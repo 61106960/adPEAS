@@ -70,7 +70,7 @@ Enumerates basic Active Directory information, like Domain Controllers, Password
 Invoke-adPEAS -Module Domain
 ```
 
-Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix password attributes, LAPS, Group Policies, Netlogon scripts.
+Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix password attributes, LAPS (if your account has the rights to read it), Group Policies, Netlogon scripts.
 ```
 Invoke-adPEAS -Module Creds
 ```
@@ -97,7 +97,7 @@ Invoke-adPEAS -Module Computer -Vulns
 
 Starts Bloodhound enumeration with the scope DCOnly. Output ZIP files is stored in the same directory adPEAS is started from.
 ```
-Invoke-adPEAS -Module Computer
+Invoke-adPEAS -Module Bloodhound
 ```
 
 ## Example program output
