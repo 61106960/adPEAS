@@ -36,6 +36,10 @@ or
 ```
 . .\adPEAS.ps1
 ```
+or
+```
+IEX (New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/61106960/adPEAS/main/adPEAS.ps1')
+```
 
 Start adPEAS with all enumeration modules and enumerate the domain the logged-on user and computer is connected to.
 ```
