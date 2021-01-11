@@ -1,4 +1,4 @@
-﻿Function Invoke-adPEAS {
+Function Invoke-adPEAS {
 <#
 .SYNOPSIS
 Author: Alexander Sturz (@_61106960_)
