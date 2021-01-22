@@ -4832,16 +4832,16 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
                 $DistinguishedName = 'UNKNOWN'
             }
 
-            # if a user has multiple SPNs we only take the first one otherwise the service ticket request fails miserably :) -@st3r30byt3
-            if ($UserSPN -is [System.DirectoryServices.ResultPropertyValueCollection]) {
-                $UserSPN = $UserSPN[0]
-            }
-
-            try {
-                $Ticket = New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken -ArgumentList $UserSPN
-            }
-            catch {
-                Write-Warning "[Get-DomainSPNTicket] Error requesting ticket for SPN '$UserSPN' from user '$DistinguishedName' : $_"
+            $Ticket = $null
+            foreach($SPN in $UserSPN)
+            {
+                try {
+                    $Ticket = New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken -ArgumentList $SPN
+                    break
+                }
+                catch {
+                    Write-Debug "[Get-DomainSPNTicket] Error requesting ticket for SPN '$UserSPN' from user '$DistinguishedName' : $_"
+                }
             }
             if ($Ticket) {
                 $TicketByteStream = $Ticket.GetRequest()

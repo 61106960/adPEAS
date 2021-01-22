@@ -4575,11 +4575,16 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
                 $UserSPN = $UserSPN[0]
             }
 
-            try {
-                $Ticket = New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken -ArgumentList $UserSPN
-            }
-            catch {
-                Write-Warning "[Get-DomainSPNTicket] Error requesting ticket for SPN '$UserSPN' from user '$DistinguishedName' : $_"
+            $Ticket = $null
+            foreach($SPN in $UserSPN)
+            {
+                try {
+                    $Ticket = New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken -ArgumentList $SPN
+                    break
+                }
+                catch {
+                    Write-Debug "[Get-DomainSPNTicket] Error requesting ticket for SPN '$UserSPN' from user '$DistinguishedName' : $_"
+                }
             }
             if ($Ticket) {
                 $TicketByteStream = $Ticket.GetRequest()
