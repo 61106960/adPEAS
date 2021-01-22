@@ -113,7 +113,7 @@ Start adPEAS, enumerate the domain 'contoso.com', use the module 'Computer' only
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.5.0 light'
+    $adPEASVersion = '0.5.1 light'
     Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
