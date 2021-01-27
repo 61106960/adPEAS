@@ -1,5 +1,7 @@
 # adPEAS
 
+![](https://github.com/61106960/adPEAS/raw/main/images/adPEAS_large.jpg)
+
 adPEAS is a Powershell tool to automate Active Directory enumeration.
 In fact, adPEAS is like a wrapper for different other cool projects like
 * PowerView
