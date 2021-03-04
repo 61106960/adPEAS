@@ -574,7 +574,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $IdentiyDN = $(Get-DomainUser @SearcherArguments -Identity krbtgt).distinguishedname
     $IdentiyDomDN = $IdentiyDN.SubString($IdentiyDN.IndexOf('DC='))
     Write-Verbose "[Get-adPEASDomain] Using $($IdentiyDomDN) to search for rights"
-    $adPEAS_DomainRights = Get-ObjectACL @SearcherArguments -DistinguishedName $IdentiyDomDN -ResolveGUIDs | ? { ($_.ObjectAceType -match 'DS-Replication-Get-Changes') -or ($_.ActiveDirectoryRights -match 'GenericAll') } | Sort-Object -Property ActiveDirectoryRights
+    $adPEAS_DomainRights = Get-ObjectACL @SearcherArguments -DistinguishedName $IdentiyDomDN -ResolveGUIDs | Where-Object { ($_.ObjectAceType -match 'DS-Replication-Get-Changes') -or ($_.ActiveDirectoryRights -match 'GenericAll') } | Sort-Object -Property ActiveDirectoryRights
     
     # Display DCSync Rights
     if ($adPEAS_DomainRights -and $adPEAS_DomainRights -ne '') {

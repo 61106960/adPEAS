@@ -47,7 +47,7 @@ Possible modules are:
 
 .PARAMETER Scope
 This parameter works together with the module 'Bloodhound' only.
-Changes the scope of Bloodhound enumeration from DCOnly to All. With this setting Bloodhound will activley connect to all computers in the domain!
+Changes the scope of Bloodhound enumeration from DCOnly to All. With this setting Bloodhound will actively connect to all computers in the domain!
 Default is DCOnly.
 
 .PARAMETER Vulns
@@ -627,7 +627,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $IdentiyDN = $(Get-DomainUser @SearcherArguments -Identity krbtgt).distinguishedname
     $IdentiyDomDN = $IdentiyDN.SubString($IdentiyDN.IndexOf('DC='))
     Write-Verbose "[Get-adPEASDomain] Using $($IdentiyDomDN) to search for rights"
-    $adPEAS_DomainRights = Get-ObjectACL @SearcherArguments -DistinguishedName $IdentiyDomDN -ResolveGUIDs | ? { ($_.ObjectAceType -match 'DS-Replication-Get-Changes') -or ($_.ActiveDirectoryRights -match 'GenericAll') } | Sort-Object -Property ActiveDirectoryRights
+    $adPEAS_DomainRights = Get-ObjectACL @SearcherArguments -DistinguishedName $IdentiyDomDN -ResolveGUIDs | Where-Object { ($_.ObjectAceType -match 'DS-Replication-Get-Changes') -or ($_.ActiveDirectoryRights -match 'GenericAll') } | Sort-Object -Property ActiveDirectoryRights
     
     # Display DCSync Rights
     if ($adPEAS_DomainRights -and $adPEAS_DomainRights -ne '') {
@@ -817,7 +817,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             if ($Object_Var.admincount -and $Object_Var.admincount -eq '1') {
                 Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
             }
-            invoke-logger -logclass Info -logvalue 'Hashcat usage: hashcat -m 18200'
+            invoke-logger -logclass Info -logvalue 'Hashcat usage: Hashcat -m 18200'
             Write-Output "Searching for ASREPRoast Users - Details for User $(($Object_Var).samaccountname):"
             $Object
             $Object_TGT
