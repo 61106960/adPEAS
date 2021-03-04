@@ -11,7 +11,7 @@ In fact, adPEAS is like a wrapper for different other cool projects like
 
 As said, adPEAS is a wrapper for other tools. They are almost all written in pure Powershell but some of them are included as compressed binary blob or C# code.
 
-adPEAS-Light is a version withouth Bloodhound and vulnerability checks and it is more likely that it will not blocked by an AV solution.
+adPEAS-Light is a version without Bloodhound and vulnerability checks and it is more likely that it will not blocked by an AV solution.
 
 # How It Works
 
@@ -106,6 +106,11 @@ Invoke-adPEAS -Module Computer -Vulns
 Starts Bloodhound enumeration with the scope DCOnly. Output ZIP files is stored in the same directory adPEAS is started from.
 ```
 Invoke-adPEAS -Module Bloodhound
+```
+
+Starts Bloodhound enumeration with the scope All. With this option Bloodhound will contact each member computer of the domain. Output ZIP files is stored in the same directory adPEAS is started from.
+```
+Invoke-adPEAS -Module Bloodhound -Scope All
 ```
 
 ## Example program output
