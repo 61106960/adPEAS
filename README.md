@@ -22,7 +22,7 @@ If the system you are running adPEAS from is not domain joined or you want to en
 
 adPEAS consists of the following enumeration modules:
 * Domain - Searching for basic Active Directory information, like Domain Controllers, Sites und Subnets, Trusts and DCSync rights
-* Creds - Searching for different kind of credential exposure, like ASREPRoast, Kereberoasting, GroupPolicies, Netlogon scripts, LAPS, certain account attributes, e.g. UnixPassword, etc.
+* Creds - Searching for different kind of credential exposure, like ASREPRoast, Kerberoasting, GroupPolicies, Netlogon scripts, LAPS, certain account attributes, e.g. UnixPassword, etc.
 * Delegation - Searching for delegation issues, like 'Constrained Delegation', 'Unconstrained Delegation' and 'Resource Based Unconstrained Delegation', for computer and user accounts
 * Accounts - Searching for high privileged user accounts in predefined groups, account issues like e.g. password not expire
 * Computer - Enumerating Domain Controllers and Exchange server, with the switch -Vulns it checks the systems for EternalBlue, BlueKeep, ZeroLogon and critical Exchange vulnerabilities
