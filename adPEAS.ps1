@@ -45,9 +45,14 @@ Possible modules are:
 - Module Computer: Enumerates installed Domain Controllers and Exchange Server
 - Module Bloodhound: Starts Bloodhound enumeration with the scope DCOnly
 
+.PARAMETER Scope
+This parameter works together with the module 'Bloodhound' only.
+Changes the scope of Bloodhound enumeration from DCOnly to All. With this setting Bloodhound will activley connect to all computers in the domain!
+Default is DCOnly.
+
 .PARAMETER Vulns
+This parameter works together with the module 'Computer' only.
 Checks for known vulnerabilities of Windows systems gathered in module 'Computer', like Domain Controller and Exchange Server.
-This module only works together with the module 'Computer'.
 That means you have to start adPEAS at least like 'Invoke-adPEAS -Module Computer -Vulns'.
 - CVE-2020-1472 (ZeroLogon)
 - CVE-2019-0708 (BlueKeep)
@@ -84,6 +89,10 @@ Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to searc
 .EXAMPLE
 Invoke-adPEAS -Domain contoso.com -Module Computer -Vulns
 Start adPEAS, enumerate the domain 'contoso.com', use the module 'Computer' only and search for known CVE.
+
+.EXAMPLE
+Invoke-adPEAS -Domain contoso.com -Module Bloodhound -Method All
+Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound' with the scope All.
 #>
     [CmdletBinding()]
     Param (
@@ -121,13 +130,18 @@ Start adPEAS, enumerate the domain 'contoso.com', use the module 'Computer' only
         $Module = "adPEAS",
 
         [Parameter(Mandatory = $false)]
+        [ValidateSet("DCOnly", "All")]
+        [String]
+        $Scope = "DCOnly",
+
+        [Parameter(Mandatory = $false)]
         [Switch]
         $Vulns
     )
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.5.2'
+    $adPEASVersion = '0.5.3'
     Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
@@ -236,7 +250,9 @@ Start adPEAS, enumerate the domain 'contoso.com', use the module 'Computer' only
                 else {
                     Get-adPEASComputer @SearcherArguments
                 }
-               
+                if ($PSBoundParameters['Scope'] -eq 'All'){
+                    Get-adPEASBloodhound @SearcherArguments -Scope 'All'
+                }
                 Get-adPEASBloodhound @SearcherArguments
             }
             
@@ -272,7 +288,12 @@ Start adPEAS, enumerate the domain 'contoso.com', use the module 'Computer' only
             
             "Bloodhound" {
 
-                Get-adPEASBloodhound @SearcherArguments
+                if ($PSBoundParameters['Scope'] -eq 'All') {
+                    Get-adPEASBloodhound @SearcherArguments -Scope 'All'
+                }
+                else {
+                    Get-adPEASBloodhound @SearcherArguments
+                }
             }
     }
 
@@ -2011,6 +2032,10 @@ Specifies the domain to use for the query, defaults to the current domain.
 .PARAMETER Server
 Specifies an Active Directory server (domain controller) to bind to, defaults to the users current domain.
 
+.PARAMETER Scope
+Changes the scope of enumeration from DCOnly to All. With this setting Bloodhound will activley connect to all computers in the domain!
+Default is DCOnly.
+
 .PARAMETER Credential
 A [Management.Automation.PSCredential] object of alternate credentials for connection to the target domain.
 
@@ -2021,6 +2046,10 @@ Start Enumerating and use the domain the logged-on user is connected too
 .EXAMPLE
 Get-adPEASCreds -Domain 'contoso.com'
 Start Enumerating and use the domain 'contoso.com'
+
+.EXAMPLE
+Get-adPEASCreds -Domain 'contoso.com' -Scope All
+Start Enumerating and use the domain 'contoso.com' with the scope All instead of default DCOnly
 
 .EXAMPLE
 Get-adPEASCreds -Domain 'contoso.com' -Server 'dc1.contoso.com'
@@ -2044,6 +2073,11 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         [ValidateNotNullOrEmpty()]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet("DCOnly", "All")]
+        [String]
+        $Scope = "DCOnly",
 
         [Parameter(Mandatory = $false,HelpMessage='Enter a PSCredentials object like $Cred = New-Object System.Management.Automation.PSCredential("contoso\johndoe", $SecPassword)')]
         [ValidateNotNullOrEmpty()]
@@ -2105,6 +2139,9 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         Write-Verbose "[Get-adPEASBloodhound] Using '$Server' as target Domain Controller"
     }
     $SearcherArguments['CollectionMethod'] = 'DCOnly'
+    if ($PSBoundParameters['Scope'] -eq 'All') {
+        $SearcherArguments['CollectionMethod'] = 'All'
+    }
 
     # Starting to impersonate given credentials
     if ($PSBoundParameters['Credential']) {
