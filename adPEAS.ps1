@@ -1985,7 +1985,7 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
                                 $Object | Add-Member Noteproperty 'CVE-2021-28482' $true
                                 $Object | Add-Member Noteproperty 'CVE-2021-28483' $true
                             }
-                            Invoke-Logger -LogClass Info -LogValue "https://github.com/Shadow0ps/CVE-2021-28482-Exchange-POC"
+                            Invoke-Logger -LogClass Info -LogValue "https://gist.github.com/testanull/9ebbd6830f7a501e35e67f2fcaa57bda"
 
                         }
 
