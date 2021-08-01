@@ -84,7 +84,7 @@ Start adPEAS with all modules, enumerate the domain 'contoso.com' and use the us
 
 .EXAMPLE
 Invoke-adPEAS -Domain contoso.com -Module Creds
-Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to search for credential leackage.
+Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to search for credential leakage.
 
 .EXAMPLE
 Invoke-adPEAS -Domain contoso.com -Module Computer -Vulns
