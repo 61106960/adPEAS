@@ -58,7 +58,7 @@ That means you have to start adPEAS at least like 'Invoke-adPEAS -Module Compute
 - CVE-2019-0708 (BlueKeep)
 - CVE-2017-0144 (aka MS17-010, EternalBlue)
 - and various critical Exchange vulnerabilities like
-  CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065 
+  CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483 
 
 .EXAMPLE
 Invoke-adPEAS
@@ -141,7 +141,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.5.3'
+    $adPEASVersion = '0.5.4'
     Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
@@ -1689,7 +1689,7 @@ This module checks for the following CVE:
 - CVE-2019-0708 (BlueKeep)
 - CVE-2017-0144 (aka MS17-010, EternalBlue)
 - and various critical Exchange vulnerabilities like
-  CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065
+  CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483
 
 .EXAMPLE
 Get-adPEASComputer
@@ -24303,7 +24303,7 @@ Optional Dependencies: None
 
 .DESCRIPTION
 Retrieves Microsoft Exchange version via OWA https request and checks for severe vulnerabilities like
-CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065.
+CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483.
 
 .PARAMETER Identity
 Specifies the FQDN or at least the Exchange server hostname. 
