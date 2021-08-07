@@ -38,6 +38,7 @@ If no module is given, the default modules are 'Domain','Creds','Delegation','Ac
 
 Possible modules are:
 - Module Domain: Enumerates some basic AD information, like Domain Controllers, Password Policy, Sites and Subnets, Trusts, DCSync Rights
+- Module CA: Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates.
 - Module Creds: Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, LAPS, Group Policies, Netlogon Scripts
 - Module Delegation: Enumerates delegation issues, like 'Unconstrained Delegation', 'Constrained Delegation', 'Resource Based Constrained Delegation' for user and computer objects
 - Module Accounts: Enumerates users in high privileged groups which are NOT disabled, like Administrators, Domain Admins, Enterprise Admins, Group Policy Creators, DNS Admins, Account Operators, Server Operators, Printer Operators, Backup Operators, Hyper-V Admins, Remote Management Users und CERT Publishers
@@ -125,7 +126,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
         [Parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
-        [ValidateSet("Domain", "Creds", "Delegation", "Accounts", "Computer", "Bloodhound")]
+        [ValidateSet("Domain", "CA", "Creds", "Delegation", "Accounts", "Computer", "Bloodhound")]
         [String[]]
         $Module = "adPEAS",
 
@@ -141,7 +142,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.5.4'
+    $adPEASVersion = '0.6.0'
     Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
@@ -240,6 +241,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
             "adPEAS" {
 
                 Get-adPEASDomain @SearcherArguments
+                Get-adPEASCA @SearcherArguments
                 Get-adPEASCreds @SearcherArguments
                 Get-adPEASDelegation @SearcherArguments
                 Get-adPEASAccounts @SearcherArguments
@@ -259,6 +261,11 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
             "Domain" {
 
                 Get-adPEASDomain @SearcherArguments
+            }
+
+            "CA" {
+
+                Get-adPEASCA @SearcherArguments
             }
             
             "Creds" {
@@ -564,7 +571,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         }
     }
     else {
-        Write-Verbose "[Get-adPEASDomain] No domain sites and subents could be gathered"
+        Write-Verbose "[Get-adPEASDomain] No domain sites and subnets could be gathered"
     }
     $Object_Var = $null
     $Object = $null
@@ -674,6 +681,153 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
 
+Function Get-adPEASCA {
+    <#
+    .SYNOPSIS
+    Author: Alexander Sturz (@_61106960_)
+    Required Dependencies: None
+    Optional Dependencies: None
+    
+    .DESCRIPTION
+    Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates.
+    
+    .PARAMETER Domain
+    Specifies the domain to use for the query, defaults to the current domain.
+    
+    .PARAMETER Server
+    Specifies an Active Directory server (domain controller) to bind to.
+    
+    .PARAMETER Credential
+    A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
+    
+    .EXAMPLE
+    Get-adPEASCA
+    Start Enumerating and use the domain the logged-on user is connected to.
+    
+    .EXAMPLE
+    Get-adPEASCA -Domain 'contoso.com'
+    Start Enumerating and use the domain 'contoso.com'.
+    
+    .EXAMPLE
+    Get-adPEASCA -Domain 'contoso.com' -Server 'dc1.contoso.com'
+    Start Enumerating using the domain 'contoso.com' and use the domain controller 'dc1.contoso.com' for almost all enumeration requests.
+    
+    .EXAMPLE
+    $SecPassword = ConvertTo-SecureString 'Passw0rd1!' -AsPlainText -Force
+    $Cred = New-Object System.Management.Automation.PSCredential('contoso\johndoe', $SecPassword)
+    Get-adPEASCA -Domain 'contoso.com' -Cred $Cred
+    Start Enumerating using the domain 'contoso.com' and use the passed PSCredential object during enumeration.
+    #>
+        [CmdletBinding()]
+        Param (
+            #[Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+            [Parameter(Mandatory = $false,HelpMessage="Enter a domain name here, e.g. contoso.com")]
+            [ValidateNotNullOrEmpty()]
+            [String]
+            $Domain,
+    
+            [Parameter(Mandatory = $false,HelpMessage="Enter a FQDN of a Domain Controller here, e.g. dc1.contoso.com")]
+            [ValidateNotNullOrEmpty()]
+            [String]
+            $Server,
+    
+            [Parameter(Mandatory = $false,HelpMessage='Enter a PSCredentials object like $Cred = New-Object System.Management.Automation.PSCredential("contoso\johndoe", $SecPassword)')]
+            [ValidateNotNullOrEmpty()]
+            [Management.Automation.PSCredential]
+            [Management.Automation.CredentialAttribute()]
+            $Credential = [Management.Automation.PSCredential]::Empty
+        )
+    
+        <# +++++ Starting adPEAS CA Enumeration +++++ #>
+        $ErrorActionPreference = "Continue"
+    
+    
+        Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Certificate Authority Information +++++"
+    
+        # first trying to resolve supplied parameter
+        if ($PSBoundParameters['Credential']) {
+            Write-Verbose "[Get-adPEASCA] Using alternate credentials $($Credential.UserName) for Get-Domain"
+            if ($PSBoundParameters['Domain']) {
+                $TargetDomain = $Domain
+            }
+            else {
+                # if no domain is supplied, extract the logon domain from the PSCredential passed
+                $TargetDomain = $Credential.GetNetworkCredential().Domain
+                Write-Verbose "[Get-adPEASCA] Extracted domain $($TargetDomain) from -Credential"
+            }
+            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $TargetDomain, $Credential.UserName, $Credential.GetNetworkCredential().Password)
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
+            }
+            catch {
+                throw "[Get-adPEASCA] The specified domain $($TargetDomain) does not exist, could not be contacted, there isn't an existing trust, or the specified credentials are invalid: $_"
+            }
+        }
+        elseif ($PSBoundParameters['Domain']) {
+            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $Domain)
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
+            }
+            catch {
+                throw "[Get-adPEASCA] The specified domain $($Domain) does not exist, could not be contacted, or there isn't an existing trust : $_"
+            }
+        }
+        else {
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name
+            }
+            catch {
+                throw "[Get-adPEASCA] Error retrieving the current domain: $_"
+            }
+        }
+        
+        # Building searcher arguments for the following PowerView requests
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain'] -or $Domain) {
+            $SearcherArguments['Domain'] = $Domain
+            Write-Verbose "[Get-adPEASCA] Using $($Domain) as target Windows Domain"
+        }
+        if ($PSBoundParameters['Server']) {
+            $SearcherArguments['Server'] = $Server
+            Write-Verbose "[Get-adPEASCA] Using $($Server) as target Domain Controller"
+        }
+    
+        # Starting to impersonate given credentials
+        if ($PSBoundParameters['Credential']) {
+            Write-Warning "[Get-adPEASCA] Using $($Cred.Username) for authentication"
+            $adPEAS_LogonToken = Invoke-UserImpersonation -Credential $Credential
+        }
+    
+        <# +++++ Checking Enterprise CA +++++ #>
+        Invoke-Logger -LogClass Info -LogValue "+++++ Checking Enterprise CA +++++"
+    
+        $adPEAS_Domain = get-domain @SearcherArguments
+        $adPEAS_CABasePath = "CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($adPEAS_Domain.Name).Replace(".",",DC="))
+        
+        Write-Verbose "[Get-adPEASCA] Using $adPEAS_CABasePath to search for Enterprise CA Services"
+        $adPEAS_CAEnterpriseCA = Get-DomainObject @SearcherArguments -SearchBase ("CN=Enrollment Services," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=pKIEnrollmentService)"
+        $adPEAS_CANTAuthStore = Get-DomainObject @SearcherArguments -SearchBase ("CN=NTAuthCertificates," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=certificationAuthority)"
+
+        if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
+            foreach ($Object_Var in $adPEAS_CAEnterpriseCA) {
+                $Object = New-Object PSObject
+                $Object | Add-Member Noteproperty 'CA Name' $Object_Var.cn
+                $Object | Add-Member Noteproperty 'CA dnshostname' $Object_Var.dnshostname
+                $Object | Add-Member Noteproperty 'CA IP Address' $($Object_Var.dnshostname | Resolve-IPAddress).IpAddress
+                $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var.whencreated
+                $Object | Add-Member Noteproperty 'DistinguishedName' $Object_Var.distinguishedName
+                $Object | Add-Member Noteproperty 'Templates' $(($Object_Var.certificatetemplates) -join '; ')
+                $Object | Add-Member Noteproperty 'NTAuthCertificates' $(if ($adPEAS_CANTAuthStore) {$true} else {$false})
+                Write-Output "Checking Certificate Authority - Details for $($Object_Var.cn):"
+                $Object
+                $Object_Var = $Null
+                $Object = $null                
+            }
+        }
+
+        # Stop to impersonate with other credentials
+        if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
+    }
 
 Function Get-adPEASCreds {
 <#
@@ -8920,7 +9074,12 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             Write-Verbose "[Get-DomainObject] Get-DomainObject filter string: $($ObjectSearcher.filter)"
 
             if ($PSBoundParameters['FindOne']) { $Results = $ObjectSearcher.FindOne() }
-            else { $Results = $ObjectSearcher.FindAll() }
+            else {
+                try { $Results = $ObjectSearcher.FindAll() }
+                catch {
+                    Write-Verbose "[Get-DomainObject] Error: $_"
+                }
+            }
             $Results | Where-Object {$_} | ForEach-Object {
                 if ($PSBoundParameters['Raw']) {
                     # return raw result objects
