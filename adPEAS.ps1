@@ -142,7 +142,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.6.1'
+    $adPEASVersion = '0.6.2'
     Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
@@ -241,7 +241,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
             "adPEAS" {
 
                 Get-adPEASDomain @SearcherArguments
-                Get-adPEASCA @SearcherArguments
+                # Get-adPEASCA @SearcherArguments
                 Get-adPEASCreds @SearcherArguments
                 Get-adPEASDelegation @SearcherArguments
                 Get-adPEASAccounts @SearcherArguments
@@ -307,7 +307,6 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
     # Stop to impersonate with other credentials
     if ($InvokeadPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $InvokeadPEAS_LogonToken}
 }
-
 
 Function Get-adPEASDomain {
 <#
@@ -811,7 +810,7 @@ Function Get-adPEASCA {
         if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
             foreach ($Object_Var in $adPEAS_CAEnterpriseCA) {
                 $Object = New-Object PSObject
-                $Object | Add-Member Noteproperty 'CA Name' $Object_Var.cn
+                $Object | Add-Member Noteproperty 'CA Name' $Object_Var.name
                 $Object | Add-Member Noteproperty 'CA dnshostname' $Object_Var.dnshostname
                 $Object | Add-Member Noteproperty 'CA IP Address' $($Object_Var.dnshostname | Resolve-IPAddress).IpAddress
                 $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var.whencreated
@@ -825,9 +824,34 @@ Function Get-adPEASCA {
             }
         }
 
+        <# +++++ Checking Certificate Templates +++++ #>
+        Invoke-Logger -LogClass Info -LogValue "+++++ Checking Certificate Templates +++++"
+
+        if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
+            foreach ($Object_CA in $adPEAS_CAEnterpriseCA) {
+                foreach ($Object_Template in $Object_CA.certificatetemplates) {
+                    $Object_Var_Template = $Object_Template | Get-ADCSTemplate @SearcherArguments -ResolveFlags
+                    #$Object_Var_TemplateACL = $Object_Template | Get-ADCSTemplateACL @SearcherArguments -Filter AdminACEs
+                    
+                    $Object = New-Object PSObject
+                    $Object | Add-Member Noteproperty 'Template Name' $Object_Var_Template.name
+                    $Object | Add-Member Noteproperty 'Template distinguishedname' $Object_Var_Template.distinguishedname
+                    $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var_Template.whencreated
+                    $Object | Add-Member Noteproperty 'CertificateNameFlag' $(($Object_Var_Template.CertificateNameFlag) -join '; ')
+                    $Object | Add-Member Noteproperty 'EnrollmentFlag' $(($Object_Var_Template.EnrollmentFlag) -join '; ')
+                    if ($Object_Var_Template.PrivateKeyFlag -and $Object_Var_Template.PrivateKeyFlag -eq 'CT_FLAG_EXPORTABLE_KEY') {
+                        $Object | Add-Member Noteproperty 'Private Key Exportable' $true
+                    }
+                    Write-Output "Checking Certificate Template - Details for Template '$($Object_Template)':"
+                    $object
+                    $Object_Var_Template = $null
+                }
+            }
+        }
+
         # Stop to impersonate with other credentials
         if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
-    }
+}
 
 Function Get-adPEASCreds {
 <#
@@ -1195,7 +1219,6 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
 
-
 Function Get-adPEASDelegation {
 <#
 .SYNOPSIS
@@ -1516,7 +1539,6 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
 
-
 Function Get-adPEASAccounts {
 <#
 .SYNOPSIS
@@ -1815,8 +1837,6 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     # Stop to impersonate with other credentials
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
-
-
 Function Get-adPEASComputer {
 <#
 .SYNOPSIS
@@ -2187,8 +2207,6 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 
 }
-
-
 Function Get-adPEASBloodhound {
 <#
 .SYNOPSIS
@@ -2328,7 +2346,6 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     # Stop to impersonate with other credentials
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
-
 
 function Invoke-Logger {
 <#
