@@ -142,7 +142,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.6.0'
+    $adPEASVersion = '0.6.1'
     Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
@@ -25936,6 +25936,672 @@ Invoke-PortCheck -Identity ex.contoso.com -Port 445
         }
     }
 }
+
+function Convert-ADCSPrivateKeyFlag {
+<#
+.SYNOPSIS
+Converts the mspki-private-key-flag specified by the "Flag" parameter.
+Author: Christoph Falta (@cfalta)
+
+.PARAMETER Flag
+The value to translate.
+
+.EXAMPLE
+Convert-ADCSPrivateKeyFlag -Flag 1
+
+Description
+-----------
+Translates the value "1" according to microsoft documentation.
+
+.LINK
+https://github.com/cfalta/PoshADCS
+#>
+
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory = $true, ValueFromPipeline=$true)]
+        [ValidateNotNullorEmpty()]
+        [string]
+        $Flag
+    )
+
+# Based on 2.27 msPKI-Private-Key-Flag Attribute
+# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-crtd/f6122d87-b999-4b92-bff8-f465e8949667
+
+    $Result = @()
+    $BitFlag =  [convert]::ToString($Flag,2).padleft(32,'0')
+
+    if($BitFlag.Substring(31,1) -eq '1') {
+        $Result += "CT_FLAG_REQUIRE_PRIVATE_KEY_ARCHIVAL"
+    }
+
+    if($BitFlag.Substring(27,1) -eq '1') {
+        $Result += "CT_FLAG_EXPORTABLE_KEY"
+    }
+
+    if($BitFlag.Substring(26,1) -eq '1') {
+        $Result += "CT_FLAG_STRONG_KEY_PROTECTION_REQUIRED"
+    }
+
+    if($BitFlag.Substring(25,1) -eq '1') {
+        $Result += "CT_FLAG_REQUIRE_ALTERNATE_SIGNATURE_ALGORITHM"
+    }
+
+    if($BitFlag.Substring(24,1) -eq '1') {
+        $Result += "CT_FLAG_REQUIRE_SAME_KEY_RENEWAL"
+    }
+
+    if($BitFlag.Substring(23,1) -eq '1') {
+        $Result += "CT_FLAG_USE_LEGACY_PROVIDER"
+    }
+
+    if($BitFlag -eq '00000000000000000000000000000000') {
+        $Result += "CT_FLAG_ATTEST_NONE"
+    }
+
+    if($BitFlag.Substring(18,1) -eq '1') {
+        $Result += "CT_FLAG_ATTEST_REQUIRED"
+    }
+
+    if($BitFlag.Substring(19,1) -eq '1') {
+        $Result += "CT_FLAG_ATTEST_PREFERRED"
+    }
+
+    if($BitFlag.Substring(17,1) -eq '1') {
+        $Result += "CT_FLAG_ATTESTATION_WITHOUT_POLICY"
+    }
+
+    if($BitFlag.Substring(22,1) -eq '1') {
+        $Result += "CT_FLAG_EK_TRUST_ON_USE"
+    }
+
+    if($BitFlag.Substring(21,1) -eq '1') {
+        $Result += "CT_FLAG_EK_VALIDATE_CERT" 
+    }
+
+    if($BitFlag.Substring(20,1) -eq '1') {
+        $Result += "CT_FLAG_EK_VALIDATE_KEY"
+    }
+    $Result
+}
+function Convert-ADCSNameFlag {
+<#
+.SYNOPSIS
+Converts the mspki-certificate-name-flag specified by the "Flag" parameter.
+Author: Christoph Falta (@cfalta)
+
+.PARAMETER Flag
+The value to translate.
+
+.EXAMPLE
+Convert-ADCSNameFlag -Flag 1
+
+Description
+-----------
+Translates the value "1" according to microsoft documentation.
+
+.LINK
+https://github.com/cfalta/PoshADCS
+#>
+
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory = $true, ValueFromPipeline=$true)]
+        [ValidateNotNullorEmpty()]
+        [string]
+        $Flag
+    )
+
+# Based on 2.28 msPKI-Certificate-Name-Flag Attribute
+# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-crtd/1192823c-d839-4bc3-9b6b-fa8c53507ae1
+
+    $Result = @()
+    $BitFlag =  [convert]::ToString($Flag,2).padleft(32,'0')
+
+    if($BitFlag.Substring(31,1) -eq '1') {
+        $Result += "ENROLLEE_SUPPLIES_SUBJECT"
+    }
+
+    if($BitFlag.Substring(28,1) -eq '1') {
+        $Result += "OLD_CERT_SUPPLIES_SUBJECT_AND_ALT_NAME"
+    }
+
+    if($BitFlag.Substring(15,1) -eq '1') {
+        $Result += "ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME"
+    }
+
+    if($BitFlag.Substring(9,1) -eq '1') {
+        $Result += "SUBJECT_ALT_REQUIRE_DOMAIN_DNS"
+    }
+
+    if($BitFlag.Substring(7,1) -eq '1') {
+        $Result += "SUBJECT_ALT_REQUIRE_DIRECTORY_GUID"
+    }
+
+    if($BitFlag.Substring(6,1) -eq '1') {
+        $Result += "SUBJECT_ALT_REQUIRE_UPN"
+    }
+
+    if($BitFlag.Substring(5,1) -eq '1') {
+        $Result += "SUBJECT_ALT_REQUIRE_EMAIL"
+    }
+
+    if($BitFlag.Substring(4,1) -eq '1') {
+        $Result += "SUBJECT_ALT_REQUIRE_DNS"
+    }
+
+    if($BitFlag.Substring(3,1) -eq '1') {
+        $Result += "SUBJECT_REQUIRE_DNS_AS_CN"
+    }
+
+    if($BitFlag.Substring(2,1) -eq '1') {
+        $Result += "SUBJECT_REQUIRE_EMAIL"
+    }
+
+    if($BitFlag.Substring(1,1) -eq '1') {
+        $Result += "SUBJECT_REQUIRE_COMMON_NAME"
+    }
+
+    if($BitFlag.Substring(0,1) -eq '1') {
+        $Result += "SUBJECT_REQUIRE_DIRECTORY_PATH"
+    }
+    $Result
+}
+
+function Convert-ADCSEnrollmentFlag {
+<#
+.SYNOPSIS
+Converts the mspki-enrollment-flag specified by the "Flag" parameter.
+Author: Christoph Falta (@cfalta)
+
+.PARAMETER Flag
+The value to translate.
+
+.EXAMPLE
+Convert-ADCSEnrollmentFlag -Flag 1
+
+Description
+-----------
+Translates the value "1" according to microsoft documentation.
+
+.LINK
+https://github.com/cfalta/PoshADCS
+#>
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory = $true, ValueFromPipeline=$true)]
+        [ValidateNotNullorEmpty()]
+        [string]
+        $Flag
+    )
+
+# Based on 2.26 msPKI-Enrollment-Flag Attribute
+# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-crtd/ec71fd43-61c2-407b-83c9-b52272dec8a1
+
+    $Result = @()
+    $BitFlag =  [convert]::ToString($Flag,2).padleft(32,'0')
+
+    if($BitFlag.Substring(31,1) -eq '1') {
+        $Result += "CT_FLAG_INCLUDE_SYMMETRIC_ALGORITHMS"
+    }
+
+    if($BitFlag.Substring(30,1) -eq '1') {
+        $Result += "CT_FLAG_PEND_ALL_REQUESTS"
+    }
+
+    if($BitFlag.Substring(29,1) -eq '1') {
+        $Result += "CT_FLAG_PUBLISH_TO_KRA_CONTAINER"
+    }
+
+    if($BitFlag.Substring(28,1) -eq '1') {
+        $Result += "CT_FLAG_PUBLISH_TO_DS"
+    }
+
+    if($BitFlag.Substring(27,1) -eq '1') {
+        $Result += "CT_FLAG_AUTO_ENROLLMENT_CHECK_USER_DS_CERTIFICATE"
+    }
+
+    if($BitFlag.Substring(26,1) -eq '1') {
+        $Result += "CT_FLAG_AUTO_ENROLLMENT"
+    }
+    if($BitFlag.Substring(25,1) -eq '1') {
+        $Result += "CT_FLAG_PREVIOUS_APPROVAL_VALIDATE_REENROLLMENT"
+    }
+
+    if($BitFlag.Substring(23,1) -eq '1') {
+        $Result += "CT_FLAG_USER_INTERACTION_REQUIRED"
+    }
+
+    if($BitFlag.Substring(21,1) -eq '1') {
+        $Result += "CT_FLAG_REMOVE_INVALID_CERTIFICATE_FROM_PERSONAL_STORE"
+    }
+
+    if($BitFlag.Substring(20,1) -eq '1') {
+        $Result += "CT_FLAG_ALLOW_ENROLL_ON_BEHALF_OF"
+    }
+
+    if($BitFlag.Substring(19,1) -eq '1') {
+        $Result += "CT_FLAG_ADD_OCSP_NOCHECK"
+    }
+
+    if($BitFlag.Substring(18,1) -eq '1') {
+        $Result += "CT_FLAG_ENABLE_KEY_REUSE_ON_NT_TOKEN_KEYSET_STORAGE_FULL"
+    }
+
+    if($BitFlag.Substring(17,1) -eq '1') {
+        $Result += "CT_FLAG_NOREVOCATIONINFOINISSUEDCERTS"
+    }
+
+    if($BitFlag.Substring(16,1) -eq '1') {
+        $Result += "CT_FLAG_INCLUDE_BASIC_CONSTRAINTS_FOR_EE_CERTS"
+    }
+
+    if($BitFlag.Substring(15,1) -eq '1') {
+        $Result += "CT_FLAG_ALLOW_PREVIOUS_APPROVAL_KEYBASEDRENEWAL_VALIDATE_REENROLLMENT"
+    }
+
+    if($BitFlag.Substring(14,1) -eq '1') {
+        $Result += "CT_FLAG_ISSUANCE_POLICIES_FROM_REQUEST"
+    }
+    $Result
+}
+
+
+function Convert-ADCSFlag
+{
+<#
+.SYNOPSIS
+Translates the value of a specified flag-attribute into a human readable form.
+Author: Christoph Falta (@cfalta)
+
+.PARAMETER Attribute
+The flag attribute to translate. Can be one of "mspki-enrollment-flag", "mspki-certificate-name-flag" or "mspki-private-key-flag".
+
+.PARAMETER Value
+The value to translate.
+
+.EXAMPLE
+Convert-ADCSFlag -Attribute mspki-enrollment-flag -Value 1
+
+Description
+-----------
+Converts the value 1 of the attribute mspki-enrollment-flag into a human readable form.
+
+.LINK
+https://github.com/cfalta/PoshADCS
+#>
+        [CmdletBinding()]
+        Param (
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("mspki-enrollment-flag","mspki-certificate-name-flag","mspki-private-key-flag")]
+        [string]
+        $Attribute,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullorEmpty()]
+        [string]
+        $Value)
+
+    switch($Attribute) {
+        "mspki-enrollment-flag" { Convert-ADCSEnrollmentFlag -Flag $Value }
+        "mspki-certificate-name-flag"{ Convert-ADCSNameFlag -Flag $Value }
+        "mspki-private-key-flag"{ Convert-ADCSPrivateKeyFlag -Flag $Value }
+    }
+}
+
+function Get-ADCSTemplateACL {
+    <#
+    .SYNOPSIS
+    Get-ADCSTemplateACL uses PowerViews Get-DomainObjectACL to retrieve the ACLs of a single or all certificate templates. 
+    Use the filter switch to remove ACEs that match admin groups or other default groups to reduce the output and gain better visibility.
+    Author: Christoph Falta (@cfalta)
+    Adopted by: Alexander Sturz (@_61106960_)
+    
+    .PARAMETER Name
+    The name of the certificate template to search for. If omitted, all templates will be retrieved.
+    
+    .PARAMETER Domain
+    Specifies the domain to use for the query, defaults to the current domain.
+    
+    .PARAMETER Server
+    Specifies an Active Directory server (domain controller) to bind to.
+    
+    .PARAMETER Filter
+    Filter the ACEs to reduce output and gain better visibility.
+
+    -Filter AdminACEs --> will remove ACEs that match to default admin groups (e.g. Domain Admins)
+    -Filter DefaultACEs --> will remove ACEs that match to default domain groups including admin groups (e.g. Domain Admins, Authenticated Users,...)
+    
+    .PARAMETER Credential
+    A [Management.Automation.PSCredential] object of alternate credentials
+    for connection to the target domain.
+    
+    .EXAMPLE
+    Get-ADCSTemplateACL -Name Template1 -Filter DefaultACEs
+
+    Description
+    -----------
+    Get's the ACEs of the template with name "Template1" and removes all default ACEs
+
+    .EXAMPLE
+    Get-ADCSTemplateACL -Filter AdminACEs
+
+    Description
+    -----------
+    Get's the ACEs of all templates and removes admin ACEs
+    
+    .LINK
+    https://github.com/cfalta/PoshADCS
+    #>
+        [CmdletBinding()]
+        Param (
+            [Parameter(Position = 0, Mandatory = $false, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+            [ValidateNotNullorEmpty()]
+            [String]
+            $Name,
+    
+            [ValidateNotNullOrEmpty()]
+            [String]
+            $Domain,
+    
+            [ValidateNotNullOrEmpty()]
+            [Alias('DomainController')]
+            [String]
+            $Server,
+    
+            [Parameter(Mandatory = $false)]
+            [ValidateSet("AdminACEs","DefaultACEs")]
+            [String]
+            $Filter,
+
+            [ValidateNotNullOrEmpty()]
+            [String]
+            $SearchBase,
+
+            [ValidateNotNullOrEmpty()]
+            [String]
+            $LDAPFilter,
+
+            [Management.Automation.PSCredential]
+            [Management.Automation.CredentialAttribute()]
+            $Credential = [Management.Automation.PSCredential]::Empty
+        )
+    
+        BEGIN {
+            if ($PSBoundParameters['Domain']) {
+                $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $Domain)
+                try {
+                    $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
+                }
+                catch {
+                    throw "[Get-ADCSTemplateACL] The specified domain $($Domain) does not exist, could not be contacted, or there isn't an existing trust : $_"
+                }
+            }
+            else {
+                try {
+                    $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name
+                }
+                catch {
+                    throw "[Get-ADCSTemplateACL] Error retrieving the current domain: $_"
+                }
+            }
+    
+            # Building searcher arguments for the following PowerView requests
+            $SearcherArguments = @{}
+            if ($PSBoundParameters['Domain'] -or $Domain) {
+                $SearcherArguments['Domain'] = $Domain
+                Write-Verbose "[Get-ADCSTemplateACL] Using $($Domain) as target Windows Domain"
+            }
+            if ($PSBoundParameters['Server']) {
+                $SearcherArguments['Server'] = $Server
+                Write-Verbose "[Get-ADCSTemplateACL] Using $($Server) as target Domain Controller"
+            }
+            if ($PSBoundParameters['Credential']) {
+                Write-Warning "[Get-ADCSTemplateACL] Using PSCredential $($Cred.Username) for authentication"
+                $LogonToken = Invoke-UserImpersonation -Credential $Credential
+            }
+            # Get Domain Object
+            $DomainName = get-domain @SearcherArguments
+        }
+    
+        PROCESS {
+            # Add Values to Searcher Argument
+            if ($PSBoundParameters['SearchBase']) {
+                $SearcherArguments['SearchBase'] = $SearchBase
+                Write-Verbose "[Get-ADCSTemplateACL] Search base: $($SearchBase)"
+            }
+            else {
+                $SearcherArguments['SearchBase'] = ("CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($DomainName.Name).Replace(".",",DC=")))
+                Write-Verbose "[Get-ADCSTemplateACL] Search base: $($SearcherArguments.SearchBase)"
+            }
+
+            if ($PSBoundParameters['Name']) {
+                $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)(name=" + $Name + ")")
+                Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($SearcherArguments.LDAPFilter)"
+            }
+            elseif ($PSBoundParameters['LDAPFilter']) {
+                $SearcherArguments['LDAPFilter'] = $LDAPFilter
+                Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($LDAPFilter)"
+            }
+            else {
+                $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)")
+                Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($SearcherArguments.LDAPFilter)"
+            }
+
+            # Gets Template ACL
+            $TemplatesACL = Get-DomainObjectACL @SearcherArguments -Resolveguids
+
+            foreach($acl in $TemplatesACL) {
+                $acl | Add-Member -MemberType NoteProperty -Name Identity -Value (Convert-SidToName $acl.SecurityIdentifier)
+            }
+
+            # Filter AdminACEs --> will remove ACEs that match to default admin groups (e.g. Domain Admins)
+            if($Filter -eq "AdminACEs") {
+                $TemplatesACL = $TemplatesACL | ? { -not (($_.SecurityIdentifier.value -like "*-512") -or ($_.SecurityIdentifier.value -like "*-519") -or ($_.SecurityIdentifier.value -like "*-516") -or ($_.SecurityIdentifier.value -like "*-500") -or ($_.SecurityIdentifier.value -like "*-498") -or ($_.SecurityIdentifier.value -eq "S-1-5-9")) }
+            }
+
+            # Filter DefaultACEs --> will remove ACEs that match to default domain groups including admin groups (e.g. Domain Admins, Authenticated Users,...)
+            if($Filter -eq "DefaultACEs") {
+                $TemplatesACL = $TemplatesACL | ? { -not (($_.SecurityIdentifier.value -like "*-512") -or ($_.SecurityIdentifier.value -like "*-519") -or ($_.SecurityIdentifier.value -like "*-516") -or ($_.SecurityIdentifier.value -like "*-500") -or ($_.SecurityIdentifier.value -like "*-498") -or ($_.SecurityIdentifier.value -eq "S-1-5-9") -or ($_.SecurityIdentifier.value -eq "S-1-5-11") -or ($_.SecurityIdentifier.value -like "*-513") -or ($_.SecurityIdentifier.value -like "*-515") -or ($_.SecurityIdentifier.value -like "*-553")) } 
+            }
+
+            $TemplatesACL
+        }
+    
+        END {
+            if ($LogonToken) {
+                Invoke-RevertToSelf -TokenHandle $LogonToken
+            }
+        }
+    }
+
+function Get-ADCSTemplate {
+<#
+.SYNOPSIS
+This function gets a specified or all objects of type "pKICertificateTemplate" stored under the default path CN=Certificate Templates... from Active Directory using PowerViews Get-DomainObject.
+It can also translate the various flag attributes to human-readable values and include the ACLs of the template objects.
+Author: Christoph Falta (@cfalta)
+Adopted by: Alexander Sturz (@_61106960_)
+
+.PARAMETER Name
+The name of the certificate template to search for. If omitted, all templates will be retrieved.
+
+.PARAMETER Domain
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER ResolveFlags
+Instructs the script to translate the flag attributes to human readable values.
+
+.PARAMETER IncludeACL
+Includes the ACLs of the template in the returned template object.
+
+.PARAMETER Credential
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.EXAMPLE
+Get-ADCSTemplate -Domain contoso.com -Server dc.contoso.com -ResolveFlags
+
+Description
+-----------
+Get's all templates from domain contoso.com, used a specific domain controller to rade templates from and resolves flags.
+
+.EXAMPLE
+Get-ADCSTemplate -Name Template1 -ResolveFlags -IncludeACL
+
+Description
+-----------
+Get's the template with the name "Template1", resolves flags and shows set ACL.
+#>
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $false, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [ValidateNotNullorEmpty()]
+        [String]
+        $Name,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullorEmpty()]
+        [Switch]
+        $ResolveFlags,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullorEmpty()]
+        [Switch]
+        $IncludeACL,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullorEmpty()]
+        [Switch]
+        $Raw
+    )
+
+    BEGIN {
+        if ($PSBoundParameters['Domain']) {
+            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $Domain)
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
+            }
+            catch {
+                throw "[Get-ADCSTemplate] The specified domain $($Domain) does not exist, could not be contacted, or there isn't an existing trust : $_"
+            }
+        }
+        else {
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name
+            }
+            catch {
+                throw "[Get-ADCSTemplate] Error retrieving the current domain: $_"
+            }
+        }
+
+        # Building searcher arguments for the following PowerView requests
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain'] -or $Domain) {
+            $SearcherArguments['Domain'] = $Domain
+            Write-Verbose "[Get-ADCSTemplate] Using $($Domain) as target Windows Domain"
+        }
+        if ($PSBoundParameters['Server']) {
+            $SearcherArguments['Server'] = $Server
+            Write-Verbose "[Get-ADCSTemplate] Using $($Server) as target Domain Controller"
+        }
+        if ($PSBoundParameters['Credential']) {
+            Write-Warning "[Get-ADCSTemplate] Using PSCredential $($Cred.Username) for authentication"
+            $LogonToken = Invoke-UserImpersonation -Credential $Credential
+        }
+        # Get Domain Object
+        $DomainName = get-domain @SearcherArguments
+    }
+
+    PROCESS {
+        # Add Values to Searcher Argument
+        $SearcherArguments['SearchBase'] = ("CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($DomainName.Name).Replace(".",",DC=")))
+        if ($PSBoundParameters['Name']) {
+            $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)(name=" + $Name + ")")
+        }
+        else {
+            $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)")
+        }
+        if ($PSBoundParameters['Raw']) { $SearcherArguments['Raw'] = $Raw }
+
+        # Get Templates
+        $Templates = Get-DomainObject @SearcherArguments
+    
+        $RefOidDCAuthTemplate = @("1.3.6.1.5.5.7.3.2", "1.3.6.1.5.5.7.3.1", "1.3.6.1.4.1.311.20.2.2")
+        $RefOidKerbAuthTemplate = @("1.3.6.1.5.5.7.3.2", "1.3.6.1.5.5.7.3.1", "1.3.6.1.4.1.311.20.2.2", "1.3.6.1.5.2.3.5")
+    
+        foreach($template in $Templates) {
+            $template | Add-Member -MemberType NoteProperty -Name DCAuthCert -Value $False 
+    
+            if($template.pkiextendedkeyusage) {
+                if($template.pkiextendedkeyusage.gettype().name -eq "String") {
+                    $keyusage = @(,$template.pkiextendedkeyusage)
+                }
+                else {
+                    $keyusage = new-object 'Object[]' $template.pkiextendedkeyusage.Count
+                    $template.pkiextendedkeyusage.CopyTo($keyusage,0)
+                }
+            
+                if((-not (compare-object $keyusage $RefOidDCAuthTemplate)) -or (-not (Compare-Object $keyusage $RefOidKerbAuthTemplate))) {
+                    $template.DCAuthCert = $True
+                }
+            }
+        }
+    
+        if($IncludeACL) {
+            $TemplatesACL = Get-ADCSTemplateACL @SearcherArguments
+
+            foreach($template in $Templates) {
+                $ACEs = $TemplatesACL | ? {$_.ObjectDN -eq $template.distinguishedname}
+                $template | Add-Member -MemberType NoteProperty -Name "ACL" -Value $ACEs
+            }
+        }
+    
+        if($ResolveFlags) {
+            foreach($template in $Templates) {
+                $CertificateNameFlag = Convert-ADCSFlag -Attribute mspki-certificate-name-flag -Value $template.'mspki-certificate-name-flag'
+                if($CertificateNameFlag) {
+                    $template | Add-Member -MemberType NoteProperty -Name "CertificateNameFlag" -Value $CertificateNameFlag
+                }
+    
+                $EnrollmentFlag = Convert-ADCSFlag -Attribute mspki-enrollment-flag -Value $template."mspki-enrollment-flag"
+                if($EnrollmentFlag) {
+                    $template | Add-Member -MemberType NoteProperty -Name "EnrollmentFlag" -Value $EnrollmentFlag
+                }
+    
+                $PrivateKeyFlag = Convert-ADCSFlag -Attribute mspki-private-key-flag -Value $template."mspki-private-key-flag"
+                if($PrivateKeyFlag) {
+                    $template | Add-Member -MemberType NoteProperty -Name "PrivateKeyFlag" -Value $PrivateKeyFlag
+                }
+            }
+        }
+        $Templates
+    }
+
+    END {
+        if ($LogonToken) {
+            Invoke-RevertToSelf -TokenHandle $LogonToken
+        }
+    }
+
+}
+
 
 function Invoke-BloodHound{
     <#
