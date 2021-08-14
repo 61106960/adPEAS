@@ -142,7 +142,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.6.2'
+    $adPEASVersion = '0.6.3'
     Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
@@ -241,7 +241,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
             "adPEAS" {
 
                 Get-adPEASDomain @SearcherArguments
-                # Get-adPEASCA @SearcherArguments
+                Get-adPEASCA @SearcherArguments
                 Get-adPEASCreds @SearcherArguments
                 Get-adPEASDelegation @SearcherArguments
                 Get-adPEASAccounts @SearcherArguments
@@ -448,8 +448,8 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     else {
         $Object | Add-Member Noteproperty 'Forest Children' "No Subdomain[s] available"
     }
-    $Object | Add-Member Noteproperty 'Domain Controller' (($adPEAS_Domain.DomainControllers) -join '; ')
-    Write-Output "Checking Domain - Details for Domain $($adPEAS_Domain.Name):"
+    $Object | Add-Member Noteproperty 'Domain Controller' (($adPEAS_Domain.DomainControllers) -join "`n")
+    Write-Output "Checking Domain - Details for Domain '$($adPEAS_Domain.Name)':"
     $Object
     $Object = $null
 
@@ -509,7 +509,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     else {
         $Object | Add-Member Noteproperty 'Reversible Encryption' "Enabled"
     }
-    Write-Output "Checking Password Policy - Details for Domain $($adPEAS_Domain.Name):"
+    Write-Output "Checking Password Policy - Details for Domain '$($adPEAS_Domain.Name)':"
     if (($adPEAS_DomainPolicy.SystemAccess).ClearTextPassword -and ($adPEAS_DomainPolicy.SystemAccess).ClearTextPassword -eq '1') { 
         invoke-logger -LogClass Finding -logvalue "Password of accounts are stored with reversible encryption"
         Invoke-Logger -LogClass Hint -LogValue "https://adsecurity.org/?p=2053"
@@ -529,7 +529,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         $Object | Add-Member Noteproperty -Force 'Maximum Clock Time Difference' "$(($adPEAS_DomainPolicy.KerberosPolicy).MaxClockSkew) minutes"
     }
     $Object | Add-Member Noteproperty 'Krbtgt Password Last Set' $(Get-DomainUser @SearcherArguments -Identity krbtgt).pwdlastset
-    Write-Output "Checking Kerberos Policy - Details for Domain $($adPEAS_Domain.Name):"
+    Write-Output "Checking Kerberos Policy - Details for Domain '$($adPEAS_Domain.Name)':"
     $Object
     $Object = $null
 
@@ -541,7 +541,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $adPEAS_DomainController = Get-DomainController @SearcherArguments -NoLDAP
     
     if ($adPEAS_DomainController -and $adPEAS_DomainController -ne '') {
-        Write-Output "Checking Domain Controller - Details for Domain $($adPEAS_Domain.Name):"
+        Write-Output "Checking Domain Controller - Details for Domain '$($adPEAS_Domain.Name)':"
         foreach ($Object_Var in $adPEAS_DomainController) {
             $Object = New-Object PSObject
             $Object | Add-Member Noteproperty 'DC Host Name' $Object_Var.Name
@@ -561,7 +561,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $adPEAS_DomainSubnets = Get-DomainSubnet @SitesSearcherArguments
 
     if ($adPEAS_DomainSubnets -and $adPEAS_DomainSubnets -ne '') {
-        Write-Output "Checking Sites and Subnets - Details for Domain $($adPEAS_Domain.Name):"
+        Write-Output "Checking Sites and Subnets - Details for Domain '$($adPEAS_Domain.Name)':"
         foreach ($Object_Var in $adPEAS_DomainSubnets) {
             $Object = New-Object PSObject
             $Object | Add-Member Noteproperty 'IP Subnet' $Object_Var.name
@@ -605,7 +605,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $adPEAS_DomainTrust = Get-DomainTrust @SearcherArguments -API
 
     if ($adPEAS_DomainTrust -and $adPEAS_DomainTrust -ne '') {
-        if ($(Get-DomainTrust @SearcherArguments)) { Write-Output "Checking Domain Trusts - Details for Domain $($adPEAS_Domain.Name):" }
+        if ($(Get-DomainTrust @SearcherArguments)) { Write-Output "Checking Domain Trusts - Details for Domain '$($adPEAS_Domain.Name)':" }
         
         foreach ($Object_Var in $adPEAS_DomainTrust) {
             if ($Object_Var.SourceName -ne $Object_Var.TargetName) {
@@ -637,7 +637,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     
     # Display DCSync Rights
     if ($adPEAS_DomainRights -and $adPEAS_DomainRights -ne '') {
-        Write-Output "Checking DCSync Rights - Details for Domain $($adPEAS_Domain.Name):"
+        Write-Output "Checking DCSync Rights - Details for Domain '$($adPEAS_Domain.Name)':"
         
         foreach ($Object_Var in $adPEAS_DomainRights) {
             if ($Object_Var.ActiveDirectoryRights -eq 'ExtendedRight') {
@@ -659,7 +659,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
 
     # Display GenericAll Rights
     if ($adPEAS_DomainRights -and $adPEAS_DomainRights -ne '') {
-        Write-Output "Checking GenericAll Rights - Details for Domain $($adPEAS_Domain.Name):"
+        Write-Output "Checking GenericAll Rights - Details for Domain '$($adPEAS_Domain.Name)':"
         
         foreach ($Object_Var in $adPEAS_DomainRights) {
             if ($Object_Var.ActiveDirectoryRights -eq 'GenericAll') {
@@ -815,9 +815,9 @@ Function Get-adPEASCA {
                 $Object | Add-Member Noteproperty 'CA IP Address' $($Object_Var.dnshostname | Resolve-IPAddress).IpAddress
                 $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var.whencreated
                 $Object | Add-Member Noteproperty 'DistinguishedName' $Object_Var.distinguishedName
-                $Object | Add-Member Noteproperty 'Templates' $(($Object_Var.certificatetemplates) -join '; ')
+                $Object | Add-Member Noteproperty 'Templates' $(($Object_Var.certificatetemplates) -join "`n")
                 $Object | Add-Member Noteproperty 'NTAuthCertificates' $(if ($adPEAS_CANTAuthStore) {$true} else {$false})
-                Write-Output "Checking Certificate Authority - Details for $($Object_Var.cn):"
+                Write-Output "Checking Certificate Authority - Details for '$($Object_Var.cn)':"
                 $Object
                 $Object_Var = $Null
                 $Object = $null                
@@ -837,8 +837,8 @@ Function Get-adPEASCA {
                     $Object | Add-Member Noteproperty 'Template Name' $Object_Var_Template.name
                     $Object | Add-Member Noteproperty 'Template distinguishedname' $Object_Var_Template.distinguishedname
                     $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var_Template.whencreated
-                    $Object | Add-Member Noteproperty 'CertificateNameFlag' $(($Object_Var_Template.CertificateNameFlag) -join '; ')
-                    $Object | Add-Member Noteproperty 'EnrollmentFlag' $(($Object_Var_Template.EnrollmentFlag) -join '; ')
+                    $Object | Add-Member Noteproperty 'CertificateNameFlag' $(($Object_Var_Template.CertificateNameFlag) -join "`n")
+                    $Object | Add-Member Noteproperty 'EnrollmentFlag' $(($Object_Var_Template.EnrollmentFlag) -join "`n")
                     if ($Object_Var_Template.PrivateKeyFlag -and $Object_Var_Template.PrivateKeyFlag -eq 'CT_FLAG_EXPORTABLE_KEY') {
                         $Object | Add-Member Noteproperty 'Private Key Exportable' $true
                     }
@@ -988,7 +988,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             invoke-logger -logclass Finding -logvalue "Account $(($Object_Var).samaccountname) does not require kerberos preauthentication to get a TGT"
@@ -996,7 +996,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
             }
             invoke-logger -logclass Info -logvalue 'Hashcat usage: Hashcat -m 18200'
-            Write-Output "Searching for ASREPRoast Users - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for ASREPRoast Users - Details for User '$(($Object_Var).samaccountname)':"
             $Object
             $Object_TGT
         }
@@ -1026,7 +1026,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             invoke-logger -logclass Finding -logvalue "Account $(($Object_Var).samaccountname) has a SPN and is vulnerable to Kerberoasting"
@@ -1034,7 +1034,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
             }
             invoke-logger -logclass Info -logvalue 'Hashcat usage: hashcat -m 13100'
-            Write-Output "Searching for Kerberoastable Users - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Kerberoastable Users - Details for User '$(($Object_Var).samaccountname)':"
             $Object
             $Object_Var.hash
         }
@@ -1063,7 +1063,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             if ($Object_Var.UnixUserPassword -and $Object_Var.UnixUserPassword -ne '') {
@@ -1082,7 +1082,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             if ($Object_Var.admincount -and $Object_Var.admincount -eq '1') {
                 Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
             }
-            Write-Output "Searching for Users with a set 'Linux/Unix Password' attribute - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Users with a set 'Linux/Unix Password' attribute - Details for User '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1110,14 +1110,14 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             Invoke-Logger -LogClass Finding -LogValue "User $(($Object_Var).samaccountname) has legacy data in attribute 'extensionData' password set"
             if ($Object_Var.admincount -and $Object_Var.admincount -eq '1') {
                 Invoke-Logger -LogClass Hint -LogValue "The account '$(($Object_Var).samaccountname)' is or was member of a high privileged protected group"
             }
-            Write-Output "Searching for Users with a set 'extensionData' attribute - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Users with a set 'extensionData' attribute - Details for User '$(($Object_Var).samaccountname)':"
             $Object
             # reads binary blob in extension data and converts to ascii
             $Object_Var | select-object -expandproperty extensiondata | ForEach-Object {[System.Text.Encoding]::ASCII.GetString($_)}
@@ -1157,7 +1157,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 }
             }
             invoke-logger -logclass Finding -logvalue "Computer $(($Object_Var).samaccountname) has enabled LAPS - Found password '$($Object_Var.'ms-Mcs-AdmPwd')'"
-            Write-Output "Searching for Computers with enabled LAPS - Details for Computer $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Computers with enabled LAPS - Details for Computer '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1363,7 +1363,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 }
             }
             invoke-logger -logclass Finding -logvalue "Computer $(($Object_Var).samaccountname) has unconstrained delegation rights"
-            Write-Output "Searching for Computers with Unconstrained Delegation Rights - Details for Computer $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Computers with Unconstrained Delegation Rights - Details for Computer '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1400,9 +1400,9 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                         $object | Add-Member Noteproperty 'ms-mcs-AdmPwdExpirationTime [Password Expiration]' $([datetime]::FromFileTime([convert]::ToInt64($Object_Var.'ms-MCS-AdmPwdExpirationTime',10)))
                     }
             }
-            $Object | Add-Member Noteproperty 'msDS-AllowedToDelegateTo' (($Object_Var.'msDS-AllowedToDelegateTo') -join ';')
+            $Object | Add-Member Noteproperty 'msDS-AllowedToDelegateTo' (($Object_Var.'msDS-AllowedToDelegateTo') -join "`n")
             invoke-logger -logclass Finding -logvalue "Computer $(($Object_Var).samaccountname) has constrained delegation rights"
-            Write-Output "Searching for Computers with Constrained Delegation Rights - Details for Computer $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Computers with Constrained Delegation Rights - Details for Computer '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1441,7 +1441,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             
             $Object | Add-Member Noteproperty 'AllowedToActOnBehalfOfOtherIdentity' $Object_VarRBCDIdentity
             invoke-logger -logclass Finding -logvalue "Computer $(($Object_Var).samaccountname) has resource-based constrained delegation rights"
-            Write-Output "Searching for Computers with Resource-Based Constrained Delegation Rights - Details for Computer $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Computers with Resource-Based Constrained Delegation Rights - Details for Computer '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1471,16 +1471,16 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
-            $Object | Add-Member Noteproperty 'msDS-AllowedToDelegateTo' (($Object_Var.'msDS-AllowedToDelegateTo') -join ';')
+            $Object | Add-Member Noteproperty 'msDS-AllowedToDelegateTo' (($Object_Var.'msDS-AllowedToDelegateTo') -join "`n")
             Invoke-Logger -LogClass Finding -LogValue "User $(($Object_Var).samaccountname) has constrained delegation rights"
             if ($Object_Var.admincount -and $Object_Var.admincount -eq '1') {
                 Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
                 Invoke-Logger -LogClass Hint -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group"
             }
-            Write-Output "Searching for Users with Constrained Delegation Rights - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Users with Constrained Delegation Rights - Details for User '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1509,7 +1509,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             
@@ -1523,7 +1523,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
                 Invoke-Logger -LogClass Hint -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group"
             }
-            Write-Output "Searching for Users with Resource-Based Constrained Delegation Rights - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Users with Resource-Based Constrained Delegation Rights - Details for User '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1705,7 +1705,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $adPEAS_GroupMembers += Get-DomainGroupMember @RootDomSearcherArguments -Identity $Object_VarGroup -recurse | Sort-Object -Property MemberDistinguishedName -Unique | sort-object -Property MemberObjectClass
         }
         $Object_VarSIDName = ConvertFrom-SID @SearcherArguments -ObjectSid $Object_VarGroup
-        write-output "Searching for Users in High Privileged Groups - Members of Group $($Object_VarSIDName):"
+        write-output "Searching for Users in High Privileged Groups - Members of Group '$($Object_VarSIDName)':"
         
         foreach ($Object_Var in $adPEAS_GroupMembers) {
             $Object_VarUser = @()
@@ -1782,13 +1782,13 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             Invoke-Logger -LogClass Finding -LogValue "The password of account $(($Object_Var).samaccountname) does not expire"
             Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
             Invoke-Logger -LogClass Info -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group"
-            Write-Output "Searching for High Privileged Users where the Password does not expire - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for High Privileged Users where the Password does not expire - Details for User '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1817,13 +1817,13 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             Invoke-Logger -LogClass Finding -LogValue "The user $(($Object_Var).samaccountname) does not require to have a password"
             Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
             Invoke-Logger -LogClass Info -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group"
-            Write-Output "Searching for High Privileged Users which may not require a Password - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for High Privileged Users which may not require a Password - Details for User '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1977,9 +1977,7 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
     $adPEAS_ListDC = $((get-domain @SearcherArguments).DomainControllers).Name
 
     foreach ($Object_Var in $adPEAS_ListDC) {
-
             if ($Object_Var -and $Object_Var -ne '') {
-                
                 # request all attributes of a single domain controller
                 $Object_dc = Get-DomainComputer @SearcherArguments -Identity $Object_Var
             
@@ -1998,53 +1996,19 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
                         $object | Add-Member Noteproperty 'ms-mcs-AdmPwdExpirationTime [Password Expiration]' $([datetime]::FromFileTime([convert]::ToInt64($Object_dc.'ms-MCS-AdmPwdExpirationTime',10)))
                     }
                 }
-                if ($PSBoundParameters['Vulns']) {
-                    Write-verbose "[Get-adPEASComputer] Checking for vulnerabilities have been activated"
-                    
-                    # ZeroLogon Check
-                    Write-verbose "[Get-adPEASComputer] Checking $($Object_dc.sAMAccountName) for CVE-2020-1472 (ZeroLogon)"
-                    $Object_Var_ZeroLogon = Invoke-CheckZeroLogon -Identity $Object_dc.dNSHostName
-
-                    if ($Object_Var_ZeroLogon.Vulnerable -and $Object_Var_ZeroLogon.Vulnerable -eq $true) {
-                        $Object | Add-Member Noteproperty 'CVE-2020-1472 aka ZeroLogon' $Object_Var_ZeroLogon.Vulnerable
-                        Invoke-Logger -LogClass Finding -LogValue "$($Object_dc.sAMAccountName) is vulnerable to ZeroLogon CVE-2020-1472"
-                        Invoke-Logger -LogClass Info -LogValue "https://dirkjanm.io/a-different-way-of-abusing-zerologon"
-                    }
-
-                    # EternalBlue Check
-                    Write-verbose "[Get-adPEASComputer] Checking $($Object_dc.sAMAccountName) for CVE-2017-0144 (EternalBlue)"
-                    $Object_Var_EternalBlue = Invoke-CheckEternalBlue -Identity $Object_dc.dNSHostName
-
-                    if ($Object_Var_EternalBlue.Vulnerable -and $Object_Var_EternalBlue.Vulnerable -eq $true) {
-                        $Object | Add-Member Noteproperty 'CVE-2017-0144 aka EternalBlue' $Object_Var_EternalBlue.Vulnerable
-                        Invoke-Logger -LogClass Finding -LogValue "$($Object_dc.sAMAccountName) is vulnerable to EternalBlue CVE-2017-0144 aka MS17-010"
-                        Invoke-Logger -LogClass Info -LogValue "https://www.rapid7.com/db/modules/exploit/windows/smb/ms17_010_eternalblue"
-                    }
-                    
-                    # BlueKeep Check
-                    Write-verbose "[Get-adPEASComputer] Checking $($Object_dc.sAMAccountName) for CVE-2019-0708 (BlueKeep)"
-                    $Object_Var_BlueKeep = Invoke-CheckBlueKeep -Identity $Object_dc.dNSHostName
-
-                    if ($Object_Var_BlueKeep.Vulnerable -and $Object_Var_BlueKeep.Vulnerable -eq $true) {
-                        $Object | Add-Member Noteproperty 'CVE-2019-0708 aka BlueKeep' $Object_Var_BlueKeep.Vulnerable
-                        Invoke-Logger -LogClass Finding -LogValue "$($Object_dc.sAMAccountName) is vulnerable to BlueKeep CVE-2019-0708"
-                        Invoke-Logger -LogClass Info -LogValue "https://www.rapid7.com/db/modules/exploit/windows/rdp/cve_2019_0708_bluekeep_rce"
-                    }
-                }
-
-                Write-Output "Searching for Domain Controllers - Details for Computer $(($Object_dc).samaccountname):"
+                Write-Output "Searching for Domain Controllers - Details for Computer '$(($Object_dc).samaccountname)':"
                 $Object
+
+                if ($PSBoundParameters['Vulns']) {
+                    Invoke-VulnsCheck -Identiy $Object_dc.dNSHostName -Scope ZeroLogon,EternalBlue,BlueKeep
+                }
             }
-        
         else {
             Write-verbose "[Get-adPEASComputer] No Results or Results have been suppressed"
         }
     }
     $Object_Var = $null
     $Object_dc = $null
-    $Object_Var_ZeroLogon = $null
-    $Object_Var_EternalBlue = $null
-    $Object_Var_BlueKeep = $null
     $Object = $null
 
     <# +++++ Searching for Exchange Servers +++++ #>
@@ -2079,7 +2043,7 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
             }
             
             if ($PSBoundParameters['Vulns']) {
-                Write-verbose "[Get-adPEASComputer] Checking for vulnerabilities have been activated"
+                Write-verbose "[Get-adPEASComputer] Checking for Exchange vulnerabilities have been activated"
                 
                 # Searching for Exchange version and vulns
                 Write-verbose "[Get-adPEASComputer] Checking $($object_VarExSrv.sAMAccountName) for known Exchange vulnerabilities"
@@ -2168,29 +2132,13 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
                     }
                     }
                 }
-
-                # EternalBlue Check
-                Write-verbose "[Get-adPEASComputer] Checking $($object_VarExSrv.sAMAccountName) for CVE-2017-0144 (EternalBlue)"
-                $Object_Var_EternalBlue = Invoke-CheckEternalBlue -Identity $object_VarExSrv.dNSHostName
-
-                if ($Object_Var_EternalBlue.Vulnerable -and $Object_Var_EternalBlue.Vulnerable -eq $true) {
-                    $Object | Add-Member Noteproperty 'CVE-2017-0144 aka EternalBlue' $Object_Var_EternalBlue.Vulnerable
-                    Invoke-Logger -LogClass Finding -LogValue "$($object_VarExSrv.sAMAccountName) is vulnerable to EternalBlue CVE-2017-0144 aka MS17-010"
-                    Invoke-Logger -LogClass Info -LogValue "https://www.rapid7.com/db/modules/exploit/windows/smb/ms17_010_eternalblue"
-                }
-                    
-                # BlueKeep Check
-                Write-verbose "[Get-adPEASComputer] Checking $($object_VarExSrv.sAMAccountName) for CVE-2019-0708 (BlueKeep)"
-                $Object_Var_BlueKeep = Invoke-CheckBlueKeep -Identity $object_VarExSrv.dNSHostName
-
-                if ($Object_Var_BlueKeep.Vulnerable -and $Object_Var_BlueKeep.Vulnerable -eq $true) {
-                    $Object | Add-Member Noteproperty 'CVE-2019-0708 aka BlueKeep' $Object_Var_BlueKeep.Vulnerable
-                    Invoke-Logger -LogClass Finding -LogValue "$($object_VarExSrv.sAMAccountName) is vulnerable to BlueKeep CVE-2019-0708"
-                    Invoke-Logger -LogClass Info -LogValue "https://www.rapid7.com/db/modules/exploit/windows/rdp/cve_2019_0708_bluekeep_rce"
-                }
             }
-            Write-Output "Searching for Exchange Servers - Details for Exchange Server $($object_VarExSrv.sAMAccountName):"
+            Write-Output "Searching for Exchange Servers - Details for Exchange Server '$($object_VarExSrv.sAMAccountName)':"
             $Object
+
+            if ($PSBoundParameters['Vulns']) {
+                Invoke-VulnsCheck -Identiy $object_VarExSrv.dNSHostName -Scope EternalBlue,BlueKeep
+            }
         }
         else {
             Write-verbose "[Get-adPEASComputer] No Results or Results have been suppressed"
@@ -2198,15 +2146,59 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
     }
     $Object_Var = $null
     $object_VarExSrv = $null
-    $Object_Var_ZeroLogon = $null
-    $Object_Var_EternalBlue = $null
-    $Object_Var_BlueKeep = $null
     $Object = $null
+
+    <# +++++ Searching for Enterprise CA Servers +++++ #>
+    Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Enterprise CA Servers +++++"
+
+    $adPEAS_Domain = get-domain @SearcherArguments
+    $adPEAS_CABasePath = "CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($adPEAS_Domain.Name).Replace(".",",DC="))
+    
+    Write-Verbose "[Get-adPEASCA] Using $adPEAS_CABasePath to search for Enterprise CA Services"
+    $adPEAS_CAEnterpriseCA = Get-DomainObject @SearcherArguments -SearchBase ("CN=Enrollment Services," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=pKIEnrollmentService)"
+
+    foreach ($Object_Var in $adPEAS_CAEnterpriseCA) {
+
+            if ($Object_Var -and $Object_Var -ne '') {
+                
+                # request all attributes of a single Enterprise CA server
+                $Object_ca = Get-DomainComputer @SearcherArguments -Identity $Object_Var.dnshostname
+            
+                $Object = New-Object PSObject
+                $Object | Add-Member Noteproperty 'sAMAccountName' $Object_ca.sAMAccountName
+                $Object | Add-Member Noteproperty 'dNSHostName' $Object_ca.dNSHostName
+                $Object | Add-Member Noteproperty 'distinguishedName' $Object_ca.distinguishedName
+                $Object | Add-Member Noteproperty 'IPv4Address' ($Object_ca.dNSHostName | Get-IPAddress).IPAddress
+                $Object | Add-Member Noteproperty 'operatingSystem' $Object_ca.operatingsystem
+                $Object | Add-Member Noteproperty 'description' $Object_ca.description
+                $Object | Add-Member Noteproperty 'objectSid' $Object_ca.objectSid
+                $Object | Add-Member Noteproperty 'userAccountControl' $Object_ca.useraccountcontrol
+                if ($Object_ca.'ms-Mcs-AdmPwd' -and $Object_ca.'ms-Mcs-AdmPwd' -ne '') {
+                    $object | Add-Member Noteproperty 'ms-Mcs-AdmPwd [Password]' $Object_ca.'ms-Mcs-AdmPwd'
+                    if ($Object_ca.'ms-mcs-AdmPwdExpirationTime' -and $Object_ca.'ms-mcs-AdmPwdExpirationTime' -ne '') {
+                        $object | Add-Member Noteproperty 'ms-mcs-AdmPwdExpirationTime [Password Expiration]' $([datetime]::FromFileTime([convert]::ToInt64($Object_ca.'ms-MCS-AdmPwdExpirationTime',10)))
+                    }
+                }
+                Write-Output "Searching for Enterprise CA servers - Details for Computer '$(($Object_ca).samaccountname)':"
+                $Object
+
+                if ($PSBoundParameters['Vulns']) {
+                    Invoke-VulnsCheck -Identiy $Object_ca.dNSHostName -Scope EternalBlue,BlueKeep
+                }
+            }
+        
+        else {
+            Write-verbose "[Get-adPEASComputer] No Results or Results have been suppressed"
+        }
+    }
+    $Object_Var = $null
+    $Object_ca = $null
+    $Object = $null    
 
     # Stop to impersonate with other credentials
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
-
 }
+
 Function Get-adPEASBloodhound {
 <#
 .SYNOPSIS
@@ -2396,6 +2388,76 @@ Prints the text "ASREPRoast Hash" in color Red (LogClass Finding).
     }
 }
 
+Function Invoke-VulnsCheck {
+<#
+.SYNOPSIS
+Author: Alexander Sturz (@_61106960_)
+Required Dependencies: None
+Optional Dependencies: None
+
+.DESCRIPTION
+Helper function of Get-adPEASComputer to test a given identity for certain vulnerabilities and displays the results if vulnerable
+
+.PARAMETER Identiy
+The target identity where vulnerabilities will be checked
+
+.PARAMETER Scope
+The vulnerability which will be checked
+Possible values are "ZeroLogon", "EternalBlue", "BlueKeep"
+
+.EXAMPLE
+Invoke-VulnsCheck -Identity 'dc1.contoso.com' -Scope ZeroLogon,BlueKeep
+Start checking for ZeroLogon and BlueKeep vulnerability at host 'dc1.contoso.com'
+#>
+    [CmdletBinding()]
+    Param (
+        #[Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [Parameter(Mandatory = $true,HelpMessage="Enter a host or dns name here, e.g. 'dc1.contoso.com'")]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Identiy,
+
+        [Parameter(Mandatory = $true,HelpMessage="Enter a the vulnerability name, e.g. 'ZeroLogon")]
+        [ValidateSet("ZeroLogon", "EternalBlue", "BlueKeep")]
+        [String[]]
+        $Scope
+    )
+
+    Write-verbose "[Get-adPEASComputer] Checking for vulnerabilities have been activated"
+                    
+    # ZeroLogon Check
+    if ($Scope -and $Scope -eq "ZeroLogon") {
+        Write-verbose "[Get-adPEASComputer] Checking '$Identiy' for CVE-2020-1472 (ZeroLogon)"
+        $Object_Var_ZeroLogon = Invoke-CheckZeroLogon -Identity $Identiy
+        
+        if ($Object_Var_ZeroLogon.Vulnerable -and $Object_Var_ZeroLogon.Vulnerable -eq $true) {
+            Invoke-Logger -LogClass Finding -LogValue "$Identiy is vulnerable to ZeroLogon CVE-2020-1472"
+            Invoke-Logger -LogClass Info -LogValue "https://dirkjanm.io/a-different-way-of-abusing-zerologon"
+        }
+    }
+
+    # EternalBlue Check
+    if ($Scope -and $Scope -eq "EternalBlue") {
+        Write-verbose "[Get-adPEASComputer] Checking '$Identiy' for CVE-2017-0144 (EternalBlue)"
+        $Object_Var_EternalBlue = Invoke-CheckEternalBlue -Identity $Identiy
+    
+        if ($Object_Var_EternalBlue.Vulnerable -and $Object_Var_EternalBlue.Vulnerable -eq $true) {
+            Invoke-Logger -LogClass Finding -LogValue "$Identiy is vulnerable to EternalBlue CVE-2017-0144 aka MS17-010"
+            Invoke-Logger -LogClass Info -LogValue "https://www.rapid7.com/db/modules/exploit/windows/smb/ms17_010_eternalblue"
+        }
+    }
+    
+    # BlueKeep Check
+    if ($Scope -and $Scope -eq "BlueKeep") {
+        Write-verbose "[Get-adPEASComputer] Checking '$Identiy' for CVE-2019-0708 (BlueKeep)"
+        $Object_Var_BlueKeep = Invoke-CheckBlueKeep -Identity $Identiy
+    
+        if ($Object_Var_BlueKeep.Vulnerable -and $Object_Var_BlueKeep.Vulnerable -eq $true) {
+            Invoke-Logger -LogClass Finding -LogValue "$Identiy is vulnerable to BlueKeep CVE-2019-0708"
+            Invoke-Logger -LogClass Info -LogValue "https://www.rapid7.com/db/modules/exploit/windows/rdp/cve_2019_0708_bluekeep_rce"
+        }
+    }
+}
 
 ########################################################
 #
@@ -5172,9 +5234,7 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
                 }
 
                 $Out.PSObject.TypeNames.Insert(0, 'PowerView.SPNTicket')
-                #Write-Output $Out
                 $Out
-                #Invoke-logger -logclass finding -logvalue $HashFormat
             }
         }
     }
