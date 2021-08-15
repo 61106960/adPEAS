@@ -142,7 +142,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.6.3'
+    $adPEASVersion = '0.6.4'
     Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
@@ -674,7 +674,6 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     }
     $Object_Var = $null
     $Object = $null
-
     
     # Stop to impersonate with other credentials
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
@@ -688,7 +687,7 @@ Function Get-adPEASCA {
     Optional Dependencies: None
     
     .DESCRIPTION
-    Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates.
+    Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates where non-administrative users have full access.
     
     .PARAMETER Domain
     Specifies the domain to use for the query, defaults to the current domain.
@@ -739,7 +738,6 @@ Function Get-adPEASCA {
     
         <# +++++ Starting adPEAS CA Enumeration +++++ #>
         $ErrorActionPreference = "Continue"
-    
     
         Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Certificate Authority Information +++++"
     
@@ -797,8 +795,9 @@ Function Get-adPEASCA {
             $adPEAS_LogonToken = Invoke-UserImpersonation -Credential $Credential
         }
     
-        <# +++++ Checking Enterprise CA +++++ #>
-        Invoke-Logger -LogClass Info -LogValue "+++++ Checking Enterprise CA +++++"
+        <# +++++ Searching for Enterprise CA +++++ #>
+        Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Enterprise CA +++++"
+        Invoke-Logger -LogClass Info -LogValue "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
     
         $adPEAS_Domain = get-domain @SearcherArguments
         $adPEAS_CABasePath = "CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($adPEAS_Domain.Name).Replace(".",",DC="))
@@ -817,35 +816,45 @@ Function Get-adPEASCA {
                 $Object | Add-Member Noteproperty 'DistinguishedName' $Object_Var.distinguishedName
                 $Object | Add-Member Noteproperty 'Templates' $(($Object_Var.certificatetemplates) -join "`n")
                 $Object | Add-Member Noteproperty 'NTAuthCertificates' $(if ($adPEAS_CANTAuthStore) {$true} else {$false})
-                Write-Output "Checking Certificate Authority - Details for '$($Object_Var.cn)':"
+                Write-Output "Searching for Certificate Authority - Details for '$($Object_Var.cn)':"
                 $Object
                 $Object_Var = $Null
                 $Object = $null                
             }
         }
 
-        <# +++++ Checking Certificate Templates +++++ #>
-        Invoke-Logger -LogClass Info -LogValue "+++++ Checking Certificate Templates +++++"
+        <# +++++ Searching for Vulnerable Certificate Templates +++++ #>
+        Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Vulnerable Certificate Templates +++++"
 
         if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
+            Invoke-Logger -LogClass Hint -LogValue "adPEAS does basic enumeration only, consider using https://github.com/GhostPack/PSPKIAudit"
             foreach ($Object_CA in $adPEAS_CAEnterpriseCA) {
                 foreach ($Object_Template in $Object_CA.certificatetemplates) {
+                    Invoke-Logger -LogClass Info -LogValue "+++++ Checking Template '$Object_Template' +++++"
                     $Object_Var_Template = $Object_Template | Get-ADCSTemplate @SearcherArguments -ResolveFlags
-                    #$Object_Var_TemplateACL = $Object_Template | Get-ADCSTemplateACL @SearcherArguments -Filter AdminACEs
-                    
-                    $Object = New-Object PSObject
-                    $Object | Add-Member Noteproperty 'Template Name' $Object_Var_Template.name
-                    $Object | Add-Member Noteproperty 'Template distinguishedname' $Object_Var_Template.distinguishedname
-                    $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var_Template.whencreated
-                    $Object | Add-Member Noteproperty 'CertificateNameFlag' $(($Object_Var_Template.CertificateNameFlag) -join "`n")
-                    $Object | Add-Member Noteproperty 'EnrollmentFlag' $(($Object_Var_Template.EnrollmentFlag) -join "`n")
-                    if ($Object_Var_Template.PrivateKeyFlag -and $Object_Var_Template.PrivateKeyFlag -eq 'CT_FLAG_EXPORTABLE_KEY') {
-                        $Object | Add-Member Noteproperty 'Private Key Exportable' $true
+                    $Object_Var_TemplateACL = $Object_Template | Get-ADCSTemplateACL @SearcherArguments -Filter AdminACEs
+
+                    foreach ($TemplateACL in $Object_Var_TemplateACL) {
+                        if ($TemplateACL.ActiveDirectoryRights -and $TemplateACL.ActiveDirectoryRights -like '*WriteDacl*' -or $TemplateACL.ActiveDirectoryRights -like '*WriteOwner*' -or $TemplateACL.ActiveDirectoryRights -like '*GenericAll*') {
+                            $Object = New-Object PSObject
+                            $Object | Add-Member Noteproperty 'Template Name' $Object_Var_Template.name
+                            $Object | Add-Member Noteproperty 'Template distinguishedname' $Object_Var_Template.distinguishedname
+                            $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var_Template.whencreated
+                            $Object | Add-Member Noteproperty 'CertificateNameFlag' $(($Object_Var_Template.CertificateNameFlag) -join "`n")
+                            $Object | Add-Member Noteproperty 'EnrollmentFlag' $(($Object_Var_Template.EnrollmentFlag) -join "`n")
+                            if ($Object_Var_Template.PrivateKeyFlag -and $Object_Var_Template.PrivateKeyFlag -eq 'CT_FLAG_EXPORTABLE_KEY') {
+                                $Object | Add-Member Noteproperty 'Private Key Exportable' $true
+                            }
+                            $Object | Add-Member Noteproperty $TemplateACL.identity $TemplateACL.ActiveDirectoryRights
+                            Invoke-Logger -LogClass Finding -LogValue "'$($TemplateACL.identity)' have '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
+                            Write-Output "Checking Certificate Template - Details for Template '$($Object_Template)':"
+                            $object
+                        }
                     }
-                    Write-Output "Checking Certificate Template - Details for Template '$($Object_Template)':"
-                    $object
-                    $Object_Var_Template = $null
+                    $Object = $null
                 }
+                $Object_Var_Template = $null
+                $Object_Var_TemplateACL = $null
             }
         }
 
