@@ -22,6 +22,7 @@ If the system you are running adPEAS from is not domain joined or you want to en
 
 adPEAS consists of the following enumeration modules:
 * Domain - Searching for basic Active Directory information, like Domain Controllers, Sites und Subnets, Trusts and DCSync rights
+* CA - Searching for basic Enterprise Certificate Authority information, like CA Name, CA Server and Templates
 * Creds - Searching for different kind of credential exposure, like ASREPRoast, Kerberoasting, GroupPolicies, Netlogon scripts, LAPS, certain account attributes, e.g. UnixPassword, etc.
 * Delegation - Searching for delegation issues, like 'Constrained Delegation', 'Unconstrained Delegation' and 'Resource Based Unconstrained Delegation', for computer and user accounts
 * Accounts - Searching for high privileged user accounts in predefined groups, account issues like e.g. password not expire
@@ -37,6 +38,10 @@ Import-Module .\adPEAS.ps1
 or
 ```
 . .\adPEAS.ps1
+```
+or
+```
+gc -raw .\adPEAS.ps1 | iex
 ```
 or
 ```
@@ -78,6 +83,11 @@ Enumerates basic Active Directory information, like Domain Controllers, Password
 Invoke-adPEAS -Module Domain
 ```
 
+Enumerates basic Enterprise Certificate Authority information, like CA Name, CA Server and Templates.
+```
+Invoke-adPEAS -Module CA
+```
+
 Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix password attributes, LAPS (if your account has the rights to read it), Group Policies, Netlogon scripts.
 ```
 Invoke-adPEAS -Module Creds
@@ -117,12 +127,12 @@ Invoke-adPEAS -Module Bloodhound -Scope All
 ```
 PS > Invoke-adPEAS -Domain sub.pen.local
 
-[*] +++++ Starting adPEAS Version 0.5.0 +++++
-adPEAS version 0.5.0
+[*] +++++ Starting adPEAS Version 0.6.4 +++++
+adPEAS version 0.6.4
 [*] +++++ Starting Enumeration +++++
 [*] +++++ Searching for Domain Information +++++
 [*] +++++ Checking Domain +++++
-Checking Domain - Details for Domain sub.pen.local:
+Checking Domain - Details for Domain 'sub.pen.local':
 Domain Name       : sub.pen.local
 Domain SID        : S-1-5-21-575725702-4057784316-641645133
 Forest Name       : pen.local
@@ -132,7 +142,7 @@ Forest Children   : No Subdomain[s] available
 Domain Controller : PEN-SDC01.sub.pen.local
 
 [*] +++++ Checking Password and Kerberos Policy +++++
-Checking Password Policy - Details for Domain sub.pen.local:
+Checking Password Policy - Details for Domain 'sub.pen.local':
 [!] Password of accounts are stored with reversible encryption
 [+] https://adsecurity.org/?p=2053
 Minimum Password Age    : Disabled
@@ -142,25 +152,25 @@ Password Complexity     : Disabled
 Lockout Account         : Disabled
 Reversible Encryption   : Enabled
 
-Checking Kerberos Policy - Details for Domain sub.pen.local:
+Checking Kerberos Policy - Details for Domain 'sub.pen.local':
 Maximum Age of TGT            : 10 hours
 Maximum Age of TGS            : 600 minutes
 Maximum Clock Time Difference : 5 minutes
 Krbtgt Password Last Set      : 29.04.2019 10:05:59
 
 [*] +++++ Checking Domain Controller, Sites and Subnets +++++
-Checking Domain Controller - Details for Domain sub.pen.local:
+Checking Domain Controller - Details for Domain 'sub.pen.local':
 DC Host Name  : PEN-SDC01.sub.pen.local
 DC IP Address : 192.168.46.10
 Site Name     : Germany
 Domain        : sub.pen.local
 
-Checking Sites and Subnets - Details for Domain sub.pen.local:
+Checking Sites and Subnets - Details for Domain 'sub.pen.local':
 IP Subnet : 192.168.46.0/25
 Site Name : Germany
 
 [*] +++++ Checking Forest and Domain Trusts +++++
-Checking Domain Trusts - Details for Domain sub.pen.local:
+Checking Domain Trusts - Details for Domain 'sub.pen.local':
 Target Domain Name : pen.local
 Target Domain SID  : S-1-5-21-2219892162-3422002451-1011183393
 Flags              : IN_FOREST, DIRECT_OUTBOUND, TREE_ROOT, DIRECT_INBOUND
@@ -168,7 +178,7 @@ TrustAttributes    : WITHIN_FOREST
 
 [*] +++++ Checking DCSync Rights +++++
 [*] https://book.hacktricks.xyz/windows/active-directory-methodology/dcsync
-Checking DCSync Rights - Details for Domain sub.pen.local:
+Checking DCSync Rights - Details for Domain 'sub.pen.local':
 ActiveDirectoryRight : DS-Replication-Get-Changes
 Identity             : BUILTIN\Administrators
 distinguishedName    :
@@ -216,7 +226,7 @@ ObjectSID            : S-1-5-21-575725702-4057784316-641645133-3954
 
 [*] +++++ Checking GenericAll Rights +++++
 [*] https://www.ired.team/offensive-security-experiments/active-directory-kerberos-abuse/abusing-active-directory-acls-aces
-Checking GenericAll Rights - Details for Domain sub.pen.local:
+Checking GenericAll Rights - Details for Domain 'sub.pen.local':
 ActiveDirectoryRight : GenericAll
 Identity             : Local System
 distinguishedName    :
@@ -252,12 +262,83 @@ Identity             : PEN\Exchange Trusted Subsystem
 distinguishedName    : CN=Exchange Trusted Subsystem,OU=Microsoft Exchange Security Groups,DC=pen,DC=local
 ObjectSID            : S-1-5-21-2219892162-3422002451-1011183393-1118
 
+[*] +++++ Searching for Certificate Authority Information +++++
+[*] +++++ Searching for Enterprise CA +++++
+[*] https://posts.specterops.io/certified-pre-owned-d95910965cd2
+Searching for Certificate Authority - Details for 'PEN-IssuingCA01':
+CA Name            : PEN-IssuingCA01
+CA dnshostname     : PEN-SCA.sub.pen.local
+CA IP Address      : 192.168.46.23
+Date of Creation   : 29.07.2020 21:05:02
+DistinguishedName  : CN=PEN-IssuingCA01,CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,DC=sub,DC=pen,DC=local
+Templates          : Wildcard-Smartcard-User
+                     Wildcard-User
+                     Webserver
+                     DirectoryEmailReplication
+                     DomainControllerAuthentication
+                     DomainController
+                     Machine
+                     Administrator
+NTAuthCertificates : True
+
+[*] +++++ Searching for Vulnerable Certificate Templates +++++
+[+] adPEAS does basic enumeration only, consider using https://github.com/GhostPack/PSPKIAudit
+[*] +++++ Checking Template 'Wildcard-Smartcard-User' +++++
+[!] 'Authenticated Users' have 'GenericAll' permissions on Template 'Wildcard-Smartcard-User'
+Checking Certificate Template - Details for Template 'Wildcard-Smartcard-User':
+Template Name              : Wildcard-Smartcard-User
+Template distinguishedname : CN=Wildcard-Smartcard-User,CN=Certificate Templates,CN=Public Key
+                             Services,CN=Services,CN=Configuration,DC=sub,DC=pen,DC=local
+Date of Creation           : 15.08.2020 14:15:13
+CertificateNameFlag        : ENROLLEE_SUPPLIES_SUBJECT
+                             OLD_CERT_SUPPLIES_SUBJECT_AND_ALT_NAME
+                             ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME
+                             SUBJECT_ALT_REQUIRE_DOMAIN_DNS
+                             SUBJECT_ALT_REQUIRE_DIRECTORY_GUID
+                             SUBJECT_ALT_REQUIRE_UPN
+                             SUBJECT_ALT_REQUIRE_EMAIL
+                             SUBJECT_ALT_REQUIRE_DNS
+                             SUBJECT_REQUIRE_DNS_AS_CN
+                             SUBJECT_REQUIRE_EMAIL
+                             SUBJECT_REQUIRE_COMMON_NAME
+                             SUBJECT_REQUIRE_DIRECTORY_PATH
+EnrollmentFlag             : CT_FLAG_INCLUDE_SYMMETRIC_ALGORITHMS
+                             CT_FLAG_PUBLISH_TO_DS
+                             CT_FLAG_AUTO_ENROLLMENT
+                             CT_FLAG_USER_INTERACTION_REQUIRED
+Private Key Exportable     : True
+Authenticated Users        : GenericAll
+
+[*] +++++ Checking Template 'Wildcard-User' +++++
+[!] 'Authenticated Users' have 'ReadProperty, WriteProperty, GenericExecute, WriteDacl, WriteOwner' permissions on Template 'Wildcard-User'
+Checking Certificate Template - Details for Template 'Wildcard-User':
+Template Name              : Wildcard-User
+Template distinguishedname : CN=Wildcard-User,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=sub,DC=pen,DC=local
+Date of Creation           : 15.08.2020 14:06:08
+CertificateNameFlag        : ENROLLEE_SUPPLIES_SUBJECT
+                             OLD_CERT_SUPPLIES_SUBJECT_AND_ALT_NAME
+                             ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME
+                             SUBJECT_ALT_REQUIRE_DOMAIN_DNS
+                             SUBJECT_ALT_REQUIRE_DIRECTORY_GUID
+                             SUBJECT_ALT_REQUIRE_UPN
+                             SUBJECT_ALT_REQUIRE_EMAIL
+                             SUBJECT_ALT_REQUIRE_DNS
+                             SUBJECT_REQUIRE_DNS_AS_CN
+                             SUBJECT_REQUIRE_EMAIL
+                             SUBJECT_REQUIRE_COMMON_NAME
+                             SUBJECT_REQUIRE_DIRECTORY_PATH
+EnrollmentFlag             : CT_FLAG_INCLUDE_SYMMETRIC_ALGORITHMS
+                             CT_FLAG_AUTO_ENROLLMENT
+                             CT_FLAG_USER_INTERACTION_REQUIRED
+Private Key Exportable     : True
+Authenticated Users        : ReadProperty, WriteProperty, GenericExecute, WriteDacl, WriteOwner
+
 [*] +++++ Searching for Credentials Exposure +++++
 [*] +++++ Searching for ASREPRoast Users +++++
 [*] https://book.hacktricks.xyz/windows/active-directory-methodology/asreproast
 [!] Account Boody1946 does not require kerberos preauthentication to get a TGT
 [*] Hashcat usage: hashcat -m 18200
-Searching for ASREPRoast Users - Details for User Boody1946:
+Searching for ASREPRoast Users - Details for User 'Boody1946':
 sAMAccountName     : Boody1946
 userPrincipalName  : Kevin.Ehrlichmann@sub.pen.local
 distinguishedName  : CN=Kevin Ehrlichmann,OU=germany,OU=users,OU=corp,DC=sub,DC=pen,DC=local
@@ -278,7 +359,7 @@ c91f35d66bdcf241f8fa821db4cf0db74247b508401fe17639c488f379d43043bfb3c99
 [*] https://book.hacktricks.xyz/windows/active-directory-methodology/kerberoast#kerberoast
 [!] Account svc_web has a SPN and is vulnerable to Kerberoasting
 [*] Hashcat usage: hashcat -m 13100
-Searching for Kerberoastable Users - Details for User svc_web:
+Searching for Kerberoastable Users - Details for User 'svc_web':
 sAMAccountName     : svc_web
 userPrincipalName  : svc_web@sub.pen.local
 distinguishedName  : CN=svc_web,OU=service accounts,OU=corp,DC=sub,DC=pen,DC=local
@@ -313,7 +394,7 @@ C326EC09C657BC09F6502A4058CA88258CCDAEB34E12A652D76C07C0D2547E52A8FFF50CA164E748
 [*] +++++ Searching for Users with a set 'Linux/Unix Password' attribute +++++
 [*] https://www.blackhillsinfosec.com/domain-goodness-learned-love-ad-explorer/
 [!] User Tiledgets has a legacy cleartext Linux/Unix password set
-Searching for Users with a set 'Linux/Unix Password' attribute - Details for User Tiledgets:
+Searching for Users with a set 'Linux/Unix Password' attribute - Details for User 'Tiledgets':
 sAMAccountName     : Tiledgets
 userPrincipalName  : Lucas.Maier@sub.pen.local
 distinguishedName  : CN=Lucas Maier,OU=germany,OU=users,OU=corp,DC=sub,DC=pen,DC=local
@@ -328,7 +409,7 @@ UnixUserPassword   : ABCD!efgh12345$67890
 [*] +++++ Searching for Computers with enabled and readable LAPS attribute +++++
 [*] https://book.hacktricks.xyz/windows/windows-local-privilege-escalation#antivirus-and-detectors
 [!] Computer SRVCLOUD$ has enabled LAPS - Found password 'SecretPW0815!'
-Searching for Computers with enabled LAPS - Details for Computer SRVCLOUD$:
+Searching for Computers with enabled LAPS - Details for Computer 'SRVCLOUD$':
 sAMAccountName                                    : SRVCLOUD$
 dNSHostName                                       : srvcloud.sub.pen.local
 distinguishedName                                 : CN=SRVCLOUD,OU=corp,DC=sub,DC=pen,DC=local
@@ -363,7 +444,7 @@ LineContent : {rem password: TestPW0815!, net use l: \\srv-rfile.pen.local\Depar
 [*] +++++ Searching for Computers with Unconstrained Delegation Rights +++++
 [*] https://book.hacktricks.xyz/windows/active-directory-methodology/unconstrained-delegation
 [!] Computer PEN-SEXCH$ has unconstrained delegation rights
-Searching for Computers with Unconstrained Delegation Rights - Details for Computer PEN-SEXCH$:
+Searching for Computers with Unconstrained Delegation Rights - Details for Computer 'PEN-SEXCH$':
 sAMAccountName     : PEN-SEXCH$
 dNSHostName        : PEN-SEXCH.sub.pen.local
 distinguishedName  : CN=PEN-SEXCH,OU=servers,OU=corp,DC=sub,DC=pen,DC=local
@@ -376,7 +457,7 @@ userAccountControl : WORKSTATION_TRUST_ACCOUNT, TRUSTED_FOR_DELEGATION
 [*] +++++ Searching for Computers with Constrained Delegation Rights +++++
 [*] https://book.hacktricks.xyz/windows/active-directory-methodology/constrained-delegation
 [!] Computer PEN-SCA$ has constrained delegation rights
-Searching for Computers with Constrained Delegation Rights - Details for Computer PEN-SCA$:
+Searching for Computers with Constrained Delegation Rights - Details for Computer 'PEN-SCA$':
 sAMAccountName           : PEN-SCA$
 dNSHostName              : PEN-SCA.sub.pen.local
 distinguishedName        : CN=PEN-SCA,OU=servers,OU=corp,DC=sub,DC=pen,DC=local
@@ -385,13 +466,16 @@ operatingSystem          : Windows Server 2016 Datacenter
 description              :
 objectSid                : S-1-5-21-575725702-4057784316-641645133-1104
 userAccountControl       : WORKSTATION_TRUST_ACCOUNT, TRUSTED_TO_AUTH_FOR_DELEGATION
-msDS-AllowedToDelegateTo : HOST/PEN-SDC01.sub.pen.local/sub.pen.local;HOST/PEN-SDC01.sub.pen.local;HOST/PEN-SDC01;HOST/
-                           PEN-SDC01.sub.pen.local/SUB;HOST/PEN-SDC01/SUB
+msDS-AllowedToDelegateTo : HOST/PEN-SDC01.sub.pen.local/sub.pen.local
+                           HOST/PEN-SDC01.sub.pen.local
+                           HOST/PEN-SDC01
+                           HOST/PEN-SDC01.sub.pen.local/SUB
+                           HOST/PEN-SDC01/SUB
 
 [*] +++++ Searching for Computers with Resource-Based Constrained Delegation Rights +++++
 [*] https://shenaniganslabs.io/2019/01/28/Wagging-the-Dog.html
 [!] Computer SRVVM$ has resource-based constrained delegation rights
-Searching for Computers with Resource-Based Constrained Delegation Rights - Details for Computer SRVVM$:
+Searching for Computers with Resource-Based Constrained Delegation Rights - Details for Computer 'SRVVM$':
 sAMAccountName                      : SRVVM$
 dNSHostName                         : srvvm.sub.pen.local
 distinguishedName                   : CN=SRVVM,OU=corp,DC=sub,DC=pen,DC=local
@@ -407,7 +491,7 @@ AllowedToActOnBehalfOfOtherIdentity : SUB\SRV-TEST$
 [!] User test has constrained delegation rights
 [+] The account test is or was member of a high privileged protected group
 [+] https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group
-Searching for Users with Constrained Delegation Rights - Details for User test:
+Searching for Users with Constrained Delegation Rights - Details for User 'test':
 sAMAccountName           : test
 userPrincipalName        : test@sub.pen.local
 distinguishedName        : CN=test,OU=test,OU=corp,DC=sub,DC=pen,DC=local
@@ -417,13 +501,16 @@ userAccountControl       : PASSWD_NOTREQD, NORMAL_ACCOUNT, DONT_REQ_PREAUTH
 memberOf                 : CN=Testgroup,OU=test,OU=corp,DC=sub,DC=pen,DC=local
 pwdLastSet               : 20.10.2020 13:48:35
 lastLogonTimestamp       : 19.11.2020 16:43:36
-msDS-AllowedToDelegateTo : HOST/PEN-SDC01.sub.pen.local/sub.pen.local;HOST/PEN-SDC01.sub.pen.local;HOST/PEN-SDC01;HOST/
-                           PEN-SDC01.sub.pen.local/SUB;HOST/PEN-SDC01/SUB
+msDS-AllowedToDelegateTo : HOST/PEN-SDC01.sub.pen.local/sub.pen.local
+                           HOST/PEN-SDC01.sub.pen.local
+                           HOST/PEN-SDC01
+                           HOST/PEN-SDC01.sub.pen.local/SUB
+                           HOST/PEN-SDC01/SUB
 
 [*] +++++ Searching for Users with Resource-Based Constrained Delegation Rights +++++
 [*] https://shenaniganslabs.io/2019/01/28/Wagging-the-Dog.html
 [!] User test1 has resource-based constrained delegation rights
-Searching for Users with Resource-Based Constrained Delegation Rights - Details for User test1:
+Searching for Users with Resource-Based Constrained Delegation Rights - Details for User 'test1':
 sAMAccountName                      : test1
 userPrincipalName                   : test1@sub.pen.local
 distinguishedName                   : CN=test1,OU=test,OU=corp,DC=sub,DC=pen,DC=local
@@ -439,7 +526,7 @@ AllowedToActOnBehalfOfOtherIdentity : SUB\SRV-DB01$
 [*] +++++ Starting Domain User Enumeration +++++
 [*] +++++ Searching for Users in High Privileged Groups +++++
 [*] https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges
-Searching for Users in High Privileged Groups - Members of Group BUILTIN\Administrators:
+Searching for Users in High Privileged Groups - Members of Group 'BUILTIN\Administrators':
 GroupName         : Domain Admins
 distinguishedName : CN=Domain Admins,CN=Users,DC=sub,DC=pen,DC=local
 description       :
@@ -482,7 +569,7 @@ pwdLastSet         : 28.10.2019 10:37:49
 lastLogonTimestamp : 30.12.2020 14:10:15
 UserAccountControl : NORMAL_ACCOUNT
 
-Searching for Users in High Privileged Groups - Members of Group SUB\Domain Admins:
+Searching for Users in High Privileged Groups - Members of Group 'SUB\Domain Admins':
 sAMAccountName     : superadmin
 userPrincipalName  : superadmin@sub.pen.local
 distinguishedName  : CN=Superadmin,CN=Users,DC=sub,DC=pen,DC=local
@@ -513,7 +600,7 @@ pwdLastSet         : 12.06.2019 13:18:33
 lastLogonTimestamp : 14.04.2020 15:12:20
 UserAccountControl : NORMAL_ACCOUNT
 
-Searching for Users in High Privileged Groups - Members of Group PEN\Enterprise Admins:
+Searching for Users in High Privileged Groups - Members of Group 'PEN\Enterprise Admins':
 GroupName         : Domain Admins
 distinguishedName : CN=Domain Admins,CN=Users,DC=sub,DC=pen,DC=local
 description       :
@@ -530,7 +617,7 @@ pwdLastSet         : 12.06.2019 11:04:17
 lastLogonTimestamp : 30.12.2020 14:06:11
 UserAccountControl : NORMAL_ACCOUNT
 
-Searching for Users in High Privileged Groups - Members of Group SUB\Group Policy Creator Owners:
+Searching for Users in High Privileged Groups - Members of Group 'SUB\Group Policy Creator Owners':
 sAMAccountName     : Administrator
 userPrincipalName  : Administrator@sub.pen.local
 distinguishedName  : CN=Administrator,CN=Users,DC=sub,DC=pen,DC=local
@@ -541,7 +628,7 @@ pwdLastSet         : 28.10.2019 10:37:49
 lastLogonTimestamp : 30.12.2020 14:10:15
 UserAccountControl : NORMAL_ACCOUNT
 
-Searching for Users in High Privileged Groups - Members of Group SUB\DnsAdmins:
+Searching for Users in High Privileged Groups - Members of Group 'SUB\DnsAdmins':
 sAMAccountName     : Andend
 userPrincipalName  : Alexander.Baumgartner@sub.pen.local
 distinguishedName  : CN=Alexander Baumgartner,OU=germany,OU=users,OU=corp,DC=sub,DC=pen,DC=local
@@ -552,10 +639,10 @@ pwdLastSet         : 12.06.2019 13:18:33
 lastLogonTimestamp : 14.04.2020 15:12:20
 UserAccountControl : NORMAL_ACCOUNT
 
-Searching for Users in High Privileged Groups - Members of Group BUILTIN\Account Operators:
-Searching for Users in High Privileged Groups - Members of Group BUILTIN\Server Operators:
-Searching for Users in High Privileged Groups - Members of Group BUILTIN\Print Operators:
-Searching for Users in High Privileged Groups - Members of Group BUILTIN\Backup Operators:
+Searching for Users in High Privileged Groups - Members of Group 'BUILTIN\Account Operators':
+Searching for Users in High Privileged Groups - Members of Group 'BUILTIN\Server Operators':
+Searching for Users in High Privileged Groups - Members of Group 'BUILTIN\Print Operators':
+Searching for Users in High Privileged Groups - Members of Group 'BUILTIN\Backup Operators':
 sAMAccountName     : Andend
 userPrincipalName  : Alexander.Baumgartner@sub.pen.local
 distinguishedName  : CN=Alexander Baumgartner,OU=germany,OU=users,OU=corp,DC=sub,DC=pen,DC=local
@@ -566,9 +653,9 @@ pwdLastSet         : 12.06.2019 13:18:33
 lastLogonTimestamp : 14.04.2020 15:12:20
 UserAccountControl : NORMAL_ACCOUNT
 
-Searching for Users in High Privileged Groups - Members of Group BUILTIN\Hyper-V Administrators:
-Searching for Users in High Privileged Groups - Members of Group BUILTIN\Access Control Assistance Operators:
-Searching for Users in High Privileged Groups - Members of Group SUB\Cert Publishers:
+Searching for Users in High Privileged Groups - Members of Group 'BUILTIN\Hyper-V Administrators':
+Searching for Users in High Privileged Groups - Members of Group 'BUILTIN\Access Control Assistance Operators':
+Searching for Users in High Privileged Groups - Members of Group 'SUB\Cert Publishers':
 sAMAccountName     : Andend
 userPrincipalName  : Alexander.Baumgartner@sub.pen.local
 distinguishedName  : CN=Alexander Baumgartner,OU=germany,OU=users,OU=corp,DC=sub,DC=pen,DC=local
@@ -584,7 +671,7 @@ UserAccountControl : NORMAL_ACCOUNT
 [!] The password of account Andend does not expire
 [+] The account Andend is or was member of a high privileged protected group
 [*] https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group
-Searching for High Privileged Users where the Password does not expire - Details for User Andend:
+Searching for High Privileged Users where the Password does not expire - Details for User 'Andend':
 sAMAccountName     : Andend
 userPrincipalName  : Alexander.Baumgartner@sub.pen.local
 distinguishedName  : CN=Alexander Baumgartner,OU=germany,OU=users,OU=corp,DC=sub,DC=pen,DC=local
@@ -600,7 +687,7 @@ lastLogonTimestamp : 14.04.2020 15:12:20
 [!] The user test does not require to have a password
 [+] The account test is or was member of a high privileged protected group
 [*] https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group
-Searching for High Privileged Users which may not require a Password - Details for User test:
+Searching for High Privileged Users which may not require a Password - Details for User 'test':
 sAMAccountName     : test
 userPrincipalName  : test@sub.pen.local
 distinguishedName  : CN=test,OU=test,OU=corp,DC=sub,DC=pen,DC=local
@@ -613,7 +700,7 @@ lastLogonTimestamp : 19.11.2020 16:43:36
 
 [*] +++++ Starting Computer Enumeration +++++
 [*] +++++ Searching Domain Controllers +++++
-Searching for Domain Controllers - Details for Computer PEN-SDC01$:
+Searching for Domain Controllers - Details for Computer 'PEN-SDC01$':
 sAMAccountName     : PEN-SDC01$
 dNSHostName        : PEN-SDC01.sub.pen.local
 distinguishedName  : CN=PEN-SDC01,OU=Domain Controllers,DC=sub,DC=pen,DC=local
@@ -634,9 +721,20 @@ description        :
 objectSid          : S-1-5-21-575725702-4057784316-641645133-1106
 userAccountControl : WORKSTATION_TRUST_ACCOUNT, TRUSTED_FOR_DELEGATION
 
+[*] +++++ Searching for Enterprise CA Servers +++++
+Searching for Computers with Constrained Delegation Rights - Details for Computer 'PEN-SCA$':
+sAMAccountName     : PEN-SCA$
+dNSHostName        : PEN-SCA.sub.pen.local
+distinguishedName  : CN=PEN-SCA,OU=servers,OU=corp,DC=sub,DC=pen,DC=local
+IPv4Address        : 192.168.46.23
+operatingSystem    : Windows Server 2019 Datacenter
+description        :
+objectSid          : S-1-5-21-575725702-4057784316-641645133-1104
+userAccountControl : WORKSTATION_TRUST_ACCOUNT, TRUSTED_TO_AUTH_FOR_DELEGATION
+
 [*] +++++ Starting BloodHound Enumeration +++++
 ----------------------------------------------
-Initializing SharpHound at 14:16 on 30.12.2020
+Initializing SharpHound at 14:16 on 30.07.2021
 ----------------------------------------------
 
 Resolved Collection Methods: Group, Trusts, ACL, ObjectProps, Container, GPOLocalGroup, DCOnly
@@ -650,13 +748,11 @@ PS > [+] Cache File Found! Loaded 143 Objects in cache
 Status: 0 objects finished (+0) -- Using 146 MB RAM
 Status: 2906 objects finished (+2906 484,3333)/s -- Using 164 MB RAM
 Enumeration finished in 00:00:06.0289570
-Compressing data to 20201230141650_sub.pen.local_Bloodhound.zip
+Compressing data to 20210730141650_sub.pen.local_Bloodhound.zip
 You can upload this file directly to the UI
 
-SharpHound Enumeration Completed at 14:16 on 30.12.2020! Happy Graphing!
+SharpHound Enumeration Completed at 14:16 on 30.07.2021! Happy Graphing!
 ```
-
-
 
 ## Special thanks go to...
 * Will Schroeder @harmjoy, for his great PowerView
@@ -665,4 +761,5 @@ SharpHound Enumeration Completed at 14:16 on 30.12.2020! Happy Graphing!
 * BC-Security, for their great ongoing work with Empire
 * Vincent LE TOUX @vletoux, for his vulnerability detection PoC's
 * Joaquim Nogueira @lkys37en, for his idea to build a simple AD enumeration tool
+* Christoph Falta @cfalta, for his inspiring work on PoshADCS
 * and all the people who inspired me on my journey...
