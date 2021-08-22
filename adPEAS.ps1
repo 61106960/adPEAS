@@ -14,6 +14,7 @@ Special thanks go to
 - BC-Security, for their great ongoing work with Empire
 - @vletoux, for his PoC code of EternalBlue and Bluekeep 
 - Joaquim Nogueira @lkys37en, for his idea to build a simple AD enumeration tool
+- Christoph Falta @cfalta, for his inspiring work on PoshADCS
 - and all the people who inspired me on my journey...
 
 .PARAMETER Domain
