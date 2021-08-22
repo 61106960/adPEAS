@@ -10,10 +10,9 @@ This tool is used to automate Active Directory enumeration. The tool requires a 
 Special thanks go to
 - Will Schroeder @harmjoy, for his great PowerView
 - Dirk-jan @_dirkjan, for his great AD and Windows research
-- SpecterOps, for their fantastic BloodHound
 - BC-Security, for their great ongoing work with Empire
-- @vletoux, for his PoC code of EternalBlue and Bluekeep 
 - Joaquim Nogueira @lkys37en, for his idea to build a simple AD enumeration tool
+- Christoph Falta @cfalta, for his inspiring work on PoshADCS
 - and all the people who inspired me on my journey...
 
 .PARAMETER Domain
@@ -38,6 +37,7 @@ If no module is given, the default modules are 'Domain','Creds','Delegation','Ac
 
 Possible modules are:
 - Module Domain: Enumerates some basic AD information, like Domain Controllers, Password Policy, Sites and Subnets, Trusts, DCSync Rights
+- Module CA: Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates.
 - Module Creds: Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, LAPS, Group Policies, Netlogon Scripts
 - Module Delegation: Enumerates delegation issues, like 'Unconstrained Delegation', 'Constrained Delegation', 'Resource Based Constrained Delegation' for user and computer objects
 - Module Accounts: Enumerates users in high privileged groups which are NOT disabled, like Administrators, Domain Admins, Enterprise Admins, Group Policy Creators, DNS Admins, Account Operators, Server Operators, Printer Operators, Backup Operators, Hyper-V Admins, Remote Management Users und CERT Publishers
@@ -69,7 +69,6 @@ Start adPEAS with all modules, enumerate the domain 'contoso.com' and use the us
 .EXAMPLE
 Invoke-adPEAS -Domain contoso.com -Module Creds
 Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to search for credential leakage.
-
 #>
     [CmdletBinding()]
     Param (
@@ -102,16 +101,15 @@ Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to searc
 
         [Parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
-        [ValidateSet("Domain", "Creds", "Delegation", "Accounts", "Computer")]
+        [ValidateSet("Domain", "CA", "Creds", "Delegation", "Accounts", "Computer")]
         [String[]]
         $Module = "adPEAS"
-
     )
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.5.4'
-    Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Light Version $adPEASVersion +++++"
+    $adPEASVersion = '0.6.4 Light'
+    Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
     #Checking Powershell version
@@ -209,6 +207,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to searc
             "adPEAS" {
 
                 Get-adPEASDomain @SearcherArguments
+                Get-adPEASCA @SearcherArguments
                 Get-adPEASCreds @SearcherArguments
                 Get-adPEASDelegation @SearcherArguments
                 Get-adPEASAccounts @SearcherArguments
@@ -218,6 +217,11 @@ Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to searc
             "Domain" {
 
                 Get-adPEASDomain @SearcherArguments
+            }
+
+            "CA" {
+
+                Get-adPEASCA @SearcherArguments
             }
             
             "Creds" {
@@ -234,18 +238,15 @@ Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to searc
 
                 Get-adPEASAccounts @SearcherArguments
             }
-            
+           
             "Computer" {
-
                 Get-adPEASComputer @SearcherArguments
             }
-            
     }
 
     # Stop to impersonate with other credentials
     if ($InvokeadPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $InvokeadPEAS_LogonToken}
 }
-
 
 Function Get-adPEASDomain {
 <#
@@ -387,8 +388,8 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     else {
         $Object | Add-Member Noteproperty 'Forest Children' "No Subdomain[s] available"
     }
-    $Object | Add-Member Noteproperty 'Domain Controller' (($adPEAS_Domain.DomainControllers) -join '; ')
-    Write-Output "Checking Domain - Details for Domain $($adPEAS_Domain.Name):"
+    $Object | Add-Member Noteproperty 'Domain Controller' (($adPEAS_Domain.DomainControllers) -join "`n")
+    Write-Output "Checking Domain - Details for Domain '$($adPEAS_Domain.Name)':"
     $Object
     $Object = $null
 
@@ -448,7 +449,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     else {
         $Object | Add-Member Noteproperty 'Reversible Encryption' "Enabled"
     }
-    Write-Output "Checking Password Policy - Details for Domain $($adPEAS_Domain.Name):"
+    Write-Output "Checking Password Policy - Details for Domain '$($adPEAS_Domain.Name)':"
     if (($adPEAS_DomainPolicy.SystemAccess).ClearTextPassword -and ($adPEAS_DomainPolicy.SystemAccess).ClearTextPassword -eq '1') { 
         invoke-logger -LogClass Finding -logvalue "Password of accounts are stored with reversible encryption"
         Invoke-Logger -LogClass Hint -LogValue "https://adsecurity.org/?p=2053"
@@ -468,7 +469,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         $Object | Add-Member Noteproperty -Force 'Maximum Clock Time Difference' "$(($adPEAS_DomainPolicy.KerberosPolicy).MaxClockSkew) minutes"
     }
     $Object | Add-Member Noteproperty 'Krbtgt Password Last Set' $(Get-DomainUser @SearcherArguments -Identity krbtgt).pwdlastset
-    Write-Output "Checking Kerberos Policy - Details for Domain $($adPEAS_Domain.Name):"
+    Write-Output "Checking Kerberos Policy - Details for Domain '$($adPEAS_Domain.Name)':"
     $Object
     $Object = $null
 
@@ -480,7 +481,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $adPEAS_DomainController = Get-DomainController @SearcherArguments -NoLDAP
     
     if ($adPEAS_DomainController -and $adPEAS_DomainController -ne '') {
-        Write-Output "Checking Domain Controller - Details for Domain $($adPEAS_Domain.Name):"
+        Write-Output "Checking Domain Controller - Details for Domain '$($adPEAS_Domain.Name)':"
         foreach ($Object_Var in $adPEAS_DomainController) {
             $Object = New-Object PSObject
             $Object | Add-Member Noteproperty 'DC Host Name' $Object_Var.Name
@@ -500,7 +501,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $adPEAS_DomainSubnets = Get-DomainSubnet @SitesSearcherArguments
 
     if ($adPEAS_DomainSubnets -and $adPEAS_DomainSubnets -ne '') {
-        Write-Output "Checking Sites and Subnets - Details for Domain $($adPEAS_Domain.Name):"
+        Write-Output "Checking Sites and Subnets - Details for Domain '$($adPEAS_Domain.Name)':"
         foreach ($Object_Var in $adPEAS_DomainSubnets) {
             $Object = New-Object PSObject
             $Object | Add-Member Noteproperty 'IP Subnet' $Object_Var.name
@@ -509,7 +510,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         }
     }
     else {
-        Write-Verbose "[Get-adPEASDomain] No domain sites and subents could be gathered"
+        Write-Verbose "[Get-adPEASDomain] No domain sites and subnets could be gathered"
     }
     $Object_Var = $null
     $Object = $null
@@ -544,7 +545,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $adPEAS_DomainTrust = Get-DomainTrust @SearcherArguments -API
 
     if ($adPEAS_DomainTrust -and $adPEAS_DomainTrust -ne '') {
-        if ($(Get-DomainTrust @SearcherArguments)) { Write-Output "Checking Domain Trusts - Details for Domain $($adPEAS_Domain.Name):" }
+        if ($(Get-DomainTrust @SearcherArguments)) { Write-Output "Checking Domain Trusts - Details for Domain '$($adPEAS_Domain.Name)':" }
         
         foreach ($Object_Var in $adPEAS_DomainTrust) {
             if ($Object_Var.SourceName -ne $Object_Var.TargetName) {
@@ -576,7 +577,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     
     # Display DCSync Rights
     if ($adPEAS_DomainRights -and $adPEAS_DomainRights -ne '') {
-        Write-Output "Checking DCSync Rights - Details for Domain $($adPEAS_Domain.Name):"
+        Write-Output "Checking DCSync Rights - Details for Domain '$($adPEAS_Domain.Name)':"
         
         foreach ($Object_Var in $adPEAS_DomainRights) {
             if ($Object_Var.ActiveDirectoryRights -eq 'ExtendedRight') {
@@ -598,7 +599,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
 
     # Display GenericAll Rights
     if ($adPEAS_DomainRights -and $adPEAS_DomainRights -ne '') {
-        Write-Output "Checking GenericAll Rights - Details for Domain $($adPEAS_Domain.Name):"
+        Write-Output "Checking GenericAll Rights - Details for Domain '$($adPEAS_Domain.Name)':"
         
         foreach ($Object_Var in $adPEAS_DomainRights) {
             if ($Object_Var.ActiveDirectoryRights -eq 'GenericAll') {
@@ -613,12 +614,193 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     }
     $Object_Var = $null
     $Object = $null
-
     
     # Stop to impersonate with other credentials
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
 
+Function Get-adPEASCA {
+    <#
+    .SYNOPSIS
+    Author: Alexander Sturz (@_61106960_)
+    Required Dependencies: None
+    Optional Dependencies: None
+    
+    .DESCRIPTION
+    Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates where non-administrative users have full access.
+    
+    .PARAMETER Domain
+    Specifies the domain to use for the query, defaults to the current domain.
+    
+    .PARAMETER Server
+    Specifies an Active Directory server (domain controller) to bind to.
+    
+    .PARAMETER Credential
+    A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
+    
+    .EXAMPLE
+    Get-adPEASCA
+    Start Enumerating and use the domain the logged-on user is connected to.
+    
+    .EXAMPLE
+    Get-adPEASCA -Domain 'contoso.com'
+    Start Enumerating and use the domain 'contoso.com'.
+    
+    .EXAMPLE
+    Get-adPEASCA -Domain 'contoso.com' -Server 'dc1.contoso.com'
+    Start Enumerating using the domain 'contoso.com' and use the domain controller 'dc1.contoso.com' for almost all enumeration requests.
+    
+    .EXAMPLE
+    $SecPassword = ConvertTo-SecureString 'Passw0rd1!' -AsPlainText -Force
+    $Cred = New-Object System.Management.Automation.PSCredential('contoso\johndoe', $SecPassword)
+    Get-adPEASCA -Domain 'contoso.com' -Cred $Cred
+    Start Enumerating using the domain 'contoso.com' and use the passed PSCredential object during enumeration.
+    #>
+        [CmdletBinding()]
+        Param (
+            #[Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+            [Parameter(Mandatory = $false,HelpMessage="Enter a domain name here, e.g. contoso.com")]
+            [ValidateNotNullOrEmpty()]
+            [String]
+            $Domain,
+    
+            [Parameter(Mandatory = $false,HelpMessage="Enter a FQDN of a Domain Controller here, e.g. dc1.contoso.com")]
+            [ValidateNotNullOrEmpty()]
+            [String]
+            $Server,
+    
+            [Parameter(Mandatory = $false,HelpMessage='Enter a PSCredentials object like $Cred = New-Object System.Management.Automation.PSCredential("contoso\johndoe", $SecPassword)')]
+            [ValidateNotNullOrEmpty()]
+            [Management.Automation.PSCredential]
+            [Management.Automation.CredentialAttribute()]
+            $Credential = [Management.Automation.PSCredential]::Empty
+        )
+    
+        <# +++++ Starting adPEAS CA Enumeration +++++ #>
+        $ErrorActionPreference = "Continue"
+    
+        Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Certificate Authority Information +++++"
+    
+        # first trying to resolve supplied parameter
+        if ($PSBoundParameters['Credential']) {
+            Write-Verbose "[Get-adPEASCA] Using alternate credentials $($Credential.UserName) for Get-Domain"
+            if ($PSBoundParameters['Domain']) {
+                $TargetDomain = $Domain
+            }
+            else {
+                # if no domain is supplied, extract the logon domain from the PSCredential passed
+                $TargetDomain = $Credential.GetNetworkCredential().Domain
+                Write-Verbose "[Get-adPEASCA] Extracted domain $($TargetDomain) from -Credential"
+            }
+            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $TargetDomain, $Credential.UserName, $Credential.GetNetworkCredential().Password)
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
+            }
+            catch {
+                throw "[Get-adPEASCA] The specified domain $($TargetDomain) does not exist, could not be contacted, there isn't an existing trust, or the specified credentials are invalid: $_"
+            }
+        }
+        elseif ($PSBoundParameters['Domain']) {
+            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $Domain)
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
+            }
+            catch {
+                throw "[Get-adPEASCA] The specified domain $($Domain) does not exist, could not be contacted, or there isn't an existing trust : $_"
+            }
+        }
+        else {
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name
+            }
+            catch {
+                throw "[Get-adPEASCA] Error retrieving the current domain: $_"
+            }
+        }
+        
+        # Building searcher arguments for the following PowerView requests
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain'] -or $Domain) {
+            $SearcherArguments['Domain'] = $Domain
+            Write-Verbose "[Get-adPEASCA] Using $($Domain) as target Windows Domain"
+        }
+        if ($PSBoundParameters['Server']) {
+            $SearcherArguments['Server'] = $Server
+            Write-Verbose "[Get-adPEASCA] Using $($Server) as target Domain Controller"
+        }
+    
+        # Starting to impersonate given credentials
+        if ($PSBoundParameters['Credential']) {
+            Write-Warning "[Get-adPEASCA] Using $($Cred.Username) for authentication"
+            $adPEAS_LogonToken = Invoke-UserImpersonation -Credential $Credential
+        }
+    
+        <# +++++ Searching for Enterprise CA +++++ #>
+        Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Enterprise CA +++++"
+        Invoke-Logger -LogClass Info -LogValue "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+    
+        $adPEAS_Domain = get-domain @SearcherArguments
+        $adPEAS_CABasePath = "CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($adPEAS_Domain.Name).Replace(".",",DC="))
+        
+        Write-Verbose "[Get-adPEASCA] Using $adPEAS_CABasePath to search for Enterprise CA Services"
+        $adPEAS_CAEnterpriseCA = Get-DomainObject @SearcherArguments -SearchBase ("CN=Enrollment Services," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=pKIEnrollmentService)"
+        $adPEAS_CANTAuthStore = Get-DomainObject @SearcherArguments -SearchBase ("CN=NTAuthCertificates," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=certificationAuthority)"
+
+        if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
+            foreach ($Object_Var in $adPEAS_CAEnterpriseCA) {
+                $Object = New-Object PSObject
+                $Object | Add-Member Noteproperty 'CA Name' $Object_Var.name
+                $Object | Add-Member Noteproperty 'CA dnshostname' $Object_Var.dnshostname
+                $Object | Add-Member Noteproperty 'CA IP Address' $($Object_Var.dnshostname | Resolve-IPAddress).IpAddress
+                $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var.whencreated
+                $Object | Add-Member Noteproperty 'DistinguishedName' $Object_Var.distinguishedName
+                $Object | Add-Member Noteproperty 'Templates' $(($Object_Var.certificatetemplates) -join "`n")
+                $Object | Add-Member Noteproperty 'NTAuthCertificates' $(if ($adPEAS_CANTAuthStore) {$true} else {$false})
+                Write-Output "Searching for Certificate Authority - Details for '$($Object_Var.cn)':"
+                $Object
+                $Object_Var = $Null
+                $Object = $null                
+            }
+        }
+
+        <# +++++ Searching for Vulnerable Certificate Templates +++++ #>
+        Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Vulnerable Certificate Templates +++++"
+
+        if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
+            Invoke-Logger -LogClass Hint -LogValue "adPEAS does basic enumeration only, consider using https://github.com/GhostPack/PSPKIAudit"
+            foreach ($Object_CA in $adPEAS_CAEnterpriseCA) {
+                foreach ($Object_Template in $Object_CA.certificatetemplates) {
+                    Invoke-Logger -LogClass Info -LogValue "+++++ Checking Template '$Object_Template' +++++"
+                    $Object_Var_Template = $Object_Template | Get-ADCSTemplate @SearcherArguments -ResolveFlags
+                    $Object_Var_TemplateACL = $Object_Template | Get-ADCSTemplateACL @SearcherArguments -Filter AdminACEs
+
+                    foreach ($TemplateACL in $Object_Var_TemplateACL) {
+                        if ($TemplateACL.ActiveDirectoryRights -and $TemplateACL.ActiveDirectoryRights -like '*WriteDacl*' -or $TemplateACL.ActiveDirectoryRights -like '*WriteOwner*' -or $TemplateACL.ActiveDirectoryRights -like '*GenericAll*') {
+                            $Object = New-Object PSObject
+                            $Object | Add-Member Noteproperty 'Template Name' $Object_Var_Template.name
+                            $Object | Add-Member Noteproperty 'Template distinguishedname' $Object_Var_Template.distinguishedname
+                            $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var_Template.whencreated
+                            $Object | Add-Member Noteproperty 'CertificateNameFlag' $(($Object_Var_Template.CertificateNameFlag) -join "`n")
+                            $Object | Add-Member Noteproperty 'EnrollmentFlag' $(($Object_Var_Template.EnrollmentFlag) -join "`n")
+                            if ($Object_Var_Template.PrivateKeyFlag -and $Object_Var_Template.PrivateKeyFlag -eq 'CT_FLAG_EXPORTABLE_KEY') {
+                                $Object | Add-Member Noteproperty 'Private Key Exportable' $true
+                            }
+                            $Object | Add-Member Noteproperty $TemplateACL.identity $TemplateACL.ActiveDirectoryRights
+                            Invoke-Logger -LogClass Finding -LogValue "'$($TemplateACL.identity)' have '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
+                            Write-Output "Checking Certificate Template - Details for Template '$($Object_Template)':"
+                            $object
+                        }
+                    }
+                    $Object = $null
+                }
+                $Object_Var_Template = $null
+                $Object_Var_TemplateACL = $null
+            }
+        }
+
+        # Stop to impersonate with other credentials
+        if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
+}
 
 Function Get-adPEASCreds {
 <#
@@ -755,7 +937,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             invoke-logger -logclass Finding -logvalue "Account $(($Object_Var).samaccountname) does not require kerberos preauthentication to get a TGT"
@@ -763,7 +945,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
             }
             invoke-logger -logclass Info -logvalue 'Hashcat usage: Hashcat -m 18200'
-            Write-Output "Searching for ASREPRoast Users - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for ASREPRoast Users - Details for User '$(($Object_Var).samaccountname)':"
             $Object
             $Object_TGT
         }
@@ -793,7 +975,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             invoke-logger -logclass Finding -logvalue "Account $(($Object_Var).samaccountname) has a SPN and is vulnerable to Kerberoasting"
@@ -801,7 +983,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
             }
             invoke-logger -logclass Info -logvalue 'Hashcat usage: hashcat -m 13100'
-            Write-Output "Searching for Kerberoastable Users - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Kerberoastable Users - Details for User '$(($Object_Var).samaccountname)':"
             $Object
             $Object_Var.hash
         }
@@ -830,7 +1012,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             if ($Object_Var.UnixUserPassword -and $Object_Var.UnixUserPassword -ne '') {
@@ -849,7 +1031,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             if ($Object_Var.admincount -and $Object_Var.admincount -eq '1') {
                 Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
             }
-            Write-Output "Searching for Users with a set 'Linux/Unix Password' attribute - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Users with a set 'Linux/Unix Password' attribute - Details for User '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -877,14 +1059,14 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             Invoke-Logger -LogClass Finding -LogValue "User $(($Object_Var).samaccountname) has legacy data in attribute 'extensionData' password set"
             if ($Object_Var.admincount -and $Object_Var.admincount -eq '1') {
                 Invoke-Logger -LogClass Hint -LogValue "The account '$(($Object_Var).samaccountname)' is or was member of a high privileged protected group"
             }
-            Write-Output "Searching for Users with a set 'extensionData' attribute - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Users with a set 'extensionData' attribute - Details for User '$(($Object_Var).samaccountname)':"
             $Object
             # reads binary blob in extension data and converts to ascii
             $Object_Var | select-object -expandproperty extensiondata | ForEach-Object {[System.Text.Encoding]::ASCII.GetString($_)}
@@ -924,7 +1106,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 }
             }
             invoke-logger -logclass Finding -logvalue "Computer $(($Object_Var).samaccountname) has enabled LAPS - Found password '$($Object_Var.'ms-Mcs-AdmPwd')'"
-            Write-Output "Searching for Computers with enabled LAPS - Details for Computer $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Computers with enabled LAPS - Details for Computer '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -985,7 +1167,6 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     # Stop to impersonate with other credentials
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
-
 
 Function Get-adPEASDelegation {
 <#
@@ -1131,7 +1312,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 }
             }
             invoke-logger -logclass Finding -logvalue "Computer $(($Object_Var).samaccountname) has unconstrained delegation rights"
-            Write-Output "Searching for Computers with Unconstrained Delegation Rights - Details for Computer $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Computers with Unconstrained Delegation Rights - Details for Computer '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1168,9 +1349,9 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                         $object | Add-Member Noteproperty 'ms-mcs-AdmPwdExpirationTime [Password Expiration]' $([datetime]::FromFileTime([convert]::ToInt64($Object_Var.'ms-MCS-AdmPwdExpirationTime',10)))
                     }
             }
-            $Object | Add-Member Noteproperty 'msDS-AllowedToDelegateTo' (($Object_Var.'msDS-AllowedToDelegateTo') -join ';')
+            $Object | Add-Member Noteproperty 'msDS-AllowedToDelegateTo' (($Object_Var.'msDS-AllowedToDelegateTo') -join "`n")
             invoke-logger -logclass Finding -logvalue "Computer $(($Object_Var).samaccountname) has constrained delegation rights"
-            Write-Output "Searching for Computers with Constrained Delegation Rights - Details for Computer $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Computers with Constrained Delegation Rights - Details for Computer '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1209,7 +1390,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             
             $Object | Add-Member Noteproperty 'AllowedToActOnBehalfOfOtherIdentity' $Object_VarRBCDIdentity
             invoke-logger -logclass Finding -logvalue "Computer $(($Object_Var).samaccountname) has resource-based constrained delegation rights"
-            Write-Output "Searching for Computers with Resource-Based Constrained Delegation Rights - Details for Computer $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Computers with Resource-Based Constrained Delegation Rights - Details for Computer '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1239,16 +1420,16 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
-            $Object | Add-Member Noteproperty 'msDS-AllowedToDelegateTo' (($Object_Var.'msDS-AllowedToDelegateTo') -join ';')
+            $Object | Add-Member Noteproperty 'msDS-AllowedToDelegateTo' (($Object_Var.'msDS-AllowedToDelegateTo') -join "`n")
             Invoke-Logger -LogClass Finding -LogValue "User $(($Object_Var).samaccountname) has constrained delegation rights"
             if ($Object_Var.admincount -and $Object_Var.admincount -eq '1') {
                 Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
                 Invoke-Logger -LogClass Hint -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group"
             }
-            Write-Output "Searching for Users with Constrained Delegation Rights - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Users with Constrained Delegation Rights - Details for User '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1277,7 +1458,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             
@@ -1291,7 +1472,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
                 Invoke-Logger -LogClass Hint -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group"
             }
-            Write-Output "Searching for Users with Resource-Based Constrained Delegation Rights - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for Users with Resource-Based Constrained Delegation Rights - Details for User '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1306,7 +1487,6 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     # Stop to impersonate with other credentials
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
-
 
 Function Get-adPEASAccounts {
 <#
@@ -1474,7 +1654,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $adPEAS_GroupMembers += Get-DomainGroupMember @RootDomSearcherArguments -Identity $Object_VarGroup -recurse | Sort-Object -Property MemberDistinguishedName -Unique | sort-object -Property MemberObjectClass
         }
         $Object_VarSIDName = ConvertFrom-SID @SearcherArguments -ObjectSid $Object_VarGroup
-        write-output "Searching for Users in High Privileged Groups - Members of Group $($Object_VarSIDName):"
+        write-output "Searching for Users in High Privileged Groups - Members of Group '$($Object_VarSIDName)':"
         
         foreach ($Object_Var in $adPEAS_GroupMembers) {
             $Object_VarUser = @()
@@ -1551,13 +1731,13 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             Invoke-Logger -LogClass Finding -LogValue "The password of account $(($Object_Var).samaccountname) does not expire"
             Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
             Invoke-Logger -LogClass Info -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group"
-            Write-Output "Searching for High Privileged Users where the Password does not expire - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for High Privileged Users where the Password does not expire - Details for User '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1586,13 +1766,13 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'description' $Object_Var.description
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
-            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join ';')
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
             Invoke-Logger -LogClass Finding -LogValue "The user $(($Object_Var).samaccountname) does not require to have a password"
             Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
             Invoke-Logger -LogClass Info -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group"
-            Write-Output "Searching for High Privileged Users which may not require a Password - Details for User $(($Object_Var).samaccountname):"
+            Write-Output "Searching for High Privileged Users which may not require a Password - Details for User '$(($Object_Var).samaccountname)':"
             $Object
         }
         else {
@@ -1606,8 +1786,6 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     # Stop to impersonate with other credentials
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
-
-
 Function Get-adPEASComputer {
 <#
 .SYNOPSIS
@@ -1644,7 +1822,6 @@ $SecPassword = ConvertTo-SecureString 'Passw0rd1!' -AsPlainText -Force
 $Cred = New-Object System.Management.Automation.PSCredential('contoso\johndoe', $SecPassword)
 Get-adPEASComputer -Domain 'contoso.com' -Cred $Cred
 Start Enumerating using the domain 'contoso.com' and use the passed PSCredential object during enumeration.
-
 #>
     [CmdletBinding()]
     Param (
@@ -1664,7 +1841,6 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty
-
     )
 
     <# +++++ Starting Computer Enumeration +++++ #>
@@ -1733,9 +1909,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $adPEAS_ListDC = $((get-domain @SearcherArguments).DomainControllers).Name
 
     foreach ($Object_Var in $adPEAS_ListDC) {
-
             if ($Object_Var -and $Object_Var -ne '') {
-                
                 # request all attributes of a single domain controller
                 $Object_dc = Get-DomainComputer @SearcherArguments -Identity $Object_Var
             
@@ -1754,11 +1928,9 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                         $object | Add-Member Noteproperty 'ms-mcs-AdmPwdExpirationTime [Password Expiration]' $([datetime]::FromFileTime([convert]::ToInt64($Object_dc.'ms-MCS-AdmPwdExpirationTime',10)))
                     }
                 }
-
-                Write-Output "Searching for Domain Controllers - Details for Computer $(($Object_dc).samaccountname):"
+                Write-Output "Searching for Domain Controllers - Details for Computer '$(($Object_dc).samaccountname)':"
                 $Object
             }
-        
         else {
             Write-verbose "[Get-adPEASComputer] No Results or Results have been suppressed"
         }
@@ -1797,8 +1969,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                     $object | Add-Member Noteproperty 'ms-mcs-AdmPwdExpirationTime [Password Expiration]' $([datetime]::FromFileTime([convert]::ToInt64($Object_Var.'ms-MCS-AdmPwdExpirationTime',10)))
                 }
             }
-            
-            Write-Output "Searching for Exchange Servers - Details for Exchange Server $($object_VarExSrv.sAMAccountName):"
+            Write-Output "Searching for Exchange Servers - Details for Exchange Server '$($object_VarExSrv.sAMAccountName)':"
             $Object
         }
         else {
@@ -1809,9 +1980,50 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $object_VarExSrv = $null
     $Object = $null
 
+    <# +++++ Searching for Enterprise CA Servers +++++ #>
+    Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Enterprise CA Servers +++++"
+
+    $adPEAS_Domain = get-domain @SearcherArguments
+    $adPEAS_CABasePath = "CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($adPEAS_Domain.Name).Replace(".",",DC="))
+    
+    Write-Verbose "[Get-adPEASCA] Using $adPEAS_CABasePath to search for Enterprise CA Services"
+    $adPEAS_CAEnterpriseCA = Get-DomainObject @SearcherArguments -SearchBase ("CN=Enrollment Services," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=pKIEnrollmentService)"
+
+    foreach ($Object_Var in $adPEAS_CAEnterpriseCA) {
+
+            if ($Object_Var -and $Object_Var -ne '') {
+                
+                # request all attributes of a single Enterprise CA server
+                $Object_ca = Get-DomainComputer @SearcherArguments -Identity $Object_Var.dnshostname
+            
+                $Object = New-Object PSObject
+                $Object | Add-Member Noteproperty 'sAMAccountName' $Object_ca.sAMAccountName
+                $Object | Add-Member Noteproperty 'dNSHostName' $Object_ca.dNSHostName
+                $Object | Add-Member Noteproperty 'distinguishedName' $Object_ca.distinguishedName
+                $Object | Add-Member Noteproperty 'IPv4Address' ($Object_ca.dNSHostName | Get-IPAddress).IPAddress
+                $Object | Add-Member Noteproperty 'operatingSystem' $Object_ca.operatingsystem
+                $Object | Add-Member Noteproperty 'description' $Object_ca.description
+                $Object | Add-Member Noteproperty 'objectSid' $Object_ca.objectSid
+                $Object | Add-Member Noteproperty 'userAccountControl' $Object_ca.useraccountcontrol
+                if ($Object_ca.'ms-Mcs-AdmPwd' -and $Object_ca.'ms-Mcs-AdmPwd' -ne '') {
+                    $object | Add-Member Noteproperty 'ms-Mcs-AdmPwd [Password]' $Object_ca.'ms-Mcs-AdmPwd'
+                    if ($Object_ca.'ms-mcs-AdmPwdExpirationTime' -and $Object_ca.'ms-mcs-AdmPwdExpirationTime' -ne '') {
+                        $object | Add-Member Noteproperty 'ms-mcs-AdmPwdExpirationTime [Password Expiration]' $([datetime]::FromFileTime([convert]::ToInt64($Object_ca.'ms-MCS-AdmPwdExpirationTime',10)))
+                    }
+                }
+                Write-Output "Searching for Enterprise CA servers - Details for Computer '$(($Object_ca).samaccountname)':"
+                $Object
+            }
+        else {
+            Write-verbose "[Get-adPEASComputer] No Results or Results have been suppressed"
+        }
+    }
+    $Object_Var = $null
+    $Object_ca = $null
+    $Object = $null    
+
     # Stop to impersonate with other credentials
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
-
 }
 
 function Invoke-Logger {
@@ -4639,9 +4851,7 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
                 }
 
                 $Out.PSObject.TypeNames.Insert(0, 'PowerView.SPNTicket')
-                #Write-Output $Out
                 $Out
-                #Invoke-logger -logclass finding -logvalue $HashFormat
             }
         }
     }
@@ -8558,7 +8768,12 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             Write-Verbose "[Get-DomainObject] Get-DomainObject filter string: $($ObjectSearcher.filter)"
 
             if ($PSBoundParameters['FindOne']) { $Results = $ObjectSearcher.FindOne() }
-            else { $Results = $ObjectSearcher.FindAll() }
+            else {
+                try { $Results = $ObjectSearcher.FindAll() }
+                catch {
+                    Write-Verbose "[Get-DomainObject] Error: $_"
+                }
+            }
             $Results | Where-Object {$_} | ForEach-Object {
                 if ($PSBoundParameters['Raw']) {
                     # return raw result objects
@@ -23984,7 +24199,672 @@ Invoke-PortCheck -Identity ex.contoso.com -Port 445
         }
     }
 }
-   
+
+function Convert-ADCSPrivateKeyFlag {
+<#
+.SYNOPSIS
+Converts the mspki-private-key-flag specified by the "Flag" parameter.
+Author: Christoph Falta (@cfalta)
+
+.PARAMETER Flag
+The value to translate.
+
+.EXAMPLE
+Convert-ADCSPrivateKeyFlag -Flag 1
+
+Description
+-----------
+Translates the value "1" according to microsoft documentation.
+
+.LINK
+https://github.com/cfalta/PoshADCS
+#>
+
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory = $true, ValueFromPipeline=$true)]
+        [ValidateNotNullorEmpty()]
+        [string]
+        $Flag
+    )
+
+# Based on 2.27 msPKI-Private-Key-Flag Attribute
+# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-crtd/f6122d87-b999-4b92-bff8-f465e8949667
+
+    $Result = @()
+    $BitFlag =  [convert]::ToString($Flag,2).padleft(32,'0')
+
+    if($BitFlag.Substring(31,1) -eq '1') {
+        $Result += "CT_FLAG_REQUIRE_PRIVATE_KEY_ARCHIVAL"
+    }
+
+    if($BitFlag.Substring(27,1) -eq '1') {
+        $Result += "CT_FLAG_EXPORTABLE_KEY"
+    }
+
+    if($BitFlag.Substring(26,1) -eq '1') {
+        $Result += "CT_FLAG_STRONG_KEY_PROTECTION_REQUIRED"
+    }
+
+    if($BitFlag.Substring(25,1) -eq '1') {
+        $Result += "CT_FLAG_REQUIRE_ALTERNATE_SIGNATURE_ALGORITHM"
+    }
+
+    if($BitFlag.Substring(24,1) -eq '1') {
+        $Result += "CT_FLAG_REQUIRE_SAME_KEY_RENEWAL"
+    }
+
+    if($BitFlag.Substring(23,1) -eq '1') {
+        $Result += "CT_FLAG_USE_LEGACY_PROVIDER"
+    }
+
+    if($BitFlag -eq '00000000000000000000000000000000') {
+        $Result += "CT_FLAG_ATTEST_NONE"
+    }
+
+    if($BitFlag.Substring(18,1) -eq '1') {
+        $Result += "CT_FLAG_ATTEST_REQUIRED"
+    }
+
+    if($BitFlag.Substring(19,1) -eq '1') {
+        $Result += "CT_FLAG_ATTEST_PREFERRED"
+    }
+
+    if($BitFlag.Substring(17,1) -eq '1') {
+        $Result += "CT_FLAG_ATTESTATION_WITHOUT_POLICY"
+    }
+
+    if($BitFlag.Substring(22,1) -eq '1') {
+        $Result += "CT_FLAG_EK_TRUST_ON_USE"
+    }
+
+    if($BitFlag.Substring(21,1) -eq '1') {
+        $Result += "CT_FLAG_EK_VALIDATE_CERT" 
+    }
+
+    if($BitFlag.Substring(20,1) -eq '1') {
+        $Result += "CT_FLAG_EK_VALIDATE_KEY"
+    }
+    $Result
+}
+function Convert-ADCSNameFlag {
+<#
+.SYNOPSIS
+Converts the mspki-certificate-name-flag specified by the "Flag" parameter.
+Author: Christoph Falta (@cfalta)
+
+.PARAMETER Flag
+The value to translate.
+
+.EXAMPLE
+Convert-ADCSNameFlag -Flag 1
+
+Description
+-----------
+Translates the value "1" according to microsoft documentation.
+
+.LINK
+https://github.com/cfalta/PoshADCS
+#>
+
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory = $true, ValueFromPipeline=$true)]
+        [ValidateNotNullorEmpty()]
+        [string]
+        $Flag
+    )
+
+# Based on 2.28 msPKI-Certificate-Name-Flag Attribute
+# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-crtd/1192823c-d839-4bc3-9b6b-fa8c53507ae1
+
+    $Result = @()
+    $BitFlag =  [convert]::ToString($Flag,2).padleft(32,'0')
+
+    if($BitFlag.Substring(31,1) -eq '1') {
+        $Result += "ENROLLEE_SUPPLIES_SUBJECT"
+    }
+
+    if($BitFlag.Substring(28,1) -eq '1') {
+        $Result += "OLD_CERT_SUPPLIES_SUBJECT_AND_ALT_NAME"
+    }
+
+    if($BitFlag.Substring(15,1) -eq '1') {
+        $Result += "ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME"
+    }
+
+    if($BitFlag.Substring(9,1) -eq '1') {
+        $Result += "SUBJECT_ALT_REQUIRE_DOMAIN_DNS"
+    }
+
+    if($BitFlag.Substring(7,1) -eq '1') {
+        $Result += "SUBJECT_ALT_REQUIRE_DIRECTORY_GUID"
+    }
+
+    if($BitFlag.Substring(6,1) -eq '1') {
+        $Result += "SUBJECT_ALT_REQUIRE_UPN"
+    }
+
+    if($BitFlag.Substring(5,1) -eq '1') {
+        $Result += "SUBJECT_ALT_REQUIRE_EMAIL"
+    }
+
+    if($BitFlag.Substring(4,1) -eq '1') {
+        $Result += "SUBJECT_ALT_REQUIRE_DNS"
+    }
+
+    if($BitFlag.Substring(3,1) -eq '1') {
+        $Result += "SUBJECT_REQUIRE_DNS_AS_CN"
+    }
+
+    if($BitFlag.Substring(2,1) -eq '1') {
+        $Result += "SUBJECT_REQUIRE_EMAIL"
+    }
+
+    if($BitFlag.Substring(1,1) -eq '1') {
+        $Result += "SUBJECT_REQUIRE_COMMON_NAME"
+    }
+
+    if($BitFlag.Substring(0,1) -eq '1') {
+        $Result += "SUBJECT_REQUIRE_DIRECTORY_PATH"
+    }
+    $Result
+}
+
+function Convert-ADCSEnrollmentFlag {
+<#
+.SYNOPSIS
+Converts the mspki-enrollment-flag specified by the "Flag" parameter.
+Author: Christoph Falta (@cfalta)
+
+.PARAMETER Flag
+The value to translate.
+
+.EXAMPLE
+Convert-ADCSEnrollmentFlag -Flag 1
+
+Description
+-----------
+Translates the value "1" according to microsoft documentation.
+
+.LINK
+https://github.com/cfalta/PoshADCS
+#>
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory = $true, ValueFromPipeline=$true)]
+        [ValidateNotNullorEmpty()]
+        [string]
+        $Flag
+    )
+
+# Based on 2.26 msPKI-Enrollment-Flag Attribute
+# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-crtd/ec71fd43-61c2-407b-83c9-b52272dec8a1
+
+    $Result = @()
+    $BitFlag =  [convert]::ToString($Flag,2).padleft(32,'0')
+
+    if($BitFlag.Substring(31,1) -eq '1') {
+        $Result += "CT_FLAG_INCLUDE_SYMMETRIC_ALGORITHMS"
+    }
+
+    if($BitFlag.Substring(30,1) -eq '1') {
+        $Result += "CT_FLAG_PEND_ALL_REQUESTS"
+    }
+
+    if($BitFlag.Substring(29,1) -eq '1') {
+        $Result += "CT_FLAG_PUBLISH_TO_KRA_CONTAINER"
+    }
+
+    if($BitFlag.Substring(28,1) -eq '1') {
+        $Result += "CT_FLAG_PUBLISH_TO_DS"
+    }
+
+    if($BitFlag.Substring(27,1) -eq '1') {
+        $Result += "CT_FLAG_AUTO_ENROLLMENT_CHECK_USER_DS_CERTIFICATE"
+    }
+
+    if($BitFlag.Substring(26,1) -eq '1') {
+        $Result += "CT_FLAG_AUTO_ENROLLMENT"
+    }
+    if($BitFlag.Substring(25,1) -eq '1') {
+        $Result += "CT_FLAG_PREVIOUS_APPROVAL_VALIDATE_REENROLLMENT"
+    }
+
+    if($BitFlag.Substring(23,1) -eq '1') {
+        $Result += "CT_FLAG_USER_INTERACTION_REQUIRED"
+    }
+
+    if($BitFlag.Substring(21,1) -eq '1') {
+        $Result += "CT_FLAG_REMOVE_INVALID_CERTIFICATE_FROM_PERSONAL_STORE"
+    }
+
+    if($BitFlag.Substring(20,1) -eq '1') {
+        $Result += "CT_FLAG_ALLOW_ENROLL_ON_BEHALF_OF"
+    }
+
+    if($BitFlag.Substring(19,1) -eq '1') {
+        $Result += "CT_FLAG_ADD_OCSP_NOCHECK"
+    }
+
+    if($BitFlag.Substring(18,1) -eq '1') {
+        $Result += "CT_FLAG_ENABLE_KEY_REUSE_ON_NT_TOKEN_KEYSET_STORAGE_FULL"
+    }
+
+    if($BitFlag.Substring(17,1) -eq '1') {
+        $Result += "CT_FLAG_NOREVOCATIONINFOINISSUEDCERTS"
+    }
+
+    if($BitFlag.Substring(16,1) -eq '1') {
+        $Result += "CT_FLAG_INCLUDE_BASIC_CONSTRAINTS_FOR_EE_CERTS"
+    }
+
+    if($BitFlag.Substring(15,1) -eq '1') {
+        $Result += "CT_FLAG_ALLOW_PREVIOUS_APPROVAL_KEYBASEDRENEWAL_VALIDATE_REENROLLMENT"
+    }
+
+    if($BitFlag.Substring(14,1) -eq '1') {
+        $Result += "CT_FLAG_ISSUANCE_POLICIES_FROM_REQUEST"
+    }
+    $Result
+}
+
+
+function Convert-ADCSFlag
+{
+<#
+.SYNOPSIS
+Translates the value of a specified flag-attribute into a human readable form.
+Author: Christoph Falta (@cfalta)
+
+.PARAMETER Attribute
+The flag attribute to translate. Can be one of "mspki-enrollment-flag", "mspki-certificate-name-flag" or "mspki-private-key-flag".
+
+.PARAMETER Value
+The value to translate.
+
+.EXAMPLE
+Convert-ADCSFlag -Attribute mspki-enrollment-flag -Value 1
+
+Description
+-----------
+Converts the value 1 of the attribute mspki-enrollment-flag into a human readable form.
+
+.LINK
+https://github.com/cfalta/PoshADCS
+#>
+        [CmdletBinding()]
+        Param (
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("mspki-enrollment-flag","mspki-certificate-name-flag","mspki-private-key-flag")]
+        [string]
+        $Attribute,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullorEmpty()]
+        [string]
+        $Value)
+
+    switch($Attribute) {
+        "mspki-enrollment-flag" { Convert-ADCSEnrollmentFlag -Flag $Value }
+        "mspki-certificate-name-flag"{ Convert-ADCSNameFlag -Flag $Value }
+        "mspki-private-key-flag"{ Convert-ADCSPrivateKeyFlag -Flag $Value }
+    }
+}
+
+function Get-ADCSTemplateACL {
+    <#
+    .SYNOPSIS
+    Get-ADCSTemplateACL uses PowerViews Get-DomainObjectACL to retrieve the ACLs of a single or all certificate templates. 
+    Use the filter switch to remove ACEs that match admin groups or other default groups to reduce the output and gain better visibility.
+    Author: Christoph Falta (@cfalta)
+    Adopted by: Alexander Sturz (@_61106960_)
+    
+    .PARAMETER Name
+    The name of the certificate template to search for. If omitted, all templates will be retrieved.
+    
+    .PARAMETER Domain
+    Specifies the domain to use for the query, defaults to the current domain.
+    
+    .PARAMETER Server
+    Specifies an Active Directory server (domain controller) to bind to.
+    
+    .PARAMETER Filter
+    Filter the ACEs to reduce output and gain better visibility.
+
+    -Filter AdminACEs --> will remove ACEs that match to default admin groups (e.g. Domain Admins)
+    -Filter DefaultACEs --> will remove ACEs that match to default domain groups including admin groups (e.g. Domain Admins, Authenticated Users,...)
+    
+    .PARAMETER Credential
+    A [Management.Automation.PSCredential] object of alternate credentials
+    for connection to the target domain.
+    
+    .EXAMPLE
+    Get-ADCSTemplateACL -Name Template1 -Filter DefaultACEs
+
+    Description
+    -----------
+    Get's the ACEs of the template with name "Template1" and removes all default ACEs
+
+    .EXAMPLE
+    Get-ADCSTemplateACL -Filter AdminACEs
+
+    Description
+    -----------
+    Get's the ACEs of all templates and removes admin ACEs
+    
+    .LINK
+    https://github.com/cfalta/PoshADCS
+    #>
+        [CmdletBinding()]
+        Param (
+            [Parameter(Position = 0, Mandatory = $false, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+            [ValidateNotNullorEmpty()]
+            [String]
+            $Name,
+    
+            [ValidateNotNullOrEmpty()]
+            [String]
+            $Domain,
+    
+            [ValidateNotNullOrEmpty()]
+            [Alias('DomainController')]
+            [String]
+            $Server,
+    
+            [Parameter(Mandatory = $false)]
+            [ValidateSet("AdminACEs","DefaultACEs")]
+            [String]
+            $Filter,
+
+            [ValidateNotNullOrEmpty()]
+            [String]
+            $SearchBase,
+
+            [ValidateNotNullOrEmpty()]
+            [String]
+            $LDAPFilter,
+
+            [Management.Automation.PSCredential]
+            [Management.Automation.CredentialAttribute()]
+            $Credential = [Management.Automation.PSCredential]::Empty
+        )
+    
+        BEGIN {
+            if ($PSBoundParameters['Domain']) {
+                $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $Domain)
+                try {
+                    $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
+                }
+                catch {
+                    throw "[Get-ADCSTemplateACL] The specified domain $($Domain) does not exist, could not be contacted, or there isn't an existing trust : $_"
+                }
+            }
+            else {
+                try {
+                    $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name
+                }
+                catch {
+                    throw "[Get-ADCSTemplateACL] Error retrieving the current domain: $_"
+                }
+            }
+    
+            # Building searcher arguments for the following PowerView requests
+            $SearcherArguments = @{}
+            if ($PSBoundParameters['Domain'] -or $Domain) {
+                $SearcherArguments['Domain'] = $Domain
+                Write-Verbose "[Get-ADCSTemplateACL] Using $($Domain) as target Windows Domain"
+            }
+            if ($PSBoundParameters['Server']) {
+                $SearcherArguments['Server'] = $Server
+                Write-Verbose "[Get-ADCSTemplateACL] Using $($Server) as target Domain Controller"
+            }
+            if ($PSBoundParameters['Credential']) {
+                Write-Warning "[Get-ADCSTemplateACL] Using PSCredential $($Cred.Username) for authentication"
+                $LogonToken = Invoke-UserImpersonation -Credential $Credential
+            }
+            # Get Domain Object
+            $DomainName = get-domain @SearcherArguments
+        }
+    
+        PROCESS {
+            # Add Values to Searcher Argument
+            if ($PSBoundParameters['SearchBase']) {
+                $SearcherArguments['SearchBase'] = $SearchBase
+                Write-Verbose "[Get-ADCSTemplateACL] Search base: $($SearchBase)"
+            }
+            else {
+                $SearcherArguments['SearchBase'] = ("CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($DomainName.Name).Replace(".",",DC=")))
+                Write-Verbose "[Get-ADCSTemplateACL] Search base: $($SearcherArguments.SearchBase)"
+            }
+
+            if ($PSBoundParameters['Name']) {
+                $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)(name=" + $Name + ")")
+                Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($SearcherArguments.LDAPFilter)"
+            }
+            elseif ($PSBoundParameters['LDAPFilter']) {
+                $SearcherArguments['LDAPFilter'] = $LDAPFilter
+                Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($LDAPFilter)"
+            }
+            else {
+                $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)")
+                Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($SearcherArguments.LDAPFilter)"
+            }
+
+            # Gets Template ACL
+            $TemplatesACL = Get-DomainObjectACL @SearcherArguments -Resolveguids
+
+            foreach($acl in $TemplatesACL) {
+                $acl | Add-Member -MemberType NoteProperty -Name Identity -Value (Convert-SidToName $acl.SecurityIdentifier)
+            }
+
+            # Filter AdminACEs --> will remove ACEs that match to default admin groups (e.g. Domain Admins)
+            if($Filter -eq "AdminACEs") {
+                $TemplatesACL = $TemplatesACL | ? { -not (($_.SecurityIdentifier.value -like "*-512") -or ($_.SecurityIdentifier.value -like "*-519") -or ($_.SecurityIdentifier.value -like "*-516") -or ($_.SecurityIdentifier.value -like "*-500") -or ($_.SecurityIdentifier.value -like "*-498") -or ($_.SecurityIdentifier.value -eq "S-1-5-9")) }
+            }
+
+            # Filter DefaultACEs --> will remove ACEs that match to default domain groups including admin groups (e.g. Domain Admins, Authenticated Users,...)
+            if($Filter -eq "DefaultACEs") {
+                $TemplatesACL = $TemplatesACL | ? { -not (($_.SecurityIdentifier.value -like "*-512") -or ($_.SecurityIdentifier.value -like "*-519") -or ($_.SecurityIdentifier.value -like "*-516") -or ($_.SecurityIdentifier.value -like "*-500") -or ($_.SecurityIdentifier.value -like "*-498") -or ($_.SecurityIdentifier.value -eq "S-1-5-9") -or ($_.SecurityIdentifier.value -eq "S-1-5-11") -or ($_.SecurityIdentifier.value -like "*-513") -or ($_.SecurityIdentifier.value -like "*-515") -or ($_.SecurityIdentifier.value -like "*-553")) } 
+            }
+
+            $TemplatesACL
+        }
+    
+        END {
+            if ($LogonToken) {
+                Invoke-RevertToSelf -TokenHandle $LogonToken
+            }
+        }
+    }
+
+function Get-ADCSTemplate {
+<#
+.SYNOPSIS
+This function gets a specified or all objects of type "pKICertificateTemplate" stored under the default path CN=Certificate Templates... from Active Directory using PowerViews Get-DomainObject.
+It can also translate the various flag attributes to human-readable values and include the ACLs of the template objects.
+Author: Christoph Falta (@cfalta)
+Adopted by: Alexander Sturz (@_61106960_)
+
+.PARAMETER Name
+The name of the certificate template to search for. If omitted, all templates will be retrieved.
+
+.PARAMETER Domain
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER ResolveFlags
+Instructs the script to translate the flag attributes to human readable values.
+
+.PARAMETER IncludeACL
+Includes the ACLs of the template in the returned template object.
+
+.PARAMETER Credential
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.EXAMPLE
+Get-ADCSTemplate -Domain contoso.com -Server dc.contoso.com -ResolveFlags
+
+Description
+-----------
+Get's all templates from domain contoso.com, used a specific domain controller to rade templates from and resolves flags.
+
+.EXAMPLE
+Get-ADCSTemplate -Name Template1 -ResolveFlags -IncludeACL
+
+Description
+-----------
+Get's the template with the name "Template1", resolves flags and shows set ACL.
+#>
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $false, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [ValidateNotNullorEmpty()]
+        [String]
+        $Name,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullorEmpty()]
+        [Switch]
+        $ResolveFlags,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullorEmpty()]
+        [Switch]
+        $IncludeACL,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullorEmpty()]
+        [Switch]
+        $Raw
+    )
+
+    BEGIN {
+        if ($PSBoundParameters['Domain']) {
+            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $Domain)
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
+            }
+            catch {
+                throw "[Get-ADCSTemplate] The specified domain $($Domain) does not exist, could not be contacted, or there isn't an existing trust : $_"
+            }
+        }
+        else {
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name
+            }
+            catch {
+                throw "[Get-ADCSTemplate] Error retrieving the current domain: $_"
+            }
+        }
+
+        # Building searcher arguments for the following PowerView requests
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain'] -or $Domain) {
+            $SearcherArguments['Domain'] = $Domain
+            Write-Verbose "[Get-ADCSTemplate] Using $($Domain) as target Windows Domain"
+        }
+        if ($PSBoundParameters['Server']) {
+            $SearcherArguments['Server'] = $Server
+            Write-Verbose "[Get-ADCSTemplate] Using $($Server) as target Domain Controller"
+        }
+        if ($PSBoundParameters['Credential']) {
+            Write-Warning "[Get-ADCSTemplate] Using PSCredential $($Cred.Username) for authentication"
+            $LogonToken = Invoke-UserImpersonation -Credential $Credential
+        }
+        # Get Domain Object
+        $DomainName = get-domain @SearcherArguments
+    }
+
+    PROCESS {
+        # Add Values to Searcher Argument
+        $SearcherArguments['SearchBase'] = ("CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($DomainName.Name).Replace(".",",DC=")))
+        if ($PSBoundParameters['Name']) {
+            $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)(name=" + $Name + ")")
+        }
+        else {
+            $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)")
+        }
+        if ($PSBoundParameters['Raw']) { $SearcherArguments['Raw'] = $Raw }
+
+        # Get Templates
+        $Templates = Get-DomainObject @SearcherArguments
+    
+        $RefOidDCAuthTemplate = @("1.3.6.1.5.5.7.3.2", "1.3.6.1.5.5.7.3.1", "1.3.6.1.4.1.311.20.2.2")
+        $RefOidKerbAuthTemplate = @("1.3.6.1.5.5.7.3.2", "1.3.6.1.5.5.7.3.1", "1.3.6.1.4.1.311.20.2.2", "1.3.6.1.5.2.3.5")
+    
+        foreach($template in $Templates) {
+            $template | Add-Member -MemberType NoteProperty -Name DCAuthCert -Value $False 
+    
+            if($template.pkiextendedkeyusage) {
+                if($template.pkiextendedkeyusage.gettype().name -eq "String") {
+                    $keyusage = @(,$template.pkiextendedkeyusage)
+                }
+                else {
+                    $keyusage = new-object 'Object[]' $template.pkiextendedkeyusage.Count
+                    $template.pkiextendedkeyusage.CopyTo($keyusage,0)
+                }
+            
+                if((-not (compare-object $keyusage $RefOidDCAuthTemplate)) -or (-not (Compare-Object $keyusage $RefOidKerbAuthTemplate))) {
+                    $template.DCAuthCert = $True
+                }
+            }
+        }
+    
+        if($IncludeACL) {
+            $TemplatesACL = Get-ADCSTemplateACL @SearcherArguments
+
+            foreach($template in $Templates) {
+                $ACEs = $TemplatesACL | ? {$_.ObjectDN -eq $template.distinguishedname}
+                $template | Add-Member -MemberType NoteProperty -Name "ACL" -Value $ACEs
+            }
+        }
+    
+        if($ResolveFlags) {
+            foreach($template in $Templates) {
+                $CertificateNameFlag = Convert-ADCSFlag -Attribute mspki-certificate-name-flag -Value $template.'mspki-certificate-name-flag'
+                if($CertificateNameFlag) {
+                    $template | Add-Member -MemberType NoteProperty -Name "CertificateNameFlag" -Value $CertificateNameFlag
+                }
+    
+                $EnrollmentFlag = Convert-ADCSFlag -Attribute mspki-enrollment-flag -Value $template."mspki-enrollment-flag"
+                if($EnrollmentFlag) {
+                    $template | Add-Member -MemberType NoteProperty -Name "EnrollmentFlag" -Value $EnrollmentFlag
+                }
+    
+                $PrivateKeyFlag = Convert-ADCSFlag -Attribute mspki-private-key-flag -Value $template."mspki-private-key-flag"
+                if($PrivateKeyFlag) {
+                    $template | Add-Member -MemberType NoteProperty -Name "PrivateKeyFlag" -Value $PrivateKeyFlag
+                }
+            }
+        }
+        $Templates
+    }
+
+    END {
+        if ($LogonToken) {
+            Invoke-RevertToSelf -TokenHandle $LogonToken
+        }
+    }
+
+}
+
 # Alias for Powerview
 
 Set-Alias Get-IPAddress Resolve-IPAddress
