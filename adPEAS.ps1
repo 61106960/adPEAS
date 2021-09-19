@@ -60,7 +60,7 @@ That means you have to start adPEAS at least like 'Invoke-adPEAS -Module Compute
 - CVE-2019-0708 (BlueKeep)
 - CVE-2017-0144 (aka MS17-010, EternalBlue)
 - and various critical Exchange vulnerabilities like
-  CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483 
+  CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482, CVE-2021-28483, CVE-2021-31196 and CVE-2021-34473.
 
 .EXAMPLE
 Invoke-adPEAS
@@ -1847,6 +1847,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     # Stop to impersonate with other credentials
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
+
 Function Get-adPEASComputer {
 <#
 .SYNOPSIS
@@ -1873,7 +1874,7 @@ This module checks for the following CVE:
 - CVE-2019-0708 (BlueKeep)
 - CVE-2017-0144 (aka MS17-010, EternalBlue)
 - and various critical Exchange vulnerabilities like
-  CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483
+  CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482, CVE-2021-28483, CVE-2021-31196 and CVE-2021-34473.
 
 .EXAMPLE
 Get-adPEASComputer
@@ -2052,14 +2053,13 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
                 }
             }
             
-            if ($PSBoundParameters['Vulns']) {
-                Write-verbose "[Get-adPEASComputer] Checking for Exchange vulnerabilities have been activated"
+            Write-verbose "[Get-adPEASComputer] Checking for Exchange vulnerabilities have been activated"
                 
-                # Searching for Exchange version and vulns
-                Write-verbose "[Get-adPEASComputer] Checking $($object_VarExSrv.sAMAccountName) for known Exchange vulnerabilities"
-                $adPeas_ExchVulns = Invoke-CheckExchange -Identity $object_VarExSrv.dNSHostName
+            # Searching for Exchange version and vulns
+            Write-verbose "[Get-adPEASComputer] Checking $($object_VarExSrv.sAMAccountName) for known Exchange vulnerabilities"
+            $adPeas_ExchVulns = Invoke-CheckExchange -Identity $object_VarExSrv.dNSHostName
 
-                if ($adPeas_ExchVulns.ExchangeBuild -and $adPeas_ExchVulns.ExchangeBuild -ne '') {
+            if ($adPeas_ExchVulns.ExchangeBuild -and $adPeas_ExchVulns.ExchangeBuild -ne '') {
                     $Object | Add-Member Noteproperty 'Exchange Build Number' $adPeas_ExchVulns.ExchangeBuild
 
                     if ($adPeas_ExchVulns.ExchangeVersion -and $adPeas_ExchVulns.ExchangeVersion -ne '') {
@@ -2072,6 +2072,7 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
                             Invoke-Logger -LogClass Info -LogValue "https://dirkjanm.io/abusing-exchange-one-api-call-away-from-domain-admin/"
                             $Object | Add-Member Noteproperty 'CVE-2018-8581' $true
                         }
+
                         if ($adPeas_ExchVulns.'CVE-2020-0688') {
                             if ($adPeas_ExchVulns.'CVE-2020-0688' -like '*hotfix') {
                                 Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2020-0688"
@@ -2084,6 +2085,7 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
                             Invoke-Logger -LogClass Info -LogValue "https://www.thezdi.com/blog/2020/2/24/cve-2020-0688-remote-code-execution-on-microsoft-exchange-server-through-fixed-cryptographic-keys"
                             
                         }
+
                         if ($adPeas_ExchVulns.'CVE-2020-17141') {
                             if ($adPeas_ExchVulns.'C2020-17141' -like '*hotfix'){
                                 Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2020-17141 and CVE-2020-17143"
@@ -2097,25 +2099,6 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
                             }
                             Invoke-Logger -LogClass Info -LogValue "https://srcincite.io/pocs/cve-2020-17141.py.txt"
                             Invoke-Logger -LogClass Info -LogValue "https://srcincite.io/pocs/cve-2020-17143.py.txt"
-                        }
-                        
-                        if ($adPeas_ExchVulns.'CVE-2021-26855') {
-                            if ($adPeas_ExchVulns.'CVE-2021-26855' -like '*hotfix'){
-                                Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065"
-                                $Object | Add-Member Noteproperty 'CVE-2021-26855' 'Potentially Vulnerable'
-                                $Object | Add-Member Noteproperty 'CVE-2021-26857' 'Potentially Vulnerable'
-                                $Object | Add-Member Noteproperty 'CVE-2021-26858' 'Potentially Vulnerable'
-                                $Object | Add-Member Noteproperty 'CVE-2021-27065' 'Potentially Vulnerable'
-                            }
-                            else {
-                                Invoke-Logger -LogClass Finding -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' is vulnerable to CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065"
-                                $Object | Add-Member Noteproperty 'CVE-2021-26855' $true
-                                $Object | Add-Member Noteproperty 'CVE-2021-26857' $true
-                                $Object | Add-Member Noteproperty 'CVE-2021-26858' $true
-                                $Object | Add-Member Noteproperty 'CVE-2021-27065' $true
-                            }
-                            Invoke-Logger -LogClass Info -LogValue "https://www.microsoft.com/security/blog/2021/03/02/hafnium-targeting-exchange-servers"
-
                         }
 
                         if ($adPeas_ExchVulns.'CVE-2021-28482') {
@@ -2136,13 +2119,60 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
                             Invoke-Logger -LogClass Info -LogValue "https://gist.github.com/testanull/9ebbd6830f7a501e35e67f2fcaa57bda"
 
                         }
+                        
+                        if ($adPeas_ExchVulns.'CVE-2021-26855') {
+                            if ($adPeas_ExchVulns.'CVE-2021-26855' -like '*hotfix'){
+                                Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065"
+                                $Object | Add-Member Noteproperty 'CVE-2021-26855' 'Potentially Vulnerable'
+                                $Object | Add-Member Noteproperty 'CVE-2021-26857' 'Potentially Vulnerable'
+                                $Object | Add-Member Noteproperty 'CVE-2021-26858' 'Potentially Vulnerable'
+                                $Object | Add-Member Noteproperty 'CVE-2021-27065' 'Potentially Vulnerable'
+                            }
+                            else {
+                                Invoke-Logger -LogClass Finding -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' is vulnerable to CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065"
+                                $Object | Add-Member Noteproperty 'CVE-2021-26855' $true
+                                $Object | Add-Member Noteproperty 'CVE-2021-26857' $true
+                                $Object | Add-Member Noteproperty 'CVE-2021-26858' $true
+                                $Object | Add-Member Noteproperty 'CVE-2021-27065' $true
+                            }
+                            Invoke-Logger -LogClass Info -LogValue "ProxyLogon Vulnerability"
+                            Invoke-Logger -LogClass Info -LogValue "https://www.microsoft.com/security/blog/2021/03/02/hafnium-targeting-exchange-servers"
+
+                        }
+
+                        if ($adPeas_ExchVulns.'CVE-2021-31196') {
+                            if ($adPeas_ExchVulns.'CVE-2021-31196' -like '*hotfix'){
+                                Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2021-31196"
+                                $Object | Add-Member Noteproperty 'CVE-2021-31196' 'Potentially Vulnerable'
+                            }
+                            else {
+                                Invoke-Logger -LogClass Finding -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' is vulnerable to CVE-2021-31196"
+                                $Object | Add-Member Noteproperty 'CVE-2021-31196' $true
+                            }
+                            Invoke-Logger -LogClass Info -LogValue "ProxyOracle Vulnerability"
+                            Invoke-Logger -LogClass Info -LogValue "https://blog.orange.tw/2021/08/proxyoracle-a-new-attack-surface-on-ms-exchange-part-2.html"
+
+                        }
+
+                        if ($adPeas_ExchVulns.'CVE-2021-34473') {
+                            if ($adPeas_ExchVulns.'CVE-2021-34473' -like '*hotfix'){
+                                Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2021-34473"
+                                $Object | Add-Member Noteproperty 'CVE-2021-34473' 'Potentially Vulnerable'
+                            }
+                            else {
+                                Invoke-Logger -LogClass Finding -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' is vulnerable to CVE-2021-34473"
+                                $Object | Add-Member Noteproperty 'CVE-2021-34473' $true
+                            }
+                            Invoke-Logger -LogClass Info -LogValue "ProxyShell Vulnerability"
+                            Invoke-Logger -LogClass Info -LogValue "https://www.zerodayinitiative.com/blog/2021/8/17/from-pwn2own-2021-a-new-attack-surface-on-microsoft-exchange-proxyshell"
+
+                        }
 
                     else {
                         $Object | Add-Member Noteproperty 'Vulnerabilities Detected' $False
                     }
                     }
                 }
-            }
             Write-Output "Searching for Exchange Servers - Details for Exchange Server '$($object_VarExSrv.sAMAccountName)':"
             $Object
 
@@ -24549,7 +24579,7 @@ Optional Dependencies: None
 
 .DESCRIPTION
 Retrieves Microsoft Exchange version via OWA https request and checks for severe vulnerabilities like
-CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483.
+CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482, CVE-2021-28483, CVE-2021-31196 and CVE-2021-34473.
 
 .PARAMETER Identity
 Specifies the FQDN or at least the Exchange server hostname. 
@@ -24593,67 +24623,73 @@ add-type @"
 
         # Defining exchange server build numbers, https://docs.microsoft.com/de-de/exchange/new-features/build-numbers-and-release-dates
         $ExVersions = @{
-            # Only use the first 3 blocks of the build number as OWA only shows them
-            # A CVE with + means, that the CU could be patched with a hotfix which does not change the build number
-            "15.2.922" = "Exchange Server 2019 CU10",""
-            "15.2.858" = "Exchange Server 2019 CU9","CVE-2021-28482+"
-            "15.2.792" = "Exchange Server 2019 CU8","CVE-2021-26855+","CVE-2021-28482+"
-            "15.2.721" = "Exchange Server 2019 CU7","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482"
-            "15.2.659" = "Exchange Server 2019 CU6","CVE-2020-17143+","CVE-2021-26855","CVE-2021-28482"
-            "15.2.595" = "Exchange Server 2019 CU5","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.2.529" = "Exchange Server 2019 CU4","CVE-2020-0688+","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.2.464" = "Exchange Server 2019 CU3","CVE-2020-0688+","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.2.397" = "Exchange Server 2019 CU2","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.2.330" = "Exchange Server 2019 CU1","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.2.221" = "Exchange Server 2019 RTM","CVE-2018-8581","CVE-2020-17143","CVE-2020-0688","CVE-2021-26855","CVE-2021-28482"
-            "15.1.2308" = "Exchange Server 2016 CU21",""
-            "15.1.2242" = "Exchange Server 2016 CU20","CVE-2021-28482+"
-            "15.1.2176" = "Exchange Server 2016 CU19","CVE-2021-26855+","CVE-2021-28482+"
-            "15.1.2106" = "Exchange Server 2016 CU18","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482"
-            "15.1.2044" = "Exchange Server 2016 CU17","CVE-2020-17143+","CVE-2021-26855","CVE-2021-28482"
-            "15.1.1979" = "Exchange Server 2016 CU16","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.1913" = "Exchange Server 2016 CU15","CVE-2020-0688+","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.1847" = "Exchange Server 2016 CU14","CVE-2020-0688+","CVE-2021-26855","CVE-2020-17143","CVE-2021-28482"
-            "15.1.1779" = "Exchange Server 2016 CU13","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.1713" = "Exchange Server 2016 CU12","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.1591" = "Exchange Server 2016 CU11","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.1531" = "Exchange Server 2016 CU10","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.1466" = "Exchange Server 2016 CU9","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.1415" = "Exchange Server 2016 CU8","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.1261" = "Exchange Server 2016 CU7","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.1034" = "Exchange Server 2016 CU6","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.845" = "Exchange Server 2016 CU5","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.669" = "Exchange Server 2016 CU4","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.544" = "Exchange Server 2016 CU3","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.466" = "Exchange Server 2016 CU2","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.396" = "Exchange Server 2016 CU1","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.1.225" = "Exchange Server 2016 RTM","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1497" = "Exchange Server 2013 CU23","CVE-2020-0688+","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482+"
-            "15.0.1473" = "Exchange Server 2013 CU22","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1395" = "Exchange Server 2013 CU21","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1367" = "Exchange Server 2013 CU20","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1365" = "Exchange Server 2013 CU19","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1347" = "Exchange Server 2013 CU18","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1320" = "Exchange Server 2013 CU17","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1293" = "Exchange Server 2013 CU16","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1263" = "Exchange Server 2013 CU15","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1236" = "Exchange Server 2013 CU14","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1210" = "Exchange Server 2013 CU13","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1178" = "Exchange Server 2013 CU12","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1156" = "Exchange Server 2013 CU11","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1130" = "Exchange Server 2013 CU10","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1104" = "Exchange Server 2013 CU9","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1076" = "Exchange Server 2013 CU8","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.1044" = "Exchange Server 2013 CU7","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.995" = "Exchange Server 2013 CU6","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.913" = "Exchange Server 2013 CU5","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.847" = "Exchange Server 2013 CU4","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.775" = "Exchange Server 2013 CU3","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.712" = "Exchange Server 2013 CU2","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.620" = "Exchange Server 2013 CU1","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
-            "15.0.516" = "Exchange Server 2013 RTM","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482"
+            # Exchange versions 07/13/2021 and newer show the exact installed version in the response header "X-OWA-Version".
+            # For older versions, the first 3 blocks of the build number are used only, as the OWA HTML code does not show the complete version
+            # A CVE with + means, that the CU could be patched with a hotfix but the script cannot determine the detailed build number
+            "15.2.922.13" = "Exchange Server 2019 CU10 Jul21SU",""
+            "15.2.922" = "Exchange Server 2019 CU10","CVE-2021-31196+"
+            "15.2.858.15" = "Exchange Server 2019 CU9 Jul21SU",""
+            "15.2.858" = "Exchange Server 2019 CU9","CVE-2021-28482+","CVE-2021-31196+","CVE-2021-34473+"
+            "15.2.792" = "Exchange Server 2019 CU8","CVE-2021-26855+","CVE-2021-28482+","CVE-2021-31196","CVE-2021-34473+"
+            "15.2.721" = "Exchange Server 2019 CU7","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.659" = "Exchange Server 2019 CU6","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.595" = "Exchange Server 2019 CU5","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.529" = "Exchange Server 2019 CU4","CVE-2020-0688+","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.464" = "Exchange Server 2019 CU3","CVE-2020-0688+","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.397" = "Exchange Server 2019 CU2","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.330" = "Exchange Server 2019 CU1","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.221" = "Exchange Server 2019 RTM","CVE-2018-8581","CVE-2020-17143","CVE-2020-0688","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.2308.14" = "Exchange Server 2016 CU21 Jul21SU",""
+            "15.1.2308" = "Exchange Server 2016 CU21","CVE-2021-31196+"
+            "15.1.2242.12" = "Exchange Server 2016 CU20 Jul21SU",""
+            "15.1.2242" = "Exchange Server 2016 CU20","CVE-2021-28482+","CVE-2021-31196+","CVE-2021-34473+"
+            "15.1.2176" = "Exchange Server 2016 CU19","CVE-2021-26855+","CVE-2021-28482+","CVE-2021-31196","CVE-2021-34473+"
+            "15.1.2106" = "Exchange Server 2016 CU18","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.2044" = "Exchange Server 2016 CU17","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1979" = "Exchange Server 2016 CU16","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1913" = "Exchange Server 2016 CU15","CVE-2020-0688+","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1847" = "Exchange Server 2016 CU14","CVE-2020-0688+","CVE-2021-26855+","CVE-2020-17143","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1779" = "Exchange Server 2016 CU13","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1713" = "Exchange Server 2016 CU12","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1591" = "Exchange Server 2016 CU11","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1531" = "Exchange Server 2016 CU10","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1466" = "Exchange Server 2016 CU9","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1415" = "Exchange Server 2016 CU8","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1261" = "Exchange Server 2016 CU7","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1034" = "Exchange Server 2016 CU6","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.845" = "Exchange Server 2016 CU5","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.669" = "Exchange Server 2016 CU4","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.544" = "Exchange Server 2016 CU3","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.466" = "Exchange Server 2016 CU2","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.396" = "Exchange Server 2016 CU1","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.225" = "Exchange Server 2016 RTM","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1497.23" = "Exchange Server 2013 CU23 Jul21SU",""
+            "15.0.1497" = "Exchange Server 2013 CU23","CVE-2020-0688+","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482+","CVE-2021-31196+","CVE-2021-34473+"
+            "15.0.1473" = "Exchange Server 2013 CU22","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1395" = "Exchange Server 2013 CU21","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1367" = "Exchange Server 2013 CU20","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1365" = "Exchange Server 2013 CU19","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1347" = "Exchange Server 2013 CU18","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1320" = "Exchange Server 2013 CU17","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1293" = "Exchange Server 2013 CU16","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1263" = "Exchange Server 2013 CU15","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1236" = "Exchange Server 2013 CU14","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1210" = "Exchange Server 2013 CU13","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1178" = "Exchange Server 2013 CU12","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1156" = "Exchange Server 2013 CU11","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1130" = "Exchange Server 2013 CU10","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1104" = "Exchange Server 2013 CU9","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1076" = "Exchange Server 2013 CU8","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1044" = "Exchange Server 2013 CU7","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.995" = "Exchange Server 2013 CU6","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.913" = "Exchange Server 2013 CU5","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.847" = "Exchange Server 2013 CU4","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.775" = "Exchange Server 2013 CU3","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.712" = "Exchange Server 2013 CU2","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.620" = "Exchange Server 2013 CU1","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.516" = "Exchange Server 2013 RTM","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
             "14.3.513" = "Exchange Server 2010 SP3 Updaterollup 32"
-            "14.3.509" = "Exchange Server 2010 SP3 Updaterollup 31"
+            "14.3.509" = "Exchange Server 2010 SP3 Updaterollup 31","CVE-2021-26855"
             "14.3.496" = "Exchange Server 2010 SP3 Updaterollup 30","CVE-2020-0688+","CVE-2021-26855"
             "14.3.468" = "Exchange Server 2010 SP3 Updaterollup 29","CVE-2020-0688","CVE-2021-26855"
             "14.3.461" = "Exchange Server 2010 SP3 Updaterollup 28","CVE-2020-0688","CVE-2021-26855"
@@ -24693,7 +24729,7 @@ add-type @"
         foreach ($target in $Identity) {
         
             $ExSrv = $target.Trim('\ ')
-            $ExSrvUri = "https://$($ExSrv)/owa/auth/logon.aspx"
+            $ExSrvUri = "https://$($ExSrv)/owa/" #$ExSrvUri = "https://$($ExSrv)/owa/auth/logon.aspx"
             $ExSrvIP = (Get-IPAddress -ComputerName $ExSrv).ipAddress
 
             write-verbose "[Invoke-CheckExchange] Using the Exchange server '$ExSrv' to get the version for"
@@ -24703,8 +24739,13 @@ add-type @"
                 Write-Verbose "[Invoke-CheckExchange] Connecting tcp/443 to check if '$target' is online"
                 if ($(Invoke-PortCheck -ComputerName $ExSrv -Port 443) -eq $true) {
                     Write-Verbose "[Invoke-CheckExchange] Requesting '$ExSrvUri' to gather Exchange build number"
-                    $ExSrvBuild = ((invoke-webrequest -Uri $ExSrvUri -TimeoutSec '3' -UseBasicParsing).content | select-string -Pattern '/owa/auth/(?<version>[0-9.]+)/').Matches.Groups[1].Value
-       
+
+                    $ExSrvBuild = (Invoke-WebRequest -uri $ExSrvUri -TimeoutSec 3 -UseBasicParsing -MaximumRedirection 0 -ErrorAction Ignore).headers["X-OWA-Version"]
+                    if (-not $ExSrvBuild) {
+                        write-verbose "[Invoke-CheckExchange] Exchange version older then release date 07/13/2021, fallback detection via HTML content"
+                        $ExSrvBuild = ((invoke-webrequest -Uri $ExSrvUri -TimeoutSec 3 -UseBasicParsing).content | select-string -Pattern '/owa/auth/(?<version>[0-9.]+)/').Matches.Groups[1].Value
+                    }
+
                     $Object = New-Object PSObject
                     $Object | Add-Member Noteproperty 'dNSHostName' $ExSrv
                     $Object | Add-Member Noteproperty 'IPv4Address' $ExSrvIP
@@ -24755,6 +24796,24 @@ add-type @"
                                 $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
                             }
 
+                            if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2021-28482*') {
+                                if ($ExVersions[$ExSrvBuild] -like '*CVE-2021-28482+*') {
+                                    Write-Verbose "[Invoke-CheckExchange] CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483 could be patched with hotfix"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28480' 'Vulnerable but could be patched with hotfix' -Force
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28481' 'Vulnerable but could be patched with hotfix' -Force
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28482' 'Vulnerable but could be patched with hotfix' -Force
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28483' 'Vulnerable but could be patched with hotfix' -Force
+                                }
+                                else {
+                                    Write-Verbose "[Invoke-CheckExchange] The Exchange server '$($ExSrv)' is vulnerable to CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28480' 'Vulnerable'
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28481' 'Vulnerable'
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28482' 'Vulnerable'
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28483' 'Vulnerable'
+                                }
+                                $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
+                            }
+
                             if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2021-26855*') {
                                 if ($ExVersions[$ExSrvBuild] -like '*CVE-2021-26855+*') {
                                     Write-Verbose "[Invoke-CheckExchange] CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065 could be patched with hotfix"
@@ -24773,20 +24832,26 @@ add-type @"
                                 $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
                             }
 
-                            if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2021-28482*') {
-                                if ($ExVersions[$ExSrvBuild] -like '*CVE-2021-28482+*') {
-                                    Write-Verbose "[Invoke-CheckExchange] CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483 could be patched with hotfix"
-                                    $Object | Add-Member Noteproperty 'CVE-2021-28480' 'Vulnerable but could be patched with hotfix' -Force
-                                    $Object | Add-Member Noteproperty 'CVE-2021-28481' 'Vulnerable but could be patched with hotfix' -Force
-                                    $Object | Add-Member Noteproperty 'CVE-2021-28482' 'Vulnerable but could be patched with hotfix' -Force
-                                    $Object | Add-Member Noteproperty 'CVE-2021-28483' 'Vulnerable but could be patched with hotfix' -Force
+                            if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2021-31196*') {
+                                if ($ExVersions[$ExSrvBuild] -like '*CVE-2021-31196+*') {
+                                    Write-Verbose "[Invoke-CheckExchange] CVE-2021-31196 could be patched with hotfix"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-31196' 'Vulnerable but could be patched with hotfix' -Force
                                 }
                                 else {
-                                    Write-Verbose "[Invoke-CheckExchange] The Exchange server '$($ExSrv)' is vulnerable to CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483"
-                                    $Object | Add-Member Noteproperty 'CVE-2021-28480' 'Vulnerable'
-                                    $Object | Add-Member Noteproperty 'CVE-2021-28481' 'Vulnerable'
-                                    $Object | Add-Member Noteproperty 'CVE-2021-28482' 'Vulnerable'
-                                    $Object | Add-Member Noteproperty 'CVE-2021-28483' 'Vulnerable'
+                                    Write-Verbose "[Invoke-CheckExchange] The Exchange server '$($ExSrv)' is vulnerable to CVE-2021-31196"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-31196' 'Vulnerable'
+                                }
+                                $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
+                            }
+
+                            if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2021-34473*') {
+                                if ($ExVersions[$ExSrvBuild] -like '*CVE-2021-34473+*') {
+                                    Write-Verbose "[Invoke-CheckExchange] CVE-2021-34473 could be patched with hotfix"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-34473' 'Vulnerable but could be patched with hotfix' -Force
+                                }
+                                else {
+                                    Write-Verbose "[Invoke-CheckExchange] The Exchange server '$($ExSrv)' is vulnerable to CVE-2021-34473"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-34473' 'Vulnerable'
                                 }
                                 $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
                             }
