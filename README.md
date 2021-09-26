@@ -128,7 +128,7 @@ Invoke-adPEAS -Module Bloodhound -Scope All
 PS > Invoke-adPEAS -Domain sub.pen.local
 
 [*] +++++ Starting adPEAS Version 0.7.0 +++++
-adPEAS version 0.7.0
+adPEAS version 0.7.1
 [*] +++++ Starting Enumeration +++++
 [*] +++++ Searching for Domain Information +++++
 [*] +++++ Checking Domain +++++
@@ -180,40 +180,6 @@ TrustAttributes    : WITHIN_FOREST
 [*] https://book.hacktricks.xyz/windows/active-directory-methodology/dcsync
 Checking DCSync Rights - Details for Domain 'sub.pen.local':
 ActiveDirectoryRight : DS-Replication-Get-Changes
-Identity             : BUILTIN\Administrators
-distinguishedName    :
-ObjectSID            : S-1-5-32-544
-
-ActiveDirectoryRight : DS-Replication-Get-Changes-In-Filtered-Set
-Identity             : BUILTIN\Administrators
-distinguishedName    :
-ObjectSID            : S-1-5-32-544
-
-ActiveDirectoryRight : DS-Replication-Get-Changes-All
-Identity             : BUILTIN\Administrators
-distinguishedName    :
-ObjectSID            : S-1-5-32-544
-
-ActiveDirectoryRight : DS-Replication-Get-Changes
-Identity             : Enterprise Domain Controllers
-distinguishedName    :
-ObjectSID            : S-1-5-9
-
-ActiveDirectoryRight : DS-Replication-Get-Changes-In-Filtered-Set
-Identity             : Enterprise Domain Controllers
-distinguishedName    :
-ObjectSID            : S-1-5-9
-
-ActiveDirectoryRight : DS-Replication-Get-Changes
-Identity             : PEN\Enterprise Read-only Domain Controllers
-distinguishedName    : CN=Enterprise Read-only Domain Controllers,CN=Users,DC=pen,DC=local
-ObjectSID            : S-1-5-21-2219892162-3422002451-1011183393-498
-
-ActiveDirectoryRight : DS-Replication-Get-Changes-All
-Identity             : SUB\Domain Controllers
-distinguishedName    : CN=Domain Controllers,CN=Users,DC=sub,DC=pen,DC=local
-ObjectSID            : S-1-5-21-575725702-4057784316-641645133-516
-
 ActiveDirectoryRight : DS-Replication-Get-Changes-All
 Identity             : SUB\superadmin
 distinguishedName    : CN=Superadmin,CN=Users,DC=sub,DC=pen,DC=local
@@ -228,19 +194,9 @@ ObjectSID            : S-1-5-21-575725702-4057784316-641645133-3954
 [*] https://www.ired.team/offensive-security-experiments/active-directory-kerberos-abuse/abusing-active-directory-acls-aces
 Checking GenericAll Rights - Details for Domain 'sub.pen.local':
 ActiveDirectoryRight : GenericAll
-Identity             : Local System
-distinguishedName    :
-ObjectSID            : S-1-5-18
-
-ActiveDirectoryRight : GenericAll
 Identity             : SUB\Andend
 distinguishedName    : CN=Alexander Baumgartner,OU=germany,OU=users,OU=corp,DC=sub,DC=pen,DC=local
 ObjectSID            : S-1-5-21-575725702-4057784316-641645133-2273
-
-ActiveDirectoryRight : GenericAll
-Identity             : PEN\Enterprise Admins
-distinguishedName    : CN=Enterprise Admins,CN=Users,DC=pen,DC=local
-ObjectSID            : S-1-5-21-2219892162-3422002451-1011183393-519
 
 ActiveDirectoryRight : GenericAll
 Identity             : PEN\Exchange Trusted Subsystem
