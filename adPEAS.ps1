@@ -1177,6 +1177,63 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $Object_Var = $null
     $Object = $null
 
+    <# +++++ Searching for Group Managed Service Accounts (gMSA) accounts +++++ #>
+    invoke-logger -logclass Info -logvalue "+++++ Searching for Group Managed Service Accounts (gMSA) accounts +++++"
+    invoke-logger -logclass Info -logvalue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges"
+
+    $adPEAS_gMSA = Get-DomainObject @SearcherArguments -LDAPFilter '(&(ObjectClass=msDS-GroupManagedServiceAccount))'
+
+    foreach ($Object_Var in $adPEAS_gMSA) {
+        if ($Object_Var.sAMAccountName -and $Object_Var.'useraccountcontrol' -like '*ACCOUNTDISABLE*') {
+            Write-Verbose "[Get-adPEASCreds] Account $($Object_Var.distinguishedName) is a gMSA but is disabled"
+        }
+        elseif ($Object_Var.sAMAccountName -and $Object_Var.sAMAccountName -ne '') {
+            $Object = New-Object PSObject
+            $Object | Add-Member Noteproperty 'sAMAccountName' $Object_Var.samaccountname
+            $Object | Add-Member Noteproperty 'distinguishedName' $Object_Var.distinguishedName
+            $Object | Add-Member Noteproperty 'description' $Object_Var.description
+            $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
+            $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
+            $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
+            $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
+            
+            # read parameter groupmsamembership, build descriptor, request groups and users and convert SID to name
+            try {
+                $Object_VargMSAMembers = (New-Object Security.AccessControl.RawSecurityDescriptor($object_var.'msds-groupmsamembership', 0)).DiscretionaryAcl.SecurityIdentifier.Value
+                $Object_VargMSAMemberArray = @()
+
+                foreach ($Object_VargMSAMember in $Object_VargMSAMembers){
+                    # check if the member is a group and if yes, request group members recursive
+                    if ($(Get-DomainObject @SearcherArguments -Identity $Object_VargMSAMember).samaccounttype -eq 'GROUP_OBJECT') {
+                        Write-verbose "[Get-adPEASCreds] $Object_VargMSAMember is a group"
+                        $Object_VargMSAMemberArray += $(Get-DomainGroupMember @SearcherArguments -Identity $Object_VargMSAMember -Recurse).MemberSID
+                    }
+                    else {
+                        $Object_VargMSAMemberArray += $Object_VargMSAMember
+                    }
+                }
+
+                $Object | Add-Member Noteproperty 'PrincipalsAllowedToRetrieveManagedPassword' (($Object_VargMSAMemberArray  | ConvertFrom-SID @SearcherArguments) -join "`n")
+            }
+            catch {}
+
+            Invoke-Logger -LogClass Hint -LogValue "Account $(($Object_Var).samaccountname) is a Group Managed Service Account"
+            if ($Object_Var.admincount -and $Object_Var.admincount -eq '1') {
+                Invoke-Logger -LogClass Hint -LogValue "The account '$(($Object_Var).samaccountname)' is or was member of a high privileged protected group"
+            }
+            Write-Output "Searching for gMSA - Details for Account '$(($Object_Var).samaccountname)':"
+            $Object
+        }
+        else {
+            Write-verbose "[Get-adPEASCreds] No Results or Results have been suppressed"
+        }
+    }
+    $Object_VargMSAMembers = $null
+    $Object_VargMSAMemberArray = $null
+    $Object_Var = $null
+    $Object = $null
+
     <# +++++ Searching for Crypted Passwords in SYSVOL Group Policy Objects +++++ #>
     Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Crypted Passwords in SYSVOL Group Policy Objects +++++"
     Invoke-Logger -LogClass Info -LogValue "https://www.andreafortuna.org/2019/02/13/abusing-group-policy-preference-files-for-password-discovery/"
