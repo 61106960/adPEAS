@@ -40,7 +40,7 @@ If no module is given, the default modules are 'Domain','Creds','Delegation','Ac
 Possible modules are:
 - Module Domain: Enumerates some basic AD information, like Domain Controllers, Password Policy, Sites and Subnets, Trusts, DCSync Rights
 - Module CA: Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates.
-- Module Creds: Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, LAPS, Group Policies, Netlogon Scripts
+- Module Creds: Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, gMSA, LAPS, Group Policies, Netlogon Scripts
 - Module Delegation: Enumerates delegation issues, like 'Unconstrained Delegation', 'Constrained Delegation', 'Resource Based Constrained Delegation' for user and computer objects
 - Module Accounts: Enumerates users in high privileged groups which are NOT disabled, like Administrators, Domain Admins, Enterprise Admins, Group Policy Creators, DNS Admins, Account Operators, Server Operators, Printer Operators, Backup Operators, Hyper-V Admins, Remote Management Users und CERT Publishers
     Enumerates high privileged users (admincount=1), which are NOT disabled and where the password does not expire or which may not require a password
@@ -433,11 +433,25 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     <# +++++ Checking Domain +++++ #>
     Invoke-Logger -LogClass Info -LogValue "+++++ Checking Domain +++++"
 
+    # Defining AD domain mode levels
+    $adPEAS_DomainMode = @{
+        0 = "Windows 2000 native"
+        1 = "Windows 2003 interim"
+        2 = "Windows 2003"
+        3 = "Windows 2008"
+        4 = "Windows 2008 R2"
+        5 = "Windows 2012"
+        6 = "Windows 2012 R2"
+        7 = "Windows 2016"
+        8 = "TBD"
+    }
+
     $adPEAS_Domain = get-domain @SearcherArguments
     
     $Object = New-Object PSObject
     $Object | Add-Member Noteproperty 'Domain Name' $adPEAS_Domain.Name
     $Object | Add-Member Noteproperty 'Domain SID' $(Get-DomainSID @SearcherArguments)
+    $Object | Add-Member Noteproperty 'Domain Functional Level' $adPEAS_DomainMode[$adPEAS_Domain.DomainModeLevel]
     $Object | Add-Member Noteproperty 'Forest Name' $adPEAS_Domain.Forest
     if ($adPEAS_Domain.Name -ne (((get-domain @SearcherArguments).Forest).RootDomain).name) {
         $Object | Add-Member Noteproperty 'Root Domain Name' (($adPEAS_Domain.Forest).RootDomain).Name
@@ -635,6 +649,17 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $IdentiyDomDN = $IdentiyDN.SubString($IdentiyDN.IndexOf('DC='))
     Write-Verbose "[Get-adPEASDomain] Using $($IdentiyDomDN) to search for rights"
     $adPEAS_DomainRights = Get-ObjectACL @SearcherArguments -DistinguishedName $IdentiyDomDN -ResolveGUIDs | Where-Object { ($_.ObjectAceType -match 'DS-Replication-Get-Changes') -or ($_.ActiveDirectoryRights -match 'GenericAll') } | Sort-Object -Property ActiveDirectoryRights
+    
+    # Filter default administrative groups
+    $adPEAS_DomainRights = $adPEAS_DomainRights | Where-Object { `
+        -not (($_.SecurityIdentifier.value -eq "S-1-5-9") `
+        -or ($_.SecurityIdentifier.value -eq "S-1-5-18") `
+        -or ($_.SecurityIdentifier.value -eq "S-1-5-32-544") `
+        -or ($_.SecurityIdentifier.value -like "*-498") `
+        -or ($_.SecurityIdentifier.value -like "*-500") `
+        -or ($_.SecurityIdentifier.value -like "*-516") `
+        -or ($_.SecurityIdentifier.value -like "*-519")) `
+        }
     
     # Display DCSync Rights
     if ($adPEAS_DomainRights -and $adPEAS_DomainRights -ne '') {
@@ -871,7 +896,7 @@ Required Dependencies: None
 Optional Dependencies: None
 
 .DESCRIPTION
-Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, LAPS, Group Policies, Netlogon Scripts.
+Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, LAPS, gMSA, Group Policies, Netlogon Scripts.
 
 .PARAMETER Domain
 Specifies the domain to use for the query, defaults to the current domain.
@@ -1177,8 +1202,8 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $Object_Var = $null
     $Object = $null
 
-    <# +++++ Searching for Group Managed Service Accounts (gMSA) accounts +++++ #>
-    invoke-logger -logclass Info -logvalue "+++++ Searching for Group Managed Service Accounts (gMSA) accounts +++++"
+    <# +++++ Searching for Group Managed Service Accounts (gMSA) +++++ #>
+    invoke-logger -logclass Info -logvalue "+++++ Searching for Group Managed Service Accounts (gMSA) +++++"
     invoke-logger -logclass Info -logvalue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges"
 
     $adPEAS_gMSA = Get-DomainObject @SearcherArguments -LDAPFilter '(&(ObjectClass=msDS-GroupManagedServiceAccount))'
