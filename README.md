@@ -421,7 +421,7 @@ userAccountControl                                : ACCOUNTDISABLE, WORKSTATION_
 ms-Mcs-AdmPwd [Password]                          : SecretPW0815!
 ms-mcs-AdmPwdExpirationTime [Password Expiration] : 01.12.2020 00:00:00
 
-[*] +++++ Searching for Group Managed Service Accounts (gMSA) accounts +++++
+[*] +++++ Searching for Group Managed Service Accounts (gMSA) +++++
 [*] https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges
 [+] Account gMSA-Service$ is a Group Managed Service Account
 Searching for gMSA - Details for Account 'gMSA-Service$':
