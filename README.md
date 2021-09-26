@@ -23,7 +23,7 @@ If the system you are running adPEAS from is not domain joined or you want to en
 adPEAS consists of the following enumeration modules:
 * Domain - Searching for basic Active Directory information, like Domain Controllers, Sites und Subnets, Trusts and DCSync rights
 * CA - Searching for basic Enterprise Certificate Authority information, like CA Name, CA Server and Templates
-* Creds - Searching for different kind of credential exposure, like ASREPRoast, Kerberoasting, GroupPolicies, Netlogon scripts, LAPS, certain account attributes, e.g. UnixPassword, etc.
+* Creds - Searching for different kind of credential exposure, like ASREPRoast, Kerberoasting, GroupPolicies, Netlogon scripts, LAPS, gMSA, certain account attributes, e.g. UnixPassword, etc.
 * Delegation - Searching for delegation issues, like 'Constrained Delegation', 'Unconstrained Delegation' and 'Resource Based Unconstrained Delegation', for computer and user accounts
 * Accounts - Searching for high privileged user accounts in predefined groups, account issues like e.g. password not expire
 * Computer - Enumerating Domain Controllers and Exchange server, with the switch -Vulns it checks the systems for EternalBlue, BlueKeep, ZeroLogon and critical Exchange vulnerabilities
@@ -88,7 +88,7 @@ Enumerates basic Enterprise Certificate Authority information, like CA Name, CA 
 Invoke-adPEAS -Module CA
 ```
 
-Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix password attributes, LAPS (if your account has the rights to read it), Group Policies, Netlogon scripts.
+Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix password attributes, gMSA, LAPS (if your account has the rights to read it), Group Policies, Netlogon scripts.
 ```
 Invoke-adPEAS -Module Creds
 ```
@@ -127,8 +127,8 @@ Invoke-adPEAS -Module Bloodhound -Scope All
 ```
 PS > Invoke-adPEAS -Domain sub.pen.local
 
-[*] +++++ Starting adPEAS Version 0.6.4 +++++
-adPEAS version 0.6.4
+[*] +++++ Starting adPEAS Version 0.7.0 +++++
+adPEAS version 0.7.0
 [*] +++++ Starting Enumeration +++++
 [*] +++++ Searching for Domain Information +++++
 [*] +++++ Checking Domain +++++
@@ -420,6 +420,22 @@ objectSid                                         : S-1-5-21-575725702-405778431
 userAccountControl                                : ACCOUNTDISABLE, WORKSTATION_TRUST_ACCOUNT
 ms-Mcs-AdmPwd [Password]                          : SecretPW0815!
 ms-mcs-AdmPwdExpirationTime [Password Expiration] : 01.12.2020 00:00:00
+
+[*] +++++ Searching for Group Managed Service Accounts (gMSA) accounts +++++
+[*] https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges
+[+] Account gMSA-Service$ is a Group Managed Service Account
+Searching for gMSA - Details for Account 'gMSA-Service$':
+sAMAccountName                             : gMSA-Service$
+distinguishedName                          : CN=gMSA-Service,CN=Managed Service Accounts,DC=sub,DC=pen,DC=local
+description                                :
+objectSid                                  : S-1-5-21-575725702-4057784316-641645133-36616
+userAccountControl                         : WORKSTATION_TRUST_ACCOUNT
+memberOf                                   : CN=Testgroup,OU=test,OU=corp,DC=sub,DC=pen,DC=local
+pwdLastSet                                 : 26.09.2021 12:31:44
+lastLogonTimestamp                         : 26.09.2021 12:38:07
+PrincipalsAllowedToRetrieveManagedPassword : SUB\superadmin
+                                             SUB\SRV-DB01$
+                                             SUB\test
 
 [*] +++++ Searching for Crypted Passwords in SYSVOL Group Policy Objects +++++
 [*] https://www.andreafortuna.org/2019/02/13/abusing-group-policy-preference-files-for-password-discovery/
