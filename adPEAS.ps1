@@ -1727,15 +1727,15 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
 
             # check if a user belongs to the local domain, root domain or foreign domain
             if ($Object_VarDom -eq $adPEAS_Dom) {
-                $Object_VarUser += Get-DomainUser @SearcherArguments -Identity $Object_Var.MemberName
+                $Object_VarUser += Get-DomainObject @SearcherArguments -Identity $Object_Var.MemberName
             }
             elseif ($Object_VarDom -eq $adPEAS_RootDom) {
                 Write-Verbose "[Invoke-adPEASAccounts] Account '$($Object_Var.MemberName)' belongs to Root Domain $($Object_VarDom)"
-                $Object_VarUser += Get-DomainUser @RootDomSearcherArguments -Identity $Object_Var.MemberName
+                $Object_VarUser += Get-DomainObject @RootDomSearcherArguments -Identity $Object_Var.MemberName
             }
             else {
                 Write-Verbose "[Invoke-adPEASAccounts] Account '$($Object_Var.MemberName)' belongs to foreign Domain $($Object_VarDom)"
-                $Object_VarUser += Get-DomainUser -Domain $Object_VarDom -Identity $Object_Var.MemberName
+                $Object_VarUser += Get-DomainObject -Domain $Object_VarDom -Identity $Object_Var.MemberName
             }
 
                         
@@ -1752,7 +1752,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                     $Object | Add-Member Noteproperty 'MemberDomain' $Object_Var.MemberDomain
                     $Object
                 }
-                elseif ($Object_Var.MemberObjectClass -and $Object_Var.MemberObjectClass -eq 'user') { # detected a user as member
+                elseif ($Object_Var.MemberObjectClass -and $Object_Var.MemberObjectClass -eq 'user' -or $Object_Var.MemberObjectClass -eq 'computer') { # detected a user or computer as member
                     $Object = New-Object PSObject
                     $Object | Add-Member Noteproperty 'sAMAccountName' $Object_Var.MemberName
                     $Object | Add-Member Noteproperty 'userPrincipalName' $Object_VarUser.userPrincipalName
