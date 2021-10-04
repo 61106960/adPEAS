@@ -10,7 +10,9 @@ This tool is used to automate Active Directory enumeration. The tool requires a 
 Special thanks go to
 - Will Schroeder @harmjoy, for his great PowerView
 - Dirk-jan @_dirkjan, for his great AD and Windows research
+- SpecterOps, for their fantastic BloodHound
 - BC-Security, for their great ongoing work with Empire
+- @vletoux, for his PoC code of EternalBlue and Bluekeep 
 - Joaquim Nogueira @lkys37en, for his idea to build a simple AD enumeration tool
 - Christoph Falta @cfalta, for his inspiring work on PoshADCS
 - and all the people who inspired me on my journey...
@@ -20,6 +22,9 @@ Specifies the domain to use for the query, defaults to the current domain.
 
 .PARAMETER Server
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER Credential
 A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
@@ -38,11 +43,27 @@ If no module is given, the default modules are 'Domain','Creds','Delegation','Ac
 Possible modules are:
 - Module Domain: Enumerates some basic AD information, like Domain Controllers, Password Policy, Sites and Subnets, Trusts, DCSync Rights
 - Module CA: Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates.
-- Module Creds: Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, LAPS, Group Policies, Netlogon Scripts
+- Module Creds: Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, gMSA, LAPS, Group Policies, Netlogon Scripts
 - Module Delegation: Enumerates delegation issues, like 'Unconstrained Delegation', 'Constrained Delegation', 'Resource Based Constrained Delegation' for user and computer objects
 - Module Accounts: Enumerates users in high privileged groups which are NOT disabled, like Administrators, Domain Admins, Enterprise Admins, Group Policy Creators, DNS Admins, Account Operators, Server Operators, Printer Operators, Backup Operators, Hyper-V Admins, Remote Management Users und CERT Publishers
     Enumerates high privileged users (admincount=1), which are NOT disabled and where the password does not expire or which may not require a password
 - Module Computer: Enumerates installed Domain Controllers and Exchange Server
+- Module Bloodhound: Starts Bloodhound enumeration with the scope DCOnly
+
+.PARAMETER Scope
+This parameter works together with the module 'Bloodhound' only.
+Changes the scope of Bloodhound enumeration from DCOnly to All. With this setting Bloodhound will actively connect to all computers in the domain!
+Default is DCOnly.
+
+.PARAMETER Vulns
+This parameter works together with the module 'Computer' only.
+Checks for known vulnerabilities of Windows systems gathered in module 'Computer', like Domain Controller and Exchange Server.
+That means you have to start adPEAS at least like 'Invoke-adPEAS -Module Computer -Vulns'.
+- CVE-2020-1472 (ZeroLogon)
+- CVE-2019-0708 (BlueKeep)
+- CVE-2017-0144 (aka MS17-010, EternalBlue)
+- and various critical Exchange vulnerabilities like
+  CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482, CVE-2021-28483, CVE-2021-31196 and CVE-2021-34473.
 
 .EXAMPLE
 Invoke-adPEAS
@@ -69,6 +90,14 @@ Start adPEAS with all modules, enumerate the domain 'contoso.com' and use the us
 .EXAMPLE
 Invoke-adPEAS -Domain contoso.com -Module Creds
 Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to search for credential leakage.
+
+.EXAMPLE
+Invoke-adPEAS -Domain contoso.com -Module Computer -Vulns
+Start adPEAS, enumerate the domain 'contoso.com', use the module 'Computer' only and search for known CVE.
+
+.EXAMPLE
+Invoke-adPEAS -Domain contoso.com -Module Bloodhound -Method All
+Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound' with the scope All.
 #>
     [CmdletBinding()]
     Param (
@@ -103,12 +132,25 @@ Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to searc
         [ValidateNotNullOrEmpty()]
         [ValidateSet("Domain", "CA", "Creds", "Delegation", "Accounts", "Computer")]
         [String[]]
-        $Module = "adPEAS"
+        $Module = "adPEAS",
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet("DCOnly", "All")]
+        [String]
+        $Scope = "DCOnly",
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $Vulns
     )
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.6.4 Light'
+    $adPEASVersion = '0.7.4 Light'
     Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
@@ -186,6 +228,11 @@ Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to searc
         Write-Verbose "[Invoke-adPEAS] Using $($Server) as target Domain Controller"
     }
 
+    if ($PSBoundParameters['TLS']) {
+        $SearcherArguments['TLS'] = $True
+        Write-Verbose "[Invoke-adPEAS] Using LDAPS over port 636"
+    }
+
 
     # Starting to impersonate given credentials
     if ($PSBoundParameters['Credential']) {
@@ -238,8 +285,9 @@ Start adPEAS, enumerate the domain 'contoso.com' and use module 'Creds' to searc
 
                 Get-adPEASAccounts @SearcherArguments
             }
-           
+            
             "Computer" {
+
                 Get-adPEASComputer @SearcherArguments
             }
     }
@@ -263,6 +311,9 @@ Specifies the domain to use for the query, defaults to the current domain.
 
 .PARAMETER Server
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER Credential
 A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
@@ -297,6 +348,10 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         [ValidateNotNullOrEmpty()]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
 
         [Parameter(Mandatory = $false,HelpMessage='Enter a PSCredentials object like $Cred = New-Object System.Management.Automation.PSCredential("contoso\johndoe", $SecPassword)')]
         [ValidateNotNullOrEmpty()]
@@ -359,6 +414,11 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         Write-Verbose "[Get-adPEASDomain] Using $($Server) as target Domain Controller"
     }
 
+    if ($PSBoundParameters['TLS']) {
+        $SearcherArguments['TLS'] = $True
+        Write-Verbose "[Get-adPEASDomain] Using LDAPS over port 636"
+    }
+
     # Starting to impersonate given credentials
     if ($PSBoundParameters['Credential']) {
         Write-Warning "[Get-adPEASDomain] Using $($Cred.Username) for authentication"
@@ -372,11 +432,25 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     <# +++++ Checking Domain +++++ #>
     Invoke-Logger -LogClass Info -LogValue "+++++ Checking Domain +++++"
 
+    # Defining AD domain mode levels
+    $adPEAS_DomainMode = @{
+        0 = "Windows 2000 native"
+        1 = "Windows 2003 interim"
+        2 = "Windows 2003"
+        3 = "Windows 2008"
+        4 = "Windows 2008 R2"
+        5 = "Windows 2012"
+        6 = "Windows 2012 R2"
+        7 = "Windows 2016"
+        8 = "TBD"
+    }
+
     $adPEAS_Domain = get-domain @SearcherArguments
     
     $Object = New-Object PSObject
     $Object | Add-Member Noteproperty 'Domain Name' $adPEAS_Domain.Name
     $Object | Add-Member Noteproperty 'Domain SID' $(Get-DomainSID @SearcherArguments)
+    $Object | Add-Member Noteproperty 'Domain Functional Level' $adPEAS_DomainMode[$adPEAS_Domain.DomainModeLevel]
     $Object | Add-Member Noteproperty 'Forest Name' $adPEAS_Domain.Forest
     if ($adPEAS_Domain.Name -ne (((get-domain @SearcherArguments).Forest).RootDomain).name) {
         $Object | Add-Member Noteproperty 'Root Domain Name' (($adPEAS_Domain.Forest).RootDomain).Name
@@ -575,6 +649,17 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     Write-Verbose "[Get-adPEASDomain] Using $($IdentiyDomDN) to search for rights"
     $adPEAS_DomainRights = Get-ObjectACL @SearcherArguments -DistinguishedName $IdentiyDomDN -ResolveGUIDs | Where-Object { ($_.ObjectAceType -match 'DS-Replication-Get-Changes') -or ($_.ActiveDirectoryRights -match 'GenericAll') } | Sort-Object -Property ActiveDirectoryRights
     
+    # Filter default administrative groups
+    $adPEAS_DomainRights = $adPEAS_DomainRights | Where-Object { `
+        -not (($_.SecurityIdentifier.value -eq "S-1-5-9") `
+        -or ($_.SecurityIdentifier.value -eq "S-1-5-18") `
+        -or ($_.SecurityIdentifier.value -eq "S-1-5-32-544") `
+        -or ($_.SecurityIdentifier.value -like "*-498") `
+        -or ($_.SecurityIdentifier.value -like "*-500") `
+        -or ($_.SecurityIdentifier.value -like "*-516") `
+        -or ($_.SecurityIdentifier.value -like "*-519")) `
+        }
+    
     # Display DCSync Rights
     if ($adPEAS_DomainRights -and $adPEAS_DomainRights -ne '') {
         Write-Output "Checking DCSync Rights - Details for Domain '$($adPEAS_Domain.Name)':"
@@ -620,186 +705,198 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
 }
 
 Function Get-adPEASCA {
-    <#
-    .SYNOPSIS
-    Author: Alexander Sturz (@_61106960_)
-    Required Dependencies: None
-    Optional Dependencies: None
+<#
+.SYNOPSIS
+Author: Alexander Sturz (@_61106960_)
+Required Dependencies: None
+Optional Dependencies: None
     
-    .DESCRIPTION
-    Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates where non-administrative users have full access.
+.DESCRIPTION
+Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates where non-administrative users have full access.
     
-    .PARAMETER Domain
-    Specifies the domain to use for the query, defaults to the current domain.
+.PARAMETER Domain
+Specifies the domain to use for the query, defaults to the current domain.
     
-    .PARAMETER Server
-    Specifies an Active Directory server (domain controller) to bind to.
+.PARAMETER Server
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+Switch. Specifies that encrypted LDAPS over port 636 is used.
     
-    .PARAMETER Credential
-    A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
+.PARAMETER Credential
+A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
     
-    .EXAMPLE
-    Get-adPEASCA
-    Start Enumerating and use the domain the logged-on user is connected to.
+.EXAMPLE
+Get-adPEASCA
+Start Enumerating and use the domain the logged-on user is connected to.
     
-    .EXAMPLE
-    Get-adPEASCA -Domain 'contoso.com'
-    Start Enumerating and use the domain 'contoso.com'.
+.EXAMPLE
+Get-adPEASCA -Domain 'contoso.com'
+Start Enumerating and use the domain 'contoso.com'.
     
-    .EXAMPLE
-    Get-adPEASCA -Domain 'contoso.com' -Server 'dc1.contoso.com'
-    Start Enumerating using the domain 'contoso.com' and use the domain controller 'dc1.contoso.com' for almost all enumeration requests.
+.EXAMPLE
+Get-adPEASCA -Domain 'contoso.com' -Server 'dc1.contoso.com'
+Start Enumerating using the domain 'contoso.com' and use the domain controller 'dc1.contoso.com' for almost all enumeration requests.
     
-    .EXAMPLE
-    $SecPassword = ConvertTo-SecureString 'Passw0rd1!' -AsPlainText -Force
-    $Cred = New-Object System.Management.Automation.PSCredential('contoso\johndoe', $SecPassword)
-    Get-adPEASCA -Domain 'contoso.com' -Cred $Cred
-    Start Enumerating using the domain 'contoso.com' and use the passed PSCredential object during enumeration.
-    #>
-        [CmdletBinding()]
-        Param (
-            #[Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
-            [Parameter(Mandatory = $false,HelpMessage="Enter a domain name here, e.g. contoso.com")]
-            [ValidateNotNullOrEmpty()]
-            [String]
-            $Domain,
+.EXAMPLE
+$SecPassword = ConvertTo-SecureString 'Passw0rd1!' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('contoso\johndoe', $SecPassword)
+Get-adPEASCA -Domain 'contoso.com' -Cred $Cred
+Start Enumerating using the domain 'contoso.com' and use the passed PSCredential object during enumeration.
+#>
+    [CmdletBinding()]
+    Param (
+        #[Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [Parameter(Mandatory = $false,HelpMessage="Enter a domain name here, e.g. contoso.com")]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
     
-            [Parameter(Mandatory = $false,HelpMessage="Enter a FQDN of a Domain Controller here, e.g. dc1.contoso.com")]
-            [ValidateNotNullOrEmpty()]
-            [String]
-            $Server,
+        [Parameter(Mandatory = $false,HelpMessage="Enter a FQDN of a Domain Controller here, e.g. dc1.contoso.com")]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
     
-            [Parameter(Mandatory = $false,HelpMessage='Enter a PSCredentials object like $Cred = New-Object System.Management.Automation.PSCredential("contoso\johndoe", $SecPassword)')]
-            [ValidateNotNullOrEmpty()]
-            [Management.Automation.PSCredential]
-            [Management.Automation.CredentialAttribute()]
-            $Credential = [Management.Automation.PSCredential]::Empty
-        )
+        [Parameter(Mandatory = $false,HelpMessage='Enter a PSCredentials object like $Cred = New-Object System.Management.Automation.PSCredential("contoso\johndoe", $SecPassword)')]
+        [ValidateNotNullOrEmpty()]
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
     
-        <# +++++ Starting adPEAS CA Enumeration +++++ #>
-        $ErrorActionPreference = "Continue"
+    <# +++++ Starting adPEAS CA Enumeration +++++ #>
+    $ErrorActionPreference = "Continue"
     
-        Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Certificate Authority Information +++++"
+    Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Certificate Authority Information +++++"
     
-        # first trying to resolve supplied parameter
-        if ($PSBoundParameters['Credential']) {
-            Write-Verbose "[Get-adPEASCA] Using alternate credentials $($Credential.UserName) for Get-Domain"
-            if ($PSBoundParameters['Domain']) {
-                $TargetDomain = $Domain
-            }
-            else {
-                # if no domain is supplied, extract the logon domain from the PSCredential passed
-                $TargetDomain = $Credential.GetNetworkCredential().Domain
-                Write-Verbose "[Get-adPEASCA] Extracted domain $($TargetDomain) from -Credential"
-            }
-            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $TargetDomain, $Credential.UserName, $Credential.GetNetworkCredential().Password)
-            try {
-                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
-            }
-            catch {
-                throw "[Get-adPEASCA] The specified domain $($TargetDomain) does not exist, could not be contacted, there isn't an existing trust, or the specified credentials are invalid: $_"
-            }
-        }
-        elseif ($PSBoundParameters['Domain']) {
-            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $Domain)
-            try {
-                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
-            }
-            catch {
-                throw "[Get-adPEASCA] The specified domain $($Domain) does not exist, could not be contacted, or there isn't an existing trust : $_"
-            }
+    # first trying to resolve supplied parameter
+    if ($PSBoundParameters['Credential']) {
+        Write-Verbose "[Get-adPEASCA] Using alternate credentials $($Credential.UserName) for Get-Domain"
+        if ($PSBoundParameters['Domain']) {
+            $TargetDomain = $Domain
         }
         else {
-            try {
-                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name
-            }
-            catch {
-                throw "[Get-adPEASCA] Error retrieving the current domain: $_"
-            }
+            # if no domain is supplied, extract the logon domain from the PSCredential passed
+            $TargetDomain = $Credential.GetNetworkCredential().Domain
+            Write-Verbose "[Get-adPEASCA] Extracted domain $($TargetDomain) from -Credential"
         }
+        $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $TargetDomain, $Credential.UserName, $Credential.GetNetworkCredential().Password)
+        try {
+            $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
+        }
+        catch {
+            throw "[Get-adPEASCA] The specified domain $($TargetDomain) does not exist, could not be contacted, there isn't an existing trust, or the specified credentials are invalid: $_"
+        }
+    }
+    elseif ($PSBoundParameters['Domain']) {
+        $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $Domain)
+        try {
+            $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
+        }
+        catch {
+            throw "[Get-adPEASCA] The specified domain $($Domain) does not exist, could not be contacted, or there isn't an existing trust : $_"
+        }
+    }
+    else {
+        try {
+            $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name
+        }
+        catch {
+            throw "[Get-adPEASCA] Error retrieving the current domain: $_"
+        }
+    }
         
-        # Building searcher arguments for the following PowerView requests
-        $SearcherArguments = @{}
-        if ($PSBoundParameters['Domain'] -or $Domain) {
-            $SearcherArguments['Domain'] = $Domain
-            Write-Verbose "[Get-adPEASCA] Using $($Domain) as target Windows Domain"
-        }
-        if ($PSBoundParameters['Server']) {
-            $SearcherArguments['Server'] = $Server
-            Write-Verbose "[Get-adPEASCA] Using $($Server) as target Domain Controller"
-        }
+    # Building searcher arguments for the following PowerView requests
+    $SearcherArguments = @{}
+    if ($PSBoundParameters['Domain'] -or $Domain) {
+        $SearcherArguments['Domain'] = $Domain
+        Write-Verbose "[Get-adPEASCA] Using $($Domain) as target Windows Domain"
+    }
+    if ($PSBoundParameters['Server']) {
+        $SearcherArguments['Server'] = $Server
+        Write-Verbose "[Get-adPEASCA] Using $($Server) as target Domain Controller"
+    }
+
+    if ($PSBoundParameters['TLS']) {
+        $SearcherArguments['TLS'] = $True
+        Write-Verbose "[Get-adPEASCA] Using LDAPS over port 636"
+    }
     
-        # Starting to impersonate given credentials
-        if ($PSBoundParameters['Credential']) {
-            Write-Warning "[Get-adPEASCA] Using $($Cred.Username) for authentication"
-            $adPEAS_LogonToken = Invoke-UserImpersonation -Credential $Credential
-        }
+    # Starting to impersonate given credentials
+    if ($PSBoundParameters['Credential']) {
+        Write-Warning "[Get-adPEASCA] Using $($Cred.Username) for authentication"
+        $adPEAS_LogonToken = Invoke-UserImpersonation -Credential $Credential
+    }
     
-        <# +++++ Searching for Enterprise CA +++++ #>
-        Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Enterprise CA +++++"
-        Invoke-Logger -LogClass Info -LogValue "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+    <# +++++ Searching for Enterprise CA +++++ #>
+    Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Enterprise CA +++++"
+    Invoke-Logger -LogClass Info -LogValue "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
     
-        $adPEAS_Domain = get-domain @SearcherArguments
-        $adPEAS_CABasePath = "CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($adPEAS_Domain.Name).Replace(".",",DC="))
+    $adPEAS_Domain = get-domain @SearcherArguments
+    $adPEAS_CABasePath = "CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($adPEAS_Domain.Name).Replace(".",",DC="))
         
-        Write-Verbose "[Get-adPEASCA] Using $adPEAS_CABasePath to search for Enterprise CA Services"
-        $adPEAS_CAEnterpriseCA = Get-DomainObject @SearcherArguments -SearchBase ("CN=Enrollment Services," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=pKIEnrollmentService)"
-        $adPEAS_CANTAuthStore = Get-DomainObject @SearcherArguments -SearchBase ("CN=NTAuthCertificates," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=certificationAuthority)"
+    Write-Verbose "[Get-adPEASCA] Using $adPEAS_CABasePath to search for Enterprise CA Services"
+    $adPEAS_CAEnterpriseCA = Get-DomainObject @SearcherArguments -SearchBase ("CN=Enrollment Services," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=pKIEnrollmentService)"
+    $adPEAS_CANTAuthStore = Get-DomainObject @SearcherArguments -SearchBase ("CN=NTAuthCertificates," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=certificationAuthority)"
 
-        if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
-            foreach ($Object_Var in $adPEAS_CAEnterpriseCA) {
-                $Object = New-Object PSObject
-                $Object | Add-Member Noteproperty 'CA Name' $Object_Var.name
-                $Object | Add-Member Noteproperty 'CA dnshostname' $Object_Var.dnshostname
-                $Object | Add-Member Noteproperty 'CA IP Address' $($Object_Var.dnshostname | Resolve-IPAddress).IpAddress
-                $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var.whencreated
-                $Object | Add-Member Noteproperty 'DistinguishedName' $Object_Var.distinguishedName
-                $Object | Add-Member Noteproperty 'Templates' $(($Object_Var.certificatetemplates) -join "`n")
-                $Object | Add-Member Noteproperty 'NTAuthCertificates' $(if ($adPEAS_CANTAuthStore) {$true} else {$false})
-                Write-Output "Searching for Certificate Authority - Details for '$($Object_Var.cn)':"
-                $Object
-                $Object_Var = $Null
-                $Object = $null                
-            }
+    if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
+        foreach ($Object_Var in $adPEAS_CAEnterpriseCA) {
+            $Object = New-Object PSObject
+            $Object | Add-Member Noteproperty 'CA Name' $Object_Var.name
+            $Object | Add-Member Noteproperty 'CA dnshostname' $Object_Var.dnshostname
+            $Object | Add-Member Noteproperty 'CA IP Address' $($Object_Var.dnshostname | Resolve-IPAddress).IpAddress
+            $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var.whencreated
+            $Object | Add-Member Noteproperty 'DistinguishedName' $Object_Var.distinguishedName
+            $Object | Add-Member Noteproperty 'Templates' $(($Object_Var.certificatetemplates) -join "`n")
+            $Object | Add-Member Noteproperty 'NTAuthCertificates' $(if ($adPEAS_CANTAuthStore) {$true} else {$false})
+            Write-Output "Searching for Certificate Authority - Details for '$($Object_Var.cn)':"
+            $Object
+            $Object_Var = $Null
+            $Object = $null                
         }
+    }
 
-        <# +++++ Searching for Vulnerable Certificate Templates +++++ #>
-        Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Vulnerable Certificate Templates +++++"
+    <# +++++ Searching for Vulnerable Certificate Templates +++++ #>
+    Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Vulnerable Certificate Templates +++++"
 
-        if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
-            Invoke-Logger -LogClass Hint -LogValue "adPEAS does basic enumeration only, consider using https://github.com/GhostPack/PSPKIAudit"
-            foreach ($Object_CA in $adPEAS_CAEnterpriseCA) {
-                foreach ($Object_Template in $Object_CA.certificatetemplates) {
-                    Invoke-Logger -LogClass Info -LogValue "+++++ Checking Template '$Object_Template' +++++"
-                    $Object_Var_Template = $Object_Template | Get-ADCSTemplate @SearcherArguments -ResolveFlags
-                    $Object_Var_TemplateACL = $Object_Template | Get-ADCSTemplateACL @SearcherArguments -Filter AdminACEs
+    if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
+        Invoke-Logger -LogClass Info -LogValue "adPEAS does basic enumeration only, consider using https://github.com/GhostPack/PSPKIAudit"
+        foreach ($Object_CA in $adPEAS_CAEnterpriseCA) {
+            foreach ($Object_Template in $Object_CA.certificatetemplates) {
+                Invoke-Logger -LogClass Info -LogValue "+++++ Checking Template '$Object_Template' +++++"
+                $Object_Var_Template = $Object_Template | Get-ADCSTemplate @SearcherArguments -ResolveFlags
+                $Object_Var_TemplateACL = $Object_Template | Get-ADCSTemplateACL @SearcherArguments -Filter AdminACEs
 
-                    foreach ($TemplateACL in $Object_Var_TemplateACL) {
-                        if ($TemplateACL.ActiveDirectoryRights -and $TemplateACL.ActiveDirectoryRights -like '*WriteDacl*' -or $TemplateACL.ActiveDirectoryRights -like '*WriteOwner*' -or $TemplateACL.ActiveDirectoryRights -like '*GenericAll*') {
-                            $Object = New-Object PSObject
-                            $Object | Add-Member Noteproperty 'Template Name' $Object_Var_Template.name
-                            $Object | Add-Member Noteproperty 'Template distinguishedname' $Object_Var_Template.distinguishedname
-                            $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var_Template.whencreated
-                            $Object | Add-Member Noteproperty 'CertificateNameFlag' $(($Object_Var_Template.CertificateNameFlag) -join "`n")
-                            $Object | Add-Member Noteproperty 'EnrollmentFlag' $(($Object_Var_Template.EnrollmentFlag) -join "`n")
-                            if ($Object_Var_Template.PrivateKeyFlag -and $Object_Var_Template.PrivateKeyFlag -eq 'CT_FLAG_EXPORTABLE_KEY') {
-                                $Object | Add-Member Noteproperty 'Private Key Exportable' $true
-                            }
-                            $Object | Add-Member Noteproperty $TemplateACL.identity $TemplateACL.ActiveDirectoryRights
-                            Invoke-Logger -LogClass Finding -LogValue "'$($TemplateACL.identity)' have '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
-                            Write-Output "Checking Certificate Template - Details for Template '$($Object_Template)':"
-                            $object
+                foreach ($TemplateACL in $Object_Var_TemplateACL) {
+                    if ($TemplateACL.ActiveDirectoryRights -and $TemplateACL.ActiveDirectoryRights -like '*WriteDacl*' -or $TemplateACL.ActiveDirectoryRights -like '*WriteOwner*' -or $TemplateACL.ActiveDirectoryRights -like '*GenericAll*') {
+                        $Object = New-Object PSObject
+                        $Object | Add-Member Noteproperty 'Template Name' $Object_Var_Template.name
+                        $Object | Add-Member Noteproperty 'Template distinguishedname' $Object_Var_Template.distinguishedname
+                        $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var_Template.whencreated
+                        $Object | Add-Member Noteproperty 'CertificateNameFlag' $(($Object_Var_Template.CertificateNameFlag) -join "`n")
+                        $Object | Add-Member Noteproperty 'EnrollmentFlag' $(($Object_Var_Template.EnrollmentFlag) -join "`n")
+                        if ($Object_Var_Template.PrivateKeyFlag -and $Object_Var_Template.PrivateKeyFlag -eq 'CT_FLAG_EXPORTABLE_KEY') {
+                            $Object | Add-Member Noteproperty 'Private Key Exportable' $true
                         }
+                        $Object | Add-Member Noteproperty $TemplateACL.identity $TemplateACL.ActiveDirectoryRights
+                        Invoke-Logger -LogClass Finding -LogValue "'$($TemplateACL.identity)' have '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
+                        Write-Output "Checking Certificate Template - Details for Template '$($Object_Template)':"
+                        $object
                     }
-                    $Object = $null
                 }
-                $Object_Var_Template = $null
-                $Object_Var_TemplateACL = $null
+                $Object = $null
             }
+            $Object_Var_Template = $null
+            $Object_Var_TemplateACL = $null
         }
+    }
 
-        # Stop to impersonate with other credentials
-        if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
+    # Stop to impersonate with other credentials
+    if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
 
 Function Get-adPEASCreds {
@@ -810,13 +907,16 @@ Required Dependencies: None
 Optional Dependencies: None
 
 .DESCRIPTION
-Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, LAPS, Group Policies, Netlogon Scripts.
+Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, LAPS, gMSA, Group Policies, Netlogon Scripts.
 
 .PARAMETER Domain
 Specifies the domain to use for the query, defaults to the current domain.
 
 .PARAMETER Server
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER Credential
 A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
@@ -851,6 +951,10 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         [ValidateNotNullOrEmpty()]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
 
         [Parameter(Mandatory = $false,HelpMessage='Enter a PSCredentials object like $Cred = New-Object System.Management.Automation.PSCredential("contoso\johndoe", $SecPassword)')]
         [ValidateNotNullOrEmpty()]
@@ -910,6 +1014,10 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     if ($PSBoundParameters['Server']) {
         $SearcherArguments['Server'] = $Server
         Write-Verbose "[Get-adPEASCreds] Using $($Server) as target Domain Controller"
+    }
+    if ($PSBoundParameters['TLS']) {
+        $SearcherArguments['TLS'] = $True
+        Write-Verbose "[Get-adPEASCreds] Using LDAPS over port 636"
     }
 
     # Starting to impersonate given credentials
@@ -1116,6 +1224,63 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $Object_Var = $null
     $Object = $null
 
+    <# +++++ Searching for Group Managed Service Accounts (gMSA) +++++ #>
+    invoke-logger -logclass Info -logvalue "+++++ Searching for Group Managed Service Accounts (gMSA) +++++"
+    invoke-logger -logclass Info -logvalue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges"
+
+    $adPEAS_gMSA = Get-DomainObject @SearcherArguments -LDAPFilter '(&(ObjectClass=msDS-GroupManagedServiceAccount))'
+
+    foreach ($Object_Var in $adPEAS_gMSA) {
+        if ($Object_Var.sAMAccountName -and $Object_Var.'useraccountcontrol' -like '*ACCOUNTDISABLE*') {
+            Write-Verbose "[Get-adPEASCreds] Account $($Object_Var.distinguishedName) is a gMSA but is disabled"
+        }
+        elseif ($Object_Var.sAMAccountName -and $Object_Var.sAMAccountName -ne '') {
+            $Object = New-Object PSObject
+            $Object | Add-Member Noteproperty 'sAMAccountName' $Object_Var.samaccountname
+            $Object | Add-Member Noteproperty 'distinguishedName' $Object_Var.distinguishedName
+            $Object | Add-Member Noteproperty 'description' $Object_Var.description
+            $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
+            $Object | Add-Member Noteproperty 'userAccountControl' $Object_Var.useraccountcontrol
+            $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
+            $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
+            $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
+            
+            # read parameter groupmsamembership, build descriptor, request groups and users and convert SID to name
+            try {
+                $Object_VargMSAMembers = (New-Object Security.AccessControl.RawSecurityDescriptor($object_var.'msds-groupmsamembership', 0)).DiscretionaryAcl.SecurityIdentifier.Value
+                $Object_VargMSAMemberArray = @()
+
+                foreach ($Object_VargMSAMember in $Object_VargMSAMembers){
+                    # check if the member is a group and if yes, request group members recursive
+                    if ($(Get-DomainObject @SearcherArguments -Identity $Object_VargMSAMember).samaccounttype -eq 'GROUP_OBJECT') {
+                        Write-verbose "[Get-adPEASCreds] $Object_VargMSAMember is a group"
+                        $Object_VargMSAMemberArray += $(Get-DomainGroupMember @SearcherArguments -Identity $Object_VargMSAMember -Recurse).MemberSID
+                    }
+                    else {
+                        $Object_VargMSAMemberArray += $Object_VargMSAMember
+                    }
+                }
+
+                $Object | Add-Member Noteproperty 'PrincipalsAllowedToRetrieveManagedPassword' (($Object_VargMSAMemberArray  | ConvertFrom-SID @SearcherArguments) -join "`n")
+            }
+            catch {}
+
+            Invoke-Logger -LogClass Hint -LogValue "Account $(($Object_Var).samaccountname) is a Group Managed Service Account"
+            if ($Object_Var.admincount -and $Object_Var.admincount -eq '1') {
+                Invoke-Logger -LogClass Hint -LogValue "The account '$(($Object_Var).samaccountname)' is or was member of a high privileged protected group"
+            }
+            Write-Output "Searching for gMSA - Details for Account '$(($Object_Var).samaccountname)':"
+            $Object
+        }
+        else {
+            Write-verbose "[Get-adPEASCreds] No Results or Results have been suppressed"
+        }
+    }
+    $Object_VargMSAMembers = $null
+    $Object_VargMSAMemberArray = $null
+    $Object_Var = $null
+    $Object = $null
+
     <# +++++ Searching for Crypted Passwords in SYSVOL Group Policy Objects +++++ #>
     Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Crypted Passwords in SYSVOL Group Policy Objects +++++"
     Invoke-Logger -LogClass Info -LogValue "https://www.andreafortuna.org/2019/02/13/abusing-group-policy-preference-files-for-password-discovery/"
@@ -1184,6 +1349,9 @@ Specifies the domain to use for the query, defaults to the current domain.
 .PARAMETER Server
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER Credential
 A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
 
@@ -1217,6 +1385,10 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         [ValidateNotNullOrEmpty()]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
 
         [Parameter(Mandatory = $false,HelpMessage='Enter a PSCredentials object like $Cred = New-Object System.Management.Automation.PSCredential("contoso\johndoe", $SecPassword)')]
         [ValidateNotNullOrEmpty()]
@@ -1276,6 +1448,11 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     if ($PSBoundParameters['Server']) {
         $SearcherArguments['Server'] = $Server
         Write-Verbose "[Get-adPEASDelegation] Using $($Server) as target Domain Controller"
+    }
+
+    if ($PSBoundParameters['TLS']) {
+        $SearcherArguments['TLS'] = $True
+        Write-Verbose "[Get-adPEASDelegation] Using LDAPS over port 636"
     }
 
     # Starting to impersonate given credentials
@@ -1505,6 +1682,9 @@ Specifies the domain to use for the query, defaults to the current domain.
 .PARAMETER Server
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER Credential
 A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
 
@@ -1538,6 +1718,10 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         [ValidateNotNullOrEmpty()]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
 
         [Parameter(Mandatory = $false,HelpMessage='Enter a PSCredentials object like $Cred = New-Object System.Management.Automation.PSCredential("contoso\johndoe", $SecPassword)')]
         [ValidateNotNullOrEmpty()]
@@ -1598,6 +1782,11 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     if ($PSBoundParameters['Server']) {
         $SearcherArguments['Server'] = $Server
         Write-Verbose "[Get-adPEASAccounts] Using $($Server) as target Domain Controller"
+    }
+
+    if ($PSBoundParameters['TLS']) {
+        $SearcherArguments['TLS'] = $True
+        Write-Verbose "[Get-adPEASAccounts] Using LDAPS over port 636"
     }
 
     # Starting to impersonate given credentials
@@ -1666,15 +1855,15 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
 
             # check if a user belongs to the local domain, root domain or foreign domain
             if ($Object_VarDom -eq $adPEAS_Dom) {
-                $Object_VarUser += Get-DomainUser @SearcherArguments -Identity $Object_Var.MemberName
+                $Object_VarUser += Get-DomainObject @SearcherArguments -Identity $Object_Var.MemberName
             }
             elseif ($Object_VarDom -eq $adPEAS_RootDom) {
                 Write-Verbose "[Invoke-adPEASAccounts] Account '$($Object_Var.MemberName)' belongs to Root Domain $($Object_VarDom)"
-                $Object_VarUser += Get-DomainUser @RootDomSearcherArguments -Identity $Object_Var.MemberName
+                $Object_VarUser += Get-DomainObject @RootDomSearcherArguments -Identity $Object_Var.MemberName
             }
             else {
                 Write-Verbose "[Invoke-adPEASAccounts] Account '$($Object_Var.MemberName)' belongs to foreign Domain $($Object_VarDom)"
-                $Object_VarUser += Get-DomainUser -Domain $Object_VarDom -Identity $Object_Var.MemberName
+                $Object_VarUser += Get-DomainObject -Domain $Object_VarDom -Identity $Object_Var.MemberName
             }
 
                         
@@ -1691,7 +1880,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                     $Object | Add-Member Noteproperty 'MemberDomain' $Object_Var.MemberDomain
                     $Object
                 }
-                elseif ($Object_Var.MemberObjectClass -and $Object_Var.MemberObjectClass -eq 'user') { # detected a user as member
+                elseif ($Object_Var.MemberObjectClass -and $Object_Var.MemberObjectClass -eq 'user' -or $Object_Var.MemberObjectClass -eq 'computer') { # detected a user or computer as member
                     $Object = New-Object PSObject
                     $Object | Add-Member Noteproperty 'sAMAccountName' $Object_Var.MemberName
                     $Object | Add-Member Noteproperty 'userPrincipalName' $Object_VarUser.userPrincipalName
@@ -1786,6 +1975,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     # Stop to impersonate with other credentials
     if ($adPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $adPEAS_LogonToken}
 }
+
 Function Get-adPEASComputer {
 <#
 .SYNOPSIS
@@ -1802,8 +1992,20 @@ Specifies the domain to use for the query, defaults to the current domain.
 .PARAMETER Server
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER Credential
 A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
+
+.PARAMETER Vulns
+Checks for known vulnerabilities of Windows systems gathered in this module.
+This module checks for the following CVE:
+- CVE-2020-1472 (ZeroLogon)
+- CVE-2019-0708 (BlueKeep)
+- CVE-2017-0144 (aka MS17-010, EternalBlue)
+- and various critical Exchange vulnerabilities like
+  CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482, CVE-2021-28483, CVE-2021-31196 and CVE-2021-34473.
 
 .EXAMPLE
 Get-adPEASComputer
@@ -1822,6 +2024,10 @@ $SecPassword = ConvertTo-SecureString 'Passw0rd1!' -AsPlainText -Force
 $Cred = New-Object System.Management.Automation.PSCredential('contoso\johndoe', $SecPassword)
 Get-adPEASComputer -Domain 'contoso.com' -Cred $Cred
 Start Enumerating using the domain 'contoso.com' and use the passed PSCredential object during enumeration.
+
+.EXAMPLE
+Invoke-adPEASComputer -Domain contoso.com -Vulns
+Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of gathered Domain Controllers, Exchange and MSSQL Servers.
 #>
     [CmdletBinding()]
     Param (
@@ -1836,11 +2042,16 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [Parameter(Mandatory = $false,HelpMessage='Enter a PSCredentials object like $Cred = New-Object System.Management.Automation.PSCredential("contoso\johndoe", $SecPassword)')]
         [ValidateNotNullOrEmpty()]
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty
+
     )
 
     <# +++++ Starting Computer Enumeration +++++ #>
@@ -1896,6 +2107,11 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
         Write-Verbose "[Get-adPEASComputer] Using $($Server) as target Domain Controller"
     }
 
+    if ($PSBoundParameters['TLS']) {
+        $SearcherArguments['TLS'] = $True
+        Write-Verbose "[Get-adPEASComputer] Using LDAPS over port 636"
+    }
+
     # Starting to impersonate given credentials
     if ($PSBoundParameters['Credential']) {
         Write-Warning "[Get-adPEASComputer] Using $($Cred.Username) for authentication"
@@ -1930,6 +2146,10 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 }
                 Write-Output "Searching for Domain Controllers - Details for Computer '$(($Object_dc).samaccountname)':"
                 $Object
+
+                if ($PSBoundParameters['Vulns']) {
+                    Invoke-VulnsCheck -Identiy $Object_dc.dNSHostName -Scope ZeroLogon,EternalBlue,BlueKeep
+                }
             }
         else {
             Write-verbose "[Get-adPEASComputer] No Results or Results have been suppressed"
@@ -1969,8 +2189,130 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                     $object | Add-Member Noteproperty 'ms-mcs-AdmPwdExpirationTime [Password Expiration]' $([datetime]::FromFileTime([convert]::ToInt64($Object_Var.'ms-MCS-AdmPwdExpirationTime',10)))
                 }
             }
+            
+            Write-verbose "[Get-adPEASComputer] Checking for Exchange vulnerabilities have been activated"
+                
+            # Searching for Exchange version and vulns
+            Write-verbose "[Get-adPEASComputer] Checking $($object_VarExSrv.sAMAccountName) for known Exchange vulnerabilities"
+            $adPeas_ExchVulns = Invoke-CheckExchange -Identity $object_VarExSrv.dNSHostName
+
+            if ($adPeas_ExchVulns.ExchangeBuild -and $adPeas_ExchVulns.ExchangeBuild -ne '') {
+                    $Object | Add-Member Noteproperty 'Exchange Build Number' $adPeas_ExchVulns.ExchangeBuild
+
+                    if ($adPeas_ExchVulns.ExchangeVersion -and $adPeas_ExchVulns.ExchangeVersion -ne '') {
+                        $Object | Add-Member Noteproperty 'Exchange Version' $adPeas_ExchVulns.ExchangeVersion
+                        }
+                
+                    if ($adPeas_ExchVulns.Vulnerable -and $adPeas_ExchVulns.Vulnerable -eq $true) {
+                        if ($adPeas_ExchVulns.'CVE-2018-8581') {
+                            Invoke-Logger -LogClass Finding -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' is vulnerable to CVE-2018-8581"
+                            Invoke-Logger -LogClass Info -LogValue "https://dirkjanm.io/abusing-exchange-one-api-call-away-from-domain-admin/"
+                            $Object | Add-Member Noteproperty 'CVE-2018-8581' $true
+                        }
+
+                        if ($adPeas_ExchVulns.'CVE-2020-0688') {
+                            if ($adPeas_ExchVulns.'CVE-2020-0688' -like '*hotfix') {
+                                Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2020-0688"
+                                $Object | Add-Member Noteproperty 'CVE-2020-0688' 'Potentially Vulnerable'
+                            }
+                            else {
+                                Invoke-Logger -LogClass Finding -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' is vulnerable to CVE-2020-0688"
+                                $Object | Add-Member Noteproperty 'CVE-2020-0688' $true
+                            }
+                            Invoke-Logger -LogClass Info -LogValue "https://www.thezdi.com/blog/2020/2/24/cve-2020-0688-remote-code-execution-on-microsoft-exchange-server-through-fixed-cryptographic-keys"
+                            
+                        }
+
+                        if ($adPeas_ExchVulns.'CVE-2020-17141') {
+                            if ($adPeas_ExchVulns.'C2020-17141' -like '*hotfix'){
+                                Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2020-17141 and CVE-2020-17143"
+                                $Object | Add-Member Noteproperty 'CVE-2020-17141' 'Potentially Vulnerable'
+                                $Object | Add-Member Noteproperty 'CVE-2020-17143' 'Potentially Vulnerable'
+                            }
+                            else {
+                                Invoke-Logger -LogClass Finding -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' is vulnerable to CVE-2020-17141 and CVE-2020-17143"
+                                $Object | Add-Member Noteproperty 'CVE-2020-17141' $true
+                                $Object | Add-Member Noteproperty 'CVE-2020-17143' $true
+                            }
+                            Invoke-Logger -LogClass Info -LogValue "https://srcincite.io/pocs/cve-2020-17141.py.txt"
+                            Invoke-Logger -LogClass Info -LogValue "https://srcincite.io/pocs/cve-2020-17143.py.txt"
+                        }
+
+                        if ($adPeas_ExchVulns.'CVE-2021-28482') {
+                            if ($adPeas_ExchVulns.'CVE-2021-28482' -like '*hotfix'){
+                                Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483"
+                                $Object | Add-Member Noteproperty 'CVE-2021-28480' 'Potentially Vulnerable'
+                                $Object | Add-Member Noteproperty 'CVE-2021-28481' 'Potentially Vulnerable'
+                                $Object | Add-Member Noteproperty 'CVE-2021-28482' 'Potentially Vulnerable'
+                                $Object | Add-Member Noteproperty 'CVE-2021-28483' 'Potentially Vulnerable'
+                            }
+                            else {
+                                Invoke-Logger -LogClass Finding -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' is vulnerable to CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483"
+                                $Object | Add-Member Noteproperty 'CVE-2021-28480' $true
+                                $Object | Add-Member Noteproperty 'CVE-2021-28481' $true
+                                $Object | Add-Member Noteproperty 'CVE-2021-28482' $true
+                                $Object | Add-Member Noteproperty 'CVE-2021-28483' $true
+                            }
+                            Invoke-Logger -LogClass Info -LogValue "https://gist.github.com/testanull/9ebbd6830f7a501e35e67f2fcaa57bda"
+
+                        }
+                        
+                        if ($adPeas_ExchVulns.'CVE-2021-26855') {
+                            if ($adPeas_ExchVulns.'CVE-2021-26855' -like '*hotfix'){
+                                Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065"
+                                $Object | Add-Member Noteproperty 'CVE-2021-26855' 'Potentially Vulnerable'
+                                $Object | Add-Member Noteproperty 'CVE-2021-26857' 'Potentially Vulnerable'
+                                $Object | Add-Member Noteproperty 'CVE-2021-26858' 'Potentially Vulnerable'
+                                $Object | Add-Member Noteproperty 'CVE-2021-27065' 'Potentially Vulnerable'
+                            }
+                            else {
+                                Invoke-Logger -LogClass Finding -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' is vulnerable to CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065"
+                                $Object | Add-Member Noteproperty 'CVE-2021-26855' $true
+                                $Object | Add-Member Noteproperty 'CVE-2021-26857' $true
+                                $Object | Add-Member Noteproperty 'CVE-2021-26858' $true
+                                $Object | Add-Member Noteproperty 'CVE-2021-27065' $true
+                            }
+                            Invoke-Logger -LogClass Info -LogValue "ProxyLogon Vulnerability"
+                            Invoke-Logger -LogClass Info -LogValue "https://www.microsoft.com/security/blog/2021/03/02/hafnium-targeting-exchange-servers"
+
+                        }
+
+                        if ($adPeas_ExchVulns.'CVE-2021-31196') {
+                            if ($adPeas_ExchVulns.'CVE-2021-31196' -like '*hotfix'){
+                                Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2021-31196"
+                                $Object | Add-Member Noteproperty 'CVE-2021-31196' 'Potentially Vulnerable'
+                            }
+                            else {
+                                Invoke-Logger -LogClass Finding -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' is vulnerable to CVE-2021-31196"
+                                $Object | Add-Member Noteproperty 'CVE-2021-31196' $true
+                            }
+                            Invoke-Logger -LogClass Info -LogValue "ProxyOracle Vulnerability"
+                            Invoke-Logger -LogClass Info -LogValue "https://blog.orange.tw/2021/08/proxyoracle-a-new-attack-surface-on-ms-exchange-part-2.html"
+
+                        }
+
+                        if ($adPeas_ExchVulns.'CVE-2021-34473') {
+                            if ($adPeas_ExchVulns.'CVE-2021-34473' -like '*hotfix'){
+                                Invoke-Logger -LogClass Hint -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' could be vulnerable to CVE-2021-34473"
+                                $Object | Add-Member Noteproperty 'CVE-2021-34473' 'Potentially Vulnerable'
+                            }
+                            else {
+                                Invoke-Logger -LogClass Finding -LogValue "Exchange server '$($object_VarExSrv.sAMAccountName)' is vulnerable to CVE-2021-34473"
+                                $Object | Add-Member Noteproperty 'CVE-2021-34473' $true
+                            }
+                            Invoke-Logger -LogClass Info -LogValue "ProxyShell Vulnerability"
+                            Invoke-Logger -LogClass Info -LogValue "https://www.zerodayinitiative.com/blog/2021/8/17/from-pwn2own-2021-a-new-attack-surface-on-microsoft-exchange-proxyshell"
+
+                        }
+
+                    else {
+                        $Object | Add-Member Noteproperty 'Vulnerabilities Detected' $False
+                    }
+                    }
+                }
             Write-Output "Searching for Exchange Servers - Details for Exchange Server '$($object_VarExSrv.sAMAccountName)':"
             $Object
+
         }
         else {
             Write-verbose "[Get-adPEASComputer] No Results or Results have been suppressed"
@@ -2013,7 +2355,12 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 }
                 Write-Output "Searching for Enterprise CA servers - Details for Computer '$(($Object_ca).samaccountname)':"
                 $Object
+
+                if ($PSBoundParameters['Vulns']) {
+                    Invoke-VulnsCheck -Identiy $Object_ca.dNSHostName -Scope EternalBlue,BlueKeep
+                }
             }
+        
         else {
             Write-verbose "[Get-adPEASComputer] No Results or Results have been suppressed"
         }
@@ -2074,7 +2421,6 @@ Prints the text "ASREPRoast Hash" in color Red (LogClass Finding).
         write-host -ForegroundColor Red "[!] $logValue"
     }
 }
-
 
 ########################################################
 #
@@ -2148,8 +2494,7 @@ $Module = New-InMemoryModule -ModuleName Win32
 }
 
 
-# A helper function used to reduce typing while defining function
-# prototypes for Add-Win32Type.
+# A helper function used to reduce typing while defining function prototypes for Add-Win32Type.
 function func {
     Param (
         [Parameter(Position = 0, Mandatory = $True)]
@@ -2551,8 +2896,7 @@ New-Enum. :P
 }
 
 
-# A helper function used to reduce typing while defining struct
-# fields.
+# A helper function used to reduce typing while defining struct fields.
 function field {
     Param (
         [Parameter(Position = 0, Mandatory=$True)]
@@ -3546,6 +3890,10 @@ Specifies the domain to use for the translation, defaults to the current domain.
 
 Specifies an Active Directory server (domain controller) to bind to for the translation.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER Credential
 
 Specifies an alternate credential to use for the translation.
@@ -3595,6 +3943,10 @@ A string representing the SID of the translated name.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty
@@ -3605,6 +3957,7 @@ A string representing the SID of the translated name.
         if ($PSBoundParameters['Domain']) { $DomainSearcherArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Server']) { $DomainSearcherArguments['Server'] = $Server }
         if ($PSBoundParameters['Credential']) { $DomainSearcherArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['TLS']) { $DomainSearcherArguments['TLS'] = $True }
     }
 
     PROCESS {
@@ -3673,6 +4026,10 @@ Specifies the domain to use for the translation, defaults to the current domain.
 
 Specifies an Active Directory server (domain controller) to bind to for the translation.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER Credential
 
 Specifies an alternate credential to use for the translation.
@@ -3730,6 +4087,10 @@ The converted DOMAIN\username.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty
@@ -3740,6 +4101,7 @@ The converted DOMAIN\username.
         if ($PSBoundParameters['Domain']) { $ADNameArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Server']) { $ADNameArguments['Server'] = $Server }
         if ($PSBoundParameters['Credential']) { $ADNameArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['TLS']) { $ADNameArguments['TLS'] = $True }
     }
 
     PROCESS {
@@ -3877,6 +4239,10 @@ Specifies the domain to use for the translation, defaults to the current domain.
 
 Specifies an Active Directory server (domain controller) to bind to for the translation.
 
+.PARAMETER TLS
+
+Switch. Placeholder if function is called with pre-defined searcher arguments.
+
 .PARAMETER Credential
 
 Specifies an alternate credential to use for the translation.
@@ -3947,6 +4313,10 @@ https://gallery.technet.microsoft.com/scriptcenter/Translating-Active-5c80dd67
         [Alias('DomainController')]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
@@ -4902,6 +5272,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -4984,6 +5358,10 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -5018,6 +5396,7 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
         if ($PSBoundParameters['LDAPFilter']) { $UserSearcherArguments['LDAPFilter'] = $LDAPFilter }
         if ($PSBoundParameters['SearchBase']) { $UserSearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $UserSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $UserSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $UserSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $UserSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $UserSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -5391,6 +5770,10 @@ Specifies a prefix for the LDAP search string (i.e. "CN=Sites,CN=Configuration")
 
 Specifies an Active Directory server (domain controller) to bind to for the search.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -5476,6 +5859,10 @@ System.DirectoryServices.DirectorySearcher
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -5542,6 +5929,11 @@ System.DirectoryServices.DirectorySearcher
 
         if ($BindServer -and ($BindServer.Trim() -ne '')) {
             $SearchString += $BindServer
+
+            if ($PSBoundParameters['TLS']) {
+                $SearchString += ':636'
+            }
+
             if ($TargetDomain) {
                 $SearchString += '/'
             }
@@ -5818,6 +6210,10 @@ The domain to query for zones, defaults to the current domain.
 
 Specifies an Active Directory server (domain controller) to bind to for the search.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER Properties
 
 Specifies the properties of the output object to retrieve from the server.
@@ -5872,6 +6268,10 @@ Outputs custom PSObjects with detailed information about the DNS zone.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateNotNullOrEmpty()]
         [String[]]
         $Properties,
@@ -5899,6 +6299,7 @@ Outputs custom PSObjects with detailed information about the DNS zone.
         }
         if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -5981,6 +6382,10 @@ The domain to query for zones, defaults to the current domain.
 
 Specifies an Active Directory server (domain controller) to bind to for the search.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER Properties
 
 Specifies the properties of the output object to retrieve from the server.
@@ -6045,6 +6450,10 @@ Outputs custom PSObjects with detailed information about the DNS record entry.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateNotNullOrEmpty()]
         [String[]]
         $Properties = 'name,distinguishedname,dnsrecord,whencreated,whenchanged',
@@ -6073,6 +6482,7 @@ Outputs custom PSObjects with detailed information about the DNS record entry.
         }
         if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -6180,6 +6590,10 @@ http://social.technet.microsoft.com/Forums/scriptcenter/en-US/0c5b3f83-e528-4d49
         [String]
         $Server, # Dummy value to cover predefined SearcherArguments
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS, # Dummy value to cover predefined SearcherArguments
+
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty
@@ -6253,6 +6667,10 @@ The domain to query for domain controllers, defaults to the current domain.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER LDAP
 
 Switch. Use LDAP queries to determine the domain controllers instead of built in .NET methods.
@@ -6315,6 +6733,10 @@ If -LDAP isn't specified.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [Switch]
         $LDAP,
 
@@ -6330,6 +6752,7 @@ If -LDAP isn't specified.
         $Arguments = @{}
         if ($PSBoundParameters['Domain']) { $Arguments['Domain'] = $Domain }
         if ($PSBoundParameters['Credential']) { $Arguments['Credential'] = $Credential }
+        if ($PSBoundParameters['TLS']) { $Arguments['TLS'] = $True }
 
 
         if ($PSBoundParameters['NoLDAP']) {
@@ -6766,6 +7189,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -6849,6 +7276,10 @@ Custom PSObject with translated object property outliers.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -6881,6 +7312,7 @@ Custom PSObject with translated object property outliers.
         if ($PSBoundParameters['LDAPFilter']) { $SearcherArguments['LDAPFilter'] = $LDAPFilter }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -7039,6 +7471,10 @@ Useful for OU queries.
 .PARAMETER Server
 
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER SearchScope
 
@@ -7205,6 +7641,10 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -7250,6 +7690,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -7950,6 +8391,10 @@ Specifies the domain to use for the query, defaults to the current domain.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER ResultPageSize
 
 Specifies the PageSize to set for the LDAP searcher object.
@@ -7987,6 +8432,10 @@ http://blogs.technet.com/b/ashleymcglone/archive/2013/03/25/active-directory-ou-
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateRange(1, 10000)]
         [Int]
         $ResultPageSize = 200,
@@ -8021,6 +8470,7 @@ http://blogs.technet.com/b/ashleymcglone/archive/2013/03/25/active-directory-ou-
     }
     if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
     if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+    if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
     if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
     if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
     if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
@@ -8153,6 +8603,10 @@ Useful for OU queries.
 .PARAMETER Server
 
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER SearchScope
 
@@ -8290,6 +8744,10 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -8335,6 +8793,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -8517,6 +8976,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -8637,6 +9100,10 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -8682,6 +9149,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -8843,6 +9311,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -8937,6 +9409,10 @@ https://blogs.technet.microsoft.com/pie/2014/08/25/metadata-1-when-did-the-deleg
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -8969,6 +9445,7 @@ https://blogs.technet.microsoft.com/pie/2014/08/25/metadata-1-when-did-the-deleg
         if ($PSBoundParameters['LDAPFilter']) { $SearcherArguments['LDAPFilter'] = $LDAPFilter }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -9056,6 +9533,10 @@ Useful for OU queries.
 .PARAMETER Server
 
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER SearchScope
 
@@ -9200,6 +9681,10 @@ https://blogs.technet.microsoft.com/pie/2014/08/25/metadata-2-the-ephemeral-admi
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -9232,6 +9717,7 @@ https://blogs.technet.microsoft.com/pie/2014/08/25/metadata-2-the-ephemeral-admi
         if ($PSBoundParameters['LDAPFilter']) { $SearcherArguments['LDAPFilter'] = $LDAPFilter }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -9328,6 +9814,10 @@ Useful for OU queries.
 .PARAMETER Server
 
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER SearchScope
 
@@ -9467,6 +9957,10 @@ scriptpath
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -9493,6 +9987,7 @@ scriptpath
         if ($PSBoundParameters['LDAPFilter']) { $SearcherArguments['LDAPFilter'] = $LDAPFilter }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -9685,6 +10180,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -9769,6 +10268,10 @@ System.Security.AccessControl.AuthorizationRule
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -9824,6 +10327,7 @@ System.Security.AccessControl.AuthorizationRule
             }
             if ($PSBoundParameters['PrincipalDomain']) { $PrincipalSearcherArguments['Domain'] = $PrincipalDomain }
             if ($PSBoundParameters['Server']) { $PrincipalSearcherArguments['Server'] = $Server }
+            if ($PSBoundParameters['TLS']) { $PrincipalSearcherArguments['TLS'] = $True }
             if ($PSBoundParameters['SearchScope']) { $PrincipalSearcherArguments['SearchScope'] = $SearchScope }
             if ($PSBoundParameters['ResultPageSize']) { $PrincipalSearcherArguments['ResultPageSize'] = $ResultPageSize }
             if ($PSBoundParameters['ServerTimeLimit']) { $PrincipalSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -9935,6 +10439,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -10005,6 +10513,10 @@ Set the owner of 'dfm' in the current domain to 'harmj0y' using the alternate cr
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -10031,6 +10543,7 @@ Set the owner of 'dfm' in the current domain to 'harmj0y' using the alternate cr
         if ($PSBoundParameters['LDAPFilter']) { $SearcherArguments['LDAPFilter'] = $LDAPFilter }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -10116,6 +10629,10 @@ Useful for OU queries.
 .PARAMETER Server
 
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER SearchScope
 
@@ -10209,6 +10726,10 @@ Custom PSObject with ACL entries.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -10243,6 +10764,7 @@ Custom PSObject with ACL entries.
         if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -10253,6 +10775,7 @@ Custom PSObject with ACL entries.
         $DomainGUIDMapArguments = @{}
         if ($PSBoundParameters['Domain']) { $DomainGUIDMapArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Server']) { $DomainGUIDMapArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $DomainGUIDMapArguments['TLS'] = $True }
         if ($PSBoundParameters['ResultPageSize']) { $DomainGUIDMapArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $DomainGUIDMapArguments['ServerTimeLimit'] = $ServerTimeLimit }
         if ($PSBoundParameters['Credential']) { $DomainGUIDMapArguments['Credential'] = $Credential }
@@ -10433,6 +10956,10 @@ Specifies the domain for the TargetIdentity to use for the principal, defaults t
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -10584,6 +11111,10 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -10620,6 +11151,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
         if ($PSBoundParameters['TargetLDAPFilter']) { $TargetSearcherArguments['LDAPFilter'] = $TargetLDAPFilter }
         if ($PSBoundParameters['TargetSearchBase']) { $TargetSearcherArguments['SearchBase'] = $TargetSearchBase }
         if ($PSBoundParameters['Server']) { $TargetSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $TargetSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $TargetSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $TargetSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $TargetSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -10632,6 +11164,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
         }
         if ($PSBoundParameters['PrincipalDomain']) { $PrincipalSearcherArguments['Domain'] = $PrincipalDomain }
         if ($PSBoundParameters['Server']) { $PrincipalSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $PrincipalSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $PrincipalSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $PrincipalSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $PrincipalSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -10758,6 +11291,10 @@ Specifies the domain for the TargetIdentity to use for the principal, defaults t
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -10865,6 +11402,10 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -10901,6 +11442,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
         if ($PSBoundParameters['TargetLDAPFilter']) { $TargetSearcherArguments['LDAPFilter'] = $TargetLDAPFilter }
         if ($PSBoundParameters['TargetSearchBase']) { $TargetSearcherArguments['SearchBase'] = $TargetSearchBase }
         if ($PSBoundParameters['Server']) { $TargetSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $TargetSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $TargetSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $TargetSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $TargetSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -10913,6 +11455,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
         }
         if ($PSBoundParameters['PrincipalDomain']) { $PrincipalSearcherArguments['Domain'] = $PrincipalDomain }
         if ($PSBoundParameters['Server']) { $PrincipalSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $PrincipalSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $PrincipalSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $PrincipalSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $PrincipalSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -11031,6 +11574,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -11109,6 +11656,10 @@ Custom PSObject with ACL entries.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -11136,6 +11687,7 @@ Custom PSObject with ACL entries.
         if ($PSBoundParameters['LDAPFilter']) { $ACLArguments['LDAPFilter'] = $LDAPFilter }
         if ($PSBoundParameters['SearchBase']) { $ACLArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $ACLArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ACLArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $ACLArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $ACLArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $ACLArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -11147,6 +11699,7 @@ Custom PSObject with ACL entries.
             'Raw' = $True
         }
         if ($PSBoundParameters['Server']) { $ObjectSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ObjectSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $ObjectSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $ObjectSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $ObjectSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -11155,6 +11708,7 @@ Custom PSObject with ACL entries.
 
         $ADNameArguments = @{}
         if ($PSBoundParameters['Server']) { $ADNameArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ADNameArguments['TLS'] = $True }
         if ($PSBoundParameters['Credential']) { $ADNameArguments['Credential'] = $Credential }
 
         # ongoing list of built-up SIDs
@@ -11305,6 +11859,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -11413,6 +11971,10 @@ Custom PSObject with translated OU property fields.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -11450,6 +12012,7 @@ Custom PSObject with translated OU property fields.
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -11579,6 +12142,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -11681,6 +12248,10 @@ Custom PSObject with translated site property fields.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -11720,6 +12291,7 @@ Custom PSObject with translated site property fields.
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -11849,6 +12421,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -11950,6 +12526,10 @@ Custom PSObject with translated subnet property fields.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -11989,6 +12569,7 @@ Custom PSObject with translated subnet property fields.
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -12103,6 +12684,10 @@ Specifies the domain to use for the query, defaults to the current domain.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER Credential
 
 A [Management.Automation.PSCredential] object of alternate credentials
@@ -12142,6 +12727,10 @@ A string representing the specified domain SID.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty
@@ -12152,6 +12741,7 @@ A string representing the specified domain SID.
     }
     if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
     if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+    if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
     if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
 
     $DCSID = Get-DomainComputer @SearcherArguments -FindOne | Select-Object -First 1 -ExpandProperty objectsid
@@ -12230,6 +12820,10 @@ Useful for OU queries.
 .PARAMETER Server
 
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER SearchScope
 
@@ -12404,6 +12998,10 @@ Custom PSObject with translated group property fields.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -12441,6 +13039,7 @@ Custom PSObject with translated group property fields.
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -12763,6 +13362,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -12817,6 +13420,10 @@ A custom PSObject describing the managed security group.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -12844,6 +13451,7 @@ A custom PSObject describing the managed security group.
         }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -12966,6 +13574,10 @@ Useful for OU queries.
 .PARAMETER Server
 
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER SearchScope
 
@@ -13163,6 +13775,10 @@ http://www.powershellmagazine.com/2013/05/23/pstip-retrieve-group-membership-of-
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -13195,6 +13811,7 @@ http://www.powershellmagazine.com/2013/05/23/pstip-retrieve-group-membership-of-
         if ($PSBoundParameters['LDAPFilter']) { $SearcherArguments['LDAPFilter'] = $LDAPFilter }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -13204,6 +13821,7 @@ http://www.powershellmagazine.com/2013/05/23/pstip-retrieve-group-membership-of-
         $ADNameArguments = @{}
         if ($PSBoundParameters['Domain']) { $ADNameArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Server']) { $ADNameArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ADNameArguments['TLS'] = $True }
         if ($PSBoundParameters['Credential']) { $ADNameArguments['Credential'] = $Credential }
     }
 
@@ -13510,6 +14128,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -13604,6 +14226,10 @@ https://blogs.technet.microsoft.com/pie/2014/08/25/metadata-2-the-ephemeral-admi
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -13637,6 +14263,7 @@ https://blogs.technet.microsoft.com/pie/2014/08/25/metadata-2-the-ephemeral-admi
         if ($PSBoundParameters['LDAPFilter']) { $SearcherArguments['LDAPFilter'] = $LDAPFilter }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -13966,6 +14593,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -14037,6 +14668,10 @@ One or more strings representing file server names.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -14076,6 +14711,7 @@ One or more strings representing file server names.
         }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -14130,6 +14766,10 @@ Useful for OU queries.
 .PARAMETER Server
 
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER SearchScope
 
@@ -14199,6 +14839,10 @@ A custom PSObject describing the distributed file systems.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -14227,6 +14871,7 @@ A custom PSObject describing the distributed file systems.
         $SearcherArguments = @{}
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -14893,6 +15538,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -15013,6 +15662,10 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -15050,6 +15703,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -15320,6 +15974,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -15408,6 +16066,10 @@ https://morgansimonsenblog.azurewebsites.net/tag/groups/
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -15434,6 +16096,7 @@ https://morgansimonsenblog.azurewebsites.net/tag/groups/
         if ($PSBoundParameters['LDAPFilter']) { $SearcherArguments['LDAPFilter'] = $Domain }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -15443,6 +16106,7 @@ https://morgansimonsenblog.azurewebsites.net/tag/groups/
         $ConvertArguments = @{}
         if ($PSBoundParameters['Domain']) { $ConvertArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Server']) { $ConvertArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ConvertArguments['TLS'] = $True }
         if ($PSBoundParameters['Credential']) { $ConvertArguments['Credential'] = $Credential }
 
         $SplitOption = [System.StringSplitOptions]::RemoveEmptyEntries
@@ -15648,6 +16312,10 @@ Specifies the domain to enumerate GPOs for, defaults to the current domain.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -15728,6 +16396,10 @@ http://www.harmj0y.net/blog/redteaming/where-my-admins-at-gpo-edition/
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -15752,6 +16424,7 @@ http://www.harmj0y.net/blog/redteaming/where-my-admins-at-gpo-edition/
         $CommonArguments = @{}
         if ($PSBoundParameters['Domain']) { $CommonArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Server']) { $CommonArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $CommonArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $CommonArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $CommonArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $CommonArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -15950,6 +16623,10 @@ Specifies the domain to enumerate GPOs for, defaults to the current domain.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -16026,6 +16703,10 @@ PowerView.GGPOComputerLocalGroupMember
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -16050,6 +16731,7 @@ PowerView.GGPOComputerLocalGroupMember
         $CommonArguments = @{}
         if ($PSBoundParameters['Domain']) { $CommonArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Server']) { $CommonArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $CommonArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $CommonArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $CommonArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $CommonArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -16154,6 +16836,10 @@ Otherwise queries for the particular GPO name or GUID.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER ServerTimeLimit
 
 Specifies the maximum amount of time the server spends searching. Default of 120 seconds.
@@ -16206,6 +16892,7 @@ Ouputs a hashtable representing the parsed GptTmpl.inf file.
     Param(
         [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
         [Alias('Source', 'Name')]
+        [ValidateSet("Domain", "DC", "DomainController", "All")]
         [String]
         $Policy = 'Domain',
 
@@ -16217,6 +16904,10 @@ Ouputs a hashtable representing the parsed GptTmpl.inf file.
         [Alias('DomainController')]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
 
         [ValidateRange(1, 10000)]
         [Int]
@@ -16230,11 +16921,13 @@ Ouputs a hashtable representing the parsed GptTmpl.inf file.
     BEGIN {
         $SearcherArguments = @{}
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
 
         $ConvertArguments = @{}
         if ($PSBoundParameters['Server']) { $ConvertArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ConvertArguments['TLS'] = $True }
         if ($PSBoundParameters['Credential']) { $ConvertArguments['Credential'] = $Credential }
     }
 
@@ -17262,7 +17955,11 @@ actively logged on user, with the ComputerName added.
         [Alias('HostName', 'dnshostname', 'name')]
         [ValidateNotNullOrEmpty()]
         [String[]]
-        $ComputerName = 'localhost'
+        $ComputerName = 'localhost',
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
     )
 
     BEGIN {
@@ -17956,7 +18653,7 @@ A PSCustomObject containing the ComputerName and last loggedon user.
                 $LastLoggedOn
             }
             catch {
-                Write-Warning "[Get-WMIRegLastLoggedOn] Error opening remote registry on $Computer. Remote registry likely not enabled."
+                Write-Warning "[Get-WMIRegLastLoggedOn] Error opening remote registry on $Computer. Either you don't have permissions or remote registry is not enabled."
             }
         }
     }
@@ -18826,6 +19523,10 @@ Switch. Check if the current user has local admin access to computers where targ
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under for computers, Base/OneLevel/Subtree (default of Subtree).
@@ -18993,6 +19694,10 @@ PowerView.UserLocation
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -19053,6 +19758,7 @@ PowerView.UserLocation
         if ($PSBoundParameters['ComputerServicePack']) { $ComputerSearcherArguments['ServicePack'] = $ServicePack }
         if ($PSBoundParameters['ComputerSiteName']) { $ComputerSearcherArguments['SiteName'] = $SiteName }
         if ($PSBoundParameters['Server']) { $ComputerSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ComputerSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $ComputerSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $ComputerSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $ComputerSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -19070,6 +19776,7 @@ PowerView.UserLocation
         if ($PSBoundParameters['UserAdminCount']) { $UserSearcherArguments['AdminCount'] = $UserAdminCount }
         if ($PSBoundParameters['UserAllowDelegation']) { $UserSearcherArguments['AllowDelegation'] = $UserAllowDelegation }
         if ($PSBoundParameters['Server']) { $UserSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $UserSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $UserSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $UserSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $UserSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -19094,6 +19801,7 @@ PowerView.UserLocation
                     if ($PSBoundParameters['ComputerDomain']) { $FileServerSearcherArguments['Domain'] = $ComputerDomain }
                     if ($PSBoundParameters['ComputerSearchBase']) { $FileServerSearcherArguments['SearchBase'] = $ComputerSearchBase }
                     if ($PSBoundParameters['Server']) { $FileServerSearcherArguments['Server'] = $Server }
+                    if ($PSBoundParameters['TLS']) { $FileServerSearcherArguments['TLS'] = $True }
                     if ($PSBoundParameters['SearchScope']) { $FileServerSearcherArguments['SearchScope'] = $SearchScope }
                     if ($PSBoundParameters['ResultPageSize']) { $FileServerSearcherArguments['ResultPageSize'] = $ResultPageSize }
                     if ($PSBoundParameters['ServerTimeLimit']) { $FileServerSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -19116,6 +19824,7 @@ PowerView.UserLocation
                     if ($PSBoundParameters['Domain']) { $DCSearcherArguments['Domain'] = $Domain }
                     if ($PSBoundParameters['ComputerDomain']) { $DCSearcherArguments['Domain'] = $ComputerDomain }
                     if ($PSBoundParameters['Server']) { $DCSearcherArguments['Server'] = $Server }
+                    if ($PSBoundParameters['TLS']) { $DCSearcherArguments['TLS'] = $True }
                     if ($PSBoundParameters['Credential']) { $DCSearcherArguments['Credential'] = $Credential }
                     $DomainControllers = Get-DomainController @DCSearcherArguments | Select-Object -ExpandProperty dnshostname
                     if ($DomainControllers -isnot [System.Array]) { $DomainControllers = @($DomainControllers) }
@@ -19156,6 +19865,7 @@ PowerView.UserLocation
             if ($PSBoundParameters['UserDomain']) { $GroupSearcherArguments['Domain'] = $UserDomain }
             if ($PSBoundParameters['UserSearchBase']) { $GroupSearcherArguments['SearchBase'] = $UserSearchBase }
             if ($PSBoundParameters['Server']) { $GroupSearcherArguments['Server'] = $Server }
+            if ($PSBoundParameters['TLS']) { $GroupSearcherArguments['TLS'] = $True }
             if ($PSBoundParameters['SearchScope']) { $GroupSearcherArguments['SearchScope'] = $SearchScope }
             if ($PSBoundParameters['ResultPageSize']) { $GroupSearcherArguments['ResultPageSize'] = $ResultPageSize }
             if ($PSBoundParameters['ServerTimeLimit']) { $GroupSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -19419,6 +20129,10 @@ Switch. Search for users users with '(adminCount=1)' (meaning are/were privilege
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under for computers, Base/OneLevel/Subtree (default of Subtree).
@@ -19575,6 +20289,10 @@ PowerView.UserProcess
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -19623,6 +20341,7 @@ PowerView.UserProcess
         if ($PSBoundParameters['ComputerServicePack']) { $ComputerSearcherArguments['ServicePack'] = $ServicePack }
         if ($PSBoundParameters['ComputerSiteName']) { $ComputerSearcherArguments['SiteName'] = $SiteName }
         if ($PSBoundParameters['Server']) { $ComputerSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ComputerSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $ComputerSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $ComputerSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $ComputerSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -19639,6 +20358,7 @@ PowerView.UserProcess
         if ($PSBoundParameters['UserSearchBase']) { $UserSearcherArguments['SearchBase'] = $UserSearchBase }
         if ($PSBoundParameters['UserAdminCount']) { $UserSearcherArguments['AdminCount'] = $UserAdminCount }
         if ($PSBoundParameters['Server']) { $UserSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $UserSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $UserSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $UserSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $UserSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -19680,6 +20400,7 @@ PowerView.UserProcess
             if ($PSBoundParameters['UserDomain']) { $GroupSearcherArguments['Domain'] = $UserDomain }
             if ($PSBoundParameters['UserSearchBase']) { $GroupSearcherArguments['SearchBase'] = $UserSearchBase }
             if ($PSBoundParameters['Server']) { $GroupSearcherArguments['Server'] = $Server }
+            if ($PSBoundParameters['TLS']) { $GroupSearcherArguments['TLS'] = $True }
             if ($PSBoundParameters['SearchScope']) { $GroupSearcherArguments['SearchScope'] = $SearchScope }
             if ($PSBoundParameters['ResultPageSize']) { $GroupSearcherArguments['ResultPageSize'] = $ResultPageSize }
             if ($PSBoundParameters['ServerTimeLimit']) { $GroupSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -19840,6 +20561,10 @@ Switch. Search for users users with '(adminCount=1)' (meaning are/were privilege
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under for computers, Base/OneLevel/Subtree (default of Subtree).
@@ -19988,6 +20713,10 @@ http://www.sixdub.net/2014/11/07/offensive-event-parsing-bringing-home-trophies/
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -20033,6 +20762,7 @@ http://www.sixdub.net/2014/11/07/offensive-event-parsing-bringing-home-trophies/
         if ($PSBoundParameters['UserSearchBase']) { $UserSearcherArguments['SearchBase'] = $UserSearchBase }
         if ($PSBoundParameters['UserAdminCount']) { $UserSearcherArguments['AdminCount'] = $UserAdminCount }
         if ($PSBoundParameters['Server']) { $UserSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $UserSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $UserSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $UserSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $UserSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -20052,6 +20782,7 @@ http://www.sixdub.net/2014/11/07/offensive-event-parsing-bringing-home-trophies/
             if ($PSBoundParameters['UserDomain']) { $GroupSearcherArguments['Domain'] = $UserDomain }
             if ($PSBoundParameters['UserSearchBase']) { $GroupSearcherArguments['SearchBase'] = $UserSearchBase }
             if ($PSBoundParameters['Server']) { $GroupSearcherArguments['Server'] = $Server }
+            if ($PSBoundParameters['TLS']) { $GroupSearcherArguments['TLS'] = $True }
             if ($PSBoundParameters['SearchScope']) { $GroupSearcherArguments['SearchScope'] = $SearchScope }
             if ($PSBoundParameters['ResultPageSize']) { $GroupSearcherArguments['ResultPageSize'] = $ResultPageSize }
             if ($PSBoundParameters['ServerTimeLimit']) { $GroupSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -20071,6 +20802,7 @@ http://www.sixdub.net/2014/11/07/offensive-event-parsing-bringing-home-trophies/
             }
             if ($PSBoundParameters['Domain']) { $DCSearcherArguments['Domain'] = $Domain }
             if ($PSBoundParameters['Server']) { $DCSearcherArguments['Server'] = $Server }
+            if ($PSBoundParameters['TLS']) { $DCSearcherArguments['TLS'] = $True }
             if ($PSBoundParameters['Credential']) { $DCSearcherArguments['Credential'] = $Credential }
             Write-Verbose "[Find-DomainUserEvent] Querying for domain controllers in domain: $Domain"
             $TargetComputers = Get-DomainController @DCSearcherArguments | Select-Object -ExpandProperty dnshostname
@@ -20245,6 +20977,10 @@ Switch. Only display found shares that the local user has access to.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under for computers, Base/OneLevel/Subtree (default of Subtree).
@@ -20349,6 +21085,10 @@ PowerView.ShareInfo
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -20394,6 +21134,7 @@ PowerView.ShareInfo
         if ($PSBoundParameters['ComputerServicePack']) { $ComputerSearcherArguments['ServicePack'] = $ServicePack }
         if ($PSBoundParameters['ComputerSiteName']) { $ComputerSearcherArguments['SiteName'] = $SiteName }
         if ($PSBoundParameters['Server']) { $ComputerSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ComputerSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $ComputerSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $ComputerSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $ComputerSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -20596,6 +21337,10 @@ Switch. Find .EXEs accessed within the last 7 days.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under for computers, Base/OneLevel/Subtree (default of Subtree).
@@ -20733,6 +21478,10 @@ PowerView.FoundFile
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -20776,6 +21525,7 @@ PowerView.FoundFile
         if ($PSBoundParameters['ComputerServicePack']) { $ComputerSearcherArguments['ServicePack'] = $ServicePack }
         if ($PSBoundParameters['ComputerSiteName']) { $ComputerSearcherArguments['SiteName'] = $SiteName }
         if ($PSBoundParameters['Server']) { $ComputerSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ComputerSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $ComputerSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $ComputerSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $ComputerSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -20988,6 +21738,10 @@ Switch. Only display found shares that the local user has access to.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under for computers, Base/OneLevel/Subtree (default of Subtree).
@@ -21092,6 +21846,10 @@ Computer dnshostnames the current user has administrative access to.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -21136,6 +21894,7 @@ Computer dnshostnames the current user has administrative access to.
         if ($PSBoundParameters['ComputerServicePack']) { $ComputerSearcherArguments['ServicePack'] = $ServicePack }
         if ($PSBoundParameters['ComputerSiteName']) { $ComputerSearcherArguments['SiteName'] = $SiteName }
         if ($PSBoundParameters['Server']) { $ComputerSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ComputerSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $ComputerSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $ComputerSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $ComputerSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -21286,6 +22045,10 @@ The collection method to use, defaults to 'API', also accepts 'WinNT'.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under for computers, Base/OneLevel/Subtree (default of Subtree).
@@ -21402,6 +22165,10 @@ Custom PSObject with translated group property fields from WinNT results.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -21446,6 +22213,7 @@ Custom PSObject with translated group property fields from WinNT results.
         if ($PSBoundParameters['ComputerServicePack']) { $ComputerSearcherArguments['ServicePack'] = $ServicePack }
         if ($PSBoundParameters['ComputerSiteName']) { $ComputerSearcherArguments['SiteName'] = $SiteName }
         if ($PSBoundParameters['Server']) { $ComputerSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $ComputerSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $ComputerSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $ComputerSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $ComputerSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -21605,6 +22373,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -21717,6 +22489,10 @@ Custom PSObject with translated domain API trust result fields.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [Parameter(ParameterSetName = 'LDAP')]
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
@@ -21767,6 +22543,7 @@ Custom PSObject with translated domain API trust result fields.
         if ($PSBoundParameters['Properties']) { $LdapSearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $LdapSearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $LdapSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $LdapSearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $LdapSearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $LdapSearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $LdapSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -22076,6 +22853,10 @@ Useful for OU queries.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .PARAMETER SearchScope
 
 Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
@@ -22162,6 +22943,10 @@ Custom PSObject with translated user property fields.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -22193,6 +22978,7 @@ Custom PSObject with translated user property fields.
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -22270,6 +23056,10 @@ Useful for OU queries.
 .PARAMETER Server
 
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER SearchScope
 
@@ -22355,6 +23145,10 @@ Custom PSObject with translated group member property fields.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
@@ -22386,6 +23180,7 @@ Custom PSObject with translated group member property fields.
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -22475,6 +23270,10 @@ Useful for OU queries.
 .PARAMETER Server
 
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER SearchScope
 
@@ -22577,6 +23376,10 @@ Custom PSObject with translated domain API trust result fields.
         [String]
         $Server,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+
         [Parameter(ParameterSetName = 'LDAP')]
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
@@ -22615,6 +23418,7 @@ Custom PSObject with translated domain API trust result fields.
     if ($PSBoundParameters['Properties']) { $DomainTrustArguments['Properties'] = $Properties }
     if ($PSBoundParameters['SearchBase']) { $DomainTrustArguments['SearchBase'] = $SearchBase }
     if ($PSBoundParameters['Server']) { $DomainTrustArguments['Server'] = $Server }
+    if ($PSBoundParameters['TLS']) { $DomainTrustArguments['TLS'] = $True }
     if ($PSBoundParameters['SearchScope']) { $DomainTrustArguments['SearchScope'] = $SearchScope }
     if ($PSBoundParameters['ResultPageSize']) { $DomainTrustArguments['ResultPageSize'] = $ResultPageSize }
     if ($PSBoundParameters['ServerTimeLimit']) { $DomainTrustArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -23384,6 +24188,9 @@ The domain to execute the attack on, defaults to the current domain.
 .PARAMETER Server
 Specifies an Active Directory server (domain controller) to bind to for the search and kerberos requests.
 
+.PARAMETER TLS
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
 .EXAMPLE
 Invoke-ASREPRoast | fl
 Returns crackable hashes for users without kerberos preauth in the current domain.
@@ -23406,7 +24213,11 @@ Returns crackable hashes for users without kerberos preauth in testlab.local, bi
 
         [ValidateNotNullOrEmpty()]
         [String]
-        $Server
+        $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS
     )
 
     PROCESS {
@@ -23414,6 +24225,7 @@ Returns crackable hashes for users without kerberos preauth in testlab.local, bi
             'Properties' = 'samaccountname,distinguishedname'
         }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['TLS']) { $SearcherArguments['TLS'] = $True }
         if ($PSBoundParameters['Domain']) {
             $SearcherArguments['Domain'] = $Domain
             $TargetDomain = Get-Domain -Domain $Domain
@@ -23473,10 +24285,14 @@ function Get-GPPInnerField {
 # helper function to parse fields from xml files for Get-GPPPassword
     [CmdletBinding()]
         Param (
+            [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+            [ValidateNotNullOrEmpty()]
+            [String]
             $File
         )
 
-        try {
+    PROCESS {
+            try {
             $Filename = Split-Path $File -Leaf
             [xml] $Xml = Get-Content ($File)
 
@@ -23542,47 +24358,54 @@ function Get-GPPInnerField {
         catch {
             Write-Warning "[Get-GPPInnerField] Error parsing file $($File) : $_"
         }
+        }
 }
 
 function Get-GPPDecryptedCpassword {
 # helper function that decodes and decrypts password for Get-GPPPassword
-        [CmdletBinding()]
-        Param (
-            [string] $Cpassword
-        )
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Cpassword
+    )
 
+    PROCESS {
         try {
-            #Append appropriate padding based on string length
-            $Mod = ($Cpassword.length % 4)
+        #Append appropriate padding based on string length
+        $Mod = ($Cpassword.length % 4)
 
-            switch ($Mod) {
-                '1' {$Cpassword = $Cpassword.Substring(0,$Cpassword.Length -1)}
-                '2' {$Cpassword += ('=' * (4 - $Mod))}
-                '3' {$Cpassword += ('=' * (4 - $Mod))}
-            }
-
-            Write-Verbose "[Get-GPPInnerField] Try to decrypt $($Cpassword)"
-            $Base64Decoded = [Convert]::FromBase64String($Cpassword)
-            
-            # Make sure System.Core is loaded
-            [System.Reflection.Assembly]::LoadWithPartialName("System.Core") | Out-Null
-
-            #Create a new AES .NET Crypto Object
-            $AesObject = New-Object System.Security.Cryptography.AesCryptoServiceProvider
-            [Byte[]] $AesKey = @(0x4e,0x99,0x06,0xe8,0xfc,0xb6,0x6c,0xc9,0xfa,0xf4,0x93,0x10,0x62,0x0f,0xfe,0xe8,
-                                 0xf4,0x96,0xe8,0x06,0xcc,0x05,0x79,0x90,0x20,0x9b,0x09,0xa4,0x33,0xb6,0x6c,0x1b)
-
-            #Set IV to all nulls to prevent dynamic generation of IV value
-            $AesIV = New-Object Byte[]($AesObject.IV.Length)
-            $AesObject.IV = $AesIV
-            $AesObject.Key = $AesKey
-            $DecryptorObject = $AesObject.CreateDecryptor()
-            [Byte[]] $OutBlock = $DecryptorObject.TransformFinalBlock($Base64Decoded, 0, $Base64Decoded.length)
-
-            return [System.Text.UnicodeEncoding]::Unicode.GetString($OutBlock)
+        switch ($Mod) {
+            '1' {$Cpassword = $Cpassword.Substring(0,$Cpassword.Length -1)}
+            '2' {$Cpassword += ('=' * (4 - $Mod))}
+            '3' {$Cpassword += ('=' * (4 - $Mod))}
         }
 
-        catch { Write-Error $Error[0] }
+        Write-Verbose "[Get-GPPInnerField] Try to decrypt $($Cpassword)"
+        $Base64Decoded = [Convert]::FromBase64String($Cpassword)
+            
+        # Make sure System.Core is loaded
+        [System.Reflection.Assembly]::LoadWithPartialName("System.Core") | Out-Null
+
+        #Create a new AES .NET Crypto Object
+        $AesObject = New-Object System.Security.Cryptography.AesCryptoServiceProvider
+        [Byte[]] $AesKey = @(0x4e,0x99,0x06,0xe8,0xfc,0xb6,0x6c,0xc9,0xfa,0xf4,0x93,0x10,0x62,0x0f,0xfe,0xe8,
+                                0xf4,0x96,0xe8,0x06,0xcc,0x05,0x79,0x90,0x20,0x9b,0x09,0xa4,0x33,0xb6,0x6c,0x1b)
+
+        #Set IV to all nulls to prevent dynamic generation of IV value
+        $AesIV = New-Object Byte[]($AesObject.IV.Length)
+        $AesObject.IV = $AesIV
+        $AesObject.Key = $AesKey
+        $DecryptorObject = $AesObject.CreateDecryptor()
+        [Byte[]] $OutBlock = $DecryptorObject.TransformFinalBlock($Base64Decoded, 0, $Base64Decoded.length)
+
+        return [System.Text.UnicodeEncoding]::Unicode.GetString($OutBlock)
+    }
+    catch {
+        Write-Error $Error[0]
+        }
+    }
 }
 
 function Get-GPPPassword {
@@ -23669,6 +24492,10 @@ http://rewtdance.blogspot.com/2012/06/exploiting-windows-2008-group-policy.html
         [ValidateNotNullOrEmpty()]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS, # dummy parameter for searcher object
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
@@ -23779,6 +24606,10 @@ Get-NetlogonFile -Domain contoso.com -Cred $Cred
         [ValidateNotNullOrEmpty()]
         [String[]]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS, # dummy parameter for searcher object
 
         [ValidateNotNullOrEmpty()]
         [String[]]
@@ -23917,11 +24748,13 @@ Get-Content "c:\encodedfile.vbe" | Get-DecodedVBE
     [CmdletBinding()]
     Param (
         [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [ValidateNotNullOrEmpty()]
         [string]
         $EncodedData
     )
 
-    try {
+    PROCESS {
+        try {
         # remove start and stop pattern
         $VbeData = $EncodedData -match '#@~\^......==(.+)......==\^#~@'
         if ($VbeData -eq $true) {
@@ -24144,7 +24977,319 @@ Get-Content "c:\encodedfile.vbe" | Get-DecodedVBE
         return $DecodedVBE     
     }
     
-    catch { Write-Verbose "[Get-DecodedVBE] No VBE content detected" }
+    catch {
+        Write-Verbose "[Get-DecodedVBE] No VBE content detected"
+        }
+    }
+}
+
+function Invoke-CheckExchange {
+<#
+.SYNOPSIS
+Author: Alexander Sturz (@_61106960_)
+Required Dependencies: None  
+Optional Dependencies: None  
+
+.DESCRIPTION
+Retrieves Microsoft Exchange version via OWA https request and checks for severe vulnerabilities like
+CVE-2018-8581, CVE-2020-0688, CVE-2020-17141, CVE-2020-17143, CVE-2021-26855, CVE-2021-26857, CVE-2021-26858, CVE-2021-27065, CVE-2021-28480, CVE-2021-28481, CVE-2021-28482, CVE-2021-28483, CVE-2021-31196 and CVE-2021-34473.
+
+.PARAMETER Identity
+Specifies the FQDN or at least the Exchange server hostname. 
+
+.EXAMPLE
+Invoke-CheckExchange -Identity ex.contoso.com
+#>
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True, Mandatory= $True)]
+        [ValidateNotNullOrEmpty()]
+        [String[]]
+        $Identity
+    )
+
+    BEGIN {
+
+        $ErrorActionPreference = "Continue"
+
+        if ( (($PSVersionTable).PSVersion).Major -gt '2') { # Check if Powershell version is greater 2
+
+# deactivation of certificate checks and allow all ssl/tls versions
+add-type @"
+    using System.Net;
+    using System.Security.Cryptography.X509Certificates;
+    public class TrustAllCertsPolicy : ICertificatePolicy {
+        public bool CheckValidationResult(
+            ServicePoint srvPoint, X509Certificate certificate,
+            WebRequest request, int certificateProblem) {
+            return true;
+        }
+    }
+"@
+        [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Ssl3, [Net.SecurityProtocolType]::Tls, [Net.SecurityProtocolType]::Tls11, [Net.SecurityProtocolType]::Tls12
+        }
+
+        else {
+            Write-warning "[Invoke-CheckExchange] You are using Powershell version $((($PSVersionTable).PSVersion).Major), unfortunately this function does not work"
+        }
+
+        # Defining exchange server build numbers, https://docs.microsoft.com/de-de/exchange/new-features/build-numbers-and-release-dates
+        $ExVersions = @{
+            # Exchange versions 07/13/2021 and newer show the exact installed version in the response header "X-OWA-Version".
+            # For older versions, the first 3 blocks of the build number are used only, as the OWA HTML code does not show the complete version
+            # A CVE with + means, that the CU could be patched with a hotfix but the script cannot determine the detailed build number
+            "15.2.986.5" = "Exchange Server 2019 CU11",""
+            "15.2.922.13" = "Exchange Server 2019 CU10 Jul21SU",""
+            "15.2.922" = "Exchange Server 2019 CU10","CVE-2021-31196+"
+            "15.2.858.15" = "Exchange Server 2019 CU9 Jul21SU",""
+            "15.2.858" = "Exchange Server 2019 CU9","CVE-2021-28482+","CVE-2021-31196+","CVE-2021-34473+"
+            "15.2.792" = "Exchange Server 2019 CU8","CVE-2021-26855+","CVE-2021-28482+","CVE-2021-31196","CVE-2021-34473+"
+            "15.2.721" = "Exchange Server 2019 CU7","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.659" = "Exchange Server 2019 CU6","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.595" = "Exchange Server 2019 CU5","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.529" = "Exchange Server 2019 CU4","CVE-2020-0688+","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.464" = "Exchange Server 2019 CU3","CVE-2020-0688+","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.397" = "Exchange Server 2019 CU2","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.330" = "Exchange Server 2019 CU1","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.2.221" = "Exchange Server 2019 RTM","CVE-2018-8581","CVE-2020-17143","CVE-2020-0688","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.2375.7" = "Exchange Server 2016 CU22",""
+            "15.1.2308.14" = "Exchange Server 2016 CU21 Jul21SU",""
+            "15.1.2308" = "Exchange Server 2016 CU21","CVE-2021-31196+"
+            "15.1.2242.12" = "Exchange Server 2016 CU20 Jul21SU",""
+            "15.1.2242" = "Exchange Server 2016 CU20","CVE-2021-28482+","CVE-2021-31196+","CVE-2021-34473+"
+            "15.1.2176" = "Exchange Server 2016 CU19","CVE-2021-26855+","CVE-2021-28482+","CVE-2021-31196","CVE-2021-34473+"
+            "15.1.2106" = "Exchange Server 2016 CU18","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.2044" = "Exchange Server 2016 CU17","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1979" = "Exchange Server 2016 CU16","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1913" = "Exchange Server 2016 CU15","CVE-2020-0688+","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1847" = "Exchange Server 2016 CU14","CVE-2020-0688+","CVE-2021-26855+","CVE-2020-17143","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1779" = "Exchange Server 2016 CU13","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1713" = "Exchange Server 2016 CU12","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1591" = "Exchange Server 2016 CU11","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1531" = "Exchange Server 2016 CU10","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1466" = "Exchange Server 2016 CU9","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1415" = "Exchange Server 2016 CU8","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1261" = "Exchange Server 2016 CU7","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.1034" = "Exchange Server 2016 CU6","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.845" = "Exchange Server 2016 CU5","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.669" = "Exchange Server 2016 CU4","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.544" = "Exchange Server 2016 CU3","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.466" = "Exchange Server 2016 CU2","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.396" = "Exchange Server 2016 CU1","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.1.225" = "Exchange Server 2016 RTM","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1497.23" = "Exchange Server 2013 CU23 Jul21SU",""
+            "15.0.1497" = "Exchange Server 2013 CU23","CVE-2020-0688+","CVE-2020-17143+","CVE-2021-26855+","CVE-2021-28482+","CVE-2021-31196+","CVE-2021-34473+"
+            "15.0.1473" = "Exchange Server 2013 CU22","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1395" = "Exchange Server 2013 CU21","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855+","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1367" = "Exchange Server 2013 CU20","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1365" = "Exchange Server 2013 CU19","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1347" = "Exchange Server 2013 CU18","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1320" = "Exchange Server 2013 CU17","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1293" = "Exchange Server 2013 CU16","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1263" = "Exchange Server 2013 CU15","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1236" = "Exchange Server 2013 CU14","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1210" = "Exchange Server 2013 CU13","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1178" = "Exchange Server 2013 CU12","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1156" = "Exchange Server 2013 CU11","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1130" = "Exchange Server 2013 CU10","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1104" = "Exchange Server 2013 CU9","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1076" = "Exchange Server 2013 CU8","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.1044" = "Exchange Server 2013 CU7","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.995" = "Exchange Server 2013 CU6","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.913" = "Exchange Server 2013 CU5","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.847" = "Exchange Server 2013 CU4","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.775" = "Exchange Server 2013 CU3","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.712" = "Exchange Server 2013 CU2","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.620" = "Exchange Server 2013 CU1","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "15.0.516" = "Exchange Server 2013 RTM","CVE-2018-8581","CVE-2020-0688","CVE-2020-17143","CVE-2021-26855","CVE-2021-28482","CVE-2021-31196","CVE-2021-34473"
+            "14.3.513" = "Exchange Server 2010 SP3 Updaterollup 32"
+            "14.3.509" = "Exchange Server 2010 SP3 Updaterollup 31","CVE-2021-26855"
+            "14.3.496" = "Exchange Server 2010 SP3 Updaterollup 30","CVE-2020-0688+","CVE-2021-26855"
+            "14.3.468" = "Exchange Server 2010 SP3 Updaterollup 29","CVE-2020-0688","CVE-2021-26855"
+            "14.3.461" = "Exchange Server 2010 SP3 Updaterollup 28","CVE-2020-0688","CVE-2021-26855"
+            "14.3.452" = "Exchange Server 2010 SP3 Updaterollup 27","CVE-2020-0688","CVE-2021-26855"
+            "14.3.442" = "Exchange Server 2010 SP3 Updaterollup 26","CVE-2020-0688","CVE-2021-26855"
+            "14.3.435" = "Exchange Server 2010 SP3 Updaterollup 25","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.419" = "Exchange Server 2010 SP3 Updaterollup 24","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.417" = "Exchange Server 2010 SP3 Updaterollup 23","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.411" = "Exchange Server 2010 SP3 Updaterollup 22","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.399" = "Exchange Server 2010 SP3 Updaterollup 21","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.389" = "Exchange Server 2010 SP3 Updaterollup 20","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.382" = "Exchange Server 2010 SP3 Updaterollup 19","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.361" = "Exchange Server 2010 SP3 Updaterollup 18","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.352" = "Exchange Server 2010 SP3 Updaterollup 17","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.336" = "Exchange Server 2010 SP3 Updaterollup 16","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.319" = "Exchange Server 2010 SP3 Updaterollup 15","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.301" = "Exchange Server 2010 SP3 Updaterollup 14","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.294" = "Exchange Server 2010 SP3 Updaterollup 13","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.279" = "Exchange Server 2010 SP3 Updaterollup 12","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.266" = "Exchange Server 2010 SP3 Updaterollup 11","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.248" = "Exchange Server 2010 SP3 Updaterollup 10","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.235" = "Exchange Server 2010 SP3 Updaterollup 9","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.224" = "Exchange Server 2010 SP3 Updaterollup 8","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.210" = "Exchange Server 2010 SP3 Updaterollup 7","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.195" = "Exchange Server 2010 SP3 Updaterollup 6","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.181" = "Exchange Server 2010 SP3 Updaterollup 5","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.174" = "Exchange Server 2010 SP3 Updaterollup 4","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.169" = "Exchange Server 2010 SP3 Updaterollup 3","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.158" = "Exchange Server 2010 SP3 Updaterollup 2","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.146" = "Exchange Server 2010 SP3 Updaterollup 1","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+            "14.3.123" = "Exchange Server 2010 SP3 RTM","CVE-2018-8581","CVE-2020-0688","CVE-2021-26855"
+        }
+    }
+
+    PROCESS {
+
+        foreach ($target in $Identity) {
+        
+            $ExSrv = $target.Trim('\ ')
+            $ExSrvUri = "https://$($ExSrv)/owa/" #$ExSrvUri = "https://$($ExSrv)/owa/auth/logon.aspx"
+            $ExSrvIP = (Get-IPAddress -ComputerName $ExSrv).ipAddress
+
+            write-verbose "[Invoke-CheckExchange] Using the Exchange server '$ExSrv' to get the version for"
+            Write-Verbose "[Invoke-CheckExchange] Resolved '$($ExSrv)' to IP address '$($ExSrvIP)'"
+        
+            try {
+                Write-Verbose "[Invoke-CheckExchange] Connecting tcp/443 to check if '$target' is online"
+                if ($(Invoke-PortCheck -ComputerName $ExSrv -Port 443) -eq $true) {
+                    Write-Verbose "[Invoke-CheckExchange] Requesting '$ExSrvUri' to gather Exchange build number"
+
+                    $ExSrvBuild = (Invoke-WebRequest -uri $ExSrvUri -TimeoutSec 3 -UseBasicParsing -MaximumRedirection 0 -ErrorAction Ignore).headers["X-OWA-Version"]
+                    if (-not $ExSrvBuild) {
+                        write-verbose "[Invoke-CheckExchange] Exchange version older then release date 07/13/2021, fallback detection via HTML content"
+                        $ExSrvBuild = ((invoke-webrequest -Uri $ExSrvUri -TimeoutSec 3 -UseBasicParsing).content | select-string -Pattern '/owa/auth/(?<version>[0-9.]+)/').Matches.Groups[1].Value
+                    }
+
+                    $Object = New-Object PSObject
+                    $Object | Add-Member Noteproperty 'dNSHostName' $ExSrv
+                    $Object | Add-Member Noteproperty 'IPv4Address' $ExSrvIP
+
+                    if ($ExSrvBuild -and $ExSrvBuild -ne '') {
+                        $Object | Add-Member Noteproperty 'ExchangeBuild' $ExSrvBuild
+                
+                        if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -ne '') {
+                            Write-Verbose "[Invoke-CheckExchange] Got Exchange build number '$ExSrvBuild' and resolved to Exchange version '$($($ExVersions[$ExSrvBuild])[0])'"
+                            $Object | Add-Member Noteproperty 'ExchangeVersion' $($ExVersions[$ExSrvBuild])[0]
+                            $Object | Add-Member Noteproperty 'Vulnerable' $False
+                    
+                            if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2018-8581*') {
+                                if ($ExVersions[$ExSrvBuild] -like '*CVE-2018-8581+*'){
+                                    Write-Verbose "[Get-ExchangeVersion] CVE-2018-8581 could be patched with hotfix"
+                                    $Object | Add-Member Noteproperty 'CVE-2018-8581' 'Vulnerable but could be patched with hotfix' -Force
+                                }
+                                else {
+                                    Write-Verbose "[Get-ExchangeVersion] The Exchange server '$($ExSrv)' is vulnerable to CVE-2018-8581"
+                                    $Object | Add-Member Noteproperty 'CVE-2018-8581' 'Vulnerable'
+                                }
+                                $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
+                            }
+
+                            if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2020-0688*') {
+                                if ($ExVersions[$ExSrvBuild] -like '*CVE-2020-0688+*'){
+                                    Write-Verbose "[Invoke-CheckExchange] CVE-2020-0688 could be patched with hotfix"
+                                    $Object | Add-Member Noteproperty 'CVE-2020-0688' 'Vulnerable but could be patched with hotfix' -Force
+                                }
+                                else {
+                                    Write-Verbose "[Invoke-CheckExchange] The Exchange server '$($ExSrv)' is vulnerable to CVE-2020-0688"
+                                    $Object | Add-Member Noteproperty 'CVE-2020-0688' 'Vulnerable'
+                                }
+                                $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
+                            }
+
+                            if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2020-17141*') {
+                                if ($ExVersions[$ExSrvBuild] -like '*CVE-2020-17141+*') {
+                                    Write-Verbose "[Invoke-CheckExchange] CVE-2020-17141 and CVE-2020-17143 could be patched with hotfix"
+                                    $Object | Add-Member Noteproperty 'CVE-2020-17141' 'Vulnerable but could be patched with hotfix' -Force
+                                    $Object | Add-Member Noteproperty 'CVE-2020-17143' 'Vulnerable but could be patched with hotfix' -Force
+                                }
+                                else {
+                                    Write-Verbose "[Invoke-CheckExchange] The Exchange server '$($ExSrv)' is vulnerable to CVE-2020-17141, ,CVE-2020-17143"
+                                    $Object | Add-Member Noteproperty 'CVE-2020-17141' 'Vulnerable'
+                                    $Object | Add-Member Noteproperty 'CVE-2020-17143' 'Vulnerable'
+                                }
+                                $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
+                            }
+
+                            if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2021-28482*') {
+                                if ($ExVersions[$ExSrvBuild] -like '*CVE-2021-28482+*') {
+                                    Write-Verbose "[Invoke-CheckExchange] CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483 could be patched with hotfix"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28480' 'Vulnerable but could be patched with hotfix' -Force
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28481' 'Vulnerable but could be patched with hotfix' -Force
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28482' 'Vulnerable but could be patched with hotfix' -Force
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28483' 'Vulnerable but could be patched with hotfix' -Force
+                                }
+                                else {
+                                    Write-Verbose "[Invoke-CheckExchange] The Exchange server '$($ExSrv)' is vulnerable to CVE-2021-28480, CVE-2021-28481, CVE-2021-28482 and CVE-2021-28483"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28480' 'Vulnerable'
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28481' 'Vulnerable'
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28482' 'Vulnerable'
+                                    $Object | Add-Member Noteproperty 'CVE-2021-28483' 'Vulnerable'
+                                }
+                                $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
+                            }
+
+                            if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2021-26855*') {
+                                if ($ExVersions[$ExSrvBuild] -like '*CVE-2021-26855+*') {
+                                    Write-Verbose "[Invoke-CheckExchange] CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065 could be patched with hotfix"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-26855' 'Vulnerable but could be patched with hotfix' -Force
+                                    $Object | Add-Member Noteproperty 'CVE-2021-26857' 'Vulnerable but could be patched with hotfix' -Force
+                                    $Object | Add-Member Noteproperty 'CVE-2021-26858' 'Vulnerable but could be patched with hotfix' -Force
+                                    $Object | Add-Member Noteproperty 'CVE-2021-27065' 'Vulnerable but could be patched with hotfix' -Force
+                                }
+                                else {
+                                    Write-Verbose "[Invoke-CheckExchange] The Exchange server '$($ExSrv)' is vulnerable to CVE-2021-26855, CVE-2021-26857, CVE-2021-26858 and CVE-2021-27065"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-26855' 'Vulnerable'
+                                    $Object | Add-Member Noteproperty 'CVE-2021-26857' 'Vulnerable'
+                                    $Object | Add-Member Noteproperty 'CVE-2021-26858' 'Vulnerable'
+                                    $Object | Add-Member Noteproperty 'CVE-2021-27065' 'Vulnerable'
+                                }
+                                $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
+                            }
+
+                            if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2021-31196*') {
+                                if ($ExVersions[$ExSrvBuild] -like '*CVE-2021-31196+*') {
+                                    Write-Verbose "[Invoke-CheckExchange] CVE-2021-31196 could be patched with hotfix"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-31196' 'Vulnerable but could be patched with hotfix' -Force
+                                }
+                                else {
+                                    Write-Verbose "[Invoke-CheckExchange] The Exchange server '$($ExSrv)' is vulnerable to CVE-2021-31196"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-31196' 'Vulnerable'
+                                }
+                                $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
+                            }
+
+                            if ($ExVersions[$ExSrvBuild] -and $ExVersions[$ExSrvBuild] -like '*CVE-2021-34473*') {
+                                if ($ExVersions[$ExSrvBuild] -like '*CVE-2021-34473+*') {
+                                    Write-Verbose "[Invoke-CheckExchange] CVE-2021-34473 could be patched with hotfix"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-34473' 'Vulnerable but could be patched with hotfix' -Force
+                                }
+                                else {
+                                    Write-Verbose "[Invoke-CheckExchange] The Exchange server '$($ExSrv)' is vulnerable to CVE-2021-34473"
+                                    $Object | Add-Member Noteproperty 'CVE-2021-34473' 'Vulnerable'
+                                }
+                                $Object | Add-Member Noteproperty 'Vulnerable' $True -Force
+                            }
+
+                            else {
+                                $Object | Add-Member Noteproperty 'Vulnerable' $False -Force
+                            }
+
+                        }
+
+                        else {
+                            $Object | Add-Member Noteproperty 'Exchange Version' "Exchange version could not be determined"
+                        }
+                    }
+                }
+
+                $Object
+            }
+            catch {
+                write-warning "[Invoke-CheckExchange] Exchange build number could not be determined"
+            }
+        }
+    }
 }
 
 function Invoke-PortCheck {
@@ -24287,6 +25432,7 @@ https://github.com/cfalta/PoshADCS
     }
     $Result
 }
+
 function Convert-ADCSNameFlag {
 <#
 .SYNOPSIS
@@ -24469,9 +25615,7 @@ https://github.com/cfalta/PoshADCS
     $Result
 }
 
-
-function Convert-ADCSFlag
-{
+function Convert-ADCSFlag {
 <#
 .SYNOPSIS
 Translates the value of a specified flag-attribute into a human readable form.
@@ -24513,170 +25657,181 @@ https://github.com/cfalta/PoshADCS
 }
 
 function Get-ADCSTemplateACL {
-    <#
-    .SYNOPSIS
-    Get-ADCSTemplateACL uses PowerViews Get-DomainObjectACL to retrieve the ACLs of a single or all certificate templates. 
-    Use the filter switch to remove ACEs that match admin groups or other default groups to reduce the output and gain better visibility.
-    Author: Christoph Falta (@cfalta)
-    Adopted by: Alexander Sturz (@_61106960_)
+<#
+.SYNOPSIS
+Get-ADCSTemplateACL uses PowerViews Get-DomainObjectACL to retrieve the ACLs of a single or all certificate templates. 
+Use the filter switch to remove ACEs that match admin groups or other default groups to reduce the output and gain better visibility.
+Author: Christoph Falta (@cfalta)
+Adopted by: Alexander Sturz (@_61106960_)
     
-    .PARAMETER Name
-    The name of the certificate template to search for. If omitted, all templates will be retrieved.
+.PARAMETER Name
+The name of the certificate template to search for. If omitted, all templates will be retrieved.
     
-    .PARAMETER Domain
-    Specifies the domain to use for the query, defaults to the current domain.
+.PARAMETER Domain
+Specifies the domain to use for the query, defaults to the current domain.
     
-    .PARAMETER Server
-    Specifies an Active Directory server (domain controller) to bind to.
-    
-    .PARAMETER Filter
-    Filter the ACEs to reduce output and gain better visibility.
+.PARAMETER Server
+Specifies an Active Directory server (domain controller) to bind to.
 
-    -Filter AdminACEs --> will remove ACEs that match to default admin groups (e.g. Domain Admins)
-    -Filter DefaultACEs --> will remove ACEs that match to default domain groups including admin groups (e.g. Domain Admins, Authenticated Users,...)
+.PARAMETER TLS
+Switch. Specifies that encrypted LDAPS over port 636 is used.
     
-    .PARAMETER Credential
-    A [Management.Automation.PSCredential] object of alternate credentials
-    for connection to the target domain.
-    
-    .EXAMPLE
-    Get-ADCSTemplateACL -Name Template1 -Filter DefaultACEs
+.PARAMETER Filter
+Filter the ACEs to reduce output and gain better visibility.
 
-    Description
-    -----------
-    Get's the ACEs of the template with name "Template1" and removes all default ACEs
-
-    .EXAMPLE
-    Get-ADCSTemplateACL -Filter AdminACEs
-
-    Description
-    -----------
-    Get's the ACEs of all templates and removes admin ACEs
+-Filter AdminACEs --> will remove ACEs that match to default admin groups (e.g. Domain Admins)
+-Filter DefaultACEs --> will remove ACEs that match to default domain groups including admin groups (e.g. Domain Admins, Authenticated Users,...)
     
-    .LINK
-    https://github.com/cfalta/PoshADCS
-    #>
-        [CmdletBinding()]
-        Param (
-            [Parameter(Position = 0, Mandatory = $false, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
-            [ValidateNotNullorEmpty()]
-            [String]
-            $Name,
+.PARAMETER Credential
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
     
-            [ValidateNotNullOrEmpty()]
-            [String]
-            $Domain,
-    
-            [ValidateNotNullOrEmpty()]
-            [Alias('DomainController')]
-            [String]
-            $Server,
-    
-            [Parameter(Mandatory = $false)]
-            [ValidateSet("AdminACEs","DefaultACEs")]
-            [String]
-            $Filter,
+.EXAMPLE
+Get-ADCSTemplateACL -Name Template1 -Filter DefaultACEs
 
-            [ValidateNotNullOrEmpty()]
-            [String]
-            $SearchBase,
+Description
+-----------
+Get's the ACEs of the template with name "Template1" and removes all default ACEs
 
-            [ValidateNotNullOrEmpty()]
-            [String]
-            $LDAPFilter,
+.EXAMPLE
+Get-ADCSTemplateACL -Filter AdminACEs
 
-            [Management.Automation.PSCredential]
-            [Management.Automation.CredentialAttribute()]
-            $Credential = [Management.Automation.PSCredential]::Empty
-        )
+Description
+-----------
+Get's the ACEs of all templates and removes admin ACEs
     
-        BEGIN {
-            if ($PSBoundParameters['Domain']) {
-                $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $Domain)
-                try {
-                    $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
-                }
-                catch {
-                    throw "[Get-ADCSTemplateACL] The specified domain $($Domain) does not exist, could not be contacted, or there isn't an existing trust : $_"
-                }
+.LINK
+https://github.com/cfalta/PoshADCS
+#>
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $false, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [ValidateNotNullorEmpty()]
+        [String]
+        $Name,
+    
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+    
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
+    
+        [Parameter(Mandatory = $false)]
+        [ValidateSet("AdminACEs","DefaultACEs")]
+        [String]
+        $Filter,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $SearchBase,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $LDAPFilter,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+    
+    BEGIN {
+        if ($PSBoundParameters['Domain']) {
+            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $Domain)
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext).Name
             }
-            else {
-                try {
-                    $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name
-                }
-                catch {
-                    throw "[Get-ADCSTemplateACL] Error retrieving the current domain: $_"
-                }
+            catch {
+                throw "[Get-ADCSTemplateACL] The specified domain $($Domain) does not exist, could not be contacted, or there isn't an existing trust : $_"
             }
-    
-            # Building searcher arguments for the following PowerView requests
-            $SearcherArguments = @{}
-            if ($PSBoundParameters['Domain'] -or $Domain) {
-                $SearcherArguments['Domain'] = $Domain
-                Write-Verbose "[Get-ADCSTemplateACL] Using $($Domain) as target Windows Domain"
+        }
+        else {
+            try {
+                $Domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name
             }
-            if ($PSBoundParameters['Server']) {
-                $SearcherArguments['Server'] = $Server
-                Write-Verbose "[Get-ADCSTemplateACL] Using $($Server) as target Domain Controller"
+            catch {
+                throw "[Get-ADCSTemplateACL] Error retrieving the current domain: $_"
             }
-            if ($PSBoundParameters['Credential']) {
-                Write-Warning "[Get-ADCSTemplateACL] Using PSCredential $($Cred.Username) for authentication"
-                $LogonToken = Invoke-UserImpersonation -Credential $Credential
-            }
-            # Get Domain Object
-            $DomainName = get-domain @SearcherArguments
         }
     
-        PROCESS {
-            # Add Values to Searcher Argument
-            if ($PSBoundParameters['SearchBase']) {
-                $SearcherArguments['SearchBase'] = $SearchBase
-                Write-Verbose "[Get-ADCSTemplateACL] Search base: $($SearchBase)"
-            }
-            else {
-                $SearcherArguments['SearchBase'] = ("CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($DomainName.Name).Replace(".",",DC=")))
-                Write-Verbose "[Get-ADCSTemplateACL] Search base: $($SearcherArguments.SearchBase)"
-            }
-
-            if ($PSBoundParameters['Name']) {
-                $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)(name=" + $Name + ")")
-                Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($SearcherArguments.LDAPFilter)"
-            }
-            elseif ($PSBoundParameters['LDAPFilter']) {
-                $SearcherArguments['LDAPFilter'] = $LDAPFilter
-                Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($LDAPFilter)"
-            }
-            else {
-                $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)")
-                Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($SearcherArguments.LDAPFilter)"
-            }
-
-            # Gets Template ACL
-            $TemplatesACL = Get-DomainObjectACL @SearcherArguments -Resolveguids
-
-            foreach($acl in $TemplatesACL) {
-                $acl | Add-Member -MemberType NoteProperty -Name Identity -Value (Convert-SidToName $acl.SecurityIdentifier)
-            }
-
-            # Filter AdminACEs --> will remove ACEs that match to default admin groups (e.g. Domain Admins)
-            if($Filter -eq "AdminACEs") {
-                $TemplatesACL = $TemplatesACL | ? { -not (($_.SecurityIdentifier.value -like "*-512") -or ($_.SecurityIdentifier.value -like "*-519") -or ($_.SecurityIdentifier.value -like "*-516") -or ($_.SecurityIdentifier.value -like "*-500") -or ($_.SecurityIdentifier.value -like "*-498") -or ($_.SecurityIdentifier.value -eq "S-1-5-9")) }
-            }
-
-            # Filter DefaultACEs --> will remove ACEs that match to default domain groups including admin groups (e.g. Domain Admins, Authenticated Users,...)
-            if($Filter -eq "DefaultACEs") {
-                $TemplatesACL = $TemplatesACL | ? { -not (($_.SecurityIdentifier.value -like "*-512") -or ($_.SecurityIdentifier.value -like "*-519") -or ($_.SecurityIdentifier.value -like "*-516") -or ($_.SecurityIdentifier.value -like "*-500") -or ($_.SecurityIdentifier.value -like "*-498") -or ($_.SecurityIdentifier.value -eq "S-1-5-9") -or ($_.SecurityIdentifier.value -eq "S-1-5-11") -or ($_.SecurityIdentifier.value -like "*-513") -or ($_.SecurityIdentifier.value -like "*-515") -or ($_.SecurityIdentifier.value -like "*-553")) } 
-            }
-
-            $TemplatesACL
+        # Building searcher arguments for the following PowerView requests
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain'] -or $Domain) {
+            $SearcherArguments['Domain'] = $Domain
+            Write-Verbose "[Get-ADCSTemplateACL] Using $($Domain) as target Windows Domain"
         }
+        if ($PSBoundParameters['Server']) {
+            $SearcherArguments['Server'] = $Server
+            Write-Verbose "[Get-ADCSTemplateACL] Using $($Server) as target Domain Controller"
+        }
+        if ($PSBoundParameters['TLS']) {
+            $SearcherArguments['TLS'] = $True
+            Write-Verbose "[Get-ADCSTemplateACL] Using LDAPS for search requests"
+        }
+        if ($PSBoundParameters['Credential']) {
+            Write-Warning "[Get-ADCSTemplateACL] Using PSCredential $($Cred.Username) for authentication"
+            $LogonToken = Invoke-UserImpersonation -Credential $Credential
+        }
+        # Get Domain Object
+        $DomainName = get-domain @SearcherArguments
+    }
     
-        END {
-            if ($LogonToken) {
-                Invoke-RevertToSelf -TokenHandle $LogonToken
-            }
+    PROCESS {
+        # Add Values to Searcher Argument
+        if ($PSBoundParameters['SearchBase']) {
+            $SearcherArguments['SearchBase'] = $SearchBase
+            Write-Verbose "[Get-ADCSTemplateACL] Search base: $($SearchBase)"
+        }
+        else {
+            $SearcherArguments['SearchBase'] = ("CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($DomainName.Name).Replace(".",",DC=")))
+            Write-Verbose "[Get-ADCSTemplateACL] Search base: $($SearcherArguments.SearchBase)"
+        }
+
+        if ($PSBoundParameters['Name']) {
+            $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)(name=" + $Name + ")")
+            Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($SearcherArguments.LDAPFilter)"
+        }
+        elseif ($PSBoundParameters['LDAPFilter']) {
+            $SearcherArguments['LDAPFilter'] = $LDAPFilter
+            Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($LDAPFilter)"
+        }
+        else {
+            $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)")
+            Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($SearcherArguments.LDAPFilter)"
+        }
+
+        # Gets Template ACL
+        $TemplatesACL = Get-DomainObjectACL @SearcherArguments -Resolveguids
+
+        foreach($acl in $TemplatesACL) {
+            $acl | Add-Member -MemberType NoteProperty -Name Identity -Value (Convert-SidToName $acl.SecurityIdentifier)
+        }
+
+        # Filter AdminACEs --> will remove ACEs that match to default admin groups (e.g. Domain Admins)
+        if($Filter -eq "AdminACEs") {
+            $TemplatesACL = $TemplatesACL | ? { -not (($_.SecurityIdentifier.value -like "*-512") -or ($_.SecurityIdentifier.value -like "*-519") -or ($_.SecurityIdentifier.value -like "*-516") -or ($_.SecurityIdentifier.value -like "*-500") -or ($_.SecurityIdentifier.value -like "*-498") -or ($_.SecurityIdentifier.value -eq "S-1-5-9")) }
+        }
+
+        # Filter DefaultACEs --> will remove ACEs that match to default domain groups including admin groups (e.g. Domain Admins, Authenticated Users,...)
+        if($Filter -eq "DefaultACEs") {
+            $TemplatesACL = $TemplatesACL | ? { -not (($_.SecurityIdentifier.value -like "*-512") -or ($_.SecurityIdentifier.value -like "*-519") -or ($_.SecurityIdentifier.value -like "*-516") -or ($_.SecurityIdentifier.value -like "*-500") -or ($_.SecurityIdentifier.value -like "*-498") -or ($_.SecurityIdentifier.value -eq "S-1-5-9") -or ($_.SecurityIdentifier.value -eq "S-1-5-11") -or ($_.SecurityIdentifier.value -like "*-513") -or ($_.SecurityIdentifier.value -like "*-515") -or ($_.SecurityIdentifier.value -like "*-553")) } 
+        }
+
+        $TemplatesACL
+    }
+    
+    END {
+        if ($LogonToken) {
+            Invoke-RevertToSelf -TokenHandle $LogonToken
         }
     }
+}
 
 function Get-ADCSTemplate {
 <#
@@ -24694,6 +25849,9 @@ Specifies the domain to use for the query, defaults to the current domain.
 
 .PARAMETER Server
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER TLS
+Switch. Specifies that encrypted LDAPS over port 636 is used.
 
 .PARAMETER ResolveFlags
 Instructs the script to translate the flag attributes to human readable values.
@@ -24734,6 +25892,10 @@ Get's the template with the name "Template1", resolves flags and shows set ACL.
         [Alias('DomainController')]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $TLS,
 
         [Parameter(Mandatory = $false)]
         [ValidateNotNullorEmpty()]
@@ -24783,6 +25945,10 @@ Get's the template with the name "Template1", resolves flags and shows set ACL.
         if ($PSBoundParameters['Server']) {
             $SearcherArguments['Server'] = $Server
             Write-Verbose "[Get-ADCSTemplate] Using $($Server) as target Domain Controller"
+        }
+        if ($PSBoundParameters['TLS']) {
+            $SearcherArguments['TLS'] = $True
+            Write-Verbose "[Get-ADCSTemplate] Using LDAPS for search requests"
         }
         if ($PSBoundParameters['Credential']) {
             Write-Warning "[Get-ADCSTemplate] Using PSCredential $($Cred.Username) for authentication"
@@ -24864,6 +26030,7 @@ Get's the template with the name "Template1", resolves flags and shows set ACL.
     }
 
 }
+
 
 # Alias for Powerview
 
