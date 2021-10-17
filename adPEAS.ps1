@@ -45,8 +45,7 @@ Possible modules are:
 - Module CA: Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates.
 - Module Creds: Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, gMSA, LAPS, Group Policies, Netlogon Scripts
 - Module Delegation: Enumerates delegation issues, like 'Unconstrained Delegation', 'Constrained Delegation', 'Resource Based Constrained Delegation' for user and computer objects
-- Module Accounts: Enumerates users in high privileged groups which are NOT disabled, like Administrators, Domain Admins, Enterprise Admins, Group Policy Creators, DNS Admins, Account Operators, Server Operators, Printer Operators, Backup Operators, Hyper-V Admins, Remote Management Users und CERT Publishers
-    Enumerates high privileged users (admincount=1), which are NOT disabled and where the password does not expire or which may not require a password
+- Module Accounts: Enumerates users in high privileged groups which are NOT disabled, like Administrators, Domain Admins, Enterprise Admins, Group Policy Creators, DNS Admins, Account Operators, Server Operators, Printer Operators, Backup Operators, Hyper-V Admins, Remote Management Users und CERT Publishers. Enumerates high privileged users (admincount=1), which are NOT disabled and where the password does not expire or which may not require a password. Enumerates Azure AD Connect users.
 - Module Computer: Enumerates installed Domain Controllers and Exchange Server
 - Module Bloodhound: Starts Bloodhound enumeration with the scope DCOnly
 
@@ -1700,6 +1699,7 @@ Optional Dependencies: None
 .DESCRIPTION
 Enumerates users in high privileged groups which are NOT disabled, like Administrators, Domain Admins, Enterprise Admins, Group Policy Creators, DNS Admins, Account Operators, Server Operators, Printer Operators, Backup Operators, Hyper-V Admins, Remote Management Users und CERT Publishers.
 Enumerates high privileged users (admincount=1), which are NOT disabled and where the password does not expire or which may not require a password.
+Enumerates Azure AD Connect users.
 
 .PARAMETER Domain
 Specifies the domain to use for the query, defaults to the current domain.
@@ -1836,6 +1836,42 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     $adPEAS_DomSID = Get-DomainSID @SearcherArguments
     $adPEAS_RootDomSID = Get-DomainSID @RootDomSearcherArguments
 
+    <# +++++ Searching for Azure AD Connect +++++ #>
+    Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Searching for Azure AD Connect +++++"
+    Invoke-Logger -LogClass Info -LogValue "https://www.synacktiv.com/en/publications/azure-ad-introduction-for-red-teamers.html"
+
+    $adPEAS_UserMSOL = Get-DomainUser @SearcherArguments -LDAPFilter '(cn=msol_*)'
+
+    foreach ($Object_Var in $adPEAS_UserMSOL) {
+        if ($Object_Var.samaccountname -and $Object_Var.'useraccountcontrol' -like '*ACCOUNTDISABLE*') {
+            Write-Verbose "[Invoke-adPEASAccounts] Detected Azure AD Connect user $($Object_Var.distinguishedName) but account is disabled"
+        }
+        elseif ($Object_Var.sAMAccountName -and $Object_Var.sAMAccountName -ne '') {
+            $Object = New-Object PSObject
+            $Object | Add-Member Noteproperty 'sAMAccountName' $Object_Var.samaccountname
+            $Object | Add-Member Noteproperty 'userPrincipalName' $Object_Var.userprincipalname
+            $Object | Add-Member Noteproperty 'distinguishedName' $Object_Var.distinguishedName
+            $Object | Add-Member Noteproperty 'description' $Object_Var.description
+            $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
+            $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
+            $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
+            if ($Object_Var.description){
+                $Object_MSOLDetails = ($Object_Var.description | select-string -pattern 'running on computer (\S*) configured to synchronize to tenant (\S*)').Matches.Groups.value
+                if ($Object_MSOLDetails[1]) { $Object | Add-Member Noteproperty 'Running on Server' $Object_MSOLDetails[1] }
+                if ($Object_MSOLDetails[2]) { $Object | Add-Member Noteproperty 'Used for AzureAD' $Object_MSOLDetails[2] }
+            }
+            Invoke-Logger -LogClass Hint -LogValue "Found Azure AD Connect user $(($Object_Var).samaccountname)"
+            Invoke-Logger -LogClass Info -LogValue "https://www.hub.trimarcsecurity.com/post/securing-microsoft-azure-ad-connect"
+            Write-Output "Searching for Azure AD Connect user - Details for User '$(($Object_Var).samaccountname)':"
+            $Object
+        }
+        else {
+            Write-verbose "[Get-adPEASAccounts] No Results or Results have been suppressed"
+        }              
+    }
+    $Object_MSOLDetails = $null
+    $Object_Var = $null
+    $Object = $null
 
     <# +++++ Searching for Users in High Privileged Groups +++++ #>
     Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Users in High Privileged Groups +++++"
