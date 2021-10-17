@@ -127,8 +127,8 @@ Invoke-adPEAS -Module Bloodhound -Scope All
 ```
 PS > Invoke-adPEAS -Domain sub.pen.local
 
-[*] +++++ Starting adPEAS Version 0.7.1 +++++
-adPEAS version 0.7.1
+[*] +++++ Starting adPEAS Version 0.7.5 +++++
+adPEAS version 0.7.5
 [*] +++++ Starting Enumeration +++++
 [*] +++++ Searching for Domain Information +++++
 [*] +++++ Checking Domain +++++
@@ -496,6 +496,25 @@ AllowedToActOnBehalfOfOtherIdentity : SUB\SRV-DB01$
 
 [*] +++++ Starting Account Enumeration +++++
 [*] +++++ Starting Domain User Enumeration +++++
+[*] +++++ Searching for Searching for Azure AD Connect +++++
+[*] https://www.synacktiv.com/en/publications/azure-ad-introduction-for-red-teamers.html
+[+] Found Azure AD Connect user MSOL_31B43A257955
+[*] https://www.hub.trimarcsecurity.com/post/securing-microsoft-azure-ad-connect
+Searching for Azure AD Connect user - Details for User 'MSOL_31B43A257955':
+sAMAccountName     : MSOL_31B43A257955
+userPrincipalName  : MSOL_31B43A257955@sub.pen.local
+distinguishedName  : CN=MSOL_31B43A257955,CN=Users,DC=sub,DC=pen,DC=local
+description        : Account created by Microsoft Azure Active Directory Connect with installation
+                     identifier 31B43A2579554f8affe815e99a07ab685 running on computer SRV-Azure
+                     configured to synchronize to tenant penlab-test.onmicrosoft.com. This account must have
+                     directory replication permissions in the local Active Directory and write permission
+                     on certain attributes to enable Hybrid Deployment.
+objectSid          : S-1-5-21-575725702-4057784316-641645133-36622
+pwdLastSet         : 17.10.2021 13:25:01
+lastLogonTimestamp : 17.10.2021 13:25:01
+Running on Server  : SRV-Azure
+Used for AzureAD   : penlab-test.onmicrosoft.com.
+
 [*] +++++ Searching for Users in High Privileged Groups +++++
 [*] https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges
 Searching for Users in High Privileged Groups - Members of Group 'BUILTIN\Administrators':
