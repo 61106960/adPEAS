@@ -149,7 +149,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.7.5 Light'
+    $adPEASVersion = '0.7.6 Light'
     Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
@@ -2020,7 +2020,7 @@ Required Dependencies: None
 Optional Dependencies: None
 
 .DESCRIPTION
-Enumerates installed Domain Controllers and Exchange Server.
+Enumerates installed Domain Controllers, CA and Exchange Server.
 
 .PARAMETER Domain
 Specifies the domain to use for the query, defaults to the current domain.
@@ -2063,7 +2063,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
 
 .EXAMPLE
 Invoke-adPEASComputer -Domain contoso.com -Vulns
-Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of gathered Domain Controllers, Exchange and MSSQL Servers.
+Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of gathered Domain Controllers, CA and Exchange Server.
 #>
     [CmdletBinding()]
     Param (
