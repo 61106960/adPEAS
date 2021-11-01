@@ -26,7 +26,7 @@ adPEAS consists of the following enumeration modules:
 * Creds - Searching for different kind of credential exposure, like ASREPRoast, Kerberoasting, GroupPolicies, Netlogon scripts, LAPS, gMSA, certain account attributes, e.g. UnixPassword, etc.
 * Delegation - Searching for delegation issues, like 'Constrained Delegation', 'Unconstrained Delegation' and 'Resource Based Unconstrained Delegation', for computer and user accounts
 * Accounts - Searching for high privileged user accounts in predefined groups, account issues like e.g. password not expire
-* Computer - Enumerating Domain Controllers and Exchange server, with the switch -Vulns it checks the systems for EternalBlue, BlueKeep, ZeroLogon and critical Exchange vulnerabilities
+* Computer - Enumerating Domain Controllers, CA and Exchange server, with the switch -Vulns it checks the systems for EternalBlue, BlueKeep, ZeroLogon and critical Exchange vulnerabilities
 * Bloodhound - Enumerating Active Directory with BloodHound
 
 # Some How To Use Examples
@@ -108,17 +108,17 @@ Enumerates installed Domain Controllers and Exchange Server.
 Invoke-adPEAS -Module Computer
 ```
 
-Enumerates installed Domain Controllers and Exchange Server and checks them for common critical vulnerabilities, like CVE-2020-1472 (ZeroLogon), CVE-2020-0688 (Exchange), CVE-2019-0708 (BlueKeep), CVE-2018-8581 (Exchange), CVE-2017-0144 (aka MS17-010, EternalBlue)
+Enumerates installed Domain Controllers, CA and Exchange Server and checks them for common critical vulnerabilities, like CVE-2020-1472 (ZeroLogon), CVE-2020-0688 (Exchange), CVE-2019-0708 (BlueKeep), CVE-2018-8581 (Exchange), CVE-2017-0144 (aka MS17-010, EternalBlue)
 ```
 Invoke-adPEAS -Module Computer -Vulns
 ```
 
-Starts Bloodhound enumeration with the scope DCOnly. Output ZIP files is stored in the same directory adPEAS is started from.
+Starts Bloodhound enumeration with the scope DCOnly. Output ZIP files are stored in the same directory adPEAS is started from.
 ```
 Invoke-adPEAS -Module Bloodhound
 ```
 
-Starts Bloodhound enumeration with the scope All. With this option Bloodhound will contact each member computer of the domain. Output ZIP files is stored in the same directory adPEAS is started from.
+Starts Bloodhound enumeration with the scope All. With this option Bloodhound will contact each member computer of the domain. Output ZIP files are stored in the same directory adPEAS is started from.
 ```
 Invoke-adPEAS -Module Bloodhound -Scope All
 ```
@@ -127,7 +127,7 @@ Invoke-adPEAS -Module Bloodhound -Scope All
 ```
 PS > Invoke-adPEAS -Domain sub.pen.local
 
-[*] +++++ Starting adPEAS Version 0.7.5 +++++
+[*] +++++ Starting adPEAS Version 0.7.6 +++++
 adPEAS version 0.7.5
 [*] +++++ Starting Enumeration +++++
 [*] +++++ Searching for Domain Information +++++
