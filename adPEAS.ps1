@@ -736,7 +736,7 @@ Required Dependencies: None
 Optional Dependencies: None
     
 .DESCRIPTION
-Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates where non-administrative users have full access.
+Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and Templates where non-administrative users have write access,.users have enroll permission or enrollee supplies subject.
     
 .PARAMETER Domain
 Specifies the domain to use for the query, defaults to the current domain.
@@ -889,33 +889,57 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
 
     if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
         Invoke-Logger -LogClass Info -LogValue "adPEAS does basic enumeration only, consider using https://github.com/GhostPack/PSPKIAudit"
+        Invoke-Logger -LogClass Info -LogValue "For any vulnerabilities present, consider using https://github.com/GhostPack/Certify"
         foreach ($Object_CA in $adPEAS_CAEnterpriseCA) {
             foreach ($Object_Template in $Object_CA.certificatetemplates) {
+                $Object_Template_Vuln = $false
+                $Object_Template_VulnFlag = $false
+                $Object_Template_Enroll = @()
+
                 Invoke-Logger -LogClass Info -LogValue "+++++ Checking Template '$Object_Template' +++++"
                 $Object_Var_Template = $Object_Template | Get-ADCSTemplate @SearcherArguments -ResolveFlags
                 $Object_Var_TemplateACL = $Object_Template | Get-ADCSTemplateACL @SearcherArguments -Filter AdminACEs
 
+                $Object = New-Object PSObject
+                $Object | Add-Member Noteproperty 'Template Name' $Object_Var_Template.name
+                $Object | Add-Member Noteproperty 'Template distinguishedname' $Object_Var_Template.distinguishedname
+                $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var_Template.whencreated
+                $Object | Add-Member Noteproperty 'CertificateNameFlag' $(($Object_Var_Template.CertificateNameFlag) -join "`n")
+                $Object | Add-Member Noteproperty 'EnrollmentFlag' $(($Object_Var_Template.EnrollmentFlag) -join "`n")
+                if ($Object_Var_Template.PrivateKeyFlag -and $Object_Var_Template.PrivateKeyFlag -eq 'CT_FLAG_EXPORTABLE_KEY') { $Object | Add-Member Noteproperty 'Private Key Exportable' $true }
+
                 foreach ($TemplateACL in $Object_Var_TemplateACL) {
+
                     if ($TemplateACL.ActiveDirectoryRights -and $TemplateACL.ActiveDirectoryRights -like '*WriteDacl*' -or $TemplateACL.ActiveDirectoryRights -like '*WriteOwner*' -or $TemplateACL.ActiveDirectoryRights -like '*GenericAll*') {
-                        $Object = New-Object PSObject
-                        $Object | Add-Member Noteproperty 'Template Name' $Object_Var_Template.name
-                        $Object | Add-Member Noteproperty 'Template distinguishedname' $Object_Var_Template.distinguishedname
-                        $Object | Add-Member Noteproperty 'Date of Creation' $Object_Var_Template.whencreated
-                        $Object | Add-Member Noteproperty 'CertificateNameFlag' $(($Object_Var_Template.CertificateNameFlag) -join "`n")
-                        $Object | Add-Member Noteproperty 'EnrollmentFlag' $(($Object_Var_Template.EnrollmentFlag) -join "`n")
-                        if ($Object_Var_Template.PrivateKeyFlag -and $Object_Var_Template.PrivateKeyFlag -eq 'CT_FLAG_EXPORTABLE_KEY') {
-                            $Object | Add-Member Noteproperty 'Private Key Exportable' $true
-                        }
+                        Invoke-Logger -LogClass Finding -LogValue "'$($TemplateACL.identity)' has '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
                         $Object | Add-Member Noteproperty $TemplateACL.identity $TemplateACL.ActiveDirectoryRights
-                        Invoke-Logger -LogClass Finding -LogValue "'$($TemplateACL.identity)' have '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
-                        Write-Output "Checking Certificate Template - Details for Template '$($Object_Template)':"
-                        $object
+                        $Object_Template_Vuln = $true
                     }
+                    if ($TemplateACL.ObjectAceType -and $TemplateACL.ObjectAceType -like '*Certificate-Enrollment*') {
+                        $Object_Template_Enroll += $TemplateACL.identity
+                        Invoke-Logger -LogClass Hint -LogValue "'$($TemplateACL.identity)' has Enrollment Rights for Template '$($Object_Var_Template.name)'"
+                        $Object | Add-Member Noteproperty 'Enrollment allowed for' $(($Object_Template_Enroll) -join "`n") -Force
+
+                        if ($Object_Var_Template.CertificateNameFlag -and $Object_Var_Template.CertificateNameFlag -like '*ENROLLEE_SUPPLIES_SUBJECT*' -and $Object_Var_Template.CertificateNameFlag -notcontains 'SUBJECT_REQUIRE_DIRECTORY_PATH') {
+                            $Object_Template_VulnFlag = $true
+                        }
+                        $Object_Template_Vuln = $true
+                    }
+                }
+                if ($Object_Template_Vuln -eq $true) {
+                    
+                    if ($Object_Template_VulnFlag -eq $true) { Invoke-Logger -LogClass Finding -LogValue "Template '$($Object_Var_Template.name)' has Flag 'ENROLLEE_SUPPLIES_SUBJECT'"}
+                    Write-Output "Checking Certificate Template - Details for Template '$($Object_Template)':"
+                    $object
+                    $Object_Template_Vuln = $false
                 }
                 $Object = $null
             }
             $Object_Var_Template = $null
             $Object_Var_TemplateACL = $null
+            $Object_Template_Vuln = $Null
+            $Object_Template_VulnFlag = $Null
+            $Object_Template_Enroll = $Null
         }
     }
 
