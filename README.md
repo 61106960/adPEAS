@@ -83,7 +83,7 @@ Enumerates basic Active Directory information, like Domain Controllers, Password
 Invoke-adPEAS -Module Domain
 ```
 
-Enumerates basic Enterprise Certificate Authority information, like CA Name, CA Server and Templates.
+Enumerates basic Enterprise Certificate Authority information, like CA Name, CA Server and common Template vulnerabilities.
 ```
 Invoke-adPEAS -Module CA
 ```
@@ -127,8 +127,8 @@ Invoke-adPEAS -Module Bloodhound -Scope All
 ```
 PS > Invoke-adPEAS -Domain sub.pen.local
 
-[*] +++++ Starting adPEAS Version 0.7.6 +++++
-adPEAS version 0.7.5
+[*] +++++ Starting adPEAS Version 0.7.7 +++++
+adPEAS version 0.7.7
 [*] +++++ Starting Enumeration +++++
 [*] +++++ Searching for Domain Information +++++
 [*] +++++ Checking Domain +++++
@@ -238,7 +238,8 @@ Templates          : Wildcard-Smartcard-User
 NTAuthCertificates : True
 
 [*] +++++ Searching for Vulnerable Certificate Templates +++++
-[+] adPEAS does basic enumeration only, consider using https://github.com/GhostPack/PSPKIAudit
+[*] adPEAS does basic enumeration only, consider using https://github.com/GhostPack/PSPKIAudit
+[*] For any vulnerabilities present, consider using https://github.com/GhostPack/Certify
 [*] +++++ Checking Template 'Wildcard-Smartcard-User' +++++
 [!] 'Authenticated Users' have 'GenericAll' permissions on Template 'Wildcard-Smartcard-User'
 Checking Certificate Template - Details for Template 'Wildcard-Smartcard-User':
@@ -288,6 +289,55 @@ EnrollmentFlag             : CT_FLAG_INCLUDE_SYMMETRIC_ALGORITHMS
                              CT_FLAG_USER_INTERACTION_REQUIRED
 Private Key Exportable     : True
 Authenticated Users        : ReadProperty, WriteProperty, GenericExecute, WriteDacl, WriteOwner
+
+[*] +++++ Checking Template 'Machine' +++++
+[+] 'SUB\Domänencomputer' has Enrollment Rights for Template 'Machine'
+Checking Certificate Template - Details for Template 'Machine':
+Template Name              : Machine
+Template distinguishedname : CN=Machine,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=sub,DC=pen,DC=local
+Date of Creation           : 06.09.2015 07:12:43
+CertificateNameFlag        : SUBJECT_ALT_REQUIRE_DNS
+                             SUBJECT_REQUIRE_DNS_AS_CN
+EnrollmentFlag             : CT_FLAG_AUTO_ENROLLMENT
+Enrollment allowed for     : SUB\Domänencomputer
+
+[*] +++++ Checking Template 'User' +++++
+[+] 'SUB\Domänen-Benutzer' has Enrollment Rights for Template 'User'
+Checking Certificate Template - Details for Template 'User':
+Template Name              : User
+Template distinguishedname : CN=User,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=sub,DC=pen,DC=local
+Date of Creation           : 06.09.2015 07:12:42
+CertificateNameFlag        : ENROLLEE_SUPPLIES_SUBJECT
+                             OLD_CERT_SUPPLIES_SUBJECT_AND_ALT_NAME
+                             ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME
+                             SUBJECT_ALT_REQUIRE_DOMAIN_DNS
+                             SUBJECT_ALT_REQUIRE_DIRECTORY_GUID
+                             SUBJECT_ALT_REQUIRE_UPN
+                             SUBJECT_ALT_REQUIRE_EMAIL
+                             SUBJECT_ALT_REQUIRE_DNS
+                             SUBJECT_REQUIRE_DNS_AS_CN
+                             SUBJECT_REQUIRE_EMAIL
+                             SUBJECT_REQUIRE_COMMON_NAME
+                             SUBJECT_REQUIRE_DIRECTORY_PATH
+EnrollmentFlag             : CT_FLAG_INCLUDE_SYMMETRIC_ALGORITHMS
+                             CT_FLAG_PUBLISH_TO_DS
+                             CT_FLAG_AUTO_ENROLLMENT
+Private Key Exportable     : True
+Enrollment allowed for     : SUB\Domänen-Benutzer
+
+[*] +++++ Checking Template 'IIS_Webserver' +++++
+[+] 'SUB\Domänencomputer' has Enrollment Rights for Template 'IIS_Webserver'
+[+] 'Authenticated Users' has Enrollment Rights for Template 'IIS_Webserver'
+[!] Template 'IIS_Webserver' has Flag 'ENROLLEE_SUPPLIES_SUBJECT'
+Checking Certificate Template - Details for Template 'IIS_Webserver':
+Template Name              : IIS_Webserver
+Template distinguishedname : CN=IIS_Webserver,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=sub,DC=pen,DC=local
+Date of Creation           : 11.10.2019 19:50:46
+CertificateNameFlag        : ENROLLEE_SUPPLIES_SUBJECT
+EnrollmentFlag             :
+Private Key Exportable     : True
+Enrollment allowed for     : SUB\Domänencomputer
+                             Authenticated Users
 
 [*] +++++ Searching for Credentials Exposure +++++
 [*] +++++ Searching for ASREPRoast Users +++++
