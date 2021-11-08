@@ -8301,6 +8301,125 @@ http://richardspowershellblog.wordpress.com/2008/05/25/system-directoryservices-
 }
 
 
+function New-DomainComputer {
+<#
+.SYNOPSIS
+Creates a new domain computer (assuming appropriate permissions) and returns the computer object.
+Author: Alexander Sturz (@61106960), based on New-DomainUser by Will Schroeder (@harmj0y)  
+Required Dependencies: Get-PrincipalContext  
+
+.DESCRIPTION
+First binds to the specified domain context using Get-PrincipalContext.
+The bound domain context is then used to create a new
+DirectoryServices.AccountManagement.ComputerPrincipal with the specified computer properties.
+
+.PARAMETER SamAccountName
+Specifies the Security Account Manager (SAM) account name of the computer to create.
+Maximum of 256 characters. Mandatory.
+
+.PARAMETER AccountPassword
+Specifies the password for the created computer. Mandatory.
+
+.PARAMETER Description
+Specifies the description of the computer to create.
+
+.PARAMETER Domain
+Specifies the domain to use to search for user/group principals, defaults to the current domain.
+
+.PARAMETER Credential
+A [Management.Automation.PSCredential] object of alternate credentials for connection to the target domain.
+
+.EXAMPLE
+$Password = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+New-DomainComputer -SamAccountName fakecomputer -Description 'This is a malicious host' -AccountPassword $Password
+
+Creates the computer 'fakecomputer' with the specified description and password.
+
+.EXAMPLE
+$SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('TESTLAB\dfm.a', $SecPassword)
+$Password = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+$Computer = New-DomainComputer -SamAccountName fakecomputer -Description 'This is a malicious host' -AccountPassword $Password -Credential $Cred
+
+Creates the computer 'fakecomputer' with the specified description and password, using the specified alternate credentials.
+
+.OUTPUTS
+DirectoryServices.AccountManagement.ComputerPrincipal
+#>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
+    [OutputType('DirectoryServices.AccountManagement.ComputerPrincipal')]
+    Param(
+        [Parameter(Mandatory = $True)]
+        [ValidateLength(0, 256)]
+        [String]
+        $SamAccountName,
+
+        [Parameter(Mandatory = $True)]
+        [ValidateNotNullOrEmpty()]
+        [Alias('Password')]
+        [Security.SecureString]
+        $AccountPassword,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Description,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    $SamAccountName = $SamAccountName.ToUpper()
+
+    if($SamAccountName.EndsWith('$')) {
+        $Name = $SamAccountName.SubString(0,$SamAccountName.Length - 1)
+    }
+    else {
+        $Name = $SamAccountName
+        $SamAccountName = $SamAccountName + "$"
+    }
+
+    $ContextArguments = @{ 'Identity' = $SamAccountName }
+    if ($PSBoundParameters['Domain']) {
+        $ContextArguments['Domain'] = $Domain
+    }
+    else {
+        $Domain = ([System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()).name
+        $ContextArguments['Domain'] = $Domain
+    }
+    if ($PSBoundParameters['Credential']) { $ContextArguments['Credential'] = $Credential }
+    $Context = Get-PrincipalContext @ContextArguments
+
+    if ($Context) {
+        $Computer = New-Object -TypeName System.DirectoryServices.AccountManagement.ComputerPrincipal -ArgumentList ($Context.Context)
+
+        # set all the appropriate computer parameters
+        $Computer.SamAccountName = $Context.Identity
+        $Computer.Name = $Name
+        $TempCred = New-Object System.Management.Automation.PSCredential('a', $AccountPassword)
+        $Computer.SetPassword($TempCred.GetNetworkCredential().Password)
+        $Computer.Enabled = $True
+        $Computer.PasswordNotRequired = $False
+        if ($PSBoundParameters['Description']) { $Computer.Description = $Description }
+
+        Write-Verbose "[New-DomainComputer] Attempting to create computer '$SamAccountName'"
+        try {
+            $Null = $Computer.Save()
+            Write-Verbose "[New-DomainComputer] Computer '$SamAccountName' successfully created"
+            $Computer
+        }
+        catch {
+            Write-Warning "[New-DomainComputer] Error creating computer '$SamAccountName' : $_"
+        }
+    }
+}
+
+
 function Set-DomainUserPassword {
 <#
 .SYNOPSIS
