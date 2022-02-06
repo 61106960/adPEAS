@@ -692,7 +692,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             if ($Object_Var.ActiveDirectoryRights -eq 'ExtendedRight') {
                 $Object = New-Object PSObject
                 $Object | Add-Member Noteproperty 'ActiveDirectoryRight' $Object_Var.ObjectAceType
-                $Object | Add-Member Noteproperty 'Identity' $($Object_Var.SecurityIdentifier | Convert-SidToName)
+                $Object | Add-Member Noteproperty 'Identity' $($Object_Var.SecurityIdentifier | Convert-SidToName @SearcherArguments)
                 $Object | Add-Member Noteproperty 'distinguishedName' $($Object_Var.SecurityIdentifier | Convert-ADName -OutputType DN)
                 $Object | Add-Member Noteproperty 'ObjectSID' $Object_Var.SecurityIdentifier
                 $Object
@@ -714,7 +714,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             if ($Object_Var.ActiveDirectoryRights -eq 'GenericAll') {
                 $Object = New-Object PSObject
                 $Object | Add-Member Noteproperty 'ActiveDirectoryRight' $Object_Var.ActiveDirectoryRights
-                $Object | Add-Member Noteproperty 'Identity' $($Object_Var.SecurityIdentifier | Convert-SidToName)
+                $Object | Add-Member Noteproperty 'Identity' $($Object_Var.SecurityIdentifier | Convert-SidToName @SearcherArguments)
                 $Object | Add-Member Noteproperty 'distinguishedName' $($Object_Var.SecurityIdentifier | Convert-ADName -OutputType DN)
                 $Object | Add-Member Noteproperty 'ObjectSID' $Object_Var.SecurityIdentifier
                 $Object
@@ -4665,8 +4665,8 @@ https://gallery.technet.microsoft.com/scriptcenter/Translating-Active-5c80dd67
 
         # https://msdn.microsoft.com/en-us/library/aa772266%28v=vs.85%29.aspx
         if ($PSBoundParameters['Server']) {
-            $ADSInitType = 2
-            $InitName = $Server
+            $ADSInitType = 1 # orignial value was = 2
+            $InitName = $Domain # original value was = $Server
         }
         elseif ($PSBoundParameters['Domain']) {
             $ADSInitType = 1
@@ -27372,33 +27372,35 @@ https://github.com/cfalta/PoshADCS
     
     PROCESS {
         # Add Values to Searcher Argument
+        $ACLSearcherArguments = $SearcherArguments.Clone()
+
         if ($PSBoundParameters['SearchBase']) {
-            $SearcherArguments['SearchBase'] = $SearchBase
+            $ACLSearcherArguments['SearchBase'] = $SearchBase
             Write-Verbose "[Get-ADCSTemplateACL] Search base: $($SearchBase)"
         }
         else {
-            $SearcherArguments['SearchBase'] = ("CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($DomainName.Name).Replace(".",",DC=")))
-            Write-Verbose "[Get-ADCSTemplateACL] Search base: $($SearcherArguments.SearchBase)"
+            $ACLSearcherArguments['SearchBase'] = ("CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=" + (($DomainName.Name).Replace(".",",DC=")))
+            Write-Verbose "[Get-ADCSTemplateACL] Search base: $($ACLSearcherArguments.SearchBase)"
         }
 
         if ($PSBoundParameters['Name']) {
-            $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)(name=" + $Name + ")")
-            Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($SearcherArguments.LDAPFilter)"
+            $ACLSearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)(name=" + $Name + ")")
+            Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($ACLSearcherArguments.LDAPFilter)"
         }
         elseif ($PSBoundParameters['LDAPFilter']) {
-            $SearcherArguments['LDAPFilter'] = $LDAPFilter
+            $ACLSearcherArguments['LDAPFilter'] = $LDAPFilter
             Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($LDAPFilter)"
         }
         else {
-            $SearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)")
-            Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($SearcherArguments.LDAPFilter)"
+            $ACLSearcherArguments['LDAPFilter'] = ("(objectclass=pKICertificateTemplate)")
+            Write-Verbose "[Get-ADCSTemplateACL] Using LDAP filter: $($ACLSearcherArguments.LDAPFilter)"
         }
 
         # Gets Template ACL
-        $TemplatesACL = Get-DomainObjectACL @SearcherArguments -Resolveguids
+        $TemplatesACL = Get-DomainObjectACL @ACLSearcherArguments -Resolveguids
 
         foreach($acl in $TemplatesACL) {
-            $acl | Add-Member -MemberType NoteProperty -Name Identity -Value (Convert-SidToName $acl.SecurityIdentifier)
+            $acl | Add-Member -MemberType  NoteProperty -Name Identity -Value (Convert-SidToName @SearcherArguments -ObjectSid $acl.SecurityIdentifier)
         }
 
         # Filter AdminACEs --> will remove ACEs that match to default admin groups (e.g. Domain Admins)
