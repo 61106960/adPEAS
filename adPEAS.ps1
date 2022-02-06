@@ -149,7 +149,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     Write-Host ''
-    $adPEASVersion = '0.7.8'
+    $adPEASVersion = '0.7.9'
     Invoke-Logger -LogClass Info -LogValue "+++++ Starting adPEAS Version $adPEASVersion +++++"
     "adPEAS version $adPEASVersion"
 
