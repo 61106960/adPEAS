@@ -668,7 +668,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 $Object = New-Object PSObject
                 $Object | Add-Member Noteproperty 'ActiveDirectoryRight' $Object_Var.ObjectAceType
                 $Object | Add-Member Noteproperty 'Identity' $($Object_Var.SecurityIdentifier | Convert-SidToName @SearcherArguments)
-                $Object | Add-Member Noteproperty 'distinguishedName' $($Object_Var.SecurityIdentifier | Convert-ADName -OutputType DN)
+                $Object | Add-Member Noteproperty 'distinguishedName' $($Object_Var.SecurityIdentifier | Convert-ADName @SearcherArguments -OutputType DN)
                 $Object | Add-Member Noteproperty 'ObjectSID' $Object_Var.SecurityIdentifier
                 $Object
             }
@@ -690,7 +690,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 $Object = New-Object PSObject
                 $Object | Add-Member Noteproperty 'ActiveDirectoryRight' $Object_Var.ActiveDirectoryRights
                 $Object | Add-Member Noteproperty 'Identity' $($Object_Var.SecurityIdentifier | Convert-SidToName @SearcherArguments)
-                $Object | Add-Member Noteproperty 'distinguishedName' $($Object_Var.SecurityIdentifier | Convert-ADName -OutputType DN)
+                $Object | Add-Member Noteproperty 'distinguishedName' $($Object_Var.SecurityIdentifier | Convert-ADName @SearcherArguments -OutputType DN)
                 $Object | Add-Member Noteproperty 'ObjectSID' $Object_Var.SecurityIdentifier
                 $Object
             }
