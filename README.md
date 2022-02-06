@@ -127,8 +127,8 @@ Invoke-adPEAS -Module Bloodhound -Scope All
 ```
 PS > Invoke-adPEAS -Domain sub.pen.local
 
-[*] +++++ Starting adPEAS Version 0.7.7 +++++
-adPEAS version 0.7.7
+[*] +++++ Starting adPEAS Version 0.7.9 +++++
+adPEAS version 0.7.9
 [*] +++++ Starting Enumeration +++++
 [*] +++++ Searching for Domain Information +++++
 [*] +++++ Checking Domain +++++
