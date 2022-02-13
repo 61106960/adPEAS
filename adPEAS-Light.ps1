@@ -1489,7 +1489,34 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     invoke-logger -logclass Info -logvalue "+++++ Searching for Computers with Unconstrained Delegation Rights +++++"
     invoke-logger -logclass Info -logvalue "https://book.hacktricks.xyz/windows/active-directory-methodology/unconstrained-delegation"
 
-    $adPEAS_CompUnconstrDelegate = Get-DomainComputer @SearcherArguments -Unconstrained
+    # Set some variables we need later on
+    $adPEAS_Dom = $Domain
+    $adPEAS_RootDom = (((get-domain @SearcherArguments).Forest).RootDomain).name
+
+    # Setup searcher arguments for Root domain
+    $RootDomSearcherArguments = $SearcherArguments.clone()
+    $RootDomSearcherArguments['Domain'] = (((get-domain @SearcherArguments).Forest).RootDomain).name
+
+    # Search for domain SID and Root domain SID
+    $adPEAS_DomSID = Get-DomainSID @SearcherArguments
+    $adPEAS_RootDomSID = Get-DomainSID @RootDomSearcherArguments
+
+    $adPEAS_Groups = @(
+        'S-1-5-32-544' # BUILTIN_ADMINISTRATORS
+        $($adPEAS_DomSID + '-512') # DOMAIN_ADMINS
+        $($adPEAS_RootDomSID + '-519') # ENTERPRISE_ADMINS
+        $($adPEAS_DomSID + '-520') # GROUP_POLICY_CREATOR_OWNERS
+        $(ConvertTo-SID -ObjectName DnsAdmins) # DNS_ADMINS - This group does not have a fixed SID
+        'S-1-5-32-548' # ACCOUNT_OPERATORS
+        'S-1-5-32-549' # SERVER_OPERATORS
+        'S-1-5-32-550' # PRINTER_OPERATORS
+        'S-1-5-32-551' # BACKUP_OPERATORS
+        'S-1-5-32-578' # HYPER_V_ADMINS
+        'S-1-5-32-580' # REMOTE_MANAGEMENT_USERS
+        $($adPEAS_DomSID + '-517') # CERT_PUBLISHERS
+    )
+
+    $adPEAS_CompUnconstrDelegate = Get-DomainComputer @SearcherArguments -Unconstrained -SecurityMasks Owner
 
     foreach ($Object_Var in $adPEAS_CompUnconstrDelegate) {
         if ($Object_Var.sAMAccountName -and $Object_Var.serviceprincipalname -like '*_msdcs*') {
@@ -1513,6 +1540,11 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             }
             invoke-logger -logclass Finding -logvalue "Computer $(($Object_Var).samaccountname) has unconstrained delegation rights"
             Write-Output "Searching for Computers with Unconstrained Delegation Rights - Details for Computer '$(($Object_Var).samaccountname)':"
+
+            if ($adPEAS_Groups -notcontains $Object_Var.Owner) {
+                $Object | Add-Member Noteproperty 'ObjectOwner' $($Object_Var.Owner | Convert-SidToName @SearcherArguments)
+                Invoke-Logger -LogClass Hint -LogValue "'$($Object.ObjectOwner)' is a non-default owner of the computer '$($Object.samaccountname)'"
+            }
             $Object
         }
         else {
@@ -1527,7 +1559,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     invoke-logger -logclass Info -logvalue "+++++ Searching for Computers with Constrained Delegation Rights +++++"
     invoke-logger -logclass Info -logvalue "https://book.hacktricks.xyz/windows/active-directory-methodology/constrained-delegation"
 
-    $adPEAS_CompConstrDelegate = Get-DomainComputer @SearcherArguments -TrustedToAuth
+    $adPEAS_CompConstrDelegate = Get-DomainComputer @SearcherArguments -TrustedToAuth -SecurityMasks Owner
 
     foreach ($Object_Var in $adPEAS_CompConstrDelegate) {
         if ($Object_Var.sAMAccountName -and $Object_Var.serviceprincipalname -like '*_msdcs*') {
@@ -1552,6 +1584,11 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'msDS-AllowedToDelegateTo' (($Object_Var.'msDS-AllowedToDelegateTo') -join "`n")
             invoke-logger -logclass Finding -logvalue "Computer $(($Object_Var).samaccountname) has constrained delegation rights"
             Write-Output "Searching for Computers with Constrained Delegation Rights - Details for Computer '$(($Object_Var).samaccountname)':"
+
+            if ($adPEAS_Groups -notcontains $Object_Var.Owner) {
+                $Object | Add-Member Noteproperty 'ObjectOwner' $($Object_Var.Owner | Convert-SidToName @SearcherArguments)
+                Invoke-Logger -LogClass Hint -LogValue "'$($Object.ObjectOwner)' is a non-default owner of the computer '$($Object.samaccountname)'"
+            }
             $Object
         }
         else {
@@ -1586,7 +1623,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                     }
             }
             # read parameter, build descriptor and convert SID to name
-            $Object_VarRBCDIdentity = (New-Object Security.AccessControl.RawSecurityDescriptor($object_var.'msds-allowedtoactonbehalfofotheridentity', 0)).DiscretionaryAcl.SecurityIdentifier.Value | ConvertFrom-SID @SearcherArguments
+            $Object_VarRBCDIdentity = (New-Object Security.AccessControl.RawSecurityDescriptor($object_var.'msds-allowedtoactonbehalfofotheridentity', 0)).DiscretionaryAcl.SecurityIdentifier.Value | Convert-SidToName @SearcherArguments
             
             $Object | Add-Member Noteproperty 'AllowedToActOnBehalfOfOtherIdentity' $Object_VarRBCDIdentity
             invoke-logger -logclass Finding -logvalue "Computer $(($Object_Var).samaccountname) has resource-based constrained delegation rights"
@@ -1606,7 +1643,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Users with Constrained Delegation Rights +++++"
     Invoke-Logger -LogClass Info -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/constrained-delegation"
 
-    $adPEAS_UserConstrDelegate = Get-DomainUser @SearcherArguments -TrustedToAuth
+    $adPEAS_UserConstrDelegate = Get-DomainUser @SearcherArguments -TrustedToAuth -SecurityMasks Owner
 
     foreach ($Object_Var in $adPEAS_UserConstrDelegate) {
         if ($Object_Var.sAMAccountName -and $Object_Var.'useraccountcontrol' -like '*ACCOUNTDISABLE*') {
@@ -1630,6 +1667,11 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                 Invoke-Logger -LogClass Hint -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group"
             }
             Write-Output "Searching for Users with Constrained Delegation Rights - Details for User '$(($Object_Var).samaccountname)':"
+
+            if ($adPEAS_Groups -notcontains $Object_Var.Owner) {
+                $Object | Add-Member Noteproperty 'ObjectOwner' $($Object_Var.Owner | Convert-SidToName @SearcherArguments)
+                Invoke-Logger -LogClass Hint -LogValue "'$($Object.ObjectOwner)' is a non-default owner of the computer '$($Object.samaccountname)'"
+            }
             $Object
         }
         else {
@@ -1839,7 +1881,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     Invoke-Logger -LogClass Info -LogValue "+++++ Searching for Searching for Azure AD Connect +++++"
     Invoke-Logger -LogClass Info -LogValue "https://www.synacktiv.com/en/publications/azure-ad-introduction-for-red-teamers.html"
 
-    $adPEAS_UserMSOL = Get-DomainUser @SearcherArguments -LDAPFilter '(cn=msol_*)'
+    $adPEAS_UserMSOL = Get-DomainUser @SearcherArguments -LDAPFilter '(cn=msol_*)' -SecurityMasks Owner
 
     foreach ($Object_Var in $adPEAS_UserMSOL) {
         if ($Object_Var.samaccountname -and $Object_Var.'useraccountcontrol' -like '*ACCOUNTDISABLE*') {
@@ -1854,14 +1896,21 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'objectSid' $Object_Var.objectSid
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
+
             if ($Object_Var.description){
                 $Object_MSOLDetails = ($Object_Var.description | select-string -pattern 'running on computer (\S*) configured to synchronize to tenant (\S*)').Matches.Groups.value
                 if ($Object_MSOLDetails[1]) { $Object | Add-Member Noteproperty 'Running on Server' $Object_MSOLDetails[1] }
                 if ($Object_MSOLDetails[2]) { $Object | Add-Member Noteproperty 'Used for AzureAD' $Object_MSOLDetails[2] }
             }
+
             Invoke-Logger -LogClass Hint -LogValue "Found Azure AD Connect user $(($Object_Var).samaccountname)"
             Invoke-Logger -LogClass Info -LogValue "https://www.hub.trimarcsecurity.com/post/securing-microsoft-azure-ad-connect"
             Write-Output "Searching for Azure AD Connect user - Details for User '$(($Object_Var).samaccountname)':"
+
+            if ($adPEAS_Groups -notcontains $Object_Var.Owner) {
+                $Object | Add-Member Noteproperty 'ObjectOwner' $($Object_Var.Owner | Convert-SidToName @SearcherArguments)
+                Invoke-Logger -LogClass Hint -LogValue "'$($Object.ObjectOwner)' is a non-default owner of the account '$($Object.samaccountname)'"
+            }
             $Object
         }
         else {
@@ -1915,7 +1964,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
 
             # check if a user belongs to the local domain, root domain or foreign domain
             if ($Object_VarDom -eq $adPEAS_Dom) {
-                $Object_VarUser += Get-DomainObject @SearcherArguments -Identity $Object_Var.MemberName
+                $Object_VarUser += Get-DomainObject @SearcherArguments -Identity $Object_Var.MemberName -SecurityMasks Owner
             }
             elseif ($Object_VarDom -eq $adPEAS_RootDom) {
                 Write-Verbose "[Invoke-adPEASAccounts] Account '$($Object_Var.MemberName)' belongs to Root Domain $($Object_VarDom)"
@@ -1951,6 +2000,13 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
                     $Object | Add-Member Noteproperty 'pwdLastSet' $Object_VarUser.pwdLastSet
                     $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_VarUser.lastLogonTimestamp
                     $Object | Add-Member Noteproperty 'UserAccountControl' $Object_VarUser.useraccountcontrol
+
+                    if ($Object_VarUser.Owner -and $Object_VarUser.Owner -ne '') {
+                        if ($adPEAS_Groups -notcontains $Object_VarUser.Owner) {
+                            $Object | Add-Member Noteproperty 'ObjectOwner' $($Object_VarUser.Owner | Convert-SidToName @SearcherArguments)
+                            Invoke-Logger -LogClass Hint -LogValue "'$($Object.ObjectOwner)' is a non-default owner of the account '$($Object.samaccountname)'"
+                        }
+                    }
                     $Object
                 }
                 else {
@@ -1960,13 +2016,16 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             }
         }
     }
+    $Object_Var = $null
+    $Object_VarUser = $null
+    $Object = $null
 
 
     <# +++++ Searching for High Privileged Users where the Password does not expire +++++ #>
     Invoke-Logger -LogClass Info -LogValue "+++++ Searching for High Privileged Users where the Password does not expire +++++"
     Invoke-Logger -LogClass Info -LogValue "https://ldapwiki.com/wiki/DONT_EXPIRE_PASSWORD"
 
-    $adPEAS_UserPwNotExpire = Get-DomainUser @SearcherArguments -UACFilter DONT_EXPIRE_PASSWORD -AdminCount
+    $adPEAS_UserPwNotExpire = Get-DomainUser @SearcherArguments -UACFilter DONT_EXPIRE_PASSWORD -AdminCount -SecurityMasks Owner
 
     foreach ($Object_Var in $adPEAS_UserPwNotExpire) {
         if ($Object_Var.samaccountname -and $Object_Var.'useraccountcontrol' -like '*ACCOUNTDISABLE*') {
@@ -1983,10 +2042,15 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
-            Invoke-Logger -LogClass Finding -LogValue "The password of account $(($Object_Var).samaccountname) does not expire"
-            Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
+            Invoke-Logger -LogClass Finding -LogValue "The password of account '$(($Object_Var).samaccountname)' does not expire"
+            Invoke-Logger -LogClass Hint -LogValue "The account '$(($Object_Var).samaccountname)' is or was member of a high privileged protected group"
             Invoke-Logger -LogClass Info -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group"
             Write-Output "Searching for High Privileged Users where the Password does not expire - Details for User '$(($Object_Var).samaccountname)':"
+
+            if ($adPEAS_Groups -notcontains $Object_Var.Owner) {
+                $Object | Add-Member Noteproperty 'ObjectOwner' $($Object_Var.Owner | Convert-SidToName @SearcherArguments)
+                Invoke-Logger -LogClass Hint -LogValue "'$($Object.ObjectOwner)' is a non-default owner of the account '$($Object.samaccountname)'"
+            }
             $Object
         }
         else {
@@ -2001,7 +2065,7 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
     Invoke-Logger -LogClass Info -LogValue "+++++ Searching for High Privileged Users which may not require a Password +++++"
     Invoke-Logger -LogClass Info -LogValue "https://ldapwiki.com/wiki/PASSWD_NOTREQD"
 
-    $adPEAS_UserNoPw = Get-DomainUser @SearcherArguments -UACFilter PASSWD_NOTREQD -AdminCount
+    $adPEAS_UserNoPw = Get-DomainUser @SearcherArguments -UACFilter PASSWD_NOTREQD -AdminCount -SecurityMasks Owner
 
     foreach ($Object_Var in $adPEAS_UserNoPw) {
         if ($Object_Var.samaccountname -and $Object_Var.'useraccountcontrol' -like '*ACCOUNTDISABLE*') {
@@ -2018,10 +2082,15 @@ Start Enumerating using the domain 'contoso.com' and use the passed PSCredential
             $Object | Add-Member Noteproperty 'memberOf' (($Object_Var.memberof) -join "`n")
             $Object | Add-Member Noteproperty 'pwdLastSet' $Object_Var.pwdLastSet
             $Object | Add-Member Noteproperty 'lastLogonTimestamp' $Object_Var.lastlogontimestamp
-            Invoke-Logger -LogClass Finding -LogValue "The user $(($Object_Var).samaccountname) does not require to have a password"
-            Invoke-Logger -LogClass Hint -LogValue "The account $(($Object_Var).samaccountname) is or was member of a high privileged protected group"
+            Invoke-Logger -LogClass Finding -LogValue "The user '$(($Object_Var).samaccountname)' does not require to have a password"
+            Invoke-Logger -LogClass Hint -LogValue "The account '$(($Object_Var).samaccountname)' is or was member of a high privileged protected group"
             Invoke-Logger -LogClass Info -LogValue "https://book.hacktricks.xyz/windows/active-directory-methodology/privileged-accounts-and-token-privileges#adminsdholder-group"
             Write-Output "Searching for High Privileged Users which may not require a Password - Details for User '$(($Object_Var).samaccountname)':"
+
+            if ($adPEAS_Groups -notcontains $Object_Var.Owner) {
+                $Object | Add-Member Noteproperty 'ObjectOwner' $($Object_Var.Owner | Convert-SidToName @SearcherArguments)
+                Invoke-Logger -LogClass Hint -LogValue "'$($Object.ObjectOwner)' is a non-default owner of the account '$($Object.samaccountname)'"
+            }
             $Object
         }
         else {
@@ -2180,6 +2249,35 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
 
     <# +++++ Searching Domain Controllers  +++++ #>
     Invoke-Logger -LogClass Info -LogValue "+++++ Searching Domain Controllers +++++"
+
+    # Set some variables we need later on
+    $adPEAS_Dom = $Domain
+    $adPEAS_RootDom = (((get-domain @SearcherArguments).Forest).RootDomain).name
+
+    # Setup searcher arguments for Root domain
+    $RootDomSearcherArguments = $SearcherArguments.clone()
+    $RootDomSearcherArguments['Domain'] = (((get-domain @SearcherArguments).Forest).RootDomain).name
+
+    # Search for domain SID and Root domain SID
+    $adPEAS_DomSID = Get-DomainSID @SearcherArguments
+    $adPEAS_RootDomSID = Get-DomainSID @RootDomSearcherArguments
+
+    # defining members of high privileged domain groups
+    # https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/81d92bba-d22b-4a8c-908a-554ab29148ab
+    $adPEAS_Groups = @(
+        'S-1-5-32-544' # BUILTIN_ADMINISTRATORS
+        $($adPEAS_DomSID + '-512') # DOMAIN_ADMINS
+        $($adPEAS_RootDomSID + '-519') # ENTERPRISE_ADMINS
+        $($adPEAS_DomSID + '-520') # GROUP_POLICY_CREATOR_OWNERS
+        $(ConvertTo-SID -ObjectName DnsAdmins) # DNS_ADMINS - This group does not have a fixed SID
+        'S-1-5-32-548' # ACCOUNT_OPERATORS
+        'S-1-5-32-549' # SERVER_OPERATORS
+        'S-1-5-32-550' # PRINTER_OPERATORS
+        'S-1-5-32-551' # BACKUP_OPERATORS
+        'S-1-5-32-578' # HYPER_V_ADMINS
+        'S-1-5-32-580' # REMOTE_MANAGEMENT_USERS
+        $($adPEAS_DomSID + '-517') # CERT_PUBLISHERS
+    )
     
     # Get list of all domain controllers
     $adPEAS_ListDC = $((get-domain @SearcherArguments).DomainControllers).Name
@@ -2187,7 +2285,7 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
     foreach ($Object_Var in $adPEAS_ListDC) {
             if ($Object_Var -and $Object_Var -ne '') {
                 # request all attributes of a single domain controller
-                $Object_dc = Get-DomainComputer @SearcherArguments -Identity $Object_Var
+                $Object_dc = Get-DomainComputer @SearcherArguments -Identity $Object_Var -SecurityMasks Owner
             
                 $Object = New-Object PSObject
                 $Object | Add-Member Noteproperty 'sAMAccountName' $Object_dc.sAMAccountName
@@ -2205,6 +2303,11 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
                     }
                 }
                 Write-Output "Searching for Domain Controllers - Details for Computer '$(($Object_dc).samaccountname)':"
+
+                if ($adPEAS_Groups -notcontains $Object_dc.Owner) {
+                    $Object | Add-Member Noteproperty 'ObjectOwner' $($Object_dc.Owner | Convert-SidToName @SearcherArguments)
+                    Invoke-Logger -LogClass Hint -LogValue "'$($Object.ObjectOwner)' is a non-default owner of the computer '$($Object.samaccountname)'"
+                }
                 $Object
 
                 if ($PSBoundParameters['Vulns']) {
@@ -2232,7 +2335,7 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
             $ObjectSearcherArguments['Domain'] = $Object_Var.MemberDomain
             $ObjectSearcherArguments['Identity'] = $Object_Var.MemberSID
             
-            $object_VarExSrv = Get-DomainComputer @ObjectSearcherArguments
+            $object_VarExSrv = Get-DomainComputer @ObjectSearcherArguments -SecurityMasks Owner
 
             $Object = New-Object PSObject
             $Object | Add-Member Noteproperty 'sAMAccountName' $object_VarExSrv.sAMAccountName
@@ -2365,12 +2468,17 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
 
                         }
 
-                    else {
-                        $Object | Add-Member Noteproperty 'Vulnerabilities Detected' $False
-                    }
+                        else {
+                            $Object | Add-Member Noteproperty 'Vulnerabilities Detected' $False
+                        }
                     }
                 }
             Write-Output "Searching for Exchange Servers - Details for Exchange Server '$($object_VarExSrv.sAMAccountName)':"
+
+            if ($adPEAS_Groups -notcontains $object_VarExSrv.Owner) {
+                $Object | Add-Member Noteproperty 'ObjectOwner' $($object_VarExSrv.Owner | Convert-SidToName @SearcherArguments)
+                Invoke-Logger -LogClass Hint -LogValue "'$($Object.ObjectOwner)' is a non-default owner of the computer '$($Object.samaccountname)'"
+            }
             $Object
 
         }
@@ -2396,7 +2504,7 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
             if ($Object_Var -and $Object_Var -ne '') {
                 
                 # request all attributes of a single Enterprise CA server
-                $Object_ca = Get-DomainComputer @SearcherArguments -Identity $Object_Var.dnshostname
+                $Object_ca = Get-DomainComputer @SearcherArguments -Identity $Object_Var.dnshostname -SecurityMasks Owner
             
                 $Object = New-Object PSObject
                 $Object | Add-Member Noteproperty 'sAMAccountName' $Object_ca.sAMAccountName
@@ -2414,6 +2522,11 @@ Start adPEAS, enumerate the domain 'contoso.com', and search for known CVE of ga
                     }
                 }
                 Write-Output "Searching for Enterprise CA servers - Details for Computer '$(($Object_ca).samaccountname)':"
+
+                if ($adPEAS_Groups -notcontains $Object_ca.Owner) {
+                    $Object | Add-Member Noteproperty 'ObjectOwner' $($Object_ca.Owner | Convert-SidToName @SearcherArguments)
+                    Invoke-Logger -LogClass Hint -LogValue "'$($Object.ObjectOwner)' is a non-default owner of the computer '$($Object.samaccountname)'"
+                }
                 $Object
 
                 if ($PSBoundParameters['Vulns']) {
