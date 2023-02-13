@@ -147,7 +147,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     $ErrorActionPreference = "Continue"
-    $adPEASVersion = '0.8.0'
+    $adPEASVersion = '0.8.1'
 
     # Check if outputfile is writable and set color
     if ($PSBoundParameters['Outputfile']) {
@@ -398,7 +398,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
             }
             if ( -not $(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) -or $(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) -eq '0') {
                 Invoke-Logger -Class Finding -Value "Minimum Password Length:`t`tDisabled"
-            } elseif ( -not $(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) -or $(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) -le '7') {
+            } elseif ($([int32](($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength)) -le 7) {
                 Invoke-Logger -Class Hint -Value "Minimum Password Length:`t`t$(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) character"
             } else {
                 Invoke-Logger -Value "Minimum Password Length:`t`t$(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) character"
@@ -418,7 +418,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                     Invoke-Logger -Class Finding -Value "Lockout Duration:`t`t`tDisabled"
                 }
                 if ($(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) -and $(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) -ne '') {
-                    Invoke-Logger -Class Hint -Value "Lockout Reset:`t`t`t`tLockout reset after $(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) minutes"
+                    Invoke-Logger -Class Hint -Value "Lockout Reset:`t`t`tLockout reset after $(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) minutes"
                 } else {
                     Invoke-Logger -Value "Lockout Reset:`t`t`t`tDisabled"
                 }
