@@ -147,7 +147,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     $ErrorActionPreference = "Continue"
-    $adPEASVersion = '0.8.1'
+    $adPEASVersion = '0.8.2'
 
     # Check if outputfile is writable and set color
     if ($PSBoundParameters['Outputfile']) {
@@ -717,7 +717,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         $adPEAS_CANTAuthStore = Get-DomainObject @RootDomSearcherArguments -SearchBase ("CN=NTAuthCertificates," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=certificationAuthority)"
 
         if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
-            Invoke-Logger -Class Hint -Value "Found at least one available Active Directory Certificate Services"
+            Invoke-Logger -Class Hint -Value "Found at least one available Active Directory Certificate Service"
             Invoke-Logger -Value "adPEAS does basic enumeration only, consider reading https://posts.specterops.io/certified-pre-owned-d95910965cd2`n"
             foreach ($Object_CA in $adPEAS_CAEnterpriseCA) {
                 Invoke-Logger -Class Hint -Value "Found Active Directory Certificate Services '$($Object_CA.cn)':"
@@ -769,7 +769,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                             if ($($TemplateACL.identity) -and $($TemplateACL.identity) -ne '') {
                                 Invoke-Logger -Class Finding -Value "'$($TemplateACL.identity)' has/have '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
                             } else {
-                                Invoke-Logger -Class Finding -Value "A foreign Identiy which could not be determined has '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
+                                Invoke-Logger -Class Finding -Value "An Identiy which could not be determined has '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
                                 $TemplateACL.identity = "Identity could not be determined"
                             }
                             $Object_screen | Add-Member Noteproperty 'Identity' $TemplateACL.identity
@@ -1031,15 +1031,18 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                         $Object_gMSAMembers = (New-Object Security.AccessControl.RawSecurityDescriptor($Object_gMSA.'msds-groupmsamembership', 0)).DiscretionaryAcl.SecurityIdentifier.Value
                         foreach ($Object_gMSAMember in $Object_gMSAMembers){
                             # check if the member is a group and if yes, request group members recursive
-                            if ($(Get-DomainObject @SearcherArguments -Identity $Object_gMSAMember).samaccounttype -eq 'GROUP_OBJECT') {
+                            $Object_gMSAMemberType = $(Get-DomainObject @SearcherArguments -Identity $Object_gMSAMember).samaccounttype
+                            if ($Object_gMSAMemberType -eq 'GROUP_OBJECT' -or $Object_gMSAMemberType -eq 'ALIAS_OBJECT') {
                                 Write-verbose "[Get-adPEASCreds] gMSA member identity '$Object_gMSAMember' is a group"
                                 $Object_gMSAMemberArray += $(Get-DomainGroupMember @SearcherArguments -Identity $Object_gMSAMember -Recurse).MemberSID
+                            } else {
+                                $Object_gMSAMemberArray += $(Get-DomainObject @SearcherArguments -Identity $Object_gMSAMember).objectSid
                             }
                         } 
                     } else {
                         Write-Verbose "[Get-adPEASCreds] Error retrieving gmSA group membership information for '$($Object_gMSA.sAMAccountName)'"
                     }
-                    $Object_gMSA | Add-Member Noteproperty 'PrincipalsAllowedToRetrieveManagedPassword' $($Object_gMSAMemberArray  | ConvertFrom-SID @SearcherArguments)
+                    $Object_gMSA | Add-Member Noteproperty 'PrincipalsAllowedToRetrieveManagedPassword' $($Object_gMSAMemberArray | Get-DomainObject @SearcherArguments)
                 }
                 catch {
                     Write-Warning "[Get-adPEASCreds] Error retrieving gmSA group membership information: $_"
@@ -1386,7 +1389,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         $($adPEAS_DomSID + '-512') # DOMAIN_ADMINS
         $($adPEAS_RootDomSID + '-519') # ENTERPRISE_ADMINS
         $($adPEAS_DomSID + '-520') # GROUP_POLICY_CREATOR_OWNERS
-        $(ConvertTo-SID -ObjectName DnsAdmins) # DNS_ADMINS - This group does not have a fixed SID
+        $(ConvertTo-SID @SearcherArguments -ObjectName DnsAdmins) # DNS_ADMINS - This group does not have a fixed SID
         'S-1-5-32-548' # ACCOUNT_OPERATORS
         'S-1-5-32-549' # SERVER_OPERATORS
         'S-1-5-32-550' # PRINTER_OPERATORS
@@ -1622,7 +1625,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
 
     <# +++++ Starting Computer Enumeration +++++ #>
     $ErrorActionPreference = "Continue"
-    Invoke-Logger -Class Info -Value "Searching for Juicy Computer Enumeration"
+    Invoke-Logger -Class Info -Value "Starting Computer Enumeration"
 
     # Building searcher arguments for the following PowerView requests
     $SearcherArguments = @{}
@@ -2137,7 +2140,7 @@ $legend_logo_stop
             Invoke-ScreenPrinter -Value $Value -Class "Finding"
         }
         if ($($Object.PrincipalsAllowedToRetrieveManagedPassword) -and $($Object.PrincipalsAllowedToRetrieveManagedPassword) -ne '') {
-            $Value = "AllowedToRetrieveManagedPassword:`t$($($Object.PrincipalsAllowedToRetrieveManagedPassword) -join "`n`t`t`t`t`t")"
+            $Value = "AllowedToRetrieveManagedPassword:`t$($(($Object.PrincipalsAllowedToRetrieveManagedPassword).samaccountname) -join "`n`t`t`t`t`t")"
             Invoke-ScreenPrinter -Value $Value -Class "Hint"
         }
         if ($($Object.'msDS-AllowedToDelegateTo') -and $($Object.'msDS-AllowedToDelegateTo') -ne '') {
@@ -5818,6 +5821,10 @@ A string representing the SID of the translated name.
         [Alias('DomainController')]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $SSL, # dummy for searcher arguments
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
