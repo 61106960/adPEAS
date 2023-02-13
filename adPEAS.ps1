@@ -147,7 +147,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     $ErrorActionPreference = "Continue"
-    $adPEASVersion = '0.8.2'
+    $adPEASVersion = '0.8.3'
 
     # Check if outputfile is writable and set color
     if ($PSBoundParameters['Outputfile']) {
@@ -356,16 +356,25 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         if ($adPEAS_Domain -and $adPEAS_Domain -ne '') {
             Invoke-Logger -Class Hint -Value "Found general Active Directory domain information for domain '$($adPEAS_Domain.Name)':"
             Invoke-Logger -Value "Domain Name:`t`t`t`t$($adPEAS_Domain.Name)"
-            Invoke-Logger -Value "Domain SID:`t`t`t`t$(Get-DomainSID @SearcherArguments)"
-            if ($($adPEAS_Domain.DomainModeLevel) -le '4') {
+            try {
+                Invoke-Logger -Value "Domain SID:`t`t`t`t$(Get-DomainSID @SearcherArguments)"
+            } catch {
+                Write-Verbose "[Get-adPEASDomain] Error retrieving domain SID: $_"
+            }
+            if ($([int32]($adPEAS_Domain.DomainModeLevel)) -le 4) {
                 Invoke-Logger -Class Hint -Value "Domain Functional Level:`t`t$($adPEAS_DomainMode[$adPEAS_Domain.DomainModeLevel])"
             } else {
                 Invoke-Logger -Value "Domain Functional Level:`t`t$($adPEAS_DomainMode[$adPEAS_Domain.DomainModeLevel])"
             }
             Invoke-Logger -Value "Forest Name:`t`t`t`t$($adPEAS_Domain.Forest)"
-            if ($adPEAS_Domain.Name -ne $(((get-domain @SearcherArguments).Forest).RootDomain).name) {
-                Invoke-Logger -Value "Root Domain Name:`t`t`t$((($adPEAS_Domain.Forest).RootDomain).Name)"
-                Invoke-Logger -Value "Root Domain SID:`t`t`t$(Get-DomainSID @RootDomSearcherArguments)"
+            try {
+                if ($adPEAS_Domain.Name -ne $(((get-domain @SearcherArguments).Forest).RootDomain).name) {
+                    Invoke-Logger -Value "Root Domain Name:`t`t`t$((($adPEAS_Domain.Forest).RootDomain).Name)"
+                    Invoke-Logger -Value "Root Domain SID:`t`t`t$(Get-DomainSID @RootDomSearcherArguments)"
+                }
+            }
+            catch {
+                Write-Verbose "[Get-adPEASDomain] Error retrieving root domain information: $_"
             }
             if ($adPEAS_Domain.Children -ne '') {
                 Invoke-Logger -Value "Forest Children:`t`t`t`t$($adPEAS_Domain.Children)"
@@ -479,7 +488,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         # Getting 'add computer to domain' permissions
         $adPEAS_DomainRights = Get-DomainPolicyData @SearcherArguments -Policy 'DomainController'
         if ($adPEAS_DomainRights -and $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -ne '') {
-            Invoke-Logger -Class Hint -Value "Found user/groups that can add a computer object to domain '$($adPEAS_Domain.Name)':"
+            Invoke-Logger -Class Hint -Value "Filtering found identities that can add a computer object to domain '$($adPEAS_Domain.Name)':"
             if ($(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -and $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -ne '') {
                 foreach ($object_rights in $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege)) {
                     if ($($object_rights.substring(1)) -eq "S-1-5-11") {
@@ -508,7 +517,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         $adPEAS_DCSyncRights = Get-DomainDCSync @SearcherArguments
         
         if ($adPEAS_DCSyncRights -and $adPEAS_DCSyncRights -ne '') {
-            Invoke-Logger -Class Hint -Value "Found non-default user/groups that can perform DCSync of domain '$($adPEAS_Domain.Name)':"
+            Invoke-Logger -Class Hint -Value "Filtering found identities that can perform DCSync in domain '$($adPEAS_Domain.Name)':"
             foreach ($object_dcsync in $adPEAS_DCSyncRights) {
                 # Search for non-default AD accounts with SID greater -1000
                 if ([int32]$($object_dcsync.objectSid).split("-")[-1] -ge 1000) {
@@ -535,15 +544,13 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         $adPEAS_LAPSRights = Get-DomainLAPSReaders @SearcherArguments | Select-Object PrincipalSID | Sort-Object -Property PrincipalSID -Unique
         
         if ($adPEAS_LAPSRights -and $adPEAS_LAPSRights -ne '') {
-            Invoke-Logger -Class Hint -Value "Found non-default user/groups that can read LAPS of domain '$($adPEAS_Domain.Name)':"
+            Invoke-Logger -Class Hint -Value "Filtering found identities that can read LAPS attribute in domain '$($adPEAS_Domain.Name)':"
             foreach ($object_laps in $($adPEAS_LAPSRights.PrincipalSID.Value)) {
                 if ($object_laps -ne 'S-1-5-18') {
                     # Search for non-default AD accounts with SID greater -1000
                     if ([int32]$object_laps.split("-")[-1] -ge 1000) {
-                        $object_laps_nondefault = $object_laps | ConvertFrom-SID @SearcherArguments
-                        if ($object_laps_nondefault) {
-                            Get-DomainObject @SearcherArguments -Identity $object_laps <# -SecurityMasks Owner #> | Invoke-Logger
-                        }
+                        Write-Verbose "[Get-adPEASDomain] Found LAPS permission for identity $object_laps"
+                        Get-DomainObject @SearcherArguments -Identity $object_laps <# -SecurityMasks Owner #> | Invoke-Logger
                     }
                 }
             }
