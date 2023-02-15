@@ -147,7 +147,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     $ErrorActionPreference = "Continue"
-    $adPEASVersion = '0.8.5'
+    $adPEASVersion = '0.8.6'
 
     # Check if outputfile is writable and set color
     if ($PSBoundParameters['Outputfile']) {
@@ -762,44 +762,46 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                 foreach ($Object_Template in $($Object_CA.certificatetemplates)) {
                     $Object_Template_Vuln = $false
                     $Object_Template_VulnFlag = $false
+                    $Object_Template_IdentityACL = @{}
                     $Object_Template_Enroll = @()
     
                     Invoke-Logger -Class Info -Value "Checking Template '$Object_Template'"
                     $Object_Var_Template = $Object_Template | Get-ADCSTemplate @RootDomSearcherArguments -ResolveFlags
                     $Object_Var_TemplateACL = $Object_Template | Get-ADCSTemplateACL @RootDomSearcherArguments -Filter AdminACEs
-    
+
                     $Object_screen = New-Object PSObject
                     $Object_screen | Add-Member Noteproperty 'TemplateName' $Object_Var_Template.name
                     $Object_screen | Add-Member Noteproperty 'TemplateDistinguishedname' $Object_Var_Template.distinguishedname
                     $Object_screen | Add-Member Noteproperty 'DateOfCreation' $Object_Var_Template.whencreated
-                    $Object_screen | Add-Member Noteproperty 'CertificateNameFlag' $($Object_Var_Template.CertificateNameFlag)
-                    $Object_screen | Add-Member Noteproperty 'EnrollmentFlag' $($Object_Var_Template.EnrollmentFlag)
-                    if ($Object_Var_Template.PrivateKeyFlag -and $Object_Var_Template.PrivateKeyFlag -eq 'CT_FLAG_EXPORTABLE_KEY') {
-                        $Object | Add-Member Noteproperty 'PrivateKeyExportable' $true
+                    $Object_screen | Add-Member Noteproperty 'CertificateNameFlag' $Object_Var_Template.CertificateNameFlag
+                    $Object_screen | Add-Member Noteproperty 'EnrollmentFlag' $Object_Var_Template.EnrollmentFlag
+                    $Object_screen | Add-Member Noteproperty 'ExtendedKeyUsage' $Object_Var_Template.ExtendedKeyUsage
+                    if ($Object_Var_Template.PrivateKeyFlag -and $Object_Var_Template.PrivateKeyFlag -eq 'CT_FLAG_EXPORTABLE_KEY') { $Object | Add-Member Noteproperty 'PrivateKeyExportable' $true }
+
+                    # Check flag 'ENROLLEE_SUPPLIES_SUBJECT'
+                    if ($Object_Var_Template.CertificateNameFlag -and $Object_Var_Template.CertificateNameFlag -like '*ENROLLEE_SUPPLIES_SUBJECT*' -and $Object_Var_Template.CertificateNameFlag -notcontains 'SUBJECT_REQUIRE_DIRECTORY_PATH') {
+                        Invoke-Logger -Class Finding -Value "Template '$($Object_Var_Template.name)' has Flag 'ENROLLEE_SUPPLIES_SUBJECT'"
+                        $Object_Template_Vuln = $true
+                        $Object_Template_VulnFlag = $true
                     }
-    
+
+                    # Check ACL/ACE of template
                     foreach ($TemplateACL in $Object_Var_TemplateACL) {
                         if ($TemplateACL.ActiveDirectoryRights -and $TemplateACL.ActiveDirectoryRights -like '*WriteDacl*' -or $TemplateACL.ActiveDirectoryRights -like '*WriteOwner*' -or $TemplateACL.ActiveDirectoryRights -like '*GenericAll*') {
-    
-                            if ($($TemplateACL.identity) -and $($TemplateACL.identity) -ne '') {
-                                Invoke-Logger -Class Finding -Value "'$($TemplateACL.identity)' has/have '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
+                            if ($TemplateACL.identity -and $TemplateACL.identity -ne '') {
+                                Invoke-Logger -Class Finding -Value "Identity '$($TemplateACL.identity)' has '$($TemplateACL.ActiveDirectoryRights)' permissions on template '$($Object_Var_Template.name)'"
+                                $Object_Template_IdentityACL.Add($TemplateACL.identity,$TemplateACL.ActiveDirectoryRights)
+                                $Object_screen | Add-Member Noteproperty 'IdentityACL' $Object_Template_IdentityACL -Force
+                                $Object_Template_Vuln = $true
                             } else {
-                                Invoke-Logger -Class Finding -Value "An Identiy which could not be determined has '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
+                                Invoke-Logger -Class Finding -Value "An identiy which could not be determined has '$($TemplateACL.ActiveDirectoryRights)' permissions on template '$($Object_Var_Template.name)'"
                                 $TemplateACL.identity = "Identity could not be determined"
                             }
-                            $Object_screen | Add-Member Noteproperty 'Identity' $TemplateACL.identity
-                            $Object_screen | Add-Member Noteproperty 'IdentityRights' $TemplateACL.ActiveDirectoryRights
-                            $Object_Template_Vuln = $true
                         }
                         if ($TemplateACL.ObjectAceType -and $TemplateACL.ObjectAceType -like '*Certificate-Enrollment*') {
                             $Object_Template_Enroll += $TemplateACL.identity
-                            Invoke-Logger -Class Hint -Value "'$($TemplateACL.identity)' has Enrollment Rights for Template '$($Object_Var_Template.name)'"
-                            $Object_screen | Add-Member Noteproperty 'EnrollmentAllowedFor' $($Object_Template_Enroll) -Force
-    
-                            if ($Object_Var_Template.CertificateNameFlag -and $Object_Var_Template.CertificateNameFlag -like '*ENROLLEE_SUPPLIES_SUBJECT*' -and $Object_Var_Template.CertificateNameFlag -notcontains 'SUBJECT_REQUIRE_DIRECTORY_PATH') {
-                                Invoke-Logger -Class Finding -Value "Template '$($Object_Var_Template.name)' has Flag 'ENROLLEE_SUPPLIES_SUBJECT'"
-                                $Object_Template_VulnFlag = $true
-                            }
+                            Invoke-Logger -Class Hint -Value "Identity '$($TemplateACL.identity)' has enrollment rights for template '$($Object_Var_Template.name)'"
+                            $Object_screen | Add-Member Noteproperty 'EnrollmentAllowedFor' $Object_Template_Enroll -Force
                             $Object_Template_Vuln = $true
                         }
                     }
@@ -807,6 +809,11 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                         Invoke-Logger -Value "Template Name:`t`t`t`t$($Object_screen.TemplateName)"
                         Invoke-Logger -Value "Template distinguishedname:`t`t$($Object_screen.TemplateDistinguishedname)"
                         Invoke-Logger -Value "Date of Creation:`t`t`t$($Object_screen.DateOfCreation)"
+                        if ($Object_screen.ExtendedKeyUsage -and $Object_screen.ExtendedKeyUsage -like '*Client Authentication*') {
+                            Invoke-Logger -Class Hint -Value "Extended Key Usage:`t`t`t$(($Object_screen.ExtendedKeyUsage) -join ", ")"
+                        } elseif ($Object_screen.ExtendedKeyUsage) {
+                            Invoke-Logger -Value "Extended Key Usage:`t`t`t$(($Object_screen.ExtendedKeyUsage) -join ", ")"
+                        }
                         Invoke-Logger -Value "EnrollmentFlag:`t`t`t`t$($Object_screen.EnrollmentFlag)"
                         if ($Object_screen.PrivateKeyExportable) {
                             Invoke-Logger -Class Hint -Value "Private Key Exportable:`t`t`t`t$($Object_screen.PrivateKeyExportable)"
@@ -816,13 +823,14 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                         } else {
                             Invoke-Logger -Value "CertificateNameFlag:`t`t`t$($Object_screen.CertificateNameFlag)"
                         }
-                        if ($($Object_screen.Identity) -and $($Object_screen.IdentityRights)) {
-                            Invoke-Logger -Class Finding -Value "Template Permissions:`t`t$($Object_screen.Identity) : $($Object_screen.IdentityRights)"
+                        if ($Object_screen.IdentityACL) {
+                            foreach ($Object_single_Identity in $($Object_screen.IdentityACL).GetEnumerator()) {
+                                Invoke-Logger -Class Finding -Value "Template Permissions:`t`t$($Object_single_Identity.Name) : $($Object_single_Identity.Value)"
+                            }
                         }
                         if ($Object_screen.EnrollmentAllowedFor) {
                             Invoke-Logger -Class Hint -Value "Enrollment allowed for:`t`t$(($Object_screen.EnrollmentAllowedFor) -join "`n`t`t`t`t`t")"
                         }
-                        $Object_Template_Vuln = $false
                     }
                     $Object_screen = $null
                 }
@@ -3459,14 +3467,78 @@ https://github.com/cfalta/PoshADCS
     $Result
 }
 
+function Convert-ADCSExtendedKeyFlag {
+<#
+.SYNOPSIS
+Converts the pKIExtendedKeyUsage specified by the "OID" parameter.
+Author: Alexander Sturz (@_61106960_)
+
+.PARAMETER OID
+The value to translate.
+
+.EXAMPLE
+Convert-ADCSExtendedKeyFlag -OID '1.3.6.1.5.5.7.3.2'
+
+Description
+-----------
+Translates OID to human readable value.
+#>
+
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory = $true, ValueFromPipeline=$true)]
+        [ValidateNotNullorEmpty()]
+        [string]
+        $OID
+    )
+
+    $Result = @()
+    $OIDList = $OID.Split(' ')
+
+    try {
+        foreach ($item in $OIDList) {
+            if($item -eq '1.3.6.1.5.2.3.5') { $Result += "KDC Authentication" }
+            elseif($item -eq '1.3.6.1.5.5.7.3.1') { $Result += "Server Authentication" }
+            elseif($item -eq '1.3.6.1.5.5.7.3.2') { $Result += "Client Authentication" }
+            elseif($item -eq '1.3.6.1.5.5.7.3.3') { $Result += "Code Signing" }
+            elseif($item -eq '1.3.6.1.5.5.7.3.4') { $Result += "Secure E-mail" }
+            elseif($item -eq '1.3.6.1.5.5.7.3.5') { $Result += "IP Security End System" }
+            elseif($item -eq '1.3.6.1.5.5.7.3.6') { $Result += "IP Security Tunnel Endpoint" }
+            elseif($item -eq '1.3.6.1.5.5.7.3.7') { $Result += "IP Security User" }
+            elseif($item -eq '1.3.6.1.5.5.7.3.8') { $Result += "Time Stamping" }
+            elseif($item -eq '1.3.6.1.5.5.7.3.9') { $Result += "OCSP Signing" }
+            elseif($item -eq '1.3.6.1.5.5.7.3.21') { $Result += "SSH Client" }
+            elseif($item -eq '1.3.6.1.5.5.7.3.22') { $Result += "SSH Server" }
+            elseif($item -eq '1.3.6.1.4.1.311.10.3.1') { $Result += "Microsoft Trust List Signing" }
+            elseif($item -eq '1.3.6.1.4.1.311.10.3.4') { $Result += "Encrypting File System" }
+            elseif($item -eq '1.3.6.1.4.1.311.10.3.4.1') { $Result += "File Recovery" }
+            elseif($item -eq '1.3.6.1.4.1.311.10.3.9') { $Result += "Root List Signer" }
+            elseif($item -eq '1.3.6.1.4.1.311.10.3.10') { $Result += "Qualified Subordination" }
+            elseif($item -eq '1.3.6.1.4.1.311.10.3.11') { $Result += "Key Recovery" }
+            elseif($item -eq '1.3.6.1.4.1.311.10.3.12') { $Result += "Document Signing" }
+            elseif($item -eq '1.3.6.1.4.1.311.10.3.13') { $Result += "Lifetime Signing" }
+            elseif($item -eq '1.3.6.1.4.1.311.20.2.1') { $Result += "Certificate Request Agent" }
+            elseif($item -eq '1.3.6.1.4.1.311.20.2.2') { $Result += "Smartcard Logon" }
+            elseif($item -eq '1.3.6.1.4.1.311.21.5') { $Result += "Private Key Archival" }
+            elseif($item -eq '1.3.6.1.4.1.311.54.1.2') { $Result += "Remote Desktop Authentication" }
+            elseif($item -eq '1.3.6.1.4.1.311.80.1') { $Result += "Document Encryption" }
+            else { $Result += $item }
+        }
+        $Result
+    }
+    catch {
+        Write-Verbose "[Convert-ADCSExtendedKeyFlag] Error converting OID information: $_"
+    }
+}
+
 function Convert-ADCSFlag {
 <#
 .SYNOPSIS
 Translates the value of a specified flag-attribute into a human readable form.
-Author: Christoph Falta (@cfalta)
+Author: Christoph Falta (@cfalta), Alexander Sturz (@_61106960)
 
 .PARAMETER Attribute
-The flag attribute to translate. Can be one of "mspki-enrollment-flag", "mspki-certificate-name-flag" or "mspki-private-key-flag".
+The flag attribute to translate. Can be one of "mspki-enrollment-flag", "mspki-certificate-name-flag", "mspki-private-key-flag" or "pkiextendedkeyusage-oid".
 
 .PARAMETER Value
 The value to translate.
@@ -3484,7 +3556,7 @@ https://github.com/cfalta/PoshADCS
         [CmdletBinding()]
         Param (
         [Parameter(Mandatory = $true)]
-        [ValidateSet("mspki-enrollment-flag","mspki-certificate-name-flag","mspki-private-key-flag")]
+        [ValidateSet("mspki-enrollment-flag","mspki-certificate-name-flag","mspki-private-key-flag","pkiextendedkeyusage-oid")]
         [string]
         $Attribute,
 
@@ -3495,8 +3567,9 @@ https://github.com/cfalta/PoshADCS
 
     switch($Attribute) {
         "mspki-enrollment-flag" { Convert-ADCSEnrollmentFlag -Flag $Value }
-        "mspki-certificate-name-flag"{ Convert-ADCSNameFlag -Flag $Value }
-        "mspki-private-key-flag"{ Convert-ADCSPrivateKeyFlag -Flag $Value }
+        "mspki-certificate-name-flag" { Convert-ADCSNameFlag -Flag $Value }
+        "mspki-private-key-flag" { Convert-ADCSPrivateKeyFlag -Flag $Value }
+        "pKIExtendedKeyUsage-oid" { Convert-ADCSExtendedKeyFlag -OID $Value }
     }
 }
 
@@ -3786,7 +3859,7 @@ Get's the template with the name "Template1", resolves flags and shows set ACL.
         $RefOidKerbAuthTemplate = @("1.3.6.1.5.5.7.3.2", "1.3.6.1.5.5.7.3.1", "1.3.6.1.4.1.311.20.2.2", "1.3.6.1.5.2.3.5")
     
         foreach($template in $Templates) {
-            $template | Add-Member -MemberType NoteProperty -Name DCAuthCert -Value $False 
+            $template | Add-Member -MemberType NoteProperty -Name DCAuthCert -Value $False
     
             if($template.pkiextendedkeyusage) {
                 if($template.pkiextendedkeyusage.gettype().name -eq "String") {
@@ -3811,12 +3884,17 @@ Get's the template with the name "Template1", resolves flags and shows set ACL.
                 $template | Add-Member -MemberType NoteProperty -Name "ACL" -Value $ACEs
             }
         }
-    
+
         if($ResolveFlags) {
             foreach($template in $Templates) {
                 $template | Add-Member -MemberType NoteProperty -Name "CertificateNameFlag" -Value $template.'mspki-certificate-name-flag'
                 $template | Add-Member -MemberType NoteProperty -Name "EnrollmentFlag" -Value $template.'mspki-enrollment-flag'
                 $template | Add-Member -MemberType NoteProperty -Name "PrivateKeyFlag" -Value $template.'mspki-private-key-flag'
+
+                if ($template.pKIExtendedKeyUsage) {
+                    $ExtendedKeyUsage = Convert-ADCSFlag -Attribute pKIExtendedKeyUsage-oid -Value $template.pKIExtendedKeyUsage
+                    $template | Add-Member -MemberType NoteProperty -Name "ExtendedKeyUsage" -Value $ExtendedKeyUsage
+                }
             }
         }
         $Templates
