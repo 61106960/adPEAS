@@ -147,7 +147,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     $ErrorActionPreference = "Continue"
-    $adPEASVersion = '0.8.6'
+    $adPEASVersion = '0.8.7'
 
     # Check if outputfile is writable and set color
     if ($PSBoundParameters['Outputfile']) {
@@ -1726,7 +1726,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                             }
                         }
                         catch {
-                            Write-Warning "[Get-adPEASComputer] Error retrieving Exchange Server software information: $_"
+                            Write-Verbose "[Get-adPEASComputer] Error retrieving Exchange Server software information: $_"
                         }
                         $object_ExSrv | Invoke-Logger
                     }
@@ -1760,10 +1760,10 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                         $Object_ca = Get-DomainComputer @SearcherArguments -Identity $Object_ADCS.dnshostname # -SecurityMasks Owner
                         Write-Verbose "[Get-adPEASComputer] Found ADCS Server '$($Object_ADCS.dnshostname)'"
                         if ($Object_ca) {
-                            Invoke-Logger -Class Hint -Value "Found ADCS Server '$($Object_ADCS.samaccountname)':"
+                            Invoke-Logger -Class Hint -Value "Found ADCS Server '$($Object_ca.sAMAccountName)':"
                             $Object_ca | invoke-logger
                         } else {
-                            Write-Verbose "[Get-adPEASComputer] No detailed results for ADCS server '$($Object_ADCS.dnshostname)' could be gathered"
+                            Invoke-Logger -Class Note -Value "Found ADCS Server '$($Object_ADCS.dnshostname)' but no details could be gathered"
                         }
                     }
                     else {
@@ -2123,7 +2123,7 @@ $legend_logo_stop
             $Value = "operatingsystem:`t`t`t$($object.operatingsystem)"
             # Find computer with Windows Server 2003, 2008, 2008 R2
             if ($($Object.operatingsystem) -like 'Windows Server 200*' -or $($Object.operatingsystem) -like 'Windows *7*' -or $($Object.operatingsystem) -like 'Windows Vista*') {
-                Invoke-ScreenPrinter -Value $Value -Class "Finding"
+                Invoke-ScreenPrinter -Value $Value -Class Finding
             } else {
                 Invoke-ScreenPrinter -Value $Value
             }
@@ -2138,15 +2138,15 @@ $legend_logo_stop
         }
         if ($($Object.description) -and $($Object.description) -ne '') {
             $Value = "description:`t`t`t$($object.description)"
-            Invoke-ScreenPrinter -Value $Value -Class "Hint"
+            Invoke-ScreenPrinter -Value $Value -Class Hint
         }
         if ($($Object.info) -and $($Object.info) -ne '') {
             $Value = "info:`t`t`t`t$($object.info)"
-            Invoke-ScreenPrinter -Value $Value -Class "Hint"
+            Invoke-ScreenPrinter -Value $Value -Class Hint
         }
         if ($($Object.'ms-Mcs-AdmPwd') -and $($Object.'ms-Mcs-AdmPwd') -ne '') {
             $Value = "ms-Mcs-AdmPwd:`t`t`t$($Object.'ms-Mcs-AdmPwd')"
-            Invoke-ScreenPrinter -Value $Value -Class "Finding"
+            Invoke-ScreenPrinter -Value $Value -Class Finding
             if ($($Object.'ms-mcs-AdmPwdExpirationTime') -and $($Object.'ms-mcs-AdmPwdExpirationTime') -ne '') {
                 if ($($Object.'ms-mcs-AdmPwdExpirationTime').toFileTime() -lt $(Get-Date).toFileTime()) {
                     $Value = "ms-mcs-AdmPwdExpirationTime:`t$($Object.'ms-MCS-AdmPwdExpirationTime')"
@@ -2159,37 +2159,37 @@ $legend_logo_stop
         }
         if ($($Object.UnixUserPassword) -and $($Object.UnixUserPassword) -ne '') {
             $Value = "UnixUserPassword:`t`t`t$([System.Text.Encoding]::ASCII.GetString($Object.UnixUserPassword))"
-            Invoke-ScreenPrinter -Value $Value -Class "Finding"
+            Invoke-ScreenPrinter -Value $Value -Class Finding
         }
         if ($($Object.UserPassword) -and $($Object.UserPassword) -ne '') {
             $Value = "UserPassword:`t`t`t$([System.Text.Encoding]::ASCII.GetString($Object.UserPassword))"
-            Invoke-ScreenPrinter -Value $Value -Class "Finding"
+            Invoke-ScreenPrinter -Value $Value -Class Finding
         }
         if ($($Object.unicodePwd) -and $($Object.unicodePwd) -ne '') {
             $Value = "unicodePwd:`t`t`t`t$([System.Text.Encoding]::ASCII.GetString($Object.unicodePwd))"
-            Invoke-ScreenPrinter -Value $Value -Class "Finding"
+            Invoke-ScreenPrinter -Value $Value -Class Finding
         }
         if ($($Object.msSFU30Password) -and $($Object.msSFU30Password) -ne '') {
             $Value = "msSFU30Password:`t`t`t$([System.Text.Encoding]::ASCII.GetString($Object.msSFU30Password))"
-            Invoke-ScreenPrinter -Value $Value -Class "Finding"
+            Invoke-ScreenPrinter -Value $Value -Class Finding
         }
         if ($($Object.PrincipalsAllowedToRetrieveManagedPassword) -and $($Object.PrincipalsAllowedToRetrieveManagedPassword) -ne '') {
             $Value = "AllowedToRetrieveManagedPassword:`t$($(($Object.PrincipalsAllowedToRetrieveManagedPassword).samaccountname) -join "`n`t`t`t`t`t")"
-            Invoke-ScreenPrinter -Value $Value -Class "Hint"
+            Invoke-ScreenPrinter -Value $Value -Class Hint
         }
         if ($($Object.'msDS-AllowedToDelegateTo') -and $($Object.'msDS-AllowedToDelegateTo') -ne '') {
             $Value = "msDS-AllowedToDelegateTo:`t`t$($($Object.'msDS-AllowedToDelegateTo') -join "`n`t`t`t`t`t")"
-            Invoke-ScreenPrinter -Value $Value -Class "Hint"
+            Invoke-ScreenPrinter -Value $Value -Class Hint
         }
         if ($($Object.'AllowedToActOnBehalfOfOtherIdentity') -and $($Object.'AllowedToActOnBehalfOfOtherIdentity') -ne '') {
             $Value = "AllowedToActOnBehalfOfOtherIdentity:$($($Object.'AllowedToActOnBehalfOfOtherIdentity') -join "`n`t`t`t`t`t")"
-            Invoke-ScreenPrinter -Value $Value -Class "Hint"
+            Invoke-ScreenPrinter -Value $Value -Class Hint
         }
         if ($($Object.RunningOnServer) -and $($Object.RunningOnServer) -ne '') {
             $Value = "RunningOnServer:`t`t`t$($Object.RunningOnServer)"
-            Invoke-ScreenPrinter -Value $Value -Class "Hint"
+            Invoke-ScreenPrinter -Value $Value -Class Hint
             $Value = "UsedForAzureAD:`t`t`t$($Object.UsedForAzureAD)"
-            Invoke-ScreenPrinter -Value $Value -Class "Hint"
+            Invoke-ScreenPrinter -Value $Value -Class Hint
         }
         if ($($Object.pwdLastSet) -and $($Object.pwdLastSet) -ne '') {
             $Value = "pwdLastSet:`t`t`t`t$($object.pwdLastSet)"
@@ -2197,9 +2197,9 @@ $legend_logo_stop
                 $Value = "pwdLastSet:`t`t`t`tUser must change password at next logon"
                 Invoke-ScreenPrinter -Value $Value
             } elseif ($($Object.pwdLastSet) -le $FindingPwdLastSet) {
-                Invoke-ScreenPrinter -Value $Value -Class "Finding"
+                Invoke-ScreenPrinter -Value $Value -Class Finding
             }elseif ($($Object.pwdLastSet) -le $DatePwdLastSet) {
-                Invoke-ScreenPrinter -Value $Value -Class "Hint"
+                Invoke-ScreenPrinter -Value $Value -Class Finding
             }  else {
                 Invoke-ScreenPrinter -Value $Value
             }
@@ -2216,14 +2216,16 @@ $legend_logo_stop
         if ($($Object.userAccountControl) -and $($Object.userAccountControl) -ne '') {
             $Value = "userAccountControl:`t`t`t$($object.userAccountControl)"
             if ($($Object.userAccountControl) -like "*PASSWD_NOTREQD*" -or $($Object.userAccountControl) -like "*DONT_REQ_PREAUTH*" -or $($Object.userAccountControl) -like "*TRUSTED_FOR_DELEGATION*") {
-                Invoke-ScreenPrinter -Value $Value -Class "Hint"
+                Invoke-ScreenPrinter -Value $Value -Class Hint
+            } elseif ($($Object.userAccountControl) -like "*ACCOUNTDISABLE*") {
+                Invoke-ScreenPrinter -Value $Value -Class Note
             } else {
                 Invoke-ScreenPrinter -Value $Value
             }
         }
         if ($($Object.admincount) -and $($Object.admincount) -ne '') {
             $Value = "admincount:`t`t`t`tThis identity is or was member of a high privileged admin group"
-            Invoke-ScreenPrinter -Value $Value -Class "Hint"
+            Invoke-ScreenPrinter -Value $Value -Class Hint
         }
         if ($($Object.OwnerSID) -and $($Object.OwnerSID) -ne '' -and [int32]$($Object.OwnerSID.Value).split("-")[-1] -ge 1000) {
             # Search for non-default AD accounts with SID greater -1000
@@ -2232,14 +2234,14 @@ $legend_logo_stop
             } else {
                 $Value = "OwnerOfIdentity:`t`t`t$($Object.OwnerSID)"
             }
-            Invoke-ScreenPrinter -Value $Value -Class "Hint"
+            Invoke-ScreenPrinter -Value $Value -Class Hint
         }
 
         <# removed displaying 'extensiondata', as no usefull information comes from it anymore
         if ($Object.extensiondata -and $Object.extensiondata -ne '') {
             $Object.extensiondata = $Object.extensiondata | ForEach-Object {[System.Text.Encoding]::ASCII.GetString($_)}
             $Value = "extensiondata:`t`t`t$($Object.extensiondata)"
-            Invoke-ScreenPrinter -Value $Value -Class "Hint"
+            Invoke-ScreenPrinter -Value $Value -Class Hint
         } #>
 
         # Put one last empty line to the screen
