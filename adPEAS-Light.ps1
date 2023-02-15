@@ -147,7 +147,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     $ErrorActionPreference = "Continue"
-    $adPEASVersion = '0.8.0'
+    $adPEASVersion = '0.8.5'
 
     # Check if outputfile is writable and set color
     if ($PSBoundParameters['Outputfile']) {
@@ -356,16 +356,25 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         if ($adPEAS_Domain -and $adPEAS_Domain -ne '') {
             Invoke-Logger -Class Hint -Value "Found general Active Directory domain information for domain '$($adPEAS_Domain.Name)':"
             Invoke-Logger -Value "Domain Name:`t`t`t`t$($adPEAS_Domain.Name)"
-            Invoke-Logger -Value "Domain SID:`t`t`t`t$(Get-DomainSID @SearcherArguments)"
-            if ($($adPEAS_Domain.DomainModeLevel) -le '4') {
+            try {
+                Invoke-Logger -Value "Domain SID:`t`t`t`t$(Get-DomainSID @SearcherArguments)"
+            } catch {
+                Write-Verbose "[Get-adPEASDomain] Error retrieving domain SID: $_"
+            }
+            if ($([int32]($adPEAS_Domain.DomainModeLevel)) -le 4) {
                 Invoke-Logger -Class Hint -Value "Domain Functional Level:`t`t$($adPEAS_DomainMode[$adPEAS_Domain.DomainModeLevel])"
             } else {
                 Invoke-Logger -Value "Domain Functional Level:`t`t$($adPEAS_DomainMode[$adPEAS_Domain.DomainModeLevel])"
             }
             Invoke-Logger -Value "Forest Name:`t`t`t`t$($adPEAS_Domain.Forest)"
-            if ($adPEAS_Domain.Name -ne $(((get-domain @SearcherArguments).Forest).RootDomain).name) {
-                Invoke-Logger -Value "Root Domain Name:`t`t`t$((($adPEAS_Domain.Forest).RootDomain).Name)"
-                Invoke-Logger -Value "Root Domain SID:`t`t`t$(Get-DomainSID @RootDomSearcherArguments)"
+            try {
+                if ($adPEAS_Domain.Name -ne $(((get-domain @SearcherArguments).Forest).RootDomain).name) {
+                    Invoke-Logger -Value "Root Domain Name:`t`t`t$((($adPEAS_Domain.Forest).RootDomain).Name)"
+                    Invoke-Logger -Value "Root Domain SID:`t`t`t$(Get-DomainSID @RootDomSearcherArguments)"
+                }
+            }
+            catch {
+                Write-Verbose "[Get-adPEASDomain] Error retrieving root domain information: $_"
             }
             if ($adPEAS_Domain.Children -ne '') {
                 Invoke-Logger -Value "Forest Children:`t`t`t`t$($adPEAS_Domain.Children)"
@@ -398,7 +407,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
             }
             if ( -not $(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) -or $(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) -eq '0') {
                 Invoke-Logger -Class Finding -Value "Minimum Password Length:`t`tDisabled"
-            } elseif ( -not $(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) -or $(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) -le '7') {
+            } elseif ($([int32](($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength)) -le 7) {
                 Invoke-Logger -Class Hint -Value "Minimum Password Length:`t`t$(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) character"
             } else {
                 Invoke-Logger -Value "Minimum Password Length:`t`t$(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) character"
@@ -418,7 +427,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                     Invoke-Logger -Class Finding -Value "Lockout Duration:`t`t`tDisabled"
                 }
                 if ($(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) -and $(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) -ne '') {
-                    Invoke-Logger -Class Hint -Value "Lockout Reset:`t`t`t`tLockout reset after $(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) minutes"
+                    Invoke-Logger -Class Hint -Value "Lockout Reset:`t`t`tLockout reset after $(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) minutes"
                 } else {
                     Invoke-Logger -Value "Lockout Reset:`t`t`t`tDisabled"
                 }
@@ -479,7 +488,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         # Getting 'add computer to domain' permissions
         $adPEAS_DomainRights = Get-DomainPolicyData @SearcherArguments -Policy 'DomainController'
         if ($adPEAS_DomainRights -and $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -ne '') {
-            Invoke-Logger -Class Hint -Value "Found user/groups that can add a computer object to domain '$($adPEAS_Domain.Name)':"
+            Invoke-Logger -Class Hint -Value "Filtering found identities that can add a computer object to domain '$($adPEAS_Domain.Name)':"
             if ($(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -and $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -ne '') {
                 foreach ($object_rights in $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege)) {
                     if ($($object_rights.substring(1)) -eq "S-1-5-11") {
@@ -488,12 +497,16 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                     $user_object = $object_rights.substring(1) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
                     # Search for non-default AD accounts with SID greater -1000
                     if ([int32]$($user_object.objectSid).split("-")[-1] -ge 1000) {
-                        $user_object_nondefault = $($user_object.objectSid) | ConvertFrom-SID @SearcherArguments
-                        if ($user_object_nondefault) {
-                            Invoke-Logger -Class Hint -Value "The account '$user_object_nondefault' is a non-default account and can add computer to the domain"
+                        #$object_rights_identity = $($user_object.objectSid) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
+                        if ($($user_object.sAMAccountName) -and $($user_object.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
+                            Write-Verbose "[Get-adPEASDomain] Identity '$($user_object.distinguishedName)' has DCSync rights but account is disabled"
+                        } else {
+                            Invoke-Logger -Class Hint -Value "The identity '$($user_object.sAMAccountName)' is a non-default account and can add computer to the domain"
+                            $user_object | Invoke-Logger
                         }
+                    } else {
+                        $user_object | Invoke-Logger
                     }
-                    $user_object | Invoke-Logger
                 }
             }
         }
@@ -508,18 +521,16 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         $adPEAS_DCSyncRights = Get-DomainDCSync @SearcherArguments
         
         if ($adPEAS_DCSyncRights -and $adPEAS_DCSyncRights -ne '') {
-            Invoke-Logger -Class Hint -Value "Found non-default user/groups that can perform DCSync of domain '$($adPEAS_Domain.Name)':"
+            Invoke-Logger -Class Hint -Value "Filtering found identities that can perform DCSync in domain '$($adPEAS_Domain.Name)':"
             foreach ($object_dcsync in $adPEAS_DCSyncRights) {
                 # Search for non-default AD accounts with SID greater -1000
                 if ([int32]$($object_dcsync.objectSid).split("-")[-1] -ge 1000) {
-                    $object_dcsync_nondefault = $($object_dcsync.objectSid) | ConvertFrom-SID @SearcherArguments
-                    if ($object_dcsync_nondefault) {
-                        $object_dcsync_identity = $($object_dcsync.objectSid) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
-                        if ($($object_dcsync_identity.sAMAccountName) -and $($object_dcsync_identity.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
-                            Write-Verbose "[Get-adPEASDomain] User '$($object_dcsync_identity.distinguishedName)' has DCSync rights but account is disabled"
-                        } else {
-                            $object_dcsync_identity | Invoke-Logger
-                        }
+                    $object_dcsync_identity = $($object_dcsync.objectSid) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
+                    if ($($object_dcsync_identity.sAMAccountName) -and $($object_dcsync_identity.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
+                        Write-Verbose "[Get-adPEASDomain] Identity '$($object_dcsync_identity.distinguishedName)' has DCSync rights but account is disabled"
+                    } else {
+                        Invoke-Logger -Class Hint -Value "The identity '$($object_dcsync_identity.sAMAccountName)' is a non-default account and can DCSync a domain controller"
+                        $object_dcsync_identity | Invoke-Logger
                     }
                 }
             }
@@ -535,14 +546,18 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         $adPEAS_LAPSRights = Get-DomainLAPSReaders @SearcherArguments | Select-Object PrincipalSID | Sort-Object -Property PrincipalSID -Unique
         
         if ($adPEAS_LAPSRights -and $adPEAS_LAPSRights -ne '') {
-            Invoke-Logger -Class Hint -Value "Found non-default user/groups that can read LAPS of domain '$($adPEAS_Domain.Name)':"
+            Invoke-Logger -Class Hint -Value "Filtering found identities that can read LAPS attribute in domain '$($adPEAS_Domain.Name)':"
             foreach ($object_laps in $($adPEAS_LAPSRights.PrincipalSID.Value)) {
                 if ($object_laps -ne 'S-1-5-18') {
                     # Search for non-default AD accounts with SID greater -1000
                     if ([int32]$object_laps.split("-")[-1] -ge 1000) {
-                        $object_laps_nondefault = $object_laps | ConvertFrom-SID @SearcherArguments
-                        if ($object_laps_nondefault) {
-                            Get-DomainObject @SearcherArguments -Identity $object_laps <# -SecurityMasks Owner #> | Invoke-Logger
+                        Write-Verbose "[Get-adPEASDomain] Found LAPS permission for identity $object_laps"
+                        $object_laps_identity = Get-DomainObject @SearcherArguments -Identity $object_laps <# -SecurityMasks Owner #>
+                        if ($($object_laps_identity.sAMAccountName) -and $($object_laps_identity.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
+                            Write-Verbose "[Get-adPEASDomain] Identity '$($object_laps_identity.distinguishedName)' has LAPS permission but account is disabled"
+                        } else {
+                            Invoke-Logger -Class Hint -Value "The identity '$($object_laps_identity.sAMAccountName)' is a non-default account and can read LAPS attribute"
+                            $object_laps_identity | Invoke-Logger
                         }
                     }
                 }
@@ -717,7 +732,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         $adPEAS_CANTAuthStore = Get-DomainObject @RootDomSearcherArguments -SearchBase ("CN=NTAuthCertificates," + $adPEAS_CABasePath) -LDAPFilter "(objectclass=certificationAuthority)"
 
         if ($adPEAS_CAEnterpriseCA -and $adPEAS_CAEnterpriseCA -ne '') {
-            Invoke-Logger -Class Hint -Value "Found at least one available Active Directory Certificate Services"
+            Invoke-Logger -Class Hint -Value "Found at least one available Active Directory Certificate Service"
             Invoke-Logger -Value "adPEAS does basic enumeration only, consider reading https://posts.specterops.io/certified-pre-owned-d95910965cd2`n"
             foreach ($Object_CA in $adPEAS_CAEnterpriseCA) {
                 Invoke-Logger -Class Hint -Value "Found Active Directory Certificate Services '$($Object_CA.cn)':"
@@ -769,7 +784,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                             if ($($TemplateACL.identity) -and $($TemplateACL.identity) -ne '') {
                                 Invoke-Logger -Class Finding -Value "'$($TemplateACL.identity)' has/have '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
                             } else {
-                                Invoke-Logger -Class Finding -Value "A foreign Identiy which could not be determined has '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
+                                Invoke-Logger -Class Finding -Value "An Identiy which could not be determined has '$($TemplateACL.ActiveDirectoryRights)' permissions on Template '$($Object_Var_Template.name)'"
                                 $TemplateACL.identity = "Identity could not be determined"
                             }
                             $Object_screen | Add-Member Noteproperty 'Identity' $TemplateACL.identity
@@ -1031,15 +1046,18 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                         $Object_gMSAMembers = (New-Object Security.AccessControl.RawSecurityDescriptor($Object_gMSA.'msds-groupmsamembership', 0)).DiscretionaryAcl.SecurityIdentifier.Value
                         foreach ($Object_gMSAMember in $Object_gMSAMembers){
                             # check if the member is a group and if yes, request group members recursive
-                            if ($(Get-DomainObject @SearcherArguments -Identity $Object_gMSAMember).samaccounttype -eq 'GROUP_OBJECT') {
+                            $Object_gMSAMemberType = $(Get-DomainObject @SearcherArguments -Identity $Object_gMSAMember).samaccounttype
+                            if ($Object_gMSAMemberType -eq 'GROUP_OBJECT' -or $Object_gMSAMemberType -eq 'ALIAS_OBJECT') {
                                 Write-verbose "[Get-adPEASCreds] gMSA member identity '$Object_gMSAMember' is a group"
                                 $Object_gMSAMemberArray += $(Get-DomainGroupMember @SearcherArguments -Identity $Object_gMSAMember -Recurse).MemberSID
+                            } else {
+                                $Object_gMSAMemberArray += $(Get-DomainObject @SearcherArguments -Identity $Object_gMSAMember).objectSid
                             }
                         } 
                     } else {
                         Write-Verbose "[Get-adPEASCreds] Error retrieving gmSA group membership information for '$($Object_gMSA.sAMAccountName)'"
                     }
-                    $Object_gMSA | Add-Member Noteproperty 'PrincipalsAllowedToRetrieveManagedPassword' $($Object_gMSAMemberArray  | ConvertFrom-SID @SearcherArguments)
+                    $Object_gMSA | Add-Member Noteproperty 'PrincipalsAllowedToRetrieveManagedPassword' $($Object_gMSAMemberArray | Get-DomainObject @SearcherArguments)
                 }
                 catch {
                     Write-Warning "[Get-adPEASCreds] Error retrieving gmSA group membership information: $_"
@@ -1386,7 +1404,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         $($adPEAS_DomSID + '-512') # DOMAIN_ADMINS
         $($adPEAS_RootDomSID + '-519') # ENTERPRISE_ADMINS
         $($adPEAS_DomSID + '-520') # GROUP_POLICY_CREATOR_OWNERS
-        $(ConvertTo-SID -ObjectName DnsAdmins) # DNS_ADMINS - This group does not have a fixed SID
+        $(ConvertTo-SID @SearcherArguments -ObjectName DnsAdmins) # DNS_ADMINS - This group does not have a fixed SID
         'S-1-5-32-548' # ACCOUNT_OPERATORS
         'S-1-5-32-549' # SERVER_OPERATORS
         'S-1-5-32-550' # PRINTER_OPERATORS
@@ -1622,7 +1640,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
 
     <# +++++ Starting Computer Enumeration +++++ #>
     $ErrorActionPreference = "Continue"
-    Invoke-Logger -Class Info -Value "Searching for Juicy Computer Enumeration"
+    Invoke-Logger -Class Info -Value "Starting Computer Enumeration"
 
     # Building searcher arguments for the following PowerView requests
     $SearcherArguments = @{}
@@ -1730,9 +1748,15 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
             foreach ($Object_ADCS in $adPEAS_CAEnterpriseCA) {
                 try {
                     if ($Object_ADCS -and $Object_ADCS -ne '') {
-                        # request all attributes of a single Enterprise CA server
+                        # request all attributes of a single Enterprise CA server by its dns hostname
                         $Object_ca = Get-DomainComputer @SearcherArguments -Identity $Object_ADCS.dnshostname # -SecurityMasks Owner
-                        Invoke-Logger -Class Hint -Value "Found ADCS Server '$($Object_ca.samaccountname)':"
+                        Write-Verbose "[Get-adPEASComputer] Found ADCS Server '$($Object_ADCS.dnshostname)'"
+                        if ($Object_ca) {
+                            Invoke-Logger -Class Hint -Value "Found ADCS Server '$($Object_ADCS.samaccountname)':"
+                            $Object_ca | invoke-logger
+                        } else {
+                            Write-Verbose "[Get-adPEASComputer] No detailed results for ADCS server '$($Object_ADCS.dnshostname)' could be gathered"
+                        }
                     }
                     else {
                         Write-verbose "[Get-adPEASComputer] No Results or Results have been suppressed"
@@ -1741,7 +1765,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                 catch {
                     Write-Warning "[Get-adPEASComputer] Error retrieving ADCS information: $_"
                 }
-                $Object_ca | invoke-logger
+                
             }
         }
     }
@@ -1761,8 +1785,13 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
             if ($($adPEAS_OutdatedOS.samaccountname) -and $($adPEAS_OutdatedOS.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
                 Write-Verbose "[Get-adPEASComputer] Detected outdated '$($adPEAS_OutdatedOS.operatingsystem)' at computer '$($adPEAS_OutdatedOS.distinguishedName)' but computer is disabled"
             } elseif ($($adPEAS_OutdatedOS.samaccountname) -and $($adPEAS_OutdatedOS.samaccountname) -ne '') {
-                Invoke-Logger -Class Finding -Value "Found outdated '$($adPEAS_OutdatedOS.operatingsystem)' installed on Computer '$($adPEAS_OutdatedOS.samaccountname)':"
+                # Suppress outdated OS that have not been active for 2 months
+                if ($($adPEAS_OutdatedOS.lastLogonTimestamp) -le $((Get-Date).AddMonths(-2))) {
+                    Write-Verbose "[Get-adPEASComputer] Detected outdated '$($adPEAS_OutdatedOS.operatingsystem)' at computer '$($adPEAS_OutdatedOS.distinguishedName)' but computer is not online anymore"
+                } else {
+                    Invoke-Logger -Class Finding -Value "Found outdated '$($adPEAS_OutdatedOS.operatingsystem)' installed on Computer '$($adPEAS_OutdatedOS.samaccountname)':"
                 $adPEAS_OutdatedOS | Invoke-Logger
+                }
             }
             else {
                 Write-verbose "[Get-adPEASComputer] No Results or Results have been suppressed"
@@ -2112,8 +2141,8 @@ $legend_logo_stop
             Invoke-ScreenPrinter -Value $Value -Class "Finding"
             if ($($Object.'ms-mcs-AdmPwdExpirationTime') -and $($Object.'ms-mcs-AdmPwdExpirationTime') -ne '') {
                 if ($($Object.'ms-mcs-AdmPwdExpirationTime').toFileTime() -lt $(Get-Date).toFileTime()) {
-                    $Value = "ms-mcs-AdmPwdExpirationTime:`t$($Object.'ms-MCS-AdmPwdExpirationTime') (Computer is likely not online anymore!)"
-                    Invoke-ScreenPrinter -Class Hint -Value $Value
+                    $Value = "ms-mcs-AdmPwdExpirationTime:`t$($Object.'ms-MCS-AdmPwdExpirationTime')"
+                    Invoke-ScreenPrinter -Class Note -Value $Value
                 } else {
                     $Value = "ms-mcs-AdmPwdExpirationTime:`t`t$($Object.'ms-MCS-AdmPwdExpirationTime')"
                     Invoke-ScreenPrinter -Value $Value
@@ -2137,7 +2166,7 @@ $legend_logo_stop
             Invoke-ScreenPrinter -Value $Value -Class "Finding"
         }
         if ($($Object.PrincipalsAllowedToRetrieveManagedPassword) -and $($Object.PrincipalsAllowedToRetrieveManagedPassword) -ne '') {
-            $Value = "AllowedToRetrieveManagedPassword:`t$($($Object.PrincipalsAllowedToRetrieveManagedPassword) -join "`n`t`t`t`t`t")"
+            $Value = "AllowedToRetrieveManagedPassword:`t$($(($Object.PrincipalsAllowedToRetrieveManagedPassword).samaccountname) -join "`n`t`t`t`t`t")"
             Invoke-ScreenPrinter -Value $Value -Class "Hint"
         }
         if ($($Object.'msDS-AllowedToDelegateTo') -and $($Object.'msDS-AllowedToDelegateTo') -ne '') {
@@ -2170,7 +2199,7 @@ $legend_logo_stop
         if ($($Object.lastLogonTimestamp) -and $($Object.lastLogonTimestamp) -ne '') {
             if ($($Object.userAccountControl) -like "*WORKSTATION_TRUST_ACCOUNT*" -and $($Object.lastLogonTimestamp) -le $DateLastLogon) {
                 $Value = "lastLogonTimestamp:`t`t`t$($object.lastLogonTimestamp) (Computer is likely not online anymore!)"
-                Invoke-ScreenPrinter -Class Hint -Value $Value
+                Invoke-ScreenPrinter -Class Note -Value $Value
             } else {
                 $Value = "lastLogonTimestamp:`t`t`t$($object.lastLogonTimestamp)"
                 Invoke-ScreenPrinter -Value $Value
@@ -2298,6 +2327,7 @@ function Get-GPPInnerField {
         }
         }
 }
+
 function Get-GPPDecryptedCpassword {
 # helper function that decodes and decrypts password for Get-GPPPassword
     [CmdletBinding()]
@@ -2663,6 +2693,7 @@ Get-NetlogonFile -Domain contoso.com -Cred $Cred
         
     }
 }
+
 Function Get-DecodedVBE {
 <#
 .SYNOPSIS
@@ -2920,6 +2951,7 @@ Get-Content "c:\encodedfile.vbe" | Get-DecodedVBE
         }
     }
 }
+
 function Invoke-CheckExchange {
 <#
 .SYNOPSIS
@@ -2943,8 +2975,10 @@ Invoke-CheckExchange -Identity ex.contoso.com
     )
 
     BEGIN {
-
         $ErrorActionPreference = "Continue"
+        $OriginalProgressPreference = $Global:ProgressPreference
+        $Global:ProgressPreference = 'SilentlyContinue'
+
         if ( (($PSVersionTable).PSVersion).Major -gt '2') { # Check if Powershell version is greater 2
 
 # deactivation of certificate checks and allow all ssl/tls versions
@@ -2966,11 +3000,8 @@ add-type @"
             Write-warning "[Invoke-CheckExchange] You are using Powershell version $((($PSVersionTable).PSVersion).Major), unfortunately this version does not work with this Cmdlet"
         }
     }
-
     PROCESS {
-
         foreach ($target in $Identity) {
-        
             $ExSrv = $target.Trim('\ ')
             $ExSrvUri = "https://$($ExSrv)/owa/" #$ExSrvUri = "https://$($ExSrv)/owa/auth/logon.aspx"
             $ExSrvIP = (Get-IPAddress -ComputerName $ExSrv).ipAddress
@@ -3003,9 +3034,12 @@ add-type @"
                 }
             }
             catch {
-                Write-Error "[Invoke-CheckExchange] Exchange build number could not be determined: $_"
+                Write-Warning "[Invoke-CheckExchange] Exchange build number could not be determined: $_"
             }
         }
+    }
+    END {
+        $Global:ProgressPreference = $OriginalProgressPreference
     }
 }
 
@@ -5818,6 +5852,10 @@ A string representing the SID of the translated name.
         [Alias('DomainController')]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $SSL, # dummy for searcher arguments
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]

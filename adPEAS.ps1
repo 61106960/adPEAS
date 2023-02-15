@@ -147,7 +147,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     $ErrorActionPreference = "Continue"
-    $adPEASVersion = '0.8.4'
+    $adPEASVersion = '0.8.5'
 
     # Check if outputfile is writable and set color
     if ($PSBoundParameters['Outputfile']) {
@@ -1748,9 +1748,15 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
             foreach ($Object_ADCS in $adPEAS_CAEnterpriseCA) {
                 try {
                     if ($Object_ADCS -and $Object_ADCS -ne '') {
-                        # request all attributes of a single Enterprise CA server
+                        # request all attributes of a single Enterprise CA server by its dns hostname
                         $Object_ca = Get-DomainComputer @SearcherArguments -Identity $Object_ADCS.dnshostname # -SecurityMasks Owner
-                        Invoke-Logger -Class Hint -Value "Found ADCS Server '$($Object_ca.samaccountname)':"
+                        Write-Verbose "[Get-adPEASComputer] Found ADCS Server '$($Object_ADCS.dnshostname)'"
+                        if ($Object_ca) {
+                            Invoke-Logger -Class Hint -Value "Found ADCS Server '$($Object_ADCS.samaccountname)':"
+                            $Object_ca | invoke-logger
+                        } else {
+                            Write-Verbose "[Get-adPEASComputer] No detailed results for ADCS server '$($Object_ADCS.dnshostname)' could be gathered"
+                        }
                     }
                     else {
                         Write-verbose "[Get-adPEASComputer] No Results or Results have been suppressed"
@@ -1759,7 +1765,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                 catch {
                     Write-Warning "[Get-adPEASComputer] Error retrieving ADCS information: $_"
                 }
-                $Object_ca | invoke-logger
+                
             }
         }
     }
@@ -2969,8 +2975,10 @@ Invoke-CheckExchange -Identity ex.contoso.com
     )
 
     BEGIN {
-
         $ErrorActionPreference = "Continue"
+        $OriginalProgressPreference = $Global:ProgressPreference
+        $Global:ProgressPreference = 'SilentlyContinue'
+
         if ( (($PSVersionTable).PSVersion).Major -gt '2') { # Check if Powershell version is greater 2
 
 # deactivation of certificate checks and allow all ssl/tls versions
@@ -2992,11 +3000,8 @@ add-type @"
             Write-warning "[Invoke-CheckExchange] You are using Powershell version $((($PSVersionTable).PSVersion).Major), unfortunately this version does not work with this Cmdlet"
         }
     }
-
     PROCESS {
-
         foreach ($target in $Identity) {
-        
             $ExSrv = $target.Trim('\ ')
             $ExSrvUri = "https://$($ExSrv)/owa/" #$ExSrvUri = "https://$($ExSrv)/owa/auth/logon.aspx"
             $ExSrvIP = (Get-IPAddress -ComputerName $ExSrv).ipAddress
@@ -3032,6 +3037,9 @@ add-type @"
                 Write-Warning "[Invoke-CheckExchange] Exchange build number could not be determined: $_"
             }
         }
+    }
+    END {
+        $Global:ProgressPreference = $OriginalProgressPreference
     }
 }
 
