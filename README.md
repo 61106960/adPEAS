@@ -85,7 +85,7 @@ Invoke-adPEAS -Module Domain
 
 Enumerates basic Active Directory Certificate Services information, like CA Name, CA Server and common Template vulnerabilities.
 ```
-Invoke-adPEAS -Module CA
+Invoke-adPEAS -Module ADCS
 ```
 
 Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix password attributes, gMSA, LAPS (if your account has the rights to read it), Group Policies, Netlogon scripts.
