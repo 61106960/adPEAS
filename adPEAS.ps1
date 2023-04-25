@@ -147,7 +147,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     $ErrorActionPreference = "Continue"
-    $adPEASVersion = '0.8.7'
+    $adPEASVersion = '0.8.8'
 
     # Check if outputfile is writable and set color
     if ($PSBoundParameters['Outputfile']) {
@@ -268,6 +268,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
     # Stop to impersonate with given credentials
     if ($InvokeadPEAS_LogonToken) { Invoke-RevertToSelf -TokenHandle $InvokeadPEAS_LogonToken}
 }
+
 Function Get-adPEASDomain {
 <#
 .SYNOPSIS
@@ -377,7 +378,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                 Write-Verbose "[Get-adPEASDomain] Error retrieving root domain information: $_"
             }
             if ($adPEAS_Domain.Children -ne '') {
-                Invoke-Logger -Value "Forest Children:`t`t`t`t$($adPEAS_Domain.Children)"
+                Invoke-Logger -Value "Forest Children:`t`t`t$($adPEAS_Domain.Children)"
             } else {
                 Invoke-Logger -Value "Forest Children:`t`t`tNo Subdomain[s] available"
             }
@@ -951,10 +952,12 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                     $Object_Kerberoast | Get-DomainObject @SearcherArguments -SecurityMasks Owner | Invoke-Logger
                     if ($($Object_Kerberoast.hash) -like '$krb5tgs$23$*') {
                         Invoke-Logger -Value 'Hashcat usage: hashcat -m 13100'
-                        Invoke-Logger -Class Finding -Value "$($Object_Kerberoast.hash)" -Raw
-                    } else {
-                        Invoke-Logger -Class Debug -Value "[Get-adPEASCreds] At the moment RC4 (23) TGT supported only but received $($($Object_Kerberoast.hash).substring(0,25))..."
+                    } elseif ($($Object_Kerberoast.hash) -like '$krb5tgs$17$*') {
+                        Invoke-Logger -Value 'Hashcat usage: hashcat -m 19600'
+                    } elseif ($($Object_Kerberoast.hash) -like '$krb5tgs$18$*') {
+                        Invoke-Logger -Value 'Hashcat usage: hashcat -m 19700'
                     }
+                    Invoke-Logger -Class Finding -Value "$($Object_Kerberoast.hash)" -Raw
                 } else {
                     Invoke-Logger -Value " "
                 }
@@ -7153,7 +7156,12 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
                         $Hash = $null
                         $Out | Add-Member Noteproperty 'TicketByteHexStream' ([Bitconverter]::ToString($TicketByteStream).Replace('-',''))
                     } else {
-                        $Hash = "$($CipherText.Substring(0,32))`$$($CipherText.Substring(32))"
+                        if($Etype -eq 17 -or $Etype -eq 18) { 
+                            $ChecksumLen = 24 # Checksum length AES = 24 Byte (12 Byte as hexascii = 24 Byte)
+                        } else {
+                            $ChecksumLen = 32 # Checksum length RC4 = 16 Byte (16 Byte as hexascii = 32 Byte)
+                        }
+                        $Hash = "$($CipherText.Substring(0,$ChecksumLen))`$$($CipherText.Substring($ChecksumLen))"
                         $Out | Add-Member Noteproperty 'TicketByteHexStream' $null
                     }
                 } else {
