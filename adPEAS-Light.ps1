@@ -917,6 +917,12 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
             if ($($Object_ASRep.sAMAccountName) -and $($Object_ASRep.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
                 Write-Verbose "[Get-adPEASCreds] User '$($Object_ASRep.distinguishedName)' does not require kerberos preauthentication but account is disabled"
             }
+            elseif ($($Object_ASRep.sAMAccountName) -and $($Object_ASRep.accountexpires) -ne 'NEVER' -and $($Object_ASRep.accountexpires) -le (Get-Date)) {
+                Write-Verbose "[Get-adPEASCreds] User '$($Object_ASRep.distinguishedName)' does not require kerberos preauthentication but account is expired on $($Object_ASRep.accountexpires)"
+            }
+            elseif ($($Object_ASRep.sAMAccountName) -and $($Object_ASRep.pwdLastSet).toFileTime() -eq 0) {
+                Write-Verbose "[Get-adPEASCreds] User '$($Object_ASRep.distinguishedName)' does not require kerberos preauthentication but password must be changed on next logon)"
+            }
             elseif ($($Object_ASRep.sAMAccountName) -and $($Object_ASRep.sAMAccountName) -ne '') {
                 Invoke-Logger -Class Finding -Value "Found ASREProastable User '$($Object_ASRep.samaccountname)':"
                 $Object_ASRepTGT = Get-ASREPHash @SearcherArguments -Username $Object_ASRep.samaccountname
