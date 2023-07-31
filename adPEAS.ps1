@@ -2194,16 +2194,25 @@ $legend_logo_stop
             $Value = "UsedForAzureAD:`t`t`t$($Object.UsedForAzureAD)"
             Invoke-ScreenPrinter -Value $Value -Class Hint
         }
+        if ($($Object.accountexpires) -and $($Object.accountexpires) -ne 'NEVER') {
+            if ($($Object.accountexpires) -ge (Get-Date)) {
+                $Value = "accountexpires:`t`t`tThis identity expires on $($Object.accountexpires)"
+                Invoke-ScreenPrinter -Value $Value -Class Hint
+            } else {
+                $Value = "accountexpires:`t`t`tThis identity has been expired since $($Object.accountexpires)"
+                Invoke-ScreenPrinter -Value $Value -Class Note
+            }
+        }
         if ($($Object.pwdLastSet) -and $($Object.pwdLastSet) -ne '') {
             $Value = "pwdLastSet:`t`t`t`t$($object.pwdLastSet)"
             if ($($Object.pwdLastSet).toFileTime() -eq 0) {
                 $Value = "pwdLastSet:`t`t`t`tUser must change password at next logon"
-                Invoke-ScreenPrinter -Value $Value
+                Invoke-ScreenPrinter -Value $Value -Class Note
             } elseif ($($Object.pwdLastSet) -le $FindingPwdLastSet) {
                 Invoke-ScreenPrinter -Value $Value -Class Finding
-            }elseif ($($Object.pwdLastSet) -le $DatePwdLastSet) {
+            } elseif ($($Object.pwdLastSet) -le $DatePwdLastSet) {
                 Invoke-ScreenPrinter -Value $Value -Class Finding
-            }  else {
+            } else {
                 Invoke-ScreenPrinter -Value $Value
             }
         }
