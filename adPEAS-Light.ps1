@@ -1119,16 +1119,22 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
     try {
         $adPEAS_NetlogonFiles = Get-NetlogonFile @SearcherArguments
         foreach ($Object_NetLogonFile in $adPEAS_NetlogonFiles) {
-            if ( -not $Object_NetLogonFile) {
-                Write-Verbose "[Get-adPEASCreds] We have not found any file with sensitive information in NETLOGON share"
-            }
-            elseif ($Object_NetLogonFile.FileName -and $Object_NetLogonFile.FileName -ne '') {
-                Invoke-Logger -Class Hint -Value "Found possible sensitive information in NETLOGON file '$($Object_NetLogonFile.FilePath)':"
-                Invoke-Logger -Class Finding -Value $($Object_NetLogonFile.LineContent)
-                Invoke-Logger -Value " "
+            if ($Object_NetLogonFile -and $Object_NetLogonFile -ne '') {
+                if ($Object_NetLogonFile.FilePath -and $Object_NetLogonFile.FilePath -ne '') {
+                    if ($Object_NetLogonFile.Password -and $Object_NetLogonFile.Password -ne '') {
+                        Invoke-Logger -Class Finding -Value "Found credentials in NETLOGON file '$($Object_NetLogonFile.FilePath)':"
+                        Invoke-Logger -Class Finding -Value "Credentials: Password '$($Object_NetLogonFile.Password)' for user '$($Object_NetLogonFile.Username)' has been found"
+                        Invoke-Logger -Value " " 
+                    }
+                    else {
+                        Invoke-Logger -Class Hint -Value "Found possible sensitive information in NETLOGON file '$($Object_NetLogonFile.FilePath)':"
+                        Invoke-Logger -Class Hint -Value "Content: $($Object_NetLogonFile.FoundValue)"
+                        Invoke-Logger -Value " "
+                    }
+                }   
             }
             else {
-                Write-verbose "[Get-adPEASCreds] No Results or Results have been suppressed"
+                Write-Verbose "[Get-adPEASCreds] We have not found any file with sensitive information in NETLOGON share"
             }              
         }
     }
@@ -2565,12 +2571,12 @@ Specify a certain domain controller to search for files.
 
 .PARAMETER Pattern
 Change the search pattern to a new value. RegEx is allowed
-The default search pattern is ("net use","password","passwd","credential","psexec","adminpw").
+If no search pattern is provided, the script searches for password exposure in 'net use' syntax if a password is used there.
+In addition it searches for the following words case insensitive "passwor(d/t), passwd, pwd, credential, psexec".
 
 .PARAMETER Extension
 Change the file extensions to search for.
 The default search pattern is ('*.txt','*.bat','*.ini','*.conf','*.xml','*.cnf','*.cmd','vbs','vbe').
-
 
 .PARAMETER Credential
 A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
@@ -2585,7 +2591,7 @@ Get-NetlogonFile -Domain 'contoso.com'
 Get-NetlogonFile -Server 'dc1.contoso.com'
 
 .EXAMPLE
-Get-NetlogonFile -Pattern '^password = [a-z]ecret'
+Get-NetlogonFile -Pattern '^password = [Ss]ecret'
 
 .EXAMPLE
 Get-NetlogonFile -Extension cmd,txt,in*,bak
@@ -2625,6 +2631,8 @@ Get-NetlogonFile -Domain contoso.com -Cred $Cred
 
     BEGIN {
         $ErrorActionPreference = "Continue"
+
+        if ($PSBoundParameters['Credential']) {$LogonToken = Invoke-UserImpersonation -Credential $Credential}
     }
 
     PROCESS {
@@ -2634,23 +2642,23 @@ Get-NetlogonFile -Domain contoso.com -Cred $Cred
             ForEach ($Entry in $Server) {
                 $Targets += $Entry.Trim('\ ')
                 }
-            write-verbose "[Get-NetlogonFile] Using the Domain Controller $($Server) to search for sensitive information"
+            write-verbose "[Get-NetlogonFile] Using the Domain Controller '$Server' to search for sensitive information"
         }
         elseif ($PSBoundParameters['Domain']) {
                 ForEach ($Entry in $Domain) {
                 $Targets += $Entry.Trim('\ ')
                 }
-            write-verbose "[Get-NetlogonFile] Using domain $($Targets) to search for sensitive information"
+            write-verbose "[Get-NetlogonFile] Using domain '$Targets' to search for sensitive information"
         }
         elseif ($PSBoundParameters['Credential']) {
-            # if not -Domain is specified, but -Credential is, try to retrieve the current domain name with Get-Domain
-            write-verbose write-verbose "[Get-NetlogonFile] Using provided credentials $($Credential.username) to search for sensitive information"
+            # if no -Domain is specified, but -Credential is, try to retrieve the current domain name with Get-Domain
+            write-verbose write-verbose "[Get-NetlogonFile] Using provided credentials '$Credential.username' to search for sensitive information"
             $DomainObject = Get-Domain -Credential $Credential
             $Targets += $DomainObject.Name
         }
         else {
             $Targets += [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain() | Select-Object -ExpandProperty Name
-            write-verbose "[Get-NetlogonFile] Using current domain object $($Targets) to search for sensitive information"
+            write-verbose "[Get-NetlogonFile] Using current domain object '$Targets' to search for sensitive information"
         }
 
         if ($PSBoundParameters['Pattern']) {
@@ -2661,8 +2669,12 @@ Get-NetlogonFile -Domain contoso.com -Cred $Cred
         }
         else {
             $SearchKeyWords = @(
-            "^net\s+use\s+([a-zA-Z]):\s+\\\\([a-zA-Z0-9._-])+\\([a-zA-Z0-9._-])+\S\s.+" # some ugly regex to check not only 'net use' but additional parameter
-            "password","passwd","credential","psexec","adminpw"
+            ".*(?<keyword>[Pp][aA][sS][sS][wW][oO][rR]([dD]|[tT])).*", # passwor(dt)
+            ".*(?<keyword>[Pp][aA][sS][sS][wW][dD]).*", # passwd
+            ".*(?<keyword>[Pp][wW][dD]).*", # pwd
+            ".*(?<keyword>[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]).*", # credential
+            ".*(?<keyword>[Pp][Ss][Ee][Xx][Ee][Cc]).*", # psexec
+            "net use (?<devicename>(\w|\*|LPT\d):?) (?<path>\\\\?.*?)(( (?<user>/user:((?<domain>[\w.]*)\\)?(?<username>\S*)))|( /(p(ersistent)?|P(ERSISTENT)?):(no|NO|yes|YES))|( (?<password>(?!/)\S*))|( /(delete|DELETE))|( /(savecred|SAVECRED))|( /(smartcard|SMARTCARD)))+" # try to find the password in net use syntax if used...
             )
         }
         if ($PSBoundParameters['Extension']) {
@@ -2675,12 +2687,9 @@ Get-NetlogonFile -Domain contoso.com -Cred $Cred
             $SearchExt = @('*.txt','*.bat','*.ini','*.conf','*.xml','*.cnf','*.cmd','*.vbs','*.vbe')
         }
 
-        if ($PSBoundParameters['Credential']) {$LogonToken = Invoke-UserImpersonation -Credential $Credential}
-
-
         foreach ($Target in $Targets) {
-            # discover potential NETLOGON files containing sensitive information, not complaining in case of denied access to a directory
-            Write-Verbose "[Get-NetlogonFile] Searching for files of type '$($SearchExt)' in \\$Target\NETLOGON\"
+            # discover potential NETLOGON files not complaining in case of denied access to a directory or a file
+            Write-Verbose "[Get-NetlogonFile] Searching for files of type '$SearchExt' in '\\$Target\NETLOGON\'"
             $Files = @()
             $Files = Get-ChildItem -Force -Path "\\$Target\NETLOGON\" -Recurse -ErrorAction SilentlyContinue -Include $SearchExt
             if (-not $Files) {
@@ -2690,35 +2699,66 @@ Get-NetlogonFile -Domain contoso.com -Cred $Cred
                 $Filecount = $Files | Measure-Object | Select-Object -ExpandProperty Count
                 if ($Filecount -eq '1' ) {$varFile = 'file'} else {$varFile = 'files'}
                     Write-Verbose "[Get-NetlogonFile] Found $Filecount $varFile that possibly could contain sensitive information"
-                    Write-Verbose "[Get-NetlogonFile] Searching for pattern '$($SearchKeyWords)'"
+                    Write-Verbose "[Get-NetlogonFile] Searching for pattern '$SearchKeyWords'"
 
-                    ForEach ($File in $Files) {
-                    # if the file is a encoded visual basic file, decode it first
+                ForEach ($File in $Files) {
                     if ($file.Extension -eq ".vbe") {
-                        Write-Verbose "[Get-NetlogonFile] Found encoded VBE file $File"
-                        $filecontent = Get-Content $file
-                        $filecontent = $(Get-DecodedVBE -EncodedData $filecontent) -split "`n" | Select-String -Pattern $SearchKeyWords -AllMatches
-                        Write-Verbose "[Get-NetlogonFile] You can decode the VBE file manually with Get-Content $file | Get-DecodedVBE"
+                        Write-Verbose "[Get-NetlogonFile] Try to read and decode the encoded VBE file '$File'"
+                        $FileContentPlain = $(Get-DecodedVBE -EncodedData $(Get-Content $file))
+                    } else {
+                        Write-Verbose "[Get-NetlogonFile] Try to read file '$File'"
+                        $FileContentPlain = Get-Content $file -Raw
+                    }
+
+                    if (-not $PSBoundParameters['Pattern']) {
+                        $creds = @()
+                        try {
+                            Write-Verbose "[Get-NetlogonFile] Searching for sensitive information exposure"
+                            foreach ($search in $SearchKeyWords) {
+                                $SearchResults = [Regex]::Matches($FileContentPlain,$search)
+                        
+                                foreach($cred in $SearchResults) {
+                                    if ($($cred.Groups["username"].value) -and $($cred.Groups["password"].value)) {
+                                        $obj = [pscustomobject]@{
+                                            "FilePath" = $File.FullName
+                                            "FoundValue" = $cred.value
+                                            "Username" = $($cred.Groups["domain"].value)+"\"+$($cred.Groups["username"].value)
+                                            "Password" = $cred.Groups["password"].value
+                                        }
+                                        $creds += $obj
+                                    }
+                                    elseif ($($cred.Groups["keyword"].value) -ne '') {
+                                        $obj = [pscustomobject]@{
+                                            "FilePath" = $File.FullName
+                                            "FoundValue" = $cred.value
+                                        }
+                                        $creds += $obj
+                                    }
+                                }
+                            }
+                            $creds
+                        }
+                        catch {
+                            Write-Verbose "[Get-NetlogonFile] There was an error with the provided data"
+                        }
                     }
                     else {
-                        $filecontent = $file | Select-String -Pattern $SearchKeyWords -AllMatches
-                    }
-                                        
-                    if ($filecontent -and $filecontent -ne '') {
-                        $Object = New-Object PSObject
-                        $Object | Add-Member Noteproperty 'FilePath' $file.FullName
-                        $Object | Add-Member Noteproperty 'FileName' $filecontent.FileName
-                        $Object | Add-Member Noteproperty 'LineNumber' $filecontent.LineNumber
-                        $Object | Add-Member Noteproperty 'LineContent' $filecontent.Line
-                        $Object.PSObject.TypeNames.Insert(0, 'PowerView.File')
-                        $object
+                        Write-Verbose "[Get-NetlogonFile] Fallback to provided search pattern"
+                        $SearchResults = $($FileContentPlain -split "`n") | Select-String -Pattern $SearchKeyWords -AllMatches
+                        
+                        if ($SearchResults -and $SearchResults -ne '') {
+                            $obj = [pscustomobject]@{
+                                "FilePath" = $File.FullName
+                                "FoundValue" = $SearchResults.Line
+                            }
+                            $obj
+                        }
                     }
                 }
             }
         }
 
     if ($LogonToken) {Invoke-RevertToSelf -TokenHandle $LogonToken}
-        
     }
 }
 
