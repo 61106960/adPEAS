@@ -147,7 +147,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     $ErrorActionPreference = "Continue"
-    $adPEASVersion = '0.8.10'
+    $adPEASVersion = '0.8.11'
 
     # Check if outputfile is writable and set color
     if ($PSBoundParameters['Outputfile']) {
