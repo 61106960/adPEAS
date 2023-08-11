@@ -126,7 +126,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
         [Parameter(Mandatory = $false,HelpMessage="Select the modules you want to run, e.g. Delegation")]
         [ValidateNotNullOrEmpty()]
-        [ValidateSet("Domain","ADCS","Creds","Delegation","Accounts","Computer","Bloodhound")]
+        [ValidateSet("Domain","GPO","ADCS","Creds","Delegation","Accounts","Computer","Bloodhound")]
         [String[]]
         $Module = "adPEAS",
 
@@ -249,6 +249,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
     switch ($Module) {
         "adPEAS" {
             Get-adPEASDomain @SearcherArguments
+            Get-adPEASGPO @SearcherArguments
             Get-adPEASADCS @SearcherArguments
             Get-adPEASCreds @SearcherArguments
             Get-adPEASDelegation @SearcherArguments
@@ -256,7 +257,8 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
             Get-adPEASComputer @SearcherArguments
             Get-adPEASBloodhound @SearcherArguments -Scope $Scope
         }
-        "Domain" { Get-adPEASDomain @SearcherArguments}
+        "Domain" {Get-adPEASDomain @SearcherArguments}
+        "GPO" {Get-adPEASGPO @SearcherArguments}
         "ADCS" {Get-adPEASADCS @SearcherArguments}
         "Creds" {Get-adPEASCreds @SearcherArguments}
         "Delegation" {Get-adPEASDelegation @SearcherArguments}
@@ -651,6 +653,95 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
     }
     catch {
         Write-Warning "[Get-adPEASDomain] Error retrieving domain trust information: $_"
+    }
+}
+
+Function Get-adPEASGPO {
+<#
+.SYNOPSIS
+Author: Alexander Sturz (@_61106960_)
+
+.DESCRIPTION
+Enumerates some GPO related things, like set local group memberships
+
+.PARAMETER Domain
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER SSL
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
+.EXAMPLE
+Get-adPEASGPO -Domain 'contoso.com'
+Start Enumerating and use the domain 'contoso.com'.
+
+.EXAMPLE
+Get-adPEASGPO -Domain 'contoso.com' -Server 'dc1.contoso.com'
+Start Enumerating using the domain 'contoso.com' and use the domain controller 'dc1.contoso.com' for almost all enumeration requests.
+#>
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory = $True)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $SSL
+    )
+
+    <# +++++ Starting adPEAS GPO Enumeration +++++ #>
+    $ErrorActionPreference = "Continue"
+    
+    # Building searcher arguments for the following requests
+    $SearcherArguments = @{}
+    if ($PSBoundParameters['Domain']) {
+        $SearcherArguments['Domain'] = $Domain
+        Write-Verbose "[Get-adPEASGPO] Using '$Domain' as target Active Directory domain name"
+    }
+    if ($PSBoundParameters['Server']) {
+        $SearcherArguments['Server'] = $Server
+        Write-Verbose "[Get-adPEASGPO] Using '$Server' as target domain controller"
+    }
+    if ($PSBoundParameters['SSL']) {
+        $SearcherArguments['SSL'] = $True
+        Write-Verbose "[Get-adPEASGPO] Using LDAPS over port 636"
+    }
+
+    <# +++++ Searching for GPO local group membership information +++++ #>
+    Invoke-Logger -Class Info -Value "Searching for GPO local group membership Information"
+
+    try {
+        # get all GPO's of the domain
+        $adPEAS_GPO = Get-DomainGPOLocalGroup @SearcherArguments
+        # get all OU's of the domain
+        $adPEAS_OU = Get-DomainOU @SearcherArguments
+            foreach ($Object_GPO in $adPEAS_GPO) {
+            if ($Object_GPO.GroupMembers -ne '' -and $Object_GPO.GroupName -ne '') {
+                Invoke-Logger -Class Hint -Value "Found GPO '$($Object_GPO.GPODisplayName)' which adds member[s] to local group'$($Object_GPO.GroupName)'"
+                Invoke-Logger -Value "GPO Name:`t`t`t`t$($Object_GPO.GPODisplayName)"
+                Invoke-Logger -Value "Local GroupName:`t`t`t$($Object_GPO.GroupName)"
+                Invoke-Logger -Value "Local GroupSID:`t`t`t`t$($Object_GPO.GroupSID)"
+                Invoke-Logger -Value "GroupMembers:`t`t`t`t$(($Object_GPO.GroupMembers | ConvertFrom-SID @SearcherArguments) -join "`n`t`t`t`t`t")"
+                foreach ($Object_OU in $adPEAS_OU) {
+                    if ($($Object_OU.gplink) -like "*$($Object_GPO.GPOName)*"){
+                        Invoke-Logger -Value "Configured for OU:`t`t`t$($Object_OU.distinguishedname)"
+                    }
+                }
+            } else {
+                Write-Verbose "[Get-adPEASGPO] Found no suitable GPO"
+            }
+        }
+    } catch {
+        Write-Warning "[Get-adPEASGPO] Error retrieving GPO local group membership information: $_"
     }
 }
     
