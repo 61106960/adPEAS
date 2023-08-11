@@ -21,7 +21,8 @@ If the system you are running adPEAS from is not domain joined or you want to en
 ## adPEAS Modules
 
 adPEAS consists of the following enumeration modules:
-* Domain - Searching for basic Active Directory information, like Domain Controllers, Sites und Subnets, Trusts, Password/Kerberos policy, LAPS and DCSync rights
+* Domain - Searching for basic Active Directory information, like Domain Controllers, Sites und Subnets, Trusts and Password/Kerberos policy
+* Rights - Searching for specific Active Directory rights and permissions, like LAPS, DCSync and adding computer to domain
 * GPO -  Searching for basic GPO related things, like local group membership on domain computer
 * ADCS - Searching for basic Active Directory Certificate Services information, like CA Name, CA Server and vulnerable Templates
 * Creds - Searching for different kind of credential exposure, like ASREPRoast, Kerberoasting, GroupPolicies, Netlogon scripts, LAPS, gMSA, certain legacy attributes, e.g. UnixPassword, etc.
@@ -79,9 +80,14 @@ Invoke-adPEAS -Domain 'contoso.com' -Server 'dc1.contoso.com' -Username 'contoso
 ## Usage with a single enumeration module
 ### All modules below can be combined with all generic program parameters explained above.
 
-Enumerates basic Active Directory information, like Domain Controllers, Password Policy, Sites and Subnets, Trusts, LAPS and DCSync Rights.
+Enumerates basic Active Directory information, like Domain Controllers, Password Policy, Sites and Subnets and Trusts.
 ```
 Invoke-adPEAS -Module Domain
+```
+
+Enumerates specific Active Directory rights and permissions, like LAPS, DCSync and adding computer to domain.
+```
+Invoke-adPEAS -Module Rights
 ```
 
 Enumerates basic GPO information, like set local group membership on domain computer.

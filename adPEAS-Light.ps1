@@ -41,16 +41,18 @@ Specifies the Password in combination with the username to use for the query.
 
 .PARAMETER Module
 Specifies the adPEAS enumeration module to use for the query.
-If no module is given, the default modules are 'Domain','ADCS','Creds','Delegation','Accounts','Computer','Bloodhound'.
+Specifies the adPEAS enumeration module to use for the query.
+If no module is given, the default modules are 'Domain','Rights','GPO','ADCS','Creds','Delegation','Accounts','Computer'.
 
 Possible modules are:
-- Module Domain: Enumerates some basic AD information, like Domain Controllers, Password Policy, Sites and Subnets, Trusts, DCSync Rights
+- Module Domain: Enumerates some basic AD information, like Domain Controllers, Password Policy, Sites and Subnets.
+- Module Rights: Enumerates some specifig AD rights and permissions, like Trusts, DCSync and adding computer to domain.
+- Module GPO: Enumerate some basic GPO related things, like local group membership on domain computer.
 - Module ADCS: Enumerates some basic Enterprise Certificate Authority information, like CA Name, Server and vulnerable Templates.
 - Module Creds: Enumerates credential exposure issues, like ASREPRoast, Kerberoasting, Linux/Unix Password Attributes, gMSA, LAPS, Group Policies, Netlogon Scripts
 - Module Delegation: Enumerates delegation issues, like 'Unconstrained Delegation', 'Constrained Delegation', 'Resource Based Constrained Delegation' for user and computer objects
 - Module Accounts: Enumerates users in high privileged groups which are NOT disabled, like Administrators, Domain Admins, Enterprise Admins, Group Policy Creators, DNS Admins, Account Operators, Server Operators, Printer Operators, Backup Operators, Hyper-V Admins, Remote Management Users und CERT Publishers. Enumerates high privileged users (admincount=1), which are NOT disabled and where the password does not expire or which may not require a password. Enumerates Azure AD Connect users.
 - Module Computer: Enumerates installed Domain Controllers, Certificate Authority, Exchange Server and outdated OS versions like Windows Server 2008R2, etc.
-- Module Bloodhound: Starts Bloodhound enumeration with the scope DCOnly
 
 .PARAMETER Scope
 This parameter works together with the module 'Bloodhound' only.
@@ -126,7 +128,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
         [Parameter(Mandatory = $false,HelpMessage="Select the modules you want to run, e.g. Delegation")]
         [ValidateNotNullOrEmpty()]
-        [ValidateSet("Domain","GPO","ADCS","Creds","Delegation","Accounts","Computer","Bloodhound")]
+        [ValidateSet("Domain","Rights","GPO","ADCS","Creds","Delegation","Accounts","Computer","Bloodhound")]
         [String[]]
         $Module = "adPEAS",
 
@@ -249,6 +251,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
     switch ($Module) {
         "adPEAS" {
             Get-adPEASDomain @SearcherArguments
+            Get-adPEASRights @SearcherArguments
             Get-adPEASGPO @SearcherArguments
             Get-adPEASADCS @SearcherArguments
             Get-adPEASCreds @SearcherArguments
@@ -258,6 +261,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
             #Get-adPEASBloodhound @SearcherArguments -Scope $Scope
         }
         "Domain" {Get-adPEASDomain @SearcherArguments}
+        "Rights" {Get-adPEASRights @SearcherArguments}
         "GPO" {Get-adPEASGPO @SearcherArguments}
         "ADCS" {Get-adPEASADCS @SearcherArguments}
         "Creds" {Get-adPEASCreds @SearcherArguments}
@@ -277,7 +281,7 @@ Function Get-adPEASDomain {
 Author: Alexander Sturz (@_61106960_)
 
 .DESCRIPTION
-Enumerates some basic Active Directory information, like Domain Controllers, Password Policy, Sites and Subnets, Trusts, LAPS and DCSyncRights.
+Enumerates some basic Active Directory information, like Domain Controllers, Password Policy, Sites and Subnets, Trusts.
 
 .PARAMETER Domain
 Specifies the domain to use for the query, defaults to the current domain.
@@ -483,94 +487,6 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         Write-Warning "[Get-adPEASDomain] Error retrieving Kerberos policy information: $_"
     }
 
-    <# +++++ Checking Permissions +++++ #>
-    Invoke-Logger -Class Info -Value "Checking Juicy Permissions"
-
-    Invoke-Logger -Class Info -Value "Checking Add-Computer Permissions"
-    try {
-        # Getting 'add computer to domain' permissions
-        $adPEAS_DomainRights = Get-DomainPolicyData @SearcherArguments -Policy 'DomainController'
-        if ($adPEAS_DomainRights -and $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -ne '') {
-            Invoke-Logger -Class Hint -Value "Filtering found identities that can add a computer object to domain '$($adPEAS_Domain.Name)':"
-            if ($(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -and $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -ne '') {
-                foreach ($object_rights in $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege)) {
-                    if ($($object_rights.substring(1)) -eq "S-1-5-11") {
-                        Invoke-Logger -Class Finding -Value "Every member of group '$($object_rights.substring(1) | ConvertFrom-SID @SearcherArguments)' can add a computer to domain '$($adPEAS_Domain.Name)'`n"
-                    }
-                    $user_object = $object_rights.substring(1) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
-                    # Search for non-default AD accounts with SID greater -1000
-                    if ([int32]$($user_object.objectSid).split("-")[-1] -ge 1000) {
-                        #$object_rights_identity = $($user_object.objectSid) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
-                        if ($($user_object.sAMAccountName) -and $($user_object.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
-                            Write-Verbose "[Get-adPEASDomain] Identity '$($user_object.distinguishedName)' has DCSync rights but account is disabled"
-                        } else {
-                            Invoke-Logger -Class Hint -Value "The identity '$($user_object.sAMAccountName)' is a non-default account and can add computer to the domain"
-                            $user_object | Invoke-Logger
-                        }
-                    } else {
-                        $user_object | Invoke-Logger
-                    }
-                }
-            }
-        }
-    }
-    catch {
-        Write-Warning "[Get-adPEASDomain] Error retrieving 'SeMachineAccountPrivilege' information: $_"
-    }
-
-    Invoke-Logger -Class Info -Value "Checking DCSync Permissions"
-    try {
-        # Getting DCSync permissions
-        $adPEAS_DCSyncRights = Get-DomainDCSync @SearcherArguments
-        
-        if ($adPEAS_DCSyncRights -and $adPEAS_DCSyncRights -ne '') {
-            Invoke-Logger -Class Hint -Value "Filtering found identities that can perform DCSync in domain '$($adPEAS_Domain.Name)':"
-            foreach ($object_dcsync in $adPEAS_DCSyncRights) {
-                # Search for non-default AD accounts with SID greater -1000
-                if ([int32]$($object_dcsync.objectSid).split("-")[-1] -ge 1000) {
-                    $object_dcsync_identity = $($object_dcsync.objectSid) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
-                    if ($($object_dcsync_identity.sAMAccountName) -and $($object_dcsync_identity.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
-                        Write-Verbose "[Get-adPEASDomain] Identity '$($object_dcsync_identity.distinguishedName)' has DCSync rights but account is disabled"
-                    } else {
-                        Invoke-Logger -Class Hint -Value "The identity '$($object_dcsync_identity.sAMAccountName)' is a non-default account and can DCSync a domain controller"
-                        $object_dcsync_identity | Invoke-Logger
-                    }
-                }
-            }
-        }
-    }
-    catch {
-        Write-Warning "[Get-adPEASDomain] Error retrieving DCSync permissions: $_"
-    }
-
-    Invoke-Logger -Class Info -Value "Checking LAPS Permissions"
-    try {
-        # Getting LAPS permissions
-        $adPEAS_LAPSRights = Get-DomainLAPSReaders @SearcherArguments | Select-Object PrincipalSID | Sort-Object -Property PrincipalSID -Unique
-        
-        if ($adPEAS_LAPSRights -and $adPEAS_LAPSRights -ne '') {
-            Invoke-Logger -Class Hint -Value "Filtering found identities that can read LAPS attribute in domain '$($adPEAS_Domain.Name)':"
-            foreach ($object_laps in $($adPEAS_LAPSRights.PrincipalSID.Value)) {
-                if ($object_laps -ne 'S-1-5-18') {
-                    # Search for non-default AD accounts with SID greater -1000
-                    if ([int32]$object_laps.split("-")[-1] -ge 1000) {
-                        Write-Verbose "[Get-adPEASDomain] Found LAPS permission for identity $object_laps"
-                        $object_laps_identity = Get-DomainObject @SearcherArguments -Identity $object_laps <# -SecurityMasks Owner #>
-                        if ($($object_laps_identity.sAMAccountName) -and $($object_laps_identity.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
-                            Write-Verbose "[Get-adPEASDomain] Identity '$($object_laps_identity.distinguishedName)' has LAPS permission but account is disabled"
-                        } else {
-                            Invoke-Logger -Class Hint -Value "The identity '$($object_laps_identity.sAMAccountName)' is a non-default account and can read LAPS attribute"
-                            $object_laps_identity | Invoke-Logger
-                        }
-                    }
-                }
-            }
-        }
-    }
-    catch {
-        Write-Warning "[Get-adPEASDomain] Error retrieving LAPS permissions: $_"
-    }
-
     <# +++++ Checking Domain Controller, Sites and Subnets +++++ #>
     Invoke-Logger -Class Info -Value "Checking Domain Controller, Sites and Subnets"
 
@@ -655,6 +571,156 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         Write-Warning "[Get-adPEASDomain] Error retrieving domain trust information: $_"
     }
 }
+
+Function Get-adPEASRights {
+<#
+.SYNOPSIS
+Author: Alexander Sturz (@_61106960_)
+
+.DESCRIPTION
+Enumerates some specific Active Directory rights and permissions, like LAPS, DCSync and adding computer to domain.
+
+.PARAMETER Domain
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER SSL
+Switch. Specifies that encrypted LDAPS over port 636 is used.
+
+.EXAMPLE
+Get-adPEASRights -Domain 'contoso.com'
+Start Enumerating and use the domain 'contoso.com'.
+
+.EXAMPLE
+Get-adPEASRights -Domain 'contoso.com' -Server 'dc1.contoso.com'
+Start Enumerating using the domain 'contoso.com' and use the domain controller 'dc1.contoso.com' for almost all enumeration requests.
+#>
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory = $True)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $SSL
+    )
+
+    <# +++++ Starting adPEAS Rights & Permission Enumeration +++++ #>
+    $ErrorActionPreference = "Continue"
+    
+    # Building searcher arguments for the following requests
+    $SearcherArguments = @{}
+    if ($PSBoundParameters['Domain']) {
+        $SearcherArguments['Domain'] = $Domain
+        Write-Verbose "[Get-adPEASRights] Using '$Domain' as target Active Directory domain name"
+    }
+    if ($PSBoundParameters['Server']) {
+        $SearcherArguments['Server'] = $Server
+        Write-Verbose "[Get-adPEASRights] Using '$Server' as target domain controller"
+    }
+    if ($PSBoundParameters['SSL']) {
+        $SearcherArguments['SSL'] = $True
+        Write-Verbose "[Get-adPEASRights] Using LDAPS over port 636"
+    }
+
+    <# +++++ Checking Permissions +++++ #>
+    Invoke-Logger -Class Info -Value "Checking Juicy Permissions"
+
+    Invoke-Logger -Class Info -Value "Checking Add-Computer Permissions"
+    try {
+        # Getting 'add computer to domain' permissions
+        $adPEAS_DomainRights = Get-DomainPolicyData @SearcherArguments -Policy 'DomainController'
+        if ($adPEAS_DomainRights -and $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -ne '') {
+            Invoke-Logger -Class Hint -Value "Filtering found identities that can add a computer object to domain '$($adPEAS_Domain.Name)':"
+            if ($(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -and $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -ne '') {
+                foreach ($object_rights in $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege)) {
+                    if ($($object_rights.substring(1)) -eq "S-1-5-11") {
+                        Invoke-Logger -Class Finding -Value "Every member of group '$($object_rights.substring(1) | ConvertFrom-SID @SearcherArguments)' can add a computer to domain '$($adPEAS_Domain.Name)'`n"
+                    }
+                    $user_object = $object_rights.substring(1) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
+                    # Search for non-default AD accounts with SID greater -1000
+                    if ([int32]$($user_object.objectSid).split("-")[-1] -ge 1000) {
+                        #$object_rights_identity = $($user_object.objectSid) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
+                        if ($($user_object.sAMAccountName) -and $($user_object.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
+                            Write-Verbose "[Get-adPEASRights] Identity '$($user_object.distinguishedName)' has DCSync rights but account is disabled"
+                        } else {
+                            Invoke-Logger -Class Hint -Value "The identity '$($user_object.sAMAccountName)' is a non-default account and can add computer to the domain"
+                            $user_object | Invoke-Logger
+                        }
+                    } else {
+                        $user_object | Invoke-Logger
+                    }
+                }
+            }
+        }
+    }
+    catch {
+        Write-Warning "[Get-adPEASRights] Error retrieving 'SeMachineAccountPrivilege' information: $_"
+    }
+
+    Invoke-Logger -Class Info -Value "Checking DCSync Permissions"
+    try {
+        # Getting DCSync permissions
+        $adPEAS_DCSyncRights = Get-DomainDCSync @SearcherArguments
+        
+        if ($adPEAS_DCSyncRights -and $adPEAS_DCSyncRights -ne '') {
+            Invoke-Logger -Class Hint -Value "Filtering found identities that can perform DCSync in domain '$($adPEAS_Domain.Name)':"
+            foreach ($object_dcsync in $adPEAS_DCSyncRights) {
+                # Search for non-default AD accounts with SID greater -1000
+                if ([int32]$($object_dcsync.objectSid).split("-")[-1] -ge 1000) {
+                    $object_dcsync_identity = $($object_dcsync.objectSid) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
+                    if ($($object_dcsync_identity.sAMAccountName) -and $($object_dcsync_identity.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
+                        Write-Verbose "[Get-adPEASRights] Identity '$($object_dcsync_identity.distinguishedName)' has DCSync rights but account is disabled"
+                    } else {
+                        Invoke-Logger -Class Hint -Value "The identity '$($object_dcsync_identity.sAMAccountName)' is a non-default account and can DCSync a domain controller"
+                        $object_dcsync_identity | Invoke-Logger
+                    }
+                }
+            }
+        }
+    }
+    catch {
+        Write-Warning "[Get-adPEASRights] Error retrieving DCSync permissions: $_"
+    }
+
+    Invoke-Logger -Class Info -Value "Checking LAPS Permissions"
+    try {
+        # Getting LAPS permissions
+        $adPEAS_LAPSRights = Get-DomainLAPSReaders @SearcherArguments | Select-Object PrincipalSID | Sort-Object -Property PrincipalSID -Unique
+        
+        if ($adPEAS_LAPSRights -and $adPEAS_LAPSRights -ne '') {
+            Invoke-Logger -Class Hint -Value "Filtering found identities that can read LAPS attribute in domain '$($adPEAS_Domain.Name)':"
+            foreach ($object_laps in $($adPEAS_LAPSRights.PrincipalSID.Value)) {
+                if ($object_laps -ne 'S-1-5-18') {
+                    # Search for non-default AD accounts with SID greater -1000
+                    if ([int32]$object_laps.split("-")[-1] -ge 1000) {
+                        Write-Verbose "[Get-adPEASRights] Found LAPS permission for identity $object_laps"
+                        $object_laps_identity = Get-DomainObject @SearcherArguments -Identity $object_laps <# -SecurityMasks Owner #>
+                        if ($($object_laps_identity.sAMAccountName) -and $($object_laps_identity.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
+                            Write-Verbose "[Get-adPEASRights] Identity '$($object_laps_identity.distinguishedName)' has LAPS permission but account is disabled"
+                        } else {
+                            Invoke-Logger -Class Hint -Value "The identity '$($object_laps_identity.sAMAccountName)' is a non-default account and can read LAPS attribute"
+                            $object_laps_identity | Invoke-Logger
+                        }
+                    }
+                }
+            }
+        }
+    }
+    catch {
+        Write-Warning "[Get-adPEASRights] Error retrieving LAPS permissions: $_"
+    }
+}
+    
 
 Function Get-adPEASGPO {
 <#
@@ -744,6 +810,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         Write-Warning "[Get-adPEASGPO] Error retrieving GPO local group membership information: $_"
     }
 }
+
 Function Get-adPEASADCS {
 <#
 .SYNOPSIS
