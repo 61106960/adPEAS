@@ -20426,22 +20426,22 @@ https://msdn.microsoft.com/en-us/library/windows/desktop/aa370601(v=vs.85).aspx
 function Get-NetShare {
 <#
 .SYNOPSIS
-
 Returns open shares on the local (or a remote) machine.
 
-Author: Will Schroeder (@harmj0y)  
+Author: Will Schroeder (@harmj0y), Alexander Sturz (@61106960)
 License: BSD 3-Clause  
 Required Dependencies: PSReflect, Invoke-UserImpersonation, Invoke-RevertToSelf  
 
 .DESCRIPTION
-
 This function will execute the NetShareEnum Win32API call to query
 a given host for open shares. This is a replacement for "net share \\hostname".
 
 .PARAMETER ComputerName
-
 Specifies the hostname to query for shares (also accepts IP addresses).
 Defaults to 'localhost'.
+
+.PARAMETER CheckShareAccess
+Checks if read access to the enumerated shares is allowed or not.
 
 .PARAMETER Credential
 
@@ -20449,25 +20449,21 @@ A [Management.Automation.PSCredential] object of alternate credentials
 for connection to the remote system using Invoke-UserImpersonation.
 
 .EXAMPLE
-
 Get-NetShare
 
 Returns active shares on the local host.
 
 .EXAMPLE
-
 Get-NetShare -ComputerName sqlserver
 
 Returns active shares on the 'sqlserver' host
 
 .EXAMPLE
-
 Get-DomainComputer | Get-NetShare
 
 Returns all shares for all computers in the domain.
 
 .EXAMPLE
-
 $SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
 $Cred = New-Object System.Management.Automation.PSCredential('TESTLAB\dfm.a', $SecPassword)
 Get-NetShare -ComputerName sqlserver -Credential $Cred
@@ -20492,6 +20488,9 @@ http://www.powershellmagazine.com/2014/09/25/easily-defining-enums-structs-and-w
         [ValidateNotNullOrEmpty()]
         [String[]]
         $ComputerName = 'localhost',
+
+        [Switch]
+        $CheckShareAccess,
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
@@ -20534,6 +20533,17 @@ http://www.powershellmagazine.com/2014/09/25/easily-defining-enums-structs-and-w
                     # return all the sections of the structure - have to do it this way for V2
                     $Share = $Info | Select-Object *
                     $Share | Add-Member Noteproperty 'ComputerName' $Computer
+                    if ($Share.name -and $CheckShareAccess) {
+                        try {
+                            # build full path to share
+                            $Path = "\\" + $Computer + "\" + $share.name
+                            $Null = [IO.Directory]::GetFiles($Path)
+                            $Share | Add-Member Noteproperty 'Accessible' $True
+                        }
+                        catch {
+                            $Share | Add-Member Noteproperty 'Accessible' $False
+                        }
+                    }
                     $Share.PSObject.TypeNames.Insert(0, 'PowerView.ShareInfo')
                     $Offset = $NewIntPtr.ToInt64()
                     $Offset += $Increment
