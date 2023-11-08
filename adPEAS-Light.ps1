@@ -721,7 +721,6 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
     }
 }
     
-
 Function Get-adPEASGPO {
 <#
 .SYNOPSIS
@@ -1247,8 +1246,8 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         Write-Warning "[Get-adPEASCreds] Error retrieving gMSA information: $_"
     }
 
-    <# +++++ Searching for Credentials in SYSVOL Group Policy Files +++++ #>
-    Invoke-Logger -Class Info -Value "Searching for Credentials in SYSVOL Group Policy Files"
+    <# +++++ Searching for Credentials in Group Policy Files +++++ #>
+    Invoke-Logger -Class Info -Value "Searching for Credentials in Group Policy Files"
 
     try {
         $adPEAS_Cpassword = Get-GPPPassword @SearcherArguments
@@ -1270,8 +1269,8 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         Write-Warning "[Get-adPEASCreds] Error retrieving GPP password information: $_"
     }
 
-    <# +++++ Searching for Sensitive Information in NETLOGON Share +++++ #>
-    Invoke-Logger -Class Info -Value "Searching for Sensitive Information in NETLOGON Share"
+    <# +++++ Searching for Sensitive Information in SYSVOL/NETLOGON Share +++++ #>
+    Invoke-Logger -Class Info -Value "Searching for Sensitive Information in SYSVOL/NETLOGON Share"
 
     try {
         $adPEAS_NetlogonFiles = Get-NetlogonFile @SearcherArguments
@@ -2718,7 +2717,7 @@ Author: Alexander Sturz (@_61106960_)
 
 .DESCRIPTION
 Retrieves possible passwords and other sensitive information from the Netlogon directory.
-Get-NetlogonFile searches a Domain Controller Netlogon share for possible sensitive information like passwords, etc..
+Get-NetlogonFile searches a Domain Controller SYSVOL share with below subdirectories like NETLOGON for possible sensitive information like passwords, etc..
 
 .PARAMETER Domain
 Specifies the domain to search for files, defaults to the current domain.
@@ -2845,10 +2844,10 @@ Get-NetlogonFile -Domain contoso.com -Cred $Cred
         }
 
         foreach ($Target in $Targets) {
-            # discover potential NETLOGON files not complaining in case of denied access to a directory or a file
-            Write-Verbose "[Get-NetlogonFile] Searching for files of type '$SearchExt' in '\\$Target\NETLOGON\'"
+            # discover potential SYSVOL files not complaining in case of denied access to a directory or a file
+            Write-Verbose "[Get-NetlogonFile] Searching for files of type '$SearchExt' in '\\$Target\SYSVOL\'"
             $Files = @()
-            $Files = Get-ChildItem -Force -Path "\\$Target\NETLOGON\" -Recurse -ErrorAction SilentlyContinue -Include $SearchExt
+            $Files = Get-ChildItem -Force -Path "\\$Target\SYSVOL\" -Recurse -ErrorAction SilentlyContinue -Include $SearchExt
             if (-not $Files) {
                 write-verbose '[Get-NetlogonFile] No files found'
             }
