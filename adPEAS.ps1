@@ -2377,7 +2377,7 @@ $legend_logo_stop
             if ($($Object.accountexpires) -ge (Get-Date)) {
                 $Value = "accountexpires:`t`t`tThis identity expires on $($Object.accountexpires)"
                 Invoke-ScreenPrinter -Value $Value -Class Hint
-            } else {
+            } elseif ($($Object.accountexpires).toFileTime() -ne 0) {
                 $Value = "accountexpires:`t`t`tThis identity has been expired since $($Object.accountexpires)"
                 Invoke-ScreenPrinter -Value $Value -Class Note
             }
@@ -2397,7 +2397,7 @@ $legend_logo_stop
         }
         if ($($Object.lastLogonTimestamp) -and $($Object.lastLogonTimestamp) -ne '') {
             if ($($Object.userAccountControl) -like "*WORKSTATION_TRUST_ACCOUNT*" -and $($Object.lastLogonTimestamp) -le $DateLastLogon) {
-                $Value = "lastLogonTimestamp:`t`t`t$($object.lastLogonTimestamp) (Computer is likely not online anymore!)"
+                $Value = "lastLogonTimestamp:`t`t`t$($object.lastLogonTimestamp) (Identity is likely not online anymore!)"
                 Invoke-ScreenPrinter -Class Note -Value $Value
             } else {
                 $Value = "lastLogonTimestamp:`t`t`t$($object.lastLogonTimestamp)"
