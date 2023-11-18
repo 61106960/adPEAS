@@ -1256,6 +1256,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                 Write-Verbose "[Get-adPEASCreds] Not found any crypted passwords in SYSVOL policy directories"
             }
             elseif ($($Object_GPP.Password) -and $($Object_GPP.Password) -ne '') {
+                if ($($Object_GPP.Domain) -and $($Object_GPP.Domain) -ne '') {$Object_GPP.username = $($Object_GPP.Domain) + "\" + $($Object_GPP.username)}
                 Invoke-Logger -Class Hint -Value "Found credentials in SYSVOL group policy file '$($Object_GPP.File)':"
                 Invoke-Logger -Class Finding -Value "Password '$($Object_GPP.Password)' for user '$($Object_GPP.username)' has been found"
                 Invoke-Logger -Value " "
@@ -2440,6 +2441,7 @@ $legend_logo_stop
 
 function Get-GPPInnerField {
 # helper function to parse fields from xml files for Get-GPPPassword
+# Author: Chris Campbell (@obscuresec), adjusted by Alexander Sturz (@_61106960_)
     [CmdletBinding()]
         Param (
             [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
@@ -2462,60 +2464,73 @@ function Get-GPPInnerField {
                         if ($Cpassword -and ($Cpassword -ne '')) {
                             Write-Verbose "[Get-GPPInnerField] Crypted password in $($File)"
                             $DecryptedPassword = Get-GPPDecryptedCpassword $Cpassword
-                            $Password = $DecryptedPassword
-                            Write-Verbose "[Get-GPPInnerField] Decrypted password '$($Password)'"
+                            $UserPassword = $DecryptedPassword
+                            Write-Verbose "[Get-GPPInnerField] Decrypted password '$($UserPassword)'"
                         }
-
-                        if ($_.newName) {
-                            $NewName = $_.newName
-                        }
-
                         if ($_.userName) {
                             $UserName = $_.userName
                         }
                         elseif ($_.accountName) {
                             $UserName = $_.accountName
                         }
+                        if ($_.newName) {
+                            $UserName = $_.newName
+                        }
                         elseif ($_.runAs) {
                             $UserName = $_.runAs
                         }
-
                         try {
                             $Changed = $_.ParentNode.changed
                         }
                         catch {
                             Write-Verbose "[Get-GPPInnerField] Unable to retrieve ParentNode.changed for $($File)"
                         }
-
-                        try {
-                            $NodeName = $_.ParentNode.ParentNode.LocalName
-                        }
-                        catch {
-                            Write-Verbose "[Get-GPPInnerField] Unable to retrieve ParentNode.ParentNode.LocalName for $($File)"
-                        }
-
-                        if (!($Password)) {$Password = '[BLANK]'}
-                        if (!($UserName)) {$UserName = '[BLANK]'}
-                        if (!($Changed)) {$Changed = '[BLANK]'}
-                        if (!($NewName)) {$NewName = '[BLANK]'}
-
-                        $GPPPassword = New-Object PSObject
-                        $GPPPassword | Add-Member Noteproperty 'UserName' $UserName
-                        #$GPPPassword | Add-Member Noteproperty 'NewName' $NewName
-                        $GPPPassword | Add-Member Noteproperty 'Password' $Password
-                        #$GPPPassword | Add-Member Noteproperty 'Changed' $Changed
-                        $GPPPassword | Add-Member Noteproperty 'File' $File
-                        #$GPPPassword | Add-Member Noteproperty 'NodeName' $NodeName
-                        #$GPPPassword | Add-Member Noteproperty 'Cpassword' $Cpassword
-                        $GPPPassword
                     }
                 }
             }
+
+            # check for the AutoAdminLogon
+            elseif ($filename -match 'Registry.xml' -and $xml.InnerXml -match 'AutoAdminLogon') {
+                try {
+
+                    $Xml.GetElementsByTagName('Properties') | ForEach-Object {
+
+                        if ($_.name -match 'DefaultUserName') {
+                            $UserName = $_.value
+                        }
+                        if ($_.name -match 'DefaultPassword') {
+                            $UserPassword = $_.value
+                        }
+                        if ($_.name -match 'DefaultDomainName') {
+                            $UserDomain = $_.value
+                        }
+                        try {
+                            $Changed = $_.ParentNode.changed
+                        }
+                        catch {
+                            Write-Verbose "[Get-GPPInnerField] Unable to retrieve ParentNode.changed for $($File)"
+                        }
+                    }
+                }
+                catch {
+                    Write-Verbose "[Get-GPPInnerField] Unable to retrieve AutoAdminLogon data of $($File)"
+                }
+            }
+
+            $GPPPassword = New-Object PSObject
+            if ($UserName) {$GPPPassword | Add-Member Noteproperty 'UserName' $UserName}
+            if ($UserPassword) {$GPPPassword | Add-Member Noteproperty 'Password' $UserPassword}
+            if ($UserDomain) {$GPPPassword | Add-Member Noteproperty 'Domain' $UserDomain}
+            if ($Changed) {$GPPPassword | Add-Member Noteproperty 'Changed' $Changed}
+            if ($file) {$GPPPassword | Add-Member Noteproperty 'File' $File}
+
+            $GPPPassword
+
         }
         catch {
             Write-Warning "[Get-GPPInnerField] Error parsing file $($File) : $_"
         }
-        }
+    }
 }
 
 function Get-GPPDecryptedCpassword {
