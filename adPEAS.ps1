@@ -791,11 +791,15 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         $adPEAS_OU = Get-DomainOU @SearcherArguments
             foreach ($Object_GPO in $adPEAS_GPO) {
             if ($Object_GPO.GroupMembers -ne '' -and $Object_GPO.GroupName -ne '') {
-                Invoke-Logger -Class Hint -Value "Found GPO '$($Object_GPO.GPODisplayName)' which adds member[s] to local group'$($Object_GPO.GroupName)'"
+                Invoke-Logger -Class Hint -Value "Found GPO '$($Object_GPO.GPODisplayName)' which adds member[s] to local group '$($Object_GPO.GroupName)'"
                 Invoke-Logger -Value "GPO Name:`t`t`t`t$($Object_GPO.GPODisplayName)"
                 Invoke-Logger -Value "Local GroupName:`t`t`t$($Object_GPO.GroupName)"
                 Invoke-Logger -Value "Local GroupSID:`t`t`t`t$($Object_GPO.GroupSID)"
-                Invoke-Logger -Value "GroupMembers:`t`t`t`t$(($Object_GPO.GroupMembers | ConvertFrom-SID @SearcherArguments) -join "`n`t`t`t`t`t")"
+                if ($($Object_GPO.GroupMembers) -match '^S-1-.*') {
+                    Invoke-Logger -Value "GroupMembers:`t`t`t`t$(($Object_GPO.GroupMembers | ConvertFrom-SID @SearcherArguments) -join "`n`t`t`t`t`t")"
+                } else {
+                    Invoke-Logger -Value "GroupMembers:`t`t`t`t$($Object_GPO.GroupMembers)"
+                }
                 foreach ($Object_OU in $adPEAS_OU) {
                     if ($($Object_OU.gplink) -like "*$($Object_GPO.GPOName)*"){
                         Invoke-Logger -Value "Configured for OU:`t`t`t$($Object_OU.distinguishedname)"
