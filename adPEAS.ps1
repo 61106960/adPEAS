@@ -2320,8 +2320,14 @@ $legend_logo_stop
             Invoke-ScreenPrinter -Value $Value
         }
         if ($($Object.memberOf) -and $($Object.memberOf) -ne '') {
-            $Value = "memberOf:`t`t`t`t$($($object.memberOf) -join "`n`t`t`t`t`t")"
-            Invoke-ScreenPrinter -Value $Value
+            if ($($Object.memberOf) -match '^CN=Protected Users,CN=.*') {
+                $Value = "memberOf:`t`t`t`t$($($object.memberOf) -join "`n`t`t`t`t`t")"
+                Invoke-ScreenPrinter -Value $Value
+                Invoke-ScreenPrinter -Value "memberOf 'Protected Users':`t`tThis identiy is member of the 'Protected Users' group" -Class Note
+            } else {
+                $Value = "memberOf:`t`t`t`t$($($object.memberOf) -join "`n`t`t`t`t`t")"
+                Invoke-ScreenPrinter -Value $Value                
+            }
         }
         if ($($Object.description) -and $($Object.description) -ne '') {
             $Value = "description:`t`t`t$($object.description)"
@@ -2411,10 +2417,12 @@ $legend_logo_stop
         }
         if ($($Object.userAccountControl) -and $($Object.userAccountControl) -ne '') {
             $Value = "userAccountControl:`t`t`t$($object.userAccountControl)"
-            if ($($Object.userAccountControl) -like "*PASSWD_NOTREQD*" -or $($Object.userAccountControl) -like "*DONT_REQ_PREAUTH*" -or $($Object.userAccountControl) -like "*TRUSTED_FOR_DELEGATION*") {
-                Invoke-ScreenPrinter -Value $Value -Class Hint
-            } elseif ($($Object.userAccountControl) -like "*ACCOUNTDISABLE*") {
+            if ($($Object.userAccountControl) -match '\b(DONT_REQ_PREAUTH)\b') {
+                Invoke-ScreenPrinter -Value $Value -Class Finding
+            } elseif ($($Object.userAccountControl) -match '\b(ACCOUNTDISABLE|ENCRYPTED_TEXT_PWD_ALLOWED|SMARTCARD_REQUIRED|NOT_DELEGATED)\b') {
                 Invoke-ScreenPrinter -Value $Value -Class Note
+            } elseif ($($Object.userAccountControl) -match '\b(PASSWD_NOTREQD|DONT_REQ_PREAUTH||TRUSTED_FOR_DELEGATION)\b') {
+                Invoke-ScreenPrinter -Value $Value -Class Hint
             } else {
                 Invoke-ScreenPrinter -Value $Value
             }
