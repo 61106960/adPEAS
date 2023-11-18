@@ -1895,6 +1895,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
     
                             if ($($adPeas_ExchVer.ExchangeBuild) -and $($adPeas_ExchVer.ExchangeBuild) -ne '') {
                                 $object_ExSrv | Add-Member Noteproperty 'ExchangeBuildNumber' $adPeas_ExchVer.ExchangeBuild
+                                $object_ExSrv | Add-Member Noteproperty 'ExchangeVersion' $adPeas_ExchVer.ExchangeVersion
                             }
                         }
                         catch {
@@ -2300,7 +2301,16 @@ $legend_logo_stop
                 Invoke-ScreenPrinter -Value $Value
             }
         }
-        if ($($Object.ExchangeBuildNumber) -and $($Object.membExchangeBuildNumbererOf) -ne '') {
+        if ($($Object.ExchangeVersion) -and $($Object.ExchangeVersion) -ne '') {
+            $Value = "ExchangeVersion:`t`t`t$($object.ExchangeVersion)"
+            # search for older Exchange versions than Exchange 2019 and 2016, based on the build number 15.2.x and 15.1.x 
+            if ($($object.ExchangeBuildNumber) -notmatch "^15.1.*|^15.2.*" ) {
+                Invoke-ScreenPrinter -Value $Value -Class Finding
+            } else {
+                Invoke-ScreenPrinter -Value $Value
+            }
+        }
+        if ($($Object.ExchangeBuildNumber) -and $($Object.ExchangeBuildNumber) -ne '') {
             $Value = "ExchangeBuildNumber:`t`t`t$($object.ExchangeBuildNumber)"
             Invoke-ScreenPrinter -Value $Value
         }
@@ -3220,6 +3230,23 @@ Invoke-CheckExchange -Identity ex.contoso.com
 
         if ( (($PSVersionTable).PSVersion).Major -gt '2') { # Check if Powershell version is greater 2
 
+        # Defining different Exchange major versions
+        $ExchangeVersions = @{
+            "15.2" = "Exchange 2019"
+            "15.1" = "Exchange 2016"
+            "15.0" = "Exchange 2013"
+            "14.3" = "Exchange 2010 SP3"
+            "14.2" = "Exchange 2010 SP2"
+            "14.1" = "Exchange 2010 SP1"
+            "14.0" = "Exchange 2010"
+            "8.3" = "Exchange 2007 SP3"
+            "8.2" = "Exchange 2007 SP2"
+            "8.1" = "Exchange 2007 SP1"
+            "8.0" = "Exchange 2007"
+            "6.5" = "Exchange 2003"
+            "6.0" = "Exchange 2000"
+        }
+
 # deactivation of certificate checks and allow all ssl/tls versions
 add-type @"
     using System.Net;
@@ -3263,6 +3290,7 @@ add-type @"
                             $Object = New-Object PSObject
                             $Object | Add-Member Noteproperty 'dNSHostName' $ExSrv
                             $Object | Add-Member Noteproperty 'IPv4Address' $ExSrvIP
+                            $Object | Add-Member Noteproperty 'ExchangeVersion' $ExchangeVersions[$(($ExSrvBuild.split(".")[0,1]) -join ".")]
                             $Object | Add-Member Noteproperty 'ExchangeBuild' $ExSrvBuild
                             $Object
                         }
