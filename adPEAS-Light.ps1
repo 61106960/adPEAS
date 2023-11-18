@@ -634,6 +634,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
 
     <# +++++ Checking Permissions +++++ #>
     Invoke-Logger -Class Info -Value "Checking Juicy Permissions"
+    $adPEAS_Domain = Get-Domain @SearcherArguments
 
     Invoke-Logger -Class Info -Value "Checking Add-Computer Permissions"
     try {
