@@ -7884,8 +7884,7 @@ Required Dependencies: Add-RemoteConnection, Remove-RemoteConnection, ConvertFro
 
 .DESCRIPTION
 
-Enumerates the ACL for a specified file/folder path, and translates
-the access rules for each entry into readable formats. If -Credential is passed,
+Enumerates the ACL for a specified file/folder path, and translates  the access rules for each entry into readable formats. If -Credential is passed,
 Add-RemoteConnection/Remove-RemoteConnection is used to temporarily map the remote share.
 
 .PARAMETER Path
@@ -7894,12 +7893,15 @@ Specifies the local or remote path to enumerate the ACLs for.
 
 .PARAMETER Recurse
 
-If specified, recursivly enumerates all files and folders below Path
+If specified, recursivly enumerates all files and folders below Path.
+
+.PARAMETER ResolveSID
+
+If specified, resolves the SID to its readable identity name.
 
 .PARAMETER Credential
 
-A [Management.Automation.PSCredential] object of alternate credentials
-for connection to the target path.
+A [Management.Automation.PSCredential] object of alternate credentials for connection to the target path.
 
 .EXAMPLE
 
@@ -7946,6 +7948,10 @@ https://support.microsoft.com/en-us/kb/305144
         [Parameter(Mandatory = $false)]
         [Switch]
         $Recurse,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $ResolveSID,
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
@@ -8037,13 +8043,12 @@ https://support.microsoft.com/en-us/kb/305144
                 foreach ($ACL in $ACLS) {
                     $ACL.GetAccessRules($True, $True, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {
                         $SID = $_.IdentityReference.Value
-                        $Name = ConvertFrom-SID -ObjectSID $SID @ConvertArguments
-    
+
                         $Out = New-Object PSObject
                         $Out | Add-Member Noteproperty 'Path' $(($ACL.PSPath -split "::")[1])
                         $Out | Add-Member Noteproperty 'FileSystemRights' (Convert-FileRight -FSR $_.FileSystemRights.value__)
                         $Out | Add-Member NoteProperty 'IsInherited' $_.IsInherited
-                        $Out | Add-Member Noteproperty 'IdentityReference' $Name
+                        If ($ResolveSID) {$Out | Add-Member Noteproperty 'IdentityReference' $(ConvertFrom-SID -ObjectSID $SID @ConvertArguments)}
                         $Out | Add-Member Noteproperty 'IdentitySID' $SID
                         $Out | Add-Member Noteproperty 'AccessControlType' $_.AccessControlType
                         $Out.PSObject.TypeNames.Insert(0, 'PowerView.FileACL')
