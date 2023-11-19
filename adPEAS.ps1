@@ -7878,7 +7878,7 @@ function Get-PathAcl {
 
 Enumerates the ACL for a given file path.
 
-Author: Will Schroeder (@harmj0y)  
+Author: Will Schroeder (@harmj0y), adjusted by Alexander Sturz (@_61106960_)
 License: BSD 3-Clause  
 Required Dependencies: Add-RemoteConnection, Remove-RemoteConnection, ConvertFrom-SID  
 
@@ -7891,6 +7891,10 @@ Add-RemoteConnection/Remove-RemoteConnection is used to temporarily map the remo
 .PARAMETER Path
 
 Specifies the local or remote path to enumerate the ACLs for.
+
+.PARAMETER Recurse
+
+If specified, recursivly enumerates all files and folders below Path
 
 .PARAMETER Credential
 
@@ -7938,6 +7942,10 @@ https://support.microsoft.com/en-us/kb/305144
         [Alias('FullName')]
         [String[]]
         $Path,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $Recurse,
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
@@ -7990,11 +7998,11 @@ https://support.microsoft.com/en-us/kb/305144
 
             # get simple permission
             $Permissions += $SimplePermissions.Keys | ForEach-Object {
-                              if (($FSR -band $_) -eq $_) {
-                                $SimplePermissions[$_]
-                                $FSR = $FSR -band (-bnot $_)
-                              }
-                            }
+                if (($FSR -band $_) -eq $_) {
+                    $SimplePermissions[$_]
+                    $FSR = $FSR -band (-bnot $_)
+                }
+            }
 
             # get remaining extended permissions
             $Permissions += $AccessMask.Keys | Where-Object { $FSR -band $_ } | ForEach-Object { $AccessMask[$_] }
@@ -8019,20 +8027,28 @@ https://support.microsoft.com/en-us/kb/305144
                     }
                 }
 
-                $ACL = Get-Acl -Path $TargetPath
+                $ACLS = @()
+                if ($Recurse) {
+                    $ACLS += Get-ChildItem -Path $TargetPath -Recurse -Force | ForEach-Object {Get-Acl -Path $_.FullName}
+                } else {
+                    $ACLS += Get-Acl -Path $TargetPath
+                }
 
-                $ACL.GetAccessRules($True, $True, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {
-                    $SID = $_.IdentityReference.Value
-                    $Name = ConvertFrom-SID -ObjectSID $SID @ConvertArguments
-
-                    $Out = New-Object PSObject
-                    $Out | Add-Member Noteproperty 'Path' $TargetPath
-                    $Out | Add-Member Noteproperty 'FileSystemRights' (Convert-FileRight -FSR $_.FileSystemRights.value__)
-                    $Out | Add-Member Noteproperty 'IdentityReference' $Name
-                    $Out | Add-Member Noteproperty 'IdentitySID' $SID
-                    $Out | Add-Member Noteproperty 'AccessControlType' $_.AccessControlType
-                    $Out.PSObject.TypeNames.Insert(0, 'PowerView.FileACL')
-                    $Out
+                foreach ($ACL in $ACLS) {
+                    $ACL.GetAccessRules($True, $True, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {
+                        $SID = $_.IdentityReference.Value
+                        $Name = ConvertFrom-SID -ObjectSID $SID @ConvertArguments
+    
+                        $Out = New-Object PSObject
+                        $Out | Add-Member Noteproperty 'Path' $(($ACL.PSPath -split "::")[1])
+                        $Out | Add-Member Noteproperty 'FileSystemRights' (Convert-FileRight -FSR $_.FileSystemRights.value__)
+                        $Out | Add-Member NoteProperty 'IsInherited' $_.IsInherited
+                        $Out | Add-Member Noteproperty 'IdentityReference' $Name
+                        $Out | Add-Member Noteproperty 'IdentitySID' $SID
+                        $Out | Add-Member Noteproperty 'AccessControlType' $_.AccessControlType
+                        $Out.PSObject.TypeNames.Insert(0, 'PowerView.FileACL')
+                        $Out
+                    }
                 }
             }
             catch {
