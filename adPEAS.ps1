@@ -7992,7 +7992,7 @@ https://support.microsoft.com/en-us/kb/305144
             $Permissions += $SimplePermissions.Keys | ForEach-Object {
                               if (($FSR -band $_) -eq $_) {
                                 $SimplePermissions[$_]
-                                $FSR = $FSR -band (-not $_)
+                                $FSR = $FSR -band (-bnot $_)
                               }
                             }
 
