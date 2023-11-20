@@ -352,8 +352,10 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         8 = "TBD"
     }
 
-    # Defining when a krbtgt password is an old one
-    $krbtgtPwdLastSet = (Get-Date).AddYears(-5)
+    # Defining when a krbtgt password is an old one, age +5 years
+    $krbtgtPwdLastSetOld = (Get-Date).AddYears(-5)
+    # Defining when a krbtgt password is an new one, age -1 year
+    $krbtgtPwdLastSetNew = (Get-Date).AddYears(-1)
 
     <# +++++ Checking Domain +++++ #>
     Invoke-Logger -Class Info -Value "Checking General Domain Information"
@@ -416,7 +418,9 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                 Invoke-Logger -Class Finding -Value "Minimum Password Length:`t`tDisabled"
             } elseif ($([int32](($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength)) -le 7) {
                 Invoke-Logger -Class Hint -Value "Minimum Password Length:`t`t$(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) character"
-            } else {
+            } elseif ($([int32](($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength)) -ge 12) {
+                Invoke-Logger -Class Secure -Value "Minimum Password Length:`t`t$(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) character"
+            }else {
                 Invoke-Logger -Value "Minimum Password Length:`t`t$(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) character"
             }
             if ( -not $(($adPEAS_DomainPolicy.SystemAccess).PasswordComplexity) -or $(($adPEAS_DomainPolicy.SystemAccess).PasswordComplexity) -eq '0') {
@@ -427,16 +431,22 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
             if ( -not $(($adPEAS_DomainPolicy.SystemAccess).LockoutBadCount) -or $(($adPEAS_DomainPolicy.SystemAccess).LockoutBadCount) -eq '0') {
                 Invoke-Logger -Class Finding -Value "Lockout Account:`t`t`tDisabled"
             } else {
-                Invoke-Logger -Value "Lockout Account:`t`t`tAfter $(($adPEAS_DomainPolicy.SystemAccess).LockoutBadCount) wrong passwords"
-                if ($(($adPEAS_DomainPolicy.SystemAccess).LockoutDuration) -and $(($adPEAS_DomainPolicy.SystemAccess).LockoutDuration) -ne '') {
+                if ($([int32](($adPEAS_DomainPolicy.SystemAccess).LockoutBadCount)) -le 3) {
+                    Invoke-Logger -Class Secure -Value "Lockout Account:`t`t`tAfter $(($adPEAS_DomainPolicy.SystemAccess).LockoutBadCount) wrong passwords"
+                } else {
+                    Invoke-Logger -Value "Lockout Account:`t`t`tAfter $(($adPEAS_DomainPolicy.SystemAccess).LockoutBadCount) wrong passwords"
+                }
+                if ($(($adPEAS_DomainPolicy.SystemAccess).LockoutDuration) -and $(($adPEAS_DomainPolicy.SystemAccess).LockoutDuration) -eq '-1') {
+                    Invoke-Logger -Class Secure -Value "Lockout Duration:`t`t`tForever"
+                } elseif ($(($adPEAS_DomainPolicy.SystemAccess).LockoutDuration) -and $(($adPEAS_DomainPolicy.SystemAccess).LockoutDuration) -ne '') {
                     Invoke-Logger -Value "Lockout Duration:`t`t`tLockout for $(($adPEAS_DomainPolicy.SystemAccess).LockoutDuration) minutes"
                 } else {
                     Invoke-Logger -Class Finding -Value "Lockout Duration:`t`t`tDisabled"
                 }
                 if ($(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) -and $(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) -ne '') {
-                    Invoke-Logger -Class Hint -Value "Lockout Reset:`t`t`tLockout reset after $(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) minutes"
+                    Invoke-Logger -Class Hint -Value "Lockout Counter Reset:`t`tAccount lockout counter reset after $(($adPEAS_DomainPolicy.SystemAccess).ResetLockoutCount) minutes"
                 } else {
-                    Invoke-Logger -Value "Lockout Reset:`t`t`t`tDisabled"
+                    Invoke-Logger -Value "Lockout Counter Reset:`t`t`tDisabled"
                 }
             }
             if ( $(($adPEAS_DomainPolicy.SystemAccess).ClearTextPassword) -eq '1') {
@@ -472,7 +482,9 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
             }
             try {
                 $adPEAS_krbtgt = Get-DomainUser @SearcherArguments -Identity krbtgt
-                if ($adPEAS_krbtgt -and $($adPEAS_krbtgt.pwdlastset) -le $krbtgtPwdLastSet) {
+                if ($adPEAS_krbtgt -and $($adPEAS_krbtgt.pwdlastset) -ge $krbtgtPwdLastSetNew) {
+                    Invoke-Logger -Class Secure -Value "Krbtgt Password Last Set:`t`t$($adPEAS_krbtgt.pwdlastset)"
+                } elseif ($adPEAS_krbtgt -and $($adPEAS_krbtgt.pwdlastset) -le $krbtgtPwdLastSetOld) {
                     Invoke-Logger -Class Hint -Value "Krbtgt Password Last Set:`t`t$($adPEAS_krbtgt.pwdlastset)"
                 } else {
                     Invoke-Logger -Value "Krbtgt Password Last Set:`t`t$($adPEAS_krbtgt.pwdlastset)"
@@ -1149,13 +1161,13 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                 if ($($Object_Kerberoast.hash)) {
                     $Object_Kerberoast | Get-DomainObject @SearcherArguments -SecurityMasks Owner | Invoke-Logger
                     if ($($Object_Kerberoast.hash) -like '$krb5tgs$23$*') {
-                        Invoke-Logger -Value 'Hashcat usage: hashcat -m 13100'
+                        Invoke-Logger -Class Hint -Value 'Kerberos TGS with RC4, hashcat usage: hashcat -m 13100'
                     } elseif ($($Object_Kerberoast.hash) -like '$krb5tgs$17$*') {
-                        Invoke-Logger -Value 'Hashcat usage: hashcat -m 19600'
+                        Invoke-Logger -Class Secure -Value 'Kerberos TGS with AES128, expect low cracking speed, Hashcat usage: hashcat -m 19600'
                     } elseif ($($Object_Kerberoast.hash) -like '$krb5tgs$18$*') {
-                        Invoke-Logger -Value 'Hashcat usage: hashcat -m 19700'
+                        Invoke-Logger -Class Secure -Value 'Kerberos TGS with AES256, expect low cracking speed, hashcat usage: hashcat -m 19700'
                     }
-                    Invoke-Logger -Class Finding -Value "$($Object_Kerberoast.hash)" -Raw
+                    Invoke-Logger -Class Finding -Value "$($Object_Kerberoast.hash)`n" -Raw
                 } else {
                     Invoke-Logger -Value " "
                 }
@@ -2126,6 +2138,7 @@ Gets an user, computer or generic Active Directory object and prints valuable in
 
 .PARAMETER Class
 Enter the level of Log you want to output. Different LogClass level result in different cosole output colors.
+Possible values are "Info", "Finding", "Hint", "Note", "Secure", "Standard"
 
 .PARAMETER Value
 Information which shall be displayed in console or file.
@@ -2157,7 +2170,7 @@ Prints the text "ASREPRoast Hash" in color Red (Class Finding).
         $Object,
 
         [Parameter(Mandatory = $false)]
-        [ValidateSet("Info", "Finding", "Hint", "Note", "Reserved", "Standard")]
+        [ValidateSet("Info", "Finding", "Hint", "Note", "Secure", "Standard")]
         [String[]]
         $Class = "Standard",
 
@@ -2183,7 +2196,7 @@ Prints the text "ASREPRoast Hash" in color Red (Class Finding).
             $Value,
 
             [Parameter(Mandatory = $false)]
-            [ValidateSet("Info", "Finding", "Hint", "Note", "Reserved", "Standard")]
+            [ValidateSet("Info", "Finding", "Hint", "Note", "Secure", "Standard")]
             [String[]]
             $Class = "Standard",
 
@@ -2218,7 +2231,7 @@ Prints the text "ASREPRoast Hash" in color Red (Class Finding).
             "Finding" = "[!] Found a vulnerability which may can be exploited in some way"
             "Hint" = "[+] Found some interesting information for further investigation"
             "Note" = "[*] Some kind of note"
-            "Reserved" = "[#] Reserved"
+            "Secure" = "[#] Some kind of secure configuration"
         }
 
         if ($Script:adPEAS_OutputColor -eq $True) {
@@ -2226,7 +2239,7 @@ Prints the text "ASREPRoast Hash" in color Red (Class Finding).
             $Legend_Table["Finding"] = $ANSI_Table["Red"]+$Legend_Table["Finding"]+$ANSI_Table["Reset"]
             $Legend_Table["Hint"] = $ANSI_Table["Yellow"]+$Legend_Table["Hint"]+$ANSI_Table["Reset"]
             $Legend_Table["Note"] = $ANSI_Table["Green"]+$Legend_Table["Note"]+$ANSI_Table["Reset"]
-            $Legend_Table["Reserved"] = $ANSI_Table["RedYellow"]+$Legend_Table["Reserved"]+$ANSI_Table["Reset"]
+            $Legend_Table["Secure"] = $ANSI_Table["RedYellow"]+$Legend_Table["Secure"]+$ANSI_Table["Reset"]
             $legend_logo_start = $ANSI_Table["Blue"]
             $legend_logo_stop = $ANSI_Table["Reset"]
         }
@@ -2251,7 +2264,7 @@ $legend_logo_stop
         $($Legend_Table["Finding"])
         $($Legend_Table["Hint"])
         $($Legend_Table["Note"])
-        $($Legend_Table["Reserved"])
+        $($Legend_Table["Secure"])
 
 "@
         }
@@ -2269,7 +2282,7 @@ $legend_logo_stop
         } elseif ($Class -eq "Note") {
             if (-not $Raw) {$Value = "[*] $Value"}
             if ($Script:adPEAS_OutputColor) {$Value = $ANSI_Table["Green"]+$Value+$ANSI_Table["Reset"]}
-        } elseif ($Class -eq "Reserved") {
+        } elseif ($Class -eq "Secure") {
             if (-not $Raw) {$Value ="[#] $Value"}
             if ($Script:adPEAS_OutputColor) {$Value = $ANSI_Table["RedYellow"]+$Value+$ANSI_Table["Reset"]}
         } else {
@@ -2354,7 +2367,7 @@ $legend_logo_stop
             if ($($Object.memberOf) -match '^CN=Protected Users,CN=.*') {
                 $Value = "memberOf:`t`t`t`t$($($object.memberOf) -join "`n`t`t`t`t`t")"
                 Invoke-ScreenPrinter -Value $Value
-                Invoke-ScreenPrinter -Value "memberOf 'Protected Users':`t`tThis identiy is member of the 'Protected Users' group" -Class Note
+                Invoke-ScreenPrinter -Value "memberOf 'Protected Users':`t`tThis identiy is member of the 'Protected Users' group" -Class Secure
             } else {
                 $Value = "memberOf:`t`t`t`t$($($object.memberOf) -join "`n`t`t`t`t`t")"
                 Invoke-ScreenPrinter -Value $Value                
@@ -2448,11 +2461,11 @@ $legend_logo_stop
         }
         if ($($Object.userAccountControl) -and $($Object.userAccountControl) -ne '') {
             $Value = "userAccountControl:`t`t`t$($object.userAccountControl)"
-            if ($($Object.userAccountControl) -match '\b(DONT_REQ_PREAUTH)\b') {
+            if ($($Object.userAccountControl) -match '\b(DONT_REQ_PREAUTH|ENCRYPTED_TEXT_PWD_ALLOWED)\b') {
                 Invoke-ScreenPrinter -Value $Value -Class Finding
-            } elseif ($($Object.userAccountControl) -match '\b(ACCOUNTDISABLE|ENCRYPTED_TEXT_PWD_ALLOWED|SMARTCARD_REQUIRED|NOT_DELEGATED)\b') {
-                Invoke-ScreenPrinter -Value $Value -Class Note
-            } elseif ($($Object.userAccountControl) -match '\b(PASSWD_NOTREQD|DONT_REQ_PREAUTH||TRUSTED_FOR_DELEGATION)\b') {
+            } elseif ($($Object.userAccountControl) -match '\b(ACCOUNTDISABLE|SMARTCARD_REQUIRED|NOT_DELEGATED)\b') {
+                Invoke-ScreenPrinter -Value $Value -Class Secure
+            } elseif ($($Object.userAccountControl) -match '\b(PASSWD_NOTREQD|TRUSTED_FOR_DELEGATION)\b') {
                 Invoke-ScreenPrinter -Value $Value -Class Hint
             } else {
                 Invoke-ScreenPrinter -Value $Value
