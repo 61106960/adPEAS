@@ -634,7 +634,32 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
 
     <# +++++ Checking Permissions +++++ #>
     Invoke-Logger -Class Info -Value "Checking Juicy Permissions"
-    $adPEAS_Domain = Get-Domain @SearcherArguments
+
+    try {
+        $adPEAS_Domain = Get-Domain @SearcherArguments
+    } catch {
+        Write-Warning "[Get-adPEASRights] Error retrieving general domain information: $_"
+    }
+
+    Invoke-Logger -Class Info -Value "Checking NetLogon Access Rights"
+    try {
+        if ($PSBoundParameters['Server']) { $adPEAS_NetLogonTarget = $Server } else { $adPEAS_NetLogonTarget = $adPEAS_Domain }
+
+        $adPEAS_NetLogonRights = Get-PathAcl -Path "\\$adPEAS_NetLogonTarget\NetLogon\" -Recurse
+        if ($adPEAS_NetLogonRights -and $adPEAS_NetLogonRights -ne '') {
+            foreach ($object_NetLogonRights in $adPEAS_NetLogonRights){
+                # filter out some default identities with write rights like
+                # '^S-1-3-0' # Creater/Owner '^S-1-5-18' # System, '^S-1-5-21-\d+-\d+\-\d+\-512' # DOMAIN_ADMINS, '^S-1-5-21-\d+-\d+\-\d+\-519' # ENTERPRISE_ADMINS, '^S-1-5-32-544' # BUILTIN_ADMINISTRATORS
+                if ($object_NetLogonRights.FileSystemRights -like '*Write*'-and $object_NetLogonRights.IdentitySID -notmatch '\b(^S-1-3-0|^S-1-5-18|^S-1-5-32-544|^S-1-5-21-\d+-\d+\-\d+\-5[1,2][2,9,0])\b') {
+                    $object_NetLogonRights | Add-Member NoteProperty 'sAMAccountName' $($object_NetLogonRights.IdentitySID | ConvertFrom-SID @SearcherArguments)
+                    Invoke-Logger -Class Hint -Value "Identity $($object_NetLogonRights.sAMAccountName) has write access to file $($object_NetLogonRights.Path)"
+                }
+            }
+        }
+    }
+    catch {
+        Write-Warning "[Get-adPEASRights] Error retrieving NetLogon access rights information: $_"
+    }
 
     Invoke-Logger -Class Info -Value "Checking Add-Computer Permissions"
     try {
