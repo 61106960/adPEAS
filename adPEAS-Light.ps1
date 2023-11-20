@@ -663,6 +663,9 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
 
     Invoke-Logger -Class Info -Value "Checking Add-Computer Permissions"
     try {
+        # Getting machine account quota
+        $adPEAS_RootDomainObject = Get-DomainObject @SearcherArguments -Identity (Get-DomainDN @SearcherArguments)
+
         # Getting 'add computer to domain' permissions
         $adPEAS_DomainRights = Get-DomainPolicyData @SearcherArguments -Policy 'DomainController'
         if ($adPEAS_DomainRights -and $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -ne '') {
@@ -670,6 +673,9 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
             if ($(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -and $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege) -ne '') {
                 foreach ($object_rights in $(($adPEAS_DomainRights.PrivilegeRights).SeMachineAccountPrivilege)) {
                     if ($($object_rights.substring(1)) -eq "S-1-5-11") {
+                        if ($adPEAS_RootDomainObject -and $($adPEAS_RootDomainObject."ms-ds-machineaccountquota") -ne '') {
+                            Invoke-Logger -Class Finding -Value "The Machine Account Quota is currently set to $($adPEAS_RootDomainObject."ms-ds-machineaccountquota")"
+                        }
                         Invoke-Logger -Class Finding -Value "Every member of group '$($object_rights.substring(1) | ConvertFrom-SID @SearcherArguments)' can add a computer to domain '$($adPEAS_Domain.Name)'`n"
                     }
                     $user_object = $object_rights.substring(1) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
@@ -677,7 +683,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                     if ([int32]$($user_object.objectSid).split("-")[-1] -ge 1000) {
                         #$object_rights_identity = $($user_object.objectSid) | Get-DomainObject @SearcherArguments #-SecurityMasks Owner
                         if ($($user_object.sAMAccountName) -and $($user_object.useraccountcontrol) -like '*ACCOUNTDISABLE*') {
-                            Write-Verbose "[Get-adPEASRights] Identity '$($user_object.distinguishedName)' has DCSync rights but account is disabled"
+                            Write-Verbose "[Get-adPEASRights] Identity '$($user_object.distinguishedName)' can add computer to the domain but is disabled"
                         } else {
                             Invoke-Logger -Class Hint -Value "The identity '$($user_object.sAMAccountName)' is a non-default account and can add computer to the domain"
                             $user_object | Invoke-Logger
