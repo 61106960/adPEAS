@@ -940,7 +940,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         }
     }
     catch {
-        Write-Warning "[Get-adPEASCA] Error retrieving ADCS information: $_"
+        Write-Verbose "[Get-adPEASCA] Error retrieving ADCS information: $_"
     }
 
     <# +++++ Searching for Vulnerable Certificate Templates +++++ #>
