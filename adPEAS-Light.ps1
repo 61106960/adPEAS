@@ -2337,6 +2337,10 @@ $legend_logo_stop
             $Value = "objectSid:`t`t`t`t$($object.objectSid)"
             Invoke-ScreenPrinter -Value $Value
         }
+        if ($($Object.sidhistory) -and $($Object.sidhistory) -ne '') {
+            $Value = "sidhistory:`t`t`t`t$($object.sidhistory)"
+            Invoke-ScreenPrinter -Value $Value -Class Hint
+        }
         if ($($Object.MemberDomain) -and $($Object.MemberDomain) -ne '') {
             $Value = "Foreign MemberDomain:`t`t$($object.MemberDomain)"
             Invoke-ScreenPrinter -Value $Value -Class Hint
