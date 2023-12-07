@@ -2118,7 +2118,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
     }
 
     try {
-        Invoke-Bloodhound @SearcherArguments -OutputPrefix $Domain
+        Invoke-Bloodhound @SearcherArguments -OutputPrefix $Domain -OutputDirectory ($pwd).path
     }
     catch {
         Write-Warning "[Get-adPEASBloodhound] Error starting SharpHound collector: $_"
