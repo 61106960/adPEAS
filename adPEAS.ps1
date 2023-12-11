@@ -149,7 +149,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     $ErrorActionPreference = "Continue"
-    $adPEASVersion = '0.8.22'
+    $adPEASVersion = '0.8.23'
 
     # Check if outputfile is writable and set color
     if ($PSBoundParameters['Outputfile']) {
@@ -2113,7 +2113,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         Write-Verbose "[Get-adPEASComputer] Using LDAPS over port 636"
     }
     if ($PSBoundParameters['Scope']) {
-        $SearcherArguments['Collectionmethod'] = $Scope
+        $SearcherArguments['Collectionmethods'] = $Scope
         Write-Verbose "[Get-adPEASBloodhound] Using Collectionmethod '$Scope' for Sharphound collector"
     }
 
