@@ -6,7 +6,7 @@ adPEAS is a Powershell tool to automate Active Directory enumeration.
 In fact, adPEAS is like a wrapper for different other cool projects like
 * PowerView
 * PoshADCS
-* Bloodhound
+* BloodHound Community Edition
 * and some own written lines of code
 
 As said, adPEAS is a wrapper for other tools. They are almost all written in pure Powershell but some of them are included as compressed binary blob or C# code.
@@ -29,7 +29,12 @@ adPEAS consists of the following enumeration modules:
 * Delegation - Searching for delegation issues, like 'Constrained Delegation', 'Unconstrained Delegation' and 'Resource Based Constrained Delegation', for computer and user accounts
 * Accounts - Searching for non-disabled high privileged user accounts in predefined groups and account issues like e.g. old passwords
 * Computer - Enumerating Domain Controllers, Certificate Services, Exchange Server and outdated OS versions like Windows Server 2008R2, etc.
-* Bloodhound - Enumerating Active Directory with the SharpHound collector
+* BloodHound - Enumerating Active Directory with the SharpHound collector
+
+### Important Note about the BloodHound Module
+* adPEAS is currently using the SharpHound ingestor by [BloodHound Community Edition](https://github.com/SpecterOps/BloodHound). This ingestor will NOT work with the older versions of BloodHound.
+* Since more features are constantly added to BloodHound, the ingestor may be frequently updates as well to support more complex enumeration techniques. This repo will try to keep up with the newest versions.
+* Since the older version of BloodHound is still in use, a different fork (BloodHound-Old) will exist to cover their needs.
 
 # Some How To Use Examples
 ## Simple usage with generic program parameters
