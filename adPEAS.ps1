@@ -1226,8 +1226,8 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
     }
     #>
 
-    <# +++++ Searching for Computer with enabled and readable LAPS attribute +++++ #>
-    Invoke-Logger -Class Info -Value "Searching for Computer with enabled and readable LAPS attribute"
+    <# +++++ Searching for Computer with enabled and readable LAPS native and legacy attributes +++++ #>
+    Invoke-Logger -Class Info -Value "Searching for Computer with enabled and readable Microsoft LAPS legacy attribute"
 
     try {
         $adPEAS_CompLAPS = Get-DomainComputer @SearcherArguments -LDAPFilter '(ms-Mcs-AdmPwd=*)' -SecurityMasks Owner
@@ -1236,7 +1236,28 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                 Write-Verbose "[Get-adPEASCreds] Computer '$($Object_lapspw.samaccountname) has enabled LAPS"
             }
             elseif ($($Object_lapspw.sAMAccountName) -and $($Object_lapspw.sAMAccountName) -ne '') {
-                Invoke-Logger -Class Finding -Value "Found readable LAPS attribute at Computer '$($Object_lapspw.samaccountname)':"
+                Invoke-Logger -Class Finding -Value "Found readable LAPS legacy attribute at Computer '$($Object_lapspw.samaccountname)':"
+                $Object_lapspw | Invoke-Logger
+            }
+            else {
+                Write-verbose "[Get-adPEASCreds] No Results or Results have been suppressed"
+            }
+        }
+    }
+    catch {
+        Write-Warning "[Get-adPEASCreds] Error retrieving LAPS information: $_"
+    }
+
+    Invoke-Logger -Class Info -Value "Searching for Computer with enabled and readable Windows LAPS native attribute"
+
+    try {
+        $adPEAS_CompLAPS2 = Get-DomainComputer @SearcherArguments -LDAPFilter '(|(msLAPS-Password=*)(msLAPS-EncryptedPassword=*))' -SecurityMasks Owner
+        foreach ($Object_lapspw in $adPEAS_CompLAPS2) {
+            if ($($Object_lapspw.serviceprincipalname) -and $($Object_lapspw.serviceprincipalname) -like '*_msdcs*') {
+                Write-Verbose "[Get-adPEASCreds] Computer '$($Object_lapspw.samaccountname) has enabled LAPS"
+            }
+            elseif ($($Object_lapspw.sAMAccountName) -and $($Object_lapspw.sAMAccountName) -ne '') {
+                Invoke-Logger -Class Finding -Value "Found readable LAPS native attribute at Computer '$($Object_lapspw.samaccountname)':"
                 $Object_lapspw | Invoke-Logger
             }
             else {
@@ -2385,18 +2406,32 @@ $legend_logo_stop
             $Value = "info:`t`t`t`t$($object.info)"
             Invoke-ScreenPrinter -Value $Value -Class Hint
         }
-        if ($($Object.'ms-Mcs-AdmPwd') -and $($Object.'ms-Mcs-AdmPwd') -ne '') {
-            $Value = "ms-Mcs-AdmPwd:`t`t`t$($Object.'ms-Mcs-AdmPwd')"
-            Invoke-ScreenPrinter -Value $Value -Class Finding
-            if ($($Object.'ms-mcs-AdmPwdExpirationTime') -and $($Object.'ms-mcs-AdmPwdExpirationTime') -ne '') {
-                if ($($Object.'ms-mcs-AdmPwdExpirationTime').toFileTime() -lt $(Get-Date).toFileTime()) {
-                    $Value = "ms-mcs-AdmPwdExpirationTime:`t$($Object.'ms-MCS-AdmPwdExpirationTime')"
-                    Invoke-ScreenPrinter -Class Note -Value $Value
-                } else {
-                    $Value = "ms-mcs-AdmPwdExpirationTime:`t`t$($Object.'ms-MCS-AdmPwdExpirationTime')"
-                    Invoke-ScreenPrinter -Value $Value
-                }
+        if ($($Object.'msLAPS-PasswordExpirationTime') -and $($Object.'msLAPS-PasswordExpirationTime')) {
+            $Value = "LAPS version configured:`t`tWindows LAPS (native)"
+            Invoke-ScreenPrinter -Value $Value -Class Secure
+            if ($($Object.'msLAPS-Password') -and $($Object.'msLAPS-Password') -ne '') {
+                $msLAPSObject = $($Object.'msLAPS-Password') | convertfrom-json
+                $Value = "msLAPS-Username:`t`t`t$($msLAPSObject.n)"
+                Invoke-ScreenPrinter -Value $Value -Class Finding
+                $Value = "msLAPS-Password:`t`t`t$($msLAPSObject.p)"
+                Invoke-ScreenPrinter -Value $Value -Class Finding
+            } elseif ($($Object.'msLAPS-EncryptedPassword') -and $($Object.'msLAPS-EncryptedPassword') -ne '') {
+                $Value = "LAPSCredentials:`t`t`tAccessible but encrypted"
+                Invoke-ScreenPrinter -Value $Value -Class Secure
             }
+            $PasswordExpirationTime = [DateTime]::FromFileTime($($Object.'msLAPS-PasswordExpirationTime'))
+            $Value = "msLAPS-PasswordExpirationTime:`t`t$($PasswordExpirationTime)"
+            Invoke-ScreenPrinter -Value $Value
+        }
+        if ($($Object.'ms-mcs-AdmPwdExpirationTime') -and $($Object.'ms-mcs-AdmPwdExpirationTime')) {
+            $Value = "LAPS version configured:`t`tMicrosoft LAPS (legacy)"
+            Invoke-ScreenPrinter -Value $Value -Class Secure
+            if ($($Object.'ms-Mcs-AdmPwd') -and $($Object.'ms-Mcs-AdmPwd') -ne '') {
+                $Value = "ms-Mcs-AdmPwd:`t`t`t$($Object.'ms-Mcs-AdmPwd')"
+                Invoke-ScreenPrinter -Value $Value -Class Finding
+            }
+            $Value = "ms-Mcs-AdmPwdExpirationTime:`t`t$($Object.'ms-MCS-AdmPwdExpirationTime')"
+            Invoke-ScreenPrinter -Value $Value
         }
         if ($($Object.UnixUserPassword) -and $($Object.UnixUserPassword) -ne '') {
             $Value = "UnixUserPassword:`t`t`t$([System.Text.Encoding]::ASCII.GetString($Object.UnixUserPassword))"
