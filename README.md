@@ -29,7 +29,7 @@ adPEAS consists of the following enumeration modules:
 * Delegation - Searching for delegation issues, like 'Constrained Delegation', 'Unconstrained Delegation' and 'Resource Based Constrained Delegation', for computer and user accounts
 * Accounts - Searching for non-disabled high privileged user accounts in predefined groups and account issues like e.g. old passwords
 * Computer - Enumerating Domain Controllers, Certificate Services, Exchange Server and outdated OS versions like Windows Server 2008R2, etc.
-* BloodHound - Enumerating Active Directory with the SharpHound collector
+* BloodHound - Enumerating Active Directory with the SharpHound collector for BloodHound Community Edition
 
 ### Important Note about the BloodHound Module
 * adPEAS is currently using the SharpHound ingestor by [BloodHound Community Edition](https://github.com/SpecterOps/BloodHound). This ingestor will NOT work with the older versions of BloodHound.
@@ -125,7 +125,7 @@ Enumerates installed Domain Controllers, Active Directory Certificate Services, 
 Invoke-adPEAS -Module Computer
 ```
 
-Starts Bloodhound enumeration with the scope DCOnly. Output ZIP files are stored in the same directory adPEAS is started from.
+Starts Bloodhound enumeration with the scope DCOnly. Output ZIP files are stored in the same directory adPEAS is started from. The implemented SharpHound ingestor supports BloodHound Community Edition only.
 ```
 Invoke-adPEAS -Module Bloodhound
 ```
