@@ -30878,8 +30878,8 @@ Set-Alias Get-DomainPolicy Get-DomainPolicyData
 
 ########################################################
 #
-# SharpHound collector from https://github.com/SpecterOps/BloodHound
-# Version 2.3.0 - BloocHound Community Edition
+# SharpHound collector from https://github.com/BloodHoundAD/SharpHound
+# Version 2.3.0 - Supporting BloodHound Community Edition only
 #
 ########################################################
 
@@ -30888,11 +30888,11 @@ function Invoke-BloodHound
     <#
     .SYNOPSIS
 
-        Runs the BloodHound C# Ingestor using reflection. The assembly is stored in this file.
+        Runs the BloodHound Community C# Ingestor using reflection. The assembly is stored in this file.
 
     .DESCRIPTION
 
-        Using reflection and assembly.load, load the compiled BloodHound C# ingestor into memory
+        Using reflection and assembly.load, load the compiled BloodHound Community C# ingestor into memory
         and run it without touching disk. Parameters are converted to the equivalent CLI arguments
         for the SharpHound executable and passed in via reflection. The appropriate function
         calls are made in order to ensure that assembly dependencies are loaded properly.
