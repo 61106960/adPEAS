@@ -2369,7 +2369,7 @@ $legend_logo_stop
         if ($($Object.operatingsystem) -and $($Object.operatingsystem) -ne '') {
             $Value = "operatingsystem:`t`t`t$($object.operatingsystem)"
             # Find computer with Windows Server 2003, 2008, 2008 R2
-            if ($($Object.operatingsystem) -like 'Windows Server 200*' -or $($Object.operatingsystem) -like 'Windows *7*' -or $($Object.operatingsystem) -like 'Windows Vista*') {
+            if ($($Object.operatingsystem) -like 'Windows Server 2012*' -or $($Object.operatingsystem) -like 'Windows Server 200*' -or $($Object.operatingsystem) -like 'Windows *7*' -or $($Object.operatingsystem) -like 'Windows Vista*') {
                 Invoke-ScreenPrinter -Value $Value -Class Finding
             } else {
                 Invoke-ScreenPrinter -Value $Value
@@ -2417,7 +2417,7 @@ $legend_logo_stop
                 Invoke-ScreenPrinter -Value $Value -Class Finding
             } elseif ($($Object.'msLAPS-EncryptedPassword') -and $($Object.'msLAPS-EncryptedPassword') -ne '') {
                 $Value = "LAPSCredentials:`t`t`tAccessible but encrypted"
-                Invoke-ScreenPrinter -Value $Value -Class Secure
+                Invoke-ScreenPrinter -Value $Value -Class Hint
             }
             $PasswordExpirationTime = [DateTime]::FromFileTime($($Object.'msLAPS-PasswordExpirationTime'))
             $Value = "msLAPS-PasswordExpirationTime:`t`t$($PasswordExpirationTime)"
@@ -11847,29 +11847,28 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             if ($PSBoundParameters['HasLAPS']) {
                 # Searching for attribute name, which can differ as per pingcastle by @vletoux
                 # https://github.com/vletoux/pingcastle/blob/master/Scanners/LAPSBitLocker.cs
-                Get-DomainObject -SearchBase $SchemaDN -LDAPFilter "(name=ms-*-admpwd*)" -Properties 'name' @SearcherArguments | Select-Object -expand name | ForEach-Object {
+                Get-DomainObject -SearchBase $SchemaDN -LDAPFilter "(|(name=ms-*-admpwd*)(name=ms-LAPS*))" -Properties 'LdapDisplayName' @SearcherArguments | Select-Object -expand LdapDisplayName | ForEach-Object {
                     Write-Verbose "[Get-DomainComputer] Searching for attribute: $_"
                     $AttrFilter += "($_=*)"
                 }
                 if ($AttrFilter) { $Filter += "(|$AttrFilter)" } else {
                     # If LAPS is not installed at all, set the default property
-                    $Filter += "(|(ms-Mcs-AdmPwd=*))"
+                    $Filter += "(|(ms-Mcs-AdmPwdExpirationTime=*)(msLAPS-PasswordExpirationTime))"
                 }
             }
             if ($PSBoundParameters['NoLAPS']) {
                 # Searching for attribute name, which can differ as per pingcastle by @vletoux
                 # https://github.com/vletoux/pingcastle/blob/master/Scanners/LAPSBitLocker.cs
-                Get-DomainObject -SearchBase $SchemaDN -LDAPFilter "(name=ms-*-admpwd*)" -Properties 'name' @SearcherArguments | Select-Object -expand name | ForEach-Object {
+                Get-DomainObject -SearchBase $SchemaDN -LDAPFilter "(|(name=ms-*-admpwd*)(name=ms-LAPS*))" -Properties 'LdapDisplayName' @SearcherArguments | Select-Object -expand LdapDisplayName | ForEach-Object {
                     Write-Verbose "[Get-DomainComputer] Searching for attribute: $_"
                     $AttrFilter += "(!($_=*))"
                 }
                 if ($AttrFilter) { $Filter += "(&$AttrFilter)" }
             }
-                
             if ($PSBoundParameters['CanReadLAPS']) {
                 # Searching for attribute name, which can differ as per pingcastle by @vletoux
                 # https://github.com/vletoux/pingcastle/blob/master/Scanners/LAPSBitLocker.cs
-                Get-DomainObject -SearchBase $SchemaDN -LDAPFilter "(name=ms-*-admpwd)" -Properties 'name' @SearcherArguments | Select-Object -expand name | ForEach-Object {
+                Get-DomainObject -SearchBase $SchemaDN -LDAPFilter "(|(name=ms-*-admpwd)(name=ms-LAPS-Password)(name=ms-LAPS-EncryptedPassword))" -Properties 'LdapDisplayName' @SearcherArguments | Select-Object -expand LdapDisplayName | ForEach-Object {
                     Write-Verbose "[Get-DomainComputer] Searching for attribute: $_"
                     $AttrFilter += "($_=*)"
                 }
@@ -11892,8 +11891,6 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 $Filter += "(userAccountControl:1.2.840.113556.1.4.803:=$UACValue)"
             }
         }
-
-
 
         $Results = Invoke-LDAPQuery @SearcherArguments -LDAPFilter "(&(samAccountType=805306369)$Filter)"
         $Results | Where-Object {$_} | ForEach-Object {
