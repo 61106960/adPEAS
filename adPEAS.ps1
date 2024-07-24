@@ -6664,7 +6664,7 @@ The converted DOMAIN\username.
         ForEach ($TargetSid in $ObjectSid) {
             $TargetSid = $TargetSid.trim('*')
             try {
-                # try to resolve any built-in SIDs first - https://support.microsoft.com/en-us/kb/243330
+                # try to resolve any built-in SIDs first - https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-identifiers
                 Switch ($TargetSid) {
                     'S-1-0'         { 'Null Authority' }
                     'S-1-0-0'       { 'Nobody' }
@@ -6672,7 +6672,7 @@ The converted DOMAIN\username.
                     'S-1-1-0'       { 'Everyone' }
                     'S-1-2'         { 'Local Authority' }
                     'S-1-2-0'       { 'Local' }
-                    'S-1-2-1'       { 'Console Logon ' }
+                    'S-1-2-1'       { 'Console Logon' }
                     'S-1-3'         { 'Creator Authority' }
                     'S-1-3-0'       { 'Creator Owner' }
                     'S-1-3-1'       { 'Creator Group' }
@@ -6686,20 +6686,19 @@ The converted DOMAIN\username.
                     'S-1-5-3'       { 'Batch' }
                     'S-1-5-4'       { 'Interactive' }
                     'S-1-5-6'       { 'Service' }
-                    'S-1-5-7'       { 'Anonymous' }
+                    'S-1-5-7'       { 'Anonymous Logon' }
                     'S-1-5-8'       { 'Proxy' }
                     'S-1-5-9'       { 'Enterprise Domain Controllers' }
                     'S-1-5-10'      { 'Principal Self' }
                     'S-1-5-11'      { 'Authenticated Users' }
                     'S-1-5-12'      { 'Restricted Code' }
-                    'S-1-5-13'      { 'Terminal Server Users' }
+                    'S-1-5-13'      { 'Terminal Server User' }
                     'S-1-5-14'      { 'Remote Interactive Logon' }
-                    'S-1-5-15'      { 'This Organization ' }
-                    'S-1-5-17'      { 'This Organization ' }
+                    'S-1-5-15'      { 'This Organization' }
+                    'S-1-5-17'      { 'IUSR' }
                     'S-1-5-18'      { 'Local System' }
                     'S-1-5-19'      { 'NT Authority' }
-                    'S-1-5-20'      { 'NT Authority' }
-                    'S-1-5-80-0'    { 'All Services ' }
+                    'S-1-5-20'      { 'Network Service' }
                     'S-1-5-32-544'  { 'BUILTIN\Administrators' }
                     'S-1-5-32-545'  { 'BUILTIN\Users' }
                     'S-1-5-32-546'  { 'BUILTIN\Guests' }
@@ -6726,7 +6725,15 @@ The converted DOMAIN\username.
                     'S-1-5-32-577'  { 'BUILTIN\RDS Management Servers' }
                     'S-1-5-32-578'  { 'BUILTIN\Hyper-V Administrators' }
                     'S-1-5-32-579'  { 'BUILTIN\Access Control Assistance Operators' }
-                    'S-1-5-32-580'  { 'BUILTIN\Access Control Assistance Operators' }
+                    'S-1-5-32-580'  { 'BUILTIN\Remote Management Users' }
+                    'S-1-5-64-10'    { 'NTLM Authentication' }
+                    'S-1-5-64-14'    { 'SChannel Authentication' }
+                    'S-1-5-64-21'    { 'Digest Authentication' }
+                    'S-1-5-80'    { 'NT Service' }
+                    'S-1-5-80-0'    { 'All Services' }
+                    'S-1-5-83-0'    { 'NT VIRTUAL MACHINE\Virtual Machines' }
+                    'S-1-5-113'      { 'Local account' }
+                    'S-1-5-114'      { 'Local account and member of Administrators group' }
                     Default {
                         Convert-ADName -Identity $TargetSid @ADNameArguments
                     }
