@@ -349,7 +349,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         5 = "Windows 2012"
         6 = "Windows 2012 R2"
         7 = "Windows 2016"
-        8 = "TBD"
+        10 = "Windows 2025"
     }
 
     # Defining when a krbtgt password is an old one, age +5 years
