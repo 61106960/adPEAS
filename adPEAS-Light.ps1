@@ -2961,7 +2961,7 @@ Get-NetlogonFile -Domain contoso.com -Cred $Cred
             }
         }
         else {
-            $SearchExt = @('*.txt','*.bat','*.ini','*.conf','*.xml','*.cnf','*.cmd','*.vbs','*.vbe')
+            $SearchExt = @('*.txt','*.bat','*.ini','*.conf','*.xml','*.cnf','*.cmd','*.vbs','*.vbe','*.kix')
         }
 
         foreach ($Target in $Targets) {
