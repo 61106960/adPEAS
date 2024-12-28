@@ -59,6 +59,9 @@ This parameter works together with the module 'Bloodhound' only.
 Changes the scope of Bloodhound enumeration from DCOnly to your choice.
 Default is DCOnly.
 
+.PARAMETER OPSEC
+Specifies that certain OPESEC related tasks like ASREProasting, Kerberoasting and Bloodhound enumeration are not performed.
+
 .EXAMPLE
 Invoke-adPEAS
 Start adPEAS with all modules and enumerate the domain the logged-on user is connected to.
@@ -137,6 +140,10 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
         [ValidateSet("Default", "All", "DCOnly", "ComputerOnly", "Session", "LoggedOn","Group","ACL","GPOLocalGroup","Trusts","Container","LocalGroup","LocalAdmin","RDP","DCOM","PSRemote")]
         [String[]]
         $Scope = [string[]] @('DCOnly'),
+
+        [Parameter(Mandatory = $false,HelpMessage="Switch to avoid obvious OPSEC fails")]
+        [Switch]
+        $OPSEC,
 
         [Parameter(Mandatory = $false,HelpMessage="Switch to TLS encrypted LDAPS over tcp/636")]
         [Switch]
@@ -238,6 +245,10 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
         $SearcherArguments['Server'] = $Server
         Write-Verbose "[Invoke-adPEAS] Using '$Server' as target domain controller"
     }
+    if ($PSBoundParameters['OPSEC']) {
+        $SearcherArguments['OPSEC'] = $True
+        Write-Verbose "[Invoke-adPEAS] Avoiding obvious OPSEC fails"
+    }
     if ($PSBoundParameters['SSL']) {
         $SearcherArguments['SSL'] = $True
         Write-Verbose "[Invoke-adPEAS] Using LDAPS over port 636"
@@ -311,6 +322,10 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         [ValidateNotNullOrEmpty()]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $OPSEC,
 
         [Parameter(Mandatory = $false)]
         [Switch]
@@ -420,7 +435,7 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
                 Invoke-Logger -Class Hint -Value "Minimum Password Length:`t`t$(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) character"
             } elseif ($([int32](($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength)) -ge 12) {
                 Invoke-Logger -Class Secure -Value "Minimum Password Length:`t`t$(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) character"
-            }else {
+            } else {
                 Invoke-Logger -Value "Minimum Password Length:`t`t$(($adPEAS_DomainPolicy.SystemAccess).MinimumPasswordLength) character"
             }
             if ( -not $(($adPEAS_DomainPolicy.SystemAccess).PasswordComplexity) -or $(($adPEAS_DomainPolicy.SystemAccess).PasswordComplexity) -eq '0') {
@@ -623,6 +638,10 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
 
         [Parameter(Mandatory = $false)]
         [Switch]
+        $OPSEC,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
         $SSL
     )
 
@@ -804,6 +823,10 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
 
         [Parameter(Mandatory = $false)]
         [Switch]
+        $OPSEC,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
         $SSL
     )
 
@@ -898,6 +921,10 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         [ValidateNotNullOrEmpty()]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $OPSEC,
 
         [Parameter(Mandatory = $false)]
         [Switch]
@@ -1090,6 +1117,10 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
 
         [Parameter(Mandatory = $false)]
         [Switch]
+        $OPSEC,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
         $SSL
     )
 
@@ -1129,13 +1160,17 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
             }
             elseif ($($Object_ASRep.sAMAccountName) -and $($Object_ASRep.sAMAccountName) -ne '') {
                 Invoke-Logger -Class Finding -Value "Found ASREProastable User '$($Object_ASRep.samaccountname)':"
-                $Object_ASRepTGT = Get-ASREPHash @SearcherArguments -Username $Object_ASRep.samaccountname
-                if ($Object_ASRepTGT) {
-                    $Object_ASRep | Invoke-Logger
-                    Invoke-Logger -Value 'Hashcat usage: Hashcat -m 18200'
-                    Invoke-Logger -Class Finding -Value $Object_ASRepTGT -Raw
+                if ($PSBoundParameters['OPSEC']) {
+                    Invoke-Logger -Class Note -Value "Due to OPSEC reasons no ASREProasting performed on user '$($Object_ASRep.samaccountname)'"
                 } else {
-                    Invoke-Logger -Value " "
+                    $Object_ASRepTGT = Get-ASREPHash @SearcherArguments -Username $Object_ASRep.samaccountname
+                    if ($Object_ASRepTGT) {
+                        $Object_ASRep | Invoke-Logger
+                        Invoke-Logger -Value 'Hashcat usage: Hashcat -m 18200'
+                        Invoke-Logger -Class Finding -Value $Object_ASRepTGT -Raw
+                    } else {
+                        Invoke-Logger -Value " "
+                    }
                 }
             }
             else {
@@ -1151,25 +1186,29 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
     Invoke-Logger -Class Info -Value "Searching for Kerberoastable User"
 
     try {
-        $adPEAS_UsersROAST = Invoke-Kerberoast @SearcherArguments -OutputFormat Hashcat
+        $adPEAS_UsersROAST = Invoke-Kerberoast @SearcherArguments -OutputFormat Hashcat -OPSEC
         foreach ($Object_Kerberoast in $adPEAS_UsersROAST) {
             if ($Object_Kerberoast.'useraccountcontrol' -like '*ACCOUNTDISABLE*') {
                 Write-Verbose "[Get-adPEASCreds] User '$($Object_Kerberoast.distinguishedName)' is kerberoastable but account is disabled"
             }
             elseif ($($Object_Kerberoast.sAMAccountName) -and $($Object_Kerberoast.sAMAccountName) -ne '') {
                 Invoke-Logger -Class Finding -Value "Found Kerberoastable User '$($Object_Kerberoast.samaccountname)':"
-                if ($($Object_Kerberoast.hash)) {
-                    $Object_Kerberoast | Get-DomainObject @SearcherArguments -SecurityMasks Owner | Invoke-Logger
-                    if ($($Object_Kerberoast.hash) -like '$krb5tgs$23$*') {
-                        Invoke-Logger -Class Hint -Value 'Kerberos TGS with RC4, hashcat usage: hashcat -m 13100'
-                    } elseif ($($Object_Kerberoast.hash) -like '$krb5tgs$17$*') {
-                        Invoke-Logger -Class Secure -Value 'Kerberos TGS with AES128, expect low cracking speed, Hashcat usage: hashcat -m 19600'
-                    } elseif ($($Object_Kerberoast.hash) -like '$krb5tgs$18$*') {
-                        Invoke-Logger -Class Secure -Value 'Kerberos TGS with AES256, expect low cracking speed, hashcat usage: hashcat -m 19700'
-                    }
-                    Invoke-Logger -Class Finding -Value "$($Object_Kerberoast.hash)`n" -Raw
+                if ($PSBoundParameters['OPSEC']) {
+                    Invoke-Logger -Class Note -Value "Due to OPSEC reasons no Kerberoasting performed on user '$($Object_Kerberoast.samaccountname)'"
                 } else {
-                    Invoke-Logger -Value " "
+                    if ($($Object_Kerberoast.hash)) {
+                        $Object_Kerberoast | Get-DomainObject @SearcherArguments -SecurityMasks Owner | Invoke-Logger
+                        if ($($Object_Kerberoast.hash) -like '$krb5tgs$23$*') {
+                            Invoke-Logger -Class Hint -Value 'Kerberos TGS with RC4, hashcat usage: hashcat -m 13100'
+                        } elseif ($($Object_Kerberoast.hash) -like '$krb5tgs$17$*') {
+                            Invoke-Logger -Class Secure -Value 'Kerberos TGS with AES128, expect low cracking speed, Hashcat usage: hashcat -m 19600'
+                        } elseif ($($Object_Kerberoast.hash) -like '$krb5tgs$18$*') {
+                            Invoke-Logger -Class Secure -Value 'Kerberos TGS with AES256, expect low cracking speed, hashcat usage: hashcat -m 19700'
+                        }
+                        Invoke-Logger -Class Finding -Value "$($Object_Kerberoast.hash)`n" -Raw
+                    } else {
+                        Invoke-Logger -Value " "
+                    }
                 }
             }
             else {
@@ -1413,6 +1452,10 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
 
         [Parameter(Mandatory = $false)]
         [Switch]
+        $OPSEC,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
         $SSL
     )
 
@@ -1611,6 +1654,10 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         [ValidateNotNullOrEmpty()]
         [String]
         $Server,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $OPSEC,
 
         [Parameter(Mandatory = $false)]
         [Switch]
@@ -1884,6 +1931,10 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
 
         [Parameter(Mandatory = $false)]
         [Switch]
+        $OPSEC,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
         $SSL
     )
 
@@ -2106,6 +2157,10 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
 
         [Parameter(Mandatory = $false)]
         [Switch]
+        $OPSEC,
+
+        [Parameter(Mandatory = $false)]
+        [Switch]
         $SSL,
 
         [Parameter(Mandatory = $false,HelpMessage="Switch SharpHound enumeration mode, e.g. ALL")]
@@ -2139,7 +2194,11 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
     }
 
     try {
-        Invoke-Bloodhound @SearcherArguments -OutputPrefix $Domain -OutputDirectory ($pwd).path
+        if ($PSBoundParameters['OPSEC']) {
+            Invoke-Logger -Class Note -Value "Due to OPSEC reasons no SharpHound collector started"
+        } else {
+            Invoke-Bloodhound @SearcherArguments -OutputPrefix $Domain -OutputDirectory ($pwd).path
+        }
     }
     catch {
         Write-Warning "[Get-adPEASBloodhound] Error starting SharpHound collector: $_"
@@ -7839,6 +7898,9 @@ Switch. Specifies that the searcher should also return deleted/tombstoned object
 Either 'John' for John the Ripper style hash formatting, or 'Hashcat' for Hashcat format.
 Defaults to 'Hashcat'.
 
+.PARAMETER OPSEC
+Specifies that Kerberoasting is not performed but affected identities are reported only.
+
 .PARAMETER Credential
 
 A [Management.Automation.PSCredential] object of alternate credentials
@@ -7919,6 +7981,10 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
         [Switch]
         $Tombstone,
 
+        [Parameter(Mandatory = $false)]
+        [Switch]
+        $OPSEC,
+
         [ValidateSet('John', 'Hashcat')]
         [Alias('Format')]
         [String]
@@ -7951,7 +8017,11 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
 
     PROCESS {
         if ($PSBoundParameters['Identity']) { $UserSearcherArguments['Identity'] = $Identity }
-        Get-DomainUser @UserSearcherArguments | Where-Object {$_.samaccountname -ne 'krbtgt'} | Get-DomainSPNTicket -OutputFormat $OutputFormat
+        if ($PSBoundParameters['OPSEC']) {
+            Get-DomainUser @UserSearcherArguments | Where-Object {$_.samaccountname -ne 'krbtgt'}
+        } else {
+            Get-DomainUser @UserSearcherArguments | Where-Object {$_.samaccountname -ne 'krbtgt'} | Get-DomainSPNTicket -OutputFormat $OutputFormat
+        }
     }
 
     END {
