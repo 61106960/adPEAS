@@ -1552,6 +1552,28 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         Write-Warning "[Get-adPEASDelegation] Error retrieving resource-based constrained delegetion information: $_"
     }
 
+    <# +++++ Searching for User with Unconstrained Delegation Rights +++++ #>
+    Invoke-Logger -Class Info -Value "Searching for User with Unconstrained Delegation Rights"
+
+    try {
+        $adPEAS_UserUnconstrDelegate = Get-DomainUser @SearcherArguments -Unconstrained -SecurityMasks Owner
+        foreach ($Object_UserUnconstDeleg in $adPEAS_UserUnconstrDelegate) {
+            if ($($Object_UserUnconstDeleg.sAMAccountName) -and $($Object_UserUnconstDeleg.'useraccountcontrol') -like '*ACCOUNTDISABLE*') {
+                Write-Verbose "[Invoke-adPEASDelegation] User '$($Object_UserUnconstDeleg.distinguishedName)' has unconstrained delegation rights but account is disabled"
+            }
+            elseif ($($Object_UserUnconstDeleg.sAMAccountName) -and $($Object_UserUnconstDeleg.sAMAccountName) -ne '') {
+                Invoke-Logger -Class Finding -Value "Found unconstrained delegation rights for User '$($Object_UserUnconstDeleg.samaccountname)':"
+                $Object_UserUnconstDeleg | Invoke-Logger
+            }
+            else {
+                Write-verbose "[Get-adPEASDelegation] No Results or Results have been suppressed"
+            } 
+        }
+    }
+    catch {
+        Write-Warning "[Get-adPEASDelegation] Error retrieving constrained delegetion information: $_"
+    }
+
     <# +++++ Searching for User with Constrained Delegation Rights +++++ #>
     Invoke-Logger -Class Info -Value "Searching for User with Constrained Delegation Rights"
 
