@@ -1722,6 +1722,8 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
         $($adPEAS_RootDomSID + '-519') # ENTERPRISE_ADMINS
         $($adPEAS_DomSID + '-520') # GROUP_POLICY_CREATOR_OWNERS
         $(ConvertTo-SID @SearcherArguments -ObjectName DnsAdmins) # DNS_ADMINS - This group does not have a fixed SID
+		$($adPEAS_DomSID + '-526') # KEY_ADMINS
+		$($adPEAS_RootDomSID + '-527') # ENTERPRISE_KEY_ADMINS
         'S-1-5-32-548' # ACCOUNT_OPERATORS
         'S-1-5-32-549' # SERVER_OPERATORS
         'S-1-5-32-550' # PRINTER_OPERATORS
