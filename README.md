@@ -3,13 +3,9 @@
 ![](https://github.com/61106960/adPEAS/raw/main/images/adPEAS_large.jpg)
 
 adPEAS is a Powershell tool to automate Active Directory enumeration.
-In fact, adPEAS is like a wrapper for different other cool projects like
-* PowerView
-* PoshADCS
-* BloodHound Community Edition
-* and some own written lines of code
+In fact, adPEAS is like a wrapper for different other cool projects like PowerView, PoshADCS, BloodHound stuff and some own written lines of code.
 
-As said, adPEAS is a wrapper for other tools. They are almost all written in pure Powershell but some of them are included as compressed binary blob or C# code.
+As said, adPEAS is a wrapper for other tools. They are almost all written in pure Powershell but some of them are included as C# code in a compressed binary blob.
 
 adPEAS-Light is a version without Bloodhound and it is more likely that it will not be blocked by an AV solution.
 
