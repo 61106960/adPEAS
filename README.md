@@ -29,12 +29,7 @@ adPEAS consists of the following enumeration modules:
 * Delegation - Searching for delegation issues, like 'Constrained Delegation', 'Unconstrained Delegation' and 'Resource Based Constrained Delegation', for computer and user accounts
 * Accounts - Searching for non-disabled high privileged user accounts in predefined groups and account issues like e.g. old passwords
 * Computer - Enumerating Domain Controllers, Certificate Services, Exchange Server and outdated OS versions like Windows Server 2008R2, etc.
-* BloodHound - Enumerating Active Directory with the SharpHound collector for BloodHound Community Edition
-
-### Important Note about the BloodHound Module
-* adPEAS is currently using the SharpHound ingestor by [BloodHound Community Edition](https://github.com/SpecterOps/BloodHound). This ingestor will NOT work with the older versions of BloodHound.
-* Since more features are constantly added to BloodHound, the ingestor may be frequently updates as well to support more complex enumeration techniques. This repo will try to keep up with the newest versions.
-* Since the older version of BloodHound is still in use, a different fork (BloodHound-Old) will exist to cover their needs.
+* BloodHound - Enumerating Active Directory with the SharpHound collector for BloodHound Community Edition or BloodHound-Legacy
 
 # Some How To Use Examples
 ## Simple usage with generic program parameters
@@ -125,9 +120,14 @@ Enumerates installed Domain Controllers, Active Directory Certificate Services, 
 Invoke-adPEAS -Module Computer
 ```
 
-Starts Bloodhound enumeration with the scope DCOnly. Output ZIP files are stored in the same directory adPEAS is started from. The implemented SharpHound ingestor supports BloodHound Community Edition only.
+Starts Bloodhound enumeration for BloodHound Community Edition (>= version 5.0) with the scope DCOnly. Output ZIP files are stored in the same directory adPEAS is started from.
 ```
 Invoke-adPEAS -Module Bloodhound
+```
+
+Starts Bloodhound enumeration for BloodHound-Legacy (up to version 4.3.1) with the scope DCOnly. Output ZIP files are stored in the same directory adPEAS is started from.
+```
+Invoke-adPEAS -Module Bloodhound -BloodHoundLegacy
 ```
 
 Starts Bloodhound enumeration with the scope All. With this option the SharpHound collector will contact each member computer of the domain. Output ZIP files are stored in the same directory adPEAS is started from.
