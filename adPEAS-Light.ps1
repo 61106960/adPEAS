@@ -155,7 +155,7 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
 
     <# +++++ Starting adPEAS +++++ #>
     $ErrorActionPreference = "Continue"
-    $adPEASVersion = '0.8.26'
+    $adPEASVersion = '0.8.27'
 
     # Check if outputfile is writable and set color
     if ($PSBoundParameters['Outputfile']) {
@@ -278,7 +278,6 @@ Start adPEAS, enumerate the domain 'contoso.com' and use the module 'Bloodhound'
         "Delegation" {Get-adPEASDelegation @SearcherArguments}
         "Accounts" {Get-adPEASAccounts @SearcherArguments}
         "Computer" {Get-adPEASComputer @SearcherArguments}
-        #"Bloodhound" {Get-adPEASBloodhound @SearcherArguments -Scope $Scope}
     }
 
     # Stop to impersonate with given credentials
@@ -2127,107 +2126,6 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
     }
 }
 
-Function Get-adPEASBloodhound {
-<#
-.SYNOPSIS
-Author: Alexander Sturz (@_61106960_)
-
-.DESCRIPTION
-Invoking Sharphound to enumerate given domain. Collection method is set to DCOnly by default.
-If you need a full blown BloodHound enumeration, please use 'Invoke-Bloodhound' directly.
-
-.PARAMETER Domain
-Specifies the domain to use for the query, defaults to the current domain.
-
-.PARAMETER Server
-Specifies an Active Directory server (domain controller) to bind to, defaults to the users current domain.
-
-.PARAMETER SSL
-Switch. Specifies that encrypted LDAPS over port 636 is used.
-
-.PARAMETER Scope
-Changes the scope of enumeration from DCOnly to All. With this setting Bloodhound will activley connect to all computers in the domain!
-Default is DCOnly.
-
-.EXAMPLE
-Get-adPEASBloodhound
-Start Enumerating and use the domain the logged-on user is connected too
-
-.EXAMPLE
-Get-adPEASBloodhound -Domain 'contoso.com'
-Start Enumerating and use the domain 'contoso.com'
-
-.EXAMPLE
-Get-adPEASBloodhound -Domain 'contoso.com' -Scope All
-Start Enumerating and use the domain 'contoso.com' with the scope All instead of default DCOnly
-
-.EXAMPLE
-Get-adPEASBloodhound -Domain 'contoso.com' -Server 'dc1.contoso.com'
-Start Enumerating using the domain 'contoso.com' and use the domain controller 'dc1.contoso.com' for almost all enumeration requests
-#>
-    [CmdletBinding()]
-    Param (
-        #[Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
-        [Parameter(Mandatory = $True)]
-        [ValidateNotNullOrEmpty()]
-        [String]
-        $Domain,
-
-        [Parameter(Mandatory = $false)]
-        [ValidateNotNullOrEmpty()]
-        [String]
-        $Server,
-
-        [Parameter(Mandatory = $false)]
-        [Switch]
-        $OPSEC,
-
-        [Parameter(Mandatory = $false)]
-        [Switch]
-        $SSL,
-
-        [Parameter(Mandatory = $false,HelpMessage="Switch SharpHound enumeration mode, e.g. ALL")]
-        [ValidateNotNullOrEmpty()]
-        [ValidateSet("Default", "All", "DCOnly", "ComputerOnly", "Session", "LoggedOn","Group","ACL","GPOLocalGroup","Trusts","Container","LocalGroup","LocalAdmin","RDP","DCOM","PSRemote")]
-        [String[]]
-        $Scope = [string[]] @('DCOnly')
-    )
-
-    <# +++++ Starting BloodHound Enumeration +++++ #>
-    $ErrorActionPreference = "Continue"
-    Invoke-Logger -Class Info -Value "Searching for Detailed Active Directory Information with BloodHound"
-    
-    # Building searcher arguments for the following PowerView requests
-    $SearcherArguments = @{}
-    if ($PSBoundParameters['Domain']) {
-        $SearcherArguments['Domain'] = $Domain
-        Write-Verbose "[Get-adPEASBloodhound] Using '$Domain' as target Active Directory domain"
-    }
-    if ($PSBoundParameters['Server']) {
-        $SearcherArguments['DomainController'] = $Server
-        Write-Verbose "[Get-adPEASBloodhound] Using '$Server' as target domain controller"
-    }
-    if ($PSBoundParameters['SSL']) {
-        $SearcherArguments['SecureLDAP'] = $True
-        Write-Verbose "[Get-adPEASComputer] Using LDAPS over port 636"
-    }
-    if ($PSBoundParameters['Scope']) {
-        $SearcherArguments['Collectionmethods'] = $Scope
-        Write-Verbose "[Get-adPEASBloodhound] Using Collectionmethod '$Scope' for Sharphound collector"
-    }
-
-    try {
-        if ($PSBoundParameters['OPSEC']) {
-            Invoke-Logger -Class Note -Value "Due to OPSEC reasons no SharpHound collector started"
-        } else {
-            Invoke-Bloodhound @SearcherArguments -OutputPrefix $Domain -OutputDirectory ($pwd).path
-        }
-    }
-    catch {
-        Write-Warning "[Get-adPEASBloodhound] Error starting SharpHound collector: $_"
-    }
-}
-    
 function Invoke-Logger {
 <#
 .SYNOPSIS
