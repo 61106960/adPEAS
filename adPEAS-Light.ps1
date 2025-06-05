@@ -2833,7 +2833,7 @@ In addition it searches for the following words case insensitive "passwor(d/t), 
 
 .PARAMETER Extension
 Change the file extensions to search for.
-The default search pattern is ('*.txt','*.bat','*.ini','*.conf','*.xml','*.cnf','*.cmd','vbs','vbe').
+The default search pattern is ('*.txt','*.bat','*.ini','*.conf','*.xml','*.cnf','*.cmd','*vbs','*vbe').
 
 .PARAMETER Credential
 A [Management.Automation.PSCredential] object of alternate credentials for authentication to the target domain.
@@ -2909,7 +2909,7 @@ Get-NetlogonFile -Domain contoso.com -Cred $Cred
         }
         elseif ($PSBoundParameters['Credential']) {
             # if no -Domain is specified, but -Credential is, try to retrieve the current domain name with Get-Domain
-            write-verbose write-verbose "[Get-NetlogonFile] Using provided credentials '$Credential.username' to search for sensitive information"
+            write-verbose "[Get-NetlogonFile] Using provided credentials '$($Credential.username)' to search for sensitive information"
             $DomainObject = Get-Domain -Credential $Credential
             $Targets += $DomainObject.Name
         }
@@ -2921,7 +2921,7 @@ Get-NetlogonFile -Domain contoso.com -Cred $Cred
         if ($PSBoundParameters['Pattern']) {
             $SearchKeyWords = @()
             foreach ($PatternEntry in $Pattern) {
-                $SearchKeyWords += $Pattern
+                $SearchKeyWords += $PatternEntry
             }
         }
         else {
