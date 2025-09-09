@@ -1184,7 +1184,11 @@ Start Enumerating using the domain 'contoso.com' and use the domain controller '
     Invoke-Logger -Class Info -Value "Searching for Kerberoastable User"
 
     try {
-        $adPEAS_UsersROAST = Invoke-Kerberoast @SearcherArguments -OutputFormat Hashcat -OPSEC
+        if ($PSBoundParameters['OPSEC']) {
+            $adPEAS_UsersROAST = Invoke-Kerberoast @SearcherArguments -OutputFormat Hashcat -OPSEC
+        } else {
+            $adPEAS_UsersROAST = Invoke-Kerberoast @SearcherArguments -OutputFormat Hashcat
+        }
         foreach ($Object_Kerberoast in $adPEAS_UsersROAST) {
             if ($Object_Kerberoast.'useraccountcontrol' -like '*ACCOUNTDISABLE*') {
                 Write-Verbose "[Get-adPEASCreds] User '$($Object_Kerberoast.distinguishedName)' is kerberoastable but account is disabled"
