@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="{{DEFAULT_THEME}}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>adPEAS Security Report - {{DOMAIN}}</title>
+    <style>
+{{CSS_CONTENT}}
+    </style>
+    <script>
+        // Immediate theme application to prevent flash of wrong theme
+        (function() {
+            try {
+                var savedTheme = localStorage.getItem('adpeas-theme');
+                if (savedTheme === 'dark' || savedTheme === 'light') {
+                    document.documentElement.setAttribute('data-theme', savedTheme);
+                }
+            } catch (e) {
+                // localStorage not available, use default theme from template
+            }
+        })();
+    </script>
+</head>
+<body>
+    <!-- Skip Links for Accessibility -->
+    <a href="#topActionsContainer" class="skip-link">Skip to Top Priority Actions</a>
+    <a href="#cardViewContainer" class="skip-link">Skip to Findings</a>
+    <a href="#searchInput" class="skip-link">Skip to Search</a>
+
+    <!-- Live Region for Screen Reader Announcements -->
+    <div id="a11yAnnouncements" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+
+    <header class="header" role="banner">
+        <div class="header-brand">
+            <img class="header-logo" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAU0SURBVGhD7dZrTJNXGAfwf29QLi1QoFwqVbfpZMYYFdgkwgREkYAIKCAoyJ0ChcpNLirFIvdVUJjKZMpAXSmZc7qLDI3xg8zNZcvYl+3rkm3Jkuniki1byH95ERLXOS/7Mk3eX/IkzXPOaZ/nnNP2BUQikUgkEolEItFTYDmAcMfks6QCwFcA1joOPEv2AHgPQAkAZwABAFIB7ASwxnHy02oUUvlVvP9DM7ov3FEY2inNNxONbxITt8+DdHFc8ABSx8QTaRteqnljctUKko5Dj2M5YrOzMHGHmCYNd8lRkopvSdwiUdJeI0ya+jFdW9+vC9tWrAmuaH4pqNO2ZmnneW30wDXlSLst8GaRWXspMsHNsH6r+xZjp3792M3wlZ22F5cmJz9Gc9kNSmvTCR0NhzymDW2eYyUWb0vfpFvd0atq24GhBbZdtb6G3Aa/SENz4Nrmk4vXvD2VsnloMiLP1O0XdeX7V/TuHvIRqP2JlbH02ZjD1elGIjab0AcLO/IdgImiqoifBideZnWf9vfcBt/baUbVHx32AJ6c8mHXeBAbjwWxcL8/d9d7M3+/htn1aiYVOX2+qhByx3r/hiyUV1sXfLbd6MLtJrDAAtYOaHjyhj+HPvFlh01PY4c/t+SpmFKqpPlUEN/9MoH2W1E0n9axuMWH2gUyhkZImJbpwcwcPaMSpYx8FQwNBzVaGTVaOeMzFrDHHsy6o37MqPBkXKY7TV067jv+HKteC2JWlTfjc1y4IUPG6DQwajsYGo9NjvX+g3BtTIdVVyp7NMze68WcBhVLWgJYZdWxtk/HsjYtM01efDXJlaklau4dCKBlZCEPDutZddifuQ0a+gRIuTFDzZpePQcvh9F6/gVmVXkxNMaVi4KdGJHoxqJmX+4dCKSxTcfCfTrm1gcyr1HLFIM716fKGLbpXtHxuRLGZuKXmAxkO9b6r+pOYK1lzInmURXrBjTcY/VjRUcAy1oDWbAvgBlGLROyvZlWqmVegz9LWwNnx4TX6eU+XB7iTlc3BRcvc+GiZc7UL1Ey6HkXenoruW6zhhXtehrbFtLUpWex2Y/Z9SqmmRRMLAQTCsDkUgm3V0qYVII/N+3C2bA4BDvW+EgHRqTlvR8r2H9NwbbzclrGnGmxudF8xp0HhlVsGlKz9nUVa/rVrDqipqlXzUqrmhU9Hqzs8WRhi5o79rhxW5kr04xuzKpWsajFk8YuL5Z1qmlod2WBRc6iQ1JW9MpY1a9gfouUu/eDqeX4LW437CExiAEgcaztccwuKm7H1hYbbjS9BXZelPD4lBOP33DmwHVnWi/LeNAu5GXsm1Ty8ISS1o+U7PlAyY4L8pn9o5ix2GXsvuTM7ktKdl5wZuu4E5uGMVM7iJnmMzJa7Aq22oUNUrDxlJRZe/FrdBrO6ZYgHoA3ACXwiC/tQ8wv9AqJRVxKGVpyzbhY2oNvjL24u6cfLLeC1cfAA2ekbB2XzZ7UoXfkbD4roekoWD8Eto5LZ/Ozp2iX0nzu3ljNMbDxtIR1g2D+QfwckwGbhxaJAPwBeAJQA1A41PTEhN9coRHhRIRwBaBTe2P1stWIXxWF3JBY1ITFoSU8EV2RyTgSmYIT65JwOnwLxtdtxYfR6bgek4lPN2Tii407Mb1hB76OTsd0dBqmIlMwtmItmgBEAfAB4DYXTv/16jyM0IxsrqEH/ZkIHzjfsLBzwqOE+9xuCtdBO7e7wuOF31x+/orMrxHe/38xf0JCA/eHUJAQ9+fm594fIpFIJBKJRCKRSCR65vwFlworxjr7mRwAAAAASUVORK5CYII=" alt="adPEAS Logo">
+            <span class="header-title">adPEAS</span>
+        </div>
+        <div class="header-disclaimer">{{DISCLAIMER}}</div>
+        <div class="header-actions">
+            <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme" aria-pressed="false" role="switch" title="Toggle Dark/Light Mode">
+                <span class="theme-toggle-stars"></span>
+                <span class="theme-toggle-slider"></span>
+                <span id="themeIcon" aria-hidden="true">&#9788;</span>
+                <span id="themeLabel">Light</span>
+            </button>
+            <button class="btn" onclick="toggleShortcutHelp()" title="Keyboard Shortcuts (?)" aria-label="Show keyboard shortcuts and help">&#63; Help</button>
+            <button class="btn" onclick="window.print()" aria-label="Print report or save as PDF">Print / PDF</button>
+        </div>
+    </header>
+
+    <aside class="sidebar" role="navigation" aria-label="Report navigation">
+        <div class="sidebar-section">
+            <div class="sidebar-search">
+                <label for="searchInput" class="visually-hidden">Search findings</label>
+                <input type="search" placeholder="Search findings... (press / to focus)" id="searchInput" aria-describedby="searchHint">
+                <span id="searchHint" class="visually-hidden">Type to filter findings by text content</span>
+            </div>
+        </div>
+
+        <div class="sidebar-section" role="group" aria-labelledby="severityFilterTitle">
+            <div class="sidebar-title" id="severityFilterTitle">Findings by Class</div>
+            <a class="nav-item severity-filter" data-severity="all" href="javascript:void(0)" onclick="filterBySeverity('all')" role="button" aria-pressed="true">
+                All <span class="count" aria-label="total findings">{{TOTAL_COUNT}}</span>
+            </a>
+            <a class="nav-item severity-filter finding" data-severity="finding" href="javascript:void(0)" onclick="filterBySeverity('finding')" role="button" aria-pressed="false">
+                Finding <span class="count" aria-label="critical findings">{{FINDING_COUNT}}</span>
+            </a>
+            <a class="nav-item severity-filter hint" data-severity="hint" href="javascript:void(0)" onclick="filterBySeverity('hint')" role="button" aria-pressed="false">
+                Hint <span class="count" aria-label="hints">{{HINT_COUNT}}</span>
+            </a>
+            <a class="nav-item severity-filter note" data-severity="note" href="javascript:void(0)" onclick="filterBySeverity('note')" role="button" aria-pressed="false">
+                Note <span class="count" aria-label="notes">{{NOTE_COUNT}}</span>
+            </a>
+            <a class="nav-item severity-filter secure" data-severity="secure" href="javascript:void(0)" onclick="filterBySeverity('secure')" role="button" aria-pressed="false">
+                Secure <span class="count" aria-label="secure items">{{SECURE_COUNT}}</span>
+            </a>
+        </div>
+
+        {{NAVIGATION}}
+    </aside>
+
+    <main class="main" role="main" aria-label="Report content">
+        <!-- Print-only header on first page (hidden on screen, visible in PDF) -->
+        <div class="print-header" aria-hidden="true">
+            <img class="print-header-logo" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAU0SURBVGhD7dZrTJNXGAfwf29QLi1QoFwqVbfpZMYYFdgkwgREkYAIKCAoyJ0ChcpNLirFIvdVUJjKZMpAXSmZc7qLDI3xg8zNZcvYl+3rkm3Jkuniki1byH95ERLXOS/7Mk3eX/IkzXPOaZ/nnNP2BUQikUgkEolEItFTYDmAcMfks6QCwFcA1joOPEv2AHgPQAkAZwABAFIB7ASwxnHy02oUUvlVvP9DM7ov3FEY2inNNxONbxITt8+DdHFc8ABSx8QTaRteqnljctUKko5Dj2M5YrOzMHGHmCYNd8lRkopvSdwiUdJeI0ya+jFdW9+vC9tWrAmuaH4pqNO2ZmnneW30wDXlSLst8GaRWXspMsHNsH6r+xZjp3792M3wlZ22F5cmJz9Gc9kNSmvTCR0NhzymDW2eYyUWb0vfpFvd0atq24GhBbZdtb6G3Aa/SENz4Nrmk4vXvD2VsnloMiLP1O0XdeX7V/TuHvIRqP2JlbH02ZjD1elGIjab0AcLO/IdgImiqoifBideZnWf9vfcBt/baUbVHx32AJ6c8mHXeBAbjwWxcL8/d9d7M3+/htn1aiYVOX2+qhByx3r/hiyUV1sXfLbd6MLtJrDAAtYOaHjyhj+HPvFlh01PY4c/t+SpmFKqpPlUEN/9MoH2W1E0n9axuMWH2gUyhkZImJbpwcwcPaMSpYx8FQwNBzVaGTVaOeMzFrDHHsy6o37MqPBkXKY7TV067jv+HKteC2JWlTfjc1y4IUPG6DQwajsYGo9NjvX+g3BtTIdVVyp7NMze68WcBhVLWgJYZdWxtk/HsjYtM01efDXJlaklau4dCKBlZCEPDutZddifuQ0a+gRIuTFDzZpePQcvh9F6/gVmVXkxNMaVi4KdGJHoxqJmX+4dCKSxTcfCfTrm1gcyr1HLFIM716fKGLbpXtHxuRLGZuKXmAxkO9b6r+pOYK1lzInmURXrBjTcY/VjRUcAy1oDWbAvgBlGLROyvZlWqmVegz9LWwNnx4TX6eU+XB7iTlc3BRcvc+GiZc7UL1Ey6HkXenoruW6zhhXtehrbFtLUpWex2Y/Z9SqmmRRMLAQTCsDkUgm3V0qYVII/N+3C2bA4BDvW+EgHRqTlvR8r2H9NwbbzclrGnGmxudF8xp0HhlVsGlKz9nUVa/rVrDqipqlXzUqrmhU9Hqzs8WRhi5o79rhxW5kr04xuzKpWsajFk8YuL5Z1qmlod2WBRc6iQ1JW9MpY1a9gfouUu/eDqeX4LW437CExiAEgcaztccwuKm7H1hYbbjS9BXZelPD4lBOP33DmwHVnWi/LeNAu5GXsm1Ty8ISS1o+U7PlAyY4L8pn9o5ix2GXsvuTM7ktKdl5wZuu4E5uGMVM7iJnmMzJa7Aq22oUNUrDxlJRZe/FrdBrO6ZYgHoA3ACXwiC/tQ8wv9AqJRVxKGVpyzbhY2oNvjL24u6cfLLeC1cfAA2ekbB2XzZ7UoXfkbD4roekoWD8Eto5LZ/Ozp2iX0nzu3ljNMbDxtIR1g2D+QfwckwGbhxaJAPwBeAJQA1A41PTEhN9coRHhRIRwBaBTe2P1stWIXxWF3JBY1ITFoSU8EV2RyTgSmYIT65JwOnwLxtdtxYfR6bgek4lPN2Tii407Mb1hB76OTsd0dBqmIlMwtmItmgBEAfAB4DYXTv/16jyM0IxsrqEH/ZkIHzjfsLBzwqOE+9xuCtdBO7e7wuOF31x+/orMrxHe/38xf0JCA/eHUJAQ9+fm594fIpFIJBKJRCKRSCR65vwFlworxjr7mRwAAAAASUVORK5CYII=" alt="adPEAS Logo">
+            <div class="print-header-text">
+                <div class="print-header-title">adPEAS Security Report</div>
+                <div class="print-header-domain">{{DOMAIN}}</div>
+                <div class="print-header-disclaimer">{{DISCLAIMER}}</div>
+            </div>
+        </div>
+
+        <section id="summary" aria-labelledby="summaryTitle">
+            <h1 id="summaryTitle" class="visually-hidden">Security Report Summary</h1>
+            <div class="summary-grid" role="group" aria-label="Finding counts by severity">
+                <button class="summary-card finding" onclick="filterBySeverity('finding')" aria-label="Filter by Findings: {{FINDING_COUNT}} critical issues">
+                    <div class="icon" aria-hidden="true">&#33;</div>
+                    <div>
+                        <div class="value">{{FINDING_COUNT}}</div>
+                        <div class="label">Finding</div>
+                    </div>
+                </button>
+                <button class="summary-card hint" onclick="filterBySeverity('hint')" aria-label="Filter by Hints: {{HINT_COUNT}} items">
+                    <div class="icon" aria-hidden="true">&#9650;</div>
+                    <div>
+                        <div class="value">{{HINT_COUNT}}</div>
+                        <div class="label">Hint</div>
+                    </div>
+                </button>
+                <button class="summary-card note" onclick="filterBySeverity('note')" aria-label="Filter by Notes: {{NOTE_COUNT}} items">
+                    <div class="icon" aria-hidden="true">&#9679;</div>
+                    <div>
+                        <div class="value">{{NOTE_COUNT}}</div>
+                        <div class="label">Note</div>
+                    </div>
+                </button>
+                <button class="summary-card secure" onclick="filterBySeverity('secure')" aria-label="Filter by Secure: {{SECURE_COUNT}} items">
+                    <div class="icon" aria-hidden="true">&#9675;</div>
+                    <div>
+                        <div class="value">{{SECURE_COUNT}}</div>
+                        <div class="label">Secure</div>
+                    </div>
+                </button>
+            </div>
+
+            <div class="info-bar">
+                <div class="info-item">
+                    <div class="label">Domain</div>
+                    <div class="value">{{DOMAIN}}</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Domain Controller</div>
+                    <div class="value">{{SERVER}}</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">User</div>
+                    <div class="value">{{USER}}</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Generated</div>
+                    <div class="value">{{GENERATED}}</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Version</div>
+                    <div class="value">{{VERSION}}</div>
+                </div>
+            </div>
+
+            <!-- Card Controls -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;" role="toolbar" aria-label="View controls">
+                <div class="card-controls" id="cardControls" role="group" aria-label="Card expansion controls">
+                    <button class="card-control-btn" onclick="expandAllCards()" title="Expand all cards and top priorities" aria-label="Expand all finding cards">Expand All</button>
+                    <button class="card-control-btn" onclick="collapseAllCards()" title="Collapse all cards and top priorities" aria-label="Collapse all finding cards">Collapse All</button>
+                </div>
+                <label class="hide-completed-toggle" style="margin: 0 16px;">
+                    <input type="checkbox" id="hideCompletedToggle" onchange="toggleHideCompleted()" aria-describedby="hideCompletedHint">
+                    <span>Hide completed</span>
+                    <span id="hideCompletedHint" class="visually-hidden">Toggle to show or hide findings marked as completed</span>
+                </label>
+            </div>
+
+            <!-- Top Priority Actions (generated by JavaScript) -->
+            <div id="topActionsContainer"></div>
+        </section>
+
+        <!-- Card View Container -->
+        <div id="cardViewContainer" role="region" aria-label="Findings card view">
+        {{FINDINGS_SECTIONS}}
+        </div>
+    </main>
+    <script>
+{{JS_CONTENT}}
+    </script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+# Development tools
+.claude/
+CLAUDE.md
+.vscode/
+
+# Logs & temp files
+*.log
+*.tmp
+*.bak
+*~
+temp/
+tmp/
+
+# Certificates & credentials
+*.pfx
+*.pem
+*.key
+*.crt
+*.kirbi
+*.ccache
+
+# OS files
+Thumbs.db
+.DS_Store
+desktop.ini
