@@ -930,6 +930,41 @@ function Convert-KeyCredentialLinkToRenderValues {
     }
 }
 
+# --- scriptPath Transformer ---
+function Convert-ScriptPathToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+
+    $scriptPath = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($scriptPath)) { return $null }
+
+    # Detect UNC path (\\server\share\...) or absolute local path (C:\...)
+    $isHardcoded = ($scriptPath -match '^\\\\[^\\]+\\' -or $scriptPath -match '^[A-Za-z]:[\\\/]')
+
+    if ($isHardcoded) {
+        # UNC or absolute path: Hint (yellow), promoted to primary
+        return @{
+            RowType             = 'SingleValue'
+            OverallSeverity     = 'Hint'
+            ForceAttributeClass = $true
+            Values              = @(
+                New-RenderValue -Display $scriptPath -Severity 'Hint' `
+                    -FindingId 'SCRIPTPATH_HARDCODED' -RawValue $scriptPath
+            )
+        }
+    }
+
+    # Relative path: Standard, stays in extended attributes
+    return @{
+        RowType             = 'SingleValue'
+        OverallSeverity     = 'Standard'
+        ForceAttributeClass = $false
+        Values              = @(
+            New-RenderValue -Display $scriptPath -Severity 'Standard' -RawValue $scriptPath
+        )
+    }
+}
+
 # ============================================================================
 # Register all transformers in the registry
 # ============================================================================
@@ -954,5 +989,6 @@ $Script:AttributeTransformers['EnrollmentFlagDisplay']       = ${function:Conver
 $Script:AttributeTransformers['WebEndpoints']                = ${function:Convert-WebEndpointsToRenderValues}
 $Script:AttributeTransformers['WebEnrollmentEndpoints']      = ${function:Convert-WebEnrollEndpointsToRenderValues}
 $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Convert-KeyCredentialLinkToRenderValues}
+$Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
 $Script:AttributeTransformers['ASREPRoastingHash']           = ${function:Convert-RoastingHashToRenderValues}

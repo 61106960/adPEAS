@@ -10386,6 +10386,39 @@ foreach ($oid in $linkedOIDs) {
             @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '\[EPA:\s*Disabled\]'; Severity = 'Finding'; SeverityOnly = $true }
         )
     }
+    'SCRIPTPATH_HARDCODED' = @{
+        Title = "Hardcoded Logon Script Path"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "This user account has a scriptPath attribute pointing to a UNC path (e.g., \\server\share\script.bat) or an absolute local path (e.g., C:\scripts\logon.bat) instead of a relative path resolved via NETLOGON. This is unusual and may indicate persistence, backdoor activity, or a misconfiguration that could be exploited for code execution."
+        Impact = @(
+            "UNC paths can point to attacker-controlled SMB servers, enabling code execution on user logon"
+            "Absolute local paths bypass NETLOGON share protections and GPO-based script management"
+            "Logon scripts execute with the user's privileges — privileged accounts amplify the risk"
+            "An attacker who can modify scriptPath can achieve persistence without touching NETLOGON"
+        )
+        Attack = @(
+            "1. Attacker modifies scriptPath to point to an attacker-controlled UNC share (\\evil\share\payload.bat)"
+            "2. User logs on and Windows executes the script from the UNC path"
+            "3. Attacker gains code execution in the user's security context"
+            "4. If the user is privileged, the attacker escalates privileges"
+        )
+        Remediation = @(
+            "Use only relative paths in scriptPath that resolve via the NETLOGON share"
+            "Prefer Group Policy-based logon scripts over per-user scriptPath settings"
+            "Monitor scriptPath changes, especially to UNC or absolute paths"
+            "Audit who has WriteProperty permissions on scriptPath in affected OUs"
+        )
+        References = @(
+            @{ Title = "Boot or Logon Initialization Scripts - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1037/001/" }
+            @{ Title = "scriptPath Attribute - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-scriptpath" }
+        )
+        Tools = @("PowerView", "BloodHound", "ADExplorer")
+        MITRE = "T1037.001"
+        Triggers = @(
+            @{ Attribute = 'scriptPath'; Custom = 'is_hardcoded_path'; Severity = 'Hint' }
+        )
+    }
     'UAC_SEVERITY_OVERRIDE' = @{
         Title = "User Account Control Severity Classification"
         Risk = "Finding"
@@ -10634,6 +10667,11 @@ function Test-CustomTrigger {
             $hasDangerousPerms = $SourceObject.PSObject.Properties['DangerousPermissions'] -and $SourceObject.DangerousPermissions
             $hasDangerousSettings = $SourceObject.PSObject.Properties['DangerousSettings'] -and $SourceObject.DangerousSettings
             return ($hasDangerousPerms -or $hasDangerousSettings)
+        }
+        'is_hardcoded_path' {
+            $strVal = [string]$Value
+            if ([string]::IsNullOrWhiteSpace($strVal)) { return $false }
+            return ($strVal -match '^\\\\[^\\]+\\' -or $strVal -match '^[A-Za-z]:[\\\/]')
         }
         'is_dc_uac' {
             $allFlags = if ($SourceObject) { [string]$SourceObject } else { [string]$Value }
@@ -11485,6 +11523,32 @@ function Convert-KeyCredentialLinkToRenderValues {
         Values              = $renderValues
     }
 }
+function Convert-ScriptPathToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+    $scriptPath = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($scriptPath)) { return $null }
+    $isHardcoded = ($scriptPath -match '^\\\\[^\\]+\\' -or $scriptPath -match '^[A-Za-z]:[\\\/]')
+    if ($isHardcoded) {
+        return @{
+            RowType             = 'SingleValue'
+            OverallSeverity     = 'Hint'
+            ForceAttributeClass = $true
+            Values              = @(
+                New-RenderValue -Display $scriptPath -Severity 'Hint' `
+                    -FindingId 'SCRIPTPATH_HARDCODED' -RawValue $scriptPath
+            )
+        }
+    }
+    return @{
+        RowType             = 'SingleValue'
+        OverallSeverity     = 'Standard'
+        ForceAttributeClass = $false
+        Values              = @(
+            New-RenderValue -Display $scriptPath -Severity 'Standard' -RawValue $scriptPath
+        )
+    }
+}
 $Script:AttributeTransformers['memberOf']                    = ${function:Convert-MemberOfToRenderValues}
 $Script:AttributeTransformers['privilegedGroups']            = ${function:Convert-PrivilegedGroupsToRenderValues}
 $Script:AttributeTransformers['member']                      = ${function:Convert-MemberToRenderValues}
@@ -11505,6 +11569,7 @@ $Script:AttributeTransformers['EnrollmentFlagDisplay']       = ${function:Conver
 $Script:AttributeTransformers['WebEndpoints']                = ${function:Convert-WebEndpointsToRenderValues}
 $Script:AttributeTransformers['WebEnrollmentEndpoints']      = ${function:Convert-WebEnrollEndpointsToRenderValues}
 $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Convert-KeyCredentialLinkToRenderValues}
+$Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
 $Script:AttributeTransformers['ASREPRoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
 function Render-ConsoleObject {
@@ -53155,7 +53220,7 @@ function Get-InactiveAdminAccounts {
                 $currentIndex = 0
                 foreach ($account in $inactiveAdmins) {
                     $currentIndex++
-                    if ($totalInactive -gt $Script:ProgressThreshold) {
+                    if ($totalInactive -gt $Script:ProgressThreshold) { 
                         Show-Progress -Activity "Processing inactive admin accounts" -Current $currentIndex -Total $totalInactive -ObjectName $account.sAMAccountName
                     }
                     $daysSinceLogon = $account.ActivityDetails.DaysSinceActivity
@@ -53181,7 +53246,7 @@ function Get-InactiveAdminAccounts {
                     $inactiveAccounts += $account
                 }
             }
-            if ($totalInactive -gt $Script:ProgressThreshold) {
+            if ($totalInactive -gt $Script:ProgressThreshold) { 
                 Show-Progress -Activity "Processing inactive admin accounts" -Completed
             }
             if (@($inactiveAccounts).Count -gt 0) {
@@ -68264,7 +68329,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.0.0"
+$Script:adPEASVersion = "2.0.0+20260402-1702"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
