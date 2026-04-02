@@ -66176,8 +66176,12 @@ function Compare-adPEASReport {
             }
             $baselineFindings = Import-FindingsFromCache -Cache $baselineCache
             $currentFindings = Import-FindingsFromCache -Cache $currentCache
-            $baselineComparable = @($baselineFindings | Where-Object { $_.Type -notin @('Header', 'SubHeader') })
-            $currentComparable = @($currentFindings | Where-Object { $_.Type -notin @('Header', 'SubHeader') })
+            $baselineComparable = @($baselineFindings | Where-Object {
+                $_.Type -notin @('Header', 'SubHeader') -and $_.Category -ne 'Unknown'
+            })
+            $currentComparable = @($currentFindings | Where-Object {
+                $_.Type -notin @('Header', 'SubHeader') -and $_.Category -ne 'Unknown'
+            })
             $baselineMap = @{}
             foreach ($f in $baselineComparable) {
                 $id = Get-FindingIdentity -Finding $f
@@ -66217,6 +66221,17 @@ function Compare-adPEASReport {
             $currentCategories = @($currentComparable | ForEach-Object { $_.Category } | Select-Object -Unique | Sort-Object)
             $onlyInBaseline = @($baselineCategories | Where-Object { $_ -notin $currentCategories })
             $onlyInCurrent = @($currentCategories | Where-Object { $_ -notin $baselineCategories })
+            $sharedCategories = @($baselineCategories | Where-Object { $_ -in $currentCategories })
+            $scopeOnlyBaseline = @()
+            $scopeOnlyCurrent = @()
+            if ($onlyInBaseline.Count -gt 0) {
+                $scopeOnlyBaseline = @($removed | Where-Object { $_.Category -in $onlyInBaseline })
+                $removed = [System.Collections.ArrayList]@($removed | Where-Object { $_.Category -notin $onlyInBaseline })
+            }
+            if ($onlyInCurrent.Count -gt 0) {
+                $scopeOnlyCurrent = @($added | Where-Object { $_.Category -in $onlyInCurrent })
+                $added = [System.Collections.ArrayList]@($added | Where-Object { $_.Category -notin $onlyInCurrent })
+            }
             Show-Output -Class Info -Value "adPEAS Report Comparison" -NoCollect
             Show-Line "Baseline: $(Split-Path -Leaf $Baseline) ($($baselineMeta.Date), $($baselineMeta.Domain), adPEAS $($baselineMeta.Version))" -Class Note -NoCollect
             Show-Line "Current:  $(Split-Path -Leaf $Current) ($($currentMeta.Date), $($currentMeta.Domain), adPEAS $($currentMeta.Version))" -Class Note -NoCollect
@@ -66225,8 +66240,7 @@ function Compare-adPEASReport {
             Show-Output -Key "Remediated findings (removed)" -Value "$($removed.Count)" -Class $(if ($removed.Count -gt 0) { 'Secure' } else { 'Note' }) -NoCollect
             Show-Output -Key "Changed findings" -Value "$($changed.Count)" -Class $(if ($changed.Count -gt 0) { 'Hint' } else { 'Note' }) -NoCollect
             Show-Output -Key "Unchanged findings" -Value "$unchangedCount" -Class Note -NoCollect
-            Show-Output -Key "Total baseline findings" -Value "$($baselineComparable.Count)" -Class Note -NoCollect
-            Show-Output -Key "Total current findings" -Value "$($currentComparable.Count)" -Class Note -NoCollect
+            Show-Output -Key "Compared categories" -Value "$($sharedCategories.Count) ($($sharedCategories -join ', '))" -Class Note -NoCollect
             if ($added.Count -gt 0) {
                 Show-Output -Class Info -Value "New Findings ($($added.Count))" -NoCollect
                 $addedGroups = $added | Group-Object -Property { "$($_.Category) > $($_.CheckTitle)" }
@@ -66272,17 +66286,33 @@ function Compare-adPEASReport {
                 }
             }
             if ($onlyInBaseline.Count -gt 0 -or $onlyInCurrent.Count -gt 0) {
-                Show-Output -Class Info -Value "Partial Scan Notice" -NoCollect
-                if ($onlyInBaseline.Count -gt 0) {
-                    Show-Line "Categories only in baseline: $($onlyInBaseline -join ', ')" -Class Hint -NoCollect
-                }
+                Show-Output -Class Info -Value "Scan Scope Differences" -NoCollect
+                Show-Line "The following categories were not scanned in both reports and are excluded from the comparison above." -Class Note -NoCollect
                 if ($onlyInCurrent.Count -gt 0) {
-                    Show-Line "Categories only in current: $($onlyInCurrent -join ', ')" -Class Hint -NoCollect
+                    Show-Line "Only in current scan: $($onlyInCurrent -join ', ') ($($scopeOnlyCurrent.Count) finding(s) not compared)" -Class Hint -NoCollect
                 }
-                Show-Line "Findings in non-overlapping categories appear as added/removed but may reflect scan scope differences" -Class Note -NoCollect
+                if ($onlyInBaseline.Count -gt 0) {
+                    Show-Line "Only in baseline scan: $($onlyInBaseline -join ', ') ($($scopeOnlyBaseline.Count) finding(s) not compared)" -Class Hint -NoCollect
+                }
             }
             if ($OutputPath) {
-                Show-Line "Diff report saved to: $textPath" -Class Hint -NoCollect
+                $htmlPath = "$resolvedBase.html"
+                try {
+                    Export-DiffHtmlReport -OutputPath $htmlPath `
+                        -BaselineMeta $baselineMeta -CurrentMeta $currentMeta `
+                        -BaselineFile (Split-Path -Leaf $Baseline) -CurrentFile (Split-Path -Leaf $Current) `
+                        -Added $added -Removed $removed -Changed $changed `
+                        -UnchangedCount $unchangedCount `
+                        -SharedCategories $sharedCategories `
+                        -OnlyInBaseline $onlyInBaseline -OnlyInCurrent $onlyInCurrent `
+                        -ScopeOnlyBaseline $scopeOnlyBaseline -ScopeOnlyCurrent $scopeOnlyCurrent
+                    Show-Line "HTML diff report saved to: $htmlPath" -Class Hint -NoCollect
+                } catch {
+                    Write-Warning "[Compare-adPEASReport] Error generating HTML diff report: $_"
+                }
+            }
+            if ($OutputPath) {
+                Show-Line "Text diff report saved to: $textPath" -Class Hint -NoCollect
             }
         } finally {
             $Script:adPEAS_Outputfile = $previousOutputfile
@@ -66316,6 +66346,14 @@ function Get-FindingIdentity {
                 elseif ($op.userName -and $op.filePath) { $oid = "$($op.userName)|$($op.filePath)" }
                 elseif ($op.filePath) { $oid = $op.filePath }
                 elseif ($op.credentialType) { $oid = $op.credentialType }
+                elseif ($op._adPEASObjectType) { $oid = $op._adPEASObjectType }
+                else {
+                    foreach ($p in $op.PSObject.Properties) {
+                        if ($p.Name -notin @('_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk') -and $p.Value) {
+                            $oid = "$($p.Name)=$($p.Value)"; break
+                        }
+                    }
+                }
             }
             if (-not $oid) { $oid = 'unknown' }
             return "$prefix|Object|$oid"
@@ -66351,6 +66389,14 @@ function Get-FindingDisplayName {
                 return $op.distinguishedName
             }
             if ($op.PrincipalName) { return "$($op.PrincipalName) -> $($op.TargetObject)" }
+            if ($op._adPEASObjectType) { return $op._adPEASObjectType }
+            foreach ($p in $op.PSObject.Properties) {
+                if ($p.Name -notin @('_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk') -and $p.Value) {
+                    $val = [string]$p.Value
+                    if ($val.Length -gt 60) { $val = $val.Substring(0, 57) + '...' }
+                    return $val
+                }
+            }
             return '[Object]'
         }
         'KeyValue' {
@@ -66366,6 +66412,514 @@ function Get-FindingDisplayName {
             return $Finding.Text
         }
     }
+}
+function Export-DiffHtmlReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$OutputPath,
+        [hashtable]$BaselineMeta,
+        [hashtable]$CurrentMeta,
+        [string]$BaselineFile,
+        [string]$CurrentFile,
+        $Added,
+        $Removed,
+        $Changed,
+        [int]$UnchangedCount,
+        [string[]]$SharedCategories,
+        [string[]]$OnlyInBaseline,
+        [string[]]$OnlyInCurrent,
+        $ScopeOnlyBaseline,
+        $ScopeOnlyCurrent
+    )
+    $html = Get-DiffHTMLTemplate
+    if (-not $html) {
+        Write-Warning "[Export-DiffHtmlReport] Failed to load diff HTML template"
+        return
+    }
+    $sectionsHtml = [System.Text.StringBuilder]::new()
+    if ($Added.Count -gt 0) {
+        [void]$sectionsHtml.Append((Build-DiffSectionHtml -Title "New Findings" -Findings $Added -SectionType 'new'))
+    }
+    if ($Removed.Count -gt 0) {
+        [void]$sectionsHtml.Append((Build-DiffSectionHtml -Title "Remediated Findings" -Findings $Removed -SectionType 'remediated'))
+    }
+    if ($Changed.Count -gt 0) {
+        [void]$sectionsHtml.Append((Build-DiffChangedSectionHtml -Title "Changed Findings" -ChangedEntries $Changed))
+    }
+    if ($OnlyInBaseline.Count -gt 0 -or $OnlyInCurrent.Count -gt 0) {
+        $scopeHtml = [System.Text.StringBuilder]::new()
+        [void]$scopeHtml.AppendLine('<section class="section">')
+        [void]$scopeHtml.AppendLine('  <div class="section-header" onclick="toggleSection(this)">')
+        [void]$scopeHtml.AppendLine('    <div class="section-title">Scan Scope Differences</div>')
+        [void]$scopeHtml.AppendLine('    <span class="section-toggle">&#9660;</span>')
+        [void]$scopeHtml.AppendLine('  </div>')
+        [void]$scopeHtml.AppendLine('  <div class="section-content">')
+        [void]$scopeHtml.AppendLine('    <div class="scope-info">')
+        [void]$scopeHtml.AppendLine('      The following categories were not scanned in both reports and are excluded from the comparison above.<br>')
+        if ($OnlyInCurrent.Count -gt 0) {
+            $cats = (ConvertTo-HtmlEncode ($OnlyInCurrent -join ', '))
+            [void]$scopeHtml.AppendLine("      <strong>Only in current scan:</strong> $cats ($($ScopeOnlyCurrent.Count) finding(s) not compared)<br>")
+        }
+        if ($OnlyInBaseline.Count -gt 0) {
+            $cats = (ConvertTo-HtmlEncode ($OnlyInBaseline -join ', '))
+            [void]$scopeHtml.AppendLine("      <strong>Only in baseline scan:</strong> $cats ($($ScopeOnlyBaseline.Count) finding(s) not compared)")
+        }
+        [void]$scopeHtml.AppendLine('    </div>')
+        [void]$scopeHtml.AppendLine('  </div>')
+        [void]$scopeHtml.AppendLine('</section>')
+        [void]$sectionsHtml.Append($scopeHtml.ToString())
+    }
+    if ($Added.Count -eq 0 -and $Removed.Count -eq 0 -and $Changed.Count -eq 0 -and
+        $OnlyInBaseline.Count -eq 0 -and $OnlyInCurrent.Count -eq 0) {
+        [void]$sectionsHtml.AppendLine('<div class="empty-state">No differences found between the two scans.</div>')
+    }
+    $baselineInfo = "$BaselineFile ($($BaselineMeta.Date), $($BaselineMeta.Domain), adPEAS $($BaselineMeta.Version))"
+    $currentInfo = "$CurrentFile ($($CurrentMeta.Date), $($CurrentMeta.Domain), adPEAS $($CurrentMeta.Version))"
+    $comparedCats = if ($SharedCategories.Count -gt 0) { "$($SharedCategories.Count) ($($SharedCategories -join ', '))" } else { "None" }
+    $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
+    $generatedDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $domain = $BaselineMeta.Domain
+    $html = $html -replace '{{DOMAIN}}', (ConvertTo-HtmlEncode $domain)
+    $html = $html -replace '{{NEW_COUNT}}', $Added.Count
+    $html = $html -replace '{{REMEDIATED_COUNT}}', $Removed.Count
+    $html = $html -replace '{{CHANGED_COUNT}}', $Changed.Count
+    $html = $html -replace '{{UNCHANGED_COUNT}}', $UnchangedCount
+    $html = $html -replace '{{BASELINE_INFO}}', (ConvertTo-HtmlEncode $baselineInfo)
+    $html = $html -replace '{{CURRENT_INFO}}', (ConvertTo-HtmlEncode $currentInfo)
+    $html = $html -replace '{{COMPARED_CATEGORIES}}', (ConvertTo-HtmlEncode $comparedCats)
+    $html = $html -replace '{{GENERATED}}', $generatedDate
+    $html = $html -replace '{{VERSION}}', $version
+    $html = $html.Replace('{{DIFF_SECTIONS}}', $sectionsHtml.ToString())
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
+    [System.IO.File]::WriteAllText($resolvedPath, $html, $utf8NoBom)
+    Write-Log "[Export-DiffHtmlReport] HTML diff report saved to: $OutputPath"
+}
+function Build-DiffSectionHtml {
+    [CmdletBinding()]
+    param(
+        [string]$Title,
+        [array]$Findings,
+        [string]$SectionType
+    )
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine('<section class="section">')
+    [void]$sb.AppendLine("  <div class=`"section-header`" onclick=`"toggleSection(this)`">")
+    $escapedTitle = ConvertTo-HtmlEncode $Title
+    [void]$sb.AppendLine("    <div class=`"section-title`">$escapedTitle <span class=`"section-count`">$($Findings.Count)</span></div>")
+    [void]$sb.AppendLine('    <span class="section-toggle">&#9660;</span>')
+    [void]$sb.AppendLine('  </div>')
+    [void]$sb.AppendLine('  <div class="section-content">')
+    $groups = $Findings | Group-Object -Property { "$($_.Category) > $($_.CheckTitle)" }
+    foreach ($group in ($groups | Sort-Object Name)) {
+        foreach ($f in $group.Group) {
+            $displayName = ConvertTo-HtmlEncode (Get-FindingDisplayName -Finding $f)
+            $severity = if ($f.Severity) { $f.Severity.ToLower() } else { 'standard' }
+            $category = ConvertTo-HtmlEncode $group.Name
+            $badgeClass = if ($SectionType -eq 'new') { 'badge-new' } else { 'badge-fixed' }
+            $badgeText = if ($SectionType -eq 'new') { 'NEW' } else { 'FIXED' }
+            [void]$sb.AppendLine("    <div class=`"diff-item`">")
+            [void]$sb.AppendLine("      <div class=`"severity-bar $severity`"></div>")
+            [void]$sb.AppendLine("      <div class=`"diff-item-name`">$displayName</div>")
+            [void]$sb.AppendLine("      <div class=`"diff-item-meta`">$category</div>")
+            [void]$sb.AppendLine("      <span class=`"diff-item-badge $badgeClass`">$badgeText</span>")
+            [void]$sb.AppendLine('    </div>')
+        }
+    }
+    [void]$sb.AppendLine('  </div>')
+    [void]$sb.AppendLine('</section>')
+    return $sb.ToString()
+}
+function Build-DiffChangedSectionHtml {
+    [CmdletBinding()]
+    param(
+        [string]$Title,
+        [array]$ChangedEntries
+    )
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine('<section class="section">')
+    [void]$sb.AppendLine("  <div class=`"section-header`" onclick=`"toggleSection(this)`">")
+    $escapedTitle = ConvertTo-HtmlEncode $Title
+    [void]$sb.AppendLine("    <div class=`"section-title`">$escapedTitle <span class=`"section-count`">$($ChangedEntries.Count)</span></div>")
+    [void]$sb.AppendLine('    <span class="section-toggle">&#9660;</span>')
+    [void]$sb.AppendLine('  </div>')
+    [void]$sb.AppendLine('  <div class="section-content">')
+    $groups = $ChangedEntries | Group-Object -Property { "$($_.Current.Category) > $($_.Current.CheckTitle)" }
+    foreach ($group in ($groups | Sort-Object Name)) {
+        foreach ($entry in $group.Group) {
+            $displayName = ConvertTo-HtmlEncode (Get-FindingDisplayName -Finding $entry.Current)
+            $severity = if ($entry.Current.Severity) { $entry.Current.Severity.ToLower() } else { 'standard' }
+            $category = ConvertTo-HtmlEncode $group.Name
+            $changeDesc = @()
+            if ($entry.Baseline.Severity -ne $entry.Current.Severity) {
+                $changeDesc += "$($entry.Baseline.Severity) &#8594; $($entry.Current.Severity)"
+            }
+            if ($entry.Current.Type -eq 'KeyValue' -and $entry.Baseline.Value -ne $entry.Current.Value) {
+                $oldVal = ConvertTo-HtmlEncode ([string]$entry.Baseline.Value)
+                $newVal = ConvertTo-HtmlEncode ([string]$entry.Current.Value)
+                if ($oldVal.Length -gt 40) { $oldVal = $oldVal.Substring(0, 37) + '...' }
+                if ($newVal.Length -gt 40) { $newVal = $newVal.Substring(0, 37) + '...' }
+                $changeDesc += "$oldVal &#8594; $newVal"
+            }
+            if ($entry.Current.Type -eq 'Line' -and $entry.Baseline.Text -ne $entry.Current.Text) {
+                $changeDesc += "text changed"
+            }
+            $changeHtml = $changeDesc -join ', '
+            [void]$sb.AppendLine("    <div class=`"diff-item`">")
+            [void]$sb.AppendLine("      <div class=`"severity-bar $severity`"></div>")
+            [void]$sb.AppendLine("      <div class=`"diff-item-name`">$displayName <span style=`"font-size:12px;color:var(--text-muted)`">($changeHtml)</span></div>")
+            [void]$sb.AppendLine("      <div class=`"diff-item-meta`">$category</div>")
+            [void]$sb.AppendLine('      <span class="diff-item-badge badge-changed">CHANGED</span>')
+            [void]$sb.AppendLine('    </div>')
+        }
+    }
+    [void]$sb.AppendLine('  </div>')
+    [void]$sb.AppendLine('</section>')
+    return $sb.ToString()
+}
+function Get-DiffHTMLTemplate {
+    return @'
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>adPEAS Comparison Report - {{DOMAIN}}</title>
+    <script>
+        (function() {
+            try {
+                var savedTheme = localStorage.getItem('adpeas-theme');
+                if (savedTheme === 'dark' || savedTheme === 'light') {
+                    document.documentElement.setAttribute('data-theme', savedTheme);
+                }
+            } catch (e) {}
+        })();
+    </script>
+    <style>
+        /* ============================================================
+           adPEAS Diff Report - Embedded Styles
+           Color scheme matches the main adPEAS report
+           ============================================================ */
+        :root {
+            --finding: #d32f2f;
+            --finding-bg-light: #ffebee;
+            --finding-bg-dark: #4a1a1a;
+            --hint: #f57c00;
+            --hint-bg-light: #fff3e0;
+            --hint-bg-dark: #4a3010;
+            --note: #388e3c;
+            --note-bg-light: #e8f5e9;
+            --note-bg-dark: #1a3a1a;
+            --secure: #2196f3;
+            --secure-bg-light: #e3f2fd;
+            --secure-bg-dark: #1a2a4a;
+        }
+        [data-theme="light"] {
+            --bg-main: #e2e8f0;
+            --bg-card: #ffffff;
+            --bg-header: #1a365d;
+            --bg-hover: #f1f5f9;
+            --text: #1a202c;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --finding-bg: var(--finding-bg-light);
+            --hint-bg: var(--hint-bg-light);
+            --note-bg: var(--note-bg-light);
+            --secure-bg: var(--secure-bg-light);
+        }
+        [data-theme="dark"] {
+            --bg-main: #0d1117;
+            --bg-card: #161b22;
+            --bg-header: #21262d;
+            --bg-hover: #1c2128;
+            --text: #e6edf3;
+            --text-muted: #8b949e;
+            --border: #30363d;
+            --finding-bg: var(--finding-bg-dark);
+            --hint-bg: var(--hint-bg-dark);
+            --note-bg: var(--note-bg-dark);
+            --secure-bg: var(--secure-bg-dark);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-main);
+            color: var(--text);
+            line-height: 1.6;
+        }
+        /* Header */
+        .header {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+            height: 64px;
+            background: var(--bg-header);
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .header-brand {
+            display: flex; align-items: center; gap: 12px;
+        }
+        .header-logo { height: 36px; width: 36px; }
+        .header-title { font-size: 20px; font-weight: 700; }
+        .header-subtitle { font-size: 13px; color: rgba(255,255,255,0.6); margin-left: 8px; }
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+        .btn {
+            padding: 6px 14px; border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: transparent; color: #fff;
+            cursor: pointer; font-size: 13px;
+        }
+        .btn:hover { background: rgba(255,255,255,0.1); }
+        /* Theme toggle */
+        .theme-toggle {
+            position: relative; width: 52px; height: 28px;
+            border-radius: 14px; border: none; cursor: pointer;
+            background: #334155; transition: background 0.3s;
+        }
+        .theme-toggle-slider {
+            position: absolute; top: 3px; left: 3px;
+            width: 22px; height: 22px; border-radius: 50%;
+            background: #fff; transition: transform 0.3s;
+        }
+        [data-theme="light"] .theme-toggle { background: #93c5fd; }
+        [data-theme="light"] .theme-toggle-slider { transform: translateX(24px); }
+        .theme-icon { position: absolute; right: 7px; top: 5px; font-size: 14px; }
+        [data-theme="light"] .theme-icon { left: 7px; right: auto; }
+        /* Main content */
+        .main {
+            max-width: 1100px;
+            margin: 88px auto 40px;
+            padding: 0 24px;
+        }
+        /* Summary cards */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .summary-card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .summary-card .icon {
+            width: 52px; height: 52px;
+            border-radius: 12px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 22px; font-weight: bold;
+        }
+        .summary-card .value { font-size: 32px; font-weight: 700; line-height: 1; }
+        .summary-card .label { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+        .summary-card.new-findings .icon { background: var(--finding-bg); color: var(--finding); }
+        .summary-card.new-findings .value { color: var(--finding); }
+        .summary-card.remediated .icon { background: var(--secure-bg); color: var(--secure); }
+        .summary-card.remediated .value { color: var(--secure); }
+        .summary-card.changed .icon { background: var(--hint-bg); color: var(--hint); }
+        .summary-card.changed .value { color: var(--hint); }
+        .summary-card.unchanged .icon { background: var(--note-bg); color: var(--note); }
+        .summary-card.unchanged .value { color: var(--note); }
+        /* Info bar */
+        .info-bar {
+            display: flex; flex-wrap: wrap; gap: 8px 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 20px;
+            margin-bottom: 24px;
+        }
+        .info-item .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        .info-item .value { font-size: 13px; font-weight: 500; }
+        /* Sections */
+        .section {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+        .section-header {
+            padding: 14px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            user-select: none;
+        }
+        .section-header:hover { background: var(--bg-hover); }
+        .section-title {
+            font-size: 16px; font-weight: 600;
+            display: flex; align-items: center; gap: 10px;
+        }
+        .section-count {
+            font-size: 13px; color: var(--text-muted);
+            background: var(--bg-main); border-radius: 12px;
+            padding: 2px 10px;
+        }
+        .section-toggle { font-size: 12px; color: var(--text-muted); transition: transform 0.2s; }
+        .section-toggle.collapsed { transform: rotate(-90deg); }
+        .section-content { padding: 0 20px 16px; }
+        .section-content.hidden { display: none; }
+        /* Finding items */
+        .diff-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 6px;
+            margin-bottom: 4px;
+        }
+        .diff-item:hover { background: var(--bg-hover); }
+        .severity-bar {
+            width: 4px; height: 28px;
+            border-radius: 2px; flex-shrink: 0;
+        }
+        .severity-bar.finding { background: var(--finding); }
+        .severity-bar.hint { background: var(--hint); }
+        .severity-bar.note { background: var(--note); }
+        .severity-bar.secure { background: var(--secure); }
+        .severity-bar.standard { background: var(--text-muted); }
+        .diff-item-name { flex: 1; font-size: 14px; }
+        .diff-item-meta { font-size: 12px; color: var(--text-muted); }
+        .diff-item-badge {
+            font-size: 11px; font-weight: 600;
+            padding: 2px 8px; border-radius: 4px;
+            text-transform: uppercase; letter-spacing: 0.3px;
+        }
+        .badge-new { background: var(--finding-bg); color: var(--finding); }
+        .badge-fixed { background: var(--secure-bg); color: var(--secure); }
+        .badge-changed { background: var(--hint-bg); color: var(--hint); }
+        /* Scope info */
+        .scope-info {
+            padding: 14px 16px;
+            background: var(--bg-hover);
+            border-radius: 6px;
+            font-size: 13px;
+            color: var(--text-muted);
+            line-height: 1.8;
+        }
+        .scope-info strong { color: var(--text); }
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 20px;
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+        /* Print */
+        @media print {
+            .header { position: static; }
+            .main { margin-top: 16px; }
+            .section { break-inside: avoid; }
+            .btn, .theme-toggle { display: none; }
+        }
+        /* Responsive */
+        @media (max-width: 768px) {
+            .summary-grid { grid-template-columns: repeat(2, 1fr); }
+            .info-bar { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+    <header class="header" role="banner">
+        <div class="header-brand">
+            <img class="header-logo" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAU0SURBVGhD7dZrTJNXGAfwf29QLi1QoFwqVbfpZMYYFdgkwgREkYAIKCAoyJ0ChcpNLirFIvdVUJjKZMpAXSmZc7qLDI3xg8zNZcvYl+3rkm3Jkuniki1byH95ERLXOS/7Mk3eX/IkzXPOaZ/nnNP2BUQikUgkEolEItFTYDmAcMfks6QCwFcA1joOPEv2AHgPQAkAZwABAFIB7ASwxnHy02oUUvlVvP9DM7ov3FEY2inNNxONbxITt8+DdHFc8ABSx8QTaRteqnljctUKko5Dj2M5YrOzMHGHmCYNd8lRkopvSdwiUdJeI0ya+jFdW9+vC9tWrAmuaH4pqNO2ZmnneW30wDXlSLst8GaRWXspMsHNsH6r+xZjp3792M3wlZ22F5cmJz9Gc9kNSmvTCR0NhzymDW2eYyUWb0vfpFvd0atq24GhBbZdtb6G3Aa/SENz4Nrmk4vXvD2VsnloMiLP1O0XdeX7V/TuHvIRqP2JlbH02ZjD1elGIjab0AcLO/IdgImiqoifBideZnWf9vfcBt/baUbVHx32AJ6c8mHXeBAbjwWxcL8/d9d7M3+/htn1aiYVOX2+qhByx3r/hiyUV1sXfLbd6MLtJrDAAtYOaHjyhj+HPvFlh01PY4c/t+SpmFKqpPlUEN/9MoH2W1E0n9axuMWH2gUyhkZImJbpwcwcPaMSpYx8FQwNBzVaGTVaOeMzFrDHHsy6o37MqPBkXKY7TV067jv+HKteC2JWlTfjc1y4IUPG6DQwajsYGo9NjvX+g3BtTIdVVyp7NMze68WcBhVLWgJYZdWxtk/HsjYtM01efDXJlaklau4dCKBlZCEPDutZddifuQ0a+gRIuTFDzZpePQcvh9F6/gVmVXkxNMaVi4KdGJHoxqJmX+4dCKSxTcfCfTrm1gcyr1HLFIM716fKGLbpXtHxuRLGZuKXmAxkO9b6r+pOYK1lzInmURXrBjTcY/VjRUcAy1oDWbAvgBlGLROyvZlWqmVegz9LWwNnx4TX6eU+XB7iTlc3BRcvc+GiZc7UL1Ey6HkXenoruW6zhhXtehrbFtLUpWex2Y/Z9SqmmRRMLAQTCsDkUgm3V0qYVII/N+3C2bA4BDvW+EgHRqTlvR8r2H9NwbbzclrGnGmxudF8xp0HhlVsGlKz9nUVa/rVrDqipqlXzUqrmhU9Hqzs8WRhi5o79rhxW5kr04xuzKpWsajFk8YuL5Z1qmlod2WBRc6iQ1JW9MpY1a9gfouUu/eDqeX4LW437CExiAEgcaztccwuKm7H1hYbbjS9BXZelPD4lBOP33DmwHVnWi/LeNAu5GXsm1Ty8ISS1o+U7PlAyY4L8pn9o5ix2GXsvuTM7ktKdl5wZuu4E5uGMVM7iJnmMzJa7Aq22oUNUrDxlJRZe/FrdBrO6ZYgHoA3ACXwiC/tQ8wv9AqJRVxKGVpyzbhY2oNvjL24u6cfLLeC1cfAA2ekbB2XzZ7UoXfkbD4roekoWD8Eto5LZ/Ozp2iX0nzu3ljNMbDxtIR1g2D+QfwckwGbhxaJAPwBeAJQA1A41PTEhN9coRHhRIRwBaBTe2P1stWIXxWF3JBY1ITFoSU8EV2RyTgSmYIT65JwOnwLxtdtxYfR6bgek4lPN2Tii407Mb1hB76OTsd0dBqmIlMwtmItmgBEAfAB4DYXTv/16jyM0IxsrqEH/ZkIHzjfsLBzwqOE+9xuCtdBO7e7wuOF31x+/orMrxHe/38xf0JCA/eHUJAQ9+fm594fIpFIJBKJRCKRSCR65vwFlworxjr7mRwAAAAASUVORK5CYII=" alt="adPEAS Logo">
+            <span class="header-title">adPEAS</span>
+            <span class="header-subtitle">Comparison Report</span>
+        </div>
+        <div class="header-actions">
+            <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
+                <span class="theme-toggle-slider"></span>
+                <span class="theme-icon" aria-hidden="true">&#9788;</span>
+            </button>
+            <button class="btn" onclick="window.print()">Print / PDF</button>
+        </div>
+    </header>
+    <main class="main">
+        <div class="summary-grid">
+            <div class="summary-card new-findings">
+                <div class="icon" aria-hidden="true">&#33;</div>
+                <div>
+                    <div class="value">{{NEW_COUNT}}</div>
+                    <div class="label">New</div>
+                </div>
+            </div>
+            <div class="summary-card remediated">
+                <div class="icon" aria-hidden="true">&#10003;</div>
+                <div>
+                    <div class="value">{{REMEDIATED_COUNT}}</div>
+                    <div class="label">Remediated</div>
+                </div>
+            </div>
+            <div class="summary-card changed">
+                <div class="icon" aria-hidden="true">&#9650;</div>
+                <div>
+                    <div class="value">{{CHANGED_COUNT}}</div>
+                    <div class="label">Changed</div>
+                </div>
+            </div>
+            <div class="summary-card unchanged">
+                <div class="icon" aria-hidden="true">&#9679;</div>
+                <div>
+                    <div class="value">{{UNCHANGED_COUNT}}</div>
+                    <div class="label">Unchanged</div>
+                </div>
+            </div>
+        </div>
+        <div class="info-bar">
+            <div class="info-item">
+                <div class="label">Baseline</div>
+                <div class="value">{{BASELINE_INFO}}</div>
+            </div>
+            <div class="info-item">
+                <div class="label">Current</div>
+                <div class="value">{{CURRENT_INFO}}</div>
+            </div>
+            <div class="info-item">
+                <div class="label">Compared</div>
+                <div class="value">{{COMPARED_CATEGORIES}}</div>
+            </div>
+            <div class="info-item">
+                <div class="label">Generated</div>
+                <div class="value">{{GENERATED}}</div>
+            </div>
+            <div class="info-item">
+                <div class="label">Version</div>
+                <div class="value">{{VERSION}}</div>
+            </div>
+        </div>
+        {{DIFF_SECTIONS}}
+    </main>
+    <script>
+        function toggleTheme() {
+            var current = document.documentElement.getAttribute('data-theme');
+            var next = current === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', next);
+            try { localStorage.setItem('adpeas-theme', next); } catch (e) {}
+        }
+        function toggleSection(el) {
+            var content = el.parentElement.querySelector('.section-content');
+            var toggle = el.querySelector('.section-toggle');
+            if (content.classList.contains('hidden')) {
+                content.classList.remove('hidden');
+                toggle.classList.remove('collapsed');
+            } else {
+                content.classList.add('hidden');
+                toggle.classList.add('collapsed');
+            }
+        }
+    </script>
+</body>
+</html>
+'@
 }
 function Invoke-adPEASCollector {
     [CmdletBinding()]
@@ -68329,7 +68883,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.0.0+20260402-1702"
+$Script:adPEASVersion = "2.0.0+20260402-2111"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -288,6 +288,9 @@ $JsPath = Join-Path $TemplatesDir "report-scripts.js"
 
 $TemplatesExist = (Test-Path $HtmlTemplatePath) -and (Test-Path $CssPath) -and (Test-Path $JsPath)
 
+$DiffTemplatePath = Join-Path $TemplatesDir "diff-template.html"
+$DiffTemplateExists = Test-Path $DiffTemplatePath
+
 if ($TemplatesExist) {
     Write-Host "[Build]     - Loading HTML report templates from separate files..." -ForegroundColor DarkGray
     $HtmlTemplate = Get-Content $HtmlTemplatePath -Raw -Encoding UTF8
@@ -303,6 +306,11 @@ if ($TemplatesExist) {
     Write-Host "[Build]       Combined: $($CombinedTemplate.Length) bytes" -ForegroundColor DarkGray
 }
 
+if ($DiffTemplateExists) {
+    $DiffTemplateContent = Get-Content $DiffTemplatePath -Raw -Encoding UTF8
+    Write-Host "[Build]       Diff template: $($DiffTemplateContent.Length) bytes" -ForegroundColor DarkGray
+}
+
 foreach ($Module in $ReportingModules) {
     $ModulePath = Join-Path $SourcePath $Module
     $ModuleName = Split-Path $Module -Leaf
@@ -312,6 +320,35 @@ foreach ($Module in $ReportingModules) {
     $ReadableOutput += "# ----- $ModuleName -----`n"
     $Content = Get-Content $ModulePath -Raw
     $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
+
+    # For Compare-adPEASReport.ps1: Replace Get-DiffHTMLTemplate function with embedded template
+    if ($ModuleName -eq "Compare-adPEASReport.ps1" -and $DiffTemplateExists) {
+        Write-Host "[Build]       Embedding diff template into Get-DiffHTMLTemplate function..." -ForegroundColor DarkGray
+
+        $NewGetDiffTemplate = @"
+<#
+.SYNOPSIS
+    Returns the diff HTML template.
+.DESCRIPTION
+    This function contains the embedded diff report template.
+    Template is maintained in templates/diff-template.html and embedded at build time.
+#>
+function Get-DiffHTMLTemplate {
+    return @'
+$DiffTemplateContent
+'@
+}
+"@
+
+        # Match the dev version of Get-DiffHTMLTemplate
+        $DiffPattern = '(?s)<#[\r\n]+\.SYNOPSIS[\r\n]+\s+Loads the diff HTML template from template files or embedded content\..*?function Get-DiffHTMLTemplate \{.*?return \$null[\r\n]+\}'
+        if ($Content -match $DiffPattern) {
+            $Content = [regex]::Replace($Content, $DiffPattern, $NewGetDiffTemplate)
+            Write-Host "[Build]       Diff template embedded successfully" -ForegroundColor Green
+        } else {
+            Write-Warning "[Build] Could not find Get-DiffHTMLTemplate function in Compare-adPEASReport.ps1 - diff template not embedded"
+        }
+    }
 
     # For Export-HTMLReport.ps1: Replace Get-HTMLTemplate function with embedded templates
     if ($ModuleName -eq "Export-HTMLReport.ps1" -and $TemplatesExist) {

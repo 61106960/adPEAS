@@ -131,9 +131,15 @@ function Compare-adPEASReport {
             $baselineFindings = Import-FindingsFromCache -Cache $baselineCache
             $currentFindings = Import-FindingsFromCache -Cache $currentCache
 
-            # Filter to comparable findings only (skip structural elements)
-            $baselineComparable = @($baselineFindings | Where-Object { $_.Type -notin @('Header', 'SubHeader') })
-            $currentComparable = @($currentFindings | Where-Object { $_.Type -notin @('Header', 'SubHeader') })
+            # Filter to comparable findings only
+            # Skip structural elements (Header, SubHeader) and internal artifacts (Category = Unknown:
+            # disclaimers, connection messages, merge notes, progress indicators)
+            $baselineComparable = @($baselineFindings | Where-Object {
+                $_.Type -notin @('Header', 'SubHeader') -and $_.Category -ne 'Unknown'
+            })
+            $currentComparable = @($currentFindings | Where-Object {
+                $_.Type -notin @('Header', 'SubHeader') -and $_.Category -ne 'Unknown'
+            })
 
             # 3. Build identity maps
             $baselineMap = @{}
@@ -180,11 +186,26 @@ function Compare-adPEASReport {
                 }
             }
 
-            # 5. Detect partial scans
+            # 5. Detect scope differences (categories only in one scan)
             $baselineCategories = @($baselineComparable | ForEach-Object { $_.Category } | Select-Object -Unique | Sort-Object)
             $currentCategories = @($currentComparable | ForEach-Object { $_.Category } | Select-Object -Unique | Sort-Object)
             $onlyInBaseline = @($baselineCategories | Where-Object { $_ -notin $currentCategories })
             $onlyInCurrent = @($currentCategories | Where-Object { $_ -notin $baselineCategories })
+            $sharedCategories = @($baselineCategories | Where-Object { $_ -in $currentCategories })
+
+            # Separate scope-only findings from real added/removed
+            # Findings in non-overlapping categories are NOT real changes — they reflect
+            # different scan scopes (e.g., one scan ran -Module Accounts, the other ran all modules)
+            $scopeOnlyBaseline = @()
+            $scopeOnlyCurrent = @()
+            if ($onlyInBaseline.Count -gt 0) {
+                $scopeOnlyBaseline = @($removed | Where-Object { $_.Category -in $onlyInBaseline })
+                $removed = [System.Collections.ArrayList]@($removed | Where-Object { $_.Category -notin $onlyInBaseline })
+            }
+            if ($onlyInCurrent.Count -gt 0) {
+                $scopeOnlyCurrent = @($added | Where-Object { $_.Category -in $onlyInCurrent })
+                $added = [System.Collections.ArrayList]@($added | Where-Object { $_.Category -notin $onlyInCurrent })
+            }
 
             # 6. Output report
             Show-Output -Class Info -Value "adPEAS Report Comparison" -NoCollect
@@ -199,8 +220,7 @@ function Compare-adPEASReport {
             Show-Output -Key "Remediated findings (removed)" -Value "$($removed.Count)" -Class $(if ($removed.Count -gt 0) { 'Secure' } else { 'Note' }) -NoCollect
             Show-Output -Key "Changed findings" -Value "$($changed.Count)" -Class $(if ($changed.Count -gt 0) { 'Hint' } else { 'Note' }) -NoCollect
             Show-Output -Key "Unchanged findings" -Value "$unchangedCount" -Class Note -NoCollect
-            Show-Output -Key "Total baseline findings" -Value "$($baselineComparable.Count)" -Class Note -NoCollect
-            Show-Output -Key "Total current findings" -Value "$($currentComparable.Count)" -Class Note -NoCollect
+            Show-Output -Key "Compared categories" -Value "$($sharedCategories.Count) ($($sharedCategories -join ', '))" -Class Note -NoCollect
 
             # New findings detail
             if ($added.Count -gt 0) {
@@ -256,22 +276,40 @@ function Compare-adPEASReport {
                 }
             }
 
-            # Partial scan notice
+            # Scope differences (different scan modules between baseline and current)
             if ($onlyInBaseline.Count -gt 0 -or $onlyInCurrent.Count -gt 0) {
-                Show-Output -Class Info -Value "Partial Scan Notice" -NoCollect
+                Show-Output -Class Info -Value "Scan Scope Differences" -NoCollect
+                Show-Line "The following categories were not scanned in both reports and are excluded from the comparison above." -Class Note -NoCollect
 
-                if ($onlyInBaseline.Count -gt 0) {
-                    Show-Line "Categories only in baseline: $($onlyInBaseline -join ', ')" -Class Hint -NoCollect
-                }
                 if ($onlyInCurrent.Count -gt 0) {
-                    Show-Line "Categories only in current: $($onlyInCurrent -join ', ')" -Class Hint -NoCollect
+                    Show-Line "Only in current scan: $($onlyInCurrent -join ', ') ($($scopeOnlyCurrent.Count) finding(s) not compared)" -Class Hint -NoCollect
                 }
-                Show-Line "Findings in non-overlapping categories appear as added/removed but may reflect scan scope differences" -Class Note -NoCollect
+                if ($onlyInBaseline.Count -gt 0) {
+                    Show-Line "Only in baseline scan: $($onlyInBaseline -join ', ') ($($scopeOnlyBaseline.Count) finding(s) not compared)" -Class Hint -NoCollect
+                }
+            }
+
+            # Generate HTML diff report
+            if ($OutputPath) {
+                $htmlPath = "$resolvedBase.html"
+                try {
+                    Export-DiffHtmlReport -OutputPath $htmlPath `
+                        -BaselineMeta $baselineMeta -CurrentMeta $currentMeta `
+                        -BaselineFile (Split-Path -Leaf $Baseline) -CurrentFile (Split-Path -Leaf $Current) `
+                        -Added $added -Removed $removed -Changed $changed `
+                        -UnchangedCount $unchangedCount `
+                        -SharedCategories $sharedCategories `
+                        -OnlyInBaseline $onlyInBaseline -OnlyInCurrent $onlyInCurrent `
+                        -ScopeOnlyBaseline $scopeOnlyBaseline -ScopeOnlyCurrent $scopeOnlyCurrent
+                    Show-Line "HTML diff report saved to: $htmlPath" -Class Hint -NoCollect
+                } catch {
+                    Write-Warning "[Compare-adPEASReport] Error generating HTML diff report: $_"
+                }
             }
 
             # File output notification
             if ($OutputPath) {
-                Show-Line "Diff report saved to: $textPath" -Class Hint -NoCollect
+                Show-Line "Text diff report saved to: $textPath" -Class Hint -NoCollect
             }
 
         } finally {
@@ -321,6 +359,16 @@ function Get-FindingIdentity {
                 elseif ($op.userName -and $op.filePath) { $oid = "$($op.userName)|$($op.filePath)" }
                 elseif ($op.filePath) { $oid = $op.filePath }
                 elseif ($op.credentialType) { $oid = $op.credentialType }
+                # For domain info objects, use _adPEASObjectType as stable identity
+                elseif ($op._adPEASObjectType) { $oid = $op._adPEASObjectType }
+                # Last resort: use first non-internal property value
+                else {
+                    foreach ($p in $op.PSObject.Properties) {
+                        if ($p.Name -notin @('_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk') -and $p.Value) {
+                            $oid = "$($p.Name)=$($p.Value)"; break
+                        }
+                    }
+                }
             }
             if (-not $oid) { $oid = 'unknown' }
             return "$prefix|Object|$oid"
@@ -366,6 +414,15 @@ function Get-FindingDisplayName {
                 return $op.distinguishedName
             }
             if ($op.PrincipalName) { return "$($op.PrincipalName) -> $($op.TargetObject)" }
+            # Domain info objects: use _adPEASObjectType or first meaningful property
+            if ($op._adPEASObjectType) { return $op._adPEASObjectType }
+            foreach ($p in $op.PSObject.Properties) {
+                if ($p.Name -notin @('_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk') -and $p.Value) {
+                    $val = [string]$p.Value
+                    if ($val.Length -gt 60) { $val = $val.Substring(0, 57) + '...' }
+                    return $val
+                }
+            }
             return '[Object]'
         }
         'KeyValue' {
@@ -381,4 +438,256 @@ function Get-FindingDisplayName {
             return $Finding.Text
         }
     }
+}
+
+<#
+.SYNOPSIS
+    Generates a standalone HTML diff report from comparison results.
+.DESCRIPTION
+    Creates a self-contained HTML file with embedded CSS and JS that visualizes
+    the differences between two adPEAS scans. Uses the same color scheme and
+    theme system as the main adPEAS HTML report.
+#>
+function Export-DiffHtmlReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$OutputPath,
+
+        [hashtable]$BaselineMeta,
+        [hashtable]$CurrentMeta,
+        [string]$BaselineFile,
+        [string]$CurrentFile,
+        $Added,
+        $Removed,
+        $Changed,
+        [int]$UnchangedCount,
+        [string[]]$SharedCategories,
+        [string[]]$OnlyInBaseline,
+        [string[]]$OnlyInCurrent,
+        $ScopeOnlyBaseline,
+        $ScopeOnlyCurrent
+    )
+
+    # Load diff template
+    $html = Get-DiffHTMLTemplate
+    if (-not $html) {
+        Write-Warning "[Export-DiffHtmlReport] Failed to load diff HTML template"
+        return
+    }
+
+    # Build diff sections HTML
+    $sectionsHtml = [System.Text.StringBuilder]::new()
+
+    # New Findings section
+    if ($Added.Count -gt 0) {
+        [void]$sectionsHtml.Append((Build-DiffSectionHtml -Title "New Findings" -Findings $Added -SectionType 'new'))
+    }
+
+    # Remediated Findings section
+    if ($Removed.Count -gt 0) {
+        [void]$sectionsHtml.Append((Build-DiffSectionHtml -Title "Remediated Findings" -Findings $Removed -SectionType 'remediated'))
+    }
+
+    # Changed Findings section
+    if ($Changed.Count -gt 0) {
+        [void]$sectionsHtml.Append((Build-DiffChangedSectionHtml -Title "Changed Findings" -ChangedEntries $Changed))
+    }
+
+    # Scope Differences section
+    if ($OnlyInBaseline.Count -gt 0 -or $OnlyInCurrent.Count -gt 0) {
+        $scopeHtml = [System.Text.StringBuilder]::new()
+        [void]$scopeHtml.AppendLine('<section class="section">')
+        [void]$scopeHtml.AppendLine('  <div class="section-header" onclick="toggleSection(this)">')
+        [void]$scopeHtml.AppendLine('    <div class="section-title">Scan Scope Differences</div>')
+        [void]$scopeHtml.AppendLine('    <span class="section-toggle">&#9660;</span>')
+        [void]$scopeHtml.AppendLine('  </div>')
+        [void]$scopeHtml.AppendLine('  <div class="section-content">')
+        [void]$scopeHtml.AppendLine('    <div class="scope-info">')
+        [void]$scopeHtml.AppendLine('      The following categories were not scanned in both reports and are excluded from the comparison above.<br>')
+        if ($OnlyInCurrent.Count -gt 0) {
+            $cats = (ConvertTo-HtmlEncode ($OnlyInCurrent -join ', '))
+            [void]$scopeHtml.AppendLine("      <strong>Only in current scan:</strong> $cats ($($ScopeOnlyCurrent.Count) finding(s) not compared)<br>")
+        }
+        if ($OnlyInBaseline.Count -gt 0) {
+            $cats = (ConvertTo-HtmlEncode ($OnlyInBaseline -join ', '))
+            [void]$scopeHtml.AppendLine("      <strong>Only in baseline scan:</strong> $cats ($($ScopeOnlyBaseline.Count) finding(s) not compared)")
+        }
+        [void]$scopeHtml.AppendLine('    </div>')
+        [void]$scopeHtml.AppendLine('  </div>')
+        [void]$scopeHtml.AppendLine('</section>')
+        [void]$sectionsHtml.Append($scopeHtml.ToString())
+    }
+
+    # Empty state
+    if ($Added.Count -eq 0 -and $Removed.Count -eq 0 -and $Changed.Count -eq 0 -and
+        $OnlyInBaseline.Count -eq 0 -and $OnlyInCurrent.Count -eq 0) {
+        [void]$sectionsHtml.AppendLine('<div class="empty-state">No differences found between the two scans.</div>')
+    }
+
+    # Build info strings
+    $baselineInfo = "$BaselineFile ($($BaselineMeta.Date), $($BaselineMeta.Domain), adPEAS $($BaselineMeta.Version))"
+    $currentInfo = "$CurrentFile ($($CurrentMeta.Date), $($CurrentMeta.Domain), adPEAS $($CurrentMeta.Version))"
+    $comparedCats = if ($SharedCategories.Count -gt 0) { "$($SharedCategories.Count) ($($SharedCategories -join ', '))" } else { "None" }
+    $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
+    $generatedDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $domain = $BaselineMeta.Domain
+
+    # Replace placeholders
+    $html = $html -replace '{{DOMAIN}}', (ConvertTo-HtmlEncode $domain)
+    $html = $html -replace '{{NEW_COUNT}}', $Added.Count
+    $html = $html -replace '{{REMEDIATED_COUNT}}', $Removed.Count
+    $html = $html -replace '{{CHANGED_COUNT}}', $Changed.Count
+    $html = $html -replace '{{UNCHANGED_COUNT}}', $UnchangedCount
+    $html = $html -replace '{{BASELINE_INFO}}', (ConvertTo-HtmlEncode $baselineInfo)
+    $html = $html -replace '{{CURRENT_INFO}}', (ConvertTo-HtmlEncode $currentInfo)
+    $html = $html -replace '{{COMPARED_CATEGORIES}}', (ConvertTo-HtmlEncode $comparedCats)
+    $html = $html -replace '{{GENERATED}}', $generatedDate
+    $html = $html -replace '{{VERSION}}', $version
+    $html = $html.Replace('{{DIFF_SECTIONS}}', $sectionsHtml.ToString())
+
+    # Write file (UTF-8 without BOM, same as Export-HTMLReport)
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
+    [System.IO.File]::WriteAllText($resolvedPath, $html, $utf8NoBom)
+
+    Write-Log "[Export-DiffHtmlReport] HTML diff report saved to: $OutputPath"
+}
+
+<#
+.SYNOPSIS
+    Builds an HTML section with finding items for the diff report.
+.PARAMETER Title
+    Section title (e.g., "New Findings", "Remediated Findings").
+.PARAMETER Findings
+    Array of finding objects to render.
+.PARAMETER SectionType
+    Visual style: 'new' (red badge), 'remediated' (blue badge).
+#>
+function Build-DiffSectionHtml {
+    [CmdletBinding()]
+    param(
+        [string]$Title,
+        [array]$Findings,
+        [string]$SectionType
+    )
+
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine('<section class="section">')
+    [void]$sb.AppendLine("  <div class=`"section-header`" onclick=`"toggleSection(this)`">")
+    $escapedTitle = ConvertTo-HtmlEncode $Title
+    [void]$sb.AppendLine("    <div class=`"section-title`">$escapedTitle <span class=`"section-count`">$($Findings.Count)</span></div>")
+    [void]$sb.AppendLine('    <span class="section-toggle">&#9660;</span>')
+    [void]$sb.AppendLine('  </div>')
+    [void]$sb.AppendLine('  <div class="section-content">')
+
+    # Group by Category > CheckTitle for readability
+    $groups = $Findings | Group-Object -Property { "$($_.Category) > $($_.CheckTitle)" }
+    foreach ($group in ($groups | Sort-Object Name)) {
+        foreach ($f in $group.Group) {
+            $displayName = ConvertTo-HtmlEncode (Get-FindingDisplayName -Finding $f)
+            $severity = if ($f.Severity) { $f.Severity.ToLower() } else { 'standard' }
+            $category = ConvertTo-HtmlEncode $group.Name
+
+            $badgeClass = if ($SectionType -eq 'new') { 'badge-new' } else { 'badge-fixed' }
+            $badgeText = if ($SectionType -eq 'new') { 'NEW' } else { 'FIXED' }
+
+            [void]$sb.AppendLine("    <div class=`"diff-item`">")
+            [void]$sb.AppendLine("      <div class=`"severity-bar $severity`"></div>")
+            [void]$sb.AppendLine("      <div class=`"diff-item-name`">$displayName</div>")
+            [void]$sb.AppendLine("      <div class=`"diff-item-meta`">$category</div>")
+            [void]$sb.AppendLine("      <span class=`"diff-item-badge $badgeClass`">$badgeText</span>")
+            [void]$sb.AppendLine('    </div>')
+        }
+    }
+
+    [void]$sb.AppendLine('  </div>')
+    [void]$sb.AppendLine('</section>')
+    return $sb.ToString()
+}
+
+<#
+.SYNOPSIS
+    Builds an HTML section for changed findings with before/after details.
+#>
+function Build-DiffChangedSectionHtml {
+    [CmdletBinding()]
+    param(
+        [string]$Title,
+        [array]$ChangedEntries
+    )
+
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine('<section class="section">')
+    [void]$sb.AppendLine("  <div class=`"section-header`" onclick=`"toggleSection(this)`">")
+    $escapedTitle = ConvertTo-HtmlEncode $Title
+    [void]$sb.AppendLine("    <div class=`"section-title`">$escapedTitle <span class=`"section-count`">$($ChangedEntries.Count)</span></div>")
+    [void]$sb.AppendLine('    <span class="section-toggle">&#9660;</span>')
+    [void]$sb.AppendLine('  </div>')
+    [void]$sb.AppendLine('  <div class="section-content">')
+
+    $groups = $ChangedEntries | Group-Object -Property { "$($_.Current.Category) > $($_.Current.CheckTitle)" }
+    foreach ($group in ($groups | Sort-Object Name)) {
+        foreach ($entry in $group.Group) {
+            $displayName = ConvertTo-HtmlEncode (Get-FindingDisplayName -Finding $entry.Current)
+            $severity = if ($entry.Current.Severity) { $entry.Current.Severity.ToLower() } else { 'standard' }
+            $category = ConvertTo-HtmlEncode $group.Name
+
+            # Build change description
+            $changeDesc = @()
+            if ($entry.Baseline.Severity -ne $entry.Current.Severity) {
+                $changeDesc += "$($entry.Baseline.Severity) &#8594; $($entry.Current.Severity)"
+            }
+            if ($entry.Current.Type -eq 'KeyValue' -and $entry.Baseline.Value -ne $entry.Current.Value) {
+                $oldVal = ConvertTo-HtmlEncode ([string]$entry.Baseline.Value)
+                $newVal = ConvertTo-HtmlEncode ([string]$entry.Current.Value)
+                if ($oldVal.Length -gt 40) { $oldVal = $oldVal.Substring(0, 37) + '...' }
+                if ($newVal.Length -gt 40) { $newVal = $newVal.Substring(0, 37) + '...' }
+                $changeDesc += "$oldVal &#8594; $newVal"
+            }
+            if ($entry.Current.Type -eq 'Line' -and $entry.Baseline.Text -ne $entry.Current.Text) {
+                $changeDesc += "text changed"
+            }
+            $changeHtml = $changeDesc -join ', '
+
+            [void]$sb.AppendLine("    <div class=`"diff-item`">")
+            [void]$sb.AppendLine("      <div class=`"severity-bar $severity`"></div>")
+            [void]$sb.AppendLine("      <div class=`"diff-item-name`">$displayName <span style=`"font-size:12px;color:var(--text-muted)`">($changeHtml)</span></div>")
+            [void]$sb.AppendLine("      <div class=`"diff-item-meta`">$category</div>")
+            [void]$sb.AppendLine('      <span class="diff-item-badge badge-changed">CHANGED</span>')
+            [void]$sb.AppendLine('    </div>')
+        }
+    }
+
+    [void]$sb.AppendLine('  </div>')
+    [void]$sb.AppendLine('</section>')
+    return $sb.ToString()
+}
+
+<#
+.SYNOPSIS
+    Loads the diff HTML template from template files or embedded content.
+.DESCRIPTION
+    Tries to load from templates/diff-template.html first (development mode),
+    falls back to embedded template in built standalone version.
+#>
+function Get-DiffHTMLTemplate {
+    # Try to load from template files (development mode)
+    $scriptDir = $PSScriptRoot
+    if (-not $scriptDir) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+    if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
+
+    # In dev mode, template is next to Compare-adPEASReport.ps1 in templates/
+    $templatesDir = Join-Path $scriptDir "templates"
+    $diffTemplatePath = Join-Path $templatesDir "diff-template.html"
+
+    if (Test-Path $diffTemplatePath) {
+        Write-Log "[Get-DiffHTMLTemplate] Loading diff template from file (development mode)"
+        return (Get-Content $diffTemplatePath -Raw -Encoding UTF8)
+    }
+
+    # Fallback: embedded template (replaced by Build-Release.ps1)
+    # {{DIFF_TEMPLATE_EMBEDDED}}
+    Write-Warning "[Get-DiffHTMLTemplate] Diff template not found at: $diffTemplatePath"
+    return $null
 }
