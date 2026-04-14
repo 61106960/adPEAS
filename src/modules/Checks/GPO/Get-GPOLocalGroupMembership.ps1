@@ -82,7 +82,7 @@ function Get-GPOLocalGroupMembership {
             }
 
             $domainFQDN = $Script:LDAPContext.Domain
-            $vulnerableGPOs = @()
+            $Script:vulnerableGPOs = @()
 
             Show-SubHeader "Searching for GPO local group assignments..." -ObjectType "GPOLocalGroup"
 
@@ -143,7 +143,7 @@ function Get-GPOLocalGroupMembership {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
                                 }
 
-                                $vulnerableGPOs += $restrictedGroupsFindings
+                                $Script:vulnerableGPOs += @($restrictedGroupsFindings)
                             }
                         } catch {
                             Write-Log "[Get-GPOLocalGroupMembership] Error parsing $($file.FullName): $_"
@@ -180,7 +180,7 @@ function Get-GPOLocalGroupMembership {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
                                 }
 
-                                $vulnerableGPOs += $gppGroupsFindings
+                                $Script:vulnerableGPOs += @($gppGroupsFindings)
                             }
                         } catch {
                             Write-Log "[Get-GPOLocalGroupMembership] Error parsing $($file.FullName): $_"
@@ -189,6 +189,10 @@ function Get-GPOLocalGroupMembership {
                 }
                 if ($totalXmlFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning GPP Groups.xml files" -Completed }
             }
+
+            # Collect findings from scriptblock (Script scope bridges the child scope boundary)
+            $vulnerableGPOs = $Script:vulnerableGPOs
+            $Script:vulnerableGPOs = $null
 
             # Check if SYSVOL was accessible
             $sysvolAccessible = $Script:sysvolAccessible
@@ -285,6 +289,8 @@ function Parse-RestrictedGroups {
                 $line = $line.Trim()
 
                 if ($line -match '^\*(.+?)__Members\s*=\s*(.+)$') {
+                    # Variant 1: *LOCAL_GROUP_SID__Members = *SID1, *SID2
+                    # The local group is on the LEFT, members are on the RIGHT
                     $groupSID = $Matches[1]
                     $memberSIDs = $Matches[2] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
 
@@ -326,6 +332,51 @@ function Parse-RestrictedGroups {
                             RiskyMembers = $riskyMembers
                             Severity = $severityResult.Severity
                             Risk = $severityResult.Risk
+                        }
+                    }
+                }
+                elseif ($line -match '^\*(.+?)__Memberof\s*=\s*(.+)$') {
+                    # Variant 2: *DOMAIN_SID__Memberof = *LOCAL_GROUP_SID1, *LOCAL_GROUP_SID2
+                    # The account/group being added is on the LEFT, target local groups are on the RIGHT
+                    # One finding per target local group (each may have different severity)
+                    $memberSID = $Matches[1]
+                    $targetGroupSIDs = $Matches[2] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
+
+                    # Resolve the member name and check if it is itself a risky principal
+                    $memberName = ""
+                    $riskyMembers = @()
+
+                    if ($Script:RiskySIDs.ContainsKey($memberSID)) {
+                        $memberName = $Script:RiskySIDs[$memberSID]
+                        $riskyMembers += $memberName
+                    } elseif ($memberSID -match '-513$') {
+                        $memberName = "Domain Users"
+                        $riskyMembers += $memberName
+                    } else {
+                        $memberName = ConvertFrom-SID -SID $memberSID
+                    }
+
+                    # Create one finding per target local group
+                    foreach ($groupSID in $targetGroupSIDs) {
+                        if ([string]::IsNullOrWhiteSpace($groupSID)) { continue }
+
+                        if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
+                            $groupName = $Script:LocalGroupSIDs[$groupSID]
+
+                            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
+
+                            $findings += [PSCustomObject]@{
+                                GPOName = $GPOName
+                                GPOGUID = $GPOGUID
+                                Type = "Restricted Groups"
+                                TargetGroup = $groupName
+                                TargetGroupSID = $groupSID
+                                MembersAdded = @($memberName)
+                                MemberSIDs = @($memberSID)
+                                RiskyMembers = $riskyMembers
+                                Severity = $severityResult.Severity
+                                Risk = $severityResult.Risk
+                            }
                         }
                     }
                 }

@@ -2022,6 +2022,7 @@ $Script:PrimaryAttributes = @{
 	)
 	CertificateTemplate = @(
 	    'Name', 'displayName', 'DistinguishedName',
+	    'PublishedOn',
 	    'SchemaVersion',
 	    'ExtendedKeyUsage', 'CertificateNameFlagDisplay',
 	    'ManagerApprovalRequired',
@@ -20350,21 +20351,24 @@ function Get-CertificateTemplate {
 	        $Templates = Get-DomainObject @GetParams
 	        $Templates = @($Templates)
 	        if ($Templates -and $Templates.Count -gt 0) {
-	            if (-not $ShowAll) {
-	                $EnrollmentServicesBase = "CN=Enrollment Services,CN=Public Key Services,CN=Services,$ConfigNC"
-	                try {
-	                    $CAs = Get-DomainObject -LDAPFilter "(objectClass=pKIEnrollmentService)" -SearchBase $EnrollmentServicesBase -Properties certificateTemplates -Raw
-	                    if ($CAs) {
-	                        $PublishedTemplates = @()
-	                        foreach ($CA in $CAs) {
-	                            if ($CA.certificateTemplates) {
-	                                $PublishedTemplates += $CA.certificateTemplates
+	            $TemplateCAMap = @{}
+	            $EnrollmentServicesBase = "CN=Enrollment Services,CN=Public Key Services,CN=Services,$ConfigNC"
+	            try {
+	                $CAs = Get-DomainObject -LDAPFilter "(objectClass=pKIEnrollmentService)" -SearchBase $EnrollmentServicesBase -Properties @('cn', 'certificateTemplates') -Raw
+	                if ($CAs) {
+	                    foreach ($CA in @($CAs)) {
+	                        if ($CA.certificateTemplates) {
+	                            $CAName = if ($CA.cn) { [string]$CA.cn } else { 'Unknown' }
+	                            foreach ($tmpl in @($CA.certificateTemplates)) {
+	                                if (-not $TemplateCAMap.ContainsKey($tmpl)) {
+	                                    $TemplateCAMap[$tmpl] = [System.Collections.Generic.List[string]]::new()
+	                                }
+	                                $TemplateCAMap[$tmpl].Add($CAName)
 	                            }
 	                        }
-	                        $PublishedTemplates = $PublishedTemplates | Select-Object -Unique
-	                        $EnabledTemplates = $Templates | Where-Object {
-	                            $PublishedTemplates -contains $_.cn
-	                        }
+	                    }
+	                    if (-not $ShowAll) {
+	                        $EnabledTemplates = $Templates | Where-Object { $TemplateCAMap.ContainsKey($_.cn) }
 	                        if ($EnabledTemplates) {
 	                            $ResultTemplates = $EnabledTemplates
 	                        }
@@ -20373,19 +20377,25 @@ function Get-CertificateTemplate {
 	                        }
 	                    }
 	                    else {
-	                        Write-Warning "No Certificate Authorities found. Cannot determine which templates are enabled."
-	                        Write-Warning "Returning all templates instead."
 	                        $ResultTemplates = $Templates
 	                    }
 	                }
-	                catch {
-	                    Write-Warning "Error querying CA enrollment services: $_"
+	                else {
+	                    Write-Warning "No Certificate Authorities found. Cannot determine which templates are enabled."
 	                    Write-Warning "Returning all templates instead."
 	                    $ResultTemplates = $Templates
 	                }
 	            }
-	            else {
+	            catch {
+	                Write-Warning "Error querying CA enrollment services: $_"
+	                Write-Warning "Returning all templates instead."
 	                $ResultTemplates = $Templates
+	            }
+	            if ($ResultTemplates) {
+	                foreach ($tmpl in @($ResultTemplates)) {
+	                    $caList = if ($TemplateCAMap.ContainsKey($tmpl.cn)) { @($TemplateCAMap[$tmpl.cn]) } else { @() }
+	                    $tmpl | Add-Member -NotePropertyName 'PublishedOn' -NotePropertyValue $caList -Force
+	                }
 	            }
 	            if ($ResultTemplates -and ($EnrolleeSuppliesSubject -or $NoSecurityExtension -or $ClientAuthentication -or $ExportableKey -or $NoManagerApproval -or $EnrollmentAllowed)) {
 	                $FilteredTemplates = $ResultTemplates
@@ -20456,7 +20466,7 @@ function Get-CertificateTemplate {
 	                }
 	                if ($FilteredTemplates) {
 	                    if ($Properties) {
-	                        $OutputProperties = @('cn') + $Properties | Select-Object -Unique
+	                        $OutputProperties = @('cn', 'PublishedOn') + $Properties | Select-Object -Unique
 	                        return $FilteredTemplates | Select-Object $OutputProperties
 	                    } else {
 	                        return $FilteredTemplates
@@ -20468,7 +20478,7 @@ function Get-CertificateTemplate {
 	            }
 	            else {
 	                if ($Properties) {
-	                    $OutputProperties = @('cn') + $Properties
+	                    $OutputProperties = @('cn', 'PublishedOn') + $Properties
 	                    $UniqueProperties = @()
 	                    $SeenProperties = @{}
 	                    foreach ($prop in $OutputProperties) {
@@ -53835,7 +53845,7 @@ function Get-GPOLocalGroupMembership {
 	            return
 	        }
 	        $domainFQDN = $Script:LDAPContext.Domain
-	        $vulnerableGPOs = @()
+	        $Script:vulnerableGPOs = @()
 	        Show-SubHeader "Searching for GPO local group assignments..." -ObjectType "GPOLocalGroup"
 	        $gpos = Get-DomainGPO @PSBoundParameters
 	        if (-not $gpos -or @($gpos).Count -eq 0) {
@@ -53874,7 +53884,7 @@ function Get-GPOLocalGroupMembership {
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
 	                            }
-	                            $vulnerableGPOs += $restrictedGroupsFindings
+	                            $Script:vulnerableGPOs += @($restrictedGroupsFindings)
 	                        }
 	                    } catch {
 	                    }
@@ -53901,7 +53911,7 @@ function Get-GPOLocalGroupMembership {
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
 	                            }
-	                            $vulnerableGPOs += $gppGroupsFindings
+	                            $Script:vulnerableGPOs += @($gppGroupsFindings)
 	                        }
 	                    } catch {
 	                    }
@@ -53909,6 +53919,8 @@ function Get-GPOLocalGroupMembership {
 	            }
 	            if ($totalXmlFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning GPP Groups.xml files" -Completed }
 	        }
+	        $vulnerableGPOs = $Script:vulnerableGPOs
+	        $Script:vulnerableGPOs = $null
 	        $sysvolAccessible = $Script:sysvolAccessible
 	        $Script:sysvolAccessible = $null
 	        if (-not $sysvolAccessible) {
@@ -54009,6 +54021,40 @@ function Parse-RestrictedGroups {
 	                        RiskyMembers = $riskyMembers
 	                        Severity = $severityResult.Severity
 	                        Risk = $severityResult.Risk
+	                    }
+	                }
+	            }
+	            elseif ($line -match '^\*(.+?)__Memberof\s*=\s*(.+)$') {
+	                $memberSID = $Matches[1]
+	                $targetGroupSIDs = $Matches[2] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
+	                $memberName = ""
+	                $riskyMembers = @()
+	                if ($Script:RiskySIDs.ContainsKey($memberSID)) {
+	                    $memberName = $Script:RiskySIDs[$memberSID]
+	                    $riskyMembers += $memberName
+	                } elseif ($memberSID -match '-513$') {
+	                    $memberName = "Domain Users"
+	                    $riskyMembers += $memberName
+	                } else {
+	                    $memberName = ConvertFrom-SID -SID $memberSID
+	                }
+	                foreach ($groupSID in $targetGroupSIDs) {
+	                    if ([string]::IsNullOrWhiteSpace($groupSID)) { continue }
+	                    if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
+	                        $groupName = $Script:LocalGroupSIDs[$groupSID]
+	                        $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
+	                        $findings += [PSCustomObject]@{
+	                            GPOName = $GPOName
+	                            GPOGUID = $GPOGUID
+	                            Type = "Restricted Groups"
+	                            TargetGroup = $groupName
+	                            TargetGroupSID = $groupSID
+	                            MembersAdded = @($memberName)
+	                            MemberSIDs = @($memberSID)
+	                            RiskyMembers = $riskyMembers
+	                            Severity = $severityResult.Severity
+	                            Risk = $severityResult.Risk
+	                        }
 	                    }
 	                }
 	            }
@@ -54575,6 +54621,7 @@ function Get-ADCSTemplate {
 	            Name = $coreTemplate.cn
 	            DisplayName = $coreTemplate.displayName
 	            DistinguishedName = $coreTemplate.distinguishedName
+	            PublishedOn = if ($coreTemplate.PublishedOn) { @($coreTemplate.PublishedOn) } else { @() }
 	            SchemaVersion = if ($coreTemplate.'msPKI-Template-Schema-Version') {
 	                [int]$coreTemplate.'msPKI-Template-Schema-Version'
 	            } else { 1 }
@@ -66468,7 +66515,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.0.0+20260402-2111"
+$Script:adPEASVersion = "2.0.0+20260414-1334"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
