@@ -117,7 +117,9 @@ $Script:PrimaryAttributes = @{
     CertificateTemplate = @(
         # 1. Identification
         'Name', 'displayName', 'DistinguishedName',
-        # 2. Template info
+        # 2. CA publishing info
+        'PublishedOn',
+        # 3. Template info
         'SchemaVersion',
         # 3. EKU and flags (security-critical)
         # Note: ClientAuthentication is redundant - shown in ExtendedKeyUsage

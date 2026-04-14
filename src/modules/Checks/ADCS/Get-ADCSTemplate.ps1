@@ -114,6 +114,9 @@ function Get-ADCSTemplate {
                 DisplayName = $coreTemplate.displayName
                 DistinguishedName = $coreTemplate.distinguishedName
 
+                # CA publishing info: which CAs have this template enabled (from Core)
+                PublishedOn = if ($coreTemplate.PublishedOn) { @($coreTemplate.PublishedOn) } else { @() }
+
                 # Schema Version (from Core)
                 SchemaVersion = if ($coreTemplate.'msPKI-Template-Schema-Version') {
                     [int]$coreTemplate.'msPKI-Template-Schema-Version'

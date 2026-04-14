@@ -334,37 +334,39 @@ function Get-CertificateTemplate {
             if ($Templates -and $Templates.Count -gt 0) {
                 Write-Log "[Get-CertificateTemplate] Found $($Templates.Count) certificate template(s)"
 
-                if (-not $ShowAll) {
-                    Write-Log "[Get-CertificateTemplate] Filtering for enabled (published) templates only (use -ShowAll to see all templates)"
+                # Query CAs to build template-to-CA mapping (always, regardless of -ShowAll)
+                # This map is used both for filtering published templates and for the PublishedOn property
+                $TemplateCAMap = @{}
+                $EnrollmentServicesBase = "CN=Enrollment Services,CN=Public Key Services,CN=Services,$ConfigNC"
 
-                    # Query CA enrollment services to get list of published templates
-                    $EnrollmentServicesBase = "CN=Enrollment Services,CN=Public Key Services,CN=Services,$ConfigNC"
+                try {
+                    Write-Log "[Get-CertificateTemplate] Querying Certificate Authorities for template-CA mapping"
+                    $CAs = Get-DomainObject -LDAPFilter "(objectClass=pKIEnrollmentService)" -SearchBase $EnrollmentServicesBase -Properties @('cn', 'certificateTemplates') -Raw
 
-                    try {
-                        Write-Log "[Get-CertificateTemplate] Querying Certificate Authorities (CAs) to determine which templates are published"
-                        $CAs = Get-DomainObject -LDAPFilter "(objectClass=pKIEnrollmentService)" -SearchBase $EnrollmentServicesBase -Properties certificateTemplates -Raw
-
-                        if ($CAs) {
-                            # Collect all published template names from all CAs
-                            $PublishedTemplates = @()
-                            foreach ($CA in $CAs) {
-                                if ($CA.certificateTemplates) {
-                                    $PublishedTemplates += $CA.certificateTemplates
+                    if ($CAs) {
+                        # Build reverse map: template CN → list of CA names
+                        foreach ($CA in @($CAs)) {
+                            if ($CA.certificateTemplates) {
+                                $CAName = if ($CA.cn) { [string]$CA.cn } else { 'Unknown' }
+                                foreach ($tmpl in @($CA.certificateTemplates)) {
+                                    if (-not $TemplateCAMap.ContainsKey($tmpl)) {
+                                        $TemplateCAMap[$tmpl] = [System.Collections.Generic.List[string]]::new()
+                                    }
+                                    $TemplateCAMap[$tmpl].Add($CAName)
                                 }
                             }
+                        }
 
-                            # Remove duplicates
-                            $PublishedTemplates = $PublishedTemplates | Select-Object -Unique
+                        Write-Log "[Get-CertificateTemplate] Found $($TemplateCAMap.Count) published template(s) across all CAs"
 
-                            Write-Log "[Get-CertificateTemplate] Found $($PublishedTemplates.Count) published template(s) across all CAs"
+                        if (-not $ShowAll) {
+                            Write-Log "[Get-CertificateTemplate] Filtering for enabled (published) templates only (use -ShowAll to see all templates)"
 
-                            # Filter templates to only include published ones
-                            $EnabledTemplates = $Templates | Where-Object {
-                                $PublishedTemplates -contains $_.cn
-                            }
+                            # Filter templates to only those published on at least one CA
+                            $EnabledTemplates = $Templates | Where-Object { $TemplateCAMap.ContainsKey($_.cn) }
 
                             if ($EnabledTemplates) {
-                                Write-Log "[Get-CertificateTemplate] Returning $($EnabledTemplates.Count) enabled template(s)"
+                                Write-Log "[Get-CertificateTemplate] Returning $(@($EnabledTemplates).Count) enabled template(s)"
                                 $ResultTemplates = $EnabledTemplates
                             }
                             else {
@@ -373,20 +375,28 @@ function Get-CertificateTemplate {
                             }
                         }
                         else {
-                            Write-Warning "No Certificate Authorities found. Cannot determine which templates are enabled."
-                            Write-Warning "Returning all templates instead."
+                            Write-Log "[Get-CertificateTemplate] Returning all templates (enabled and disabled)"
                             $ResultTemplates = $Templates
                         }
                     }
-                    catch {
-                        Write-Warning "Error querying CA enrollment services: $_"
+                    else {
+                        Write-Warning "No Certificate Authorities found. Cannot determine which templates are enabled."
                         Write-Warning "Returning all templates instead."
                         $ResultTemplates = $Templates
                     }
                 }
-                else {
-                    Write-Log "[Get-CertificateTemplate] Returning all templates (enabled and disabled)"
+                catch {
+                    Write-Warning "Error querying CA enrollment services: $_"
+                    Write-Warning "Returning all templates instead."
                     $ResultTemplates = $Templates
+                }
+
+                # Add PublishedOn property to each template (empty array for unpublished templates in -ShowAll mode)
+                if ($ResultTemplates) {
+                    foreach ($tmpl in @($ResultTemplates)) {
+                        $caList = if ($TemplateCAMap.ContainsKey($tmpl.cn)) { @($TemplateCAMap[$tmpl.cn]) } else { @() }
+                        $tmpl | Add-Member -NotePropertyName 'PublishedOn' -NotePropertyValue $caList -Force
+                    }
                 }
 
                 # Apply security filters if specified
@@ -509,8 +519,8 @@ function Get-CertificateTemplate {
 
                         # Filter output properties if user specified custom properties
                         if ($Properties) {
-                            # User wants specific properties - return only cn + requested properties
-                            $OutputProperties = @('cn') + $Properties | Select-Object -Unique
+                            # User wants specific properties - return only cn + PublishedOn + requested properties
+                            $OutputProperties = @('cn', 'PublishedOn') + $Properties | Select-Object -Unique
                             return $FilteredTemplates | Select-Object $OutputProperties
                         } else {
                             return $FilteredTemplates
@@ -525,7 +535,7 @@ function Get-CertificateTemplate {
                     # No filters applied - return templates as-is
                     # Filter output properties if user specified custom properties
                     if ($Properties) {
-                        $OutputProperties = @('cn') + $Properties
+                        $OutputProperties = @('cn', 'PublishedOn') + $Properties
                         $UniqueProperties = @()
                         $SeenProperties = @{}
                         foreach ($prop in $OutputProperties) {
