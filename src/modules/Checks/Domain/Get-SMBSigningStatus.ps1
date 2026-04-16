@@ -271,9 +271,13 @@ function Get-SMBSigningStatus {
                     return $allLinksToDCOU
                 })
 
-                # If ALL SMB Signing GPOs are DC-only, warn about member servers
+                # If ALL SMB Signing GPOs are DC-only, warn about member servers.
+                # Use Hint when the DC policy actually requires signing (partially secured).
+                # Keep Finding when signing is only Optional or Disabled on DCs.
                 if (@($dcOnlyGPOs).Count -eq @($gpoFindings).Count) {
-                    Show-Line "SMB Signing only configured for Domain Controllers - Member Servers and Clients rely on OS defaults (varies by version)" -Class Finding
+                    $hasRequiredSigning = @($dcOnlyGPOs | Where-Object { $_.ServerSigning -eq 'Required' }).Count -gt 0
+                    $dcOnlyClass = if ($hasRequiredSigning) { 'Hint' } else { 'Finding' }
+                    Show-Line "SMB Signing only configured for Domain Controllers - Member Servers and Clients rely on OS defaults (varies by version)" -Class $dcOnlyClass
                 }
 
                 # Check for insecure configurations and report findings
