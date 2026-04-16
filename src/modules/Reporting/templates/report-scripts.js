@@ -2653,7 +2653,7 @@
 
             // Use setTimeout to ensure the DOM has fully updated after view switch + filter changes
             setTimeout(() => {
-                card.scrollIntoView({ behavior: 'auto', block: 'center' });
+                card.scrollIntoView({ behavior: 'auto', block: 'start' });
                 card.classList.add('keyboard-focused');
                 setTimeout(() => card.classList.remove('keyboard-focused'), UI_CONSTANTS.KEYBOARD_FOCUS_DURATION);
             }, 150);
