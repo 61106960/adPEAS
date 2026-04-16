@@ -89,6 +89,22 @@ function Get-GPOLinkage {
                 $guidPattern = '\{([0-9A-Fa-f\-]{36})\}'
                 $matches = [regex]::Matches($gPLink, $guidPattern)
 
+                # Compute link order per gPLink container: last non-disabled entry = link order 1 (highest priority)
+                # First pass: collect enabled GUIDs in forward order to determine their positions
+                $enabledGUIDs = [System.Collections.Generic.List[string]]::new()
+                foreach ($m in $matches) {
+                    $g = "{$($m.Groups[1].Value.ToUpper())}"
+                    $lp = '(?i)' + [regex]::Escape($g) + ';(\d+)'
+                    $lo = if ($gPLink -match $lp) { [int]$Matches[1] } else { 0 }
+                    if (($lo -band 1) -eq 0) { $enabledGUIDs.Add($g) }  # bit 0 = disabled
+                }
+                # Assign link order: last enabled entry = 1 (highest priority)
+                $linkOrderMap = @{}
+                $totalEnabled = $enabledGUIDs.Count
+                for ($idx = 0; $idx -lt $totalEnabled; $idx++) {
+                    $linkOrderMap[$enabledGUIDs[$idx]] = $totalEnabled - $idx
+                }
+
                 foreach ($match in $matches) {
                     # Normalize GUID to uppercase for consistent hashtable key matching
                     # GPO Name attribute uses uppercase, gPLink may use lowercase
@@ -128,6 +144,8 @@ function Get-GPOLinkage {
                     }
 
                     # Create link object
+                    # LinkOrder: 1 = highest priority within this container (last entry in gPLink string)
+                    #            $null = disabled link (has no effective link order)
                     $linkInfo = [PSCustomObject]@{
                         DistinguishedName = $dn
                         Name = $name
@@ -136,6 +154,7 @@ function Get-GPOLinkage {
                         IsEnforced = $isEnforced
                         IsDisabled = $isDisabled
                         ObjectClass = $objectClass
+                        LinkOrder = if ($linkOrderMap.ContainsKey($gpoGUID)) { $linkOrderMap[$gpoGUID] } else { $null }
                     }
 
                     # Add to hashtable

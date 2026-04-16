@@ -249,124 +249,48 @@ function Get-LDAPConfiguration {
             }
 
             if ($gpoFindings -and $gpoFindings.Count -gt 0) {
+                # Determine effective GPO per scope:
+                # - DC OU / Domain scope: GPO with lowest LinkOrder (= highest priority) wins
+                # - Other OUs: GPO is always effective for its own OU
+                $gpoLinkage = Get-GPOLinkage
+                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
+
+                foreach ($gpoFinding in $gpoFindings) {
+                    $guid = $gpoFinding.Name.ToUpper()
+                    $linksEff = if ($gpoLinkage) { $gpoLinkage[$guid] } else { $null }
+                    $precScope = "NotLinked"; $precOrder = 999
+
+                    if ($linksEff) {
+                        $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
+                        $dcLink  = $activeLinksEff | Where-Object { $_.DistinguishedName -match 'OU=Domain Controllers' } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
+                        $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
+                        if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
+                        elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
+                    }
+
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
+                    $gpoFinding | Add-Member -NotePropertyName 'IsEffectiveSetting' -NotePropertyValue $false -Force
+                }
+
+                # For DC OU / Domain scope: mark the single highest-priority GPO as effective
+                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+                if ($dcDomainGPOs.Count -gt 0) {
+                    $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
+                    if ($effectiveDC) { $effectiveDC.IsEffectiveSetting = $true }
+                }
+
+                # For other OUs: each GPO is effective for its own OU
+                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "NotLinked" })) {
+                    $gpoFinding.IsEffectiveSetting = $true
+                }
+
                 # Show Found message BEFORE data
                 Show-Line "Found LDAP security configuration in $($gpoFindings.Count) GPO(s):" -Class Hint
                 foreach ($gpoFinding in $gpoFindings) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
                     Show-Object $gpoFinding
                 }
-
-                # ============================================================
-                # EFFECTIVE SETTINGS SUMMARY (PoC)
-                # ============================================================
-                # Calculate effective settings based on GPO priority
-                # Priority: OU GPOs > Domain GPOs (Last Writer Wins)
-                # For DCs: Domain Controllers OU GPO > Domain GPO
-                # ============================================================
-
-                # Get GPO linkage for priority calculation
-                $gpoLinkage = Get-GPOLinkage
-
-                # Separate GPOs by scope (for DC-focused effective calculation)
-                $dcOuGPOs = @()
-                $domainGPOs = @()
-
-                foreach ($gpoFinding in $gpoFindings) {
-                    # Normalize GUID to uppercase for hashtable lookup
-                    $links = $gpoLinkage[$gpoFinding.Name.ToUpper()]
-                    if ($links) {
-                        $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
-
-                        # Check if linked to Domain Controllers OU
-                        $dcOuLink = $activeLinks | Where-Object {
-                            $_.DistinguishedName -match 'OU=Domain Controllers'
-                        }
-
-                        # Check if linked to Domain root
-                        $domainLink = $activeLinks | Where-Object { $_.Scope -eq "Domain" }
-
-                        if ($dcOuLink) {
-                            $dcOuGPOs += $gpoFinding
-                        } elseif ($domainLink) {
-                            $domainGPOs += $gpoFinding
-                        }
-                    }
-                }
-
-                # Calculate effective values (OU GPO wins over Domain GPO)
-                $effectiveSigning = "Not Configured"
-                $effectiveChannelBinding = "Not Configured"
-                $effectiveAnonymous = "Not Configured"
-
-                # First apply Domain-level GPOs (lower priority)
-                foreach ($gpo in $domainGPOs) {
-                    if ($gpo.LDAPSigning -ne "Not Configured") {
-                        $effectiveSigning = $gpo.LDAPSigning
-                    }
-                    if ($gpo.ChannelBinding -ne "Not Configured") {
-                        $effectiveChannelBinding = $gpo.ChannelBinding
-                    }
-                    if ($gpo.AnonymousBinding -ne "Not Configured") {
-                        $effectiveAnonymous = $gpo.AnonymousBinding
-                    }
-                }
-
-                # Then apply DC OU GPOs (higher priority, overwrites Domain)
-                foreach ($gpo in $dcOuGPOs) {
-                    if ($gpo.LDAPSigning -ne "Not Configured") {
-                        $effectiveSigning = $gpo.LDAPSigning
-                    }
-                    if ($gpo.ChannelBinding -ne "Not Configured") {
-                        $effectiveChannelBinding = $gpo.ChannelBinding
-                    }
-                    if ($gpo.AnonymousBinding -ne "Not Configured") {
-                        $effectiveAnonymous = $gpo.AnonymousBinding
-                    }
-                }
-
-                # Determine severity for each setting
-                # Note: "Not Configured" = Windows default (Negotiate Signing) = Hint, not Finding
-                $signingClass = switch ($effectiveSigning) {
-                    "Required" { "Secure" }
-                    "Optional" { "Hint" }
-                    "None" { "Finding" }
-                    "Not Configured" { "Hint" }  # Default is "Negotiate Signing" (Optional)
-                    default { "Hint" }
-                }
-
-                $channelBindingClass = switch ($effectiveChannelBinding) {
-                    "Always" { "Secure" }
-                    "When Supported" { "Hint" }
-                    "Never" { "Finding" }
-                    "Not Configured" { "Hint" }  # Default depends on Windows version
-                    default { "Hint" }
-                }
-
-                $anonymousClass = switch ($effectiveAnonymous) {
-                    "Restricted" { "Secure" }
-                    "Allowed" { "Finding" }
-                    "Not Configured" { "Hint" }  # Default is restricted in modern Windows
-                    default { "Hint" }
-                }
-
-                # Display effective settings summary as object
-                # Determine overall severity based on worst setting
-                $overallClass = "Hint"
-                if ($signingClass -eq "Finding" -or $channelBindingClass -eq "Finding" -or $anonymousClass -eq "Finding") {
-                    $overallClass = "Finding"
-                } elseif ($signingClass -eq "Secure" -and $channelBindingClass -eq "Secure" -and $anonymousClass -eq "Secure") {
-                    $overallClass = "Secure"
-                }
-
-                $effectiveConfigObj = [PSCustomObject]@{
-                    LDAPSigning = $effectiveSigning
-                    ChannelBinding = $effectiveChannelBinding
-                    AnonymousBinding = $effectiveAnonymous
-                }
-
-                Show-Line "Effective LDAP Security Configuration for Domain Controllers:" -Class $overallClass
-                $effectiveConfigObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigEffective' -Force
-                Show-Object $effectiveConfigObj
 
             } else {
                 Show-Line "No LDAP Security configuration found in any GPO - all $dcCount DC(s) potentially vulnerable" -Class Finding

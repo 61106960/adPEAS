@@ -206,6 +206,43 @@ function Get-SMBSigningStatus {
             }
 
             if ($gpoFindings -and @($gpoFindings).Count -gt 0) {
+                # Determine effective GPO per scope:
+                # - DC OU / Domain scope: GPO with lowest LinkOrder (= highest priority) wins
+                # - Other OUs (Servers, Workstations, etc.): GPO is always effective for its own OU
+                $gpoLinkageForEff = Get-GPOLinkage
+                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
+
+                foreach ($gpoFinding in $gpoFindings) {
+                    $guid = $gpoFinding.Name.ToUpper()
+                    $linksEff = if ($gpoLinkageForEff) { $gpoLinkageForEff[$guid] } else { $null }
+                    $precScope = "NotLinked"; $precOrder = 999
+
+                    if ($linksEff) {
+                        $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
+                        $dcLink  = $activeLinksEff | Where-Object { $_.DistinguishedName -match 'OU=Domain Controllers' } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
+                        $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
+                        if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
+                        elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
+                    }
+
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
+                    $gpoFinding | Add-Member -NotePropertyName 'IsEffectiveSetting' -NotePropertyValue $false -Force
+                }
+
+                # For DC OU / Domain scope: mark the single highest-priority GPO as effective
+                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+                if ($dcDomainGPOs.Count -gt 0) {
+                    $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
+                    if ($effectiveDC) { $effectiveDC.IsEffectiveSetting = $true }
+                }
+
+                # For other OUs (Servers, Workstations, etc.): each GPO is effective for its own OU
+                # since there are typically no competing SMB Signing GPOs in those OUs
+                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "NotLinked" })) {
+                    $gpoFinding.IsEffectiveSetting = $true
+                }
+
                 Show-Line "Found SMB Signing configuration in $(@($gpoFindings).Count) GPO(s):" -Class Hint
                 foreach ($gpoFinding in $gpoFindings) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigning' -Force

@@ -180,21 +180,6 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "LDAP signing and channel binding are properly configured via GPO. All Domain Controllers require LDAP signing and enforce channel binding, blocking NTLM relay attacks against LDAP services."
     }
 
-    'LDAPConfigEffective' = @{
-        TitleFormat = "Effective LDAP Configuration"
-        Module = "Domain"
-        Category = "Domain"
-        SectionTitle = "Effective LDAP Configuration"
-        Summary = "Shows the effective LDAP security configuration across all GPOs."
-        WhyItMatters = "Multiple GPOs may configure LDAP settings. Understanding the effective configuration helps identify gaps in LDAP security enforcement."
-        WhatWeCheck = @(
-            "Combined effect of all LDAP-related GPO settings"
-            "Whether signing is required or just negotiated"
-            "Channel binding enforcement level"
-        )
-        SecureMessage = "The effective LDAP configuration enforces signing and channel binding across all Domain Controllers. NTLM relay attacks against LDAP are blocked by the combined GPO settings."
-    }
-
     'SMBSigning' = @{
         TitleFormat = "SMB Signing GPO: {Name}"
         Module = "Domain"
