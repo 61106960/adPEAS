@@ -494,6 +494,7 @@ function Invoke-adPEASCollector {
         # Clean up caches to free memory
         $Script:DNToIdentityCache = $null
         $Script:ParentDNToChildren = $null
+        $Script:SIDToTypeCache = $null
         $Script:ComputerHostnameCache = $null
         $Script:TemplateCNToOID = $null
         Write-Log "[Invoke-adPEASCollector] Collection completed"
@@ -720,6 +721,7 @@ function Build-DNIdentityCache {
     if ($Script:DNToIdentityCache) { return }
     $Script:DNToIdentityCache = @{}
     $Script:ParentDNToChildren = @{}
+    $Script:SIDToTypeCache = @{}
 
     # Single bulk query: all security-relevant objects with minimal properties
     # objectClass=user also matches computers (AD class hierarchy: computer inherits from user)
@@ -744,6 +746,11 @@ function Build-DNIdentityCache {
         $Script:DNToIdentityCache[$dn] = @{
             ObjectIdentifier = $objId
             ObjectType       = $objType
+        }
+
+        # SID -> ObjectType mapping (for SID history resolution)
+        if ($obj.objectSid) {
+            $Script:SIDToTypeCache[$objId] = $objType
         }
 
         # Parent DN -> Children mapping (for OU/Container/Domain child objects)
@@ -1462,12 +1469,15 @@ function Collect-BHUsers {
 
         # Parse SID history
         $sidHistory = @()
+        $sidHistoryTyped = @()
         if ($user.sIDHistory) {
             $historyItems = if ($user.sIDHistory -is [array]) { $user.sIDHistory } else { @($user.sIDHistory) }
             foreach ($histSid in $historyItems) {
                 $convertedSid = Convert-SidToString -SidInput $histSid
                 if ($convertedSid) {
                     $sidHistory += $convertedSid
+                    $resolvedType = if ($Script:SIDToTypeCache -and $Script:SIDToTypeCache.ContainsKey($convertedSid)) { $Script:SIDToTypeCache[$convertedSid] } else { 'User' }
+                    $sidHistoryTyped += @{ ObjectIdentifier = $convertedSid; ObjectType = $resolvedType }
                 }
             }
         }
@@ -1543,7 +1553,7 @@ function Collect-BHUsers {
             }
             PrimaryGroupSID    = $primaryGroupSID
             AllowedToDelegate  = $allowedToDelegate
-            HasSIDHistory      = @($sidHistory).Count -gt 0
+            HasSIDHistory      = $sidHistoryTyped
             SPNTargets         = $spnTargets
             Aces               = @()
             IsDeleted          = $false
@@ -1753,12 +1763,15 @@ function Collect-BHComputers {
 
         # SID History
         $sidHistory = @()
+        $sidHistoryTyped = @()
         if ($computer.sIDHistory) {
             $historyItems = if ($computer.sIDHistory -is [array]) { $computer.sIDHistory } else { @($computer.sIDHistory) }
             foreach ($histSid in $historyItems) {
                 $convertedSid = Convert-SidToString -SidInput $histSid
                 if ($convertedSid) {
                     $sidHistory += $convertedSid
+                    $resolvedType = if ($Script:SIDToTypeCache -and $Script:SIDToTypeCache.ContainsKey($convertedSid)) { $Script:SIDToTypeCache[$convertedSid] } else { 'Computer' }
+                    $sidHistoryTyped += @{ ObjectIdentifier = $convertedSid; ObjectType = $resolvedType }
                 }
             }
         }
@@ -1789,7 +1802,7 @@ function Collect-BHComputers {
             PrimaryGroupSID     = $primaryGroupSID
             AllowedToDelegate   = $allowedToDelegate
             AllowedToAct        = $allowedToAct
-            HasSIDHistory       = @($sidHistory).Count -gt 0
+            HasSIDHistory       = $sidHistoryTyped
             # Phase 1: No session/local group collection
             Sessions            = @{
                 Collected     = $false
