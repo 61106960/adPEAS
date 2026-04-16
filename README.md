@@ -28,7 +28,7 @@ adPEAS is a PowerShell-based security assessment tool that identifies misconfigu
 - **Session-based workflow** — connect once, run multiple checks interactively
 - **Tab-completion** — autocomplete AD object names for interactive exploration
 
-> **New to adPEAS?** Check the [Quick-Start Guide](docs/02-Quick-Start.md) or read the [blog series on blog.sekurity.de](https://blog.sekurity.de/de/blog/adpeas-v2-introduction) for a deep dive into architecture, authentication, and internals.
+> **New to adPEAS?** Check the [Quick-Start Guide](docs/02-Quick-Start.md) or read the [blog series on blog.sekurity.de](https://blog.sekurity.de/blog/adpeas-v2-introduction) for a deep dive into architecture, authentication, and internals.
 
 ---
 
@@ -209,7 +209,7 @@ Full documentation is available in the [docs/](docs/) directory:
 
 ### Blog Series
 
-A detailed blog series covering adPEAS v2 internals is published at [blog.sekurity.de](https://blog.sekurity.de/de/blog/adpeas-v2-introduction).
+A detailed blog series covering adPEAS v2 internals is published at [blog.sekurity.de](https://blog.sekurity.de/blog/adpeas-v2-introduction).
 
 ---
 
