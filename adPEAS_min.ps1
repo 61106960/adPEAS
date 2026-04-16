@@ -68301,6 +68301,7 @@ function Collect-BHOUs {
     $ous = Get-DomainObject -LDAPFilter "(objectClass=organizationalUnit)" @connectionParams
     $bhOUs = @()
     foreach ($ou in $ous) {
+        if (-not $ou.objectGuid) { continue }
         $ouGuid = $ou.objectGuid.ToString().ToUpper()
         $childObjects = @()
         $ouDN = $ou.distinguishedName
@@ -68363,6 +68364,7 @@ function Collect-BHContainers {
     $containers = Get-DomainObject -LDAPFilter "(&(objectClass=container)(!(objectClass=groupPolicyContainer)))" @connectionParams
     $bhContainers = @()
     foreach ($container in $containers) {
+        if (-not $container.objectGuid) { continue }
         $containerGuid = $container.objectGuid.ToString().ToUpper()
         $containerDN = $container.distinguishedName
         $childObjects = @()
@@ -68953,7 +68955,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.0.1"
+$Script:adPEASVersion = "2.0.1+20260416-0925"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

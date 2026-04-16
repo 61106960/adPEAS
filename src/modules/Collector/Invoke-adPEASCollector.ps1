@@ -1868,6 +1868,7 @@ function Collect-BHOUs {
     $bhOUs = @()
 
     foreach ($ou in $ous) {
+        if (-not $ou.objectGuid) { continue }
         $ouGuid = $ou.objectGuid.ToString().ToUpper()
 
         # Get child objects from pre-built DN identity cache (O(1) lookup)
@@ -1952,6 +1953,7 @@ function Collect-BHContainers {
     $bhContainers = @()
 
     foreach ($container in $containers) {
+        if (-not $container.objectGuid) { continue }
         $containerGuid = $container.objectGuid.ToString().ToUpper()
         $containerDN = $container.distinguishedName
 
