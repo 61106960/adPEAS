@@ -796,6 +796,25 @@ function Convert-ADIntervalToString {
     } catch { return "Forever" }
 }
 
+# Helper: Convert ADCS certificate name flag integer to string (BH CE expects string, not int)
+function Convert-CertNameFlagToString {
+    param([int]$Value)
+    return [string]$Value
+}
+
+# Helper: Convert ADCS enrollment flag integer to string (BH CE expects string, not int)
+function Convert-EnrollFlagToString {
+    param([int]$Value)
+    return [string]$Value
+}
+
+# Helper: Convert CA flag integer to string (BH CE expects string, not int)
+function Convert-CAFlagToString {
+    param([int]$Value)
+    return [string]$Value
+}
+
+
 # Helper: Get ContainedBy for objects in the Configuration partition
 # Looks up the parent container's GUID via LDAP (one lookup per unique parent)
 function Get-BHContainedByConfig {
@@ -817,7 +836,7 @@ function Get-BHContainedByConfig {
             $Script:ConfigContainerGuidCache[$parentDN] = $guid
             if ($guid) { return @{ ObjectIdentifier = $guid; ObjectType = 'Container' } }
         }
-    } catch { }
+    } catch { Write-Log "[Get-BHContainedByConfig] LDAP lookup failed for '$parentDN': $_" -Level Debug }
     $Script:ConfigContainerGuidCache[$parentDN] = ""
     return $null
 }
@@ -1413,7 +1432,7 @@ function Collect-BHDomain {
             $partitionsBase = "CN=Partitions,$configNC"
             $crossRef = @(Invoke-LDAPSearch -Filter "(&(objectClass=crossRef)(nCName=$DomainDN))" -SearchBase $partitionsBase -Properties nETBIOSName -Scope OneLevel @connectionParams)[0]
             if ($crossRef -and $crossRef.nETBIOSName) { $netbiosName = $crossRef.nETBIOSName }
-        } catch { }
+        } catch { Write-Log "[Collect-BHDomain] NetBIOS name lookup failed: $_" -Level Debug }
     }
 
     # Get trusts
@@ -1444,7 +1463,7 @@ function Collect-BHDomain {
 
         $trusts += @{
             TargetDomainSid     = if ($trust.securityIdentifier) { Convert-SidToString -SidInput $trust.securityIdentifier } else { "" }
-            TargetDomainName    = $trust.name.ToUpper()
+            TargetDomainName    = if ($trust.name) { $trust.name.ToUpper() } else { "" }
             IsTransitive        = ($attrFlags -notcontains 'NON_TRANSITIVE')
             TrustDirection      = $trustDirInt
             TrustType           = $trustTypeInt
@@ -1577,6 +1596,8 @@ function Collect-BHUsers {
                 }
             }
         }
+        # HasSIDHistory is a TypedPrincipal array (BH CE expects []ein.TypedPrincipal, not bool)
+        $sidHistoryTyped = @($sidHistory | ForEach-Object { @{ ObjectIdentifier = $_; ObjectType = 'User' } })
 
         # Parse allowed to delegate (resolve SPNs to computer SIDs)
         $allowedToDelegate = @()
@@ -1881,6 +1902,8 @@ function Collect-BHComputers {
                 }
             }
         }
+        # HasSIDHistory is a TypedPrincipal array (BH CE expects []ein.TypedPrincipal, not bool)
+        $sidHistoryTyped = @($sidHistory | ForEach-Object { @{ ObjectIdentifier = $_; ObjectType = 'Computer' } })
 
         $bhComputer = @{
             ObjectIdentifier    = $sid
@@ -1988,7 +2011,7 @@ function Collect-BHOUs {
     $bhOUs = @()
 
     foreach ($ou in $ous) {
-        $ouGuid = $ou.objectGuid.ToString().ToUpper()
+        $ouGuid = ConvertTo-BHGuid -Value $ou.objectGuid
 
         # Get child objects from pre-built DN identity cache (O(1) lookup)
         $childObjects = @()
@@ -2083,7 +2106,7 @@ function Collect-BHContainers {
     $bhContainers = @()
 
     foreach ($container in $containers) {
-        $containerGuid = $container.objectGuid.ToString().ToUpper()
+        $containerGuid = ConvertTo-BHGuid -Value $container.objectGuid
         $containerDN = $container.distinguishedName
 
         # Get child objects from pre-built DN identity cache (O(1) lookup)
@@ -2346,8 +2369,8 @@ function Collect-BHCertTemplates {
                 validityperiod                      = $validityPeriod
                 renewalperiod                       = $renewalPeriod
                 schemaversion                       = $schemaVersion
-                enrollmentflag                      = $enrollmentFlag
-                certificatenameflag                 = $certNameFlag
+                enrollmentflag                      = Convert-EnrollFlagToString -Value $enrollmentFlag
+                certificatenameflag                 = Convert-CertNameFlagToString -Value $certNameFlag
                 oid                                 = $oid
                 requiresmanagerapproval             = ($enrollmentFlag -band 0x2) -ne 0
                 enrolleesuppliessubject             = ($certNameFlag -band 0x1) -ne 0
@@ -2704,7 +2727,7 @@ function Collect-BHAIACAs {
                     }
                 }
             }
-            catch { }
+            catch { Write-Log "[Collect-BHAIACAs] CRL extension check failed for '$cn': $_" -Level Debug }
         }
 
         $bhAIACA = @{
