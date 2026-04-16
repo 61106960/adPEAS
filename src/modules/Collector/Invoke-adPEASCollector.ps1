@@ -770,6 +770,42 @@ function Build-DNIdentityCache {
 
 <#
 .SYNOPSIS
+    Resolves the direct parent container/OU of an AD object to a BloodHound TypedPrincipal.
+.DESCRIPTION
+    Strips the first RDN from the object's DN, looks up the result in DNToIdentityCache,
+    and falls back to the domain root when the parent is the domain partition itself.
+    Returns $null when the parent cannot be resolved (e.g. Configuration NC objects).
+#>
+function Get-BHContainedBy {
+    param(
+        [string]$DistinguishedName,
+        [string]$DomainDN,
+        [string]$DomainSID
+    )
+
+    if (-not $DistinguishedName) { return $null }
+
+    # Strip first RDN to get parent DN
+    if ($DistinguishedName -notmatch '^[^,]+,(.+)$') { return $null }
+    $parentDN = $Matches[1]
+
+    # Cache hit: OU, Container, GPO, or any other indexed object
+    if ($Script:DNToIdentityCache -and $Script:DNToIdentityCache.ContainsKey($parentDN)) {
+        $identity = $Script:DNToIdentityCache[$parentDN]
+        return @{ ObjectIdentifier = $identity.ObjectIdentifier; ObjectType = $identity.ObjectType }
+    }
+
+    # Fallback: parent is the domain root itself
+    if ($DomainDN -and $parentDN -eq $DomainDN) {
+        return @{ ObjectIdentifier = $DomainSID; ObjectType = 'Domain' }
+    }
+
+    return $null
+}
+
+
+<#
+.SYNOPSIS
     Resolves an SPN to a computer SID using the pre-built hostname cache.
 .DESCRIPTION
     Extracts the hostname from an SPN (format: service/hostname or service/hostname:port)
@@ -1414,6 +1450,7 @@ function Collect-BHDomain {
         Links            = $gpoLinks
         Aces             = @(ConvertTo-BHAces -DistinguishedName $DomainDN -ObjectType 'Domain' @connectionParams)
         IsDeleted        = $false
+        IsACLProtected   = $false
     }
 }
 
@@ -1555,8 +1592,10 @@ function Collect-BHUsers {
             AllowedToDelegate  = $allowedToDelegate
             HasSIDHistory      = $sidHistoryTyped
             SPNTargets         = $spnTargets
+            ContainedBy        = (Get-BHContainedBy -DistinguishedName $user.distinguishedName -DomainDN $Script:LDAPContext.DomainDN -DomainSID $DomainSID)
             Aces               = @()
             IsDeleted          = $false
+            IsACLProtected     = $false
         }
 
         # Collect ACLs if requested
@@ -1657,8 +1696,10 @@ function Collect-BHGroups {
                 admincount        = (Get-SafeInt -Value $group.adminCount) -gt 0
             }
             Members          = $members
+            ContainedBy      = (Get-BHContainedBy -DistinguishedName $group.distinguishedName -DomainDN $Script:LDAPContext.DomainDN -DomainSID $DomainSID)
             Aces             = @()
             IsDeleted        = $false
+            IsACLProtected   = $false
         }
 
         # Collect ACLs if requested
@@ -1806,41 +1847,43 @@ function Collect-BHComputers {
             # Phase 1: No session/local group collection
             Sessions            = @{
                 Collected     = $false
-                FailureReason = "Not collected in Phase 1 (LDAP-only)"
+                FailureReason = $null
                 Results       = @()
             }
             PrivilegedSessions  = @{
                 Collected     = $false
-                FailureReason = "Not collected in Phase 1 (LDAP-only)"
+                FailureReason = $null
                 Results       = @()
             }
             RegistrySessions    = @{
                 Collected     = $false
-                FailureReason = "Not collected in Phase 1 (LDAP-only)"
+                FailureReason = $null
                 Results       = @()
             }
             LocalAdmins         = @{
                 Collected     = $false
-                FailureReason = "Not collected in Phase 1 (LDAP-only)"
+                FailureReason = $null
                 Results       = @()
             }
             RemoteDesktopUsers  = @{
                 Collected     = $false
-                FailureReason = "Not collected in Phase 1 (LDAP-only)"
+                FailureReason = $null
                 Results       = @()
             }
             DcomUsers           = @{
                 Collected     = $false
-                FailureReason = "Not collected in Phase 1 (LDAP-only)"
+                FailureReason = $null
                 Results       = @()
             }
             PSRemoteUsers       = @{
                 Collected     = $false
-                FailureReason = "Not collected in Phase 1 (LDAP-only)"
+                FailureReason = $null
                 Results       = @()
             }
+            ContainedBy         = (Get-BHContainedBy -DistinguishedName $computer.distinguishedName -DomainDN $Script:LDAPContext.DomainDN -DomainSID $DomainSID)
             Aces                = @()
             IsDeleted           = $false
+            IsACLProtected      = $false
         }
 
         # Collect ACLs if requested
@@ -1924,8 +1967,10 @@ function Collect-BHOUs {
             }
             ChildObjects       = $childObjects
             Links              = $gpoLinks
+            ContainedBy        = (Get-BHContainedBy -DistinguishedName $ouDN -DomainDN $domainDN -DomainSID $DomainSID)
             Aces               = @()
             IsDeleted          = $false
+            IsACLProtected     = $false
         }
 
         # Collect ACLs if requested
@@ -1986,8 +2031,10 @@ function Collect-BHContainers {
                 highvalue         = $false
             }
             ChildObjects     = $childObjects
+            ContainedBy      = (Get-BHContainedBy -DistinguishedName $containerDN -DomainDN $Script:LDAPContext.DomainDN -DomainSID $DomainSID)
             Aces             = @()
             IsDeleted        = $false
+            IsACLProtected   = $false
         }
 
         if ($CollectACLs) {
@@ -2047,8 +2094,10 @@ function Collect-BHGPOs {
                 whencreated       = ConvertTo-UnixTimestamp $gpo.whenCreated
                 gpcpath           = $gpo.gPCFileSysPath
             }
+            ContainedBy      = (Get-BHContainedBy -DistinguishedName $gpo.distinguishedName -DomainDN $Script:LDAPContext.DomainDN -DomainSID $DomainSID)
             Aces             = @()
             IsDeleted        = $false
+            IsACLProtected   = $false
         }
 
         # Collect ACLs if requested
@@ -2221,6 +2270,7 @@ function Collect-BHCertTemplates {
             }
             Aces             = @()
             IsDeleted        = $false
+            IsACLProtected   = $false
         }
 
         if ($CollectACLs -and $dn) {
@@ -2338,6 +2388,7 @@ function Collect-BHEnterpriseCAs {
             HostingComputer      = $hostingSID
             Aces                 = @()
             IsDeleted            = $false
+            IsACLProtected       = $false
         }
 
         if ($CollectACLs -and $ca.DistinguishedName) {
@@ -2431,6 +2482,7 @@ function Collect-BHRootCAs {
             DomainSID        = $DomainSID
             Aces             = @()
             IsDeleted        = $false
+            IsACLProtected   = $false
         }
 
         if ($CollectACLs -and $dn) {
@@ -2539,6 +2591,7 @@ function Collect-BHAIACAs {
             }
             Aces             = @()
             IsDeleted        = $false
+            IsACLProtected   = $false
         }
 
         if ($CollectACLs -and $dn) {
@@ -2638,6 +2691,7 @@ function Collect-BHNTAuthStores {
             DomainSID        = $DomainSID
             Aces             = @()
             IsDeleted        = $false
+            IsACLProtected   = $false
         }
 
         if ($CollectACLs -and $dn) {
@@ -2746,6 +2800,7 @@ function Collect-BHIssuancePolicies {
             GroupLink        = $groupLink
             Aces             = @()
             IsDeleted        = $false
+            IsACLProtected   = $false
         }
 
         if ($CollectACLs -and $dn) {
