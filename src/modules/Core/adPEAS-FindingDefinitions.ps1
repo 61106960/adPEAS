@@ -3042,8 +3042,9 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("ntlmrelayx", "Impacket", "Responder")
         MITRE = "T1557"
         Triggers = @(
-            @{ Attribute = 'LDAPSigning'; Pattern = '^(None|Not Configured|Disabled|Not Required|Unknown)$'; Severity = 'Finding' }
+            @{ Attribute = 'LDAPSigning'; Pattern = '^(None|Disabled|Not Required|Unknown)$'; Severity = 'Finding' }
             @{ Attribute = 'LDAPSigning'; Pattern = '^Optional$'; Severity = 'Hint' }
+            @{ Attribute = 'LDAPSigning'; Pattern = '^Not Configured$'; Severity = 'Hint' }
         )
     }
 
@@ -3094,8 +3095,9 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("ntlmrelayx", "Impacket")
         MITRE = "T1557"
         Triggers = @(
-            @{ Attribute = 'ChannelBinding'; Pattern = '^(Never|Not Configured|Disabled|Not Required)$'; Severity = 'Finding' }
+            @{ Attribute = 'ChannelBinding'; Pattern = '^(Never|Disabled|Not Required)$'; Severity = 'Finding' }
             @{ Attribute = 'ChannelBinding'; Pattern = '^When Supported$'; Severity = 'Hint' }
+            @{ Attribute = 'ChannelBinding'; Pattern = '^Not Configured$'; Severity = 'Hint' }
         )
     }
 
