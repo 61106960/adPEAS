@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.0.1] - 2026-04-16
+
+### Added
+
+- **GPO link order priority** — SMB signing and LDAP configuration checks now
+  show which GPO is effectively applied (`IsEffectiveSetting`) based on GPO
+  link order precedence (DC OU beats Domain-level)
+- **HTML diff report** in `Compare-adPEASReport` for visual scan comparison
+- **PublishedOn** property on certificate templates
+
+### Changed
+
+- **scriptPath** display for user accounts now shows with conditional severity
+
+### Fixed
+
+- GPO local group membership check not reporting findings
+- Add-Computer severity now correctly distinguishes restricted scope
+  (Administrators only → secure) from broad scope (Authenticated Users,
+  Everyone → finding)
+
+---
+
 ## [2.0.0] - 2026-04-02
 
 Initial release of adPEAS v2 — a complete rewrite of adPEAS v1.
