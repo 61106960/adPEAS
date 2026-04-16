@@ -1,3 +1,9 @@
+# Build artifacts (committed only via /release)
+adPEAS.ps1
+adPEAS_min.ps1
+adPEAS_ultra.ps1
+adPEAS_obf.ps1
+
 # Development tools
 .claude/
 CLAUDE.md
