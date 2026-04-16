@@ -2374,11 +2374,20 @@
         }
 
         // Find the best matching findingDefinition for a given finding card metadata
-        // Priority: 1) findingIds from metadata, 2) vulnerability tags, 3) title keyword matching
+        // Priority: 0) ObjectType primaryFindingId, 1) findingIds from metadata, 2) vulnerability tags, 3) title keyword matching
         function findBestFindingDefinition(meta) {
             if (!findingDefinitions || !meta) return null;
             let bestKey = null;
             let bestScore = 0;
+
+            // 0. ObjectType-level primary finding (highest authority — prevents incidental attribute
+            //    triggers from overriding the card's actual topic)
+            if (meta.objectType && checkDescriptions) {
+                const checkInfo = checkDescriptions[meta.objectType];
+                if (checkInfo?.primaryFindingId && findingDefinitions[checkInfo.primaryFindingId]) {
+                    return findingDefinitions[checkInfo.primaryFindingId];
+                }
+            }
 
             // 1. Direct FindingId lookup (most reliable — from attribute trigger matching)
             if (meta.findingIds && meta.findingIds.length > 0) {

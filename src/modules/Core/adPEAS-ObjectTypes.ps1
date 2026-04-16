@@ -626,6 +626,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Whether these systems could be coerced to receive DC TGTs"
         )
         SecureMessage = "No accounts with unconstrained delegation found (excluding Domain Controllers). TGT theft through delegation abuse is not possible in this environment."
+        PrimaryFindingId = 'UNCONSTRAINED_DELEGATION'
     }
 
     'ConstrainedDelegation' = @{
@@ -641,6 +642,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Target services that could enable privilege escalation"
         )
         SecureMessage = "No accounts with dangerous constrained delegation found. No delegation targets include sensitive services like LDAP or CIFS on Domain Controllers that could enable privilege escalation."
+        PrimaryFindingId = 'CONSTRAINED_DELEGATION_PROTOCOL_TRANSITION'
     }
 
     'RBCDelegation' = @{
@@ -656,6 +658,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Whether those principals could be compromised or created"
         )
         SecureMessage = "No dangerous RBCD configurations found. RBCD settings only allow expected privileged accounts to delegate, preventing impersonation-based attacks."
+        PrimaryFindingId = 'RBCD_DANGEROUS_PRINCIPALS'
     }
 
     # ============================================================================
@@ -675,6 +678,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Last password change date"
         )
         SecureMessage = "No privileged accounts have the 'password never expires' flag set. All administrative accounts follow the domain password expiration policy."
+        PrimaryFindingId = 'PASSWORD_NEVER_EXPIRES'
     }
 
     'ReversibleEncryption' = @{
@@ -690,6 +694,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Impact on credential security"
         )
         SecureMessage = "No privileged accounts store passwords with reversible encryption. Password hashes cannot be recovered to plaintext from Active Directory."
+        PrimaryFindingId = 'REVERSIBLE_ENCRYPTION'
     }
 
     'PasswordNotRequired' = @{
@@ -705,6 +710,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Last password change date for risk assessment"
         )
         SecureMessage = "No enabled user accounts have the 'Password Not Required' flag set. All accounts require passwords according to domain password policy."
+        PrimaryFindingId = 'PASSWORD_NOT_REQUIRED'
     }
 
     'InactiveAdmin' = @{
@@ -721,6 +727,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Orphaned admin accounts (AdminCount but no privileges)"
         )
         SecureMessage = "No inactive privileged accounts were found. All administrative accounts show recent activity, indicating proper account lifecycle management."
+        PrimaryFindingId = 'INACTIVE_PRIVILEGED_ACCOUNT'
     }
 
     'gMSA' = @{
@@ -737,6 +744,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Non-privileged principals with password access"
         )
         SecureMessage = "All gMSA password access is properly restricted to privileged accounts. No non-privileged principals can retrieve gMSA passwords."
+        PrimaryFindingId = 'GMSA_PASSWORD_READABLE'
     }
 
     'gMSAPassword' = @{
@@ -751,6 +759,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "NT hash extraction for Pass-the-Hash attacks"
             "Password rotation intervals"
         )
+        PrimaryFindingId = 'GMSA_PASSWORD_READABLE'
     }
 
     'MSA' = @{
@@ -765,6 +774,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Recommendation to migrate to gMSAs"
         )
         SecureMessage = "No legacy standalone Managed Service Accounts (sMSAs) found. All service accounts use the more secure gMSA technology with automatic password rotation."
+        PrimaryFindingId = 'STANDALONE_MSA_LEGACY'
     }
 
     'NonDefaultOwner' = @{
@@ -780,6 +790,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Potential for privilege escalation via ownership"
         )
         SecureMessage = "All user objects have expected default owners (Domain Admins). No privilege escalation paths through unexpected object ownership were found."
+        PrimaryFindingId = 'NON_DEFAULT_USER_OWNERS'
     }
 
     'Tier0Account' = @{
@@ -796,6 +807,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Excludes krbtgt, DC$, and gMSA accounts (not applicable)"
         )
         SecureMessage = "All Tier-0 accounts are members of the Protected Users group. Credential theft via NTLM capture, delegation abuse, and ticket attacks is effectively mitigated for administrative accounts."
+        PrimaryFindingId = 'PRIVILEGED_GROUP_MEMBERSHIP'
     }
 
     'PrivilegedGroupMember' = @{
@@ -813,6 +825,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Service accounts with privileged access"
         )
         SecureMessage = "Privileged group membership follows least privilege principles. No excessive or unexpected memberships were found in high-value administrative groups."
+        PrimaryFindingId = 'PRIVILEGED_GROUP_MEMBERSHIP'
     }
 
     'OperatorGroup' = @{
@@ -827,6 +840,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Current Protected Users coverage for these members"
         )
         SecureMessage = "All Operator groups are either empty or their members are protected via Protected Users group. Credential theft risk for operator-level accounts is minimized."
+        PrimaryFindingId = 'OPERATOR_GROUP_MEMBERSHIP'
     }
 
     'SIDHistory' = @{
@@ -843,6 +857,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Whether SID History is legitimate or suspicious"
         )
         SecureMessage = "No accounts with privileged SIDs in sIDHistory found. Hidden privilege escalation through SID History injection is not present in this environment."
+        PrimaryFindingId = 'SID_HISTORY_INJECTION'
     }
 
     'AdminSDHolderACL' = @{
@@ -894,6 +909,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Encryption types supported (RC4 is easier to crack)"
         )
         SecureMessage = "No user accounts with Service Principal Names found (excluding computer accounts and gMSAs). Kerberoasting attacks are not possible in this environment."
+        PrimaryFindingId = 'KERBEROASTABLE_SPN'
     }
 
     'ASREPRoastable' = @{
@@ -909,6 +925,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Privilege level of vulnerable accounts"
         )
         SecureMessage = "No accounts with Kerberos pre-authentication disabled found. AS-REP Roasting attacks are not possible in this environment."
+        PrimaryFindingId = 'ASREP_ROASTABLE'
     }
 
     'UnixPassword' = @{
@@ -925,6 +942,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Whether these attributes are readable"
         )
         SecureMessage = "No accounts with readable Unix password attributes found. Legacy password attributes that could expose credentials are not present in the domain."
+        PrimaryFindingId = 'READABLE_UNIX_PASSWORD_ATTRIBUTES'
     }
 
     'GPPCredential' = @{
@@ -970,6 +988,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Scope of LAPS password access"
         )
         SecureMessage = "No readable LAPS passwords found. The current user does not have access to any local administrator passwords managed by LAPS, indicating proper access controls are in place."
+        PrimaryFindingId = 'LAPS_PASSWORD_READABLE'
     }
 
     'PasswordInDescription' = @{
@@ -986,6 +1005,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Lower-confidence credential mentions for manual review"
         )
         SecureMessage = "No credentials were found in description or info attributes. Account descriptions do not contain exposed passwords or credential patterns."
+        PrimaryFindingId = 'CREDENTIAL_IN_DESCRIPTION'
     }
 
     # ============================================================================
@@ -1006,6 +1026,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         FilteringNote = "High-privileged accounts (Domain Admins, Enterprise Admins, SYSTEM) are filtered from output as they are expected to have these rights."
         SecureMessage = "No dangerous ACLs detected on the domain root. Only expected privileged accounts have sensitive permissions like DCSync or write access."
+        PrimaryFindingId = 'DANGEROUS_ACL_DCSYNC'
     }
 
     'DangerousOUPermission' = @{
@@ -1022,6 +1043,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         FilteringNote = "High-privileged accounts (Domain Admins, Enterprise Admins, SYSTEM) are filtered from output as they are expected to have these rights."
         SecureMessage = "No dangerous OU permissions detected. OU ACLs follow expected patterns with only privileged accounts having write access."
+        PrimaryFindingId = 'OU_PERM_WRITEPROPERTY_ALL'
     }
 
     'PasswordResetRight' = @{
@@ -1038,6 +1060,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         FilteringNote = "Only Critical/High severity findings are shown. High-privileged accounts with these rights are classified as expected and filtered from output."
         SecureMessage = "No dangerous password reset rights detected. Only expected privileged accounts can reset passwords for administrative users."
+        PrimaryFindingId = 'OU_PERM_PASSWORD_RESET'
     }
 
     'AddComputerRight' = @{
@@ -1096,6 +1119,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         FilteringNote = "Only Critical/High/Medium severity findings are shown. Domain Admins and Enterprise Admins with LAPS read access are filtered as expected."
         SecureMessage = "LAPS password read access is properly restricted. No non-privileged accounts have access to LAPS passwords, following the principle of least privilege."
+        PrimaryFindingId = 'LAPS_PASSWORD_READ_ACCESS'
     }
 
     # ============================================================================
@@ -1115,6 +1139,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Operating system version details"
         )
         SecureMessage = "No active computers running end-of-life operating systems found. All systems are running supported operating systems that receive security updates."
+        PrimaryFindingId = 'OUTDATED_OS'
     }
 
     'NonDefaultComputerOwner' = @{
@@ -1130,6 +1155,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Potential for RBCD-based attacks"
         )
         SecureMessage = "All computer objects have expected default owners. No RBCD attack paths through unexpected object ownership were identified."
+        PrimaryFindingId = 'NON_DEFAULT_COMPUTER_OWNERS'
     }
 
     'LAPSConfiguration' = @{
@@ -1166,6 +1192,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Potential impact of GPO modification"
         )
         SecureMessage = "No dangerous GPO permissions found. Only privileged accounts have write access to Group Policy Objects."
+        PrimaryFindingId = 'GPO_DANGEROUS_PERMISSIONS'
     }
 
     'GPOLocalGroup' = @{
@@ -1574,6 +1601,11 @@ function Export-CheckDescriptionsJson {
         # Include SecureMessage if present (explains why secure finding is good)
         if ($desc.SecureMessage) {
             $jsonObject[$key].secureMessage = $desc.SecureMessage
+        }
+
+        # Include PrimaryFindingId if present (overrides automatic findingId detection in Top Priority Actions)
+        if ($desc.PrimaryFindingId) {
+            $jsonObject[$key].primaryFindingId = $desc.PrimaryFindingId
         }
     }
 
