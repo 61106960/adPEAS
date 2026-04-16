@@ -195,8 +195,13 @@ function Get-ADCSVulnerabilities {
                         Show-Line "NTAuth Store contains $(@($certList).Count) certificate(s) trusted for domain authentication (PKINIT)" -Class Note
                         foreach ($ntCert in $certList) {
                             if ($ntCert -and $ntCert.Subject) {
+                                # Extract CN from Subject for title display (e.g. "CN=Contoso-CA, DC=..." -> "Contoso-CA")
+                                $ntCertSubject = if ($ntCert.SubjectFull) { $ntCert.SubjectFull } elseif ($ntCert.Subject) { $ntCert.Subject } else { "" }
+                                $ntCertName = if ($ntCertSubject -match '^CN=([^,]+)') { $Matches[1] } else { "Unknown" }
+
                                 $ntAuthCertObj = [PSCustomObject]@{
-                                    Subject                = if ($ntCert.SubjectFull) { $ntCert.SubjectFull } elseif ($ntCert.Subject) { $ntCert.Subject } else { "Unknown" }
+                                    Name                   = $ntCertName
+                                    Subject                = if ($ntCertSubject) { $ntCertSubject } else { "Unknown" }
                                     Issuer                 = if ($ntCert.IssuerFull) { $ntCert.IssuerFull } elseif ($ntCert.Issuer) { $ntCert.Issuer } else { "Unknown" }
                                     SerialNumber           = if ($ntCert.SerialNumber) { $ntCert.SerialNumber } else { $null }
                                     Thumbprint             = if ($ntCert.Thumbprint) { $ntCert.Thumbprint } else { "Unknown" }
@@ -237,6 +242,7 @@ function Get-ADCSVulnerabilities {
                         if ($aiaCert -is [array]) { $aiaCert = $aiaCert[0] }
 
                         $aiaCAObj = [PSCustomObject]@{
+                            Name                   = $aiaCAName
                             Subject                = if ($aiaCert -and $aiaCert.SubjectFull) { $aiaCert.SubjectFull } elseif ($aiaCert -and $aiaCert.Subject) { $aiaCert.Subject } else { $aiaCAName }
                             Issuer                 = if ($aiaCert -and $aiaCert.IssuerFull) { $aiaCert.IssuerFull } elseif ($aiaCert -and $aiaCert.Issuer) { $aiaCert.Issuer } else { "Unknown" }
                             SerialNumber           = if ($aiaCert -and $aiaCert.SerialNumber) { $aiaCert.SerialNumber } else { $null }
