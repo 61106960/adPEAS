@@ -516,24 +516,10 @@ function Connect-adPEAS {
                 }
             }
 
-            # Step 4: Clear all session variables and caches
-            $Script:LdapConnection = $null
-            $Script:LDAPContext = $null
-            $Script:LDAPCredential = $null
-            $Script:AuthInfo = $null
-
-            # Clear output file paths (may be stale from previous Invoke-adPEAS)
-            $Script:adPEAS_Outputfile = $null
-            $Script:HTMLOutputPath = $null
-
-            # Clear caches
-            if ($Script:PrivilegedCheckCache) { $Script:PrivilegedCheckCache = @{} }
-            if ($Script:SIDResolutionCache) { $Script:SIDResolutionCache = @{} }
-            if ($Script:SIDVerboseCache) { $Script:SIDVerboseCache = @{} }
-            if ($Script:NameToSIDCache) { $Script:NameToSIDCache = @{} }
-            if ($Script:CompletionCache) {
-                try { Clear-CompletionCache } catch { }
-            }
+            # Step 4: Clear ALL session variables and caches via central function.
+            # This ensures every cache (GPOs, SIDs, groups, ACLs, collector, etc.)
+            # is reset before the new session starts.
+            Clear-SessionState
 
             Write-Log "[Connect-adPEAS] Previous session cleanup completed"
         }
