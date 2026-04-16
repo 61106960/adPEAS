@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.0.2] - 2026-04-16
+
+### Added
+
+- **Certificate template ACL** display in ADCS report — shows who has
+  write/modify rights on each template (relevant for ESC4 context)
+
+### Fixed
+
+- **BloodHound CE v6.2 compatibility** — major collector overhaul to fix
+  import errors:
+  - Replace `LocalAdmins/RemoteDesktopUsers/DcomUsers/PSRemoteUsers` with
+    `LocalGroups/UserRights/DumpSMSAPassword` (SharpHound v2.12 format)
+  - `CARegistryData` moved to top-level field (was causing Neo4j Map{} errors)
+  - `IsWebClientRunning` and `SmbInfo` correctly set to `null` in DCOnly mode
+  - `serviceprincipalnames` guard against empty LDAP hashtable (`@{}`)
+  - `HasSIDHistory` now a TypedPrincipal array instead of bool
+  - `IssuancePolicy.GroupLink` now a TypedPrincipal instead of raw string
+  - ADCS flags (`enrollmentflag`, `certificatenameflag`, `flags`) converted
+    to strings as required by BH CE v6.2
+  - ~50 missing Properties and top-level fields added across all 13 object
+    types (users, groups, computers, domain, OUs, containers, GPOs, cert
+    templates, enterprise CAs, root CAs, AIA CAs, NTAuth stores, issuance
+    policies)
+  - JSON output now compact by default; `PrettyPrint` opt-in
+  - Missing helper functions `Convert-CAFlagToString`,
+    `Convert-CertNameFlagToString`, `Convert-EnrollFlagToString` added
+    (absence caused runtime crash on Enterprise CA collection)
+  - `$sidHistoryTyped` now correctly built as TypedPrincipal array
+    (was undefined — `HasSIDHistory` was always `null`)
+  - Null-reference crashes on trust objects, OUs, and containers fixed
+- **NTAuth Certificate / AIA CA** showed "Unknown" as name in PKI Trust
+  Infrastructure card — now correctly resolves CN from Subject DN
+- **BloodHound collection crash** on OUs/containers without `objectGuid`
+- **Top Priority Action** click in HTML report now scrolls to card header
+
+---
+
 ## [2.0.1] - 2026-04-16
 
 ### Added
