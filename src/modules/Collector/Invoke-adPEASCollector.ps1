@@ -2708,8 +2708,9 @@ function Collect-BHIssuancePolicies {
 
         $name = if ($displayName) { $displayName } else { $cn }
 
-        # Resolve GroupLink: msDS-OIDToGroupLink DN -> group SID
-        $groupLink = ""
+        # Resolve GroupLink: msDS-OIDToGroupLink DN -> TypedPrincipal {ObjectIdentifier, ObjectType}
+        # BloodHound CE expects GroupLink as a TypedPrincipal object, not a plain string
+        $groupLink = $null
         if ($oidObj.'msDS-OIDToGroupLink') {
             $groupLinkDN = $oidObj.'msDS-OIDToGroupLink'
             if ($groupLinkDN -is [byte[]]) { $groupLinkDN = [System.Text.Encoding]::UTF8.GetString($groupLinkDN) }
@@ -2720,7 +2721,10 @@ function Collect-BHIssuancePolicies {
                     $escapedDN = Escape-LDAPFilterDN -DistinguishedName $groupLinkDN
                     $groupObj = @(Get-DomainObject -LDAPFilter "(distinguishedName=$escapedDN)" -Properties objectSid @connectionParams)[0]
                     if ($groupObj -and $groupObj.objectSid) {
-                        $groupLink = Convert-SidToString -SidInput $groupObj.objectSid
+                        $groupSid = Convert-SidToString -SidInput $groupObj.objectSid
+                        if ($groupSid) {
+                            $groupLink = @{ ObjectIdentifier = $groupSid; ObjectType = 'Group' }
+                        }
                     }
                 }
                 catch {
