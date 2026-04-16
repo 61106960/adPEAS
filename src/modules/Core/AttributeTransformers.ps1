@@ -79,6 +79,20 @@ function Get-AttributeSeverity {
         }
     }
 
+    # TemplateACL: promote to Primary (Note severity) only when a low-privileged identity
+    # has write/modify rights on the template. All-privileged ACLs stay in Extended (Standard).
+    if ($Name -eq 'TemplateACL' -and $Value) {
+        $entries = if ($Value -is [array]) { $Value } else { @($Value) }
+        foreach ($entry in $entries) {
+            if (-not $entry.SID) { continue }
+            $privResult = Test-IsPrivileged -SID $entry.SID
+            if (-not $privResult.IsPrivileged) {
+                return 'Note'   # Non-Standard → auto-promoted to Primary
+            }
+        }
+        return 'Standard'   # All privileged → stays in Extended
+    }
+
     # Delegate to FindingDefinitions triggers (Single Source of Truth)
     $triggerSeverity = Get-SeverityFromTrigger -Name $Name -Value $Value `
         -IsComputer $IsComputer -SourceObject $SourceObject
