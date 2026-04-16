@@ -7053,7 +7053,10 @@ foreach ($oid in $linkedOIDs) {
         Tools = @("GPO analysis", "secedit", "PowerView")
         MITRE = "T1136.002"
         Triggers = @(
-            @{ Attribute = 'accounts'; Severity = 'Hint' }
+            # Dangerous: broad groups that allow any authenticated user to join computers
+            @{ Attribute = 'accounts'; Pattern = 'Authenticated Users|Everyone|INTERACTIVE|NETWORK'; Severity = 'Hint' }
+            # Restricted: all other values (e.g., Administrators only) → secure configuration
+            @{ Attribute = 'accounts'; ExcludePattern = 'Authenticated Users|Everyone|INTERACTIVE|NETWORK'; Severity = 'Secure' }
         )
     }
 

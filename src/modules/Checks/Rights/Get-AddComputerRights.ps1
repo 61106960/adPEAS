@@ -179,12 +179,7 @@ function Get-AddComputerRights {
             }
 
             # ===== Step 3: Check GPO User Rights Assignment =====
-            $gpoFindings = Check-GPOAddComputerRights -DomainFQDN $domainFQDN @connectionParams
-            $dangerousGPOs = @()
-
-            if ($gpoFindings -and @($gpoFindings).Count -gt 0) {
-                $dangerousGPOs = @($gpoFindings | Where-Object { $_.HasAuthenticatedUsers -or $_.HasEveryone })
-            }
+            $gpoFindings = @(Check-GPOAddComputerRights -DomainFQDN $domainFQDN @connectionParams)
 
             # ===== Step 4: Output findings as objects =====
 
@@ -255,36 +250,32 @@ function Get-AddComputerRights {
                 $hasFindings = $true
             }
 
-            # Finding 3: GPO grants SeMachineAccountPrivilege - as objects
-            # Note: This is a Hint (not Finding) because MachineAccountQuota is already reported as Finding
-            # and GPO privilege alone doesn't allow computer creation without quota
+            # Finding 3: GPO grants SeMachineAccountPrivilege - as enriched native GPO objects
+            # Note: Hint (not Finding) because GPO privilege alone doesn't enable computer creation without quota
+            $dangerousGPOs = @($gpoFindings | Where-Object { $_._HasAuthenticatedUsers -or $_._HasEveryone })
+
             if (@($dangerousGPOs).Count -gt 0) {
-                Show-Line "Found $(@($dangerousGPOs).Count) GPO(s) granting SeMachineAccountPrivilege to broad groups:" -Class Hint
+                $effectiveGPO = @($gpoFindings | Where-Object { $_.IsEffectiveSetting -eq $true })[0]
+                $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
 
-                # Get GPO linkage for displaying where GPOs apply
-                $gpoLinkage = Get-GPOLinkage
+                $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
+                Show-Line "Found $(@($gpoFindings).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
 
-                foreach ($gpo in $dangerousGPOs) {
-                    # Get linked OUs for this GPO
-                    $linkedOUs = @()
-                    if ($gpoLinkage -and $gpo.GPOGUID) {
-                        $gpoGUIDUpper = $gpo.GPOGUID.ToUpper()
-                        $links = $gpoLinkage[$gpoGUIDUpper]
-                        if ($links) {
-                            $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
-                            $linkedOUs = @($activeLinks | ForEach-Object { $_.DistinguishedName })
-                        }
+                # Show all GPOs that define SeMachineAccountPrivilege, sorted by precedence (highest first)
+                $scopePriorityMap = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
+                $sortedGPOs = @($gpoFindings | Sort-Object @{Expression={$scopePriorityMap[$_._PrecedenceScope]}}, _PrecedenceOrder)
+
+                foreach ($gpo in $sortedGPOs) {
+                    $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerGPO' -Force
+
+                    $isEffective = $gpo.IsEffectiveSetting -eq $true
+                    $isDangerous = $gpo._HasAuthenticatedUsers -or $gpo._HasEveryone
+                    $objectClass = if ($isEffective) {
+                        if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
+                    } else {
+                        if ($isDangerous) { "Hint" } else { "Standard" }
                     }
-
-                    $gpoObject = [PSCustomObject]@{
-                        gpoName = $gpo.GPOName
-                        gpoGUID = $gpo.GPOGUID
-                        privilege = "SeMachineAccountPrivilege"
-                        accounts = $gpo.Accounts
-                        linkedOUs = if (@($linkedOUs).Count -gt 0) { $linkedOUs } else { @("NOT LINKED") }
-                    }
-                    $gpoObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerGPO' -Force
-                    Show-Object $gpoObject
+                    Show-Object $gpo -Class $objectClass
                 }
                 $hasFindings = $true
             }
@@ -331,6 +322,43 @@ function Check-GPOAddComputerRights {
         if (-not $gpos -or @($gpos).Count -eq 0) { return @() }
 
         $dcServer = $Script:LDAPContext.Server
+        $domainDN = $Script:LDAPContext.DomainDN
+        $dcOUDN = "OU=Domain Controllers,$domainDN"
+
+        # Build GPO precedence map using Get-GPOLinkage (which reliably reads gPLink via Invoke-LDAPSearch)
+        # Filter to DC OU and domain root — these are the containers that determine effective DC policy
+        Write-Log "[Check-GPOAddComputerRights] Building GPO precedence map from GPO linkage data"
+        $Script:gpoAddComputerPrecedenceMap = @{}
+
+        $allGPOLinkage = Get-GPOLinkage
+        if ($allGPOLinkage) {
+            $dcOUDNUpper = $dcOUDN.ToUpper()
+            $domainDNUpper = $domainDN.ToUpper()
+
+            foreach ($gpoGUID in $allGPOLinkage.Keys) {
+                foreach ($linkInfo in $allGPOLinkage[$gpoGUID]) {
+                    if ($linkInfo.IsDisabled) { continue }
+
+                    $linkDNUpper = $linkInfo.DistinguishedName.ToUpper()
+                    $precedenceScope = $null
+
+                    if ($linkDNUpper -eq $dcOUDNUpper) {
+                        $precedenceScope = "DomainControllers"
+                    } elseif ($linkDNUpper -eq $domainDNUpper) {
+                        $precedenceScope = "Domain"
+                    }
+
+                    if ($precedenceScope -and -not $Script:gpoAddComputerPrecedenceMap.ContainsKey($gpoGUID)) {
+                        $Script:gpoAddComputerPrecedenceMap[$gpoGUID] = [PSCustomObject]@{
+                            GUID      = $gpoGUID
+                            Scope     = $precedenceScope
+                            LinkOrder = $linkInfo.LinkOrder
+                        }
+                    }
+                }
+            }
+        }
+        Write-Log "[Check-GPOAddComputerRights] Precedence map: $($Script:gpoAddComputerPrecedenceMap.Count) GPO(s) linked to DC OU or domain root"
 
         # Use Invoke-SMBAccess for SYSVOL access (handles SimpleBind credentials and custom DNS)
         $Script:gpoAddComputerFindings = @()
@@ -372,26 +400,51 @@ function Check-GPOAddComputerRights {
 
                                 # SID-based detection (language-independent)
                                 # S-1-5-11 = Authenticated Users, S-1-1-0 = Everyone
-                                if ($account -match 'S-1-5-11') {
-                                    $hasAuthenticatedUsers = $true
-                                }
-                                if ($account -match 'S-1-1-0') {
-                                    $hasEveryone = $true
-                                }
+                                if ($account -match 'S-1-5-11') { $hasAuthenticatedUsers = $true }
+                                if ($account -match 'S-1-1-0')  { $hasEveryone = $true }
                             }
 
-                            $severity = if ($hasEveryone -or $hasAuthenticatedUsers) { "Finding" } else { "Hint" }
+                            # Get linkage data for Scope/LinkedOUs (same pattern as LDAP/SMB checks)
+                            $gpoLinkage = Get-GPOLinkage
+                            $gpoGUIDKey = $gpo.Name.ToUpper()
+                            $links = if ($gpoLinkage) { $gpoLinkage[$gpoGUIDKey] } else { $null }
+                            $activeLinks = @()
+                            $isDomainWide = $false
 
-                            $Script:gpoAddComputerFindings += [PSCustomObject]@{
-                                Type = "GPO_UserRightsAssignment"
-                                GPOName = $gpo.DisplayName
-                                GPOGUID = $gpo.Name
-                                Accounts = $accountNames
-                                HasAuthenticatedUsers = $hasAuthenticatedUsers
-                                HasEveryone = $hasEveryone
-                                Severity = $severity
-                                Impact = if ($hasAuthenticatedUsers) { "Authenticated Users can add computers" } elseif ($hasEveryone) { "Everyone can add computers" } else { "Specific accounts can add computers" }
+                            if ($links) {
+                                $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
+                                $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
                             }
+
+                            # Determine precedence info (for effective setting calculation after scriptblock)
+                            $precedenceInfo = $Script:gpoAddComputerPrecedenceMap[$gpoGUIDKey]
+                            $precedenceScope = if ($precedenceInfo) { $precedenceInfo.Scope } else { "NotLinked" }
+                            $precedenceOrder = if ($precedenceInfo -and $precedenceInfo.LinkOrder) { $precedenceInfo.LinkOrder } else { 999 }
+
+                            # Enrich native GPO object (matching LDAP/SMB display pattern)
+                            $gpo | Add-Member -NotePropertyName 'Accounts'              -NotePropertyValue $accountNames -Force
+                            $gpo | Add-Member -NotePropertyName 'IsEffectiveSetting'    -NotePropertyValue $false -Force
+
+                            if (@($activeLinks).Count -gt 0) {
+                                $linkedOUsDisplay = @($activeLinks | ForEach-Object { $_.DistinguishedName })
+                                $gpo | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                $scopeInfo = if ($isDomainWide) {
+                                    "Domain-wide ($(@($activeLinks).Count) link(s))"
+                                } else {
+                                    "$(@($activeLinks).Count) OU(s)"
+                                }
+                                $gpo | Add-Member -NotePropertyName 'Scope' -NotePropertyValue $scopeInfo -Force
+                            } else {
+                                $gpo | Add-Member -NotePropertyName 'Scope' -NotePropertyValue "NOT LINKED" -Force
+                            }
+
+                            # Internal precedence fields (not displayed, used for effective determination)
+                            $gpo | Add-Member -NotePropertyName '_PrecedenceScope'        -NotePropertyValue $precedenceScope -Force
+                            $gpo | Add-Member -NotePropertyName '_PrecedenceOrder'        -NotePropertyValue $precedenceOrder -Force
+                            $gpo | Add-Member -NotePropertyName '_HasAuthenticatedUsers'  -NotePropertyValue $hasAuthenticatedUsers -Force
+                            $gpo | Add-Member -NotePropertyName '_HasEveryone'            -NotePropertyValue $hasEveryone -Force
+
+                            $Script:gpoAddComputerFindings += $gpo
                         }
                     }
                 }
@@ -403,6 +456,20 @@ function Check-GPOAddComputerRights {
 
         $result = $Script:gpoAddComputerFindings
         $Script:gpoAddComputerFindings = $null
+        $Script:gpoAddComputerPrecedenceMap = $null
+
+        # Determine effective setting: DC OU GPOs take precedence over Domain GPOs;
+        # within same scope, lower _PrecedenceOrder = higher priority (1 = highest)
+        $linkedResults = @($result | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+        if ($linkedResults.Count -gt 0) {
+            $scopePriority = @{ "DomainControllers" = 1; "Domain" = 2 }
+            $effectiveGPO = $linkedResults | Sort-Object @{Expression={$scopePriority[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
+            if ($effectiveGPO) {
+                $effectiveGPO.IsEffectiveSetting = $true
+                Write-Log "[Check-GPOAddComputerRights] Effective GPO: '$($effectiveGPO.displayName)' (Scope=$($effectiveGPO._PrecedenceScope), LinkOrder=$($effectiveGPO._PrecedenceOrder))"
+            }
+        }
+
         return $result
     } catch {
         Write-Log "[Check-GPOAddComputerRights] Error: $_" -Level Error

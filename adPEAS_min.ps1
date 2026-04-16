@@ -2058,12 +2058,12 @@ $Script:PrimaryAttributes = @{
     SMBSigning = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'ServerSigning', 'ClientSigning',
-        'Scope', 'LinkedOUs'
+        'Scope', 'LinkedOUs', 'IsEffectiveSetting'
     )
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'LDAPSigning', 'ChannelBinding', 'AnonymousBinding',
-        'Scope', 'LinkedOUs'
+        'Scope', 'LinkedOUs', 'IsEffectiveSetting'
     )
     DomainPasswordPolicy = @(
         'minPwdLength', 'passwordComplexity',
@@ -2162,7 +2162,9 @@ $Script:PrimaryAttributes = @{
         'RiskyMembers', 'LinkedOUs'
     )
     AddComputerGPO = @(
-        'gpoName', 'gpoGUID', 'privilege', 'accounts', 'linkedOUs'
+        'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
+        'Accounts',
+        'Scope', 'LinkedOUs', 'IsEffectiveSetting'
     )
     GPPCredential = @(
         'credentialType', 'gpoName', 'filePath', 'userName', 'password', 'matchedLine', 'LinkedOUs'
@@ -2240,6 +2242,7 @@ $Script:PrimaryAttributes = @{
 $Script:StrictAttributeTypes = @(
     'SMBSigning',
     'LDAPConfigGPO',
+    'AddComputerGPO',
     'EffectiveLDAPConfig',
     'LDAPStatisticsModule',
     'LDAPStatisticsTotal',
@@ -2312,7 +2315,7 @@ function Get-ObjectTypeForOrdering {
     if ($Object.PSObject.Properties['ms-DS-MachineAccountQuota']) {
         return 'MachineAccountQuota'
     }
-    if ($Object.privilege -and $Object.privilege -eq 'SeMachineAccountPrivilege' -and $Object.gpoGUID) {
+    if ($Object._adPEASObjectType -eq 'AddComputerGPO') {
         return 'AddComputerGPO'
     }
     if ($Object.credentialType -and ($Object.password -or $Object.matchedLine)) {
@@ -9179,7 +9182,8 @@ foreach ($oid in $linkedOIDs) {
         Tools = @("GPO analysis", "secedit", "PowerView")
         MITRE = "T1136.002"
         Triggers = @(
-            @{ Attribute = 'accounts'; Severity = 'Hint' }
+            @{ Attribute = 'accounts'; Pattern = 'Authenticated Users|Everyone|INTERACTIVE|NETWORK'; Severity = 'Hint' }
+            @{ Attribute = 'accounts'; ExcludePattern = 'Authenticated Users|Everyone|INTERACTIVE|NETWORK'; Severity = 'Secure' }
         )
     }
     'BLOODHOUND_COLLECTION_COMPLETE' = @{
@@ -12144,20 +12148,6 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "GPO configurations enforcing these settings"
         )
         SecureMessage = "LDAP signing and channel binding are properly configured via GPO. All Domain Controllers require LDAP signing and enforce channel binding, blocking NTLM relay attacks against LDAP services."
-    }
-    'LDAPConfigEffective' = @{
-        TitleFormat = "Effective LDAP Configuration"
-        Module = "Domain"
-        Category = "Domain"
-        SectionTitle = "Effective LDAP Configuration"
-        Summary = "Shows the effective LDAP security configuration across all GPOs."
-        WhyItMatters = "Multiple GPOs may configure LDAP settings. Understanding the effective configuration helps identify gaps in LDAP security enforcement."
-        WhatWeCheck = @(
-            "Combined effect of all LDAP-related GPO settings"
-            "Whether signing is required or just negotiated"
-            "Channel binding enforcement level"
-        )
-        SecureMessage = "The effective LDAP configuration enforces signing and channel binding across all Domain Controllers. NTLM relay attacks against LDAP are blocked by the combined GPO settings."
     }
     'SMBSigning' = @{
         TitleFormat = "SMB Signing GPO: {Name}"
@@ -42063,6 +42053,18 @@ function Get-GPOLinkage {
                 Write-Log "[Get-GPOLinkage] gPLink: $gPLink"
                 $guidPattern = '\{([0-9A-Fa-f\-]{36})\}'
                 $matches = [regex]::Matches($gPLink, $guidPattern)
+                $enabledGUIDs = [System.Collections.Generic.List[string]]::new()
+                foreach ($m in $matches) {
+                    $g = "{$($m.Groups[1].Value.ToUpper())}"
+                    $lp = '(?i)' + [regex]::Escape($g) + ';(\d+)'
+                    $lo = if ($gPLink -match $lp) { [int]$Matches[1] } else { 0 }
+                    if (($lo -band 1) -eq 0) { $enabledGUIDs.Add($g) }  # bit 0 = disabled
+                }
+                $linkOrderMap = @{}
+                $totalEnabled = $enabledGUIDs.Count
+                for ($idx = 0; $idx -lt $totalEnabled; $idx++) {
+                    $linkOrderMap[$enabledGUIDs[$idx]] = $totalEnabled - $idx
+                }
                 foreach ($match in $matches) {
                     $gpoGUID = "{$($match.Groups[1].Value.ToUpper())}"
                     Write-Log "[Get-GPOLinkage] Linked GPO: $gpoGUID"
@@ -42097,6 +42099,7 @@ function Get-GPOLinkage {
                         IsEnforced = $isEnforced
                         IsDisabled = $isDisabled
                         ObjectClass = $objectClass
+                        LinkOrder = if ($linkOrderMap.ContainsKey($gpoGUID)) { $linkOrderMap[$gpoGUID] } else { $null }
                     }
                     if (-not $gpoLinkage.ContainsKey($gpoGUID)) {
                         $gpoLinkage[$gpoGUID] = @()
@@ -52020,88 +52023,36 @@ function Get-LDAPConfiguration {
                 return
             }
             if ($gpoFindings -and $gpoFindings.Count -gt 0) {
+                $gpoLinkage = Get-GPOLinkage
+                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
+                foreach ($gpoFinding in $gpoFindings) {
+                    $guid = $gpoFinding.Name.ToUpper()
+                    $linksEff = if ($gpoLinkage) { $gpoLinkage[$guid] } else { $null }
+                    $precScope = "NotLinked"; $precOrder = 999
+                    if ($linksEff) {
+                        $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
+                        $dcLink  = $activeLinksEff | Where-Object { $_.DistinguishedName -match 'OU=Domain Controllers' } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
+                        $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
+                        if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
+                        elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
+                    }
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
+                    $gpoFinding | Add-Member -NotePropertyName 'IsEffectiveSetting' -NotePropertyValue $false -Force
+                }
+                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+                if ($dcDomainGPOs.Count -gt 0) {
+                    $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
+                    if ($effectiveDC) { $effectiveDC.IsEffectiveSetting = $true }
+                }
+                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "NotLinked" })) {
+                    $gpoFinding.IsEffectiveSetting = $true
+                }
                 Show-Line "Found LDAP security configuration in $($gpoFindings.Count) GPO(s):" -Class Hint
                 foreach ($gpoFinding in $gpoFindings) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
                     Show-Object $gpoFinding
                 }
-                $gpoLinkage = Get-GPOLinkage
-                $dcOuGPOs = @()
-                $domainGPOs = @()
-                foreach ($gpoFinding in $gpoFindings) {
-                    $links = $gpoLinkage[$gpoFinding.Name.ToUpper()]
-                    if ($links) {
-                        $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
-                        $dcOuLink = $activeLinks | Where-Object {
-                            $_.DistinguishedName -match 'OU=Domain Controllers'
-                        }
-                        $domainLink = $activeLinks | Where-Object { $_.Scope -eq "Domain" }
-                        if ($dcOuLink) {
-                            $dcOuGPOs += $gpoFinding
-                        } elseif ($domainLink) {
-                            $domainGPOs += $gpoFinding
-                        }
-                    }
-                }
-                $effectiveSigning = "Not Configured"
-                $effectiveChannelBinding = "Not Configured"
-                $effectiveAnonymous = "Not Configured"
-                foreach ($gpo in $domainGPOs) {
-                    if ($gpo.LDAPSigning -ne "Not Configured") {
-                        $effectiveSigning = $gpo.LDAPSigning
-                    }
-                    if ($gpo.ChannelBinding -ne "Not Configured") {
-                        $effectiveChannelBinding = $gpo.ChannelBinding
-                    }
-                    if ($gpo.AnonymousBinding -ne "Not Configured") {
-                        $effectiveAnonymous = $gpo.AnonymousBinding
-                    }
-                }
-                foreach ($gpo in $dcOuGPOs) {
-                    if ($gpo.LDAPSigning -ne "Not Configured") {
-                        $effectiveSigning = $gpo.LDAPSigning
-                    }
-                    if ($gpo.ChannelBinding -ne "Not Configured") {
-                        $effectiveChannelBinding = $gpo.ChannelBinding
-                    }
-                    if ($gpo.AnonymousBinding -ne "Not Configured") {
-                        $effectiveAnonymous = $gpo.AnonymousBinding
-                    }
-                }
-                $signingClass = switch ($effectiveSigning) {
-                    "Required" { "Secure" }
-                    "Optional" { "Hint" }
-                    "None" { "Finding" }
-                    "Not Configured" { "Hint" }  # Default is "Negotiate Signing" (Optional)
-                    default { "Hint" }
-                }
-                $channelBindingClass = switch ($effectiveChannelBinding) {
-                    "Always" { "Secure" }
-                    "When Supported" { "Hint" }
-                    "Never" { "Finding" }
-                    "Not Configured" { "Hint" }  # Default depends on Windows version
-                    default { "Hint" }
-                }
-                $anonymousClass = switch ($effectiveAnonymous) {
-                    "Restricted" { "Secure" }
-                    "Allowed" { "Finding" }
-                    "Not Configured" { "Hint" }  # Default is restricted in modern Windows
-                    default { "Hint" }
-                }
-                $overallClass = "Hint"
-                if ($signingClass -eq "Finding" -or $channelBindingClass -eq "Finding" -or $anonymousClass -eq "Finding") {
-                    $overallClass = "Finding"
-                } elseif ($signingClass -eq "Secure" -and $channelBindingClass -eq "Secure" -and $anonymousClass -eq "Secure") {
-                    $overallClass = "Secure"
-                }
-                $effectiveConfigObj = [PSCustomObject]@{
-                    LDAPSigning = $effectiveSigning
-                    ChannelBinding = $effectiveChannelBinding
-                    AnonymousBinding = $effectiveAnonymous
-                }
-                Show-Line "Effective LDAP Security Configuration for Domain Controllers:" -Class $overallClass
-                $effectiveConfigObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigEffective' -Force
-                Show-Object $effectiveConfigObj
             } else {
                 Show-Line "No LDAP Security configuration found in any GPO - all $dcCount DC(s) potentially vulnerable" -Class Finding
             }
@@ -52248,6 +52199,31 @@ function Get-SMBSigningStatus {
                 return
             }
             if ($gpoFindings -and @($gpoFindings).Count -gt 0) {
+                $gpoLinkageForEff = Get-GPOLinkage
+                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
+                foreach ($gpoFinding in $gpoFindings) {
+                    $guid = $gpoFinding.Name.ToUpper()
+                    $linksEff = if ($gpoLinkageForEff) { $gpoLinkageForEff[$guid] } else { $null }
+                    $precScope = "NotLinked"; $precOrder = 999
+                    if ($linksEff) {
+                        $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
+                        $dcLink  = $activeLinksEff | Where-Object { $_.DistinguishedName -match 'OU=Domain Controllers' } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
+                        $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
+                        if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
+                        elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
+                    }
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
+                    $gpoFinding | Add-Member -NotePropertyName 'IsEffectiveSetting' -NotePropertyValue $false -Force
+                }
+                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+                if ($dcDomainGPOs.Count -gt 0) {
+                    $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
+                    if ($effectiveDC) { $effectiveDC.IsEffectiveSetting = $true }
+                }
+                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "NotLinked" })) {
+                    $gpoFinding.IsEffectiveSetting = $true
+                }
                 Show-Line "Found SMB Signing configuration in $(@($gpoFindings).Count) GPO(s):" -Class Hint
                 foreach ($gpoFinding in $gpoFindings) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigning' -Force
@@ -54854,11 +54830,7 @@ function Get-AddComputerRights {
                     }
                 }
             }
-            $gpoFindings = Check-GPOAddComputerRights -DomainFQDN $domainFQDN @connectionParams
-            $dangerousGPOs = @()
-            if ($gpoFindings -and @($gpoFindings).Count -gt 0) {
-                $dangerousGPOs = @($gpoFindings | Where-Object { $_.HasAuthenticatedUsers -or $_.HasEveryone })
-            }
+            $gpoFindings = @(Check-GPOAddComputerRights -DomainFQDN $domainFQDN @connectionParams)
             if ($quotaValue -eq 0) {
                 Show-Line "ms-DS-MachineAccountQuota is 0 - computer creation restricted to explicit permissions" -Class Secure
             } else {
@@ -54906,28 +54878,24 @@ function Get-AddComputerRights {
                 }
                 $hasFindings = $true
             }
+            $dangerousGPOs = @($gpoFindings | Where-Object { $_._HasAuthenticatedUsers -or $_._HasEveryone })
             if (@($dangerousGPOs).Count -gt 0) {
-                Show-Line "Found $(@($dangerousGPOs).Count) GPO(s) granting SeMachineAccountPrivilege to broad groups:" -Class Hint
-                $gpoLinkage = Get-GPOLinkage
-                foreach ($gpo in $dangerousGPOs) {
-                    $linkedOUs = @()
-                    if ($gpoLinkage -and $gpo.GPOGUID) {
-                        $gpoGUIDUpper = $gpo.GPOGUID.ToUpper()
-                        $links = $gpoLinkage[$gpoGUIDUpper]
-                        if ($links) {
-                            $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
-                            $linkedOUs = @($activeLinks | ForEach-Object { $_.DistinguishedName })
-                        }
+                $effectiveGPO = @($gpoFindings | Where-Object { $_.IsEffectiveSetting -eq $true })[0]
+                $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
+                $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
+                Show-Line "Found $(@($gpoFindings).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
+                $scopePriorityMap = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
+                $sortedGPOs = @($gpoFindings | Sort-Object @{Expression={$scopePriorityMap[$_._PrecedenceScope]}}, _PrecedenceOrder)
+                foreach ($gpo in $sortedGPOs) {
+                    $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerGPO' -Force
+                    $isEffective = $gpo.IsEffectiveSetting -eq $true
+                    $isDangerous = $gpo._HasAuthenticatedUsers -or $gpo._HasEveryone
+                    $objectClass = if ($isEffective) {
+                        if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
+                    } else {
+                        if ($isDangerous) { "Hint" } else { "Standard" }
                     }
-                    $gpoObject = [PSCustomObject]@{
-                        gpoName = $gpo.GPOName
-                        gpoGUID = $gpo.GPOGUID
-                        privilege = "SeMachineAccountPrivilege"
-                        accounts = $gpo.Accounts
-                        linkedOUs = if (@($linkedOUs).Count -gt 0) { $linkedOUs } else { @("NOT LINKED") }
-                    }
-                    $gpoObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerGPO' -Force
-                    Show-Object $gpoObject
+                    Show-Object $gpo -Class $objectClass
                 }
                 $hasFindings = $true
             }
@@ -54961,6 +54929,35 @@ function Check-GPOAddComputerRights {
         $gpos = Get-DomainGPO @connectionParams
         if (-not $gpos -or @($gpos).Count -eq 0) { return @() }
         $dcServer = $Script:LDAPContext.Server
+        $domainDN = $Script:LDAPContext.DomainDN
+        $dcOUDN = "OU=Domain Controllers,$domainDN"
+        Write-Log "[Check-GPOAddComputerRights] Building GPO precedence map from GPO linkage data"
+        $Script:gpoAddComputerPrecedenceMap = @{}
+        $allGPOLinkage = Get-GPOLinkage
+        if ($allGPOLinkage) {
+            $dcOUDNUpper = $dcOUDN.ToUpper()
+            $domainDNUpper = $domainDN.ToUpper()
+            foreach ($gpoGUID in $allGPOLinkage.Keys) {
+                foreach ($linkInfo in $allGPOLinkage[$gpoGUID]) {
+                    if ($linkInfo.IsDisabled) { continue }
+                    $linkDNUpper = $linkInfo.DistinguishedName.ToUpper()
+                    $precedenceScope = $null
+                    if ($linkDNUpper -eq $dcOUDNUpper) {
+                        $precedenceScope = "DomainControllers"
+                    } elseif ($linkDNUpper -eq $domainDNUpper) {
+                        $precedenceScope = "Domain"
+                    }
+                    if ($precedenceScope -and -not $Script:gpoAddComputerPrecedenceMap.ContainsKey($gpoGUID)) {
+                        $Script:gpoAddComputerPrecedenceMap[$gpoGUID] = [PSCustomObject]@{
+                            GUID      = $gpoGUID
+                            Scope     = $precedenceScope
+                            LinkOrder = $linkInfo.LinkOrder
+                        }
+                    }
+                }
+            }
+        }
+        Write-Log "[Check-GPOAddComputerRights] Precedence map: $($Script:gpoAddComputerPrecedenceMap.Count) GPO(s) linked to DC OU or domain root"
         $Script:gpoAddComputerFindings = @()
         Invoke-SMBAccess -Description "Scanning GPO User Rights Assignment" -ScriptBlock {
             $sysvolPath = "\\$dcServer\SYSVOL\$DomainFQDN\Policies"
@@ -54990,24 +54987,40 @@ function Check-GPOAddComputerRights {
                                 if ([string]::IsNullOrWhiteSpace($account)) { continue }
                                 $accountName = ConvertFrom-SID -SID $account
                                 $accountNames += $accountName
-                                if ($account -match 'S-1-5-11') {
-                                    $hasAuthenticatedUsers = $true
-                                }
-                                if ($account -match 'S-1-1-0') {
-                                    $hasEveryone = $true
-                                }
+                                if ($account -match 'S-1-5-11') { $hasAuthenticatedUsers = $true }
+                                if ($account -match 'S-1-1-0')  { $hasEveryone = $true }
                             }
-                            $severity = if ($hasEveryone -or $hasAuthenticatedUsers) { "Finding" } else { "Hint" }
-                            $Script:gpoAddComputerFindings += [PSCustomObject]@{
-                                Type = "GPO_UserRightsAssignment"
-                                GPOName = $gpo.DisplayName
-                                GPOGUID = $gpo.Name
-                                Accounts = $accountNames
-                                HasAuthenticatedUsers = $hasAuthenticatedUsers
-                                HasEveryone = $hasEveryone
-                                Severity = $severity
-                                Impact = if ($hasAuthenticatedUsers) { "Authenticated Users can add computers" } elseif ($hasEveryone) { "Everyone can add computers" } else { "Specific accounts can add computers" }
+                            $gpoLinkage = Get-GPOLinkage
+                            $gpoGUIDKey = $gpo.Name.ToUpper()
+                            $links = if ($gpoLinkage) { $gpoLinkage[$gpoGUIDKey] } else { $null }
+                            $activeLinks = @()
+                            $isDomainWide = $false
+                            if ($links) {
+                                $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
+                                $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
                             }
+                            $precedenceInfo = $Script:gpoAddComputerPrecedenceMap[$gpoGUIDKey]
+                            $precedenceScope = if ($precedenceInfo) { $precedenceInfo.Scope } else { "NotLinked" }
+                            $precedenceOrder = if ($precedenceInfo -and $precedenceInfo.LinkOrder) { $precedenceInfo.LinkOrder } else { 999 }
+                            $gpo | Add-Member -NotePropertyName 'Accounts'              -NotePropertyValue $accountNames -Force
+                            $gpo | Add-Member -NotePropertyName 'IsEffectiveSetting'    -NotePropertyValue $false -Force
+                            if (@($activeLinks).Count -gt 0) {
+                                $linkedOUsDisplay = @($activeLinks | ForEach-Object { $_.DistinguishedName })
+                                $gpo | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                $scopeInfo = if ($isDomainWide) {
+                                    "Domain-wide ($(@($activeLinks).Count) link(s))"
+                                } else {
+                                    "$(@($activeLinks).Count) OU(s)"
+                                }
+                                $gpo | Add-Member -NotePropertyName 'Scope' -NotePropertyValue $scopeInfo -Force
+                            } else {
+                                $gpo | Add-Member -NotePropertyName 'Scope' -NotePropertyValue "NOT LINKED" -Force
+                            }
+                            $gpo | Add-Member -NotePropertyName '_PrecedenceScope'        -NotePropertyValue $precedenceScope -Force
+                            $gpo | Add-Member -NotePropertyName '_PrecedenceOrder'        -NotePropertyValue $precedenceOrder -Force
+                            $gpo | Add-Member -NotePropertyName '_HasAuthenticatedUsers'  -NotePropertyValue $hasAuthenticatedUsers -Force
+                            $gpo | Add-Member -NotePropertyName '_HasEveryone'            -NotePropertyValue $hasEveryone -Force
+                            $Script:gpoAddComputerFindings += $gpo
                         }
                     }
                 }
@@ -55018,6 +55031,16 @@ function Check-GPOAddComputerRights {
         }
         $result = $Script:gpoAddComputerFindings
         $Script:gpoAddComputerFindings = $null
+        $Script:gpoAddComputerPrecedenceMap = $null
+        $linkedResults = @($result | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+        if ($linkedResults.Count -gt 0) {
+            $scopePriority = @{ "DomainControllers" = 1; "Domain" = 2 }
+            $effectiveGPO = $linkedResults | Sort-Object @{Expression={$scopePriority[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
+            if ($effectiveGPO) {
+                $effectiveGPO.IsEffectiveSetting = $true
+                Write-Log "[Check-GPOAddComputerRights] Effective GPO: '$($effectiveGPO.displayName)' (Scope=$($effectiveGPO._PrecedenceScope), LinkOrder=$($effectiveGPO._PrecedenceOrder))"
+            }
+        }
         return $result
     } catch {
         Write-Log "[Check-GPOAddComputerRights] Error: $_" -Level Error
@@ -68930,7 +68953,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.0.0+20260414-1334"
+$Script:adPEASVersion = "2.0.0+20260416-0905"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

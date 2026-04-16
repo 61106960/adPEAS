@@ -149,14 +149,14 @@ $Script:PrimaryAttributes = @{
     SMBSigning = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'ServerSigning', 'ClientSigning',
-        'Scope', 'LinkedOUs'
+        'Scope', 'LinkedOUs', 'IsEffectiveSetting'
     )
 
     # LDAP Configuration GPO (only LDAP-relevant attributes, no SMB)
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'LDAPSigning', 'ChannelBinding', 'AnonymousBinding',
-        'Scope', 'LinkedOUs'
+        'Scope', 'LinkedOUs', 'IsEffectiveSetting'
     )
 
     # Domain Password Policy (all attributes are security-relevant)
@@ -308,9 +308,11 @@ $Script:PrimaryAttributes = @{
         'RiskyMembers', 'LinkedOUs'
     )
 
-    # GPO granting SeMachineAccountPrivilege
+    # GPO granting SeMachineAccountPrivilege (enriched native GPO object, same pattern as LDAPConfigGPO/SMBSigning)
     AddComputerGPO = @(
-        'gpoName', 'gpoGUID', 'privilege', 'accounts', 'linkedOUs'
+        'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
+        'Accounts',
+        'Scope', 'LinkedOUs', 'IsEffectiveSetting'
     )
 
     # Credential findings (GPP and SYSVOL)
@@ -435,6 +437,7 @@ $Script:PrimaryAttributes = @{
 $Script:StrictAttributeTypes = @(
     'SMBSigning',
     'LDAPConfigGPO',
+    'AddComputerGPO',
     'EffectiveLDAPConfig',
     'LDAPStatisticsModule',
     'LDAPStatisticsTotal',
@@ -564,8 +567,8 @@ function Get-ObjectTypeForOrdering {
         return 'MachineAccountQuota'
     }
 
-    # GPO granting SeMachineAccountPrivilege
-    if ($Object.privilege -and $Object.privilege -eq 'SeMachineAccountPrivilege' -and $Object.gpoGUID) {
+    # GPO granting SeMachineAccountPrivilege (enriched native GPO object with Accounts property)
+    if ($Object._adPEASObjectType -eq 'AddComputerGPO') {
         return 'AddComputerGPO'
     }
 
