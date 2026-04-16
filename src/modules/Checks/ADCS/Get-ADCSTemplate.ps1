@@ -256,6 +256,67 @@ function Get-ADCSTemplate {
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipals' -NotePropertyValue $enrollmentPrincipals
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipalSIDs' -NotePropertyValue $enrollmentPrincipalSIDs
 
+            # Parse write/modify permissions from Security Descriptor (for informational display)
+            # These rights allow modifying the template itself (relevant for ESC4 context)
+            $templateACL = @()
+            $writeRights = @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner')
+
+            if (@($sdACEs).Count -gt 0) {
+                $seenSIDs = @{}
+                foreach ($ace in $sdACEs) {
+                    if ($ace.Type -ne 'Allow') { continue }
+                    if (-not $ace.SID) { continue }
+
+                    # Check for write/modify rights
+                    $hasWriteRight = $false
+                    $matchedRight = ""
+
+                    foreach ($right in $writeRights) {
+                        if ($ace.Rights -match $right) {
+                            $hasWriteRight = $true
+                            $matchedRight = $right
+                            break
+                        }
+                    }
+
+                    # WriteProperty on all properties (empty ObjectType = all properties)
+                    if (-not $hasWriteRight -and $ace.Rights -match 'WriteProperty') {
+                        if (-not $ace.ObjectType) {
+                            $hasWriteRight = $true
+                            $matchedRight = "WriteProperty"
+                        }
+                    }
+
+                    if (-not $hasWriteRight) { continue }
+
+                    # Deduplicate by SID+right combination
+                    $dedupeKey = "$($ace.SID)|$matchedRight"
+                    if ($seenSIDs.ContainsKey($dedupeKey)) { continue }
+                    $seenSIDs[$dedupeKey] = $true
+
+                    $templateACL += [PSCustomObject]@{
+                        Identity = if ($ace.Name) { $ace.Name } else { $ace.SID }
+                        SID      = $ace.SID
+                        Right    = $matchedRight
+                    }
+                }
+            }
+
+            # Add owner as well if not already covered by a write ACE
+            if ($coreTemplate.nTSecurityDescriptor -and $coreTemplate.nTSecurityDescriptor.Owner) {
+                $ownerSID  = $coreTemplate.nTSecurityDescriptor.Owner.SID
+                $ownerName = $coreTemplate.nTSecurityDescriptor.Owner.Name
+                if ($ownerSID -and -not ($templateACL | Where-Object { $_.SID -eq $ownerSID -and $_.Right -eq 'Owner' })) {
+                    $templateACL += [PSCustomObject]@{
+                        Identity = if ($ownerName) { $ownerName } else { $ownerSID }
+                        SID      = $ownerSID
+                        Right    = 'Owner'
+                    }
+                }
+            }
+
+            $template | Add-Member -NotePropertyName 'TemplateACL' -NotePropertyValue $templateACL
+
             Write-Output $template
         }
         if ($totalTemplates -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing certificate templates" -Completed }

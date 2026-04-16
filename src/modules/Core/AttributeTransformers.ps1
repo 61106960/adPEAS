@@ -639,6 +639,51 @@ function Convert-InheritedFromToRenderValues {
     }
 }
 
+# --- TemplateACL Transformer ---
+# Displays write/modify permissions on certificate templates (owner + dangerous rights)
+# Color-coding: Standard = expected admin, Hint = operator/unknown, Finding = non-privileged
+function Convert-TemplateACLToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+
+    $aces = @($Value)
+    if ($aces.Count -eq 0) { return $null }
+
+    $renderValues = @()
+    foreach ($ace in $aces) {
+        if ($ace -isnot [PSCustomObject]) { continue }
+
+        $display = "$($ace.Identity): $($ace.Right)"
+        $sid = $ace.SID
+
+        # Determine severity based on privilege level
+        $severity = 'Standard'
+        if ($sid) {
+            $privCheck = Test-IsPrivileged -Identity $sid
+            $severity = switch ($privCheck.Category) {
+                'Privileged'  { 'Standard' }   # Domain Admins, Enterprise Admins, SYSTEM - expected
+                'BroadGroup'  { 'Finding' }    # Everyone, Auth Users, Domain Users - dangerous
+                default       { 'Hint' }       # Operator-level or unknown
+            }
+        }
+
+        $findingId = if ($severity -ne 'Standard') { 'ESC4_TEMPLATE' } else { $null }
+        $renderValues += New-RenderValue -Display $display -Severity $severity `
+            -FindingId $findingId -RawValue $ace
+    }
+
+    if ($renderValues.Count -eq 0) { return $null }
+
+    $maxSev = Get-MaxSeverityFromValues -Values $renderValues
+    return @{
+        DisplayName         = 'templateACL'
+        RowType             = 'MultiValue'
+        OverallSeverity     = $maxSev
+        ForceAttributeClass = ($maxSev -ne 'Standard')
+        Values              = $renderValues
+    }
+}
+
 # --- DangerousACEs Transformer ---
 function Convert-DangerousACEsToRenderValues {
     [CmdletBinding()]
@@ -981,6 +1026,7 @@ $Script:AttributeTransformers['dangerousRights']             = ${function:Conver
 $Script:AttributeTransformers['affectedOUs']                 = ${function:Convert-AffectedOUsToRenderValues}
 $Script:AttributeTransformers['inheritedFrom']               = ${function:Convert-InheritedFromToRenderValues}
 $Script:AttributeTransformers['DangerousACEs']               = ${function:Convert-DangerousACEsToRenderValues}
+$Script:AttributeTransformers['TemplateACL']                 = ${function:Convert-TemplateACLToRenderValues}
 $Script:AttributeTransformers['DangerousPermissions']        = ${function:Convert-DangerousPermToRenderValues}
 $Script:AttributeTransformers['EnrollmentPrincipals']        = ${function:Convert-EnrollPrincipalsToRenderValues}
 $Script:AttributeTransformers['ExtendedKeyUsage']            = ${function:Convert-EKUToRenderValues}

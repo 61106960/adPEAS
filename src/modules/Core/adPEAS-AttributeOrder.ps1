@@ -128,7 +128,9 @@ $Script:PrimaryAttributes = @{
         'ManagerApprovalRequired',
         # 5. Enrollment
         'EnrollmentPrincipals',
-        # 6. Security findings
+        # 6. Template ACL (write/modify rights on the template object)
+        'TemplateACL',
+        # 7. Security findings
         'DangerousACEs',
         # 7. ESC13 - Issuance policy group links
         'IssuancePolicyGroupLinks'
