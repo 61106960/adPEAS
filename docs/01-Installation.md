@@ -136,6 +136,29 @@ Expected output should include functions like:
 
 ---
 
+## Building from Source
+
+The `main` branch contains only source files (`src/`). Pre-built release files are attached to each [GitHub Release](https://github.com/61106960/adPEAS/releases). To build from the latest source yourself, use the included build script:
+
+```powershell
+git clone https://github.com/61106960/adPEAS.git
+cd adPEAS
+.\Build-Release.ps1
+```
+
+This produces all four variants in the repository root:
+
+| File | Description |
+|------|-------------|
+| `adPEAS.ps1` | Readable version with comments |
+| `adPEAS_min.ps1` | Minimized, no comments |
+| `adPEAS_ultra.ps1` | Ultra-compressed, no comments |
+| `adPEAS_obf.ps1` | Obfuscated (GZip + XOR + Base64) |
+
+Requires Windows PowerShell 5.1 and no additional dependencies.
+
+---
+
 ## Licensing
 
 adPEAS uses an RSA-SHA256 signature-based license system. A valid license replaces the default disclaimer in console output and HTML reports with a personalized message ("Licensed to {Licensee} - Valid until {ValidUntil}"). All features remain fully available regardless of license status.

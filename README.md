@@ -76,6 +76,18 @@ git clone https://github.com/61106960/adPEAS.git
 cd adPEAS
 ```
 
+### Building from Source
+
+The `main` branch contains only source files (`src/`). Release builds are attached to each [GitHub Release](https://github.com/61106960/adPEAS/releases). If you want to build from the latest source, use the included build script:
+
+```powershell
+git clone https://github.com/61106960/adPEAS.git
+cd adPEAS
+.\Build-Release.ps1
+```
+
+This produces all four variants (`adPEAS.ps1`, `adPEAS_min.ps1`, `adPEAS_ultra.ps1`, `adPEAS_obf.ps1`) in the repository root. Requires Windows PowerShell 5.1 and no additional dependencies.
+
 ---
 
 ## Quick Start
