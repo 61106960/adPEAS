@@ -240,6 +240,7 @@ function Clear-SessionState {
     # Collector caches (Invoke-adPEASCollector)
     $Script:ComputerHostnameCache = @{}
     $Script:DNToIdentityCache = @{}
+    $Script:ConfigContainerGuidCache = $null
 
     # Tab-completion cache (Register-adPEASCompleters)
     if ($Script:CompletionCache) { Clear-CompletionCache }

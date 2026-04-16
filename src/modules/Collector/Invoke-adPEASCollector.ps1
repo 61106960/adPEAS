@@ -494,7 +494,6 @@ function Invoke-adPEASCollector {
         # Clean up caches to free memory
         $Script:DNToIdentityCache = $null
         $Script:ParentDNToChildren = $null
-        $Script:SIDToTypeCache = $null
         $Script:ComputerHostnameCache = $null
         $Script:TemplateCNToOID = $null
         Write-Log "[Invoke-adPEASCollector] Collection completed"
@@ -721,7 +720,6 @@ function Build-DNIdentityCache {
     if ($Script:DNToIdentityCache) { return }
     $Script:DNToIdentityCache = @{}
     $Script:ParentDNToChildren = @{}
-    $Script:SIDToTypeCache = @{}
 
     # Single bulk query: all security-relevant objects with minimal properties
     # objectClass=user also matches computers (AD class hierarchy: computer inherits from user)
@@ -748,11 +746,6 @@ function Build-DNIdentityCache {
             ObjectType       = $objType
         }
 
-        # SID -> ObjectType mapping (for SID history resolution)
-        if ($obj.objectSid) {
-            $Script:SIDToTypeCache[$objId] = $objType
-        }
-
         # Parent DN -> Children mapping (for OU/Container/Domain child objects)
         $parentDN = $dn -replace '^[^,]+,', ''
         if (-not $Script:ParentDNToChildren.ContainsKey($parentDN)) {
@@ -768,38 +761,64 @@ function Build-DNIdentityCache {
 }
 
 
-<#
-.SYNOPSIS
-    Resolves the direct parent container/OU of an AD object to a BloodHound TypedPrincipal.
-.DESCRIPTION
-    Strips the first RDN from the object's DN, looks up the result in DNToIdentityCache,
-    and falls back to the domain root when the parent is the domain partition itself.
-    Returns $null when the parent cannot be resolved (e.g. Configuration NC objects).
-#>
-function Get-BHContainedBy {
-    param(
-        [string]$DistinguishedName,
-        [string]$DomainDN,
-        [string]$DomainSID
-    )
+# Helper: Convert objectGUID (byte[] or Guid) to uppercase GUID string
+function ConvertTo-BHGuid {
+    param([object]$Value)
+    if ($null -eq $Value) { return "" }
+    try {
+        if ($Value -is [byte[]] -and $Value.Length -eq 16) { return ([Guid]$Value).ToString().ToUpper() }
+        if ($Value -is [array] -and $Value.Count -eq 16) { return ([Guid][byte[]]$Value).ToString().ToUpper() }
+        return $Value.ToString().ToUpper()
+    } catch { return "" }
+}
 
+# Helper: Convert AD negative 100-ns interval to human-readable string
+# 0 or near-MaxValue = "Forever"
+function Convert-ADIntervalToString {
+    param([object]$Value)
+    if ($null -eq $Value) { return "Forever" }
+    try {
+        $int64Val = [Int64]$Value
+        if ($int64Val -eq 0) { return "Forever" }
+        if ([Math]::Abs($int64Val) -ge 9223372036854775000) { return "Forever" }
+        $seconds = [Math]::Abs($int64Val) / 10000000
+        $ts = [TimeSpan]::FromSeconds($seconds)
+        if ($ts.TotalDays -ge 1) {
+            $d = [int]$ts.TotalDays
+            return "$d day$(if ($d -ne 1) {'s'})"
+        } elseif ($ts.TotalHours -ge 1) {
+            $h = [int]$ts.TotalHours
+            return "$h hour$(if ($h -ne 1) {'s'})"
+        } else {
+            $m = [int]$ts.TotalMinutes
+            return "$m minute$(if ($m -ne 1) {'s'})"
+        }
+    } catch { return "Forever" }
+}
+
+# Helper: Get ContainedBy for objects in the Configuration partition
+# Looks up the parent container's GUID via LDAP (one lookup per unique parent)
+function Get-BHContainedByConfig {
+    param([string]$DistinguishedName)
     if (-not $DistinguishedName) { return $null }
-
-    # Strip first RDN to get parent DN
     if ($DistinguishedName -notmatch '^[^,]+,(.+)$') { return $null }
     $parentDN = $Matches[1]
-
-    # Cache hit: OU, Container, GPO, or any other indexed object
-    if ($Script:DNToIdentityCache -and $Script:DNToIdentityCache.ContainsKey($parentDN)) {
-        $identity = $Script:DNToIdentityCache[$parentDN]
-        return @{ ObjectIdentifier = $identity.ObjectIdentifier; ObjectType = $identity.ObjectType }
+    # Use a script-level cache to avoid repeated LDAP lookups
+    if (-not $Script:ConfigContainerGuidCache) { $Script:ConfigContainerGuidCache = @{} }
+    if ($Script:ConfigContainerGuidCache.ContainsKey($parentDN)) {
+        $cachedGuid = $Script:ConfigContainerGuidCache[$parentDN]
+        if ($cachedGuid) { return @{ ObjectIdentifier = $cachedGuid; ObjectType = 'Container' } }
+        return $null
     }
-
-    # Fallback: parent is the domain root itself
-    if ($DomainDN -and $parentDN -eq $DomainDN) {
-        return @{ ObjectIdentifier = $DomainSID; ObjectType = 'Domain' }
-    }
-
+    try {
+        $parentObj = @(Invoke-LDAPSearch -Filter "(distinguishedName=$parentDN)" -SearchBase $parentDN -Properties objectGUID -Scope Base)[0]
+        if ($parentObj -and $parentObj.objectGUID) {
+            $guid = ConvertTo-BHGuid -Value $parentObj.objectGUID
+            $Script:ConfigContainerGuidCache[$parentDN] = $guid
+            if ($guid) { return @{ ObjectIdentifier = $guid; ObjectType = 'Container' } }
+        }
+    } catch { }
+    $Script:ConfigContainerGuidCache[$parentDN] = ""
     return $null
 }
 
@@ -930,7 +949,12 @@ function Write-BHJsonFile {
     }
 
     # Use central Export-adPEASFile helper for consistent file handling
-    $exportResult = Export-adPEASFile -Path $FilePath -Content $jsonObject -Type Json -JsonDepth 20 -Force
+    # Default: compact JSON (smaller files, BH CE compatible); PrettyPrint is opt-in
+    if ($PrettyPrint) {
+        $exportResult = Export-adPEASFile -Path $FilePath -Content $jsonObject -Type Json -JsonDepth 20 -Force
+    } else {
+        $exportResult = Export-adPEASFile -Path $FilePath -Content $jsonObject -Type Json -JsonDepth 20 -Force -Compress
+    }
 
     if (-not $exportResult.Success) {
         Write-Error "[Export-BloodHoundJson] Failed to export: $($exportResult.Message)"
@@ -950,6 +974,16 @@ function ConvertTo-UnixTimestamp {
     }
 
     try {
+        # Handle DateTime objects directly
+        if ($FileTime -is [DateTime]) {
+            return [int64]($FileTime.ToUniversalTime() - [DateTime]::UnixEpoch).TotalSeconds
+        }
+        # Handle LDAP Generalized Time strings ("20220412123456.0Z")
+        if ($FileTime -is [string] -and $FileTime.Length -ge 14) {
+            $dt = [DateTime]::ParseExact($FileTime.Substring(0, 14), 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
+            return [int64]($dt.ToUniversalTime() - [DateTime]::UnixEpoch).TotalSeconds
+        }
+        # Handle Windows FILETIME (int64)
         $date = [DateTime]::FromFileTimeUtc($FileTime)
         return [int64]($date - [DateTime]::UnixEpoch).TotalSeconds
     }
@@ -1359,16 +1393,27 @@ function Collect-BHDomain {
     # Get functional level
     # Note: Windows Server 2019 does not have its own functional level (uses 2016 level = 7)
     $functionalLevel = switch ($domainObj.'msDS-Behavior-Version') {
-        0 { 'Windows 2000' }
-        1 { 'Windows 2003 Interim' }
-        2 { 'Windows 2003' }
-        3 { 'Windows 2008' }
-        4 { 'Windows 2008 R2' }
-        5 { 'Windows 2012' }
-        6 { 'Windows 2012 R2' }
-        7 { 'Windows 2016' }
-        10 { 'Windows 2025' }
+        0       { '2000' }
+        1       { '2003 Interim' }
+        2       { '2003' }
+        3       { '2008' }
+        4       { '2008 R2' }
+        5       { '2012' }
+        6       { '2012 R2' }
+        7       { '2016' }
+        10      { '2025' }
         default { 'Unknown' }
+    }
+
+    # Query NetBIOS name from Partitions container
+    $netbiosName = ""
+    $configNC = $Script:LDAPContext.ConfigurationNamingContext
+    if ($configNC) {
+        try {
+            $partitionsBase = "CN=Partitions,$configNC"
+            $crossRef = @(Invoke-LDAPSearch -Filter "(&(objectClass=crossRef)(nCName=$DomainDN))" -SearchBase $partitionsBase -Properties nETBIOSName -Scope OneLevel @connectionParams)[0]
+            if ($crossRef -and $crossRef.nETBIOSName) { $netbiosName = $crossRef.nETBIOSName }
+        } catch { }
     }
 
     # Get trusts
@@ -1434,23 +1479,40 @@ function Collect-BHDomain {
     }
 
     return @{
-        ObjectIdentifier = $DomainSID
-        Properties       = @{
-            name              = $domainName
-            domain            = $domainName
-            domainsid         = $DomainSID
-            distinguishedname = $DomainDN
-            description       = if ($domainObj.description) { $domainObj.description } else { $null }
-            functionallevel   = $functionalLevel
-            highvalue         = $true
-            whencreated       = ConvertTo-UnixTimestamp $domainObj.whenCreated
+        ObjectIdentifier     = $DomainSID
+        ForestRootIdentifier = $DomainSID
+        Properties           = @{
+            name                                    = $domainName
+            domain                                  = $domainName
+            domainsid                               = $DomainSID
+            distinguishedname                       = $DomainDN
+            description                             = if ($domainObj.description) { $domainObj.description } else { $null }
+            functionallevel                         = $functionalLevel
+            highvalue                               = $true
+            whencreated                             = ConvertTo-UnixTimestamp $domainObj.whenCreated
+            objectguid                              = ConvertTo-BHGuid -Value $domainObj.objectGUID
+            isaclprotected                          = $false
+            doesanyacegrantownerrights              = $false
+            doesanyinheritedacegrantownerrights     = $false
+            collected                               = $true
+            netbios                                 = $netbiosName
+            dsheuristics                            = if ($domainObj.dSHeuristics) { $domainObj.dSHeuristics } else { $null }
+            expirepasswordsonsmartcardonlyaccounts  = if ($domainObj.'msDS-ExpirePasswordsOnSmartCardOnlyAccounts') { [bool]$domainObj.'msDS-ExpirePasswordsOnSmartCardOnlyAccounts' } else { $false }
+            machineaccountquota                     = Get-SafeInt -Value $domainObj.'ms-DS-MachineAccountQuota' -Default 10
+            lockoutthreshold                        = Get-SafeInt -Value $domainObj.lockoutThreshold -Default 0
+            minpwdlength                            = Get-SafeInt -Value $domainObj.minPwdLength -Default 0
+            pwdhistorylength                        = Get-SafeInt -Value $domainObj.pwdHistoryLength -Default 0
+            pwdproperties                           = Get-SafeInt -Value $domainObj.pwdProperties -Default 0
+            lockoutduration                         = Convert-ADIntervalToString -Value $domainObj.lockoutDuration
+            lockoutobservationwindow                = if ($domainObj.lockOutObservationWindow) { [Int64]$domainObj.lockOutObservationWindow } else { 0 }
+            maxpwdage                               = Convert-ADIntervalToString -Value $domainObj.maxPwdAge
+            minpwdage                               = Convert-ADIntervalToString -Value $domainObj.minPwdAge
         }
         Trusts           = $trusts
         ChildObjects     = $childObjects
         Links            = $gpoLinks
         Aces             = @(ConvertTo-BHAces -DistinguishedName $DomainDN -ObjectType 'Domain' @connectionParams)
         IsDeleted        = $false
-        IsACLProtected   = $false
     }
 }
 
@@ -1506,15 +1568,12 @@ function Collect-BHUsers {
 
         # Parse SID history
         $sidHistory = @()
-        $sidHistoryTyped = @()
         if ($user.sIDHistory) {
             $historyItems = if ($user.sIDHistory -is [array]) { $user.sIDHistory } else { @($user.sIDHistory) }
             foreach ($histSid in $historyItems) {
                 $convertedSid = Convert-SidToString -SidInput $histSid
                 if ($convertedSid) {
                     $sidHistory += $convertedSid
-                    $resolvedType = if ($Script:SIDToTypeCache -and $Script:SIDToTypeCache.ContainsKey($convertedSid)) { $Script:SIDToTypeCache[$convertedSid] } else { 'User' }
-                    $sidHistoryTyped += @{ ObjectIdentifier = $convertedSid; ObjectType = $resolvedType }
                 }
             }
         }
@@ -1584,18 +1643,25 @@ function Collect-BHUsers {
                 unixpassword            = $null
                 unicodepassword         = $null
                 sfupassword             = $null
-                logonscript             = $user.scriptPath
-                admincount              = (Get-SafeInt -Value $user.adminCount) -gt 0
-                sidhistory              = $sidHistory
+                logonscript                         = $user.scriptPath
+                admincount                          = (Get-SafeInt -Value $user.adminCount) -gt 0
+                sidhistory                          = $sidHistory
+                objectguid                          = ConvertTo-BHGuid -Value $user.objectGUID
+                isaclprotected                      = $false
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
+                encryptedtextpwdallowed             = ($uac -band 0x80) -ne 0
+                logonscriptenabled                  = ($uac -band 0x1) -ne 0
+                usedeskeyonly                       = ($uac -band 0x200000) -ne 0
+                profilepath                         = if ($user.profilePath) { $user.profilePath } else { $null }
+                supportedencryptiontypes            = $null
             }
             PrimaryGroupSID    = $primaryGroupSID
             AllowedToDelegate  = $allowedToDelegate
-            HasSIDHistory      = $sidHistoryTyped
+            HasSIDHistory           = $sidHistoryTyped
             SPNTargets         = $spnTargets
-            ContainedBy        = (Get-BHContainedBy -DistinguishedName $user.distinguishedName -DomainDN $Script:LDAPContext.DomainDN -DomainSID $DomainSID)
             Aces               = @()
             IsDeleted          = $false
-            IsACLProtected     = $false
         }
 
         # Collect ACLs if requested
@@ -1692,14 +1758,16 @@ function Collect-BHGroups {
                 highvalue         = $highValue
                 samaccountname    = $group.sAMAccountName
                 description       = if ($group.description) { $group.description } else { $null }
-                whencreated       = ConvertTo-UnixTimestamp $group.whenCreated
-                admincount        = (Get-SafeInt -Value $group.adminCount) -gt 0
+                whencreated                         = ConvertTo-UnixTimestamp $group.whenCreated
+                admincount                          = (Get-SafeInt -Value $group.adminCount) -gt 0
+                objectguid                          = ConvertTo-BHGuid -Value $group.objectGUID
+                isaclprotected                      = $false
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
             }
             Members          = $members
-            ContainedBy      = (Get-BHContainedBy -DistinguishedName $group.distinguishedName -DomainDN $Script:LDAPContext.DomainDN -DomainSID $DomainSID)
             Aces             = @()
             IsDeleted        = $false
-            IsACLProtected   = $false
         }
 
         # Collect ACLs if requested
@@ -1804,15 +1872,12 @@ function Collect-BHComputers {
 
         # SID History
         $sidHistory = @()
-        $sidHistoryTyped = @()
         if ($computer.sIDHistory) {
             $historyItems = if ($computer.sIDHistory -is [array]) { $computer.sIDHistory } else { @($computer.sIDHistory) }
             foreach ($histSid in $historyItems) {
                 $convertedSid = Convert-SidToString -SidInput $histSid
                 if ($convertedSid) {
                     $sidHistory += $convertedSid
-                    $resolvedType = if ($Script:SIDToTypeCache -and $Script:SIDToTypeCache.ContainsKey($convertedSid)) { $Script:SIDToTypeCache[$convertedSid] } else { 'Computer' }
-                    $sidHistoryTyped += @{ ObjectIdentifier = $convertedSid; ObjectType = $resolvedType }
                 }
             }
         }
@@ -1835,55 +1900,54 @@ function Collect-BHComputers {
                 lastlogon               = ConvertTo-UnixTimestamp $computer.lastLogon
                 lastlogontimestamp      = ConvertTo-UnixTimestamp $computer.lastLogonTimestamp
                 pwdlastset              = ConvertTo-UnixTimestamp $computer.pwdLastSet
-                serviceprincipalnames   = if ($computer.servicePrincipalName) { @($computer.servicePrincipalName) } else { @() }
-                haslaps                 = ($null -ne $computer.'ms-Mcs-AdmPwdExpirationTime') -or ($null -ne $computer.'msLAPS-PasswordExpirationTime')
-                sidhistory              = $sidHistory
-                isdc                    = $isDC
+                serviceprincipalnames   = @(
+                    if ($computer.servicePrincipalName -and $computer.servicePrincipalName -isnot [hashtable]) {
+                        $computer.servicePrincipalName
+                    }
+                )
+                haslaps                             = ($null -ne $computer.'ms-Mcs-AdmPwdExpirationTime') -or ($null -ne $computer.'msLAPS-PasswordExpirationTime')
+                sidhistory                          = $sidHistory
+                isdc                               = $isDC
+                objectguid                          = ConvertTo-BHGuid -Value $computer.objectGUID
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
+                encryptedtextpwdallowed             = ($uac -band 0x80) -ne 0
+                logonscriptenabled                  = ($uac -band 0x1) -ne 0
+                email                               = if ($computer.mail) { $computer.mail } else { $null }
+                usedeskeyonly                       = ($uac -band 0x200000) -ne 0
+                supportedencryptiontypes            = $null
             }
             PrimaryGroupSID     = $primaryGroupSID
             AllowedToDelegate   = $allowedToDelegate
             AllowedToAct        = $allowedToAct
-            HasSIDHistory       = $sidHistoryTyped
+            HasSIDHistory           = $sidHistoryTyped
             # Phase 1: No session/local group collection
             Sessions            = @{
                 Collected     = $false
-                FailureReason = $null
+                FailureReason = "Not collected in Phase 1 (LDAP-only)"
                 Results       = @()
             }
             PrivilegedSessions  = @{
                 Collected     = $false
-                FailureReason = $null
+                FailureReason = "Not collected in Phase 1 (LDAP-only)"
                 Results       = @()
             }
             RegistrySessions    = @{
                 Collected     = $false
-                FailureReason = $null
+                FailureReason = "Not collected in Phase 1 (LDAP-only)"
                 Results       = @()
             }
-            LocalAdmins         = @{
-                Collected     = $false
-                FailureReason = $null
-                Results       = @()
-            }
-            RemoteDesktopUsers  = @{
-                Collected     = $false
-                FailureReason = $null
-                Results       = @()
-            }
-            DcomUsers           = @{
-                Collected     = $false
-                FailureReason = $null
-                Results       = @()
-            }
-            PSRemoteUsers       = @{
-                Collected     = $false
-                FailureReason = $null
-                Results       = @()
-            }
-            ContainedBy         = (Get-BHContainedBy -DistinguishedName $computer.distinguishedName -DomainDN $Script:LDAPContext.DomainDN -DomainSID $DomainSID)
-            Aces                = @()
-            IsDeleted           = $false
-            IsACLProtected      = $false
+            # SharpHound v2.12.0: LocalAdmins/RemoteDesktopUsers/DcomUsers/PSRemoteUsers replaced by:
+            LocalGroups         = @()
+            UserRights          = @()
+            DumpSMSAPassword    = @()
+            DCRegistryData          = $null
+            IsWebClientRunning      = $null
+            NTLMRegistryData        = $null
+            NtlmSessions            = $null
+            SmbInfo                 = $null
+            Aces                    = @()
+            IsDeleted               = $false
         }
 
         # Collect ACLs if requested
@@ -1924,7 +1988,6 @@ function Collect-BHOUs {
     $bhOUs = @()
 
     foreach ($ou in $ous) {
-        if (-not $ou.objectGuid) { continue }
         $ouGuid = $ou.objectGuid.ToString().ToUpper()
 
         # Get child objects from pre-built DN identity cache (O(1) lookup)
@@ -1956,21 +2019,30 @@ function Collect-BHOUs {
         $bhOU = @{
             ObjectIdentifier   = $ouGuid
             Properties         = @{
-                name              = "$($ou.name)@$domainName"
-                domain            = $domainName
-                domainsid         = $DomainSID
-                distinguishedname = $ou.distinguishedName
-                highvalue         = $false
-                description       = if ($ou.description) { $ou.description } else { $null }
-                whencreated       = ConvertTo-UnixTimestamp $ou.whenCreated
-                blocksinheritance = ((Get-SafeInt -Value $ou.gPOptions) -band 1) -ne 0
+                name                                = "$($ou.name)@$domainName"
+                domain                              = $domainName
+                domainsid                           = $DomainSID
+                distinguishedname                   = $ou.distinguishedName
+                highvalue                           = $false
+                description                         = if ($ou.description) { $ou.description } else { $null }
+                whencreated                         = ConvertTo-UnixTimestamp $ou.whenCreated
+                blocksinheritance                   = ((Get-SafeInt -Value $ou.gPOptions) -band 1) -ne 0
+                objectguid                          = $ouGuid
+                isaclprotected                      = $false
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
             }
             ChildObjects       = $childObjects
             Links              = $gpoLinks
-            ContainedBy        = (Get-BHContainedBy -DistinguishedName $ouDN -DomainDN $domainDN -DomainSID $DomainSID)
+            GPOChanges         = @{
+                LocalAdmins        = @()
+                RemoteDesktopUsers = @()
+                DcomUsers          = @()
+                PSRemoteUsers      = @()
+                AffectedComputers  = @()
+            }
             Aces               = @()
             IsDeleted          = $false
-            IsACLProtected     = $false
         }
 
         # Collect ACLs if requested
@@ -2011,7 +2083,6 @@ function Collect-BHContainers {
     $bhContainers = @()
 
     foreach ($container in $containers) {
-        if (-not $container.objectGuid) { continue }
         $containerGuid = $container.objectGuid.ToString().ToUpper()
         $containerDN = $container.distinguishedName
 
@@ -2024,17 +2095,21 @@ function Collect-BHContainers {
         $bhContainer = @{
             ObjectIdentifier = $containerGuid
             Properties       = @{
-                name              = "$($container.name)@$domainName"
-                domain            = $domainName
-                domainsid         = $DomainSID
-                distinguishedname = $containerDN
-                highvalue         = $false
+                name                                = "$($container.name)@$domainName"
+                domain                              = $domainName
+                domainsid                           = $DomainSID
+                distinguishedname                   = $containerDN
+                highvalue                           = $false
+                objectguid                          = $containerGuid
+                description                         = if ($container.description) { $container.description } else { $null }
+                isaclprotected                      = $false
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
+                whencreated                         = ConvertTo-UnixTimestamp $container.whenCreated
             }
             ChildObjects     = $childObjects
-            ContainedBy      = (Get-BHContainedBy -DistinguishedName $containerDN -DomainDN $Script:LDAPContext.DomainDN -DomainSID $DomainSID)
             Aces             = @()
             IsDeleted        = $false
-            IsACLProtected   = $false
         }
 
         if ($CollectACLs) {
@@ -2085,19 +2160,22 @@ function Collect-BHGPOs {
         $bhGPO = @{
             ObjectIdentifier = $gpoGuid
             Properties       = @{
-                name              = "$($gpo.displayName)@$domainName"
-                domain            = $domainName
-                domainsid         = $DomainSID
-                distinguishedname = $gpo.distinguishedName
-                highvalue         = $false
-                description       = if ($gpo.description) { $gpo.description } else { $null }
-                whencreated       = ConvertTo-UnixTimestamp $gpo.whenCreated
-                gpcpath           = $gpo.gPCFileSysPath
+                name                                = "$($gpo.displayName)@$domainName"
+                domain                              = $domainName
+                domainsid                           = $DomainSID
+                distinguishedname                   = $gpo.distinguishedName
+                highvalue                           = $false
+                description                         = if ($gpo.description) { $gpo.description } else { $null }
+                whencreated                         = ConvertTo-UnixTimestamp $gpo.whenCreated
+                gpcpath                             = $gpo.gPCFileSysPath
+                objectguid                          = $gpoGuid
+                isaclprotected                      = $false
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
+                gpostatus                           = "0"
             }
-            ContainedBy      = (Get-BHContainedBy -DistinguishedName $gpo.distinguishedName -DomainDN $Script:LDAPContext.DomainDN -DomainSID $DomainSID)
             Aces             = @()
             IsDeleted        = $false
-            IsACLProtected   = $false
         }
 
         # Collect ACLs if requested
@@ -2145,7 +2223,7 @@ function Collect-BHCertTemplates {
     $searchBase = "CN=Certificate Templates,CN=Public Key Services,CN=Services,$configNC"
 
     $templateProps = @(
-        'cn', 'distinguishedName', 'objectGUID',
+        'cn', 'distinguishedName', 'objectGUID', 'displayName', 'whenCreated',
         'msPKI-Cert-Template-OID',
         'pKIExpirationPeriod', 'pKIOverlapPeriod',
         'msPKI-Template-Schema-Version',
@@ -2183,6 +2261,25 @@ function Collect-BHCertTemplates {
         $certNameFlag = Get-SafeInt -Value $template.'msPKI-Certificate-Name-Flag'
         $schemaVersion = Get-SafeInt -Value $template.'msPKI-Template-Schema-Version'
         $raSignature = Get-SafeInt -Value $template.'msPKI-RA-Signature'
+
+        # Parse displayName
+        $templateDisplayName = $template.displayName
+        if ($templateDisplayName -is [byte[]]) { $templateDisplayName = [System.Text.Encoding]::UTF8.GetString($templateDisplayName) }
+        if ($templateDisplayName -is [array]) { $templateDisplayName = $templateDisplayName[0] }
+
+        # Parse whenCreated (raw Generalized Time string in -Raw mode)
+        $rawWhenCreated = $template.whenCreated
+        if ($rawWhenCreated -is [byte[]]) { $rawWhenCreated = [System.Text.Encoding]::ASCII.GetString($rawWhenCreated) }
+        if ($rawWhenCreated -is [array]) { $rawWhenCreated = $rawWhenCreated[0] }
+        $templateWhenCreated = ConvertTo-UnixTimestamp $rawWhenCreated
+
+        # Parse objectGUID
+        $templateGuid = ""
+        if ($template.objectGUID) {
+            $rawGuid = $template.objectGUID
+            if ($rawGuid -is [array] -and $rawGuid.Count -gt 0) { $rawGuid = $rawGuid[0] }
+            $templateGuid = ConvertTo-BHGuid -Value $rawGuid
+        }
 
         # Parse EKU arrays
         $ekus = @()
@@ -2241,36 +2338,45 @@ function Collect-BHCertTemplates {
         $bhTemplate = @{
             ObjectIdentifier = $oid
             Properties       = @{
-                name                          = "$cn@$domainName"
-                domain                        = $domainName
-                domainsid                     = $DomainSID
-                distinguishedname             = $dn
-                highvalue                     = $false
-                validityperiod                = $validityPeriod
-                renewalperiod                 = $renewalPeriod
-                schemaversion                 = $schemaVersion
-                enrollmentflag                = $enrollmentFlag
-                certificatenameflag           = $certNameFlag
-                oid                           = $oid
-                requiresmanagerapproval       = ($enrollmentFlag -band 0x2) -ne 0
-                enrolleesuppliessubject       = ($certNameFlag -band 0x1) -ne 0
-                subjectaltrequireupn          = ($certNameFlag -band 0x2000000) -ne 0
-                subjectaltrequiredns          = ($certNameFlag -band 0x8000000) -ne 0
-                subjectaltrequiredomaindns    = ($certNameFlag -band 0x400000) -ne 0
-                subjectaltrequireemail        = ($certNameFlag -band 0x4000000) -ne 0
-                subjectaltrequirespn          = ($certNameFlag -band 0x800) -ne 0
-                nosecurityextension           = ($enrollmentFlag -band 0x80000) -ne 0
-                ekus                          = $ekus
-                certificateapplicationpolicy  = $certAppPolicy
-                authorizedsignatures          = $raSignature
-                applicationpolicies           = $appPolicies
-                issuancepolicies              = $issuancePolicies
-                effectiveekus                 = @($effectiveEkus)
-                authenticationenabled         = $authEnabled
+                name                                = "$cn@$domainName"
+                domain                              = $domainName
+                domainsid                           = $DomainSID
+                distinguishedname                   = $dn
+                highvalue                           = $false
+                validityperiod                      = $validityPeriod
+                renewalperiod                       = $renewalPeriod
+                schemaversion                       = $schemaVersion
+                enrollmentflag                      = $enrollmentFlag
+                certificatenameflag                 = $certNameFlag
+                oid                                 = $oid
+                requiresmanagerapproval             = ($enrollmentFlag -band 0x2) -ne 0
+                enrolleesuppliessubject             = ($certNameFlag -band 0x1) -ne 0
+                subjectaltrequireupn                = ($certNameFlag -band 0x2000000) -ne 0
+                subjectaltrequiredns                = ($certNameFlag -band 0x8000000) -ne 0
+                subjectaltrequiredomaindns          = ($certNameFlag -band 0x400000) -ne 0
+                subjectaltrequireemail              = ($certNameFlag -band 0x4000000) -ne 0
+                subjectaltrequirespn                = ($certNameFlag -band 0x800) -ne 0
+                nosecurityextension                 = ($enrollmentFlag -band 0x80000) -ne 0
+                ekus                                = $ekus
+                certificateapplicationpolicy        = $certAppPolicy
+                authorizedsignatures                = $raSignature
+                applicationpolicies                 = $appPolicies
+                issuancepolicies                    = $issuancePolicies
+                effectiveekus                       = @($effectiveEkus)
+                authenticationenabled               = $authEnabled
+                objectguid                          = $templateGuid
+                displayname                         = if ($templateDisplayName) { $templateDisplayName } else { $null }
+                isaclprotected                      = $false
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
+                schannelauthenticationenabled       = $false
+                subjectrequireemail                 = ($certNameFlag -band 0x20000000) -ne 0
+                whencreated                         = $templateWhenCreated
+                certificatepolicy                   = @()
             }
+            ContainedBy      = Get-BHContainedByConfig -DistinguishedName $dn
             Aces             = @()
             IsDeleted        = $false
-            IsACLProtected   = $false
         }
 
         if ($CollectACLs -and $dn) {
@@ -2366,29 +2472,36 @@ function Collect-BHEnterpriseCAs {
         $bhCA = @{
             ObjectIdentifier     = $caGuid
             Properties           = @{
-                name                       = "$($ca.Name)@$domainName"
-                domain                     = $domainName
-                domainsid                  = $DomainSID
-                distinguishedname          = $ca.DistinguishedName
-                highvalue                  = $false
-                dnshostname                = $ca.DNSHostName
-                caregistrydata             = @{
-                    IsUserSpecifiesSanEnabled    = $false
-                    EnforceEncryptICertRequest   = $false
-                    CertificateSubjectFlag       = 0
-                }
-                basicconstraintpathlength  = $certProps.PathLength
-                hasbasicconstraints        = $certProps.HasBasicConstraints
-                certchain                  = $certChain
-                certname                   = $certProps.Name
-                certthumbprint             = $certProps.Thumbprint
-                flags                      = if ($ca.Flags) { $ca.Flags } else { 0 }
+                name                                = "$($ca.Name)@$domainName"
+                domain                              = $domainName
+                domainsid                           = $DomainSID
+                distinguishedname                   = $ca.DistinguishedName
+                highvalue                           = $false
+                dnshostname                         = $ca.DNSHostName
+                basicconstraintpathlength           = $certProps.PathLength
+                hasbasicconstraints                 = $certProps.HasBasicConstraints
+                certchain                           = $certChain
+                certname                            = $certProps.Name
+                certthumbprint                      = $certProps.Thumbprint
+                flags                               = Convert-CAFlagToString -Value $(if ($ca.Flags) { [int]$ca.Flags } else { 0 })
+                caname                              = $ca.Name
+                objectguid                          = ConvertTo-BHGuid -Value $ca.ObjectGUID
+                isaclprotected                      = $false
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
+                unresolvedpublishedtemplates        = @()
+                whencreated                         = ConvertTo-UnixTimestamp $ca.Created
             }
-            EnabledCertTemplates = $enabledTemplates
-            HostingComputer      = $hostingSID
-            Aces                 = @()
-            IsDeleted            = $false
-            IsACLProtected       = $false
+            # CARegistryData must be top-level (not inside Properties) — nested dicts inside
+            # Properties cause Neo4j Map{} errors when BH CE writes them as node properties.
+            CARegistryData          = $null
+            HttpEnrollmentEndpoints = @()
+            EnabledCertTemplates    = $enabledTemplates
+            HostingComputer         = $hostingSID
+            ContainedBy             = Get-BHContainedByConfig -DistinguishedName $ca.DistinguishedName
+            Aces                    = @()
+            IsDeleted               = $false
+            IsACLProtected          = $false
         }
 
         if ($CollectACLs -and $ca.DistinguishedName) {
@@ -2433,7 +2546,7 @@ function Collect-BHRootCAs {
 
     $searchBase = "CN=Certification Authorities,CN=Public Key Services,CN=Services,$configNC"
 
-    $rootCAs = Invoke-LDAPSearch -Filter "(objectClass=certificationAuthority)" -SearchBase $searchBase -Properties cn,distinguishedName,objectGUID,cACertificate -Raw -Scope OneLevel
+    $rootCAs = Invoke-LDAPSearch -Filter "(objectClass=certificationAuthority)" -SearchBase $searchBase -Properties cn,distinguishedName,objectGUID,cACertificate,whenCreated -Raw -Scope OneLevel
 
     $bhRootCAs = @()
 
@@ -2456,6 +2569,12 @@ function Collect-BHRootCAs {
         }
         if (-not $guid) { continue }
 
+        # Parse whenCreated
+        $rawWhenCreated = $rootCA.whenCreated
+        if ($rawWhenCreated -is [byte[]]) { $rawWhenCreated = [System.Text.Encoding]::ASCII.GetString($rawWhenCreated) }
+        if ($rawWhenCreated -is [array]) { $rawWhenCreated = $rawWhenCreated[0] }
+        $rootCAWhenCreated = ConvertTo-UnixTimestamp $rawWhenCreated
+
         # Parse certificate
         $certProps = @{ Thumbprint = ""; Name = ""; HasBasicConstraints = $false; PathLength = 0 }
         if ($rootCA.cACertificate) {
@@ -2469,20 +2588,26 @@ function Collect-BHRootCAs {
         $bhRootCA = @{
             ObjectIdentifier = $guid
             Properties       = @{
-                name                       = "$cn@$domainName"
-                domain                     = $domainName
-                domainsid                  = $DomainSID
-                distinguishedname          = $dn
-                highvalue                  = $false
-                certname                   = $certProps.Name
-                certthumbprint             = $certProps.Thumbprint
-                hasbasicconstraints        = $certProps.HasBasicConstraints
-                basicconstraintpathlength  = $certProps.PathLength
+                name                                = "$cn@$domainName"
+                domain                              = $domainName
+                domainsid                           = $DomainSID
+                distinguishedname                   = $dn
+                highvalue                           = $false
+                certname                            = $certProps.Name
+                certthumbprint                      = $certProps.Thumbprint
+                hasbasicconstraints                 = $certProps.HasBasicConstraints
+                basicconstraintpathlength           = $certProps.PathLength
+                objectguid                          = $guid
+                isaclprotected                      = $false
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
+                certchain                           = @($certProps.Thumbprint | Where-Object { $_ })
+                whencreated                         = $rootCAWhenCreated
             }
             DomainSID        = $DomainSID
+            ContainedBy      = Get-BHContainedByConfig -DistinguishedName $dn
             Aces             = @()
             IsDeleted        = $false
-            IsACLProtected   = $false
         }
 
         if ($CollectACLs -and $dn) {
@@ -2527,7 +2652,7 @@ function Collect-BHAIACAs {
 
     $searchBase = "CN=AIA,CN=Public Key Services,CN=Services,$configNC"
 
-    $aiaCAs = Invoke-LDAPSearch -Filter "(objectClass=certificationAuthority)" -SearchBase $searchBase -Properties cn,distinguishedName,objectGUID,cACertificate,crossCertificatePair -Raw -Scope OneLevel
+    $aiaCAs = Invoke-LDAPSearch -Filter "(objectClass=certificationAuthority)" -SearchBase $searchBase -Properties cn,distinguishedName,objectGUID,cACertificate,crossCertificatePair,whenCreated -Raw -Scope OneLevel
 
     $bhAIACAs = @()
 
@@ -2549,6 +2674,12 @@ function Collect-BHAIACAs {
             }
         }
         if (-not $guid) { continue }
+
+        # Parse whenCreated
+        $rawWhenCreated = $aiaCA.whenCreated
+        if ($rawWhenCreated -is [byte[]]) { $rawWhenCreated = [System.Text.Encoding]::ASCII.GetString($rawWhenCreated) }
+        if ($rawWhenCreated -is [array]) { $rawWhenCreated = $rawWhenCreated[0] }
+        $aiaCAWhenCreated = ConvertTo-UnixTimestamp $rawWhenCreated
 
         # Parse certificate
         $certProps = @{ Thumbprint = ""; Name = ""; HasBasicConstraints = $false; PathLength = 0 }
@@ -2579,19 +2710,28 @@ function Collect-BHAIACAs {
         $bhAIACA = @{
             ObjectIdentifier = $guid
             Properties       = @{
-                name                       = "$cn@$domainName"
-                domain                     = $domainName
-                domainsid                  = $DomainSID
-                distinguishedname          = $dn
-                highvalue                  = $false
-                certname                   = $certProps.Name
-                certthumbprint             = $certProps.Thumbprint
-                hascrl                     = $hasCRL
-                crosscertificatepair       = @()
+                name                                = "$cn@$domainName"
+                domain                              = $domainName
+                domainsid                           = $DomainSID
+                distinguishedname                   = $dn
+                highvalue                           = $false
+                certname                            = $certProps.Name
+                certthumbprint                      = $certProps.Thumbprint
+                hascrl                              = $hasCRL
+                crosscertificatepair                = @()
+                objectguid                          = $guid
+                isaclprotected                      = $false
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
+                hasbasicconstraints                 = $certProps.HasBasicConstraints
+                basicconstraintpathlength           = $certProps.PathLength
+                hascrosscertificatepair             = $false
+                certchain                           = @($certProps.Thumbprint | Where-Object { $_ })
+                whencreated                         = $aiaCAWhenCreated
             }
+            ContainedBy      = Get-BHContainedByConfig -DistinguishedName $dn
             Aces             = @()
             IsDeleted        = $false
-            IsACLProtected   = $false
         }
 
         if ($CollectACLs -and $dn) {
@@ -2636,7 +2776,7 @@ function Collect-BHNTAuthStores {
 
     $searchBase = "CN=Public Key Services,CN=Services,$configNC"
 
-    $ntAuth = Invoke-LDAPSearch -Filter "(cn=NTAuthCertificates)" -SearchBase $searchBase -Properties cn,distinguishedName,objectGUID,cACertificate -Raw -Scope OneLevel
+    $ntAuth = Invoke-LDAPSearch -Filter "(cn=NTAuthCertificates)" -SearchBase $searchBase -Properties cn,distinguishedName,objectGUID,cACertificate,whenCreated -Raw -Scope OneLevel
 
     $bhNTAuthStores = @()
 
@@ -2658,6 +2798,12 @@ function Collect-BHNTAuthStores {
             }
         }
         if (-not $guid) { continue }
+
+        # Parse whenCreated
+        $rawWhenCreated = $ntAuthObj.whenCreated
+        if ($rawWhenCreated -is [byte[]]) { $rawWhenCreated = [System.Text.Encoding]::ASCII.GetString($rawWhenCreated) }
+        if ($rawWhenCreated -is [array]) { $rawWhenCreated = $rawWhenCreated[0] }
+        $ntAuthWhenCreated = ConvertTo-UnixTimestamp $rawWhenCreated
 
         # Parse all certificates to extract thumbprints
         $certThumbprints = @()
@@ -2681,17 +2827,22 @@ function Collect-BHNTAuthStores {
         $bhNTAuthStore = @{
             ObjectIdentifier = $guid
             Properties       = @{
-                name              = "$cn@$domainName"
-                domain            = $domainName
-                domainsid         = $DomainSID
-                distinguishedname = $dn
-                highvalue         = $false
-                certthumbprints   = $certThumbprints
+                name                                = "$cn@$domainName"
+                domain                              = $domainName
+                domainsid                           = $DomainSID
+                distinguishedname                   = $dn
+                highvalue                           = $false
+                certthumbprints                     = $certThumbprints
+                objectguid                          = $guid
+                isaclprotected                      = $false
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
+                whencreated                         = $ntAuthWhenCreated
             }
             DomainSID        = $DomainSID
+            ContainedBy      = Get-BHContainedByConfig -DistinguishedName $dn
             Aces             = @()
             IsDeleted        = $false
-            IsACLProtected   = $false
         }
 
         if ($CollectACLs -and $dn) {
@@ -2737,7 +2888,7 @@ function Collect-BHIssuancePolicies {
 
     $searchBase = "CN=OID,CN=Public Key Services,CN=Services,$configNC"
 
-    $oidObjects = Invoke-LDAPSearch -Filter "(objectClass=msPKI-Enterprise-Oid)" -SearchBase $searchBase -Properties cn,displayName,distinguishedName,objectGUID,'msPKI-Cert-Template-OID','msDS-OIDToGroupLink' -Raw
+    $oidObjects = Invoke-LDAPSearch -Filter "(objectClass=msPKI-Enterprise-Oid)" -SearchBase $searchBase -Properties cn,displayName,distinguishedName,objectGUID,'msPKI-Cert-Template-OID','msDS-OIDToGroupLink',whenCreated -Raw
 
     $bhPolicies = @()
 
@@ -2762,9 +2913,22 @@ function Collect-BHIssuancePolicies {
 
         $name = if ($displayName) { $displayName } else { $cn }
 
-        # Resolve GroupLink: msDS-OIDToGroupLink DN -> TypedPrincipal {ObjectIdentifier, ObjectType}
-        # BloodHound CE expects GroupLink as a TypedPrincipal object, not a plain string
-        $groupLink = $null
+        # Parse objectGUID
+        $policyGuid = ""
+        if ($oidObj.objectGUID) {
+            $rawGuid = $oidObj.objectGUID
+            if ($rawGuid -is [array] -and $rawGuid.Count -gt 0) { $rawGuid = $rawGuid[0] }
+            $policyGuid = ConvertTo-BHGuid -Value $rawGuid
+        }
+
+        # Parse whenCreated
+        $rawWhenCreated = $oidObj.whenCreated
+        if ($rawWhenCreated -is [byte[]]) { $rawWhenCreated = [System.Text.Encoding]::ASCII.GetString($rawWhenCreated) }
+        if ($rawWhenCreated -is [array]) { $rawWhenCreated = $rawWhenCreated[0] }
+        $policyWhenCreated = ConvertTo-UnixTimestamp $rawWhenCreated
+
+        # Resolve GroupLink: msDS-OIDToGroupLink DN -> group SID
+        $groupLink = @{ ObjectIdentifier = $null; ObjectType = 'Base' }
         if ($oidObj.'msDS-OIDToGroupLink') {
             $groupLinkDN = $oidObj.'msDS-OIDToGroupLink'
             if ($groupLinkDN -is [byte[]]) { $groupLinkDN = [System.Text.Encoding]::UTF8.GetString($groupLinkDN) }
@@ -2775,9 +2939,9 @@ function Collect-BHIssuancePolicies {
                     $escapedDN = Escape-LDAPFilterDN -DistinguishedName $groupLinkDN
                     $groupObj = @(Get-DomainObject -LDAPFilter "(distinguishedName=$escapedDN)" -Properties objectSid @connectionParams)[0]
                     if ($groupObj -and $groupObj.objectSid) {
-                        $groupSid = Convert-SidToString -SidInput $groupObj.objectSid
-                        if ($groupSid) {
-                            $groupLink = @{ ObjectIdentifier = $groupSid; ObjectType = 'Group' }
+                        $resolvedSid = Convert-SidToString -SidInput $groupObj.objectSid
+                        if ($resolvedSid) {
+                            $groupLink = @{ ObjectIdentifier = $resolvedSid; ObjectType = 'Group' }
                         }
                     }
                 }
@@ -2790,17 +2954,23 @@ function Collect-BHIssuancePolicies {
         $bhPolicy = @{
             ObjectIdentifier = $oid
             Properties       = @{
-                name              = "$name@$domainName"
-                domain            = $domainName
-                domainsid         = $DomainSID
-                distinguishedname = $dn
-                highvalue         = $false
-                certtemplateoid   = $oid
+                name                                = "$name@$domainName"
+                domain                              = $domainName
+                domainsid                           = $DomainSID
+                distinguishedname                   = $dn
+                highvalue                           = $false
+                certtemplateoid                     = $oid
+                objectguid                          = $policyGuid
+                displayname                         = if ($displayName) { $displayName } else { $null }
+                isaclprotected                      = $false
+                doesanyacegrantownerrights          = $false
+                doesanyinheritedacegrantownerrights = $false
+                whencreated                         = $policyWhenCreated
             }
             GroupLink        = $groupLink
+            ContainedBy      = Get-BHContainedByConfig -DistinguishedName $dn
             Aces             = @()
             IsDeleted        = $false
-            IsACLProtected   = $false
         }
 
         if ($CollectACLs -and $dn) {

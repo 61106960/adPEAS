@@ -91,6 +91,9 @@ function Export-adPEASFile {
         [int]$JsonDepth = 10,
 
         [Parameter(Mandatory=$false)]
+        [switch]$Compress,
+
+        [Parameter(Mandatory=$false)]
         [switch]$Force,
 
         [Parameter(Mandatory=$false)]
@@ -188,7 +191,11 @@ function Export-adPEASFile {
 
                 'Json' {
                     # JSON content - convert object and write without BOM
-                    $jsonContent = $Content | ConvertTo-Json -Depth $JsonDepth
+                    $jsonContent = if ($Compress) {
+                        $Content | ConvertTo-Json -Depth $JsonDepth -Compress
+                    } else {
+                        $Content | ConvertTo-Json -Depth $JsonDepth
+                    }
 
                     # Use UTF8 without BOM for JSON (better compatibility)
                     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
