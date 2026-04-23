@@ -1211,8 +1211,9 @@ function Get-ObjectCardTitle {
             return "Trust: $trustTarget"
         }
         'GPOLocalGroup' {
-            $localGrp = if ($Object.localGroup) { $Object.localGroup } else { "Local Group" }
-            return "GPO Local Group: $localGrp"
+            $localGrp = if ($Object.TargetGroup) { $Object.TargetGroup } else { "Local Group" }
+            $gpoName = if ($Object.GPOName) { " ($($Object.GPOName))" } else { "" }
+            return "GPO Local Group: $localGrp$gpoName"
         }
         'GPOScheduledTask' {
             $taskName = if ($Object.taskName) { $Object.taskName } else { "Task" }

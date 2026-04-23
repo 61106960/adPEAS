@@ -1,4 +1,4 @@
-﻿$Script:SeverityClasses = @{
+$Script:SeverityClasses = @{
     Finding  = 'Finding'
     Secure   = 'Secure'
     Hint     = 'Hint'
@@ -2046,7 +2046,6 @@ $Script:PrimaryAttributes = @{
         'ExtendedKeyUsage', 'CertificateNameFlagDisplay',
         'ManagerApprovalRequired',
         'EnrollmentPrincipals',
-        'TemplateACL',
         'DangerousACEs',
         'IssuancePolicyGroupLinks'
     )
@@ -5453,8 +5452,9 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("ntlmrelayx", "Impacket", "Responder")
         MITRE = "T1557"
         Triggers = @(
-            @{ Attribute = 'LDAPSigning'; Pattern = '^(None|Not Configured|Disabled|Not Required|Unknown)$'; Severity = 'Finding' }
+            @{ Attribute = 'LDAPSigning'; Pattern = '^(None|Disabled|Not Required|Unknown)$'; Severity = 'Finding' }
             @{ Attribute = 'LDAPSigning'; Pattern = '^Optional$'; Severity = 'Hint' }
+            @{ Attribute = 'LDAPSigning'; Pattern = '^Not Configured$'; Severity = 'Hint' }
         )
     }
     'LDAP_CHANNEL_BINDING_NOT_REQUIRED' = @{
@@ -5504,8 +5504,9 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("ntlmrelayx", "Impacket")
         MITRE = "T1557"
         Triggers = @(
-            @{ Attribute = 'ChannelBinding'; Pattern = '^(Never|Not Configured|Disabled|Not Required)$'; Severity = 'Finding' }
+            @{ Attribute = 'ChannelBinding'; Pattern = '^(Never|Disabled|Not Required)$'; Severity = 'Finding' }
             @{ Attribute = 'ChannelBinding'; Pattern = '^When Supported$'; Severity = 'Hint' }
+            @{ Attribute = 'ChannelBinding'; Pattern = '^Not Configured$'; Severity = 'Hint' }
         )
     }
     'LDAP_ANONYMOUS_BINDING_ALLOWED' = @{
@@ -10881,6 +10882,17 @@ function Get-AttributeSeverity {
             $IsComputer = $true
         }
     }
+    if ($Name -eq 'TemplateACL' -and $Value) {
+        $entries = if ($Value -is [array]) { $Value } else { @($Value) }
+        foreach ($entry in $entries) {
+            if (-not $entry.SID) { continue }
+            $privResult = Test-IsPrivileged -SID $entry.SID
+            if (-not $privResult.IsPrivileged) {
+                return 'Note'   # Non-Standard → auto-promoted to Primary
+            }
+        }
+        return 'Standard'   # All privileged → stays in Extended
+    }
     $triggerSeverity = Get-SeverityFromTrigger -Name $Name -Value $Value `
         -IsComputer $IsComputer -SourceObject $SourceObject
     if ($null -ne $triggerSeverity) {
@@ -11917,11 +11929,11 @@ $Script:ImpactMultipliers = @{
     'none'  = 1.0    # Standard user accounts - base impact
 }
 $Script:PasswordAgeModifiers = @{
-    'multiplier_10x' = 1.6    # Password age >= 10Ã— maxPwdAge
-    'multiplier_5x'  = 1.4    # Password age >= 5Ã— maxPwdAge
-    'multiplier_3x'  = 1.3    # Password age >= 3Ã— maxPwdAge
-    'multiplier_2x'  = 1.2    # Password age >= 2Ã— maxPwdAge
-    'multiplier_1x'  = 1.1    # Password age >= 1Ã— maxPwdAge (over policy)
+    'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
+    'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
+    'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
+    'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
+    'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
     'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 $Script:PasswordLengthModifiers = @{
@@ -15625,19 +15637,7 @@ function Connect-adPEAS {
                     Write-Log "[Connect-adPEAS] Warning: Hosts file cleanup failed: $_"
                 }
             }
-            $Script:LdapConnection = $null
-            $Script:LDAPContext = $null
-            $Script:LDAPCredential = $null
-            $Script:AuthInfo = $null
-            $Script:adPEAS_Outputfile = $null
-            $Script:HTMLOutputPath = $null
-            if ($Script:PrivilegedCheckCache) { $Script:PrivilegedCheckCache = @{} }
-            if ($Script:SIDResolutionCache) { $Script:SIDResolutionCache = @{} }
-            if ($Script:SIDVerboseCache) { $Script:SIDVerboseCache = @{} }
-            if ($Script:NameToSIDCache) { $Script:NameToSIDCache = @{} }
-            if ($Script:CompletionCache) {
-                try { Clear-CompletionCache } catch { }
-            }
+            Clear-SessionState
             Write-Log "[Connect-adPEAS] Previous session cleanup completed"
         }
         $ParamSetDisplay = switch ($PSCmdlet.ParameterSetName) {
@@ -35080,9 +35080,9 @@ function Get-KerberosChecksumNative {
         [int]$EncryptionType
     )
     $checksumType = switch ($EncryptionType) {
-        18 { 16 }    # AES256 â†’ HMAC_SHA1_96_AES256
-        17 { 15 }    # AES128 â†’ HMAC_SHA1_96_AES128
-        23 { -138 }  # RC4 â†’ HMAC_MD5
+        18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
+        17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
+        23 { -138 }  # RC4 → HMAC_MD5
         default { throw "Unsupported encryption type for checksum: $EncryptionType" }
     }
     Write-Verbose "[Get-KerberosChecksumNative] Called with: etype=$EncryptionType, checksumType=$checksumType, keyUsage=$KeyUsage, keyLen=$($Key.Length), dataLen=$($Data.Length)"
@@ -52317,7 +52317,9 @@ function Get-SMBSigningStatus {
                     return $allLinksToDCOU
                 })
                 if (@($dcOnlyGPOs).Count -eq @($gpoFindings).Count) {
-                    Show-Line "SMB Signing only configured for Domain Controllers - Member Servers and Clients rely on OS defaults (varies by version)" -Class Finding
+                    $hasRequiredSigning = @($dcOnlyGPOs | Where-Object { $_.ServerSigning -eq 'Required' }).Count -gt 0
+                    $dcOnlyClass = if ($hasRequiredSigning) { 'Hint' } else { 'Finding' }
+                    Show-Line "SMB Signing only configured for Domain Controllers - Member Servers and Clients rely on OS defaults (varies by version)" -Class $dcOnlyClass
                 }
                 $insecureGPOs = @()
                 foreach ($gpoFinding in $gpoFindings) {
@@ -53065,8 +53067,8 @@ function Get-ProtectedUsersStatus {
             }
             Write-Log "[Get-ProtectedUsersStatus] Found $($protectedMemberSIDs.Count) members in Protected Users group"
             $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
-            $tier0Accounts = @{}  # SID â†’ Account object (deduplicated)
-            $tier0AccountGroups = @{}  # SID â†’ Array of group names (for display)
+            $tier0Accounts = @{}  # SID → Account object (deduplicated)
+            $tier0AccountGroups = @{}  # SID → Array of group names (for display)
             foreach ($groupSID in $tier0GroupSIDs) {
                 $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
                 if (-not $groupObj) {
@@ -59860,8 +59862,8 @@ function Get-PasswordInDescription {
             $exclusionPatterns = @(
                 'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
                 '\bparol[ae]?\s*(policy|politica|cerinta)',
-                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|mÃ¥|bÃ¸r|deve|trebuie)\s+',
-                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utlÃ¸p|lunghezza|scadenza)',
+                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
+                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
                 'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
                 '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
                 '(minimum|maximum)\s+passw\S*',
@@ -60776,8 +60778,9 @@ function Get-ObjectCardTitle {
             return "Trust: $trustTarget"
         }
         'GPOLocalGroup' {
-            $localGrp = if ($Object.localGroup) { $Object.localGroup } else { "Local Group" }
-            return "GPO Local Group: $localGrp"
+            $localGrp = if ($Object.TargetGroup) { $Object.TargetGroup } else { "Local Group" }
+            $gpoName = if ($Object.GPOName) { " ($($Object.GPOName))" } else { "" }
+            return "GPO Local Group: $localGrp$gpoName"
         }
         'GPOScheduledTask' {
             $taskName = if ($Object.taskName) { $Object.taskName } else { "Task" }
@@ -69305,7 +69308,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.0.2"
+$Script:adPEASVersion = "2.0.2+20260423-2149"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
