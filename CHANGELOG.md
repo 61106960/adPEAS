@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.0.3] - 2026-05-07
+
+### Fixed
+
+- **Crash on second `Invoke-adPEAS` call** — `op_Subtraction` error when
+  running `Invoke-adPEAS` a second time in the same session.
+  `Connect-adPEAS` cleared `$Script:StartTime` on reconnect, breaking the
+  end-of-scan duration calculation
+- **`-OPSEC` mode still listed Bloodhound** in the module overview
+  (`Executing Modules: ..., Bloodhound`) even though collection was
+  correctly skipped — confusing for users who couldn't tell at a glance
+  whether BloodHound had run
+- **GPO Local Group card** title showed "Local Group" placeholder instead
+  of the actual group name
+- **LDAP "Not Configured"** signing/channel-binding values were shown as
+  Hint instead of Finding in GPO analysis
+- **SMB Signing DC-only configuration** was shown as Hint even when
+  server signing is Required — member servers fall back to OS defaults,
+  so this should be a Finding
+- **Certificate template ACL** was tagged as Primary finding even when
+  the current low-privileged user had no write rights — now Primary only
+  when actually exploitable by the running identity
+- **`Connect-adPEAS` cache cleanup** on reconnect was incomplete — stale
+  cached state from the previous session could leak into the new one
+
+---
+
 ## [2.0.2] - 2026-04-16
 
 ### Added
