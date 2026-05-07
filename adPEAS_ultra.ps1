@@ -1,4 +1,4 @@
-$Script:SeverityClasses = @{
+﻿$Script:SeverityClasses = @{
 	Finding  = 'Finding'
 	Secure   = 'Secure'
 	Hint     = 'Hint'
@@ -10869,10 +10869,10 @@ function Get-AttributeSeverity {
 	        if (-not $entry.SID) { continue }
 	        $privResult = Test-IsPrivileged -SID $entry.SID
 	        if (-not $privResult.IsPrivileged) {
-	            return 'Note'   # Non-Standard → auto-promoted to Primary
+	            return 'Note'   # Non-Standard â†’ auto-promoted to Primary
 	        }
 	    }
-	    return 'Standard'   # All privileged → stays in Extended
+	    return 'Standard'   # All privileged â†’ stays in Extended
 	}
 	$triggerSeverity = Get-SeverityFromTrigger -Name $Name -Value $Value `
 	    -IsComputer $IsComputer -SourceObject $SourceObject
@@ -11910,11 +11910,11 @@ $Script:ImpactMultipliers = @{
 	'none'  = 1.0    # Standard user accounts - base impact
 }
 $Script:PasswordAgeModifiers = @{
-	'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
-	'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
-	'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
-	'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
-	'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
+	'multiplier_10x' = 1.6    # Password age >= 10Ã— maxPwdAge
+	'multiplier_5x'  = 1.4    # Password age >= 5Ã— maxPwdAge
+	'multiplier_3x'  = 1.3    # Password age >= 3Ã— maxPwdAge
+	'multiplier_2x'  = 1.2    # Password age >= 2Ã— maxPwdAge
+	'multiplier_1x'  = 1.1    # Password age >= 1Ã— maxPwdAge (over policy)
 	'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 $Script:PasswordLengthModifiers = @{
@@ -16753,7 +16753,6 @@ function Clear-SessionState {
 	$Script:IncludePrivilegedMode = $null
 	$Script:adPEAS_OutputColor = $true
 	$Script:adPEAS_VerboseLogging = $false
-	$Script:StartTime = $null
 	$Script:ModuleCategoryHeaders = $null
 	$Script:adPEAS_Outputfile = $null
 	$Script:HTMLOutputPath = $null
@@ -33915,9 +33914,9 @@ function Get-KerberosChecksumNative {
 	    [int]$EncryptionType
 	)
 	$checksumType = switch ($EncryptionType) {
-	    18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
-	    17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
-	    23 { -138 }  # RC4 → HMAC_MD5
+	    18 { 16 }    # AES256 â†’ HMAC_SHA1_96_AES256
+	    17 { 15 }    # AES128 â†’ HMAC_SHA1_96_AES128
+	    23 { -138 }  # RC4 â†’ HMAC_MD5
 	    default { throw "Unsupported encryption type for checksum: $EncryptionType" }
 	}
 	if ((Initialize-KerbCryptoInterop) -and $Script:KerbCryptoHasChecksum) {
@@ -51000,8 +50999,8 @@ function Get-ProtectedUsersStatus {
 	            }
 	        }
 	        $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
-	        $tier0Accounts = @{}  # SID → Account object (deduplicated)
-	        $tier0AccountGroups = @{}  # SID → Array of group names (for display)
+	        $tier0Accounts = @{}  # SID â†’ Account object (deduplicated)
+	        $tier0AccountGroups = @{}  # SID â†’ Array of group names (for display)
 	        foreach ($groupSID in $tier0GroupSIDs) {
 	            $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
 	            if (-not $groupObj) {
@@ -57489,8 +57488,8 @@ function Get-PasswordInDescription {
 	        $exclusionPatterns = @(
 	            'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
 	            '\bparol[ae]?\s*(policy|politica|cerinta)',
-	            'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
-	            'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
+	            'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|mÃ¥|bÃ¸r|deve|trebuie)\s+',
+	            'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utlÃ¸p|lunghezza|scadenza)',
 	            'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
 	            '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
 	            '(minimum|maximum)\s+passw\S*',
@@ -66890,7 +66889,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.0.2+20260423-2149"
+$Script:adPEASVersion = "2.0.2+20260507-1638"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -66952,7 +66951,7 @@ function Invoke-adPEAS {
 	    [Parameter(Mandatory=$false)]
 	    [switch]$Statistics
 	)
-	$Script:StartTime = Get-Date
+	$StartTime = Get-Date
 	$Script:adPEAS_OutputColor = -not $NoColor
 	$Script:adPEAS_Outputfile = $null
 	$Script:adPEAS_VerboseLogging = $VerboseLogging
@@ -67451,7 +67450,7 @@ try {
 	    Show-Object $totalObj
 	}
 	$EndTime = Get-Date
-	$Duration = $EndTime - $Script:StartTime
+	$Duration = $EndTime - $StartTime
 	Show-Header "Scan Summary"
 	Show-Line "Duration: $([Math]::Round($Duration.TotalSeconds, 1)) seconds" -Class Hint
 	if ($sessionAborted) {

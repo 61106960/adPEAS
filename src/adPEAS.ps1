@@ -464,7 +464,10 @@ function Invoke-adPEAS {
     )
 
     # Reset script variables for each invocation
-    $Script:StartTime = Get-Date
+    # NOTE: $StartTime is intentionally local — it is only consumed within this invocation.
+    # Making it $Script: would expose it to Clear-SessionState (called by Connect-adPEAS on
+    # repeated invocations), which would null it before the duration calculation at the end.
+    $StartTime = Get-Date
     $Script:adPEAS_OutputColor = -not $NoColor
     $Script:adPEAS_Outputfile = $null
     $Script:adPEAS_VerboseLogging = $VerboseLogging
@@ -602,7 +605,7 @@ try {
         $Script:adPEASDisclaimer=(-join([Convert]::FromBase64String($_lm)|ForEach-Object{[char]($_-bxor$_lk)}))
         Show-Line $Script:adPEASDisclaimer -Class Finding
     }
-    Write-Log "[adPEAS] Script started: $Script:StartTime"
+    Write-Log "[adPEAS] Script started: $StartTime"
     Write-Log "[adPEAS] Version: $Script:adPEASVersion"
 
     if ($OPSEC) {
@@ -1145,7 +1148,7 @@ try {
 
     # 7. Summary
     $EndTime = Get-Date
-    $Duration = $EndTime - $Script:StartTime
+    $Duration = $EndTime - $StartTime
 
     Show-Header "Scan Summary"
     Show-Line "Duration: $([Math]::Round($Duration.TotalSeconds, 1)) seconds" -Class Hint

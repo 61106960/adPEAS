@@ -274,7 +274,6 @@ function Clear-SessionState {
     $Script:IncludePrivilegedMode = $null
     $Script:adPEAS_OutputColor = $true
     $Script:adPEAS_VerboseLogging = $false
-    $Script:StartTime = $null
     $Script:ModuleCategoryHeaders = $null
 
     # Output file (set by Invoke-adPEAS -Outputfile)
