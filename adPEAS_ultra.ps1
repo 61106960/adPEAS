@@ -66889,7 +66889,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.0.2+20260507-1638"
+$Script:adPEASVersion = "2.0.2+20260507-1645"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -67159,6 +67159,9 @@ try {
 	if (-not $Module) {
 	    $Module = @('Domain','Creds','Rights','Delegation','ADCS','Accounts','GPO','Computer','Application','Bloodhound')
 	}
+	if ($OPSEC) {
+	    $Module = @($Module | Where-Object { $_ -ne 'Bloodhound' })
+	}
 	Show-Line "Executing Modules: $($Module -join ', ')"
 	$moduleCounter = 0
 	$moduleTotal = $Module.Count
@@ -67361,25 +67364,20 @@ try {
 	    $moduleCounter++
 	    Enter-StatisticsModule 'Bloodhound'
 	    Show-Header "[$moduleCounter/$moduleTotal] Collecting $($Script:ModuleCategoryHeaders['Bloodhound'])"
-	    if ($OPSEC) {
-	        Show-Line "OPSEC mode: Skipping BloodHound collection" -Class Hint
-	    }
-	    else {
-	        try {
-	            $bhOutputDir = $null
-	            if ($Script:adPEAS_Outputfile) {
-	                $bhOutputDir = Split-Path -Parent $Script:adPEAS_Outputfile
-	            } elseif ($Script:HTMLOutputPath) {
-	                $bhOutputDir = Split-Path -Parent $Script:HTMLOutputPath
-	            }
-	            if ($bhOutputDir) {
-	                Invoke-CheckWithContext -Category 'Bloodhound' -CheckName 'Invoke-adPEASCollector' -Title 'BloodHound Collector' -Check { Invoke-adPEASCollector -OutputPath $bhOutputDir }
-	            } else {
-	                Invoke-CheckWithContext -Category 'Bloodhound' -CheckName 'Invoke-adPEASCollector' -Title 'BloodHound Collector' -Check { Invoke-adPEASCollector }
-	            }
-	        } catch {
-	            Write-Warning "[adPEAS] Error executing Bloodhound Module: $_"
+	    try {
+	        $bhOutputDir = $null
+	        if ($Script:adPEAS_Outputfile) {
+	            $bhOutputDir = Split-Path -Parent $Script:adPEAS_Outputfile
+	        } elseif ($Script:HTMLOutputPath) {
+	            $bhOutputDir = Split-Path -Parent $Script:HTMLOutputPath
 	        }
+	        if ($bhOutputDir) {
+	            Invoke-CheckWithContext -Category 'Bloodhound' -CheckName 'Invoke-adPEASCollector' -Title 'BloodHound Collector' -Check { Invoke-adPEASCollector -OutputPath $bhOutputDir }
+	        } else {
+	            Invoke-CheckWithContext -Category 'Bloodhound' -CheckName 'Invoke-adPEASCollector' -Title 'BloodHound Collector' -Check { Invoke-adPEASCollector }
+	        }
+	    } catch {
+	        Write-Warning "[adPEAS] Error executing Bloodhound Module: $_"
 	    }
 	    Exit-StatisticsModule 'Bloodhound'
 	}
