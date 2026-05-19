@@ -346,10 +346,76 @@ function Test-IsComputerObject {
 
 <#
 .SYNOPSIS
-    Adds activity status to an object based on lastLogonTimestamp.
+    Converts an AD timestamp value to a DateTime.
 .DESCRIPTION
-    Checks if an account is inactive (no login within InactiveDays) and adds
-    an activityStatus property if so. Uses $Script:DefaultInactiveDays by default.
+    Handles the timestamp representations that occur on AD objects:
+    - DateTime objects (pass through)
+    - FileTime integers (lastLogonTimestamp, pwdLastSet)
+    - FileTime as string
+    - Generalized Time strings (whenCreated, e.g. "20180101000000.0Z")
+    - Generic DateTime strings (fallback)
+    Returns $null for "never" / unset values (0, Int64.MaxValue) or on failure.
+.PARAMETER Value
+    The raw timestamp value (may be wrapped in a single-element array).
+#>
+function ConvertTo-ActivityDate {
+    param($Value)
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [array]) {
+        if ($Value.Count -eq 0) { return $null }
+        $Value = $Value[0]
+    }
+
+    if ($Value -is [DateTime]) { return $Value }
+
+    if ($Value -is [long] -or $Value -is [int]) {
+        if ($Value -le 0 -or $Value -eq 9223372036854775807) { return $null }
+        try { return [DateTime]::FromFileTime([long]$Value) } catch { return $null }
+    }
+
+    if ($Value -is [string]) {
+        # FileTime stored as string
+        $parsed = 0L
+        if ([long]::TryParse($Value, [ref]$parsed)) {
+            if ($parsed -le 0 -or $parsed -eq 9223372036854775807) { return $null }
+            try { return [DateTime]::FromFileTime($parsed) } catch { return $null }
+        }
+
+        # Generalized Time (e.g. "20180101000000.0Z" / "20180101000000Z")
+        if ($Value -match '^(\d{14})') {
+            $gtDate = [DateTime]::MinValue
+            if ([DateTime]::TryParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$gtDate)) {
+                return $gtDate.ToLocalTime()
+            }
+        }
+
+        # Generic DateTime string
+        $parsedDate = [DateTime]::MinValue
+        if ([DateTime]::TryParse($Value, [ref]$parsedDate)) {
+            return $parsedDate
+        }
+    }
+
+    return $null
+}
+
+<#
+.SYNOPSIS
+    Adds activity status to an object based on logon / password / creation age.
+.DESCRIPTION
+    Determines whether an account is inactive and, if so, adds an activityStatus
+    property (rendered as a Hint). Uses $Script:DefaultInactiveDays by default.
+
+    Detection logic:
+    - lastLogonTimestamp present  -> inactive if older than the threshold
+    - lastLogonTimestamp missing  -> fall back to pwdLastSet (machine accounts
+      rotate their password ~every 30 days, so a stale pwdLastSet means the host
+      is effectively dead even though it never recorded a replicated logon).
+      If the password was never set either, the account is flagged as
+      "never logged on" only when whenCreated proves it is old enough - this
+      guards against false positives on freshly created / not-yet-replicated
+      accounts.
 .PARAMETER Object
     The object to check and potentially modify.
 .PARAMETER InactiveDays
@@ -366,8 +432,8 @@ function Add-ActivityStatus {
         [int]$InactiveDays = 0  # 0 = use $Script:DefaultInactiveDays
     )
 
-    # Skip if already has status or no lastLogonTimestamp
-    if ($Object.activityStatus -or -not $Object.lastLogonTimestamp) {
+    # Skip if already classified
+    if ($Object.activityStatus) {
         return
     }
 
@@ -380,31 +446,36 @@ function Add-ActivityStatus {
         90  # Fallback if global not set
     }
 
-    $lastLogon = $Object.lastLogonTimestamp
-    $lastLogonDate = $null
+    $cutoffDate = (Get-Date).AddDays(-$effectiveInactiveDays)
+    $lastLogonDate = ConvertTo-ActivityDate -Value $Object.lastLogonTimestamp
 
-    # Parse lastLogonTimestamp (could be DateTime, FileTime, or string)
-    if ($lastLogon -is [DateTime]) {
-        $lastLogonDate = $lastLogon
-    } elseif ($lastLogon -is [long] -or $lastLogon -is [int]) {
-        if ($lastLogon -gt 0 -and $lastLogon -ne 9223372036854775807) {
-            try { $lastLogonDate = [DateTime]::FromFileTime([long]$lastLogon) } catch {}
+    if ($lastLogonDate) {
+        # Primary signal: a replicated logon timestamp exists
+        if ($lastLogonDate -lt $cutoffDate) {
+            $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no login for >$effectiveInactiveDays days)" -Force
         }
-    } elseif ($lastLogon -is [string]) {
-        $parsed = 0L
-        if ([long]::TryParse($lastLogon, [ref]$parsed) -and $parsed -gt 0) {
-            try { $lastLogonDate = [DateTime]::FromFileTime($parsed) } catch {}
-        } else {
-            $parsedDate = [DateTime]::MinValue
-            if ([DateTime]::TryParse($lastLogon, [ref]$parsedDate)) {
-                $lastLogonDate = $parsedDate
-            }
-        }
+        return
     }
 
-    # Check if inactive
-    if ($lastLogonDate -and $lastLogonDate -lt (Get-Date).AddDays(-$effectiveInactiveDays)) {
-        $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no login for >$effectiveInactiveDays days)" -Force
+    # No lastLogonTimestamp - fall back to secondary signals so old/dead
+    # accounts are not silently rendered as if they were alive.
+    $pwdLastSetDate = ConvertTo-ActivityDate -Value $Object.pwdLastSet
+
+    if ($pwdLastSetDate) {
+        if ($pwdLastSetDate -lt $cutoffDate) {
+            $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no logon recorded, password not changed for >$effectiveInactiveDays days)" -Force
+        }
+        # Recent password change -> live host whose lastLogonTimestamp simply
+        # has not replicated yet. Do not flag (avoids false positives).
+        return
+    }
+
+    # Password was never set either. Only flag as "never logged on" when
+    # whenCreated proves the account is older than the threshold; otherwise it
+    # may be a brand-new / not-yet-replicated account.
+    $createdDate = ConvertTo-ActivityDate -Value $Object.whenCreated
+    if ($createdDate -and $createdDate -lt $cutoffDate) {
+        $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (never logged on, account created >$effectiveInactiveDays days ago)" -Force
     }
 }
 
