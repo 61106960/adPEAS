@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.0.4] - 2026-05-19
+
+### Added
+
+- **Resizable name column in HTML report** — drag the column divider per
+  object card to widen/narrow the attribute-name column (Excel-style),
+  e.g. for screenshots. Transient only, resets to default on reload.
+
+### Changed
+
+- **GPO/object attribute reordering in HTML report** now uses a dedicated
+  drag handle (small grip at the left of each row) instead of making the
+  whole row draggable, so row text stays selectable.
+
+### Fixed
+
+- **Umlauts garbled in GPO local group / scheduled task findings** — GPP
+  `Groups.xml` / `ScheduledTasks.xml` are UTF-8, but were read with the
+  ANSI code page (Windows PowerShell 5.1 default without BOM), mojibaking
+  names such as "Domänen-Benutzer" → "DomÃ¤nen-Benutzer"
+- **Inactive accounts shown as active** when the AD object had no
+  `lastLogonTimestamp` (very old / never-used accounts, e.g. stale
+  computers found via SPN) — activity status now falls back to
+  `pwdLastSet` / `whenCreated`
+- **HTML report card text could not be selected or copied** — finding and
+  object card content is now freely selectable; selecting text no longer
+  expands/collapses the card
+
+---
+
 ## [2.0.3] - 2026-05-07
 
 ### Fixed

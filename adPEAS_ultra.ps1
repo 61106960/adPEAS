@@ -1,4 +1,4 @@
-﻿$Script:SeverityClasses = @{
+$Script:SeverityClasses = @{
 	Finding  = 'Finding'
 	Secure   = 'Secure'
 	Hint     = 'Hint'
@@ -2588,6 +2588,37 @@ function Test-IsComputerObject {
 	param($Object)
 	return (($Object.objectClass -contains "computer") -or ($Object.sAMAccountName -like '*$'))
 }
+function ConvertTo-ActivityDate {
+	param($Value)
+	if ($null -eq $Value) { return $null }
+	if ($Value -is [array]) {
+	    if ($Value.Count -eq 0) { return $null }
+	    $Value = $Value[0]
+	}
+	if ($Value -is [DateTime]) { return $Value }
+	if ($Value -is [long] -or $Value -is [int]) {
+	    if ($Value -le 0 -or $Value -eq 9223372036854775807) { return $null }
+	    try { return [DateTime]::FromFileTime([long]$Value) } catch { return $null }
+	}
+	if ($Value -is [string]) {
+	    $parsed = 0L
+	    if ([long]::TryParse($Value, [ref]$parsed)) {
+	        if ($parsed -le 0 -or $parsed -eq 9223372036854775807) { return $null }
+	        try { return [DateTime]::FromFileTime($parsed) } catch { return $null }
+	    }
+	    if ($Value -match '^(\d{14})') {
+	        $gtDate = [DateTime]::MinValue
+	        if ([DateTime]::TryParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$gtDate)) {
+	            return $gtDate.ToLocalTime()
+	        }
+	    }
+	    $parsedDate = [DateTime]::MinValue
+	    if ([DateTime]::TryParse($Value, [ref]$parsedDate)) {
+	        return $parsedDate
+	    }
+	}
+	return $null
+}
 function Add-ActivityStatus {
 	[CmdletBinding()]
 	param(
@@ -2596,7 +2627,7 @@ function Add-ActivityStatus {
 	    [Parameter(Mandatory=$false)]
 	    [int]$InactiveDays = 0  # 0 = use $Script:DefaultInactiveDays
 	)
-	if ($Object.activityStatus -or -not $Object.lastLogonTimestamp) {
+	if ($Object.activityStatus) {
 	    return
 	}
 	$effectiveInactiveDays = if ($InactiveDays -gt 0) {
@@ -2606,27 +2637,24 @@ function Add-ActivityStatus {
 	} else {
 	    90  # Fallback if global not set
 	}
-	$lastLogon = $Object.lastLogonTimestamp
-	$lastLogonDate = $null
-	if ($lastLogon -is [DateTime]) {
-	    $lastLogonDate = $lastLogon
-	} elseif ($lastLogon -is [long] -or $lastLogon -is [int]) {
-	    if ($lastLogon -gt 0 -and $lastLogon -ne 9223372036854775807) {
-	        try { $lastLogonDate = [DateTime]::FromFileTime([long]$lastLogon) } catch {}
+	$cutoffDate = (Get-Date).AddDays(-$effectiveInactiveDays)
+	$lastLogonDate = ConvertTo-ActivityDate -Value $Object.lastLogonTimestamp
+	if ($lastLogonDate) {
+	    if ($lastLogonDate -lt $cutoffDate) {
+	        $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no login for >$effectiveInactiveDays days)" -Force
 	    }
-	} elseif ($lastLogon -is [string]) {
-	    $parsed = 0L
-	    if ([long]::TryParse($lastLogon, [ref]$parsed) -and $parsed -gt 0) {
-	        try { $lastLogonDate = [DateTime]::FromFileTime($parsed) } catch {}
-	    } else {
-	        $parsedDate = [DateTime]::MinValue
-	        if ([DateTime]::TryParse($lastLogon, [ref]$parsedDate)) {
-	            $lastLogonDate = $parsedDate
-	        }
-	    }
+	    return
 	}
-	if ($lastLogonDate -and $lastLogonDate -lt (Get-Date).AddDays(-$effectiveInactiveDays)) {
-	    $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no login for >$effectiveInactiveDays days)" -Force
+	$pwdLastSetDate = ConvertTo-ActivityDate -Value $Object.pwdLastSet
+	if ($pwdLastSetDate) {
+	    if ($pwdLastSetDate -lt $cutoffDate) {
+	        $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no logon recorded, password not changed for >$effectiveInactiveDays days)" -Force
+	    }
+	    return
+	}
+	$createdDate = ConvertTo-ActivityDate -Value $Object.whenCreated
+	if ($createdDate -and $createdDate -lt $cutoffDate) {
+	    $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (never logged on, account created >$effectiveInactiveDays days ago)" -Force
 	}
 }
 function Get-RenderModel {
@@ -10869,10 +10897,10 @@ function Get-AttributeSeverity {
 	        if (-not $entry.SID) { continue }
 	        $privResult = Test-IsPrivileged -SID $entry.SID
 	        if (-not $privResult.IsPrivileged) {
-	            return 'Note'   # Non-Standard â†’ auto-promoted to Primary
+	            return 'Note'   # Non-Standard → auto-promoted to Primary
 	        }
 	    }
-	    return 'Standard'   # All privileged â†’ stays in Extended
+	    return 'Standard'   # All privileged → stays in Extended
 	}
 	$triggerSeverity = Get-SeverityFromTrigger -Name $Name -Value $Value `
 	    -IsComputer $IsComputer -SourceObject $SourceObject
@@ -11787,7 +11815,7 @@ function Render-HtmlRow {
 	        $valueHtml = Format-HtmlValueSpan -DisplayHtml $displayHtml -Severity $val.Severity -FindingId $val.FindingId
 	        $classAttr = Get-HtmlValueClassAttr -Severity $Row.OverallSeverity
 	        $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-	        return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div$classAttr>$valueHtml</div></div>"
+	        return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div$classAttr>$valueHtml</div></div>"
 	    }
 	    'MultiValue' {
 	        $valuesHtml = @()
@@ -11797,7 +11825,7 @@ function Render-HtmlRow {
 	        }
 	        $displayValue = $valuesHtml -join '<br>'
 	        $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-	        return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayValue</div></div>"
+	        return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayValue</div></div>"
 	    }
 	    'Image' {
 	        $val = $Row.Values[0]
@@ -11821,11 +11849,11 @@ function Render-HtmlRow {
 	            $altText = ConvertTo-HtmlEncode $Row.Name
 	            $displayValue = "<img src=`"$imgSrc`" alt=`"$altText`" title=`"$imgTitle`" style=`"max-width: 96px; max-height: 96px; border: 1px solid #555; border-radius: 4px;`" /><br><span style=`"font-size: 0.85em; color: #888;`">$imgTitle</span>"
 	            $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-	            return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayValue</div></div>"
+	            return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayValue</div></div>"
 	        }
 	        $displayHtml = ConvertTo-HtmlEncode $val.Display
 	        $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-	        return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayHtml</div></div>"
+	        return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayHtml</div></div>"
 	    }
 	    'Hash' {
 	        $val = $Row.Values[0]
@@ -11833,13 +11861,13 @@ function Render-HtmlRow {
 	        $dataAttr = if ($val.FindingId) { " data-finding-id=`"$(ConvertTo-HtmlEncode $val.FindingId)`"" } else { "" }
 	        $valueHtml = "<span class=`"finding`"$dataAttr>$displayHtml</span>"
 	        $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-	        return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$valueHtml</div></div>"
+	        return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$valueHtml</div></div>"
 	    }
 	    default {
 	        $val = if ($Row.Values.Count -gt 0) { $Row.Values[0] } else { $null }
 	        $displayHtml = if ($val) { ConvertTo-HtmlEncode $val.Display } else { '' }
 	        $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-	        return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayHtml</div></div>"
+	        return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayHtml</div></div>"
 	    }
 	}
 }
@@ -11910,11 +11938,11 @@ $Script:ImpactMultipliers = @{
 	'none'  = 1.0    # Standard user accounts - base impact
 }
 $Script:PasswordAgeModifiers = @{
-	'multiplier_10x' = 1.6    # Password age >= 10Ã— maxPwdAge
-	'multiplier_5x'  = 1.4    # Password age >= 5Ã— maxPwdAge
-	'multiplier_3x'  = 1.3    # Password age >= 3Ã— maxPwdAge
-	'multiplier_2x'  = 1.2    # Password age >= 2Ã— maxPwdAge
-	'multiplier_1x'  = 1.1    # Password age >= 1Ã— maxPwdAge (over policy)
+	'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
+	'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
+	'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
+	'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
+	'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
 	'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 $Script:PasswordLengthModifiers = @{
@@ -33914,9 +33942,9 @@ function Get-KerberosChecksumNative {
 	    [int]$EncryptionType
 	)
 	$checksumType = switch ($EncryptionType) {
-	    18 { 16 }    # AES256 â†’ HMAC_SHA1_96_AES256
-	    17 { 15 }    # AES128 â†’ HMAC_SHA1_96_AES128
-	    23 { -138 }  # RC4 â†’ HMAC_MD5
+	    18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
+	    17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
+	    23 { -138 }  # RC4 → HMAC_MD5
 	    default { throw "Unsupported encryption type for checksum: $EncryptionType" }
 	}
 	if ((Initialize-KerbCryptoInterop) -and $Script:KerbCryptoHasChecksum) {
@@ -50999,8 +51027,8 @@ function Get-ProtectedUsersStatus {
 	            }
 	        }
 	        $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
-	        $tier0Accounts = @{}  # SID â†’ Account object (deduplicated)
-	        $tier0AccountGroups = @{}  # SID â†’ Array of group names (for display)
+	        $tier0Accounts = @{}  # SID → Account object (deduplicated)
+	        $tier0AccountGroups = @{}  # SID → Array of group names (for display)
 	        foreach ($groupSID in $tier0GroupSIDs) {
 	            $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
 	            if (-not $groupObj) {
@@ -54169,7 +54197,8 @@ function Parse-GPPGroups {
 	    [string]$GPOGUID
 	)
 	try {
-	    [xml]$xmlContent = Get-Content -Path $FilePath -ErrorAction Stop
+	    $xmlContent = New-Object System.Xml.XmlDocument
+	    $xmlContent.Load($FilePath)
 	    $findings = @()
 	    $groups = $xmlContent.Groups.Group
 	    foreach ($group in $groups) {
@@ -54352,7 +54381,8 @@ function Parse-ScheduledTasksXML {
 	    [string]$GPOGUID
 	)
 	try {
-	    [xml]$xmlContent = Get-Content -Path $FilePath -ErrorAction Stop
+	    $xmlContent = New-Object System.Xml.XmlDocument
+	    $xmlContent.Load($FilePath)
 	    $tasks = @()
 	    $context = if ($FilePath -match '\\Machine\\') { 'Machine' } else { 'User' }
 	    $taskNodes = $xmlContent.SelectNodes("//Task | //TaskV2 | //ImmediateTask | //ImmediateTaskV2")
@@ -57488,8 +57518,8 @@ function Get-PasswordInDescription {
 	        $exclusionPatterns = @(
 	            'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
 	            '\bparol[ae]?\s*(policy|politica|cerinta)',
-	            'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|mÃ¥|bÃ¸r|deve|trebuie)\s+',
-	            'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utlÃ¸p|lunghezza|scadenza)',
+	            'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
+	            'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
 	            'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
 	            '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
 	            '(minimum|maximum)\s+passw\S*',
@@ -58433,6 +58463,7 @@ function Build-ObjectDetailHtml {
 	[void]$html.AppendLine("                        <span class=`"expand-icon`">&#9654;</span>")
 	[void]$html.AppendLine("                    </div>")
 	[void]$html.AppendLine("                    <div class=`"object-body`">")
+	[void]$html.AppendLine("                        <div class=`"attr-col-resizer`" title=`"Drag to resize the name column`" aria-hidden=`"true`"></div>")
 	if (-not $RenderModel) {
 	    $RenderModel = Get-RenderModel -Object $Object
 	}
@@ -59494,7 +59525,6 @@ function Get-HTMLTemplate {
 	        display: flex;
 	        align-items: center;
 	        justify-content: space-between;
-	        user-select: none;
 	        transition: background 0.15s ease;
 	    }
 	    .object-header:hover {
@@ -59520,6 +59550,41 @@ function Get-HTMLTemplate {
 	    }
 	    .object-detail.expanded .object-body {
 	        display: block;
+	        position: relative;
+	    }
+	    /* Excel-like per-card column resizer (not persisted, resets on reload) */
+	    .attr-col-resizer {
+	        position: absolute;
+	        top: 0;
+	        bottom: 0;
+	        left: var(--attr-name-w, 280px);
+	        width: 9px;
+	        transform: translateX(-50%);
+	        cursor: col-resize;
+	        z-index: 2;
+	        opacity: 0;
+	        transition: opacity 0.15s ease;
+	    }
+	    .attr-col-resizer::before {
+	        content: "";
+	        position: absolute;
+	        top: 0;
+	        bottom: 0;
+	        left: 50%;
+	        width: 2px;
+	        transform: translateX(-50%);
+	        background: var(--accent);
+	    }
+	    .object-body:hover .attr-col-resizer {
+	        opacity: 0.35;
+	    }
+	    .attr-col-resizer:hover,
+	    .attr-col-resizer.resizing {
+	        opacity: 1;
+	    }
+	    body.col-resizing {
+	        cursor: col-resize;
+	        user-select: none;
 	    }
 	    .attr-row {
 	        display: flex;
@@ -59530,8 +59595,8 @@ function Get-HTMLTemplate {
 	        border-bottom: none;
 	    }
 	    .attr-name {
-	        width: 280px;
-	        padding: 10px 18px;
+	        width: var(--attr-name-w, 280px);
+	        padding: 10px 18px 10px 20px;
 	        background: var(--bg-hover);
 	        font-weight: 500;
 	        color: var(--text-muted);
@@ -59589,21 +59654,42 @@ function Get-HTMLTemplate {
 	    .extended-attrs .attr-name {
 	        background: transparent;
 	    }
-	    /* Drag & Drop attribute reordering */
-	    .attr-row[draggable="true"] {
-	        cursor: grab;
-	        transition: opacity 0.2s, box-shadow 0.2s, transform 0.1s;
+	    /* Drag & Drop attribute reordering (handle-only, so row text stays selectable) */
+	    .attr-row {
+	        transition: opacity 0.2s, box-shadow 0.2s;
 	        position: relative;
 	    }
-	    .attr-row[draggable="true"]:hover {
-	        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+	    /* Overlay: sits on top of the (grey) attr-name column, takes no layout
+	       width, so colours match and no white gutter / no layout shift. */
+	    .attr-drag-handle {
+	        position: absolute;
+	        left: 0;
+	        top: 0;
+	        bottom: 0;
+	        width: 18px;
+	        display: flex;
+	        align-items: center;
+	        justify-content: center;
+	        color: var(--text-muted);
+	        font-size: 12px;
+	        line-height: 1;
+	        cursor: grab;
+	        opacity: 0;
+	        user-select: none;
+	        transition: opacity 0.15s ease;
+	        z-index: 1;
 	    }
-	    .attr-row[draggable="true"]:active {
+	    .attr-row:hover .attr-drag-handle {
+	        opacity: 0.55;
+	    }
+	    .attr-drag-handle:hover {
+	        opacity: 1;
+	    }
+	    .attr-drag-handle:active {
 	        cursor: grabbing;
 	    }
 	    .attr-row.dragging {
 	        opacity: 0.5;
-	        cursor: grabbing;
 	    }
 	    .attr-row.drag-over {
 	        border-top: 2px solid var(--accent);
@@ -60325,7 +60411,9 @@ function Get-HTMLTemplate {
 	        .expand-icon,
 	        .collapse-icon,
 	        .finding-toggle,
-	        .extended-attrs-toggle {
+	        .extended-attrs-toggle,
+	        .attr-drag-handle,
+	        .attr-col-resizer {
 	            display: none !important;
 	        }
 	        /* Attribute rows */
@@ -61021,6 +61109,8 @@ function Get-HTMLTemplate {
 	        }
 	    }
 	    function toggleFinding(header) {
+	        // Don't toggle if the click was actually a text selection (allow copy)
+	        if (window.getSelection && window.getSelection().toString().length > 0) return;
 	        const card = header.closest('.finding-card');
 	        card.classList.toggle('expanded');
 	        // Highlight the category in the sidebar navigation
@@ -61055,6 +61145,8 @@ function Get-HTMLTemplate {
 	    }
 	    // Toggle individual object card (collapsed/expanded)
 	    function toggleObjectCard(objectId) {
+	        // Don't toggle if the click was actually a text selection (allow copy)
+	        if (window.getSelection && window.getSelection().toString().length > 0) return;
 	        const card = document.getElementById('obj-' + objectId);
 	        if (card) {
 	            card.classList.toggle('expanded');
@@ -61297,6 +61389,8 @@ function Get-HTMLTemplate {
 	        sortCardsByScore();
 	        // Initialize attribute drag & drop reordering
 	        initAttributeDragAndDrop();
+	        // Initialize per-card name-column resizing
+	        initColumnResize();
 	    });
 	    let activeTooltip = null;
 	    function initFindingTooltips() {
@@ -63453,21 +63547,66 @@ function Get-HTMLTemplate {
 	        });
 	    }
 	    // ============================================================
+	    // Per-card name column resizing (Excel-like, not persisted)
+	    // ============================================================
+	    function initColumnResize() {
+	        const MIN_NAME_W = 120;   // px - keep the name column usable
+	        const MIN_VALUE_W = 140;  // px - keep the value column usable
+	        let resizer = null;
+	        let objectBody = null;
+	        let startX = 0;
+	        let startW = 0;
+	        let maxW = 0;
+	        document.addEventListener('mousedown', function(e) {
+	            const r = e.target.closest('.attr-col-resizer');
+	            if (!r) return;
+	            objectBody = r.closest('.object-body');
+	            if (!objectBody) return;
+	            e.preventDefault();
+	            resizer = r;
+	            // Current width from the CSS variable or the rendered name cell
+	            const nameCell = objectBody.querySelector('.attr-name');
+	            startW = nameCell ? nameCell.getBoundingClientRect().width : 280;
+	            startX = e.clientX;
+	            maxW = Math.max(MIN_NAME_W, objectBody.clientWidth - MIN_VALUE_W);
+	            resizer.classList.add('resizing');
+	            document.body.classList.add('col-resizing');
+	        });
+	        document.addEventListener('mousemove', function(e) {
+	            if (!resizer || !objectBody) return;
+	            e.preventDefault();
+	            let w = startW + (e.clientX - startX);
+	            w = Math.max(MIN_NAME_W, Math.min(w, maxW));
+	            objectBody.style.setProperty('--attr-name-w', w + 'px');
+	        });
+	        document.addEventListener('mouseup', function() {
+	            if (!resizer) return;
+	            resizer.classList.remove('resizing');
+	            document.body.classList.remove('col-resizing');
+	            resizer = null;
+	            objectBody = null;
+	        });
+	    }
+	    // ============================================================
 	    // DRAG & DROP Attribute Reordering
 	    // ============================================================
 	    function initAttributeDragAndDrop() {
 	        let draggedElement = null;
+	        // Only the dedicated drag handle starts a drag, so the rest of the
+	        // row text stays freely selectable / copyable.
 	        document.addEventListener('dragstart', function(e) {
-	            if (e.target.classList.contains('attr-row') && e.target.draggable) {
-	                draggedElement = e.target;
-	                e.target.classList.add('dragging');
+	            const handle = (e.target.classList && e.target.classList.contains('attr-drag-handle')) ? e.target : null;
+	            const row = handle ? handle.closest('.attr-row') : null;
+	            if (row) {
+	                draggedElement = row;
+	                row.classList.add('dragging');
 	                e.dataTransfer.effectAllowed = 'move';
-	                e.dataTransfer.setData('text/html', e.target.innerHTML);
+	                e.dataTransfer.setData('text/html', row.innerHTML);
 	            }
 	        });
-	        document.addEventListener('dragend', function(e) {
-	            if (e.target.classList.contains('attr-row')) {
-	                e.target.classList.remove('dragging');
+	        document.addEventListener('dragend', function() {
+	            if (draggedElement) {
+	                draggedElement.classList.remove('dragging');
 	                // Remove all drag-over indicators
 	                document.querySelectorAll('.attr-row.drag-over').forEach(el => {
 	                    el.classList.remove('drag-over');
@@ -66889,7 +67028,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.0.3"
+$Script:adPEASVersion = "2.0.4"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
