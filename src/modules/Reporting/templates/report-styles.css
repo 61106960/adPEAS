@@ -1197,7 +1197,6 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            user-select: none;
             transition: background 0.15s ease;
         }
 
@@ -1229,6 +1228,46 @@
 
         .object-detail.expanded .object-body {
             display: block;
+            position: relative;
+        }
+
+        /* Excel-like per-card column resizer (not persisted, resets on reload) */
+        .attr-col-resizer {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: var(--attr-name-w, 280px);
+            width: 9px;
+            transform: translateX(-50%);
+            cursor: col-resize;
+            z-index: 2;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+        }
+
+        .attr-col-resizer::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 50%;
+            width: 2px;
+            transform: translateX(-50%);
+            background: var(--accent);
+        }
+
+        .object-body:hover .attr-col-resizer {
+            opacity: 0.35;
+        }
+
+        .attr-col-resizer:hover,
+        .attr-col-resizer.resizing {
+            opacity: 1;
+        }
+
+        body.col-resizing {
+            cursor: col-resize;
+            user-select: none;
         }
 
         .attr-row {
@@ -1242,8 +1281,8 @@
         }
 
         .attr-name {
-            width: 280px;
-            padding: 10px 18px;
+            width: var(--attr-name-w, 280px);
+            padding: 10px 18px 10px 20px;
             background: var(--bg-hover);
             font-weight: 500;
             color: var(--text-muted);
@@ -1312,24 +1351,47 @@
             background: transparent;
         }
 
-        /* Drag & Drop attribute reordering */
-        .attr-row[draggable="true"] {
-            cursor: grab;
-            transition: opacity 0.2s, box-shadow 0.2s, transform 0.1s;
+        /* Drag & Drop attribute reordering (handle-only, so row text stays selectable) */
+        .attr-row {
+            transition: opacity 0.2s, box-shadow 0.2s;
             position: relative;
         }
 
-        .attr-row[draggable="true"]:hover {
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        /* Overlay: sits on top of the (grey) attr-name column, takes no layout
+           width, so colours match and no white gutter / no layout shift. */
+        .attr-drag-handle {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1;
+            cursor: grab;
+            opacity: 0;
+            user-select: none;
+            transition: opacity 0.15s ease;
+            z-index: 1;
         }
 
-        .attr-row[draggable="true"]:active {
+        .attr-row:hover .attr-drag-handle {
+            opacity: 0.55;
+        }
+
+        .attr-drag-handle:hover {
+            opacity: 1;
+        }
+
+        .attr-drag-handle:active {
             cursor: grabbing;
         }
 
         .attr-row.dragging {
             opacity: 0.5;
-            cursor: grabbing;
         }
 
         .attr-row.drag-over {
@@ -2173,7 +2235,9 @@
             .expand-icon,
             .collapse-icon,
             .finding-toggle,
-            .extended-attrs-toggle {
+            .extended-attrs-toggle,
+            .attr-drag-handle,
+            .attr-col-resizer {
                 display: none !important;
             }
 

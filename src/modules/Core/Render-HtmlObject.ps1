@@ -108,7 +108,7 @@ function Render-HtmlRow {
             $valueHtml = Format-HtmlValueSpan -DisplayHtml $displayHtml -Severity $val.Severity -FindingId $val.FindingId
             $classAttr = Get-HtmlValueClassAttr -Severity $Row.OverallSeverity
             $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-            return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div$classAttr>$valueHtml</div></div>"
+            return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div$classAttr>$valueHtml</div></div>"
         }
 
         'MultiValue' {
@@ -121,7 +121,7 @@ function Render-HtmlRow {
             # Individual values carry their own severity spans, so the container
             # div uses plain "attr-value" to avoid coloring non-severity items
             $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-            return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayValue</div></div>"
+            return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayValue</div></div>"
         }
 
         'Image' {
@@ -151,13 +151,13 @@ function Render-HtmlRow {
                 $altText = ConvertTo-HtmlEncode $Row.Name
                 $displayValue = "<img src=`"$imgSrc`" alt=`"$altText`" title=`"$imgTitle`" style=`"max-width: 96px; max-height: 96px; border: 1px solid #555; border-radius: 4px;`" /><br><span style=`"font-size: 0.85em; color: #888;`">$imgTitle</span>"
                 $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-                return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayValue</div></div>"
+                return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayValue</div></div>"
             }
 
             # Fallback: display as text
             $displayHtml = ConvertTo-HtmlEncode $val.Display
             $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-            return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayHtml</div></div>"
+            return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayHtml</div></div>"
         }
 
         'Hash' {
@@ -167,7 +167,7 @@ function Render-HtmlRow {
             $dataAttr = if ($val.FindingId) { " data-finding-id=`"$(ConvertTo-HtmlEncode $val.FindingId)`"" } else { "" }
             $valueHtml = "<span class=`"finding`"$dataAttr>$displayHtml</span>"
             $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-            return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$valueHtml</div></div>"
+            return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$valueHtml</div></div>"
         }
 
         default {
@@ -175,7 +175,7 @@ function Render-HtmlRow {
             $val = if ($Row.Values.Count -gt 0) { $Row.Values[0] } else { $null }
             $displayHtml = if ($val) { ConvertTo-HtmlEncode $val.Display } else { '' }
             $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
-            return "                        <div class=`"attr-row`" draggable=`"true`" data-attr-name=`"$attrNameEncoded`"><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayHtml</div></div>"
+            return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayHtml</div></div>"
         }
     }
 }

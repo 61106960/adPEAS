@@ -1269,6 +1269,7 @@ function Build-ObjectDetailHtml {
     [void]$html.AppendLine("                        <span class=`"expand-icon`">&#9654;</span>")
     [void]$html.AppendLine("                    </div>")
     [void]$html.AppendLine("                    <div class=`"object-body`">")
+    [void]$html.AppendLine("                        <div class=`"attr-col-resizer`" title=`"Drag to resize the name column`" aria-hidden=`"true`"></div>")
 
     # Use RenderModel if available, otherwise create one
     if (-not $RenderModel) {

@@ -99,6 +99,8 @@
         }
 
         function toggleFinding(header) {
+            // Don't toggle if the click was actually a text selection (allow copy)
+            if (window.getSelection && window.getSelection().toString().length > 0) return;
             const card = header.closest('.finding-card');
             card.classList.toggle('expanded');
 
@@ -140,6 +142,8 @@
 
         // Toggle individual object card (collapsed/expanded)
         function toggleObjectCard(objectId) {
+            // Don't toggle if the click was actually a text selection (allow copy)
+            if (window.getSelection && window.getSelection().toString().length > 0) return;
             const card = document.getElementById('obj-' + objectId);
             if (card) {
                 card.classList.toggle('expanded');
@@ -423,6 +427,9 @@
 
             // Initialize attribute drag & drop reordering
             initAttributeDragAndDrop();
+
+            // Initialize per-card name-column resizing
+            initColumnResize();
         });
 
         let activeTooltip = null;
@@ -2924,24 +2931,78 @@
         }
 
         // ============================================================
+        // Per-card name column resizing (Excel-like, not persisted)
+        // ============================================================
+
+        function initColumnResize() {
+            const MIN_NAME_W = 120;   // px - keep the name column usable
+            const MIN_VALUE_W = 140;  // px - keep the value column usable
+            let resizer = null;
+            let objectBody = null;
+            let startX = 0;
+            let startW = 0;
+            let maxW = 0;
+
+            document.addEventListener('mousedown', function(e) {
+                const r = e.target.closest('.attr-col-resizer');
+                if (!r) return;
+
+                objectBody = r.closest('.object-body');
+                if (!objectBody) return;
+
+                e.preventDefault();
+                resizer = r;
+
+                // Current width from the CSS variable or the rendered name cell
+                const nameCell = objectBody.querySelector('.attr-name');
+                startW = nameCell ? nameCell.getBoundingClientRect().width : 280;
+                startX = e.clientX;
+                maxW = Math.max(MIN_NAME_W, objectBody.clientWidth - MIN_VALUE_W);
+
+                resizer.classList.add('resizing');
+                document.body.classList.add('col-resizing');
+            });
+
+            document.addEventListener('mousemove', function(e) {
+                if (!resizer || !objectBody) return;
+                e.preventDefault();
+                let w = startW + (e.clientX - startX);
+                w = Math.max(MIN_NAME_W, Math.min(w, maxW));
+                objectBody.style.setProperty('--attr-name-w', w + 'px');
+            });
+
+            document.addEventListener('mouseup', function() {
+                if (!resizer) return;
+                resizer.classList.remove('resizing');
+                document.body.classList.remove('col-resizing');
+                resizer = null;
+                objectBody = null;
+            });
+        }
+
+        // ============================================================
         // DRAG & DROP Attribute Reordering
         // ============================================================
 
         function initAttributeDragAndDrop() {
             let draggedElement = null;
 
+            // Only the dedicated drag handle starts a drag, so the rest of the
+            // row text stays freely selectable / copyable.
             document.addEventListener('dragstart', function(e) {
-                if (e.target.classList.contains('attr-row') && e.target.draggable) {
-                    draggedElement = e.target;
-                    e.target.classList.add('dragging');
+                const handle = (e.target.classList && e.target.classList.contains('attr-drag-handle')) ? e.target : null;
+                const row = handle ? handle.closest('.attr-row') : null;
+                if (row) {
+                    draggedElement = row;
+                    row.classList.add('dragging');
                     e.dataTransfer.effectAllowed = 'move';
-                    e.dataTransfer.setData('text/html', e.target.innerHTML);
+                    e.dataTransfer.setData('text/html', row.innerHTML);
                 }
             });
 
-            document.addEventListener('dragend', function(e) {
-                if (e.target.classList.contains('attr-row')) {
-                    e.target.classList.remove('dragging');
+            document.addEventListener('dragend', function() {
+                if (draggedElement) {
+                    draggedElement.classList.remove('dragging');
                     // Remove all drag-over indicators
                     document.querySelectorAll('.attr-row.drag-over').forEach(el => {
                         el.classList.remove('drag-over');
