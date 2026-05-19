@@ -405,7 +405,11 @@ function Parse-GPPGroups {
     )
 
     try {
-        [xml]$xmlContent = Get-Content -Path $FilePath -ErrorAction Stop
+        # Use XmlDocument.Load() to honor the XML encoding declaration / BOM.
+        # Get-Content defaults to the ANSI code page in Windows PowerShell 5.1,
+        # which mojibakes UTF-8 Groups.xml (e.g. "Domänen-Benutzer" -> "DomÃ¤nen-Benutzer").
+        $xmlContent = New-Object System.Xml.XmlDocument
+        $xmlContent.Load($FilePath)
         $findings = @()
 
         $groups = $xmlContent.Groups.Group
