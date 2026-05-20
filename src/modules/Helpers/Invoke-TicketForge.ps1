@@ -387,7 +387,10 @@ function Invoke-TicketForge {
                     if (-not (Test-Path $BaseUserTGTPath)) {
                         throw "Base TGT file not found: $BaseUserTGTPath"
                     }
-                    $baseTgtBytes = [System.IO.File]::ReadAllBytes($BaseUserTGTPath)
+                    # Resolve to a full filesystem path: [IO.File]::ReadAllBytes uses
+                    # Environment.CurrentDirectory, not PowerShell's $PWD.
+                    $resolvedTgtPath = (Resolve-Path -LiteralPath $BaseUserTGTPath -ErrorAction Stop).ProviderPath
+                    $baseTgtBytes = [System.IO.File]::ReadAllBytes($resolvedTgtPath)
                     Write-Log "[Invoke-TicketForge] Loaded base TGT from file: $BaseUserTGTPath"
                 }
                 # Option 2: Base64 string

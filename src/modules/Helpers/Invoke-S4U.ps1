@@ -274,10 +274,13 @@ function Invoke-S4UCore {
 
             # Step 5: Export .kirbi (optional)
             if ($OutputKirbi) {
-                Write-Log "[Invoke-S4UCore] Exporting ticket to: $OutputKirbi"
+                # Resolve PSPath to filesystem path: [IO.File]::WriteAllBytes uses
+                # Environment.CurrentDirectory, not PowerShell's $PWD.
+                $outputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputKirbi)
+                Write-Log "[Invoke-S4UCore] Exporting ticket to: $outputPath"
 
                 try {
-                    [System.IO.File]::WriteAllBytes($OutputKirbi, $baseKrbCred)
+                    [System.IO.File]::WriteAllBytes($outputPath, $baseKrbCred)
                     Write-Log "[Invoke-S4UCore] Ticket exported successfully"
                 }
                 catch {

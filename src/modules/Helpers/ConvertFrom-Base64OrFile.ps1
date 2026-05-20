@@ -213,7 +213,11 @@ function ConvertFrom-Base64OrFile {
         # Check if file exists
         if (Test-Path -Path $InputValue -PathType Leaf) {
             try {
-                $fileBytes = [System.IO.File]::ReadAllBytes($InputValue)
+                # Resolve to a full filesystem path before handing it to .NET:
+                # [IO.File]::ReadAllBytes uses Environment.CurrentDirectory, not PowerShell's $PWD,
+                # so relative paths like ".\cert.pfx" would otherwise resolve against the wrong directory.
+                $resolvedPath = (Resolve-Path -LiteralPath $InputValue -ErrorAction Stop).ProviderPath
+                $fileBytes = [System.IO.File]::ReadAllBytes($resolvedPath)
 
                 if ($fileBytes.Length -eq 0) {
                     $result.Error = "File is empty: $InputValue"
