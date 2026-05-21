@@ -595,7 +595,11 @@ function Invoke-KerberosAuth {
                 [int]$EType
             )
 
-            $keyUsage = 3
+            # AS-REP enc-part: RFC 4120 specifies key usage 3 (encrypted with client long-term key).
+            # RC4-HMAC against Windows KDCs uses key usage 8 instead — a historic Microsoft quirk
+            # (early Win2000 KDC conflated AS-REP/TGS-REP enc-part) documented in RFC 4757.
+            # MIT Kerberos and Impacket apply the same 3->8 remap for ARCFOUR_HMAC.
+            $keyUsage = if ($EType -eq 23) { 8 } else { 3 }
 
             try {
                 switch ($EType) {
