@@ -152,6 +152,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-ManagedPassword.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-LAPSEncryptedPassword.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-SupplementalCredentials.ps1"
+    . "$Script:ScriptPath\modules\Helpers\ConvertFrom-TSProperties.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-CurrentUserTokenGroups.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-adPEASSession.ps1"
     . "$Script:ScriptPath\modules\Helpers\Test-KerberosTGTExists.ps1"

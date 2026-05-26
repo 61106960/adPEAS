@@ -456,7 +456,8 @@ function Invoke-LDAPSearch {
                 'msds-keyversionnumber', 'repluptodatevector', 'replpropertymeta',
                 'pkiexpirationperiod', 'pkioverlapperiod', 'pkikeyusage',
                 'extensiondata',
-                'msmqdigests', 'msmqsigncertificates'
+                'msmqdigests', 'msmqsigncertificates',
+                'userparameters', 'terminalserver'
             )) { [void]$BinaryAttributeSet.Add($ba) }
 
             # CountOnly mode: only count matching objects without collecting or converting them
@@ -1282,10 +1283,21 @@ function Invoke-LDAPSearch {
                                 } catch {
                                     $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
                                 }
-                            } elseif ($PropNameLower -eq 'userparameters') {
-                                # userParameters contains Terminal Services settings - skip conversion, show as placeholder
-                                # The raw data is binary/encoded and not useful for display
-                                $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[Terminal Services Settings]"
+                            } elseif ($PropNameLower -eq 'userparameters' -or $PropNameLower -eq 'terminalserver') {
+                                # Legacy Terminal Services blob (TSPropertyArray, [MS-TSTS] 2.2.1.1).
+                                # Decode the well-known Ctx* properties when the signature matches;
+                                # otherwise emit a placeholder describing the byte count.
+                                $tsLines = ConvertFrom-TSProperties -Bytes $PropValue
+                                if ($tsLines) {
+                                    if ($tsLines.Count -eq 1) {
+                                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines[0]
+                                    } else {
+                                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines
+                                    }
+                                } else {
+                                    $byteLen = if ($PropValue[0] -is [byte[]]) { $PropValue[0].Length } else { 0 }
+                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[Terminal Services blob: $byteLen bytes, no recognised TSPropertyArray signature]"
+                                }
                             } elseif ($PropNameLower -eq 'useraccountcontrol') {
                                 # Convert userAccountControl to readable flags
                                 try {

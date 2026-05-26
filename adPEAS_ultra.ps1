@@ -11590,6 +11590,44 @@ function Convert-KeyCredentialLinkToRenderValues {
 	    Values              = $renderValues
 	}
 }
+function Convert-ProtocolSettingsToRenderValues {
+	[CmdletBinding()]
+	param([string]$Name, $Value, $Context)
+	$entries = @($Value)
+	if ($entries.Count -eq 0) { return $null }
+	$renderValues = @()
+	foreach ($entry in $entries) {
+	    $entryStr = [string]$entry
+	    if ([string]::IsNullOrWhiteSpace($entryStr)) { continue }
+	    $fields   = $entryStr.Split([char]0x00A7)
+	    $protocol = if ($fields[0]) { $fields[0] } else { '<unknown>' }
+	    $state = if ($fields.Count -ge 2 -and -not [string]::IsNullOrEmpty($fields[1])) {
+	        switch ($fields[1]) {
+	            '0'     { 'disabled' }
+	            '1'     { 'enabled' }
+	            default { "flag=$($fields[1])" }
+	        }
+	    } else { 'no override' }
+	    $extras = @()
+	    for ($i = 2; $i -lt $fields.Count; $i++) {
+	        if (-not [string]::IsNullOrEmpty($fields[$i])) {
+	            $extras += $fields[$i]
+	        }
+	    }
+	    $display = "${protocol}: $state"
+	    if ($extras.Count -gt 0) {
+	        $display += " [$($extras -join ', ')]"
+	    }
+	    $renderValues += New-RenderValue -Display $display -Severity 'Standard' -RawValue $entry
+	}
+	if ($renderValues.Count -eq 0) { return $null }
+	return @{
+	    RowType             = 'MultiValue'
+	    OverallSeverity     = 'Standard'
+	    ForceAttributeClass = $false
+	    Values              = $renderValues
+	}
+}
 function Convert-ScriptPathToRenderValues {
 	[CmdletBinding()]
 	param([string]$Name, $Value, $Context)
@@ -11640,6 +11678,7 @@ $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Conver
 $Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
 $Script:AttributeTransformers['ASREPRoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
+$Script:AttributeTransformers['protocolSettings']            = ${function:Convert-ProtocolSettingsToRenderValues}
 function Render-ConsoleObject {
 	[CmdletBinding()]
 	param(
@@ -17081,7 +17120,8 @@ function Invoke-LDAPSearch {
 	            'msds-keyversionnumber', 'repluptodatevector', 'replpropertymeta',
 	            'pkiexpirationperiod', 'pkioverlapperiod', 'pkikeyusage',
 	            'extensiondata',
-	            'msmqdigests', 'msmqsigncertificates'
+	            'msmqdigests', 'msmqsigncertificates',
+	            'userparameters', 'terminalserver'
 	        )) { [void]$BinaryAttributeSet.Add($ba) }
 	        if ($CountOnly) {
 	            $TotalCount = 0
@@ -17741,8 +17781,18 @@ function Invoke-LDAPSearch {
 	                            } catch {
 	                                $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
 	                            }
-	                        } elseif ($PropNameLower -eq 'userparameters') {
-	                            $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[Terminal Services Settings]"
+	                        } elseif ($PropNameLower -eq 'userparameters' -or $PropNameLower -eq 'terminalserver') {
+	                            $tsLines = ConvertFrom-TSProperties -Bytes $PropValue
+	                            if ($tsLines) {
+	                                if ($tsLines.Count -eq 1) {
+	                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines[0]
+	                                } else {
+	                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines
+	                                }
+	                            } else {
+	                                $byteLen = if ($PropValue[0] -is [byte[]]) { $PropValue[0].Length } else { 0 }
+	                                $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[Terminal Services blob: $byteLen bytes, no recognised TSPropertyArray signature]"
+	                            }
 	                        } elseif ($PropNameLower -eq 'useraccountcontrol') {
 	                            try {
 	                                $UACValue = [Int32]$PropValue[0]
@@ -29489,6 +29539,117 @@ function Parse-WDigestHashes {
 	catch {
 	    return @()
 	}
+}
+function ConvertFrom-TSProperties {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    $Bytes
+	)
+	if ($Bytes -is [array] -and $Bytes.Count -eq 1 -and $Bytes[0] -is [byte[]]) {
+	    $Bytes = $Bytes[0]
+	}
+	if ($Bytes -isnot [byte[]]) { return $null }
+	if ($Bytes.Length -lt 100) { return $null }
+	if ($Bytes[96] -ne 0x50 -or $Bytes[97] -ne 0x00) { return $null }
+	$propCount = [BitConverter]::ToUInt16($Bytes, 98)
+	if ($propCount -lt 1 -or $propCount -gt 100) { return $null }  # sanity
+	$offset = 100
+	$lines = @()
+	$labelMap = @{
+	    'CtxCfgPresent'             = 'TSConfigPresent'
+	    'CtxCfgFlags1'              = 'TSConfigFlags'
+	    'CtxCallback'               = 'TSCallback'
+	    'CtxCallbackNumber'         = 'TSCallbackNumber'
+	    'CtxKeyboardLayout'         = 'TSKeyboardLayout'
+	    'CtxMinEncryptionLevel'     = 'TSMinEncryptionLevel'
+	    'CtxNWLogonServer'          = 'TSNetWareLogonServer'
+	    'CtxWFHomeDir'              = 'TSHomeDirectory'
+	    'CtxWFHomeDirDrive'         = 'TSHomeDrive'
+	    'CtxWFProfilePath'          = 'TSProfilePath'
+	    'CtxInitialProgram'         = 'TSInitialProgram'
+	    'CtxMaxConnectionTime'      = 'TSMaxConnectionTime'
+	    'CtxMaxDisconnectionTime'   = 'TSMaxDisconnectionTime'
+	    'CtxMaxIdleTime'            = 'TSMaxIdleTime'
+	    'CtxShadow'                 = 'TSShadowingSetting'
+	    'CtxWorkDirectory'          = 'TSWorkDirectory'
+	}
+	$cfgFlags = [ordered]@{
+	    0x00000008 = 'INHERIT_INITIAL_PROGRAM'
+	    0x00000010 = 'INHERIT_CALLBACK'
+	    0x00000020 = 'INHERIT_CALLBACK_NUMBER'
+	    0x00000040 = 'INHERIT_SHADOW'
+	    0x00000080 = 'INHERIT_MAX_DISCONNECTION_TIME'
+	    0x00000100 = 'INHERIT_MAX_CONNECTION_TIME'
+	    0x00000200 = 'INHERIT_MAX_IDLE_TIME'
+	    0x00000400 = 'INHERIT_AUTO_CLIENT'
+	    0x00010000 = 'AUTO_CLIENT_DRIVES'
+	    0x00020000 = 'AUTO_CLIENT_PRINTERS'
+	    0x00040000 = 'FORCE_CLIENT_PRINTER_DEFAULT'
+	    0x00080000 = 'DISABLE_ENCRYPTION'
+	    0x00100000 = 'HOMEDIR_MAP_ROOT'
+	    0x00200000 = 'USE_DEFAULT_GINA'
+	    0x00400000 = 'DISABLE_CPM'
+	    0x00800000 = 'DISABLE_CDM'
+	    0x01000000 = 'DISABLE_CCM'
+	    0x02000000 = 'DISABLE_LPT'
+	    0x04000000 = 'DISABLE_CLIP'
+	    0x08000000 = 'DISABLE_EXE'
+	    0x10000000 = 'WALLPAPER_DISABLED'
+	    0x40000000 = 'LOGON_DISABLED'
+	    0x80000000 = 'RECONNECT_SAME'
+	}
+	try {
+	    for ($i = 0; $i -lt $propCount; $i++) {
+	        if ($offset + 6 -gt $Bytes.Length) { break }
+	        $nameLen  = [BitConverter]::ToUInt16($Bytes, $offset);     $offset += 2
+	        $valueLen = [BitConverter]::ToUInt16($Bytes, $offset);     $offset += 2
+	        $type     = [BitConverter]::ToUInt16($Bytes, $offset);     $offset += 2
+	        if ($offset + $nameLen + $valueLen -gt $Bytes.Length) { break }
+	        $name = [System.Text.Encoding]::Unicode.GetString($Bytes, $offset, $nameLen)
+	        $offset += $nameLen
+	        $decoded = New-Object byte[] ($valueLen / 2)
+	        for ($k = 0; $k -lt $decoded.Length; $k++) {
+	            $hi = $Bytes[$offset + ($k * 2)]     - 0x30
+	            $lo = $Bytes[$offset + ($k * 2) + 1] - 0x30
+	            $decoded[$k] = (($hi -shl 4) -bor $lo) -band 0xFF
+	        }
+	        $offset += $valueLen
+	        $label = if ($labelMap.ContainsKey($name)) { $labelMap[$name] } else { $name }
+	        switch ($type) {
+	            1 {
+	                $str = [System.Text.Encoding]::Unicode.GetString($decoded).TrimEnd([char]0)
+	                if ($str) { $lines += "$label = '$str'" }
+	            }
+	            2 {
+	                if ($decoded.Length -ge 4) {
+	                    $val = [BitConverter]::ToUInt32($decoded, 0)
+	                    if ($name -eq 'CtxCfgFlags1') {
+	                        $setFlags = foreach ($mask in $cfgFlags.Keys) {
+	                            if ($val -band $mask) { $cfgFlags[$mask] }
+	                        }
+	                        if ($setFlags) {
+	                            $lines += ("{0} = 0x{1:X8} ({2})" -f $label, $val, ($setFlags -join ', '))
+	                        } else {
+	                            $lines += ("{0} = 0x{1:X8}" -f $label, $val)
+	                        }
+	                    } elseif ($name -eq 'CtxCfgPresent') {
+	                        $lines += ("{0} = 0x{1:X8}" -f $label, $val)
+	                    } else {
+	                        $lines += "$label = $val"
+	                    }
+	                }
+	            }
+	            default {
+	                $lines += "$label (type $type, $($decoded.Length) bytes)"
+	            }
+	        }
+	    }
+	} catch {
+	    return $null
+	}
+	if ($lines.Count -eq 0) { return $null }
+	return $lines
 }
 function Get-CurrentUserTokenGroups {
 	[CmdletBinding()]
@@ -67042,7 +67203,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.0.4+20260526-1417"
+$Script:adPEASVersion = "2.0.4+20260526-1442"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
