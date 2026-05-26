@@ -17455,8 +17455,20 @@ function Invoke-LDAPSearch {
                 if ($Script:LDAPStatistics -and $Entry.DistinguishedName) {
                     $Script:LDAPStatistics.TotalEstimatedBytes += $Entry.DistinguishedName.Length * 2 + 40
                 }
-                foreach ($PropName in $Entry.Attributes.AttributeNames) {
-                    $AttrValues = $Entry.Attributes[$PropName]
+                if (-not $Entry.Attributes) { continue }
+                $AttrNames = @()
+                try { $AttrNames = @($Entry.Attributes.AttributeNames) } catch {
+                    Write-Log "[Invoke-LDAPSearch] Failed to enumerate attributes for '$($Entry.DistinguishedName)': $_" -Level Warning
+                    continue
+                }
+                foreach ($PropName in $AttrNames) {
+                    if ([string]::IsNullOrEmpty($PropName)) { continue }
+                    $AttrValues = $null
+                    try { $AttrValues = $Entry.Attributes[$PropName] } catch {
+                        Write-Log "[Invoke-LDAPSearch] Failed to read attribute '$PropName' on '$($Entry.DistinguishedName)': $_" -Level Warning
+                        continue
+                    }
+                    if ($null -eq $AttrValues) { continue }
                     if ($Script:LDAPStatistics) {
                         for ($si = 0; $si -lt $AttrValues.Count; $si++) {
                             try {
@@ -30618,7 +30630,7 @@ function ConvertFrom-TSProperties {
         'CtxShadow'                 = 'TSShadowingSetting'
         'CtxWorkDirectory'          = 'TSWorkDirectory'
     }
-    $cfgFlags = [ordered]@{
+    $cfgFlags = @{
         0x00000008 = 'INHERIT_INITIAL_PROGRAM'
         0x00000010 = 'INHERIT_CALLBACK'
         0x00000020 = 'INHERIT_CALLBACK_NUMBER'
@@ -30643,6 +30655,7 @@ function ConvertFrom-TSProperties {
         0x40000000 = 'LOGON_DISABLED'
         0x80000000 = 'RECONNECT_SAME'
     }
+    $cfgFlagKeys = ($cfgFlags.Keys | Sort-Object)
     try {
         for ($i = 0; $i -lt $propCount; $i++) {
             if ($offset + 6 -gt $Bytes.Length) { break }
@@ -30650,10 +30663,12 @@ function ConvertFrom-TSProperties {
             $valueLen = [BitConverter]::ToUInt16($Bytes, $offset);     $offset += 2
             $type     = [BitConverter]::ToUInt16($Bytes, $offset);     $offset += 2
             if ($offset + $nameLen + $valueLen -gt $Bytes.Length) { break }
+            if ($valueLen % 2 -ne 0) { break }
             $name = [System.Text.Encoding]::Unicode.GetString($Bytes, $offset, $nameLen)
             $offset += $nameLen
-            $decoded = New-Object byte[] ($valueLen / 2)
-            for ($k = 0; $k -lt $decoded.Length; $k++) {
+            $decodedLen = [int]($valueLen / 2)
+            $decoded = New-Object byte[] $decodedLen
+            for ($k = 0; $k -lt $decodedLen; $k++) {
                 $hi = $Bytes[$offset + ($k * 2)]     - 0x30
                 $lo = $Bytes[$offset + ($k * 2) + 1] - 0x30
                 $decoded[$k] = (($hi -shl 4) -bor $lo) -band 0xFF
@@ -30669,7 +30684,7 @@ function ConvertFrom-TSProperties {
                     if ($decoded.Length -ge 4) {
                         $val = [BitConverter]::ToUInt32($decoded, 0)
                         if ($name -eq 'CtxCfgFlags1') {
-                            $setFlags = foreach ($mask in $cfgFlags.Keys) {
+                            $setFlags = foreach ($mask in $cfgFlagKeys) {
                                 if ($val -band $mask) { $cfgFlags[$mask] }
                             }
                             if ($setFlags) {
@@ -69614,7 +69629,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.0.4+20260526-1505"
+$Script:adPEASVersion = "2.0.4+20260526-1526"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

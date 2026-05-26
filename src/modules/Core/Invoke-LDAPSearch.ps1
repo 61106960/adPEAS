@@ -557,9 +557,24 @@ function Invoke-LDAPSearch {
                     $Script:LDAPStatistics.TotalEstimatedBytes += $Entry.DistinguishedName.Length * 2 + 40
                 }
 
-                # Process each attribute with full conversion logic
-                foreach ($PropName in $Entry.Attributes.AttributeNames) {
-                    $AttrValues = $Entry.Attributes[$PropName]
+                # Process each attribute with full conversion logic.
+                # Some entries may have attributes that throw on indexer access (e.g. range
+                # retrieval markers, unparseable binary blobs). Snapshot the names first and
+                # guard the indexer so one bad attribute does not abort the whole query.
+                if (-not $Entry.Attributes) { continue }
+                $AttrNames = @()
+                try { $AttrNames = @($Entry.Attributes.AttributeNames) } catch {
+                    Write-Log "[Invoke-LDAPSearch] Failed to enumerate attributes for '$($Entry.DistinguishedName)': $_" -Level Warning
+                    continue
+                }
+                foreach ($PropName in $AttrNames) {
+                    if ([string]::IsNullOrEmpty($PropName)) { continue }
+                    $AttrValues = $null
+                    try { $AttrValues = $Entry.Attributes[$PropName] } catch {
+                        Write-Log "[Invoke-LDAPSearch] Failed to read attribute '$PropName' on '$($Entry.DistinguishedName)': $_" -Level Warning
+                        continue
+                    }
+                    if ($null -eq $AttrValues) { continue }
 
                     # Statistics: estimate bytes for this attribute
                     if ($Script:LDAPStatistics) {

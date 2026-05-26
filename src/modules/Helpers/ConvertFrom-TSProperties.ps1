@@ -75,8 +75,12 @@ function ConvertFrom-TSProperties {
         'CtxWorkDirectory'          = 'TSWorkDirectory'
     }
 
-    # Flag bits for CtxCfgFlags1 (only the ones useful for security review)
-    $cfgFlags = [ordered]@{
+    # Flag bits for CtxCfgFlags1 (only the ones useful for security review).
+    # Use a plain hashtable, not [ordered]@{} - the OrderedDictionary indexer treats
+    # integer arguments as positional indices, so $cfgFlags[0x20] returns the 32nd
+    # entry (or fails) instead of the value under key 0x00000020. With @{} the
+    # integer key lookup works as expected.
+    $cfgFlags = @{
         0x00000008 = 'INHERIT_INITIAL_PROGRAM'
         0x00000010 = 'INHERIT_CALLBACK'
         0x00000020 = 'INHERIT_CALLBACK_NUMBER'
@@ -101,6 +105,8 @@ function ConvertFrom-TSProperties {
         0x40000000 = 'LOGON_DISABLED'
         0x80000000 = 'RECONNECT_SAME'
     }
+    # Sorted ascending key list so flag enumeration is deterministic
+    $cfgFlagKeys = ($cfgFlags.Keys | Sort-Object)
 
     try {
         for ($i = 0; $i -lt $propCount; $i++) {
@@ -110,7 +116,10 @@ function ConvertFrom-TSProperties {
             $valueLen = [BitConverter]::ToUInt16($Bytes, $offset);     $offset += 2
             $type     = [BitConverter]::ToUInt16($Bytes, $offset);     $offset += 2
 
+            # Sanity: header lengths must point inside the buffer and the encoded
+            # value must be an even number of bytes (two ASCII chars per output byte).
             if ($offset + $nameLen + $valueLen -gt $Bytes.Length) { break }
+            if ($valueLen % 2 -ne 0) { break }
 
             $name = [System.Text.Encoding]::Unicode.GetString($Bytes, $offset, $nameLen)
             $offset += $nameLen
@@ -118,8 +127,9 @@ function ConvertFrom-TSProperties {
             # Decode value: each output byte = (nibbleHi - 0x30) << 4 | (nibbleLo - 0x30)
             # The valueLen is the length of the ENCODED ASCII representation, so the
             # decoded byte count is valueLen / 2.
-            $decoded = New-Object byte[] ($valueLen / 2)
-            for ($k = 0; $k -lt $decoded.Length; $k++) {
+            $decodedLen = [int]($valueLen / 2)
+            $decoded = New-Object byte[] $decodedLen
+            for ($k = 0; $k -lt $decodedLen; $k++) {
                 $hi = $Bytes[$offset + ($k * 2)]     - 0x30
                 $lo = $Bytes[$offset + ($k * 2) + 1] - 0x30
                 $decoded[$k] = (($hi -shl 4) -bor $lo) -band 0xFF
@@ -139,7 +149,7 @@ function ConvertFrom-TSProperties {
                     if ($decoded.Length -ge 4) {
                         $val = [BitConverter]::ToUInt32($decoded, 0)
                         if ($name -eq 'CtxCfgFlags1') {
-                            $setFlags = foreach ($mask in $cfgFlags.Keys) {
+                            $setFlags = foreach ($mask in $cfgFlagKeys) {
                                 if ($val -band $mask) { $cfgFlags[$mask] }
                             }
                             if ($setFlags) {
