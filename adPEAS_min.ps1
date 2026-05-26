@@ -1,4 +1,4 @@
-﻿$Script:SeverityClasses = @{
+$Script:SeverityClasses = @{
     Finding  = 'Finding'
     Secure   = 'Secure'
     Hint     = 'Hint'
@@ -2647,6 +2647,13 @@ function Add-ActivityStatus {
         [int]$InactiveDays = 0  # 0 = use $Script:DefaultInactiveDays
     )
     if ($Object.activityStatus) {
+        return
+    }
+    $objectClasses = @($Object.objectClass)
+    $isAccountObject = ($objectClasses -contains 'user') -or
+                       ($objectClasses -contains 'computer') -or
+                       ($Object.sAMAccountName -like '*$')
+    if (-not $isAccountObject) {
         return
     }
     $effectiveInactiveDays = if ($InactiveDays -gt 0) {
@@ -10916,10 +10923,10 @@ function Get-AttributeSeverity {
             if (-not $entry.SID) { continue }
             $privResult = Test-IsPrivileged -Identity $entry.SID
             if (-not $privResult.IsPrivileged) {
-                return 'Note'   # Non-Standard â†’ auto-promoted to Primary
+                return 'Note'   # Non-Standard → auto-promoted to Primary
             }
         }
-        return 'Standard'   # All privileged â†’ stays in Extended
+        return 'Standard'   # All privileged → stays in Extended
     }
     $triggerSeverity = Get-SeverityFromTrigger -Name $Name -Value $Value `
         -IsComputer $IsComputer -SourceObject $SourceObject
@@ -11957,11 +11964,11 @@ $Script:ImpactMultipliers = @{
     'none'  = 1.0    # Standard user accounts - base impact
 }
 $Script:PasswordAgeModifiers = @{
-    'multiplier_10x' = 1.6    # Password age >= 10Ã— maxPwdAge
-    'multiplier_5x'  = 1.4    # Password age >= 5Ã— maxPwdAge
-    'multiplier_3x'  = 1.3    # Password age >= 3Ã— maxPwdAge
-    'multiplier_2x'  = 1.2    # Password age >= 2Ã— maxPwdAge
-    'multiplier_1x'  = 1.1    # Password age >= 1Ã— maxPwdAge (over policy)
+    'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
+    'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
+    'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
+    'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
+    'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
     'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 $Script:PasswordLengthModifiers = @{
@@ -35108,9 +35115,9 @@ function Get-KerberosChecksumNative {
         [int]$EncryptionType
     )
     $checksumType = switch ($EncryptionType) {
-        18 { 16 }    # AES256 â†’ HMAC_SHA1_96_AES256
-        17 { 15 }    # AES128 â†’ HMAC_SHA1_96_AES128
-        23 { -138 }  # RC4 â†’ HMAC_MD5
+        18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
+        17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
+        23 { -138 }  # RC4 → HMAC_MD5
         default { throw "Unsupported encryption type for checksum: $EncryptionType" }
     }
     Write-Verbose "[Get-KerberosChecksumNative] Called with: etype=$EncryptionType, checksumType=$checksumType, keyUsage=$KeyUsage, keyLen=$($Key.Length), dataLen=$($Data.Length)"
@@ -53097,8 +53104,8 @@ function Get-ProtectedUsersStatus {
             }
             Write-Log "[Get-ProtectedUsersStatus] Found $($protectedMemberSIDs.Count) members in Protected Users group"
             $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
-            $tier0Accounts = @{}  # SID â†’ Account object (deduplicated)
-            $tier0AccountGroups = @{}  # SID â†’ Array of group names (for display)
+            $tier0Accounts = @{}  # SID → Account object (deduplicated)
+            $tier0AccountGroups = @{}  # SID → Array of group names (for display)
             foreach ($groupSID in $tier0GroupSIDs) {
                 $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
                 if (-not $groupObj) {
@@ -59894,8 +59901,8 @@ function Get-PasswordInDescription {
             $exclusionPatterns = @(
                 'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
                 '\bparol[ae]?\s*(policy|politica|cerinta)',
-                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|mÃ¥|bÃ¸r|deve|trebuie)\s+',
-                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utlÃ¸p|lunghezza|scadenza)',
+                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
+                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
                 'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
                 '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
                 '(minimum|maximum)\s+passw\S*',
@@ -69449,7 +69456,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.0.4+20260526-1350"
+$Script:adPEASVersion = "2.0.4+20260526-1400"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -69459,7 +69466,7 @@ $Script:adPEAS_OutputColor = $true
 $Script:adPEAS_Outputfile = $null
 $Script:adPEAS_VerboseLogging = $false
 $Script:DefaultInactiveDays = 90
-$Script:EmbeddedLicense = "eyJMaWNlbnNlZSI6IlNFS3VyaXR5IEdtYkgiLCJWYWxpZFVudGlsIjoiMjAyOS0wMi0wOSIsIlNpZ25hdHVyZSI6Im15N1FEQmNGK01yK3ptOERaUlVvNkNKR0lwYnFkRTFCSWFLWVFPMnBIbXpuTnJ5N2lQNXZ0MmhxSlorTCtFcXMyVUNjWHE3T2ZYQ3BMaitJckNGVm1GazRzc3NhVU0rYVJHa20zY0l0UnM4QkR0dlM2VTI0S2M3NVZVbHhsRkIwa0s4RXhhZVovNUZGL0l5NVlBalJSUCtDV0U0Q2dYSmlkb1dFdmJ5dUY5eVBsclhhR3RCaWdDV1dKUGUrb3BOTDVmMkMxVGM4WFRmSnZYRkFDdThwR2cwM05Ja1BkQzU2ZGtpeFJ4cjd2YUFxV1lxdEhQeFVMRE0wWTNjejNzK1dhMnJUSEhhL05BTEErY3haZStvUGJORFF2Q0k1Wm1tTDkvaXdpQTRGeks1dkxxN2tSY1daeE44b1UrQ21ZRENYTDl5MG5sN1FSN0xyYWtrZm8vWjZPZz09In0NCg=="
+$Script:EmbeddedLicense = $null
 $Script:RuntimeLicense = $null
 function Invoke-adPEAS {
     [CmdletBinding(DefaultParameterSetName='Default')]

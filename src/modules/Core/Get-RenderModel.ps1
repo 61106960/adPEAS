@@ -437,6 +437,18 @@ function Add-ActivityStatus {
         return
     }
 
+    # Only user / computer accounts have a meaningful logon history. Groups,
+    # GPOs, OUs, certificate templates, etc. carry whenCreated but never log
+    # on, so the whenCreated fallback below would otherwise mark every
+    # long-lived group as "INACTIVE (never logged on)".
+    $objectClasses = @($Object.objectClass)
+    $isAccountObject = ($objectClasses -contains 'user') -or
+                       ($objectClasses -contains 'computer') -or
+                       ($Object.sAMAccountName -like '*$')
+    if (-not $isAccountObject) {
+        return
+    }
+
     # Resolve InactiveDays from global constant if not explicitly set
     $effectiveInactiveDays = if ($InactiveDays -gt 0) {
         $InactiveDays
