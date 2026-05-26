@@ -2316,7 +2316,7 @@ function Get-ObjectTypeForOrdering {
 	}
 	return 'User'
 	} catch {
-	    Write-Debug "[Get-ObjectTypeForOrdering] Error detecting object type: $_"
+	    Write-Warning "[Get-ObjectTypeForOrdering] Error detecting object type: $_"
 	    return 'User'
 	}
 }
@@ -2385,7 +2385,7 @@ function Get-OrderedAttributes {
 	}
 	return $result
 	} catch {
-	    Write-Debug "[Get-OrderedAttributes] Error processing attributes: $_"
+	    Write-Warning "[Get-OrderedAttributes] Error processing attributes: $_"
 	    return [PSCustomObject]@{
 	        ObjectType = 'User'
 	        Primary = [System.Collections.ArrayList]@()
@@ -10895,7 +10895,7 @@ function Get-AttributeSeverity {
 	    $entries = if ($Value -is [array]) { $Value } else { @($Value) }
 	    foreach ($entry in $entries) {
 	        if (-not $entry.SID) { continue }
-	        $privResult = Test-IsPrivileged -SID $entry.SID
+	        $privResult = Test-IsPrivileged -Identity $entry.SID
 	        if (-not $privResult.IsPrivileged) {
 	            return 'Note'   # Non-Standard â†’ auto-promoted to Primary
 	        }
@@ -67031,7 +67031,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.0.4+20260521-1535"
+$Script:adPEASVersion = "2.0.4+20260526-1350"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -67041,7 +67041,7 @@ $Script:adPEAS_OutputColor = $true
 $Script:adPEAS_Outputfile = $null
 $Script:adPEAS_VerboseLogging = $false
 $Script:DefaultInactiveDays = 90
-$Script:EmbeddedLicense = $null
+$Script:EmbeddedLicense = "eyJMaWNlbnNlZSI6IlNFS3VyaXR5IEdtYkgiLCJWYWxpZFVudGlsIjoiMjAyOS0wMi0wOSIsIlNpZ25hdHVyZSI6Im15N1FEQmNGK01yK3ptOERaUlVvNkNKR0lwYnFkRTFCSWFLWVFPMnBIbXpuTnJ5N2lQNXZ0MmhxSlorTCtFcXMyVUNjWHE3T2ZYQ3BMaitJckNGVm1GazRzc3NhVU0rYVJHa20zY0l0UnM4QkR0dlM2VTI0S2M3NVZVbHhsRkIwa0s4RXhhZVovNUZGL0l5NVlBalJSUCtDV0U0Q2dYSmlkb1dFdmJ5dUY5eVBsclhhR3RCaWdDV1dKUGUrb3BOTDVmMkMxVGM4WFRmSnZYRkFDdThwR2cwM05Ja1BkQzU2ZGtpeFJ4cjd2YUFxV1lxdEhQeFVMRE0wWTNjejNzK1dhMnJUSEhhL05BTEErY3haZStvUGJORFF2Q0k1Wm1tTDkvaXdpQTRGeks1dkxxN2tSY1daeE44b1UrQ21ZRENYTDl5MG5sN1FSN0xyYWtrZm8vWjZPZz09In0NCg=="
 $Script:RuntimeLicense = $null
 function Invoke-adPEAS {
 	[CmdletBinding(DefaultParameterSetName='Default')]

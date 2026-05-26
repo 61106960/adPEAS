@@ -85,7 +85,7 @@ function Get-AttributeSeverity {
         $entries = if ($Value -is [array]) { $Value } else { @($Value) }
         foreach ($entry in $entries) {
             if (-not $entry.SID) { continue }
-            $privResult = Test-IsPrivileged -SID $entry.SID
+            $privResult = Test-IsPrivileged -Identity $entry.SID
             if (-not $privResult.IsPrivileged) {
                 return 'Note'   # Non-Standard → auto-promoted to Primary
             }

@@ -603,7 +603,7 @@ function Get-ObjectTypeForOrdering {
 
     } catch {
         # On any error during type detection, fall back to User
-        Write-Debug "[Get-ObjectTypeForOrdering] Error detecting object type: $_"
+        Write-Warning "[Get-ObjectTypeForOrdering] Error detecting object type: $_"
         return 'User'
     }
 }
@@ -721,7 +721,8 @@ function Get-OrderedAttributes {
 
     } catch {
         # On any error, return empty result with User type
-        Write-Debug "[Get-OrderedAttributes] Error processing attributes: $_"
+        # Surface as warning so silent breakage (e.g. invalid transformer call) is visible.
+        Write-Warning "[Get-OrderedAttributes] Error processing attributes: $_"
         return [PSCustomObject]@{
             ObjectType = 'User'
             Primary = [System.Collections.ArrayList]@()
