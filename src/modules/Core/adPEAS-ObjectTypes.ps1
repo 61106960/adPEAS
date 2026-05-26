@@ -497,7 +497,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
     # ============================================================================
 
     'CertificateAuthority' = @{
-        TitleFormat = "Certificate Authority: {DisplayName}"
+        TitleFormat = "Certificate Authority: {CAName}"
         Module = "ADCS"
         Category = "ADCS"
         SectionTitle = "Certificate Authorities"
@@ -1369,6 +1369,12 @@ function Get-ObjectTypeTitle {
     if ($title -match '\{DisplayName\}') {
         $displayName = if ($Object.displayName) { $Object.displayName } else { $objName }
         $title = $title -replace '\{DisplayName\}', $displayName
+    }
+
+    # Handle {CAName} placeholder - used by CertificateAuthority titles
+    if ($title -match '\{CAName\}') {
+        $caName = if ($Object.caName) { $Object.caName } else { $objName }
+        $title = $title -replace '\{CAName\}', $caName
     }
 
     # Handle DN placeholder if present

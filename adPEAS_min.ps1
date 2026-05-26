@@ -2079,7 +2079,7 @@ $Script:PrimaryAttributes = @{
         'appliesTo'
     )
     CertificateAuthority = @(
-        'displayName',
+        'caName',
         'sAMAccountName', 'dNSHostName', 'distinguishedName', 'objectSid',
         'caNote',
         'operatingSystem',
@@ -12514,7 +12514,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "Organization Management contains only designated Exchange administrators."
     }
     'CertificateAuthority' = @{
-        TitleFormat = "Certificate Authority: {DisplayName}"
+        TitleFormat = "Certificate Authority: {CAName}"
         Module = "ADCS"
         Category = "ADCS"
         SectionTitle = "Certificate Authorities"
@@ -13267,6 +13267,10 @@ function Get-ObjectTypeTitle {
     if ($title -match '\{DisplayName\}') {
         $displayName = if ($Object.displayName) { $Object.displayName } else { $objName }
         $title = $title -replace '\{DisplayName\}', $displayName
+    }
+    if ($title -match '\{CAName\}') {
+        $caName = if ($Object.caName) { $Object.caName } else { $objName }
+        $title = $title -replace '\{CAName\}', $caName
     }
     if ($title -match '\{DN\}' -and $Object.distinguishedName) {
         $dn = $Object.distinguishedName
@@ -57423,7 +57427,7 @@ function Get-ADCSVulnerabilities {
                         $caComputer = @(Get-DomainComputer -LDAPFilter "(dNSHostName=$escapedDnsHostName2)" @CredParams)[0]
                     }
                     if ($caComputer) {
-                        $caComputer | Add-Member -NotePropertyName 'displayName' -NotePropertyValue $ca.Name -Force
+                        $caComputer | Add-Member -NotePropertyName 'caName' -NotePropertyValue $ca.Name -Force
                         if ($hasDangerousADPermissions) {
                             $permissionStrings = $dangerousACEs | ForEach-Object { "$($_.Identity): $($_.DangerousRight)" }
                             $caComputer | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue $permissionStrings -Force
@@ -57536,7 +57540,7 @@ function Get-ADCSVulnerabilities {
                         Write-Log "[Get-ADCSVulnerabilities] CA computer '$($ca.DNSHostName)' not found in current domain - using Configuration Partition data"
                         $syntheticCA = [PSCustomObject]@{
                             dNSHostName          = $ca.DNSHostName
-                            displayName          = $ca.Name
+                            caName               = $ca.Name
                             caNote               = "CA server is not in the current domain partition - showing data from Configuration Partition only"
                             certificateTemplates = if ($ca.CertificateTemplates) { $ca.CertificateTemplates -join ', ' } else { $null }
                             CALastModified       = if ($ca.Modified) { $ca.Modified.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
@@ -69456,7 +69460,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.0.4+20260526-1400"
+$Script:adPEASVersion = "2.0.4+20260526-1417"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

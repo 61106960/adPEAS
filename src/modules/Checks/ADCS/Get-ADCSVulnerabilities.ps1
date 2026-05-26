@@ -451,8 +451,9 @@ function Get-ADCSVulnerabilities {
                     }
 
                     if ($caComputer) {
-                        # Add CA displayName as first attribute (will be shown at top of object)
-                        $caComputer | Add-Member -NotePropertyName 'displayName' -NotePropertyValue $ca.Name -Force
+                        # Add CA common name (from pKIEnrollmentService.cn) as a dedicated attribute -
+                        # using 'displayName' would overwrite the underlying computer's actual displayName.
+                        $caComputer | Add-Member -NotePropertyName 'caName' -NotePropertyValue $ca.Name -Force
 
                         # Add dangerous AD object permissions as dangerousRights attribute
                         if ($hasDangerousADPermissions) {
@@ -612,7 +613,7 @@ function Get-ADCSVulnerabilities {
                         Write-Log "[Get-ADCSVulnerabilities] CA computer '$($ca.DNSHostName)' not found in current domain - using Configuration Partition data"
                         $syntheticCA = [PSCustomObject]@{
                             dNSHostName          = $ca.DNSHostName
-                            displayName          = $ca.Name
+                            caName               = $ca.Name
                             caNote               = "CA server is not in the current domain partition - showing data from Configuration Partition only"
                             certificateTemplates = if ($ca.CertificateTemplates) { $ca.CertificateTemplates -join ', ' } else { $null }
                             CALastModified       = if ($ca.Modified) { $ca.Modified.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }

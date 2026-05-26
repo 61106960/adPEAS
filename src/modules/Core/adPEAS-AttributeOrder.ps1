@@ -178,8 +178,8 @@ $Script:PrimaryAttributes = @{
 
     # Certificate Authority objects
     CertificateAuthority = @(
-        # 1. CA Name (displayName added by check module)
-        'displayName',
+        # 1. CA Common Name (from pKIEnrollmentService, added by check module)
+        'caName',
         # 2. Identification
         'sAMAccountName', 'dNSHostName', 'distinguishedName', 'objectSid',
         # 2a. Cross-domain note (when CA computer object is in different domain)
