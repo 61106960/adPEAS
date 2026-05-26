@@ -655,9 +655,14 @@ function Get-OrderedAttributes {
     $processedAttrs = @{}
 
     # 1. Process defined primary attributes in order
+    # Attributes that should be rendered even when empty - their absence carries meaning
+    # (e.g. an unlinked GPO is a security-relevant fact that users will miss if the row is suppressed).
+    $alwaysShowEmpty = @('LinkedOUs')
+
     foreach ($attrName in $primaryAttrNames) {
         $value = $Object.$attrName
-        if ($null -ne $value -and ($value -is [bool] -or $value -ne '')) {
+        $isEmpty = ($null -eq $value) -or ($value -isnot [bool] -and $value -eq '')
+        if (-not $isEmpty -or ($attrName -in $alwaysShowEmpty -and $Object.PSObject.Properties[$attrName])) {
             $severity = Get-AttributeSeverity -Name $attrName -Value $value -IsComputer $IsComputer -SourceObject $Object
             [void]$result.Primary.Add(@{
                 Name = $attrName
@@ -682,8 +687,10 @@ function Get-OrderedAttributes {
         # Skip excluded attributes
         if ($prop.Name -in $Script:ExcludeAttributes) { continue }
 
-        # Skip null/empty (but keep boolean $false)
-        if ($null -eq $prop.Value -or ($prop.Value -isnot [bool] -and $prop.Value -eq '')) { continue }
+        # Skip null/empty (but keep boolean $false, and keep AlwaysShow attributes whose
+        # absence is itself meaningful - e.g. unlinked GPO LinkedOUs).
+        $isEmptyValue = ($null -eq $prop.Value) -or ($prop.Value -isnot [bool] -and $prop.Value -eq '')
+        if ($isEmptyValue -and $prop.Name -notin $alwaysShowEmpty) { continue }
 
         $severity = Get-AttributeSeverity -Name $prop.Name -Value $prop.Value -IsComputer $IsComputer -SourceObject $Object
 

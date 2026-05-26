@@ -2359,9 +2359,11 @@ function Get-OrderedAttributes {
         Extended = [System.Collections.ArrayList]@()
     }
     $processedAttrs = @{}
+    $alwaysShowEmpty = @('LinkedOUs')
     foreach ($attrName in $primaryAttrNames) {
         $value = $Object.$attrName
-        if ($null -ne $value -and ($value -is [bool] -or $value -ne '')) {
+        $isEmpty = ($null -eq $value) -or ($value -isnot [bool] -and $value -eq '')
+        if (-not $isEmpty -or ($attrName -in $alwaysShowEmpty -and $Object.PSObject.Properties[$attrName])) {
             $severity = Get-AttributeSeverity -Name $attrName -Value $value -IsComputer $IsComputer -SourceObject $Object
             [void]$result.Primary.Add(@{
                 Name = $attrName
@@ -2378,7 +2380,8 @@ function Get-OrderedAttributes {
     foreach ($prop in $Object.PSObject.Properties) {
         if ($processedAttrs.ContainsKey($prop.Name)) { continue }
         if ($prop.Name -in $Script:ExcludeAttributes) { continue }
-        if ($null -eq $prop.Value -or ($prop.Value -isnot [bool] -and $prop.Value -eq '')) { continue }
+        $isEmptyValue = ($null -eq $prop.Value) -or ($prop.Value -isnot [bool] -and $prop.Value -eq '')
+        if ($isEmptyValue -and $prop.Name -notin $alwaysShowEmpty) { continue }
         $severity = Get-AttributeSeverity -Name $prop.Name -Value $prop.Value -IsComputer $IsComputer -SourceObject $Object
         if ($prop.Name -ieq 'Owner') {
             $ownerSID = $Object.OwnerSID
@@ -11609,6 +11612,58 @@ function Convert-KeyCredentialLinkToRenderValues {
         Values              = $renderValues
     }
 }
+function Convert-LinkedOUsToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+    $items = @()
+    if ($null -ne $Value) { $items = @($Value) }
+    if ($items.Count -eq 0) {
+        return @{
+            RowType             = 'SingleValue'
+            OverallSeverity     = 'Standard'
+            ForceAttributeClass = $false
+            Values              = @(
+                New-RenderValue -Display 'Not linked - GPO is not applied anywhere' `
+                    -Severity 'Standard' -RawValue $null
+            )
+        }
+    }
+    $renderValues = @()
+    foreach ($item in $items) {
+        $display = $null
+        if ($item -is [PSCustomObject] -and $item.PSObject.Properties['DistinguishedName']) {
+            $display = $item.DistinguishedName
+            if ([string]::IsNullOrWhiteSpace($display)) { continue }
+            if ($item.PSObject.Properties['LinkStatus'] -and $item.LinkStatus -and $item.LinkStatus -ne 'Enabled') {
+                $display = "$display ($($item.LinkStatus))"
+            }
+        } else {
+            $display = [string]$item
+            if ([string]::IsNullOrWhiteSpace($display)) { continue }
+        }
+        $itemMatch = Get-TriggerMatch -Name $Name -Value $display -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
+        $renderValues += New-RenderValue -Display $display -Severity $itemMatch.Severity `
+            -FindingId $itemMatch.FindingId -RawValue $item
+    }
+    if ($renderValues.Count -eq 0) {
+        return @{
+            RowType             = 'SingleValue'
+            OverallSeverity     = 'Standard'
+            ForceAttributeClass = $false
+            Values              = @(
+                New-RenderValue -Display 'Not linked - GPO is not applied anywhere' `
+                    -Severity 'Standard' -RawValue $null
+            )
+        }
+    }
+    $maxSev = Get-MaxSeverityFromValues -Values $renderValues
+    return @{
+        RowType             = 'MultiValue'
+        OverallSeverity     = $maxSev
+        ForceAttributeClass = ($maxSev -ne 'Standard')
+        Values              = $renderValues
+    }
+}
 function Convert-ScriptPathToRenderValues {
     [CmdletBinding()]
     param([string]$Name, $Value, $Context)
@@ -11657,6 +11712,7 @@ $Script:AttributeTransformers['WebEndpoints']                = ${function:Conver
 $Script:AttributeTransformers['WebEnrollmentEndpoints']      = ${function:Convert-WebEnrollEndpointsToRenderValues}
 $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Convert-KeyCredentialLinkToRenderValues}
 $Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
+$Script:AttributeTransformers['LinkedOUs']                   = ${function:Convert-LinkedOUsToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
 $Script:AttributeTransformers['ASREPRoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
 function Render-ConsoleObject {
@@ -69629,7 +69685,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.0.4+20260526-1526"
+$Script:adPEASVersion = "2.0.4+20260526-2040"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

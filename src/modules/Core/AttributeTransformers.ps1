@@ -989,6 +989,73 @@ function Convert-KeyCredentialLinkToRenderValues {
     }
 }
 
+# --- LinkedOUs Transformer ---
+# Renders GPO link information. Importantly, when the GPO is not linked to any
+# OU at all, an explicit 'Not linked' row is emitted so an unlinked (and
+# therefore non-applying) GPO is visible to the user instead of silently
+# vanishing because the array is empty.
+function Convert-LinkedOUsToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+
+    $items = @()
+    if ($null -ne $Value) { $items = @($Value) }
+
+    if ($items.Count -eq 0) {
+        return @{
+            RowType             = 'SingleValue'
+            OverallSeverity     = 'Standard'
+            ForceAttributeClass = $false
+            Values              = @(
+                New-RenderValue -Display 'Not linked - GPO is not applied anywhere' `
+                    -Severity 'Standard' -RawValue $null
+            )
+        }
+    }
+
+    $renderValues = @()
+    foreach ($item in $items) {
+        # Linkage records from Get-GPOLinkage carry DistinguishedName + LinkStatus.
+        # Plain string entries are tolerated (cross-domain links, manual placeholders).
+        $display = $null
+        if ($item -is [PSCustomObject] -and $item.PSObject.Properties['DistinguishedName']) {
+            $display = $item.DistinguishedName
+            if ([string]::IsNullOrWhiteSpace($display)) { continue }
+            if ($item.PSObject.Properties['LinkStatus'] -and $item.LinkStatus -and $item.LinkStatus -ne 'Enabled') {
+                $display = "$display ($($item.LinkStatus))"
+            }
+        } else {
+            $display = [string]$item
+            if ([string]::IsNullOrWhiteSpace($display)) { continue }
+        }
+
+        $itemMatch = Get-TriggerMatch -Name $Name -Value $display -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
+        $renderValues += New-RenderValue -Display $display -Severity $itemMatch.Severity `
+            -FindingId $itemMatch.FindingId -RawValue $item
+    }
+
+    if ($renderValues.Count -eq 0) {
+        # All entries were filtered as whitespace - still surface the unlinked state
+        return @{
+            RowType             = 'SingleValue'
+            OverallSeverity     = 'Standard'
+            ForceAttributeClass = $false
+            Values              = @(
+                New-RenderValue -Display 'Not linked - GPO is not applied anywhere' `
+                    -Severity 'Standard' -RawValue $null
+            )
+        }
+    }
+
+    $maxSev = Get-MaxSeverityFromValues -Values $renderValues
+    return @{
+        RowType             = 'MultiValue'
+        OverallSeverity     = $maxSev
+        ForceAttributeClass = ($maxSev -ne 'Standard')
+        Values              = $renderValues
+    }
+}
+
 # --- scriptPath Transformer ---
 function Convert-ScriptPathToRenderValues {
     [CmdletBinding()]
@@ -1050,5 +1117,6 @@ $Script:AttributeTransformers['WebEndpoints']                = ${function:Conver
 $Script:AttributeTransformers['WebEnrollmentEndpoints']      = ${function:Convert-WebEnrollEndpointsToRenderValues}
 $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Convert-KeyCredentialLinkToRenderValues}
 $Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
+$Script:AttributeTransformers['LinkedOUs']                   = ${function:Convert-LinkedOUsToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
 $Script:AttributeTransformers['ASREPRoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
