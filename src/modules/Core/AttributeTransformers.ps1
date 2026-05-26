@@ -989,62 +989,6 @@ function Convert-KeyCredentialLinkToRenderValues {
     }
 }
 
-# --- protocolSettings Transformer (Exchange msExchProtocolSettings) ---
-# Exchange stores per-user protocol overrides in a multi-valued attribute where
-# each entry has the form <Protocol>§<EnabledFlag>§<DefaultsFlag>§<extra fields>.
-# The '§' (U+00A7) delimiter is internal to Exchange and unfriendly to read, so
-# render each entry as 'Protocol: enabled/disabled' (with extra fields if set).
-function Convert-ProtocolSettingsToRenderValues {
-    [CmdletBinding()]
-    param([string]$Name, $Value, $Context)
-
-    $entries = @($Value)
-    if ($entries.Count -eq 0) { return $null }
-
-    $renderValues = @()
-    foreach ($entry in $entries) {
-        $entryStr = [string]$entry
-        if ([string]::IsNullOrWhiteSpace($entryStr)) { continue }
-
-        $fields   = $entryStr.Split([char]0x00A7)
-        $protocol = if ($fields[0]) { $fields[0] } else { '<unknown>' }
-
-        $state = if ($fields.Count -ge 2 -and -not [string]::IsNullOrEmpty($fields[1])) {
-            switch ($fields[1]) {
-                '0'     { 'disabled' }
-                '1'     { 'enabled' }
-                default { "flag=$($fields[1])" }
-            }
-        } else { 'no override' }
-
-        # Trailing non-empty fields beyond Enabled/UseProtocolDefaults hold extras
-        # like client port, server host, encryption level - surface them so an
-        # auditor can see when something deviates from defaults.
-        $extras = @()
-        for ($i = 2; $i -lt $fields.Count; $i++) {
-            if (-not [string]::IsNullOrEmpty($fields[$i])) {
-                $extras += $fields[$i]
-            }
-        }
-
-        $display = "${protocol}: $state"
-        if ($extras.Count -gt 0) {
-            $display += " [$($extras -join ', ')]"
-        }
-
-        $renderValues += New-RenderValue -Display $display -Severity 'Standard' -RawValue $entry
-    }
-
-    if ($renderValues.Count -eq 0) { return $null }
-
-    return @{
-        RowType             = 'MultiValue'
-        OverallSeverity     = 'Standard'
-        ForceAttributeClass = $false
-        Values              = $renderValues
-    }
-}
-
 # --- scriptPath Transformer ---
 function Convert-ScriptPathToRenderValues {
     [CmdletBinding()]
@@ -1108,4 +1052,3 @@ $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Conver
 $Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
 $Script:AttributeTransformers['ASREPRoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
-$Script:AttributeTransformers['protocolSettings']            = ${function:Convert-ProtocolSettingsToRenderValues}

@@ -11590,44 +11590,6 @@ function Convert-KeyCredentialLinkToRenderValues {
 	    Values              = $renderValues
 	}
 }
-function Convert-ProtocolSettingsToRenderValues {
-	[CmdletBinding()]
-	param([string]$Name, $Value, $Context)
-	$entries = @($Value)
-	if ($entries.Count -eq 0) { return $null }
-	$renderValues = @()
-	foreach ($entry in $entries) {
-	    $entryStr = [string]$entry
-	    if ([string]::IsNullOrWhiteSpace($entryStr)) { continue }
-	    $fields   = $entryStr.Split([char]0x00A7)
-	    $protocol = if ($fields[0]) { $fields[0] } else { '<unknown>' }
-	    $state = if ($fields.Count -ge 2 -and -not [string]::IsNullOrEmpty($fields[1])) {
-	        switch ($fields[1]) {
-	            '0'     { 'disabled' }
-	            '1'     { 'enabled' }
-	            default { "flag=$($fields[1])" }
-	        }
-	    } else { 'no override' }
-	    $extras = @()
-	    for ($i = 2; $i -lt $fields.Count; $i++) {
-	        if (-not [string]::IsNullOrEmpty($fields[$i])) {
-	            $extras += $fields[$i]
-	        }
-	    }
-	    $display = "${protocol}: $state"
-	    if ($extras.Count -gt 0) {
-	        $display += " [$($extras -join ', ')]"
-	    }
-	    $renderValues += New-RenderValue -Display $display -Severity 'Standard' -RawValue $entry
-	}
-	if ($renderValues.Count -eq 0) { return $null }
-	return @{
-	    RowType             = 'MultiValue'
-	    OverallSeverity     = 'Standard'
-	    ForceAttributeClass = $false
-	    Values              = $renderValues
-	}
-}
 function Convert-ScriptPathToRenderValues {
 	[CmdletBinding()]
 	param([string]$Name, $Value, $Context)
@@ -11678,7 +11640,6 @@ $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Conver
 $Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
 $Script:AttributeTransformers['ASREPRoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
-$Script:AttributeTransformers['protocolSettings']            = ${function:Convert-ProtocolSettingsToRenderValues}
 function Render-ConsoleObject {
 	[CmdletBinding()]
 	param(
@@ -17305,6 +17266,37 @@ function Invoke-LDAPSearch {
 	                    }
 	                    continue
 	                }
+	                if ($PropName -ieq "protocolSettings") {
+	                    $protoLines = @()
+	                    foreach ($entry in $PropValue) {
+	                        $entryStr = [string]$entry
+	                        if ([string]::IsNullOrWhiteSpace($entryStr)) { continue }
+	                        $fields = $entryStr.Split([char]0x00A7)
+	                        $proto = if ($fields[0]) { $fields[0] } else { '<unknown>' }
+	                        $state = if ($fields.Count -ge 2 -and -not [string]::IsNullOrEmpty($fields[1])) {
+	                            switch ($fields[1]) {
+	                                '0'     { 'disabled' }
+	                                '1'     { 'enabled' }
+	                                default { "flag=$($fields[1])" }
+	                            }
+	                        } else { 'no override' }
+	                        $extras = @()
+	                        for ($pi = 2; $pi -lt $fields.Count; $pi++) {
+	                            if (-not [string]::IsNullOrEmpty($fields[$pi])) {
+	                                $extras += $fields[$pi]
+	                            }
+	                        }
+	                        $display = "${proto}: $state"
+	                        if ($extras.Count -gt 0) { $display += " [$($extras -join ', ')]" }
+	                        $protoLines += $display
+	                    }
+	                    if ($protoLines.Count -eq 1) {
+	                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $protoLines[0]
+	                    } elseif ($protoLines.Count -gt 1) {
+	                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $protoLines
+	                    }
+	                    continue
+	                }
 	                if ($PropName -ieq "pKIExtendedKeyUsage") {
 	                    $ekuNames = Convert-OIDsToNames -OIDs $PropValue -IncludeOID
 	                    if ($ekuNames.Count -eq 1) {
@@ -17738,6 +17730,18 @@ function Invoke-LDAPSearch {
 	                            } catch {
 	                                $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
 	                            }
+	                        } elseif ($PropNameLower -eq 'userparameters' -or $PropNameLower -eq 'terminalserver') {
+	                            $tsLines = ConvertFrom-TSProperties -Bytes $PropValue
+	                            if ($tsLines) {
+	                                if ($tsLines.Count -eq 1) {
+	                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines[0]
+	                                } else {
+	                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines
+	                                }
+	                            } else {
+	                                $byteLen = if ($PropValue[0] -is [byte[]]) { $PropValue[0].Length } else { 0 }
+	                                $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[Terminal Services blob: $byteLen bytes, no recognised TSPropertyArray signature]"
+	                            }
 	                        } else {
 	                            $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
 	                        }
@@ -17780,18 +17784,6 @@ function Invoke-LDAPSearch {
 	                                }
 	                            } catch {
 	                                $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
-	                            }
-	                        } elseif ($PropNameLower -eq 'userparameters' -or $PropNameLower -eq 'terminalserver') {
-	                            $tsLines = ConvertFrom-TSProperties -Bytes $PropValue
-	                            if ($tsLines) {
-	                                if ($tsLines.Count -eq 1) {
-	                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines[0]
-	                                } else {
-	                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines
-	                                }
-	                            } else {
-	                                $byteLen = if ($PropValue[0] -is [byte[]]) { $PropValue[0].Length } else { 0 }
-	                                $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[Terminal Services blob: $byteLen bytes, no recognised TSPropertyArray signature]"
 	                            }
 	                        } elseif ($PropNameLower -eq 'useraccountcontrol') {
 	                            try {
@@ -67203,7 +67195,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.0.4+20260526-1442"
+$Script:adPEASVersion = "2.0.4+20260526-1505"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

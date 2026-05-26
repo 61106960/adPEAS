@@ -706,6 +706,41 @@ function Invoke-LDAPSearch {
                         continue
                     }
 
+                    # protocolSettings - Exchange's per-user protocol overrides.
+                    # Each entry has the form '<Protocol>SS<Enabled>SS<Defaults>SS<extras>'
+                    # using U+00A7 as separator. Render as 'Protocol: enabled/disabled [extras]'.
+                    if ($PropName -ieq "protocolSettings") {
+                        $protoLines = @()
+                        foreach ($entry in $PropValue) {
+                            $entryStr = [string]$entry
+                            if ([string]::IsNullOrWhiteSpace($entryStr)) { continue }
+                            $fields = $entryStr.Split([char]0x00A7)
+                            $proto = if ($fields[0]) { $fields[0] } else { '<unknown>' }
+                            $state = if ($fields.Count -ge 2 -and -not [string]::IsNullOrEmpty($fields[1])) {
+                                switch ($fields[1]) {
+                                    '0'     { 'disabled' }
+                                    '1'     { 'enabled' }
+                                    default { "flag=$($fields[1])" }
+                                }
+                            } else { 'no override' }
+                            $extras = @()
+                            for ($pi = 2; $pi -lt $fields.Count; $pi++) {
+                                if (-not [string]::IsNullOrEmpty($fields[$pi])) {
+                                    $extras += $fields[$pi]
+                                }
+                            }
+                            $display = "${proto}: $state"
+                            if ($extras.Count -gt 0) { $display += " [$($extras -join ', ')]" }
+                            $protoLines += $display
+                        }
+                        if ($protoLines.Count -eq 1) {
+                            $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $protoLines[0]
+                        } elseif ($protoLines.Count -gt 1) {
+                            $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $protoLines
+                        }
+                        continue
+                    }
+
                     # pKIExtendedKeyUsage - Multi-valued OID array (convert to friendly names)
                     if ($PropName -ieq "pKIExtendedKeyUsage") {
                         # Convert EKU OIDs to friendly names using central OID mapping
@@ -1228,6 +1263,21 @@ function Invoke-LDAPSearch {
                                 } catch {
                                     $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
                                 }
+                            } elseif ($PropNameLower -eq 'userparameters' -or $PropNameLower -eq 'terminalserver') {
+                                # Legacy Terminal Services blob (TSPropertyArray, [MS-TSTS] 2.2.1.1).
+                                # Decode the well-known Ctx* properties when the signature matches;
+                                # otherwise emit a placeholder describing the byte count.
+                                $tsLines = ConvertFrom-TSProperties -Bytes $PropValue
+                                if ($tsLines) {
+                                    if ($tsLines.Count -eq 1) {
+                                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines[0]
+                                    } else {
+                                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines
+                                    }
+                                } else {
+                                    $byteLen = if ($PropValue[0] -is [byte[]]) { $PropValue[0].Length } else { 0 }
+                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[Terminal Services blob: $byteLen bytes, no recognised TSPropertyArray signature]"
+                                }
                             } else {
                                 # Generic byte array handling
                                 $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
@@ -1282,21 +1332,6 @@ function Invoke-LDAPSearch {
                                     }
                                 } catch {
                                     $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
-                                }
-                            } elseif ($PropNameLower -eq 'userparameters' -or $PropNameLower -eq 'terminalserver') {
-                                # Legacy Terminal Services blob (TSPropertyArray, [MS-TSTS] 2.2.1.1).
-                                # Decode the well-known Ctx* properties when the signature matches;
-                                # otherwise emit a placeholder describing the byte count.
-                                $tsLines = ConvertFrom-TSProperties -Bytes $PropValue
-                                if ($tsLines) {
-                                    if ($tsLines.Count -eq 1) {
-                                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines[0]
-                                    } else {
-                                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $tsLines
-                                    }
-                                } else {
-                                    $byteLen = if ($PropValue[0] -is [byte[]]) { $PropValue[0].Length } else { 0 }
-                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[Terminal Services blob: $byteLen bytes, no recognised TSPropertyArray signature]"
                                 }
                             } elseif ($PropNameLower -eq 'useraccountcontrol') {
                                 # Convert userAccountControl to readable flags
