@@ -557,21 +557,16 @@ function Invoke-LDAPSearch {
                     $Script:LDAPStatistics.TotalEstimatedBytes += $Entry.DistinguishedName.Length * 2 + 40
                 }
 
-                # Process each attribute with full conversion logic.
-                # Some entries may have attributes that throw on indexer access (e.g. range
-                # retrieval markers, unparseable binary blobs). Snapshot the names first and
-                # guard the indexer so one bad attribute does not abort the whole query.
-                if (-not $Entry.Attributes) { continue }
-                $AttrNames = @()
-                try { $AttrNames = @($Entry.Attributes.AttributeNames) } catch {
-                    Write-Log "[Invoke-LDAPSearch] Failed to enumerate attributes for '$($Entry.DistinguishedName)': $_" -Level Warning
-                    continue
-                }
-                foreach ($PropName in $AttrNames) {
+                # Call .get_Item([string]) directly instead of the PowerShell [] indexer:
+                # PS's indexer resolution on SearchResultAttributeCollection silently drops
+                # some attributes (e.g. objectSid, msExchDelegateListBL) with a null result.
+                $EntryAttrs = $Entry.Attributes
+                if (-not $EntryAttrs) { continue }
+                foreach ($PropName in $EntryAttrs.AttributeNames) {
                     if ([string]::IsNullOrEmpty($PropName)) { continue }
                     $AttrValues = $null
-                    try { $AttrValues = $Entry.Attributes[$PropName] } catch {
-                        Write-Log "[Invoke-LDAPSearch] Failed to read attribute '$PropName' on '$($Entry.DistinguishedName)': $_" -Level Warning
+                    try { $AttrValues = $EntryAttrs.get_Item([string]$PropName) } catch {
+                        Write-Log "[Invoke-LDAPSearch] Failed to read attribute '$PropName' on '$($Entry.DistinguishedName)': $($_.Exception.Message)" -Level Warning
                         continue
                     }
                     if ($null -eq $AttrValues) { continue }
@@ -722,8 +717,9 @@ function Invoke-LDAPSearch {
                     }
 
                     # protocolSettings - Exchange's per-user protocol overrides.
-                    # Each entry has the form '<Protocol>SS<Enabled>SS<Defaults>SS<extras>'
-                    # using U+00A7 as separator. Render as 'Protocol: enabled/disabled [extras]'.
+                    # Each entry has the form '<Protocol>§<Enabled 0/1>§<UseDefaults 0/1>§<encoding flags...>'
+                    # with § = U+00A7. For security review only the protocol + enabled state matter;
+                    # the trailing per-user encoding overrides (mail format, MIME charset, etc.) are noise.
                     if ($PropName -ieq "protocolSettings") {
                         $protoLines = @()
                         foreach ($entry in $PropValue) {
@@ -735,18 +731,10 @@ function Invoke-LDAPSearch {
                                 switch ($fields[1]) {
                                     '0'     { 'disabled' }
                                     '1'     { 'enabled' }
-                                    default { "flag=$($fields[1])" }
+                                    default { "unknown=$($fields[1])" }
                                 }
-                            } else { 'no override' }
-                            $extras = @()
-                            for ($pi = 2; $pi -lt $fields.Count; $pi++) {
-                                if (-not [string]::IsNullOrEmpty($fields[$pi])) {
-                                    $extras += $fields[$pi]
-                                }
-                            }
-                            $display = "${proto}: $state"
-                            if ($extras.Count -gt 0) { $display += " [$($extras -join ', ')]" }
-                            $protoLines += $display
+                            } else { 'no enable flag' }
+                            $protoLines += "${proto}: $state"
                         }
                         if ($protoLines.Count -eq 1) {
                             $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $protoLines[0]
@@ -1278,10 +1266,8 @@ function Invoke-LDAPSearch {
                                 } catch {
                                     $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
                                 }
-                            } elseif ($PropNameLower -eq 'userparameters' -or $PropNameLower -eq 'terminalserver') {
-                                # Legacy Terminal Services blob (TSPropertyArray, [MS-TSTS] 2.2.1.1).
-                                # Decode the well-known Ctx* properties when the signature matches;
-                                # otherwise emit a placeholder describing the byte count.
+                            } elseif ($PropNameLower -eq 'userparameters') {
+                                # TSPropertyArray ([MS-TSTS] 2.2.1.1) - per-user TS settings.
                                 $tsLines = ConvertFrom-TSProperties -Bytes $PropValue
                                 if ($tsLines) {
                                     if ($tsLines.Count -eq 1) {
@@ -1291,7 +1277,20 @@ function Invoke-LDAPSearch {
                                     }
                                 } else {
                                     $byteLen = if ($PropValue[0] -is [byte[]]) { $PropValue[0].Length } else { 0 }
-                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[Terminal Services blob: $byteLen bytes, no recognised TSPropertyArray signature]"
+                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[userParameters blob: $byteLen bytes, no recognised TSPropertyArray signature]"
+                                }
+                            } elseif ($PropNameLower -eq 'terminalserver') {
+                                # Per-User CAL tracking token written by Remote Desktop Licensing.
+                                $licLines = ConvertFrom-TSClientLicense -Bytes $PropValue
+                                if ($licLines) {
+                                    if ($licLines.Count -eq 1) {
+                                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $licLines[0]
+                                    } else {
+                                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $licLines
+                                    }
+                                } else {
+                                    $byteLen = if ($PropValue[0] -is [byte[]]) { $PropValue[0].Length } else { 0 }
+                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[terminalServer blob: $byteLen bytes, unknown format]"
                                 }
                             } else {
                                 # Generic byte array handling
