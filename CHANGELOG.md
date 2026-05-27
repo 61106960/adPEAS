@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.0.5] - 2026-05-27
+
+### Fixed
+
+- **`Get-DomainUser` / `Get-Domain*` silently dropped attributes** (e.g.
+  `objectSid`, `displayName`, `userPrincipalName`, `accountExpires`)
+- **`terminalServer` / `userParameters` shown as raw byte arrays** — both
+  are now decoded to readable text (TS per-user settings and Per-User CAL
+  tracking token respectively)
+- **`protocolSettings` (Exchange) shown as cryptic `§`-separated strings**
+  — now rendered as `<Protocol>: enabled/disabled` per entry, dropping the
+  per-user encoding/use-defaults flags that are noise for security review
+- **ADCS certificate templates not rendered to console** — templates were
+  collected but their attribute conversion never reached `Show-Object`
+- **Certificate Authority common name shown under generic `displayName`
+  label** — CA-specific name field now used
+- **Groups falsely flagged as `INACTIVE`** — the activity check applied
+  the user-only `lastLogonTimestamp` heuristic unconditionally; groups
+  never log on, so they always tripped the heuristic
+- **GPO findings with empty `LinkedOUs` rendered blank** — now shown
+  explicitly as `Not linked`
+- **Overpass-the-Hash (RC4) failed with AS-REP decryption error**
+- **Relative file paths resolved against the process directory** instead
+  of the current PowerShell location (`$PWD`)
+
+---
+
 ## [2.0.4] - 2026-05-19
 
 ### Added
