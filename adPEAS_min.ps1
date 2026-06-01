@@ -50501,11 +50501,13 @@ function New-PKCS10Request {
         [Parameter(Mandatory)]
         [string]$SubjectDN,
         [string[]]$AlternativeNames,
+        [string]$SID,
+        [string[]]$ApplicationPolicies,
         [ValidateSet(1024, 2048, 4096)]
         [int]$KeyLength = 2048
     )
     $FunctionPrefix = "[New-PKCS10Request]"
-    Write-Log "$FunctionPrefix Generating $KeyLength-bit RSA key pair"
+    Write-Log "$FunctionPrefix Generating $KeyLength-bit RSA key pair (Subject='$SubjectDN', SANs=$($AlternativeNames.Count), SID=$(if ($SID) { 'yes' } else { 'no' }), AppPolicies=$($ApplicationPolicies.Count))"
     $rsa = [System.Security.Cryptography.RSA]::Create($KeyLength)
     try {
         $subjectBytes = ConvertTo-ASN1Subject -SubjectDN $SubjectDN
@@ -50519,15 +50521,58 @@ function New-PKCS10Request {
         $pubKeyBitString = New-ASN1BitString -Value $rsaPublicKey
         $subjectPKInfo = New-ASN1Sequence -Data ([byte[]]($algorithmId + $pubKeyBitString))
         $attributesContent = [byte[]]@()
+        $extensionBlobs = [System.Collections.Generic.List[byte]]::new()
+        $extensionCount = 0
+        $sanNames = @()
         if ($AlternativeNames -and $AlternativeNames.Count -gt 0) {
-            $sanExtension = New-SANExtension -AlternativeNames $AlternativeNames
+            $sanNames += $AlternativeNames
+        }
+        if ($SID) {
+            $sanNames += "URL:tag:microsoft.com,2022-09-14:sid:$SID"
+        }
+        if ($sanNames.Count -gt 0) {
+            $sanExtension = New-SANExtension -AlternativeNames $sanNames
             if ($sanExtension) {
-                $extensionsSeq = New-ASN1Sequence -Data $sanExtension
-                $extReqOID = New-ASN1ObjectIdentifier -OID "1.2.840.113549.1.9.14"
-                $extReqValues = New-ASN1Set -Data $extensionsSeq
-                $extReqAttr = New-ASN1Sequence -Data ([byte[]]($extReqOID + $extReqValues))
-                $attributesContent = $extReqAttr
+                $extensionBlobs.AddRange([byte[]]$sanExtension)
+                $extensionCount++
+                Write-Log "$FunctionPrefix Added Subject Alternative Name extension ($($sanNames.Count) name(s)): $($sanNames -join ', ')"
             }
+            else {
+                Write-Log "$FunctionPrefix SAN extension requested but produced no GeneralNames - skipping"
+            }
+        }
+        if ($SID) {
+            $sidExtension = New-NTDSCASecurityExtension -SID $SID
+            if ($sidExtension) {
+                $extensionBlobs.AddRange([byte[]]$sidExtension)
+                $extensionCount++
+                Write-Log "$FunctionPrefix Added NTDS CA Security (SID) extension: $SID"
+            }
+            else {
+                Write-Log "$FunctionPrefix SID extension requested but could not be built for '$SID' - skipping" -Level Warning
+            }
+        }
+        if ($ApplicationPolicies -and $ApplicationPolicies.Count -gt 0) {
+            $apExtension = New-ApplicationPoliciesExtension -PolicyOIDs $ApplicationPolicies
+            if ($apExtension) {
+                $extensionBlobs.AddRange([byte[]]$apExtension)
+                $extensionCount++
+                Write-Log "$FunctionPrefix Added Application Policies extension ($($ApplicationPolicies.Count) requested)"
+            }
+            else {
+                Write-Log "$FunctionPrefix Application Policies requested but none could be resolved - skipping" -Level Warning
+            }
+        }
+        if ($extensionCount -gt 0) {
+            $extensionsSeq = New-ASN1Sequence -Data ($extensionBlobs.ToArray())
+            $extReqOID = New-ASN1ObjectIdentifier -OID "1.2.840.113549.1.9.14"
+            $extReqValues = New-ASN1Set -Data $extensionsSeq
+            $extReqAttr = New-ASN1Sequence -Data ([byte[]]($extReqOID + $extReqValues))
+            $attributesContent = $extReqAttr
+            Write-Log "$FunctionPrefix Built extensionRequest attribute with $extensionCount extension(s)"
+        }
+        else {
+            Write-Log "$FunctionPrefix No extensions requested - CSR has empty attribute set"
         }
         $attributesTag = [byte]0xA0
         $attributesLenBytes = New-ASN1Length -Length $attributesContent.Length
@@ -50636,8 +50681,14 @@ function New-SANExtension {
                 $dnsLen = New-ASN1Length -Length $dnsBytes.Length
                 $generalNames += [byte[]](@($dnsTag) + $dnsLen + $dnsBytes)
             }
+            'URL' {
+                $urlBytes = [System.Text.Encoding]::ASCII.GetBytes($sanValue)
+                $urlTag = [byte]0x86  # Context [6] IMPLICIT
+                $urlLen = New-ASN1Length -Length $urlBytes.Length
+                $generalNames += [byte[]](@($urlTag) + $urlLen + $urlBytes)
+            }
             default {
-                Write-Warning "[New-SANExtension] Unsupported SAN type '$sanType'. Supported: UPN, DNS."
+                Write-Warning "[New-SANExtension] Unsupported SAN type '$sanType'. Supported: UPN, DNS, URL."
             }
         }
     }
@@ -50648,6 +50699,127 @@ function New-SANExtension {
     $sanOID = New-ASN1ObjectIdentifier -OID "2.5.29.17"
     $sanOctet = New-ASN1OctetString -Value $generalNamesSeq
     return [byte[]](New-ASN1Sequence -Data ([byte[]]($sanOID + $sanOctet)))
+}
+function New-NTDSCASecurityExtension {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SID
+    )
+    $FunctionPrefix = "[New-NTDSCASecurityExtension]"
+    if ($SID -notmatch '^S-1-\d+(-\d+)+$') {
+        Write-Warning "$FunctionPrefix '$SID' is not a valid SID string (expected S-1-5-21-...). Skipping SID extension."
+        return $null
+    }
+    $sidBytes = [System.Text.Encoding]::ASCII.GetBytes($SID)
+    $sidOctet = New-ASN1OctetString -Value $sidBytes
+    $ctx0Value = [byte[]](@(0xA0) + (New-ASN1Length -Length $sidOctet.Length) + $sidOctet)
+    $objectSidOID = New-ASN1ObjectIdentifier -OID "1.3.6.1.4.1.311.25.2.1"
+    $otherNameContent = [byte[]]($objectSidOID + $ctx0Value)
+    $otherName = [byte[]](@(0xA0) + (New-ASN1Length -Length $otherNameContent.Length) + $otherNameContent)
+    $generalNamesSeq = New-ASN1Sequence -Data $otherName
+    $extOID = New-ASN1ObjectIdentifier -OID "1.3.6.1.4.1.311.25.2"
+    $extnValue = New-ASN1OctetString -Value $generalNamesSeq
+    Write-Log "$FunctionPrefix Encoded NTDS CA Security Extension for SID $SID"
+    return [byte[]](New-ASN1Sequence -Data ([byte[]]($extOID + $extnValue)))
+}
+function New-ApplicationPoliciesExtension {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$PolicyOIDs
+    )
+    $FunctionPrefix = "[New-ApplicationPoliciesExtension]"
+    $nameToOid = @{
+        'client authentication'         = '1.3.6.1.5.5.7.3.2'
+        'server authentication'         = '1.3.6.1.5.5.7.3.1'
+        'smart card logon'              = '1.3.6.1.4.1.311.20.2.2'
+        'smartcardlogon'                = '1.3.6.1.4.1.311.20.2.2'
+        'certificate request agent'     = '1.3.6.1.4.1.311.20.2.1'
+        'enrollment agent'              = '1.3.6.1.4.1.311.20.2.1'
+        'code signing'                  = '1.3.6.1.5.5.7.3.3'
+        'any purpose'                   = '2.5.29.37.0'
+        'pkinit client authentication'  = '1.3.6.1.5.2.3.4'
+        'secure email'                  = '1.3.6.1.5.5.7.3.4'
+        'email protection'              = '1.3.6.1.5.5.7.3.4'
+    }
+    $policyInfos = [System.Collections.Generic.List[byte]]::new()
+    $resolvedCount = 0
+    foreach ($p in $PolicyOIDs) {
+        $val = $p.Trim()
+        $oid = $null
+        if ($val -match '^\d+(\.\d+)+$') {
+            $oid = $val
+        }
+        elseif ($nameToOid.ContainsKey($val.ToLower())) {
+            $oid = $nameToOid[$val.ToLower()]
+        }
+        else {
+            Write-Warning "$FunctionPrefix Unknown application policy '$p' (not an OID and not a known friendly name). Skipping."
+            continue
+        }
+        $policyInfo = New-ASN1Sequence -Data (New-ASN1ObjectIdentifier -OID $oid)
+        $policyInfos.AddRange([byte[]]$policyInfo)
+        $resolvedCount++
+        Write-Log "$FunctionPrefix Application policy: '$p' -> $oid"
+    }
+    if ($resolvedCount -eq 0) {
+        return $null
+    }
+    $certPolicies = New-ASN1Sequence -Data ($policyInfos.ToArray())
+    $extOID = New-ASN1ObjectIdentifier -OID "1.3.6.1.4.1.311.21.10"
+    $extnValue = New-ASN1OctetString -Value $certPolicies
+    return [byte[]](New-ASN1Sequence -Data ([byte[]]($extOID + $extnValue)))
+}
+function New-ASN1BMPString {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Value
+    )
+    $bytes = [System.Text.Encoding]::BigEndianUnicode.GetBytes($Value)
+    return [byte[]](@(0x1E) + (New-ASN1Length -Length $bytes.Length) + $bytes)
+}
+function New-EnrollOnBehalfOfRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [byte[]]$InnerCsrDer,
+        [Parameter(Mandatory)]
+        [string]$OnBehalfOf,
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$AgentCert
+    )
+    $FunctionPrefix = "[New-EnrollOnBehalfOfRequest]"
+    if (-not $AgentCert.HasPrivateKey) {
+        Write-Warning "$FunctionPrefix Agent certificate has no associated private key - cannot sign the request."
+        return $null
+    }
+    try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } catch { }
+    $nameBmp = New-ASN1BMPString -Value ("requestername" + [char]0)
+    $valBmp  = New-ASN1BMPString -Value ($OnBehalfOf + [char]0)
+    $envpDer = New-ASN1Sequence -Data ([byte[]]($nameBmp + $valBmp))
+    $clientAuthOidDer = New-ASN1ObjectIdentifier -OID "1.3.6.1.5.5.7.3.2"
+    try {
+        $contentInfo = New-Object System.Security.Cryptography.Pkcs.ContentInfo -ArgumentList (,[byte[]]$InnerCsrDer)
+        $cms = New-Object System.Security.Cryptography.Pkcs.SignedCms -ArgumentList $contentInfo, $false
+        $signer = New-Object System.Security.Cryptography.Pkcs.CmsSigner -ArgumentList $AgentCert
+        $signer.DigestAlgorithm = New-Object System.Security.Cryptography.Oid -ArgumentList "2.16.840.1.101.3.4.2.1"  # SHA256
+        $signer.IncludeOption = [System.Security.Cryptography.X509Certificates.X509IncludeOption]::EndCertOnly
+        $appPolOid = New-Object System.Security.Cryptography.Oid -ArgumentList "1.3.6.1.4.1.311.21.10"
+        [void]$signer.SignedAttributes.Add((New-Object System.Security.Cryptography.AsnEncodedData -ArgumentList $appPolOid, ([byte[]]$clientAuthOidDer)))
+        $envpOid = New-Object System.Security.Cryptography.Oid -ArgumentList "1.3.6.1.4.1.311.13.2.1"
+        [void]$signer.SignedAttributes.Add((New-Object System.Security.Cryptography.AsnEncodedData -ArgumentList $envpOid, ([byte[]]$envpDer)))
+        $cms.ComputeSignature($signer)
+        $p7 = $cms.Encode()
+        Write-Log "$FunctionPrefix Built enroll-on-behalf-of PKCS#7 ($($p7.Length) bytes) for '$OnBehalfOf' signed by '$($AgentCert.Subject)'"
+        return [Convert]::ToBase64String($p7)
+    }
+    catch {
+        Write-Warning "$FunctionPrefix Failed to build/sign on-behalf-of request: $_"
+        return $null
+    }
 }
 $Script:ICertRequestCode = @'
 using System;
@@ -50671,6 +50843,7 @@ namespace adPEAS
     {
         public const int CR_IN_BASE64 = 0x1;
         public const int CR_IN_PKCS10 = 0x100;
+        public const int CR_IN_PKCS7 = 0x300;
         public const int CR_OUT_BASE64 = 0x1;
         public const int CR_OUT_CHAIN = 0x100;
     }
@@ -50714,7 +50887,8 @@ namespace adPEAS
             string caServer,
             string caName,
             string csrBase64,
-            string templateName)
+            string templateName,
+            int inputFlags)
         {
             var result = new CertRequestResult
             {
@@ -50727,11 +50901,17 @@ namespace adPEAS
             ICertRequest certRequest = null;
             try
             {
-                // Create COM object (local or remote)
-                Type certRequestType = Type.GetTypeFromProgID("CertificateAuthority.Request", caServer, false);
+                // Create the ICertRequest COM object LOCALLY. The request is routed
+                // to the (possibly remote) CA by the strConfig "CAHost\CAName" string,
+                // which the certificate client resolves to the CA's ICertRequestD(2)
+                // DCOM interface. Activating the client object remotely (passing the CA
+                // host as the COM server) is wrong and normally fails with access denied.
+                // Any alternate credentials are applied by the caller via thread
+                // impersonation (LogonUser/ImpersonateLoggedOnUser) before this call.
+                Type certRequestType = Type.GetTypeFromProgID("CertificateAuthority.Request");
                 if (certRequestType == null)
                 {
-                    result.ErrorMessage = "Failed to get COM type CertificateAuthority.Request";
+                    result.ErrorMessage = "Failed to get COM type CertificateAuthority.Request (certificate enrollment COM API not available on this host)";
                     return result;
                 }
                 object certRequestObj = Activator.CreateInstance(certRequestType);
@@ -50740,8 +50920,10 @@ namespace adPEAS
                 string caConfig = string.Format("{0}\\{1}", caServer, caName);
                 // Build certificate attributes
                 string attributes = string.Format("CertificateTemplate:{0}", templateName);
-                // Submit request
-                int flags = CR_FLAGS.CR_IN_BASE64 | CR_FLAGS.CR_IN_PKCS10;
+                // Submit request. inputFlags lets the caller choose the request
+                // format (PKCS#10 for a normal CSR, PKCS#7 for an enroll-on-behalf-of
+                // SignedData envelope). Fall back to Base64 PKCS#10 when unset.
+                int flags = inputFlags != 0 ? inputFlags : (CR_FLAGS.CR_IN_BASE64 | CR_FLAGS.CR_IN_PKCS10);
                 int disposition = certRequest.Submit(flags, csrBase64, attributes, caConfig);
                 result.Disposition = disposition;
                 result.RequestID = certRequest.GetRequestId();
@@ -50750,9 +50932,12 @@ namespace adPEAS
                 certRequest.GetDispositionMessage(out dispositionMessage);
                 if (disposition == (int)CR_DISPOSITION.CR_DISP_ISSUED)
                 {
-                    // Certificate was issued - retrieve it
+                    // Certificate was issued - retrieve the leaf certificate as Base64.
+                    // CR_OUT_CHAIN is intentionally NOT set: we only need the issued
+                    // certificate to pair with our private key, and a single cert is
+                    // simpler to decode than a Base64 PKCS#7 chain.
                     string certificate;
-                    int outFlags = CR_FLAGS.CR_OUT_BASE64 | CR_FLAGS.CR_OUT_CHAIN;
+                    int outFlags = CR_FLAGS.CR_OUT_BASE64;
                     certRequest.GetCertificate(outFlags, out certificate);
                     result.Success = true;
                     result.CertificateBase64 = certificate;
@@ -50813,6 +50998,65 @@ if (-not ([System.Management.Automation.PSTypeName]'adPEAS.CertificateRequest').
         Write-Log "[Request-ADCSCertificate] Failed to load ICertRequest COM type: $_" -Level Warning
     }
 }
+function ConvertTo-X509FromBase64 {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Base64
+    )
+    $FunctionPrefix = "[ConvertTo-X509FromBase64]"
+    $clean = $Base64
+    if ($clean -match '(?s)-----BEGIN[^-]+-----\s*(.+?)\s*-----END[^-]+-----') {
+        $clean = $Matches[1]
+    }
+    $clean = $clean -replace '\s', ''
+    if ([string]::IsNullOrEmpty($clean)) {
+        Write-Log "$FunctionPrefix Empty Base64 input" -Level Warning
+        return $null
+    }
+    try {
+        $bytes = [Convert]::FromBase64String($clean)
+    }
+    catch {
+        Write-Log "$FunctionPrefix Input is not valid Base64: $_" -Level Warning
+        return $null
+    }
+    try {
+        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,$bytes)
+        Write-Log "$FunctionPrefix Decoded single X.509 certificate (Subject=$($cert.Subject))"
+        return $cert
+    }
+    catch {
+        Write-Log "$FunctionPrefix Not a single DER certificate, trying PKCS#7 chain: $_"
+    }
+    try {
+        $cms = New-Object System.Security.Cryptography.Pkcs.SignedCms
+        $cms.Decode($bytes)
+        $coll = $cms.Certificates
+        if (-not $coll -or $coll.Count -eq 0) {
+            Write-Log "$FunctionPrefix PKCS#7 contained no certificates" -Level Warning
+            return $null
+        }
+        $leaf = $null
+        foreach ($candidate in $coll) {
+            $isIssuerOfAnother = $false
+            foreach ($other in $coll) {
+                if ($other.Subject -ne $candidate.Subject -and $other.Issuer -eq $candidate.Subject) {
+                    $isIssuerOfAnother = $true
+                    break
+                }
+            }
+            if (-not $isIssuerOfAnother) { $leaf = $candidate; break }
+        }
+        if (-not $leaf) { $leaf = $coll[0] }
+        Write-Log "$FunctionPrefix Extracted leaf certificate from PKCS#7 chain of $($coll.Count) (Subject=$($leaf.Subject))"
+        return $leaf
+    }
+    catch {
+        Write-Log "$FunctionPrefix Failed to decode as PKCS#7: $_" -Level Warning
+        return $null
+    }
+}
 function Submit-COMRequest {
     [CmdletBinding()]
     param(
@@ -50823,44 +51067,79 @@ function Submit-COMRequest {
         [Parameter(Mandatory)]
         [string]$CSRBase64,
         [Parameter(Mandatory)]
-        [string]$TemplateName
+        [string]$TemplateName,
+        [PSCredential]$Credential,
+        [switch]$IsPKCS7
     )
     $FunctionPrefix = "[Submit-COMRequest]"
-    Write-Log "$FunctionPrefix Submitting CSR via COM/RPC to $CAServer\$CAName"
+    $inputFlags = if ($IsPKCS7) { 0x301 } else { 0x101 }
+    Write-Log "$FunctionPrefix Submitting via COM/RPC to config '$CAServer\$CAName' (template '$TemplateName', format=$(if ($IsPKCS7) { 'PKCS#7' } else { 'PKCS#10' }), auth=$(if ($Credential) { 'impersonated credential' } else { 'current context' }))"
     $result = @{
         Success      = $false
         RequestID    = $null
         Disposition  = $null
-        Certificate  = $null
+        Certificate  = $null   # X509Certificate2 on success (decoded from Base64)
         ErrorMessage = $null
     }
+    $impersonationToken = [IntPtr]::Zero
     try {
         if (-not ([System.Management.Automation.PSTypeName]'adPEAS.CertificateRequest').Type) {
             $result.ErrorMessage = "ICertRequest COM type not loaded - Add-Type failed during initialization"
             Write-Log "$FunctionPrefix $($result.ErrorMessage)" -Level Error
             return $result
         }
+        if ($Credential) {
+            try {
+                Write-Log "$FunctionPrefix Impersonating supplied credential for DCOM call"
+                $impersonationToken = Invoke-NTLMImpersonation -Credential $Credential -Quiet
+            }
+            catch {
+                $result.ErrorMessage = "Failed to impersonate credential for COM/RPC: $($_.Exception.Message)"
+                Write-Log "$FunctionPrefix $($result.ErrorMessage)" -Level Error
+                return $result
+            }
+        }
         $comResult = [adPEAS.CertificateRequest]::SubmitRequest(
             $CAServer,
             $CAName,
             $CSRBase64,
-            $TemplateName
+            $TemplateName,
+            $inputFlags
         )
-        $result.Success = $comResult.Success
         $result.RequestID = $comResult.RequestID
         $result.Disposition = $comResult.Disposition
-        $result.Certificate = $comResult.CertificateBase64
-        $result.ErrorMessage = $comResult.ErrorMessage
+        Write-Log "$FunctionPrefix CA returned disposition=$($comResult.Disposition), RequestID=$($comResult.RequestID)"
         if ($comResult.Success) {
-            Write-Log "$FunctionPrefix Certificate issued successfully (RequestID: $($comResult.RequestID))"
+            $decoded = ConvertTo-X509FromBase64 -Base64 $comResult.CertificateBase64
+            if ($decoded) {
+                $result.Success = $true
+                $result.Certificate = $decoded
+                Write-Log "$FunctionPrefix Certificate issued and decoded (RequestID: $($comResult.RequestID), Thumbprint: $($decoded.Thumbprint))"
+            }
+            else {
+                $result.ErrorMessage = "CA issued the certificate but the returned data could not be decoded"
+                Write-Log "$FunctionPrefix $($result.ErrorMessage)" -Level Warning
+            }
         }
         else {
+            $result.ErrorMessage = $comResult.ErrorMessage
             Write-Log "$FunctionPrefix Request failed: $($comResult.ErrorMessage)" -Level Warning
         }
     }
     catch {
         $result.ErrorMessage = "COM invocation failed: $($_.Exception.Message)"
         Write-Log "$FunctionPrefix $($result.ErrorMessage)" -Level Error
+    }
+    finally {
+        if ($impersonationToken -ne [IntPtr]::Zero) {
+            try {
+                Invoke-RevertToSelf -TokenHandle $impersonationToken
+                Write-Log "$FunctionPrefix Reverted impersonation token"
+            }
+            catch {
+                Write-Log "$FunctionPrefix Failed to revert impersonation: $_" -Level Warning
+            }
+        }
     }
     return $result
 }
@@ -50875,11 +51154,13 @@ function Submit-CertsrvRequest {
         [string]$TemplateName,
         [PSCredential]$Credential,
         [switch]$UseHTTP,
+        [int]$Port = 0,
         [int]$TimeoutSeconds = 30
     )
     $FunctionPrefix = "[Submit-CertsrvRequest]"
     $protocol = if ($UseHTTP) { "http" } else { "https" }
-    $submitUrl = "${protocol}://${CAServer}/certsrv/certfnsh.asp"
+    $portPart = if ($Port -gt 0) { ":$Port" } else { "" }
+    $submitUrl = "${protocol}://${CAServer}${portPart}/certsrv/certfnsh.asp"
     Write-Log "$FunctionPrefix Submitting CSR to $submitUrl"
     $encodedCSR = [System.Uri]::EscapeDataString($CSRBase64)
     $formBody = "Mode=newreq&CertRequest=$encodedCSR&CertAttrib=CertificateTemplate%3A$TemplateName&SaveCert=yes&ThumbPrint="
@@ -51045,11 +51326,13 @@ function Get-CertsrvCertificate {
         [int]$RequestID,
         [PSCredential]$Credential,
         [switch]$UseHTTP,
+        [int]$Port = 0,
         [int]$TimeoutSeconds = 30
     )
     $FunctionPrefix = "[Get-CertsrvCertificate]"
     $protocol = if ($UseHTTP) { "http" } else { "https" }
-    $retrieveUrl = "${protocol}://${CAServer}/certsrv/certnew.cer?ReqID=${RequestID}&Enc=b64"
+    $portPart = if ($Port -gt 0) { ":$Port" } else { "" }
+    $retrieveUrl = "${protocol}://${CAServer}${portPart}/certsrv/certnew.cer?ReqID=${RequestID}&Enc=b64"
     Write-Log "$FunctionPrefix Retrieving certificate from $retrieveUrl"
     $originalSecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol
     $originalCertCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
@@ -51103,50 +51386,275 @@ function Get-CertsrvCertificate {
             Write-Error "$FunctionPrefix Empty response when retrieving certificate"
             return $null
         }
-        $certBase64 = $null
-        if ($responseContent -match '(?s)-----BEGIN CERTIFICATE-----\s*(.+?)\s*-----END CERTIFICATE-----') {
-            $certBase64 = $Matches[1] -replace '\s', ''
-        }
-        else {
-            $cleaned = $responseContent.Trim() -replace '\s', ''
-            if ($cleaned -match '^[A-Za-z0-9+/=]+$' -and $cleaned.Length -gt 100) {
-                $certBase64 = $cleaned
-            }
-        }
-        if (-not $certBase64) {
-            Write-Error "$FunctionPrefix Could not extract certificate data from response"
+        $cert = ConvertTo-X509FromBase64 -Base64 $responseContent
+        if (-not $cert) {
+            Write-Error "$FunctionPrefix Could not extract a certificate from the CA response"
             return $null
         }
-        try {
-            $certBytes = [Convert]::FromBase64String($certBase64)
-            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,$certBytes)
-            Write-Log "$FunctionPrefix Certificate retrieved: Subject=$($cert.Subject), Thumbprint=$($cert.Thumbprint)"
-            return $cert
-        }
-        catch {
-            Write-Error "$FunctionPrefix Failed to parse certificate: $_"
-            return $null
-        }
+        Write-Log "$FunctionPrefix Certificate retrieved: Subject=$($cert.Subject), Thumbprint=$($cert.Thumbprint)"
+        return $cert
     }
     finally {
         [System.Net.ServicePointManager]::SecurityProtocol = $originalSecurityProtocol
         [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $originalCertCallback
     }
 }
+function Save-IssuedCertificatePFX {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$IssuedCert,
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.RSA]$RSA,
+        [string]$OutputPath,
+        [switch]$NoPassword,
+        [string]$TemplateName,
+        $RequestID,
+        [string]$CAServer,
+        [switch]$Force
+    )
+    $FunctionPrefix = "[Save-IssuedCertificatePFX]"
+    if ($NoPassword) {
+        $pfxPassword = $null
+        Write-Log "$FunctionPrefix Exporting PFX without password (-NoPassword)"
+    }
+    else {
+        $pfxPassword = New-SafePassword -Length 20
+        Write-Log "$FunctionPrefix Generated random PFX password"
+    }
+    try {
+        $certWithKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::CopyWithPrivateKey($IssuedCert, $RSA)
+        if ($pfxPassword) {
+            $securePfxPassword = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force
+            $pfxBytes = $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $securePfxPassword)
+        }
+        else {
+            $pfxBytes = $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx)
+        }
+        $certWithKey.Dispose()
+        Write-Log "$FunctionPrefix Built PFX ($($pfxBytes.Length) bytes)"
+    }
+    catch {
+        Write-Log "$FunctionPrefix CopyWithPrivateKey failed: $_"
+        Write-Warning "[!] Failed to create PFX. .NET Framework 4.7.2+ is required."
+        return $null
+    }
+    if (-not $OutputPath) {
+        $cnForFile = if ($IssuedCert.Subject -match 'CN=([^,]+)') { $Matches[1].Trim() } else { 'certificate' }
+        $pfxTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $OutputPath = "${cnForFile}_${pfxTimestamp}.pfx"
+        Write-Log "$FunctionPrefix Derived output path: $OutputPath"
+    }
+    $exportResult = Export-adPEASFile -Path $OutputPath -Content $pfxBytes -Type Binary -SanitizeFilename -Force:$Force
+    if (-not $exportResult.Success) {
+        Write-Warning "[!] Failed to save PFX: $($exportResult.Message)"
+        return $null
+    }
+    $OutputPath = $exportResult.Path
+    Show-Line "Certificate saved as PFX:" -Class Hint
+    Show-KeyValue "PFX Path:" $OutputPath
+    if ($pfxPassword) {
+        Show-KeyValue "PFX Password:" $pfxPassword
+    } else {
+        Show-KeyValue "PFX Password:" "(none)" -Class Note
+    }
+    Show-KeyValue "Thumbprint:" $IssuedCert.Thumbprint
+    Show-KeyValue "Subject:" $IssuedCert.Subject
+    Show-KeyValue "Issuer:" $IssuedCert.Issuer
+    Show-KeyValue "Valid Until:" $IssuedCert.NotAfter.ToString("yyyy-MM-dd")
+    if ($TemplateName) {
+        Show-KeyValue "Template:" $TemplateName
+    }
+    $sanExt = $IssuedCert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' }
+    if ($sanExt) {
+        Show-KeyValue "SAN:" $sanExt.Format($false)
+    }
+    $sidExt = $IssuedCert.Extensions | Where-Object { $_.Oid.Value -eq '1.3.6.1.4.1.311.25.2' }
+    if ($sidExt) {
+        Show-KeyValue "SID Extension:" "present (strong mapping enabled)"
+    }
+    Show-EmptyLine
+    $domainHint = if ($Script:LDAPContext -and $Script:LDAPContext['Domain']) { $Script:LDAPContext['Domain'] } else { '<domain>' }
+    Show-Line "Usage with Connect-adPEAS:" -Class Note
+    if ($pfxPassword) {
+        Show-Line "Connect-adPEAS -Domain $domainHint -Certificate '$OutputPath' -CertificatePassword '$pfxPassword'"
+    } else {
+        Show-Line "Connect-adPEAS -Domain $domainHint -Certificate '$OutputPath'"
+    }
+    $certThumbprint = $IssuedCert.Thumbprint
+    $certSubject = $IssuedCert.Subject
+    $certIssuer = $IssuedCert.Issuer
+    $IssuedCert.Dispose()
+    return [PSCustomObject]@{
+        Success     = $true
+        Status      = 'Issued'
+        RequestID   = $RequestID
+        PFXPath     = $OutputPath
+        PFXPassword = if ($pfxPassword) { $pfxPassword } else { $null }
+        Thumbprint  = $certThumbprint
+        Subject     = $certSubject
+        Issuer      = $certIssuer
+        Template    = $TemplateName
+        CAServer    = $CAServer
+    }
+}
+function Save-PendingPrivateKey {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.RSA]$RSA,
+        [Parameter(Mandatory)]
+        $RequestID,
+        [string]$Subject,
+        [string]$CAServer,
+        [Parameter(Mandatory)]
+        [string]$OutputPath,
+        [switch]$Force
+    )
+    $FunctionPrefix = "[Save-PendingPrivateKey]"
+    $p = $RSA.ExportParameters($true)
+    $obj = [PSCustomObject]@{
+        Type      = 'adPEAS-PendingKey'
+        Version   = 1
+        RequestID = $RequestID
+        Subject   = $Subject
+        CAServer  = $CAServer
+        Modulus   = [Convert]::ToBase64String($p.Modulus)
+        Exponent  = [Convert]::ToBase64String($p.Exponent)
+        D         = [Convert]::ToBase64String($p.D)
+        P         = [Convert]::ToBase64String($p.P)
+        Q         = [Convert]::ToBase64String($p.Q)
+        DP        = [Convert]::ToBase64String($p.DP)
+        DQ        = [Convert]::ToBase64String($p.DQ)
+        InverseQ  = [Convert]::ToBase64String($p.InverseQ)
+    }
+    $json = $obj | ConvertTo-Json
+    $exportResult = Export-adPEASFile -Path $OutputPath -Content $json -Type Text -SanitizeFilename -Force:$Force
+    if (-not $exportResult.Success) {
+        throw "Failed to write key file: $($exportResult.Message)"
+    }
+    Write-Log "$FunctionPrefix Saved pending private key to $($exportResult.Path)"
+    return $exportResult.Path
+}
+function Restore-PendingPrivateKey {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$KeyFile
+    )
+    $FunctionPrefix = "[Restore-PendingPrivateKey]"
+    if (-not (Test-Path -Path $KeyFile)) {
+        throw "Key file not found: $KeyFile"
+    }
+    $j = Get-Content -Path $KeyFile -Raw | ConvertFrom-Json
+    if ($j.Type -ne 'adPEAS-PendingKey') {
+        throw "Unrecognized key file format: $KeyFile"
+    }
+    $p = New-Object System.Security.Cryptography.RSAParameters
+    $p.Modulus  = [Convert]::FromBase64String($j.Modulus)
+    $p.Exponent = [Convert]::FromBase64String($j.Exponent)
+    $p.D        = [Convert]::FromBase64String($j.D)
+    $p.P        = [Convert]::FromBase64String($j.P)
+    $p.Q        = [Convert]::FromBase64String($j.Q)
+    $p.DP       = [Convert]::FromBase64String($j.DP)
+    $p.DQ       = [Convert]::FromBase64String($j.DQ)
+    $p.InverseQ = [Convert]::FromBase64String($j.InverseQ)
+    $rsa = [System.Security.Cryptography.RSA]::Create()
+    $rsa.ImportParameters($p)
+    Write-Log "$FunctionPrefix Restored private key from $KeyFile (RequestID=$($j.RequestID))"
+    return [PSCustomObject]@{
+        RSA       = $rsa
+        RequestID = $j.RequestID
+        Subject   = $j.Subject
+        CAServer  = $j.CAServer
+    }
+}
+function Invoke-ADCSRetrieve {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [int]$RetrieveID,
+        [string]$KeyFile,
+        [string]$CAServer,
+        [PSCredential]$Credential,
+        [switch]$UseHTTP,
+        [int]$Port = 0,
+        [string]$OutputPath,
+        [switch]$NoPassword,
+        [switch]$PassThru,
+        [switch]$Force
+    )
+    $FunctionPrefix = "[Invoke-ADCSRetrieve]"
+    if ([string]::IsNullOrEmpty($CAServer)) {
+        Write-Warning "[!] -RetrieveID requires -CAServer (the CA host that issued the request)."
+        return $null
+    }
+    if ([string]::IsNullOrEmpty($KeyFile)) {
+        Write-Warning "[!] -RetrieveID requires -KeyFile (the *.key.json saved when the request went pending)."
+        return $null
+    }
+    try {
+        $restored = Restore-PendingPrivateKey -KeyFile $KeyFile
+    }
+    catch {
+        Write-Warning "[!] $_"
+        return $null
+    }
+    $rsa = $restored.RSA
+    try {
+        Show-Line "Retrieving certificate (Request ID: $RetrieveID) from CA '$CAServer'" -Class Note
+        $httpModes = if ($UseHTTP) { @($true) } else { @($false, $true) }
+        $issuedCert = $null
+        foreach ($httpMode in $httpModes) {
+            Write-Log "$FunctionPrefix Attempting retrieval (http=$httpMode)"
+            $issuedCert = Get-CertsrvCertificate -CAServer $CAServer -RequestID $RetrieveID `
+                -Credential $Credential -UseHTTP:$httpMode -Port $Port
+            if ($issuedCert) { break }
+        }
+        if (-not $issuedCert) {
+            Write-Warning "[!] Failed to retrieve certificate for Request ID $RetrieveID (not yet approved, denied, or wrong CA?)."
+            return $null
+        }
+        $pfxResult = Save-IssuedCertificatePFX -IssuedCert $issuedCert -RSA $rsa `
+            -OutputPath $OutputPath -NoPassword:$NoPassword `
+            -RequestID $RetrieveID -CAServer $CAServer -Force:$Force
+        if (-not $pfxResult) {
+            return $null
+        }
+        if ($PassThru) {
+            return $pfxResult
+        }
+    }
+    finally {
+        if ($rsa) { $rsa.Dispose() }
+    }
+}
 function Request-ADCSCertificate {
     [CmdletBinding()]
     param(
         [string]$CAServer,
-        [Parameter(Mandatory)]
+        [string]$CAName,
         [string]$TemplateName,
         [string]$Impersonate,
         [Alias('SubjectName')]
         [string]$Subject,
         [string]$UPN,
         [string[]]$DNS,
+        [string]$SID,
+        [switch]$NoSID,
+        [string[]]$ApplicationPolicies,
         [string[]]$AlternativeNames,
         [ValidateSet(1024, 2048, 4096)]
         [int]$KeyLength = 2048,
+        [ValidateSet('Auto', 'Web', 'COM')]
+        [string]$Method = 'Auto',
+        [ValidateRange(0, 65535)]
+        [int]$Port = 0,
+        [int]$RetrieveID,
+        [string]$KeyFile,
+        [string]$OnBehalfOf,
+        [string]$PFX,
+        [string]$PFXPassword,
         [string]$OutputPath,
         [PSCredential]$Credential,
         [string]$Domain,
@@ -51159,10 +51667,68 @@ function Request-ADCSCertificate {
     )
     process {
         $FunctionPrefix = "[Request-ADCSCertificate]"
+        $isRetrieve = $PSBoundParameters.ContainsKey('RetrieveID')
+        if (-not $isRetrieve -and [string]::IsNullOrEmpty($TemplateName)) {
+            Write-Warning "[!] -TemplateName is required for a new certificate request."
+            return $null
+        }
+        if ($isRetrieve) {
+            return Invoke-ADCSRetrieve -RetrieveID $RetrieveID -KeyFile $KeyFile `
+                -CAServer $CAServer -Credential $Credential -UseHTTP:$UseHTTP -Port $Port `
+                -OutputPath $OutputPath -NoPassword:$NoPassword -PassThru:$PassThru -Force:$Force
+        }
+        $oboAgentCert = $null
+        if ($OnBehalfOf) {
+            if ([string]::IsNullOrEmpty($PFX)) {
+                Write-Warning "[!] -OnBehalfOf requires -PFX (enrollment-agent certificate + private key)."
+                return $null
+            }
+            Write-Log "$FunctionPrefix Enroll-on-behalf-of mode for '$OnBehalfOf', loading agent certificate from '$PFX'"
+            try {
+                if (Test-Path -LiteralPath $PFX) {
+                    $pfxBytesIn = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $PFX).Path)
+                }
+                else {
+                    $pfxBytesIn = [Convert]::FromBase64String(($PFX -replace '\s', ''))
+                }
+            }
+            catch {
+                Write-Warning "[!] Failed to read -PFX '$PFX' (not a valid file path or Base64): $_"
+                return $null
+            }
+            try {
+                $pfxPwdIn = if ($PSBoundParameters.ContainsKey('PFXPassword')) { $PFXPassword } else { $null }
+                $oboAgentCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 `
+                    -ArgumentList ([byte[]]$pfxBytesIn), $pfxPwdIn, ([System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
+            }
+            catch {
+                Write-Warning "[!] Failed to load agent certificate from -PFX (wrong password?): $_"
+                return $null
+            }
+            if (-not $oboAgentCert.HasPrivateKey) {
+                Write-Warning "[!] Agent certificate has no associated private key - cannot sign the on-behalf-of request."
+                return $null
+            }
+            $hasAgentEku = $false
+            foreach ($ext in $oboAgentCert.Extensions) {
+                if ($ext -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]) {
+                    foreach ($eku in $ext.EnhancedKeyUsages) {
+                        if ($eku.Value -eq '1.3.6.1.4.1.311.20.2.1') { $hasAgentEku = $true }
+                    }
+                }
+            }
+            if ($hasAgentEku) {
+                Show-Line "Loaded enrollment-agent certificate '$($oboAgentCert.Subject)' (Certificate Request Agent EKU present)" -Class Note
+            }
+            else {
+                Show-Line "Agent certificate '$($oboAgentCert.Subject)' does NOT advertise the Certificate Request Agent EKU - the CA may reject the request" -Class Hint
+            }
+        }
         $candidateCAs = @()
         if ($CAServer) {
+            Write-Log "$FunctionPrefix Explicit CA server '$CAServer' (CAName='$CAName')"
             $candidateCAs = @([PSCustomObject]@{
-                Name            = $CAServer
+                Name            = $CAName
                 DNSHostName     = $CAServer
                 CertificateTemplates = @()
                 _Explicit       = $true
@@ -51232,86 +51798,116 @@ function Request-ADCSCertificate {
             }
         }
         $CAServer = $null
+        $resolvedCAName = $null
+        $resolvedMethod = $null
         $resolvedUseHTTP = $UseHTTP.IsPresent
         $lastError = $null
+        $webEligible = ($Method -eq 'Auto' -or $Method -eq 'Web')
+        $comEligible = ($Method -eq 'Auto' -or $Method -eq 'COM')
         $protocolsToTry = if ($UseHTTP) { @('http') } else { @('https', 'http') }
         foreach ($candidateCA in $candidateCAs) {
             $testHost = $candidateCA.DNSHostName
-            $caReached = $false
-            foreach ($protocol in $protocolsToTry) {
-                $testUrl = "${protocol}://${testHost}/certsrv/"
-                Write-Log "$FunctionPrefix Testing CA endpoint: $testUrl"
-                try {
-                    $testRequest = [System.Net.HttpWebRequest]::Create($testUrl)
-                    $testRequest.Method = 'HEAD'
-                    $testRequest.Timeout = 5000
-                    $testRequest.AllowAutoRedirect = $true
-                    $origCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-                    if ($Credential) {
-                        $testRequest.Credentials = $Credential.GetNetworkCredential()
-                    }
-                    else {
-                        $testRequest.UseDefaultCredentials = $true
-                    }
-                    $testResponse = $null
+            $candidateCAName = $candidateCA.Name
+            $caSelected = $false
+            if ($webEligible) {
+                $portPart = if ($Port -gt 0) { ":$Port" } else { "" }
+                foreach ($protocol in $protocolsToTry) {
+                    $testUrl = "${protocol}://${testHost}${portPart}/certsrv/"
+                    Write-Log "$FunctionPrefix Probing Web Enrollment endpoint: $testUrl"
                     try {
-                        $testResponse = $testRequest.GetResponse()
-                        $statusCode = [int]$testResponse.StatusCode
-                    }
-                    catch [System.Net.WebException] {
-                        $webEx = $_.Exception
-                        if ($webEx.Response) {
-                            $statusCode = [int]$webEx.Response.StatusCode
-                            try { $webEx.Response.Close() } catch { }
-                            try { $webEx.Response.Dispose() } catch { }
+                        $testRequest = [System.Net.HttpWebRequest]::Create($testUrl)
+                        $testRequest.Method = 'HEAD'
+                        $testRequest.Timeout = 5000
+                        $testRequest.AllowAutoRedirect = $true
+                        $origCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+                        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+                        if ($Credential) {
+                            $testRequest.Credentials = $Credential.GetNetworkCredential()
                         }
                         else {
-                            throw
+                            $testRequest.UseDefaultCredentials = $true
+                        }
+                        $testResponse = $null
+                        try {
+                            $testResponse = $testRequest.GetResponse()
+                            $statusCode = [int]$testResponse.StatusCode
+                        }
+                        catch [System.Net.WebException] {
+                            $webEx = $_.Exception
+                            if ($webEx.Response) {
+                                $statusCode = [int]$webEx.Response.StatusCode
+                                try { $webEx.Response.Close() } catch { }
+                                try { $webEx.Response.Dispose() } catch { }
+                            }
+                            else {
+                                throw
+                            }
+                        }
+                        finally {
+                            if ($testResponse) {
+                                try { $testResponse.Close() } catch { }
+                                try { $testResponse.Dispose() } catch { }
+                            }
+                            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $origCallback
+                        }
+                        if ($statusCode -in @(200, 301, 302, 401, 403)) {
+                            $CAServer = $testHost
+                            $resolvedCAName = $candidateCAName
+                            $resolvedMethod = 'Web'
+                            $resolvedUseHTTP = ($protocol -eq 'http')
+                            Write-Log "$FunctionPrefix Web Enrollment reachable: $testUrl (HTTP $statusCode) -> method=Web"
+                            if ($protocol -eq 'http' -and -not $UseHTTP) {
+                                Show-Line "HTTPS not available on '$testHost', falling back to HTTP" -Class Hint
+                            }
+                            $caSelected = $true
+                            break
+                        }
+                        else {
+                            $lastError = "HTTP $statusCode"
+                            Write-Log "$FunctionPrefix Web Enrollment returned unexpected status: $testUrl - HTTP $statusCode"
                         }
                     }
-                    finally {
-                        if ($testResponse) {
-                            try { $testResponse.Close() } catch { }
-                            try { $testResponse.Dispose() } catch { }
-                        }
-                        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $origCallback
+                    catch {
+                        $lastError = $_.Exception.Message
+                        Write-Log "$FunctionPrefix Web Enrollment unreachable: $testUrl - $lastError"
                     }
-                    if ($statusCode -in @(200, 301, 302, 401, 403)) {
-                        $CAServer = $testHost
-                        $resolvedUseHTTP = ($protocol -eq 'http')
-                        Write-Log "$FunctionPrefix CA endpoint reachable: $testUrl (HTTP $statusCode)"
-                        if ($protocol -eq 'http' -and -not $UseHTTP) {
-                            Show-Line "HTTPS not available on '$testHost', falling back to HTTP" -Class Hint
-                        }
-                        $caReached = $true
-                        break
-                    }
-                    else {
-                        $lastError = "HTTP $statusCode"
-                        Write-Log "$FunctionPrefix CA endpoint returned unexpected status: $testUrl - HTTP $statusCode"
-                    }
-                }
-                catch {
-                    $lastError = $_.Exception.Message
-                    Write-Log "$FunctionPrefix CA endpoint unreachable: $testUrl - $lastError"
                 }
             }
-            if ($caReached) { break }
+            if ($caSelected) { break }
+            if ($comEligible) {
+                if ($candidateCAName) {
+                    $CAServer = $testHost
+                    $resolvedCAName = $candidateCAName
+                    $resolvedMethod = 'COM'
+                    if ($webEligible) {
+                        Show-Line "Web Enrollment unavailable on '$testHost', using COM/RPC (ICertRequest) instead" -Class Hint
+                    }
+                    Write-Log "$FunctionPrefix Selected COM/RPC for CA '$candidateCAName' on '$testHost'"
+                    $caSelected = $true
+                    break
+                }
+                else {
+                    $lastError = "COM/RPC requires the logical CA name (use -CAName)"
+                    Write-Log "$FunctionPrefix Cannot use COM/RPC for '$testHost' - CA name unknown"
+                }
+            }
             if ($candidateCAs.Count -gt 1 -or -not $candidateCA._Explicit) {
-                Show-Line "CA '$($candidateCA.Name)' ($testHost) unreachable via /certsrv/ - trying next CA" -Class Note
+                Show-Line "CA '$($candidateCA.Name)' ($testHost) not usable ($Method) - trying next CA" -Class Note
             }
         }
         if (-not $CAServer) {
-            if ($candidateCAs.Count -eq 1 -and $candidateCAs[0]._Explicit) {
+            if ($Method -eq 'COM') {
+                Write-Warning "[!] No CA usable via COM/RPC. Ensure the logical CA name is known (use -CAName with -CAServer). Last error: $lastError"
+            }
+            elseif ($candidateCAs.Count -eq 1 -and $candidateCAs[0]._Explicit) {
                 Write-Warning "[!] Cannot reach CA server '$($candidateCAs[0].DNSHostName)': $lastError"
             }
             else {
-                Write-Warning "[!] None of the $($candidateCAs.Count) candidate CAs are reachable via /certsrv/. Last error: $lastError"
+                Write-Warning "[!] None of the $($candidateCAs.Count) candidate CAs are usable (method '$Method'). Last error: $lastError"
             }
             return $null
         }
-        Show-Line "Requesting certificate from CA '$CAServer' using template '$TemplateName'" -Class Note
+        Show-Line "Requesting certificate from CA '$CAServer' (method: $resolvedMethod) using template '$TemplateName'" -Class Note
         $templateBackupPath = $null
         $templateModified = $false
         if ($ModifyTemplate) {
@@ -51422,6 +52018,12 @@ function Request-ADCSCertificate {
                     $resolvedSubjectDN = "CN=$hostPart"
                     Write-Log "$FunctionPrefix No -Subject specified, derived from -DNS: $resolvedSubjectDN"
                 }
+                elseif ($OnBehalfOf) {
+                    $oboUser = $OnBehalfOf
+                    if ($oboUser -match '\\(.+)$') { $oboUser = $Matches[1] }
+                    $resolvedSubjectDN = "CN=$oboUser"
+                    Write-Log "$FunctionPrefix No -Subject specified, derived from -OnBehalfOf: $resolvedSubjectDN"
+                }
                 else {
                     $currentUser = $null
                     if ($Script:LDAPContext -and $Script:LDAPContext['Username']) {
@@ -51463,6 +52065,59 @@ function Request-ADCSCertificate {
             if ($resolvedSANs.Count -gt 0) {
                 Write-Log "$FunctionPrefix SANs: $($resolvedSANs -join ', ')"
             }
+            if ($resolvedSANs.Count -eq 0 -and -not $OnBehalfOf) {
+                $cnValue = if ($resolvedSubjectDN -match 'CN=([^,]+)') { $Matches[1].Trim() } else { '' }
+                if ($cnValue -match '@') {
+                    Show-Line "Subject '$cnValue' looks like a UPN but no SAN was set - the certificate will NOT map to that user. Use -UPN or -Impersonate for impersonation." -Class Finding
+                }
+                elseif ($cnValue -match '^[^@\s]+\.[^@\s]+$') {
+                    Show-Line "Subject '$cnValue' looks like a DNS/FQDN but no SAN was set - the certificate will NOT map to that host. Use -DNS or -Impersonate." -Class Finding
+                }
+            }
+            $resolvedSID = $null
+            if ($NoSID) {
+                Write-Log "$FunctionPrefix -NoSID specified, skipping SID extension"
+            }
+            elseif ($SID) {
+                $resolvedSID = $SID
+                Write-Log "$FunctionPrefix Using explicit -SID: $resolvedSID"
+            }
+            else {
+                $sidTargetIdentity = $null
+                $upnSan = $resolvedSANs | Where-Object { $_ -match '^UPN:' } | Select-Object -First 1
+                $dnsSan = $resolvedSANs | Where-Object { $_ -match '^DNS:' } | Select-Object -First 1
+                if ($OnBehalfOf) {
+                    $sidTargetIdentity = $OnBehalfOf
+                }
+                elseif ($upnSan) {
+                    $sidTargetIdentity = ($upnSan -split ':', 2)[1]
+                }
+                elseif ($dnsSan) {
+                    $dnsValue = ($dnsSan -split ':', 2)[1]
+                    $sidTargetIdentity = "$(($dnsValue -split '\.')[0])`$"
+                }
+                elseif ($resolvedSubjectDN -match 'CN=([^,]+)') {
+                    $sidTargetIdentity = $Matches[1].Trim()
+                }
+                if ($sidTargetIdentity -and $Script:LdapConnection) {
+                    Write-Log "$FunctionPrefix Attempting SID auto-resolution for '$sidTargetIdentity'"
+                    try {
+                        $resolvedSID = ConvertTo-SID -Identity $sidTargetIdentity
+                    }
+                    catch {
+                        Write-Log "$FunctionPrefix SID auto-resolution threw: $_"
+                    }
+                    if ($resolvedSID) {
+                        Show-Line "Auto-resolved SID for '$sidTargetIdentity': $resolvedSID (embedding NTDS CA Security Extension for strong mapping)" -Class Hint
+                    }
+                    else {
+                        Show-Line "Could not resolve a SID for '$sidTargetIdentity'. On patched DCs the certificate may not map - supply -SID explicitly, or use -NoSID to silence this." -Class Hint
+                    }
+                }
+                elseif (-not $Script:LdapConnection) {
+                    Write-Log "$FunctionPrefix No LDAP session for SID auto-resolution; supply -SID for strong mapping"
+                }
+            }
             $csrResult = $null
             try {
                 $csrParams = @{
@@ -51471,6 +52126,12 @@ function Request-ADCSCertificate {
                 }
                 if ($resolvedSANs.Count -gt 0) {
                     $csrParams['AlternativeNames'] = $resolvedSANs
+                }
+                if ($resolvedSID) {
+                    $csrParams['SID'] = $resolvedSID
+                }
+                if ($ApplicationPolicies -and $ApplicationPolicies.Count -gt 0) {
+                    $csrParams['ApplicationPolicies'] = $ApplicationPolicies
                 }
                 $csrResult = New-PKCS10Request @csrParams
             }
@@ -51481,58 +52142,85 @@ function Request-ADCSCertificate {
             Show-Line "Generated $KeyLength-bit RSA key pair and PKCS#10 CSR" -Class Note
             $rsa = $csrResult.RSAKey
             try {
-                $submitResult = Submit-CertsrvRequest -CAServer $CAServer `
-                    -CSRBase64 $csrResult.CSRBase64 `
-                    -TemplateName $TemplateName `
-                    -Credential $Credential `
-                    -UseHTTP:$resolvedUseHTTP
-                if ($submitResult.Status -eq 'Error' -and
-                    ($submitResult.ErrorMessage -match 'unable to connect|connection|timeout|refused|unreachable' -or
-                     $submitResult.RawResponse -match 'HTTP.*40[13]')) {
-                    Show-Line "Web Enrollment unavailable, attempting COM/RPC fallback..." -Class Hint
-                    Write-Log "$FunctionPrefix Web Enrollment failed: $($submitResult.ErrorMessage), trying COM/RPC"
-                    $caName = $null
-                    if ($candidateCAs -and $candidateCAs.Count -gt 0) {
-                        $matchingCA = $candidateCAs | Where-Object { $_.DNSHostName -eq $CAServer } | Select-Object -First 1
-                        if ($matchingCA) {
-                            $caName = $matchingCA.Name
-                        }
-                    }
-                    if (-not $caName) {
-                        Write-Warning "[!] Cannot determine CA name for COM/RPC fallback. Web Enrollment error: $($submitResult.ErrorMessage)"
+                $submissionBase64 = $csrResult.CSRBase64
+                $submissionIsPKCS7 = $false
+                if ($OnBehalfOf) {
+                    Show-Line "Wrapping request as enroll-on-behalf-of '$OnBehalfOf' (signed by agent certificate)" -Class Note
+                    $p7Base64 = New-EnrollOnBehalfOfRequest -InnerCsrDer $csrResult.CSRBytes `
+                        -OnBehalfOf $OnBehalfOf -AgentCert $oboAgentCert
+                    if (-not $p7Base64) {
+                        Write-Warning "[!] Failed to build the on-behalf-of request."
                         return $null
                     }
+                    $submissionBase64 = $p7Base64
+                    $submissionIsPKCS7 = $true
+                }
+                $submitResult = $null
+                if ($resolvedMethod -eq 'COM') {
+                    Write-Log "$FunctionPrefix Submitting via COM/RPC to CA '$resolvedCAName'"
                     $comResult = Submit-COMRequest -CAServer $CAServer `
-                        -CAName $caName `
-                        -CSRBase64 $csrResult.CSRBase64 `
-                        -TemplateName $TemplateName
+                        -CAName $resolvedCAName `
+                        -CSRBase64 $submissionBase64 `
+                        -TemplateName $TemplateName `
+                        -Credential $Credential `
+                        -IsPKCS7:$submissionIsPKCS7
                     if ($comResult.Success) {
                         $submitResult = @{
                             Success      = $true
                             Status       = 'Issued'
                             RequestID    = $comResult.RequestID
-                            Certificate  = $comResult.Certificate  # COM returns cert immediately
+                            Certificate  = $comResult.Certificate   # X509Certificate2
                             ErrorMessage = $null
+                            RawResponse  = $null
                         }
                         Show-Line "Certificate issued via COM/RPC (Request ID: $($comResult.RequestID))" -Class Hint
                     }
                     else {
-                        Write-Warning "[!] Both Web Enrollment and COM/RPC failed"
-                        Write-Warning "[!] Web Enrollment: $($submitResult.ErrorMessage)"
-                        Write-Warning "[!] COM/RPC: $($comResult.ErrorMessage)"
+                        Write-Warning "[!] COM/RPC request failed: $($comResult.ErrorMessage)"
                         return $null
                     }
                 }
                 else {
-                    if ($submitResult.Status -eq 'AuthError') {
-                        Write-Warning "[!] $($submitResult.ErrorMessage)"
-                        return $null
+                    Write-Log "$FunctionPrefix Submitting via Web Enrollment (http=$resolvedUseHTTP)"
+                    $submitResult = Submit-CertsrvRequest -CAServer $CAServer `
+                        -CSRBase64 $submissionBase64 `
+                        -TemplateName $TemplateName `
+                        -Credential $Credential `
+                        -UseHTTP:$resolvedUseHTTP `
+                        -Port $Port
+                    $isTransportFailure = ($submitResult.Status -eq 'Error' -and
+                        $submitResult.ErrorMessage -match 'connect|connection|timeout|refused|unreachable')
+                    if ($isTransportFailure -and $comEligible -and $resolvedCAName) {
+                        Show-Line "Web Enrollment transport error ($($submitResult.ErrorMessage)), attempting COM/RPC fallback..." -Class Hint
+                        Write-Log "$FunctionPrefix Web Enrollment transport failure, trying COM/RPC with CA '$resolvedCAName'"
+                        $comResult = Submit-COMRequest -CAServer $CAServer `
+                            -CAName $resolvedCAName `
+                            -CSRBase64 $submissionBase64 `
+                            -TemplateName $TemplateName `
+                            -Credential $Credential `
+                            -IsPKCS7:$submissionIsPKCS7
+                        if ($comResult.Success) {
+                            $submitResult = @{
+                                Success      = $true
+                                Status       = 'Issued'
+                                RequestID    = $comResult.RequestID
+                                Certificate  = $comResult.Certificate   # X509Certificate2
+                                ErrorMessage = $null
+                                RawResponse  = $null
+                            }
+                            Show-Line "Certificate issued via COM/RPC fallback (Request ID: $($comResult.RequestID))" -Class Hint
+                        }
+                        else {
+                            Write-Warning "[!] Both Web Enrollment and COM/RPC failed"
+                            Write-Warning "[!] Web Enrollment: $($submitResult.ErrorMessage)"
+                            Write-Warning "[!] COM/RPC: $($comResult.ErrorMessage)"
+                            return $null
+                        }
                     }
-                    if ($submitResult.Status -eq 'Denied') {
-                        Write-Warning "[!] $($submitResult.ErrorMessage)"
-                        return $null
-                    }
-                    if ($submitResult.Status -eq 'Error') {
+                    elseif ($submitResult.Status -in @('AuthError', 'Denied', 'Error')) {
+                        if ($isTransportFailure -and -not $resolvedCAName) {
+                            Write-Log "$FunctionPrefix Transport failure but no CA name known for COM/RPC fallback (use -CAName)"
+                        }
                         Write-Warning "[!] $($submitResult.ErrorMessage)"
                         return $null
                     }
@@ -51540,12 +52228,28 @@ function Request-ADCSCertificate {
                 if ($submitResult.Status -eq 'Pending') {
                     Show-Line "Certificate request is pending approval (Request ID: $($submitResult.RequestID))" -Class Hint
                     Show-Line "The CA administrator must approve this request before the certificate can be retrieved."
+                    $savedKeyPath = $null
+                    try {
+                        $cnForKey = if ($resolvedSubjectDN -match 'CN=([^,]+)') { $Matches[1].Trim() } else { 'certificate' }
+                        $savedKeyPath = Save-PendingPrivateKey -RSA $rsa -RequestID $submitResult.RequestID `
+                            -Subject $resolvedSubjectDN -CAServer $CAServer `
+                            -OutputPath "${cnForKey}_req$($submitResult.RequestID).key.json" -Force:$Force
+                    }
+                    catch {
+                        Write-Warning "[!] Could not save the private key for later retrieval: $_"
+                    }
+                    if ($savedKeyPath) {
+                        Show-Line "Private key saved for retrieval: $savedKeyPath" -Class Hint
+                        Show-Line "After approval, retrieve with:" -Class Note
+                        Show-Line "Request-ADCSCertificate -RetrieveID $($submitResult.RequestID) -CAServer '$CAServer' -KeyFile '$savedKeyPath'"
+                    }
                     if ($PassThru) {
                         return [PSCustomObject]@{
                             Success   = $true
                             Status    = 'Pending'
                             RequestID = $submitResult.RequestID
                             CAServer  = $CAServer
+                            KeyFile   = $savedKeyPath
                             Message   = "Certificate pending approval. Request ID: $($submitResult.RequestID)"
                         }
                     }
@@ -51564,86 +52268,22 @@ function Request-ADCSCertificate {
                     $issuedCert = Get-CertsrvCertificate -CAServer $CAServer `
                         -RequestID $submitResult.RequestID `
                         -Credential $Credential `
-                        -UseHTTP:$resolvedUseHTTP
+                        -UseHTTP:$resolvedUseHTTP `
+                        -Port $Port
                     if (-not $issuedCert) {
                         Write-Warning "[!] Failed to retrieve issued certificate"
                         return $null
                     }
                 }
-                if ($NoPassword) {
-                    $pfxPassword = $null
-                }
-                else {
-                    $pfxPassword = New-SafePassword -Length 20
-                }
-                try {
-                    $certWithKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::CopyWithPrivateKey($issuedCert, $rsa)
-                    if ($pfxPassword) {
-                        $securePfxPassword = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force
-                        $pfxBytes = $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $securePfxPassword)
-                    }
-                    else {
-                        $pfxBytes = $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx)
-                    }
-                    $certWithKey.Dispose()
-                }
-                catch {
-                    Write-Log "$FunctionPrefix CopyWithPrivateKey failed: $_"
-                    Write-Warning "[!] Failed to create PFX. .NET Framework 4.7.2+ is required."
+                $pfxResult = Save-IssuedCertificatePFX -IssuedCert $issuedCert -RSA $rsa `
+                    -OutputPath $OutputPath -NoPassword:$NoPassword `
+                    -TemplateName $TemplateName -RequestID $submitResult.RequestID -CAServer $CAServer `
+                    -Force:$Force
+                if (-not $pfxResult) {
                     return $null
                 }
-                if (-not $OutputPath) {
-                    $cnForFile = if ($issuedCert.Subject -match 'CN=([^,]+)') { $Matches[1].Trim() } else { 'certificate' }
-                    $pfxTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-                    $OutputPath = "${cnForFile}_${pfxTimestamp}.pfx"
-                }
-                $exportResult = Export-adPEASFile -Path $OutputPath -Content $pfxBytes -Type Binary -SanitizeFilename -Force:$Force
-                if (-not $exportResult.Success) {
-                    Write-Warning "[!] Failed to save PFX: $($exportResult.Message)"
-                    return $null
-                }
-                $OutputPath = $exportResult.Path
-                Show-Line "Certificate saved as PFX:" -Class Hint
-                Show-KeyValue "PFX Path:" $OutputPath
-                if ($pfxPassword) {
-                    Show-KeyValue "PFX Password:" $pfxPassword
-                } else {
-                    Show-KeyValue "PFX Password:" "(none)" -Class Note
-                }
-                Show-KeyValue "Thumbprint:" $issuedCert.Thumbprint
-                Show-KeyValue "Subject:" $issuedCert.Subject
-                Show-KeyValue "Issuer:" $issuedCert.Issuer
-                Show-KeyValue "Valid Until:" $issuedCert.NotAfter.ToString("yyyy-MM-dd")
-                Show-KeyValue "Template:" $TemplateName
-                $sanExt = $issuedCert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' }
-                if ($sanExt) {
-                    Show-KeyValue "SAN:" $sanExt.Format($false)
-                }
-                Show-EmptyLine
-                $domainHint = if ($Script:LDAPContext -and $Script:LDAPContext['Domain']) { $Script:LDAPContext['Domain'] } else { '<domain>' }
-                Show-Line "Usage with Connect-adPEAS:" -Class Note
-                if ($pfxPassword) {
-                    Show-Line "Connect-adPEAS -Domain $domainHint -Certificate '$OutputPath' -CertificatePassword '$pfxPassword'"
-                } else {
-                    Show-Line "Connect-adPEAS -Domain $domainHint -Certificate '$OutputPath'"
-                }
-                $certThumbprint = $issuedCert.Thumbprint
-                $certSubject = $issuedCert.Subject
-                $certIssuer = $issuedCert.Issuer
-                $issuedCert.Dispose()
                 if ($PassThru) {
-                    return [PSCustomObject]@{
-                        Success     = $true
-                        Status      = 'Issued'
-                        RequestID   = $submitResult.RequestID
-                        PFXPath     = $OutputPath
-                        PFXPassword = if ($pfxPassword) { $pfxPassword } else { $null }
-                        Thumbprint  = $certThumbprint
-                        Subject     = $certSubject
-                        Issuer      = $certIssuer
-                        Template    = $TemplateName
-                        CAServer    = $CAServer
-                    }
+                    return $pfxResult
                 }
             }
             finally {
@@ -69915,7 +70555,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.0.5"
+$Script:adPEASVersion = "2.0.5+20260601-1658"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
