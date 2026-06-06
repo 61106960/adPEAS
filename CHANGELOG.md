@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.1.0] - 2026-06-06
+
+### Added
+
+- **`Request-ADCSCertificate` — ESC3 (enrollment agent)** via
+  `-OnBehalfOf` / `-PFX` / `-PFXPassword`: enroll-on-behalf-of another
+  user using an enrollment-agent certificate (PKCS#7 SignedData).
+- **`Request-ADCSCertificate` — ESC13 / ESC15 (EKUwu)** via
+  `-ApplicationPolicies` (raw OIDs or friendly names), injected through
+  the `szOID_APPLICATION_CERT_POLICIES` extension.
+- **`Request-ADCSCertificate` — retrieve pending requests** via
+  `-RetrieveID` / `-KeyFile`; the private key is persisted when a request
+  goes pending so it can be completed later.
+- **`Request-ADCSCertificate` — new request controls**: `-SID` (with LDAP
+  auto-resolution) / `-NoSID`, `-Method Auto/Web/COM`, `-CAName`, and
+  `-Port` for a custom certsrv Web Enrollment port.
+
+### Changed
+
+- **Diamond Ticket now "recuts" from the genuine PAC** instead of
+  rebuilding a synthetic one. It preserves the real identity/session
+  fields, `PrimaryGroupId` and `UserAccountControl` from the base TGT and
+  only appends the requested group(s), removing the synthetic fingerprints
+  (default group set 512/513/518/519/520) that are a known IOC. Diamond
+  without `-GroupRIDs` now injects only Domain Admins (512). Golden/Silver
+  output is byte-identical to before.
+- **`Invoke-TicketForge -PTT`** now warns when Windows cannot locate a KDC
+  for the ticket's realm (host not joined, no `_kerberos._tcp.<realm>` SRV
+  record), so `SEC_E_NO_LOGON_SERVERS` is not mistaken for an invalid
+  ticket. Suggests an NRPT rule / ksetup mapping as the fix.
+
+### Fixed
+
+- **`New-DomainComputer` failed to create accounts via
+  MachineAccountQuota** — the LDAP AddRequest set `dNSHostName` and
+  `userPrincipalName` at creation time, which AD validated-writes reject
+  ("A value in the request is invalid") for unprivileged MAQ creators,
+  aborting the whole creation. These are now set best-effort after
+  creation, so the account is always created.
+- **`Request-ADCSCertificate` (COM/RPC) leaked a Base64 string** instead
+  of decoding the issued certificate (now X509 / PKCS#7-aware), and the
+  COM/RPC fallback is now reachable when `/certsrv/` web enrollment is
+  absent.
+- **Requester SID dropped from the issued certificate** — the SID is now
+  also embedded in the SAN as a URL
+  (`tag:microsoft.com,2022-09-14:sid:`) in addition to the NTDS CA
+  Security Extension, so it survives CAs that strip the requester-supplied
+  extension (matches Certipy).
+
+---
+
 ## [2.0.5] - 2026-05-27
 
 ### Fixed

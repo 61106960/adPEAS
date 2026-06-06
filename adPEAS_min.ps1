@@ -27025,8 +27025,6 @@ function New-DomainComputer {
             $AddRequest.DistinguishedName = $ComputerDN
             $AddRequest.Attributes.Add((New-Object System.DirectoryServices.Protocols.DirectoryAttribute("objectClass", "computer"))) | Out-Null
             $AddRequest.Attributes.Add((New-Object System.DirectoryServices.Protocols.DirectoryAttribute("sAMAccountName", $Name))) | Out-Null
-            $AddRequest.Attributes.Add((New-Object System.DirectoryServices.Protocols.DirectoryAttribute("userPrincipalName", "$Name@$($Script:LDAPContext.Domain)"))) | Out-Null
-            $AddRequest.Attributes.Add((New-Object System.DirectoryServices.Protocols.DirectoryAttribute("dNSHostName", "$ComputerNameWithoutDollar.$($Script:LDAPContext.Domain)"))) | Out-Null
             $AddRequest.Attributes.Add((New-Object System.DirectoryServices.Protocols.DirectoryAttribute("userAccountControl", "4098"))) | Out-Null
             if ($Description) {
                 $AddRequest.Attributes.Add((New-Object System.DirectoryServices.Protocols.DirectoryAttribute("description", $Description))) | Out-Null
@@ -27114,6 +27112,30 @@ function New-DomainComputer {
                     throw "Failed to enable account: $($EnableResponse.ResultCode) - $($EnableResponse.ErrorMessage)"
                 }
                 Write-Log "[New-DomainComputer] Account enabled"
+            }
+            $OptionalAttributes = @(
+                @{ Name = 'dNSHostName';       Value = "$ComputerNameWithoutDollar.$($Script:LDAPContext.Domain)" }
+                @{ Name = 'userPrincipalName'; Value = "$Name@$($Script:LDAPContext.Domain)" }
+            )
+            foreach ($OptAttr in $OptionalAttributes) {
+                try {
+                    $OptModifyRequest = New-Object System.DirectoryServices.Protocols.ModifyRequest
+                    $OptModifyRequest.DistinguishedName = $ComputerDN
+                    $OptMod = New-Object System.DirectoryServices.Protocols.DirectoryAttributeModification
+                    $OptMod.Name = $OptAttr.Name
+                    $OptMod.Operation = [System.DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace
+                    $OptMod.Add($OptAttr.Value) | Out-Null
+                    $OptModifyRequest.Modifications.Add($OptMod) | Out-Null
+                    $OptResponse = $Script:LdapConnection.SendRequest($OptModifyRequest)
+                    if ($OptResponse.ResultCode -eq [System.DirectoryServices.Protocols.ResultCode]::Success) {
+                        Write-Log "[New-DomainComputer] Set optional attribute '$($OptAttr.Name)' = '$($OptAttr.Value)'"
+                    } else {
+                        Write-Log "[New-DomainComputer] Optional attribute '$($OptAttr.Name)' not set (non-fatal): $($OptResponse.ResultCode)"
+                    }
+                }
+                catch {
+                    Write-Log "[New-DomainComputer] Optional attribute '$($OptAttr.Name)' not set (non-fatal): $($_.Exception.Message)"
+                }
             }
             if ($PassThru) {
                 $Result = [PSCustomObject]@{
@@ -70555,7 +70577,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.0.5+20260601-1658"
+$Script:adPEASVersion = "2.1.0"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
