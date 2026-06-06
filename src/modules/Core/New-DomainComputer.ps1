@@ -141,11 +141,15 @@ function New-DomainComputer {
             $AddRequest.DistinguishedName = $ComputerDN
 
             # WORKSTATION_TRUST_ACCOUNT (0x1000=4096) + ACCOUNTDISABLE (0x0002=2) = 4098
-            # Create DISABLED first, then set password, then enable
+            # Create DISABLED first, then set password, then enable.
+            # NOTE: Only the minimal, always-writable attributes are set here. dNSHostName and
+            # userPrincipalName go through AD validated-writes and are frequently rejected with
+            # "A value in the request is invalid" when an unprivileged user creates the account
+            # via MachineAccountQuota (the validated-write right applies to SELF, not the creator
+            # at Add time). They are not required for a usable account (e.g. RBCD) and are set
+            # best-effort after creation (Phase D) so they never abort object creation.
             $AddRequest.Attributes.Add((New-Object System.DirectoryServices.Protocols.DirectoryAttribute("objectClass", "computer"))) | Out-Null
             $AddRequest.Attributes.Add((New-Object System.DirectoryServices.Protocols.DirectoryAttribute("sAMAccountName", $Name))) | Out-Null
-            $AddRequest.Attributes.Add((New-Object System.DirectoryServices.Protocols.DirectoryAttribute("userPrincipalName", "$Name@$($Script:LDAPContext.Domain)"))) | Out-Null
-            $AddRequest.Attributes.Add((New-Object System.DirectoryServices.Protocols.DirectoryAttribute("dNSHostName", "$ComputerNameWithoutDollar.$($Script:LDAPContext.Domain)"))) | Out-Null
             $AddRequest.Attributes.Add((New-Object System.DirectoryServices.Protocols.DirectoryAttribute("userAccountControl", "4098"))) | Out-Null
 
             if ($Description) {
@@ -254,6 +258,40 @@ function New-DomainComputer {
                     throw "Failed to enable account: $($EnableResponse.ResultCode) - $($EnableResponse.ErrorMessage)"
                 }
                 Write-Log "[New-DomainComputer] Account enabled"
+            }
+
+            # Phase D: Set optional attributes (dNSHostName, userPrincipalName) best-effort.
+            # These go through AD validated-writes and are commonly rejected with
+            # "A value in the request is invalid" when an unprivileged user creates the
+            # account via MachineAccountQuota. They are not required for a usable account
+            # (e.g. RBCD), so any failure here is logged but never aborts creation.
+            # Each attribute is sent in its own ModifyRequest so one rejection does not
+            # prevent the other from being set.
+            $OptionalAttributes = @(
+                @{ Name = 'dNSHostName';       Value = "$ComputerNameWithoutDollar.$($Script:LDAPContext.Domain)" }
+                @{ Name = 'userPrincipalName'; Value = "$Name@$($Script:LDAPContext.Domain)" }
+            )
+            foreach ($OptAttr in $OptionalAttributes) {
+                try {
+                    $OptModifyRequest = New-Object System.DirectoryServices.Protocols.ModifyRequest
+                    $OptModifyRequest.DistinguishedName = $ComputerDN
+
+                    $OptMod = New-Object System.DirectoryServices.Protocols.DirectoryAttributeModification
+                    $OptMod.Name = $OptAttr.Name
+                    $OptMod.Operation = [System.DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace
+                    $OptMod.Add($OptAttr.Value) | Out-Null
+                    $OptModifyRequest.Modifications.Add($OptMod) | Out-Null
+
+                    $OptResponse = $Script:LdapConnection.SendRequest($OptModifyRequest)
+                    if ($OptResponse.ResultCode -eq [System.DirectoryServices.Protocols.ResultCode]::Success) {
+                        Write-Log "[New-DomainComputer] Set optional attribute '$($OptAttr.Name)' = '$($OptAttr.Value)'"
+                    } else {
+                        Write-Log "[New-DomainComputer] Optional attribute '$($OptAttr.Name)' not set (non-fatal): $($OptResponse.ResultCode)"
+                    }
+                }
+                catch {
+                    Write-Log "[New-DomainComputer] Optional attribute '$($OptAttr.Name)' not set (non-fatal): $($_.Exception.Message)"
+                }
             }
 
             # Return result object only if -PassThru is specified (no console output)
