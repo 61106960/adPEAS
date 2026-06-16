@@ -292,6 +292,7 @@ function Clear-SessionState {
 
     # Check module caches
     $Script:LAPSSchemaInfo = $null
+    $Script:BitLockerSchemaInfo = $null
     $Script:lapsGPOResults = $null
     $Script:AllForeignMembers = $null
     $Script:PrivilegedGroupSIDs = $null

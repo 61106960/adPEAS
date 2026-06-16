@@ -1,4 +1,4 @@
-$Script:SeverityClasses = @{
+﻿$Script:SeverityClasses = @{
     Finding  = 'Finding'
     Secure   = 'Secure'
     Hint     = 'Hint'
@@ -2166,6 +2166,14 @@ $Script:PrimaryAttributes = @{
         'Accounts',
         'Scope', 'LinkedOUs', 'IsEffectiveSetting'
     )
+    BitLockerRecoveryKey = @(
+        'ComputerName',
+        'msFVE-RecoveryPassword',
+        'msFVE-RecoveryGuid',
+        'msFVE-VolumeGuid',
+        'whenCreated',
+        'distinguishedName'
+    )
     GPPCredential = @(
         'credentialType', 'gpoName', 'filePath', 'userName', 'password', 'matchedLine', 'LinkedOUs'
     )
@@ -2247,7 +2255,8 @@ $Script:StrictAttributeTypes = @(
     'LDAPStatisticsModule',
     'LDAPStatisticsTotal',
     'DomainPasswordPolicy',
-    'FineGrainedPasswordPolicy'
+    'FineGrainedPasswordPolicy',
+    'BitLockerRecoveryKey'
 )
 $Script:ExcludeAttributes = @(
     'objectClass', 'objectGUID', 'objectCategory', 'instanceType',
@@ -5973,6 +5982,50 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             @{ Attribute = 'ms-Mcs-AdmPwd'; Severity = 'Finding' }
             @{ Attribute = 'msLAPS-Password'; Severity = 'Finding' }
             @{ Attribute = 'msLAPS-EncryptedPassword'; Severity = 'Finding' }
+        )
+    }
+    'BITLOCKER_KEY_READABLE' = @{
+        Title = "BitLocker Recovery Key Readable"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "The current user can read the escrowed BitLocker recovery password for this computer. BitLocker recovery keys are stored as msFVE-RecoveryInformation child objects and their read access is controlled by ACLs. Read access is often legitimate (recovery and helpdesk roles) and is not by itself a vulnerability, but it is worth reviewing: a readable recovery key lets the holder unlock the computer's BitLocker-protected volume offline, so unexpectedly broad access may indicate over-permissive delegation on the computer OUs."
+        Impact = @(
+            "The recovery key can unlock the computer's BitLocker-protected volume offline"
+            "Relevant when a disk is lost, stolen, decommissioned, or imaged"
+            "Broad read access may exceed what recovery/helpdesk roles actually require"
+            "Often correlates with over-permissive ACLs on the computer OUs"
+        )
+        Attack = @(
+            "1. Review which principals can read msFVE-RecoveryPassword on computer objects"
+            "2. With the 48-digit key, a holder can unlock BitLocker given physical access or a disk image"
+            "3. Confirm read access is limited to the intended recovery/helpdesk roles"
+        )
+        Remediation = @(
+            "Review who can read msFVE-RecoveryPassword on computer OUs"
+            "Restrict recovery key read access to dedicated recovery/helpdesk roles (tiered administration)"
+            "Use security groups for recovery key access, not broad or individual grants"
+            "Audit recovery key reads (Event ID 4662 on msFVE-RecoveryInformation objects)"
+            "Ensure recovery keys are only escrowed where AD ACLs are properly hardened"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List who has read access to BitLocker recovery passwords on an OU"
+                Command = "(Get-Acl 'AD:\OU=Workstations,DC=domain,DC=com').Access | Where-Object {`$_.ObjectType -eq '43061ac1-c8ad-4ccc-b785-2bfac20fc60a'} | Select-Object IdentityReference,ActiveDirectoryRights,AccessControlType,IsInherited"
+            }
+            @{
+                Description = "View escrowed BitLocker recovery information for a computer (RSAT BitLocker tools)"
+                Command = "Get-ADObject -Filter {objectClass -eq 'msFVE-RecoveryInformation'} -SearchBase 'CN=COMPUTER01,OU=Workstations,DC=domain,DC=com' -Properties msFVE-RecoveryPassword"
+            }
+        )
+        References = @(
+            @{ Title = "BitLocker recovery information in AD DS"; Url = "https://learn.microsoft.com/en-us/windows/security/operating-system-security/data-protection/bitlocker/configure?tabs=common#store-recovery-information-in-active-directory-domain-services" }
+            @{ Title = "msFVE-RecoveryInformation class"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-ada2/" }
+            @{ Title = "Attacking and defending BitLocker recovery keys in AD"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/index.html" }
+        )
+        Tools = @("PowerView", "DSInternals")
+        MITRE = "T1552"
+        Triggers = @(
+            @{ Attribute = 'msFVE-RecoveryPassword'; Severity = 'Hint' }
         )
     }
     'LAPS_PASSWORD_READ_ACCESS' = @{
@@ -10926,10 +10979,10 @@ function Get-AttributeSeverity {
             if (-not $entry.SID) { continue }
             $privResult = Test-IsPrivileged -Identity $entry.SID
             if (-not $privResult.IsPrivileged) {
-                return 'Note'   # Non-Standard → auto-promoted to Primary
+                return 'Note'   # Non-Standard â†’ auto-promoted to Primary
             }
         }
-        return 'Standard'   # All privileged → stays in Extended
+        return 'Standard'   # All privileged â†’ stays in Extended
     }
     $triggerSeverity = Get-SeverityFromTrigger -Name $Name -Value $Value `
         -IsComputer $IsComputer -SourceObject $SourceObject
@@ -12020,11 +12073,11 @@ $Script:ImpactMultipliers = @{
     'none'  = 1.0    # Standard user accounts - base impact
 }
 $Script:PasswordAgeModifiers = @{
-    'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
-    'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
-    'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
-    'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
-    'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
+    'multiplier_10x' = 1.6    # Password age >= 10Ã— maxPwdAge
+    'multiplier_5x'  = 1.4    # Password age >= 5Ã— maxPwdAge
+    'multiplier_3x'  = 1.3    # Password age >= 3Ã— maxPwdAge
+    'multiplier_2x'  = 1.2    # Password age >= 2Ã— maxPwdAge
+    'multiplier_1x'  = 1.1    # Password age >= 1Ã— maxPwdAge (over policy)
     'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 $Script:PasswordLengthModifiers = @{
@@ -13021,6 +13074,21 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         SecureMessage = "No readable LAPS passwords found. The current user does not have access to any local administrator passwords managed by LAPS, indicating proper access controls are in place."
         PrimaryFindingId = 'LAPS_PASSWORD_READABLE'
+    }
+    'BitLockerRecoveryKey' = @{
+        TitleFormat = "BitLocker Recovery Key: {ComputerName}"
+        Module = "Creds"
+        Category = "Credentials"
+        SectionTitle = "BitLocker Recovery Key Access"
+        Summary = "Tests which BitLocker recovery keys the current user can read from AD."
+        WhyItMatters = "BitLocker recovery keys are escrowed in AD as msFVE-RecoveryInformation child objects, with read access controlled by ACLs. Being able to read a recovery key is often legitimate (recovery and helpdesk roles) and is not by itself a vulnerability, but it is worth reviewing: a readable key lets the holder unlock the computer's encrypted volume offline. Unexpectedly broad read access can indicate over-permissive delegation on the computer OUs."
+        WhatWeCheck = @(
+            "msFVE-RecoveryInformation objects where the current user can read msFVE-RecoveryPassword"
+            "The 48-digit recovery password, recovery/volume GUID and escrow time"
+            "The computer each recovery key belongs to"
+        )
+        SecureMessage = "No readable BitLocker recovery keys found. The current user cannot read any escrowed BitLocker recovery passwords, indicating proper access controls are in place."
+        PrimaryFindingId = 'BITLOCKER_KEY_READABLE'
     }
     'PasswordInDescription' = @{
         TitleFormat = "Password in Description: {Name}"
@@ -17150,6 +17218,7 @@ function Clear-SessionState {
     $Script:ExchangeGroupCache = $null
     $Script:OUPermissionsCache = $null
     $Script:LAPSSchemaInfo = $null
+    $Script:BitLockerSchemaInfo = $null
     $Script:lapsGPOResults = $null
     $Script:AllForeignMembers = $null
     $Script:PrivilegedGroupSIDs = $null
@@ -17437,6 +17506,7 @@ function Invoke-LDAPSearch {
                 'msds-managedpasswordpreviousid', 'ms-ds-consistencyguid', 'logonhours',
                 'msds-allowedtoactonbehalfofotheridentity', 'mslaps-encryptedpassword',
                 'mslaps-encryptedpasswordhistory', 'mslaps-encrypteddsconfigurationdata',
+                'msfve-recoveryguid', 'msfve-volumeguid',
                 'thumbnailphoto', 'jpegphoto', 'usercertificate', 'cacertificate',
                 'msds-keyversionnumber', 'repluptodatevector', 'replpropertymeta',
                 'pkiexpirationperiod', 'pkioverlapperiod', 'pkikeyusage',
@@ -35390,9 +35460,9 @@ function Get-KerberosChecksumNative {
         [int]$EncryptionType
     )
     $checksumType = switch ($EncryptionType) {
-        18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
-        17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
-        23 { -138 }  # RC4 → HMAC_MD5
+        18 { 16 }    # AES256 â†’ HMAC_SHA1_96_AES256
+        17 { 15 }    # AES128 â†’ HMAC_SHA1_96_AES128
+        23 { -138 }  # RC4 â†’ HMAC_MD5
         default { throw "Unsupported encryption type for checksum: $EncryptionType" }
     }
     Write-Verbose "[Get-KerberosChecksumNative] Called with: etype=$EncryptionType, checksumType=$checksumType, keyUsage=$KeyUsage, keyLen=$($Key.Length), dataLen=$($Data.Length)"
@@ -54225,8 +54295,8 @@ function Get-ProtectedUsersStatus {
             }
             Write-Log "[Get-ProtectedUsersStatus] Found $($protectedMemberSIDs.Count) members in Protected Users group"
             $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
-            $tier0Accounts = @{}  # SID → Account object (deduplicated)
-            $tier0AccountGroups = @{}  # SID → Array of group names (for display)
+            $tier0Accounts = @{}  # SID â†’ Account object (deduplicated)
+            $tier0AccountGroups = @{}  # SID â†’ Array of group names (for display)
             foreach ($groupSID in $tier0GroupSIDs) {
                 $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
                 if (-not $groupObj) {
@@ -60975,6 +61045,111 @@ function Get-LAPSCredentialAccess {
         Write-Log "[Get-LAPSCredentialAccess] Check completed"
     }
 }
+function Get-BitLockerRecoveryKeyAccess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    begin {
+        Write-Log "[Get-BitLockerRecoveryKeyAccess] Starting check"
+    }
+    process {
+        try {
+            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+                return
+            }
+            Show-SubHeader "Testing BitLocker recovery key read access for current user..." -ObjectType "BitLockerRecoveryKey"
+            $bitLockerPresent = $false
+            if ($Script:BitLockerSchemaInfo) {
+                $bitLockerPresent = $Script:BitLockerSchemaInfo.Present
+                Write-Log "[Get-BitLockerRecoveryKeyAccess] Using cached schema info: Present=$bitLockerPresent"
+            } else {
+                $schemaDN = $Script:LDAPContext.SchemaNamingContext
+                if ($schemaDN) {
+                    try {
+                        $schemaFilter = "(&(objectClass=classSchema)(|(lDAPDisplayName=msFVE-RecoveryInformation)(cn=ms-FVE-RecoveryInformation)))"
+                        $schemaResult = @(Get-DomainObject -LDAPFilter $schemaFilter -SearchBase $schemaDN -Properties 'cn' -ResultLimit 1 @PSBoundParameters)
+                        if ($schemaResult.Count -gt 0) {
+                            $bitLockerPresent = $true
+                            Write-Log "[Get-BitLockerRecoveryKeyAccess] msFVE-RecoveryInformation schema class found"
+                        }
+                    } catch {
+                        Write-Log "[Get-BitLockerRecoveryKeyAccess] Schema query error: $($_.Exception.Message)"
+                    }
+                }
+                if (-not $bitLockerPresent) {
+                    $existsCheck = @(Get-DomainObject -LDAPFilter "(objectClass=msFVE-RecoveryInformation)" -Properties 'distinguishedName' -ResultLimit 1 @PSBoundParameters)
+                    if ($existsCheck.Count -gt 0) {
+                        $bitLockerPresent = $true
+                        Write-Log "[Get-BitLockerRecoveryKeyAccess] msFVE-RecoveryInformation objects detected"
+                    }
+                }
+                $Script:BitLockerSchemaInfo = @{ Present = $bitLockerPresent }
+            }
+            if (-not $bitLockerPresent) {
+                Show-Line "BitLocker recovery escrow is not used in this domain (no msFVE-RecoveryInformation objects found)" -Class "Note"
+                return
+            }
+            Write-Log "[Get-BitLockerRecoveryKeyAccess] Querying for readable BitLocker recovery keys"
+            $recoveryProperties = @(
+                'msFVE-RecoveryPassword',
+                'msFVE-RecoveryGuid',
+                'msFVE-VolumeGuid',
+                'whenCreated'
+            )
+            $recoveryObjects = @(Get-DomainObject -LDAPFilter "(&(objectClass=msFVE-RecoveryInformation)(msFVE-RecoveryPassword=*))" -Properties $recoveryProperties -Raw @PSBoundParameters)
+            Write-Log "[Get-BitLockerRecoveryKeyAccess] Found $($recoveryObjects.Count) readable recovery key(s)"
+            if ($recoveryObjects.Count -gt 0) {
+                Show-Line "Found $($recoveryObjects.Count) readable BitLocker recovery key(s):" -Class "Hint"
+                $totalObjects = $recoveryObjects.Count
+                $currentIndex = 0
+                foreach ($recoveryObject in $recoveryObjects) {
+                    $currentIndex++
+                    if ($totalObjects -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking BitLocker recovery key access" -Current $currentIndex -Total $totalObjects -ObjectName $recoveryObject.distinguishedName }
+                    $recoveryDN = [string]$recoveryObject.distinguishedName
+                    $parentDN = $recoveryDN -replace '^CN=[^,]+,', ''
+                    $computerName = if ($parentDN -match '^CN=([^,]+),') { $Matches[1] } else { $parentDN }
+                    $recoveryObject | Add-Member -NotePropertyName 'ComputerName' -NotePropertyValue $computerName -Force
+                    $recoveryObject | Add-Member -NotePropertyName 'distinguishedName' -NotePropertyValue $parentDN -Force
+                    foreach ($guidAttr in @('msFVE-RecoveryGuid', 'msFVE-VolumeGuid')) {
+                        $guidValue = $recoveryObject.$guidAttr
+                        if ($guidValue -is [byte[]] -and $guidValue.Length -eq 16) {
+                            try {
+                                $guidObj = New-Object System.Guid -ArgumentList (,$guidValue)
+                                $recoveryObject | Add-Member -NotePropertyName $guidAttr -NotePropertyValue $guidObj.ToString() -Force
+                            } catch {
+                                Write-Log "[Get-BitLockerRecoveryKeyAccess] Failed to convert $guidAttr for '$parentDN': $($_.Exception.Message)"
+                            }
+                        }
+                    }
+                    $whenCreatedRaw = [string]$recoveryObject.whenCreated
+                    if ($whenCreatedRaw -match '^(\d{14})') {
+                        try {
+                            $escrowTime = [datetime]::ParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
+                            $recoveryObject | Add-Member -NotePropertyName 'whenCreated' -NotePropertyValue ($escrowTime.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC') -Force
+                        } catch {
+                        }
+                    }
+                    $recoveryObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'BitLockerRecoveryKey' -Force
+                    Show-Object $recoveryObject
+                }
+                if ($totalObjects -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking BitLocker recovery key access" -Completed }
+            } else {
+                Show-Line "No readable BitLocker recovery keys found" -Class "Secure"
+            }
+        } catch {
+            Write-Log "[Get-BitLockerRecoveryKeyAccess] Error: $_" -Level Error
+        }
+    }
+    end {
+        Write-Log "[Get-BitLockerRecoveryKeyAccess] Check completed"
+    }
+}
 function Get-PasswordInDescription {
     [CmdletBinding()]
     param(
@@ -61022,8 +61197,8 @@ function Get-PasswordInDescription {
             $exclusionPatterns = @(
                 'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
                 '\bparol[ae]?\s*(policy|politica|cerinta)',
-                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
-                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
+                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|mÃ¥|bÃ¸r|deve|trebuie)\s+',
+                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utlÃ¸p|lunghezza|scadenza)',
                 'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
                 '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
                 '(minimum|maximum)\s+passw\S*',
@@ -70577,7 +70752,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.1.0"
+$Script:adPEASVersion = "2.1.0+20260616-0818"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -70953,6 +71128,7 @@ try {
         Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['Creds'])"
         try {
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-LAPSCredentialAccess' -Title 'LAPS Credential Access' -Check { Get-LAPSCredentialAccess }
+            Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-BitLockerRecoveryKeyAccess' -Title 'BitLocker Recovery Key Access' -Check { Get-BitLockerRecoveryKeyAccess }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialExposure' -Title 'Credential Exposure' -Check { Get-CredentialExposure }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-PasswordInDescription' -Title 'Passwords in Description/Info' -Check { Get-PasswordInDescription -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-KerberoastableAccounts' -Title 'Kerberoastable Accounts' -Check { Get-KerberoastableAccounts -OPSEC:$OPSEC }

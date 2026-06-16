@@ -991,6 +991,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'LAPS_PASSWORD_READABLE'
     }
 
+    'BitLockerRecoveryKey' = @{
+        TitleFormat = "BitLocker Recovery Key: {ComputerName}"
+        Module = "Creds"
+        Category = "Credentials"
+        SectionTitle = "BitLocker Recovery Key Access"
+        Summary = "Tests which BitLocker recovery keys the current user can read from AD."
+        WhyItMatters = "BitLocker recovery keys are escrowed in AD as msFVE-RecoveryInformation child objects, with read access controlled by ACLs. Being able to read a recovery key is often legitimate (recovery and helpdesk roles) and is not by itself a vulnerability, but it is worth reviewing: a readable key lets the holder unlock the computer's encrypted volume offline. Unexpectedly broad read access can indicate over-permissive delegation on the computer OUs."
+        WhatWeCheck = @(
+            "msFVE-RecoveryInformation objects where the current user can read msFVE-RecoveryPassword"
+            "The 48-digit recovery password, recovery/volume GUID and escrow time"
+            "The computer each recovery key belongs to"
+        )
+        SecureMessage = "No readable BitLocker recovery keys found. The current user cannot read any escrowed BitLocker recovery passwords, indicating proper access controls are in place."
+        PrimaryFindingId = 'BITLOCKER_KEY_READABLE'
+    }
+
     'PasswordInDescription' = @{
         TitleFormat = "Password in Description: {Name}"
         Module = "Creds"

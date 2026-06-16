@@ -235,6 +235,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Creds\Get-UnixPasswordAccounts.ps1"
     . "$Script:ScriptPath\modules\Checks\Creds\Get-CredentialExposure.ps1"
     . "$Script:ScriptPath\modules\Checks\Creds\Get-LAPSCredentialAccess.ps1"
+    . "$Script:ScriptPath\modules\Checks\Creds\Get-BitLockerRecoveryKeyAccess.ps1"
     . "$Script:ScriptPath\modules\Checks\Creds\Get-PasswordInDescription.ps1"
 
     # Reporting Modules
@@ -910,6 +911,7 @@ try {
         Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['Creds'])"
         try {
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-LAPSCredentialAccess' -Title 'LAPS Credential Access' -Check { Get-LAPSCredentialAccess }
+            Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-BitLockerRecoveryKeyAccess' -Title 'BitLocker Recovery Key Access' -Check { Get-BitLockerRecoveryKeyAccess }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialExposure' -Title 'Credential Exposure' -Check { Get-CredentialExposure }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-PasswordInDescription' -Title 'Passwords in Description/Info' -Check { Get-PasswordInDescription -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-KerberoastableAccounts' -Title 'Kerberoastable Accounts' -Check { Get-KerberoastableAccounts -OPSEC:$OPSEC }

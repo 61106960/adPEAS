@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`Get-BitLockerRecoveryKeyAccess` — new Creds check** that lists the
+  BitLocker recovery keys the current user can read from AD. BitLocker
+  recovery information is escrowed as `msFVE-RecoveryInformation` child
+  objects below each computer (not as a computer attribute); the check
+  runs a single domain-wide, server-side filtered subtree query
+  `(&(objectClass=msFVE-RecoveryInformation)(msFVE-RecoveryPassword=*))`.
+  The presence filter is ACL-gated, so only readable keys are returned —
+  no per-computer enumeration. A schema/feasibility check short-circuits
+  (and is cached for the session) so domains without BitLocker escrow skip
+  the query entirely. The owning computer name is derived from the parent
+  DN without extra LDAP queries, and recovery/volume GUIDs are decoded for
+  display. Reported as a *Hint* (yellow) since read access is often a
+  legitimate recovery/helpdesk capability, with full HTML report card and
+  hover tooltip.
+
+---
+
 ## [2.1.0] - 2026-06-06
 
 ### Added

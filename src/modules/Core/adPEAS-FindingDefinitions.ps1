@@ -3551,6 +3551,51 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         )
     }
 
+    'BITLOCKER_KEY_READABLE' = @{
+        Title = "BitLocker Recovery Key Readable"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "The current user can read the escrowed BitLocker recovery password for this computer. BitLocker recovery keys are stored as msFVE-RecoveryInformation child objects and their read access is controlled by ACLs. Read access is often legitimate (recovery and helpdesk roles) and is not by itself a vulnerability, but it is worth reviewing: a readable recovery key lets the holder unlock the computer's BitLocker-protected volume offline, so unexpectedly broad access may indicate over-permissive delegation on the computer OUs."
+        Impact = @(
+            "The recovery key can unlock the computer's BitLocker-protected volume offline"
+            "Relevant when a disk is lost, stolen, decommissioned, or imaged"
+            "Broad read access may exceed what recovery/helpdesk roles actually require"
+            "Often correlates with over-permissive ACLs on the computer OUs"
+        )
+        Attack = @(
+            "1. Review which principals can read msFVE-RecoveryPassword on computer objects"
+            "2. With the 48-digit key, a holder can unlock BitLocker given physical access or a disk image"
+            "3. Confirm read access is limited to the intended recovery/helpdesk roles"
+        )
+        Remediation = @(
+            "Review who can read msFVE-RecoveryPassword on computer OUs"
+            "Restrict recovery key read access to dedicated recovery/helpdesk roles (tiered administration)"
+            "Use security groups for recovery key access, not broad or individual grants"
+            "Audit recovery key reads (Event ID 4662 on msFVE-RecoveryInformation objects)"
+            "Ensure recovery keys are only escrowed where AD ACLs are properly hardened"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List who has read access to BitLocker recovery passwords on an OU"
+                Command = "(Get-Acl 'AD:\OU=Workstations,DC=domain,DC=com').Access | Where-Object {`$_.ObjectType -eq '43061ac1-c8ad-4ccc-b785-2bfac20fc60a'} | Select-Object IdentityReference,ActiveDirectoryRights,AccessControlType,IsInherited"
+            }
+            @{
+                Description = "View escrowed BitLocker recovery information for a computer (RSAT BitLocker tools)"
+                Command = "Get-ADObject -Filter {objectClass -eq 'msFVE-RecoveryInformation'} -SearchBase 'CN=COMPUTER01,OU=Workstations,DC=domain,DC=com' -Properties msFVE-RecoveryPassword"
+            }
+        )
+        References = @(
+            @{ Title = "BitLocker recovery information in AD DS"; Url = "https://learn.microsoft.com/en-us/windows/security/operating-system-security/data-protection/bitlocker/configure?tabs=common#store-recovery-information-in-active-directory-domain-services" }
+            @{ Title = "msFVE-RecoveryInformation class"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-ada2/" }
+            @{ Title = "Attacking and defending BitLocker recovery keys in AD"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/index.html" }
+        )
+        Tools = @("PowerView", "DSInternals")
+        MITRE = "T1552"
+        Triggers = @(
+            @{ Attribute = 'msFVE-RecoveryPassword'; Severity = 'Hint' }
+        )
+    }
+
     'LAPS_PASSWORD_READ_ACCESS' = @{
         Title = "LAPS Password Read Permissions"
         Risk = "Finding"

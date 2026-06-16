@@ -452,6 +452,7 @@ function Invoke-LDAPSearch {
                 'msds-managedpasswordpreviousid', 'ms-ds-consistencyguid', 'logonhours',
                 'msds-allowedtoactonbehalfofotheridentity', 'mslaps-encryptedpassword',
                 'mslaps-encryptedpasswordhistory', 'mslaps-encrypteddsconfigurationdata',
+                'msfve-recoveryguid', 'msfve-volumeguid',
                 'thumbnailphoto', 'jpegphoto', 'usercertificate', 'cacertificate',
                 'msds-keyversionnumber', 'repluptodatevector', 'replpropertymeta',
                 'pkiexpirationperiod', 'pkioverlapperiod', 'pkikeyusage',

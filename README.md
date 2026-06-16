@@ -37,7 +37,7 @@ adPEAS is a PowerShell-based security assessment tool that identifies misconfigu
 | Category | Highlights |
 |----------|-----------|
 | **Authentication** | Credentials, PKINIT, Pass-the-Cert, NT-Hash, AES keys, Windows auth, Kerberos-first with automatic fallback |
-| **Security Checks** | Domain config, Kerberoast, ASREPRoast, ACLs, DCSync, delegation, ADCS (ESC1-ESC15), GPO abuse, LAPS, outdated systems |
+| **Security Checks** | Domain config, Kerberoast, ASREPRoast, ACLs, DCSync, delegation, ADCS (ESC1-ESC15), GPO abuse, LAPS, BitLocker recovery keys, outdated systems |
 | **Reporting** | Console (color-coded), plain text, interactive HTML, JSON export |
 | **Offensive Ops** | Kerberoasting, AS-REP Roasting, Golden/Silver/Diamond Tickets, RBCD, Shadow Credentials, Pass-the-Ticket |
 | **BloodHound** | Built-in BloodHound CE collector (ZIP export) |
@@ -182,7 +182,7 @@ Compare-adPEASReport -Baseline ".\scan_q1.json" -Current ".\scan_q2.json" -Outpu
 | Module | Description |
 |--------|-------------|
 | `Domain` | Domain configuration, trusts, password policy, LDAP signing, SMB signing |
-| `Creds` | Kerberoast, ASREPRoast, credential exposure in SYSVOL |
+| `Creds` | Kerberoast, ASREPRoast, LAPS & BitLocker recovery key access, credential exposure in SYSVOL |
 | `Rights` | ACLs, DCSync, password reset rights, dangerous OU permissions |
 | `Delegation` | Unconstrained, constrained, resource-based constrained delegation |
 | `ADCS` | Certificate templates, ESC1–ESC15 vulnerabilities |

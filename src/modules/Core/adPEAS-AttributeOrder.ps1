@@ -315,6 +315,16 @@ $Script:PrimaryAttributes = @{
         'Scope', 'LinkedOUs', 'IsEffectiveSetting'
     )
 
+    # BitLocker Recovery Key (readable msFVE-RecoveryInformation child object)
+    BitLockerRecoveryKey = @(
+        'ComputerName',
+        'msFVE-RecoveryPassword',
+        'msFVE-RecoveryGuid',
+        'msFVE-VolumeGuid',
+        'whenCreated',
+        'distinguishedName'
+    )
+
     # Credential findings (GPP and SYSVOL)
     GPPCredential = @(
         'credentialType', 'gpoName', 'filePath', 'userName', 'password', 'matchedLine', 'LinkedOUs'
@@ -442,7 +452,8 @@ $Script:StrictAttributeTypes = @(
     'LDAPStatisticsModule',
     'LDAPStatisticsTotal',
     'DomainPasswordPolicy',
-    'FineGrainedPasswordPolicy'
+    'FineGrainedPasswordPolicy',
+    'BitLockerRecoveryKey'
 )
 
 # Attributes to always exclude from display

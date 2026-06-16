@@ -87,12 +87,12 @@ Exceptions where disabled accounts are excluded:
 
 ## Overview
 
-adPEAS performs 41+ security checks organized into 9 categories:
+adPEAS performs 42+ security checks organized into 9 categories:
 
 | Module        | Checks | Description                               |
 | ------------- | ------ | ----------------------------------------- |
 | Domain        | 5      | Domain configuration, trusts, policies    |
-| Creds         | 6      | Credential exposure vectors               |
+| Creds         | 7      | Credential exposure vectors               |
 | Rights        | 5      | ACL and permission analysis               |
 | Delegation    | 3      | Kerberos delegation misconfigurations     |
 | ADCS          | 2      | Certificate Services vulnerabilities      |
@@ -224,6 +224,26 @@ Identifies credential exposure vectors.
 **Usage**:
 ```powershell
 Get-LAPSCredentialAccess
+```
+
+---
+
+### Get-BitLockerRecoveryKeyAccess
+
+**Purpose**: Tests which BitLocker recovery keys the current user can read from AD.
+
+**What it checks**:
+- Readable `msFVE-RecoveryPassword` on `msFVE-RecoveryInformation` objects (escrowed as child objects below each computer)
+- The 48-digit recovery password, recovery/volume GUID and escrow time
+- The computer each recovery key belongs to (derived from the parent DN)
+
+**How it works**: A single domain-wide, server-side filtered subtree query `(&(objectClass=msFVE-RecoveryInformation)(msFVE-RecoveryPassword=*))`. The presence filter is ACL-gated, so the DC only returns recovery objects whose password the current user is actually allowed to read — no per-computer enumeration. If BitLocker recovery escrow is not used in the domain (no `msFVE-RecoveryInformation` schema/objects), the expensive query is skipped and the result is cached for the session.
+
+**Security Impact**: Reading a recovery key is often legitimate (recovery/helpdesk roles) and is reported as a *Hint*, not a Finding. A readable key lets the holder unlock the computer's BitLocker-protected volume offline (given physical access or a disk image), so unexpectedly broad read access can indicate over-permissive delegation on the computer OUs.
+
+**Usage**:
+```powershell
+Get-BitLockerRecoveryKeyAccess
 ```
 
 ---
