@@ -299,6 +299,25 @@ $Script:BroadGroupRIDSuffixes = @(
     '-515'    # Domain Computers
 )
 
+<#
+.SYNOPSIS
+    Well-known service / builtin-support identities that legitimately hold User Rights
+    Assignment privileges by default.
+.DESCRIPTION
+    These principals are the documented default holders of various user rights (e.g.
+    SeImpersonatePrivilege, SeBatchLogonRight) and are NOT meaningful privilege-escalation
+    targets: they are virtual/service identities or builtin support groups you cannot
+    usefully add members to in a domain. Treat them like privileged principals when
+    deciding whether a User Rights Assignment is unexpected.
+#>
+$Script:WellKnownServiceSIDs = @(
+    'S-1-5-6',        # SERVICE
+    'S-1-5-80-0',     # NT SERVICE\ALL SERVICES
+    'S-1-5-90-0',     # Window Manager\Window Manager Group
+    'S-1-5-32-559',   # BUILTIN\Performance Log Users
+    'S-1-5-32-568'    # BUILTIN\IIS_IUSRS
+)
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -523,6 +542,25 @@ function Test-IsBroadGroupRID {
     }
 
     return $null
+}
+
+<#
+.SYNOPSIS
+    Tests if a SID is a well-known service / builtin-support identity that is an expected
+    default holder of user rights (see $Script:WellKnownServiceSIDs).
+.PARAMETER SID
+    The Security Identifier to check.
+.OUTPUTS
+    Boolean - $true if the SID is in $Script:WellKnownServiceSIDs.
+#>
+function Test-IsWellKnownServiceSID {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$SID
+    )
+
+    return $Script:WellKnownServiceSIDs -contains $SID
 }
 
 # ============================================================================

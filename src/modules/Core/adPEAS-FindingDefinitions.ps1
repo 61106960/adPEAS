@@ -3596,6 +3596,53 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         )
     }
 
+    'GPO_DANGEROUS_USER_RIGHT' = @{
+        Title = "Dangerous User Right Assigned via GPO"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "A sensitive Windows user right is assigned to a non-privileged principal through Group Policy (GptTmpl.inf [Privilege Rights]). The right is applied to every computer the GPO targets, so a single misconfiguration can grant privilege-escalation or lateral-movement capability fleet-wide."
+        Impact = @(
+            "Privileges like SeDebug/SeImpersonate/SeTcb lead directly to SYSTEM on affected hosts"
+            "SeBackup/SeRestore/SeTakeOwnership give file/registry access (SAM, SYSTEM, NTDS) -> credential theft"
+            "SeLoadDriver enables loading a vulnerable driver (BYOVD) -> kernel/SYSTEM"
+            "Logon rights (RDP/service/batch) enable lateral movement to every targeted host"
+            "Rights granted to broad principals (Everyone, Authenticated Users, Domain Users) affect all users"
+        )
+        Attack = @(
+            "1. Identify a GPO granting a sensitive right to a non-privileged/broad principal"
+            "2. Compromise (or already control) that principal on a targeted computer"
+            "3. Abuse the right (e.g. SeBackup to read SAM, SeImpersonate via a Potato, SeLoadDriver for BYOVD)"
+            "4. Escalate to SYSTEM / harvest credentials / move laterally across all targeted hosts"
+        )
+        Remediation = @(
+            "Remove non-privileged and broad principals from sensitive User Rights Assignment policies"
+            "Grant sensitive rights only to dedicated admin groups, scoped to the systems that need them"
+            "Follow tiered administration - do not grant Tier-0 rights via broadly-linked GPOs"
+            "Audit changes to user rights (Event ID 4704/4717) and review GPO links/scope"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List User Rights Assignment configured in a GPO"
+                Command = "Get-GPOReport -Name 'PolicyName' -ReportType Xml | Select-String 'UserRightsAssignment' -Context 0,20"
+            }
+            @{
+                Description = "Inspect the [Privilege Rights] section of a GPO's security template"
+                Command = "Get-Content '\\domain\SYSVOL\domain\Policies\{GUID}\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf'"
+            }
+        )
+        References = @(
+            @{ Title = "User Rights Assignment (Microsoft)"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/user-rights-assignment" }
+            @{ Title = "Abusing Token Privileges"; Url = "https://github.com/hatRiot/token-priv" }
+            @{ Title = "Privilege Escalation - MITRE ATT&CK"; Url = "https://attack.mitre.org/tactics/TA0004/" }
+        )
+        Tools = @("SharpGPOAbuse", "PowerView")
+        MITRE = "T1068"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = 'SeDebugPrivilege|SeTcbPrivilege|SeImpersonatePrivilege|SeAssignPrimaryTokenPrivilege|SeCreateTokenPrivilege|SeLoadDriverPrivilege|SeBackupPrivilege|SeRestorePrivilege|SeTakeOwnershipPrivilege|SeEnableDelegationPrivilege|SeSyncAgentPrivilege|SeManageVolumePrivilege|SeSecurityPrivilege|SeRelabelPrivilege|SeTrustedCredManAccessPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'userRight'; Pattern = 'SeRemoteInteractiveLogonRight|SeServiceLogonRight|SeBatchLogonRight|SeInteractiveLogonRight|SeSystemtimePrivilege|SeRemoteShutdownPrivilege|SeShutdownPrivilege'; Severity = 'Hint' }
+        )
+    }
+
     'LAPS_PASSWORD_READ_ACCESS' = @{
         Title = "LAPS Password Read Permissions"
         Risk = "Finding"

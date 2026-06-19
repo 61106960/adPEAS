@@ -87,13 +87,13 @@ Exceptions where disabled accounts are excluded:
 
 ## Overview
 
-adPEAS performs 42+ security checks organized into 9 categories:
+adPEAS performs 43+ security checks organized into 9 categories:
 
 | Module        | Checks | Description                               |
 | ------------- | ------ | ----------------------------------------- |
 | Domain        | 5      | Domain configuration, trusts, policies    |
 | Creds         | 7      | Credential exposure vectors               |
-| Rights        | 5      | ACL and permission analysis               |
+| Rights        | 6      | ACL and permission analysis               |
 | Delegation    | 3      | Kerberos delegation misconfigurations     |
 | ADCS          | 2      | Certificate Services vulnerabilities      |
 | Accounts      | 9      | Privileged accounts and security settings |
@@ -464,6 +464,36 @@ Get-AddComputerRights -IncludePrivileged
 | Parameter | Description |
 |-----------|-------------|
 | `-IncludePrivileged` | Include privileged accounts in output (shown in yellow) |
+
+---
+
+### Get-GPOUserRightsAssignment
+
+**Purpose**: Detects dangerous Windows user rights / privileges assigned to non-privileged principals via Group Policy.
+
+**What it checks**:
+- The `[Privilege Rights]` section of `GptTmpl.inf` in every GPO
+- Privilege-escalation/credential privileges (SeDebug, SeBackup, SeRestore, SeTakeOwnership, SeImpersonate, SeAssignPrimaryToken, SeCreateToken, SeTcb, SeLoadDriver, SeEnableDelegation, SeSyncAgent, SeManageVolume, SeSecurity, SeRelabel, SeTrustedCredManAccess) — reported as Finding
+- Logon rights (RDP / service / batch / interactive logon, change system time, shutdown) — reported as Hint
+- Rights granted to broad principals (Everyone, Authenticated Users, Domain Users) — escalated to Finding
+- Maps each finding to the affected OUs / domain-wide scope via GPO links
+
+**Security Impact**: A single GPO can grant a low-level privilege (e.g. SeDebugPrivilege → SYSTEM, SeBackupPrivilege → read SAM/NTDS) to a non-privileged or broad principal across every computer it applies to — a direct, often domain-wide privilege-escalation and lateral-movement path. `SeMachineAccountPrivilege` is covered separately by Get-AddComputerRights.
+
+**Usage**:
+```powershell
+# Show dangerous rights granted to non-privileged principals (default)
+Get-GPOUserRightsAssignment
+
+# Include rights granted to privileged accounts (expected) as well
+Get-GPOUserRightsAssignment -IncludePrivileged
+```
+
+**Parameters**:
+
+| Parameter | Description |
+|-----------|-------------|
+| `-IncludePrivileged` | Include rights granted to privileged accounts in output |
 
 ---
 

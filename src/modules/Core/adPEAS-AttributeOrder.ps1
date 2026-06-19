@@ -279,6 +279,11 @@ $Script:PrimaryAttributes = @{
         'eolDate', 'daysSinceEoL', 'lastLogonTimestamp'
     )
 
+    # GPO User Rights Assignment findings ([Privilege Rights] in GptTmpl.inf)
+    GPOUserRights = @(
+        'gpoName', 'userRight', 'userRightName', 'principals', 'scope', 'linkedOUs'
+    )
+
     # Add Computer Rights findings (ACL-based)
     AddComputerRights = @(
         'sid', 'accountName', 'right', 'attributeName', 'value', 'isSecure',
@@ -453,7 +458,8 @@ $Script:StrictAttributeTypes = @(
     'LDAPStatisticsTotal',
     'DomainPasswordPolicy',
     'FineGrainedPasswordPolicy',
-    'BitLockerRecoveryKey'
+    'BitLockerRecoveryKey',
+    'GPOUserRights'
 )
 
 # Attributes to always exclude from display

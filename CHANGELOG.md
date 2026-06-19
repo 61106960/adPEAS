@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`Get-GPOUserRightsAssignment` — new Rights check** that parses the
+  `[Privilege Rights]` section of `GptTmpl.inf` in every GPO and flags sensitive
+  Windows user rights assigned to non-privileged principals. Two tiers: privilege-
+  escalation/credential privileges (SeDebug, SeBackup, SeRestore, SeTakeOwnership,
+  SeImpersonate, SeAssignPrimaryToken, SeCreateToken, SeTcb, SeLoadDriver,
+  SeEnableDelegation, SeSyncAgent, SeManageVolume, SeSecurity, SeRelabel,
+  SeTrustedCredManAccess) → Finding; logon rights (RDP/service/batch/interactive,
+  change system time, shutdown) → Hint. Rights granted to broad principals (Everyone,
+  Authenticated Users, Domain Users) are escalated to Finding. Each finding is mapped to
+  the affected OUs / domain-wide scope via GPO links; privileged principals, built-in
+  operator groups and well-known service/builtin default holders are hidden unless
+  `-IncludePrivileged`. Closes the gap vs. dedicated GPO parsers — adPEAS previously only
+  detected `SeMachineAccountPrivilege` (via Get-AddComputerRights).
+
 - **`Set-DomainGPO` — Backup/Revert for GPO modifications**, aligned to the
   `Set-CertificateTemplate -Export`/`-Import` idiom (operator-driven, no automatic
   backup — "the tester must know what they're doing"):

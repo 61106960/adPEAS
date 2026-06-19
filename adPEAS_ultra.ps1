@@ -814,6 +814,13 @@ $Script:BroadGroupRIDSuffixes = @(
 	'-514',   # Domain Guests
 	'-515'    # Domain Computers
 )
+$Script:WellKnownServiceSIDs = @(
+	'S-1-5-6',        # SERVICE
+	'S-1-5-80-0',     # NT SERVICE\ALL SERVICES
+	'S-1-5-90-0',     # Window Manager\Window Manager Group
+	'S-1-5-32-559',   # BUILTIN\Performance Log Users
+	'S-1-5-32-568'    # BUILTIN\IIS_IUSRS
+)
 function Test-IsPrivilegedSID {
 	[CmdletBinding()]
 	param(
@@ -921,6 +928,14 @@ function Test-IsBroadGroupRID {
 	    }
 	}
 	return $null
+}
+function Test-IsWellKnownServiceSID {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [string]$SID
+	)
+	return $Script:WellKnownServiceSIDs -contains $SID
 }
 $Script:SecurityScopes = @{
 	'DCSync' = @{
@@ -2123,6 +2138,9 @@ $Script:PrimaryAttributes = @{
 	    'name', 'dNSHostName', 'operatingSystem', 'operatingSystemVersion',
 	    'eolDate', 'daysSinceEoL', 'lastLogonTimestamp'
 	)
+	GPOUserRights = @(
+	    'gpoName', 'userRight', 'userRightName', 'principals', 'scope', 'linkedOUs'
+	)
 	AddComputerRights = @(
 	    'sid', 'accountName', 'right', 'attributeName', 'value', 'isSecure',
 	    'gpoName', 'accounts', 'hasAuthenticatedUsers', 'severity'
@@ -2237,7 +2255,8 @@ $Script:StrictAttributeTypes = @(
 	'LDAPStatisticsTotal',
 	'DomainPasswordPolicy',
 	'FineGrainedPasswordPolicy',
-	'BitLockerRecoveryKey'
+	'BitLockerRecoveryKey',
+	'GPOUserRights'
 )
 $Script:ExcludeAttributes = @(
 	'objectClass', 'objectGUID', 'objectCategory', 'instanceType',
@@ -6007,6 +6026,52 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
 	    MITRE = "T1552"
 	    Triggers = @(
 	        @{ Attribute = 'msFVE-RecoveryPassword'; Severity = 'Hint' }
+	    )
+	}
+	'GPO_DANGEROUS_USER_RIGHT' = @{
+	    Title = "Dangerous User Right Assigned via GPO"
+	    Risk = "Finding"
+	    BaseScore = 60
+	    Description = "A sensitive Windows user right is assigned to a non-privileged principal through Group Policy (GptTmpl.inf [Privilege Rights]). The right is applied to every computer the GPO targets, so a single misconfiguration can grant privilege-escalation or lateral-movement capability fleet-wide."
+	    Impact = @(
+	        "Privileges like SeDebug/SeImpersonate/SeTcb lead directly to SYSTEM on affected hosts"
+	        "SeBackup/SeRestore/SeTakeOwnership give file/registry access (SAM, SYSTEM, NTDS) -> credential theft"
+	        "SeLoadDriver enables loading a vulnerable driver (BYOVD) -> kernel/SYSTEM"
+	        "Logon rights (RDP/service/batch) enable lateral movement to every targeted host"
+	        "Rights granted to broad principals (Everyone, Authenticated Users, Domain Users) affect all users"
+	    )
+	    Attack = @(
+	        "1. Identify a GPO granting a sensitive right to a non-privileged/broad principal"
+	        "2. Compromise (or already control) that principal on a targeted computer"
+	        "3. Abuse the right (e.g. SeBackup to read SAM, SeImpersonate via a Potato, SeLoadDriver for BYOVD)"
+	        "4. Escalate to SYSTEM / harvest credentials / move laterally across all targeted hosts"
+	    )
+	    Remediation = @(
+	        "Remove non-privileged and broad principals from sensitive User Rights Assignment policies"
+	        "Grant sensitive rights only to dedicated admin groups, scoped to the systems that need them"
+	        "Follow tiered administration - do not grant Tier-0 rights via broadly-linked GPOs"
+	        "Audit changes to user rights (Event ID 4704/4717) and review GPO links/scope"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "List User Rights Assignment configured in a GPO"
+	            Command = "Get-GPOReport -Name 'PolicyName' -ReportType Xml | Select-String 'UserRightsAssignment' -Context 0,20"
+	        }
+	        @{
+	            Description = "Inspect the [Privilege Rights] section of a GPO's security template"
+	            Command = "Get-Content '\\domain\SYSVOL\domain\Policies\{GUID}\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf'"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "User Rights Assignment (Microsoft)"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/user-rights-assignment" }
+	        @{ Title = "Abusing Token Privileges"; Url = "https://github.com/hatRiot/token-priv" }
+	        @{ Title = "Privilege Escalation - MITRE ATT&CK"; Url = "https://attack.mitre.org/tactics/TA0004/" }
+	    )
+	    Tools = @("SharpGPOAbuse", "PowerView")
+	    MITRE = "T1068"
+	    Triggers = @(
+	        @{ Attribute = 'userRight'; Pattern = 'SeDebugPrivilege|SeTcbPrivilege|SeImpersonatePrivilege|SeAssignPrimaryTokenPrivilege|SeCreateTokenPrivilege|SeLoadDriverPrivilege|SeBackupPrivilege|SeRestorePrivilege|SeTakeOwnershipPrivilege|SeEnableDelegationPrivilege|SeSyncAgentPrivilege|SeManageVolumePrivilege|SeSecurityPrivilege|SeRelabelPrivilege|SeTrustedCredManAccessPrivilege'; Severity = 'Finding' }
+	        @{ Attribute = 'userRight'; Pattern = 'SeRemoteInteractiveLogonRight|SeServiceLogonRight|SeBatchLogonRight|SeInteractiveLogonRight|SeSystemtimePrivilege|SeRemoteShutdownPrivilege|SeShutdownPrivilege'; Severity = 'Hint' }
 	    )
 	}
 	'LAPS_PASSWORD_READ_ACCESS' = @{
@@ -13148,6 +13213,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Explicit create permissions on computer containers"
 	    )
 	    SecureMessage = "Computer creation is properly restricted. ms-DS-MachineAccountQuota is set to 0, preventing regular users from joining computers to the domain."
+	}
+	'GPOUserRights' = @{
+	    TitleFormat = "GPO User Right: {userRightName}"
+	    Module = "Rights"
+	    Category = "Rights"
+	    SectionTitle = "Dangerous User Rights via GPO"
+	    Summary = "Detects sensitive Windows user rights assigned to non-privileged principals via Group Policy."
+	    WhyItMatters = "User Rights Assignment in a GPO grants low-level privileges (e.g. SeDebugPrivilege, SeBackupPrivilege, SeImpersonatePrivilege, or Remote Desktop logon) to principals across every computer the GPO applies to. Granted to a non-privileged or broad principal, these are direct privilege-escalation and lateral-movement paths - often domain-wide and easily overlooked."
+	    WhatWeCheck = @(
+	        "GptTmpl.inf [Privilege Rights] in every GPO"
+	        "Sensitive privileges granted to non-privileged principals (SeDebug, SeBackup, SeRestore, SeImpersonate, SeLoadDriver, ...)"
+	        "Logon rights (RDP / service / batch / interactive) granted via GPO"
+	        "Rights granted to broad principals (Everyone, Authenticated Users, Domain Users)"
+	    )
+	    SecureMessage = "No dangerous user rights are assigned to non-privileged principals via GPO. User Rights Assignment follows least privilege."
+	    PrimaryFindingId = 'GPO_DANGEROUS_USER_RIGHT'
 	}
 	'MachineAccountQuota' = @{
 	    TitleFormat = "Machine Account Quota Configuration"
@@ -54493,9 +54574,9 @@ function Check-GPOAddComputerRights {
 	            $gptTmplPath = Join-Path $sysvolPath "$($gpo.Name)\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
 	            $content = Get-CachedSYSVOLContent -Path $gptTmplPath
 	            if ($content) {
-	                if ($content -match '(?s)\[Privilege Rights\](.*?)(\[|$)') {
+	                if ($content -match '(?is)\[Privilege Rights\](.*?)(\[|$)') {
 	                    $privilegeRightsSection = $Matches[1]
-	                    if ($privilegeRightsSection -match 'SeMachineAccountPrivilege\s*=\s*(.+)') {
+	                    if ($privilegeRightsSection -match '(?i)SeMachineAccountPrivilege\s*=\s*(.+)') {
 	                        $accountsLine = $Matches[1].Trim()
 	                        $accounts = $accountsLine -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
 	                        $accountNames = @()
@@ -54561,6 +54642,171 @@ function Check-GPOAddComputerRights {
 	    return $result
 	} catch {
 	    return @()
+	}
+}
+function Get-GPOUserRightsAssignment {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [string]$Domain,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Server,
+	    [Parameter(Mandatory=$false)]
+	    [System.Management.Automation.PSCredential]$Credential,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$IncludePrivileged
+	)
+	begin {
+	}
+	process {
+	    try {
+	        $CredParams = @{}
+	        if ($Domain) { $CredParams['Domain'] = $Domain }
+	        if ($Server) { $CredParams['Server'] = $Server }
+	        if ($Credential) { $CredParams['Credential'] = $Credential }
+	        if (-not (Ensure-LDAPConnection @CredParams)) {
+	            return
+	        }
+	        Show-SubHeader "Searching for dangerous user rights assigned via GPO..." -ObjectType "GPOUserRights"
+	        $dangerousRights = [ordered]@{
+	            'SeDebugPrivilege'                = @{ Name = 'Debug programs';                                  Tier = 'Finding' }
+	            'SeTcbPrivilege'                  = @{ Name = 'Act as part of the operating system';              Tier = 'Finding' }
+	            'SeImpersonatePrivilege'          = @{ Name = 'Impersonate a client after authentication';       Tier = 'Finding' }
+	            'SeAssignPrimaryTokenPrivilege'   = @{ Name = 'Replace a process level token';                   Tier = 'Finding' }
+	            'SeCreateTokenPrivilege'          = @{ Name = 'Create a token object';                           Tier = 'Finding' }
+	            'SeLoadDriverPrivilege'           = @{ Name = 'Load and unload device drivers';                  Tier = 'Finding' }
+	            'SeBackupPrivilege'               = @{ Name = 'Back up files and directories';                   Tier = 'Finding' }
+	            'SeRestorePrivilege'              = @{ Name = 'Restore files and directories';                   Tier = 'Finding' }
+	            'SeTakeOwnershipPrivilege'        = @{ Name = 'Take ownership of files or other objects';        Tier = 'Finding' }
+	            'SeEnableDelegationPrivilege'     = @{ Name = 'Enable computer/user accounts to be trusted for delegation'; Tier = 'Finding' }
+	            'SeSyncAgentPrivilege'            = @{ Name = 'Synchronize directory service data';              Tier = 'Finding' }
+	            'SeManageVolumePrivilege'         = @{ Name = 'Perform volume maintenance tasks';                Tier = 'Finding' }
+	            'SeSecurityPrivilege'             = @{ Name = 'Manage auditing and security log';                Tier = 'Finding' }
+	            'SeRelabelPrivilege'              = @{ Name = 'Modify an object label';                          Tier = 'Finding' }
+	            'SeTrustedCredManAccessPrivilege' = @{ Name = 'Access Credential Manager as a trusted caller';   Tier = 'Finding' }
+	            'SeRemoteInteractiveLogonRight'   = @{ Name = 'Allow log on through Remote Desktop Services';    Tier = 'Hint' }
+	            'SeServiceLogonRight'             = @{ Name = 'Log on as a service';                             Tier = 'Hint' }
+	            'SeBatchLogonRight'               = @{ Name = 'Log on as a batch job';                           Tier = 'Hint' }
+	            'SeInteractiveLogonRight'         = @{ Name = 'Allow log on locally';                            Tier = 'Hint' }
+	            'SeSystemtimePrivilege'           = @{ Name = 'Change the system time';                          Tier = 'Hint' }
+	            'SeRemoteShutdownPrivilege'       = @{ Name = 'Force shutdown from a remote system';             Tier = 'Hint' }
+	            'SeShutdownPrivilege'             = @{ Name = 'Shut down the system';                            Tier = 'Hint' }
+	        }
+	        $gpos = @(Get-DomainGPO @CredParams)
+	        if ($gpos.Count -eq 0) {
+	            Show-Line "No GPOs found" -Class "Note"
+	            return
+	        }
+	        $gpoLinkage = Get-GPOLinkage
+	        $domainFQDN = $Script:LDAPContext.Domain
+	        $dcServer = $Script:LDAPContext.Server
+	        $includePriv = [bool]$IncludePrivileged
+	        $rightsMap = $dangerousRights
+	        $linkage = $gpoLinkage
+	        $Script:gpoUserRightsFindings = @()
+	        Invoke-SMBAccess -Description "Scanning GPO user rights assignments" -ScriptBlock {
+	            $sysvolPath = "\\$dcServer\SYSVOL\$domainFQDN\Policies"
+	            if (-not (Test-Path $sysvolPath)) {
+	                return
+	            }
+	            $totalGPOs = @($gpos).Count
+	            $currentGPOIndex = 0
+	            foreach ($gpo in $gpos) {
+	                $currentGPOIndex++
+	                if ($totalGPOs -gt $Script:ProgressThreshold) {
+	                    Show-Progress -Activity "Scanning GPO user rights assignments" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.displayName
+	                }
+	                $gptTmplPath = Join-Path $sysvolPath "$($gpo.Name)\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
+	                $content = Get-CachedSYSVOLContent -Path $gptTmplPath
+	                if (-not $content) { continue }
+	                if ($content -notmatch '(?is)\[Privilege Rights\](.*?)(\[|$)') { continue }
+	                $section = $Matches[1]
+	                $gpoGUIDKey = $gpo.Name.ToUpper()
+	                $links = if ($linkage) { $linkage[$gpoGUIDKey] } else { $null }
+	                $activeLinks = @()
+	                $isDomainWide = $false
+	                if ($links) {
+	                    $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
+	                    $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
+	                }
+	                if (@($activeLinks).Count -gt 0) {
+	                    $linkedOUs = @($activeLinks | ForEach-Object { $_.DistinguishedName })
+	                    $scopeInfo = if ($isDomainWide) { "Domain-wide ($(@($activeLinks).Count) link(s))" } else { "$(@($activeLinks).Count) OU(s)" }
+	                } else {
+	                    $linkedOUs = @()
+	                    $scopeInfo = "NOT LINKED"
+	                }
+	                foreach ($right in $rightsMap.Keys) {
+	                    $pattern = '(?im)^\s*' + [regex]::Escape($right) + '\s*=\s*(.+)$'
+	                    $m = [regex]::Match($section, $pattern)
+	                    if (-not $m.Success) { continue }
+	                    $tokens = $m.Groups[1].Value -split ',' | ForEach-Object { $_.Trim() }
+	                    $keptNames = @()
+	                    $anyBroad = $false
+	                    foreach ($token in $tokens) {
+	                        $raw = $token.TrimStart('*')
+	                        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+	                        $sid = $raw
+	                        if ($raw -notmatch '^S-1-') {
+	                            $resolved = $null
+	                            try { $resolved = ConvertTo-SID -Identity $raw } catch { }
+	                            if ($resolved) { $sid = $resolved }
+	                        }
+	                        if ($sid -match '^S-1-') {
+	                            $isPriv = (Test-IsPrivilegedSID -SID $sid) -or
+	                                      [bool](Test-IsPrivilegedRID -SID $sid) -or
+	                                      ($Script:OperatorSIDs -contains $sid) -or
+	                                      (Test-IsWellKnownServiceSID -SID $sid)
+	                            if ($isPriv -and -not $includePriv) { continue }
+	                            if ((Test-IsBroadGroupSID -SID $sid) -or [bool](Test-IsBroadGroupRID -SID $sid)) { $anyBroad = $true }
+	                            $keptNames += (ConvertFrom-SID -SID $sid)
+	                        } else {
+	                            $keptNames += $raw
+	                        }
+	                    }
+	                    if ($keptNames.Count -eq 0) { continue }
+	                    $info = $rightsMap[$right]
+	                    $severity = if ($anyBroad) { 'Finding' } else { $info.Tier }
+	                    $finding = [PSCustomObject]@{
+	                        gpoName       = $gpo.displayName
+	                        gpoGuid       = $gpo.Name
+	                        userRight     = $right
+	                        userRightName = $info.Name
+	                        principals    = $keptNames
+	                        scope         = $scopeInfo
+	                        linkedOUs     = $linkedOUs
+	                        _severity     = $severity
+	                    }
+	                    $Script:gpoUserRightsFindings += $finding
+	                }
+	            }
+	            if ($totalGPOs -gt $Script:ProgressThreshold) {
+	                Show-Progress -Activity "Scanning GPO user rights assignments" -Completed
+	            }
+	        }
+	        $findings = @($Script:gpoUserRightsFindings)
+	        $Script:gpoUserRightsFindings = $null
+	        if ($findings.Count -gt 0) {
+	            $hasFinding = @($findings | Where-Object { $_._severity -eq 'Finding' }).Count -gt 0
+	            $headerClass = if ($hasFinding) { "Finding" } else { "Hint" }
+	            Show-Line "Found $($findings.Count) dangerous user right assignment(s) via GPO:" -Class $headerClass
+	            $ordered = @($findings | Sort-Object @{Expression={ if ($_._severity -eq 'Finding') { 0 } else { 1 } }}, gpoName, userRight)
+	            foreach ($finding in $ordered) {
+	                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOUserRights' -Force
+	                Show-Object $finding -Class $finding._severity
+	            }
+	        } elseif ((Test-SysvolAccessible) -eq $false) {
+	            Show-Line "SYSVOL is not accessible - GPO user rights could not be evaluated" -Class "Note"
+	        } else {
+	            Show-Line "No dangerous user rights assigned via GPO to non-privileged principals" -Class "Secure"
+	        }
+	    } catch {
+	        Show-Line "Error during check: $_" -Class "Finding"
+	    } finally {
+	        $Script:gpoUserRightsFindings = $null
+	    }
+	}
+	end {
 	}
 }
 function Get-LAPSPermissions {
@@ -68708,7 +68954,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.1.0+20260619-1401"
+$Script:adPEASVersion = "2.1.0+20260619-1408"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -69090,6 +69336,7 @@ try {
 	        Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-DangerousOUPermissions' -Title 'Dangerous OU Permissions' -Check { Get-DangerousOUPermissions -IncludePrivileged:$IncludePrivileged }
 	        Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-PasswordResetRights' -Title 'Password Reset Rights' -Check { Get-PasswordResetRights -IncludePrivileged:$IncludePrivileged }
 	        Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-AddComputerRights' -Title 'Add Computer Rights' -Check { Get-AddComputerRights -IncludePrivileged:$IncludePrivileged }
+	        Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-GPOUserRightsAssignment' -Title 'GPO User Rights Assignment' -Check { Get-GPOUserRightsAssignment -IncludePrivileged:$IncludePrivileged }
 	        Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-LAPSPermissions' -Title 'LAPS Permissions' -Check { Get-LAPSPermissions -IncludePrivileged:$IncludePrivileged }
 	    } catch {
 	        Write-Warning "[adPEAS] Error executing Rights Module: $_"

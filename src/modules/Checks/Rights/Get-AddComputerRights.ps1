@@ -382,10 +382,10 @@ function Check-GPOAddComputerRights {
 
                 $content = Get-CachedSYSVOLContent -Path $gptTmplPath
                 if ($content) {
-                    if ($content -match '(?s)\[Privilege Rights\](.*?)(\[|$)') {
+                    if ($content -match '(?is)\[Privilege Rights\](.*?)(\[|$)') {
                         $privilegeRightsSection = $Matches[1]
 
-                        if ($privilegeRightsSection -match 'SeMachineAccountPrivilege\s*=\s*(.+)') {
+                        if ($privilegeRightsSection -match '(?i)SeMachineAccountPrivilege\s*=\s*(.+)') {
                             $accountsLine = $Matches[1].Trim()
                             $accounts = $accountsLine -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
 

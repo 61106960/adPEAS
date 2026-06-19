@@ -1094,6 +1094,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "Computer creation is properly restricted. ms-DS-MachineAccountQuota is set to 0, preventing regular users from joining computers to the domain."
     }
 
+    'GPOUserRights' = @{
+        TitleFormat = "GPO User Right: {userRightName}"
+        Module = "Rights"
+        Category = "Rights"
+        SectionTitle = "Dangerous User Rights via GPO"
+        Summary = "Detects sensitive Windows user rights assigned to non-privileged principals via Group Policy."
+        WhyItMatters = "User Rights Assignment in a GPO grants low-level privileges (e.g. SeDebugPrivilege, SeBackupPrivilege, SeImpersonatePrivilege, or Remote Desktop logon) to principals across every computer the GPO applies to. Granted to a non-privileged or broad principal, these are direct privilege-escalation and lateral-movement paths - often domain-wide and easily overlooked."
+        WhatWeCheck = @(
+            "GptTmpl.inf [Privilege Rights] in every GPO"
+            "Sensitive privileges granted to non-privileged principals (SeDebug, SeBackup, SeRestore, SeImpersonate, SeLoadDriver, ...)"
+            "Logon rights (RDP / service / batch / interactive) granted via GPO"
+            "Rights granted to broad principals (Everyone, Authenticated Users, Domain Users)"
+        )
+        SecureMessage = "No dangerous user rights are assigned to non-privileged principals via GPO. User Rights Assignment follows least privilege."
+        PrimaryFindingId = 'GPO_DANGEROUS_USER_RIGHT'
+    }
+
     'MachineAccountQuota' = @{
         TitleFormat = "Machine Account Quota Configuration"
         Module = "Rights"
