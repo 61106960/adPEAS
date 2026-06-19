@@ -1,4 +1,4 @@
-﻿$Script:SeverityClasses = @{
+$Script:SeverityClasses = @{
 	Finding  = 'Finding'
 	Secure   = 'Secure'
 	Hint     = 'Hint'
@@ -10960,10 +10960,10 @@ function Get-AttributeSeverity {
 	        if (-not $entry.SID) { continue }
 	        $privResult = Test-IsPrivileged -Identity $entry.SID
 	        if (-not $privResult.IsPrivileged) {
-	            return 'Note'   # Non-Standard â†’ auto-promoted to Primary
+	            return 'Note'   # Non-Standard → auto-promoted to Primary
 	        }
 	    }
-	    return 'Standard'   # All privileged â†’ stays in Extended
+	    return 'Standard'   # All privileged → stays in Extended
 	}
 	$triggerSeverity = Get-SeverityFromTrigger -Name $Name -Value $Value `
 	    -IsComputer $IsComputer -SourceObject $SourceObject
@@ -12054,11 +12054,11 @@ $Script:ImpactMultipliers = @{
 	'none'  = 1.0    # Standard user accounts - base impact
 }
 $Script:PasswordAgeModifiers = @{
-	'multiplier_10x' = 1.6    # Password age >= 10Ã— maxPwdAge
-	'multiplier_5x'  = 1.4    # Password age >= 5Ã— maxPwdAge
-	'multiplier_3x'  = 1.3    # Password age >= 3Ã— maxPwdAge
-	'multiplier_2x'  = 1.2    # Password age >= 2Ã— maxPwdAge
-	'multiplier_1x'  = 1.1    # Password age >= 1Ã— maxPwdAge (over policy)
+	'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
+	'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
+	'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
+	'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
+	'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
 	'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 $Script:PasswordLengthModifiers = @{
@@ -24551,6 +24551,7 @@ function Set-DomainGPO {
 	    [Parameter(ParameterSetName='AddScheduledTask', Mandatory=$true)]
 	    [switch]$AddScheduledTask,
 	    [Parameter(ParameterSetName='AddScheduledTask', Mandatory=$true)]
+	    [Parameter(ParameterSetName='RemoveScheduledTask', Mandatory=$true)]
 	    [string]$TaskName,
 	    [Parameter(ParameterSetName='AddScheduledTask', Mandatory=$true)]
 	    [string]$TaskCommand,
@@ -24564,8 +24565,10 @@ function Set-DomainGPO {
 	    [Parameter(ParameterSetName='AddLocalGroupMember', Mandatory=$true)]
 	    [switch]$AddLocalGroupMember,
 	    [Parameter(ParameterSetName='AddLocalGroupMember', Mandatory=$true)]
+	    [Parameter(ParameterSetName='RemoveLocalGroupMember', Mandatory=$true)]
 	    [string]$LocalGroup,
 	    [Parameter(ParameterSetName='AddLocalGroupMember', Mandatory=$true)]
+	    [Parameter(ParameterSetName='RemoveLocalGroupMember', Mandatory=$true)]
 	    [string]$MemberToAdd,
 	    [Parameter(ParameterSetName='AddStartupScript', Mandatory=$true)]
 	    [switch]$AddStartupScript,
@@ -24579,6 +24582,8 @@ function Set-DomainGPO {
 	    [string]$ScriptContent,
 	    [Parameter(ParameterSetName='AddStartupScript', Mandatory=$false)]
 	    [Parameter(ParameterSetName='AddLogonScript', Mandatory=$false)]
+	    [Parameter(ParameterSetName='RemoveStartupScript', Mandatory=$true)]
+	    [Parameter(ParameterSetName='RemoveLogonScript', Mandatory=$true)]
 	    [string]$ScriptName,
 	    [Parameter(ParameterSetName='AddStartupScript', Mandatory=$false)]
 	    [Parameter(ParameterSetName='AddLogonScript', Mandatory=$false)]
@@ -24586,6 +24591,7 @@ function Set-DomainGPO {
 	    [Parameter(ParameterSetName='AddService', Mandatory=$true)]
 	    [switch]$AddService,
 	    [Parameter(ParameterSetName='AddService', Mandatory=$true)]
+	    [Parameter(ParameterSetName='RemoveService', Mandatory=$true)]
 	    [string]$ServiceName,
 	    [Parameter(ParameterSetName='AddService', Mandatory=$false)]
 	    [string]$ServiceDisplayName,
@@ -24608,6 +24614,7 @@ function Set-DomainGPO {
 	    [Parameter(ParameterSetName='AddFirewallRule', Mandatory=$true)]
 	    [switch]$AddFirewallRule,
 	    [Parameter(ParameterSetName='AddFirewallRule', Mandatory=$true)]
+	    [Parameter(ParameterSetName='RemoveFirewallRule', Mandatory=$true)]
 	    [string]$RuleName,
 	    [Parameter(ParameterSetName='AddFirewallRule', Mandatory=$true)]
 	    [ValidateSet('Inbound', 'Outbound')]
@@ -24626,6 +24633,26 @@ function Set-DomainGPO {
 	    [string]$RuleRemoteAddress = "Any",
 	    [Parameter(ParameterSetName='AddFirewallRule', Mandatory=$false)]
 	    [string]$RuleProgram,
+	    [Parameter(ParameterSetName='Export', Mandatory=$true)]
+	    [string]$Export,
+	    [Parameter(ParameterSetName='Import', Mandatory=$true)]
+	    [string]$Import,
+	    [Parameter(ParameterSetName='RemoveScheduledTask', Mandatory=$true)]
+	    [switch]$RemoveScheduledTask,
+	    [Parameter(ParameterSetName='RemoveLocalGroupMember', Mandatory=$true)]
+	    [switch]$RemoveLocalGroupMember,
+	    [Parameter(ParameterSetName='RemoveService', Mandatory=$true)]
+	    [switch]$RemoveService,
+	    [Parameter(ParameterSetName='RemoveDeployedFile', Mandatory=$true)]
+	    [switch]$RemoveDeployedFile,
+	    [Parameter(ParameterSetName='RemoveDeployedFile', Mandatory=$true)]
+	    [string]$FileName,
+	    [Parameter(ParameterSetName='RemoveFirewallRule', Mandatory=$true)]
+	    [switch]$RemoveFirewallRule,
+	    [Parameter(ParameterSetName='RemoveStartupScript', Mandatory=$true)]
+	    [switch]$RemoveStartupScript,
+	    [Parameter(ParameterSetName='RemoveLogonScript', Mandatory=$true)]
+	    [switch]$RemoveLogonScript,
 	    [Parameter(Mandatory=$false)]
 	    [string]$Domain,
 	    [Parameter(Mandatory=$false)]
@@ -24662,7 +24689,81 @@ function Set-DomainGPO {
 	        }
 	        $GPODN = $TargetGPO.distinguishedName
 	        $GPOName = $TargetGPO.displayName
+	        $GPOGUIDResolved = if ($GPODN -match 'CN=(\{[0-9A-Fa-f\-]{36}\})') { $Matches[1] } else { $null }
 	        switch ($PSCmdlet.ParameterSetName) {
+	            'Export' {
+	                try {
+	                    $Result = Export-GPOState -GPODN $GPODN -GPOName $GPOName -GPOGUID $GPOGUIDResolved -Path $Export -Credential $Credential
+	                    if ($PassThru) {
+	                        return [PSCustomObject]@{ Operation="Export"; GPO=$GPOName; Path=$Result.Path; FileCount=$Result.FileCount; Success=$true; Message="GPO exported" }
+	                    } else {
+	                        Show-Line "Exported GPO '$GPOName' to: $($Result.Path)" -Class Hint
+	                        Show-KeyValue "SYSVOL files:" $Result.FileCount
+	                    }
+	                } catch {
+	                    if ($PassThru) { return [PSCustomObject]@{ Operation="Export"; GPO=$GPOName; Success=$false; Message=$_.Exception.Message } }
+	                    Show-Line "Failed to export GPO '$GPOName': $($_.Exception.Message)" -Class Finding
+	                }
+	                break
+	            }
+	            'Import' {
+	                try {
+	                    $Result = Import-GPOState -GPODN $GPODN -GPOName $GPOName -GPOGUID $GPOGUIDResolved -Path $Import -Credential $Credential
+	                    if ($PassThru) { return $Result }
+	                    Show-Line "Restored GPO '$GPOName' from backup: $Import" -Class Hint
+	                    Show-KeyValue "SYSVOL files restored:" $Result.FilesRestored
+	                    Show-KeyValue "Injected files deleted:" $Result.FilesDeleted
+	                } catch {
+	                    if ($PassThru) { return [PSCustomObject]@{ Operation="Import"; GPO=$GPOName; Success=$false; Message=$_.Exception.Message } }
+	                    Show-Line "Failed to import GPO '$GPOName': $($_.Exception.Message)" -Class Finding
+	                }
+	                break
+	            }
+	            { $_ -in 'RemoveScheduledTask','RemoveService','RemoveDeployedFile','RemoveFirewallRule','RemoveLocalGroupMember' } {
+	                if (-not $GPOGUIDResolved) { throw "Could not extract GUID from GPO DN: $GPODN" }
+	                $removeType = $_ -replace '^Remove',''
+	                $itemId = switch ($removeType) {
+	                    'ScheduledTask'    { $TaskName }
+	                    'Service'          { $ServiceName }
+	                    'DeployedFile'     { $FileName }
+	                    'FirewallRule'     { $RuleName }
+	                    'LocalGroupMember' { $LocalGroup }
+	                }
+	                try {
+	                    $memberSidVal = $null
+	                    if ($removeType -eq 'LocalGroupMember') {
+	                        if ($MemberToAdd -match '^S-1-') {
+	                            $memberSidVal = $MemberToAdd
+	                        } else {
+	                            $memberObj = @(Get-DomainObject -Identity $MemberToAdd @ConnectionParams)[0]
+	                            if ($memberObj -and $memberObj.objectSid) { $memberSidVal = [string]$memberObj.objectSid }
+	                        }
+	                        if (-not $memberSidVal) { throw "Could not resolve member '$MemberToAdd' to SID" }
+	                    }
+	                    $Result = Remove-GPOPayloadItem -GPODN $GPODN -GPOName $GPOName -GPOGUID $GPOGUIDResolved -Type $removeType -ItemName $itemId -MemberSID $memberSidVal -Credential $Credential
+	                    if ($PassThru) { return $Result }
+	                    Show-Line "Removed $removeType '$itemId' from GPO '$GPOName' ($($Result.ItemsRemoved) item(s))" -Class Hint
+	                    Show-Line "Server-side only: effects already applied on clients are NOT undone." -Class Note
+	                } catch {
+	                    if ($PassThru) { return [PSCustomObject]@{ Operation="Remove$removeType"; GPO=$GPOName; Success=$false; Message=$_.Exception.Message } }
+	                    Show-Line "Failed to remove $removeType from GPO '$GPOName': $($_.Exception.Message)" -Class Finding
+	                }
+	                break
+	            }
+	            { $_ -in 'RemoveStartupScript','RemoveLogonScript' } {
+	                if (-not $GPOGUIDResolved) { throw "Could not extract GUID from GPO DN: $GPODN" }
+	                $kind = if ($_ -eq 'RemoveStartupScript') { 'Startup' } else { 'Logon' }
+	                try {
+	                    $Result = Remove-GPOScriptEntry -GPODN $GPODN -GPOName $GPOName -GPOGUID $GPOGUIDResolved -Kind $kind -ScriptName $ScriptName -Credential $Credential
+	                    if ($PassThru) { return $Result }
+	                    Show-Line "Removed $kind script '$ScriptName' from GPO '$GPOName'" -Class Hint
+	                    Show-Line "Server-side only: effects already applied on clients are NOT undone." -Class Note
+	                } catch {
+	                    if ($PassThru) { return [PSCustomObject]@{ Operation="Remove${kind}Script"; GPO=$GPOName; Success=$false; Message=$_.Exception.Message } }
+	                    Show-Line "Failed to remove $kind script from GPO '$GPOName': $($_.Exception.Message)" -Class Finding
+	                }
+	                break
+	            }
 	            'SetOwner' {
 	                try {
 	                    $Result = Set-DomainObject -Identity $GPODN -SetOwner -Principal $Owner @ConnectionParams
@@ -26077,6 +26178,343 @@ function Update-GPOVersion {
 	        Message = $_.Exception.Message
 	    }
 	}
+}
+function Get-GPOPayloadMap {
+	return @{
+	    ScheduledTask    = @{ Rel='Machine\Preferences\ScheduledTasks\ScheduledTasks.xml'; Root='ScheduledTasks'; Item='ImmediateTaskV2'; CSE='{CAB54552-DEEA-4691-817E-ED4A4D1AFC72}'; Attr='gPCMachineExtensionNames' }
+	    LocalGroupMember = @{ Rel='Machine\Preferences\Groups\Groups.xml';                 Root='Groups';         Item='Group';          CSE='{17D89FEC-5C44-4972-B12D-241CAEF74509}'; Attr='gPCMachineExtensionNames' }
+	    Service          = @{ Rel='Machine\Preferences\Services\Services.xml';             Root='NTServices';     Item='NTService';      CSE='{7150F9BF-48AD-4DA4-A49C-29EF4A8369BA}'; Attr='gPCMachineExtensionNames' }
+	    DeployedFile     = @{ Rel='Machine\Preferences\Files\Files.xml';                   Root='Files';          Item='File';           CSE='{3BAE7E51-E3F4-41D0-853D-AEB06EFFDBE1}'; Attr='gPCMachineExtensionNames' }
+	    FirewallRule     = @{ Rel='Machine\Preferences\WindowsFirewall\WindowsFirewall.xml'; Root='FirewallRules'; Item='*';             CSE='{6A4C88C6-C502-4f74-8F60-2CB23EDC24E2}'; Attr='gPCMachineExtensionNames' }
+	}
+}
+function Remove-GPOCSEBlock {
+	[CmdletBinding()]
+	param([string]$Extensions, [string]$CSEGuid)
+	if ([string]::IsNullOrEmpty($Extensions)) { return $Extensions }
+	$blocks = [regex]::Matches($Extensions, '\[[^\]]*\]') | ForEach-Object { $_.Value }
+	$kept = @($blocks | Where-Object { $_ -notmatch [regex]::Escape($CSEGuid) })
+	return ($kept -join '')
+}
+function Set-GPOAttributeRaw {
+	[CmdletBinding()]
+	param([string]$GPODN, [string]$Name, $Value, [bool]$CurrentlyPresent = $true)
+	$req = New-Object System.DirectoryServices.Protocols.ModifyRequest
+	$req.DistinguishedName = $GPODN
+	$mod = New-Object System.DirectoryServices.Protocols.DirectoryAttributeModification
+	$mod.Name = $Name
+	if ($null -eq $Value -or $Value -eq '') {
+	    if (-not $CurrentlyPresent) { return $true }  # nothing to delete
+	    $mod.Operation = [System.DirectoryServices.Protocols.DirectoryAttributeOperation]::Delete
+	} else {
+	    $mod.Operation = [System.DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace
+	    $mod.Add([string]$Value) | Out-Null
+	}
+	$req.Modifications.Add($mod) | Out-Null
+	$resp = $Script:LdapConnection.SendRequest($req)
+	return ($resp.ResultCode -eq [System.DirectoryServices.Protocols.ResultCode]::Success)
+}
+function Export-GPOState {
+	[CmdletBinding()]
+	param(
+	    [string]$GPODN, [string]$GPOName, [string]$GPOGUID, [string]$Path,
+	    [System.Management.Automation.PSCredential]$Credential
+	)
+	$g = @(Invoke-LDAPSearch -Filter "(distinguishedName=$GPODN)" -Properties @('gPCMachineExtensionNames','gPCUserExtensionNames','versionNumber') -SizeLimit 1)[0]
+	$sddl = $null
+	$rawAcl = @(Invoke-LDAPSearch -Filter "(distinguishedName=$GPODN)" -Properties @('nTSecurityDescriptor') -Raw -SizeLimit 1)[0]
+	if ($rawAcl -and $rawAcl.nTSecurityDescriptor -is [byte[]]) {
+	    try {
+	        $rsd = New-Object System.Security.AccessControl.RawSecurityDescriptor($rawAcl.nTSecurityDescriptor, 0)
+	        $sddl = $rsd.GetSddlForm([System.Security.AccessControl.AccessControlSections]::All)
+	    } catch { Write-Log "[Export-GPOState] Could not derive SDDL: $($_.Exception.Message)" }
+	}
+	$domainName = $Script:LDAPContext.Domain
+	$guid = $GPOGUID
+	$files = Invoke-SMBAccess -Description "Export GPO SYSVOL tree" -ErrorHandling Stop -ScriptBlock {
+	    param($basePath)
+	    $root = Join-Path $basePath "$domainName\Policies\$guid"
+	    if (-not (Test-Path $root)) { return ,@() }
+	    $sha = [System.Security.Cryptography.SHA256]::Create()
+	    $out = @()
+	    Get-ChildItem -Path $root -Recurse -File -ErrorAction Stop | ForEach-Object {
+	        $rel = $_.FullName.Substring($root.Length).TrimStart('\')
+	        $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+	        $hash = [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','')
+	        $out += [PSCustomObject]@{ rel = $rel; base64 = [Convert]::ToBase64String($bytes); sha256 = $hash }
+	    }
+	    return ,$out
+	}.GetNewClosure()
+	$fileArr = @($files)
+	$export = [ordered]@{
+	    adPEASBackupType         = "GPO"
+	    ExportDate               = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+	    ExportedBy               = "$env:USERDOMAIN\$env:USERNAME"
+	    gpoName                  = $GPOName
+	    gpoDN                    = $GPODN
+	    gpoGuid                  = $GPOGUID
+	    ad                       = [ordered]@{
+	        gPCMachineExtensionNames = if ($g) { $g.gPCMachineExtensionNames } else { $null }
+	        gPCUserExtensionNames    = if ($g) { $g.gPCUserExtensionNames } else { $null }
+	        versionNumber            = if ($g -and $g.versionNumber) { [int]$g.versionNumber } else { 0 }
+	        nTSecurityDescriptorSDDL = $sddl
+	    }
+	    sysvol                   = $fileArr
+	}
+	$export | ConvertTo-Json -Depth 10 | Set-Content -Path $Path -Encoding UTF8 -ErrorAction Stop
+	return [PSCustomObject]@{ Path = $Path; FileCount = $fileArr.Count }
+}
+function Import-GPOState {
+	[CmdletBinding()]
+	param(
+	    [string]$GPODN, [string]$GPOName, [string]$GPOGUID, [string]$Path,
+	    [System.Management.Automation.PSCredential]$Credential
+	)
+	if (-not (Test-Path $Path)) { throw "Backup file not found: $Path" }
+	$backup = Get-Content -Path $Path -Raw | ConvertFrom-Json
+	if ($backup.adPEASBackupType -ne 'GPO') { throw "Not an adPEAS GPO backup file: $Path" }
+	if ($backup.gpoGuid -and ($backup.gpoGuid -ne $GPOGUID)) {
+	    Write-Warning "[Set-DomainGPO] Backup GUID ($($backup.gpoGuid)) differs from target GPO GUID ($GPOGUID) - restoring onto target anyway"
+	}
+	$domainName = $Script:LDAPContext.Domain
+	$guid = $GPOGUID
+	$backupFiles = @($backup.sysvol)
+	$relLookup = @{}
+	foreach ($f in $backupFiles) { $relLookup[$f.rel.ToLower()] = $true }
+	$smb = Invoke-SMBAccess -Description "Restore GPO SYSVOL tree" -ErrorHandling Stop -ScriptBlock {
+	    param($basePath)
+	    $root = Join-Path $basePath "$domainName\Policies\$guid"
+	    if (-not (Test-Path $root)) { throw "SYSVOL folder not found: $root" }
+	    $restored = 0; $deleted = 0; $drift = @()
+	    $sha = [System.Security.Cryptography.SHA256]::Create()
+	    foreach ($f in $backupFiles) {
+	        $dest = Join-Path $root $f.rel
+	        $destDir = Split-Path $dest -Parent
+	        if (-not (Test-Path $destDir)) { $null = New-Item -Path $destDir -ItemType Directory -Force }
+	        if (Test-Path $dest) {
+	            $curHash = [System.BitConverter]::ToString($sha.ComputeHash([System.IO.File]::ReadAllBytes($dest))).Replace('-','')
+	            if ($f.sha256 -and $curHash -ne $f.sha256) { $drift += $f.rel }
+	        }
+	        [System.IO.File]::WriteAllBytes($dest, [Convert]::FromBase64String($f.base64))
+	        $restored++
+	    }
+	    Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+	        $rel = $_.FullName.Substring($root.Length).TrimStart('\')
+	        if (-not $relLookup.ContainsKey($rel.ToLower())) {
+	            Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+	            $deleted++
+	        }
+	    }
+	    Get-ChildItem -Path $root -Recurse -Directory -ErrorAction SilentlyContinue |
+	        Sort-Object { $_.FullName.Length } -Descending | ForEach-Object {
+	            if (-not (Get-ChildItem -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue)) {
+	                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+	            }
+	        }
+	    return @{ Success = $true; Restored = $restored; Deleted = $deleted; Drift = $drift }
+	}.GetNewClosure()
+	if ($smb.Drift -and @($smb.Drift).Count -gt 0) {
+	    Write-Warning "[Set-DomainGPO] $(@($smb.Drift).Count) SYSVOL file(s) had been modified after the backup and were overwritten: $(@($smb.Drift) -join ', ')"
+	}
+	$cur = @(Invoke-LDAPSearch -Filter "(distinguishedName=$GPODN)" -Properties @('gPCMachineExtensionNames','gPCUserExtensionNames','versionNumber','nTSecurityDescriptor') -SizeLimit 1)[0]
+	foreach ($attr in @('gPCMachineExtensionNames','gPCUserExtensionNames')) {
+	    $backupVal = $backup.ad.$attr
+	    $curVal = if ($cur) { $cur.$attr } else { $null }
+	    if ([string]$curVal -ne [string]$backupVal) {
+	        $null = Set-GPOAttributeRaw -GPODN $GPODN -Name $attr -Value $backupVal -CurrentlyPresent ([bool]$curVal)
+	    }
+	}
+	$curVer = if ($cur -and $cur.versionNumber) { [int]$cur.versionNumber } else { 0 }
+	if ($curVer -ne [int]$backup.ad.versionNumber) {
+	    $null = Set-GPOAttributeRaw -GPODN $GPODN -Name 'versionNumber' -Value ([string][int]$backup.ad.versionNumber)
+	}
+	$sdRestored = $false
+	if ($backup.ad.nTSecurityDescriptorSDDL -and $cur -and $cur.nTSecurityDescriptor) {
+	    try {
+	        $curSddl = (New-Object System.Security.AccessControl.RawSecurityDescriptor($cur.nTSecurityDescriptor, 0)).GetSddlForm([System.Security.AccessControl.AccessControlSections]::All)
+	        if ($curSddl -ne $backup.ad.nTSecurityDescriptorSDDL) {
+	            Write-Warning "[Set-DomainGPO] GPO security descriptor (owner/ACL) differs from the backup. This is NOT auto-restored - revert owner/permission changes explicitly with -GrantRights / Set-DomainObject if needed."
+	        }
+	    } catch { }
+	}
+	return [PSCustomObject]@{
+	    Operation     = "Import"
+	    GPO           = $GPOName
+	    FilesRestored = $smb.Restored
+	    FilesDeleted  = $smb.Deleted
+	    SDRestored    = $sdRestored
+	    Success       = $true
+	}
+}
+function Remove-GPOPayloadItem {
+	[CmdletBinding()]
+	param(
+	    [string]$GPODN, [string]$GPOName, [string]$GPOGUID,
+	    [ValidateSet('ScheduledTask','LocalGroupMember','Service','DeployedFile','FirewallRule')]
+	    [string]$Type,
+	    [string]$ItemName,           # name= of the item (TaskName/ServiceName/FileName/RuleName); for LocalGroupMember = the local group
+	    [string]$MemberSID,          # only for LocalGroupMember
+	    [System.Management.Automation.PSCredential]$Credential
+	)
+	$map = (Get-GPOPayloadMap)[$Type]
+	$domainName = $Script:LDAPContext.Domain
+	$guid = $GPOGUID
+	$rel = $map.Rel
+	$rootName = $map.Root
+	$itemName = $map.Item
+	$targetName = $ItemName
+	$memberSidVal = $MemberSID
+	$typeVal = $Type
+	$smb = Invoke-SMBAccess -Description "Remove GPO payload item" -ErrorHandling Stop -ScriptBlock {
+	    param($basePath)
+	    $file = Join-Path $basePath "$domainName\Policies\$guid\$rel"
+	    if (-not (Test-Path $file)) { return @{ Success = $false; NotFound = $true } }
+	    [xml]$xml = Get-Content -Path $file -Raw
+	    $removed = 0
+	    if ($typeVal -eq 'FirewallRule') {
+	        $rulesNode = $xml.SelectSingleNode("//FirewallRules")
+	        if ($rulesNode) {
+	            @($rulesNode.SelectNodes("*[@name='$targetName']")) | ForEach-Object { [void]$rulesNode.RemoveChild($_); $removed++ }
+	            $emptyRoot = (@($rulesNode.SelectNodes("*")).Count -eq 0)
+	        }
+	    }
+	    elseif ($typeVal -eq 'LocalGroupMember') {
+	        $groupEmpty = $false
+	        @($xml.SelectNodes("//Group")) | ForEach-Object {
+	            $grp = $_
+	            @($grp.SelectNodes(".//Member[@sid='$memberSidVal']")) | ForEach-Object {
+	                [void]$_.ParentNode.RemoveChild($_); $removed++
+	            }
+	            $remainingMembers = @($grp.SelectNodes(".//Member")).Count
+	            if ($removed -gt 0 -and $remainingMembers -eq 0) {
+	                [void]$grp.ParentNode.RemoveChild($grp)
+	            }
+	        }
+	        $rootNode = $xml.DocumentElement
+	        $emptyRoot = (@($rootNode.SelectNodes("*")).Count -eq 0)
+	    }
+	    else {
+	        $rootNode = $xml.DocumentElement
+	        @($rootNode.SelectNodes("*[@name='$targetName']")) | ForEach-Object { [void]$rootNode.RemoveChild($_); $removed++ }
+	        $emptyRoot = (@($rootNode.SelectNodes("*")).Count -eq 0)
+	    }
+	    if ($removed -eq 0) { return @{ Success = $false; NotMatched = $true } }
+	    if ($emptyRoot) {
+	        Remove-Item -LiteralPath $file -Force -ErrorAction Stop
+	        return @{ Success = $true; Removed = $removed; FileDeleted = $true }
+	    } else {
+	        $xml.Save($file)
+	        return @{ Success = $true; Removed = $removed; FileDeleted = $false }
+	    }
+	}.GetNewClosure()
+	if (-not $smb -or -not $smb.Success) {
+	    if ($smb.NotFound)   { throw "Payload file not found in SYSVOL ($rel) - nothing to remove" }
+	    if ($smb.NotMatched) { throw "No matching '$Type' item found for: $ItemName" }
+	    throw "Failed to remove payload item via SMB"
+	}
+	if ($smb.FileDeleted) {
+	    $cur = @(Invoke-LDAPSearch -Filter "(distinguishedName=$GPODN)" -Properties @($map.Attr) -SizeLimit 1)[0]
+	    $curExt = if ($cur) { $cur.($map.Attr) } else { $null }
+	    if ($curExt) {
+	        $newExt = Remove-GPOCSEBlock -Extensions $curExt -CSEGuid $map.CSE
+	        if ($newExt -ne $curExt) {
+	            $null = Set-GPOAttributeRaw -GPODN $GPODN -Name $map.Attr -Value $newExt -CurrentlyPresent $true
+	        }
+	    }
+	}
+	$incArg = if ($map.Attr -eq 'gPCUserExtensionNames') { @{ IncrementUser = $true } } else { @{ IncrementMachine = $true } }
+	$null = Update-GPOVersion -GPODN $GPODN -GPOName $GPOName -Credential $Credential @incArg
+	return [PSCustomObject]@{ Operation = "Remove$Type"; GPO = $GPOName; ItemsRemoved = $smb.Removed; FileDeleted = $smb.FileDeleted; Success = $true }
+}
+function Remove-GPOScriptEntry {
+	[CmdletBinding()]
+	param(
+	    [string]$GPODN, [string]$GPOName, [string]$GPOGUID,
+	    [ValidateSet('Startup','Logon')] [string]$Kind,
+	    [string]$ScriptName,
+	    [System.Management.Automation.PSCredential]$Credential
+	)
+	$domainName = $Script:LDAPContext.Domain
+	$guid = $GPOGUID
+	$side = if ($Kind -eq 'Startup') { 'Machine' } else { 'User' }
+	$section = $Kind
+	$scriptDir = "$side\Scripts\$Kind"
+	$iniRel = "$side\Scripts\scripts.ini"
+	$cseGuid = '{40B6664F-4972-11D1-A7CA-0000F87571E3}'
+	$attr = if ($Kind -eq 'Startup') { 'gPCMachineExtensionNames' } else { 'gPCUserExtensionNames' }
+	$scriptNameVal = $ScriptName
+	$sectionVal = $section
+	$scriptDirVal = $scriptDir
+	$iniRelVal = $iniRel
+	$smb = Invoke-SMBAccess -Description "Remove GPO script entry" -ErrorHandling Stop -ScriptBlock {
+	    param($basePath)
+	    $gpoBase = Join-Path $basePath "$domainName\Policies\$guid"
+	    $iniPath = Join-Path $gpoBase $iniRelVal
+	    $scriptFile = Join-Path (Join-Path $gpoBase $scriptDirVal) $scriptNameVal
+	    $removed = 0
+	    if (Test-Path $scriptFile) { Remove-Item -LiteralPath $scriptFile -Force -ErrorAction SilentlyContinue }
+	    $sectionEmpty = $true
+	    $iniDeleted = $false
+	    if (Test-Path $iniPath) {
+	        $lines = Get-Content -Path $iniPath
+	        $result = New-Object System.Collections.Generic.List[string]
+	        $inTarget = $false
+	        $kept = New-Object System.Collections.Generic.List[object]   # @{Cmd=..;Param=..} for target section
+	        $skipParam = $false
+	        $lastKept = $null
+	        foreach ($line in $lines) {
+	            if ($line -match '^\s*\[(.+)\]\s*$') {
+	                if ($inTarget) {
+	                    $idx = 0
+	                    foreach ($e in $kept) { $result.Add("${idx}CmdLine=$($e.Cmd)"); $result.Add("${idx}Parameters=$($e.Param)"); $idx++ }
+	                    if ($kept.Count -gt 0) { $sectionEmpty = $false }
+	                    $kept.Clear()
+	                }
+	                $inTarget = ($Matches[1] -ieq $sectionVal)
+	                $result.Add($line)
+	                continue
+	            }
+	            if ($inTarget) {
+	                if ($line -match '^\s*(\d+)CmdLine=(.*)$') {
+	                    $pendingCmd = $Matches[2]
+	                    if ($pendingCmd.Trim() -ieq $scriptNameVal) { $removed++; $skipParam = $true }
+	                    else { $kept.Add(@{ Cmd = $pendingCmd; Param = '' }); $skipParam = $false; $lastKept = $kept[$kept.Count-1] }
+	                } elseif ($line -match '^\s*(\d+)Parameters=(.*)$') {
+	                    if (-not $skipParam -and $lastKept) { $lastKept.Param = $Matches[2] }
+	                }
+	            } else {
+	                $result.Add($line)
+	            }
+	        }
+	        if ($inTarget) {
+	            $idx = 0
+	            foreach ($e in $kept) { $result.Add("${idx}CmdLine=$($e.Cmd)"); $result.Add("${idx}Parameters=$($e.Param)"); $idx++ }
+	            if ($kept.Count -gt 0) { $sectionEmpty = $false }
+	        }
+	        $content = ($result -join "`r`n").Trim()
+	        if ([string]::IsNullOrWhiteSpace(($content -replace '\[[^\]]*\]',''))) {
+	            Remove-Item -LiteralPath $iniPath -Force -ErrorAction SilentlyContinue
+	            $iniDeleted = $true
+	        } else {
+	            Set-Content -Path $iniPath -Value $content -Force -ErrorAction Stop
+	        }
+	    }
+	    return @{ Success = ($removed -gt 0 -or $true); Removed = $removed; SectionEmpty = $sectionEmpty; IniDeleted = $iniDeleted }
+	}.GetNewClosure()
+	if ($smb.Removed -eq 0) {
+	    Write-Warning "[Set-DomainGPO] No scripts.ini entry matched '$ScriptName' in [$section] (script file removed if it existed)"
+	}
+	if ($smb.SectionEmpty) {
+	    $cur = @(Invoke-LDAPSearch -Filter "(distinguishedName=$GPODN)" -Properties @($attr) -SizeLimit 1)[0]
+	    $curExt = if ($cur) { $cur.$attr } else { $null }
+	    if ($curExt) {
+	        $newExt = Remove-GPOCSEBlock -Extensions $curExt -CSEGuid $cseGuid
+	        if ($newExt -ne $curExt) { $null = Set-GPOAttributeRaw -GPODN $GPODN -Name $attr -Value $newExt -CurrentlyPresent $true }
+	    }
+	}
+	$incArg = if ($Kind -eq 'Logon') { @{ IncrementUser = $true } } else { @{ IncrementMachine = $true } }
+	$null = Update-GPOVersion -GPODN $GPODN -GPOName $GPOName -Credential $Credential @incArg
+	return [PSCustomObject]@{ Operation = "Remove${Kind}Script"; GPO = $GPOName; ItemsRemoved = $smb.Removed; Success = $true }
 }
 function New-DomainUser {
 	[CmdletBinding()]
@@ -34290,9 +34728,9 @@ function Get-KerberosChecksumNative {
 	    [int]$EncryptionType
 	)
 	$checksumType = switch ($EncryptionType) {
-	    18 { 16 }    # AES256 â†’ HMAC_SHA1_96_AES256
-	    17 { 15 }    # AES128 â†’ HMAC_SHA1_96_AES128
-	    23 { -138 }  # RC4 â†’ HMAC_MD5
+	    18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
+	    17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
+	    23 { -138 }  # RC4 → HMAC_MD5
 	    default { throw "Unsupported encryption type for checksum: $EncryptionType" }
 	}
 	if ((Initialize-KerbCryptoInterop) -and $Script:KerbCryptoHasChecksum) {
@@ -52174,8 +52612,8 @@ function Get-ProtectedUsersStatus {
 	            }
 	        }
 	        $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
-	        $tier0Accounts = @{}  # SID â†’ Account object (deduplicated)
-	        $tier0AccountGroups = @{}  # SID â†’ Array of group names (for display)
+	        $tier0Accounts = @{}  # SID → Account object (deduplicated)
+	        $tier0AccountGroups = @{}  # SID → Array of group names (for display)
 	        foreach ($groupSID in $tier0GroupSIDs) {
 	            $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
 	            if (-not $groupObj) {
@@ -58760,8 +59198,8 @@ function Get-PasswordInDescription {
 	        $exclusionPatterns = @(
 	            'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
 	            '\bparol[ae]?\s*(policy|politica|cerinta)',
-	            'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|mÃ¥|bÃ¸r|deve|trebuie)\s+',
-	            'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utlÃ¸p|lunghezza|scadenza)',
+	            'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
+	            'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
 	            'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
 	            '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
 	            '(minimum|maximum)\s+passw\S*',
@@ -68270,7 +68708,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.1.0+20260616-0818"
+$Script:adPEASVersion = "2.1.0+20260619-1401"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
