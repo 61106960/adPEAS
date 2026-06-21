@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
-## [Unreleased]
+## [2.2.0] - 2026-06-21
 
 ### Added
 
@@ -55,6 +55,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   display. Reported as a *Hint* (yellow) since read access is often a
   legitimate recovery/helpdesk capability, with full HTML report card and
   hover tooltip.
+
+### Fixed
+
+- **HTML report card titles** — object cards whose title template referenced a
+  custom property placeholder rendered it literally. The "GPO User Right" card
+  showed `GPO User Right: {userRightName}` instead of the resolved right name
+  (e.g. *Manage auditing and security log*). `Get-ObjectTypeTitle` now resolves
+  any remaining `{propertyName}` placeholder from the matching object property,
+  which also fixes the BitLocker Recovery Key card's `{ComputerName}` placeholder.
 
 ---
 
