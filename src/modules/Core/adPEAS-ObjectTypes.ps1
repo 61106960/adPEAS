@@ -1422,6 +1422,18 @@ function Get-ObjectTypeTitle {
         }
     }
 
+    # Generic fallback: resolve any remaining {propertyName} placeholders
+    # directly from a matching object property (e.g. {userRightName}, {ComputerName}).
+    # Falls back to the object name when the property is absent. Uses literal
+    # string replacement so property values containing '$' are not treated as
+    # regex replacement tokens.
+    foreach ($match in [regex]::Matches($title, '\{(\w+)\}')) {
+        $propName = $match.Groups[1].Value
+        $propValue = $Object.$propName
+        $replacement = if ($propValue) { [string]$propValue } else { $objName }
+        $title = $title.Replace($match.Value, $replacement)
+    }
+
     return $title
 }
 
