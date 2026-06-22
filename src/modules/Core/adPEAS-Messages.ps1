@@ -813,6 +813,50 @@ function Show-KeyValue {
 
 <#
 .SYNOPSIS
+    Emits a standardized note when a web endpoint probe could not reach the target.
+
+.DESCRIPTION
+    Shared by every check that probes HTTP/HTTPS endpoints (ADCS web enrollment,
+    Exchange endpoints, ...). Centralizing the wording and severity guarantees that
+    all web endpoint checks behave identically, so a missing endpoint row is never
+    mistaken for "the service exposes no web endpoint" when in reality the probe was
+    simply blocked (firewall, VPN, host down). Does nothing when the probe succeeded.
+
+.PARAMETER ProbeResult
+    The result object returned by Invoke-HTTPRequest (-ScanADCS / -ScanExchange).
+    May be $null when the probe was abandoned before it ran (e.g. a TCP pre-check failed).
+
+.PARAMETER Hostname
+    The target host name that was (or would have been) probed.
+
+.PARAMETER CheckLabel
+    Short label describing the probe, prefixed to the message (e.g. 'Web enrollment check').
+
+.EXAMPLE
+    Show-WebEndpointUnreachable -ProbeResult $webEnrollmentResult -Hostname $ca.DNSHostName -CheckLabel 'Web enrollment check'
+#>
+function Show-WebEndpointUnreachable {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowNull()]
+        $ProbeResult,
+
+        [Parameter(Mandatory=$true)]
+        [string]$Hostname,
+
+        [Parameter(Mandatory=$false)]
+        [string]$CheckLabel = 'Web endpoint check'
+    )
+
+    # Probe reached the target - nothing to report here.
+    if ($ProbeResult -and $ProbeResult.Success) { return }
+
+    Show-Line "$CheckLabel could not reach $Hostname (HTTP/HTTPS unreachable)" -Class Note
+}
+
+<#
+.SYNOPSIS
     Outputs an AD object with all relevant properties formatted.
 
 .DESCRIPTION

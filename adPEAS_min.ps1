@@ -14173,6 +14173,20 @@ function Show-KeyValue {
     )
     Show-Output -Key $Key -Value $Value -Class $Class -AlignAt $AlignAt -FindingId $FindingId -NoCollect:$NoCollect
 }
+function Show-WebEndpointUnreachable {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowNull()]
+        $ProbeResult,
+        [Parameter(Mandatory=$true)]
+        [string]$Hostname,
+        [Parameter(Mandatory=$false)]
+        [string]$CheckLabel = 'Web endpoint check'
+    )
+    if ($ProbeResult -and $ProbeResult.Success) { return }
+    Show-Line "$CheckLabel could not reach $Hostname (HTTP/HTTPS unreachable)" -Class Note
+}
 function Show-Object {
     [CmdletBinding()]
     param(
@@ -44052,14 +44066,14 @@ function Invoke-ExchangeScanInternal {
         BuildNumber      = $null
         Method           = $null
         Endpoints        = [PSCustomObject]@{
-            OWA          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            ECP          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            EWS          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            Autodiscover = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            MAPI         = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            RPC          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            PowerShell   = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            ActiveSync   = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            OWA          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            ECP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            EWS          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            Autodiscover = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            MAPI         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            RPC          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            PowerShell   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            ActiveSync   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
         }
         HttpAvailable    = $false
         HttpsAvailable   = $false
@@ -44270,6 +44284,7 @@ function Invoke-ExchangeScanInternal {
         $httpResult = Test-ExchangeEndpoint -Url $httpOwaUrl -EndpointName "OWA" -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
         if ($httpResult.IsExchangeEndpoint) {
             $result.HttpAvailable = $true
+            $result.Endpoints.OWA.AvailableHttp = $true
             if (-not $result.Endpoints.OWA.Available) {
                 $result.Endpoints.OWA.Available = $true
                 $result.Endpoints.OWA.AuthMethods = $httpResult.AuthMethods -join ', '
@@ -44295,6 +44310,12 @@ function Invoke-ExchangeScanInternal {
             $result.Error = "No Exchange endpoints found (server may be offline, blocking requests, or not Exchange)"
             Write-Log "[ScanExchange] No endpoints found for $targetHost"
         }
+    }
+    foreach ($epName in @('OWA', 'ECP', 'EWS', 'Autodiscover', 'MAPI', 'RPC', 'PowerShell', 'ActiveSync')) {
+        $ep = $result.Endpoints.$epName
+        if ($ep.Available -and -not $ep.AvailableHttp) { $ep.AvailableHttps = $true }
+        if ($ep.AvailableHttp)  { $result.HttpAvailable  = $true }
+        if ($ep.AvailableHttps) { $result.HttpsAvailable = $true }
     }
     $availableEndpoints = @()
     foreach ($ep in @('OWA', 'ECP', 'EWS', 'Autodiscover', 'MAPI', 'RPC', 'PowerShell', 'ActiveSync')) {
@@ -44645,10 +44666,10 @@ function Invoke-ADCSScanInternal {
         HttpsStatusCode  = $null
         ServerHeader     = $null
         Endpoints        = [PSCustomObject]@{
-            CertSrv      = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /certsrv/
-            CEP          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /ADPolicyProvider_CEP_*/
-            CES          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /<CAName>_CES_*/
-            NDES         = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /CertSrv/mscep/
+            CertSrv      = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /certsrv/
+            CEP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /ADPolicyProvider_CEP_*/
+            CES          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /<CAName>_CES_*/
+            NDES         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /CertSrv/mscep/
         }
         EPAEnabled       = $null         # $true = EPA active (secure), $false = EPA not active (ESC8 vulnerable), $null = not tested
         EPAConfidence    = $null         # "High", "Medium", "Low", "Unknown"
@@ -44684,6 +44705,7 @@ function Invoke-ADCSScanInternal {
         $result.HttpsStatusCode = $httpsResult.StatusCode
         $result.Success = $true
         $result.Endpoints.CertSrv.Available = $true
+        $result.Endpoints.CertSrv.AvailableHttps = $true
         $result.Endpoints.CertSrv.AuthMethods = $httpsResult.AuthMethods -join ', '
         if ($httpsResult.ServerHeader) {
             $result.ServerHeader = $httpsResult.ServerHeader
@@ -44704,6 +44726,7 @@ function Invoke-ADCSScanInternal {
         $result.HttpStatusCode = $httpResult.StatusCode
         $result.Success = $true
         $result.Endpoints.CertSrv.Available = $true
+        $result.Endpoints.CertSrv.AvailableHttp = $true
         if ([string]::IsNullOrEmpty($result.Endpoints.CertSrv.AuthMethods) -and $httpResult.AuthMethods.Count -gt 0) {
             $result.Endpoints.CertSrv.AuthMethods = $httpResult.AuthMethods -join ', '
         }
@@ -44721,6 +44744,7 @@ function Invoke-ADCSScanInternal {
         $cepResult = Test-ADCSEndpoint -Url $cepUrl -EndpointName "CEP" -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
         if ($cepResult.IsADCSEndpoint) {
             $result.Endpoints.CEP.Available = $true
+            $result.Endpoints.CEP.AvailableHttps = $true
             $result.Endpoints.CEP.AuthMethods = $cepResult.AuthMethods -join ', '
             $result.Success = $true
             Write-Log "[ScanADCS] CEP available (HTTP $($cepResult.StatusCode)), Auth: $($cepResult.AuthMethods -join ', ')"
@@ -44734,6 +44758,7 @@ function Invoke-ADCSScanInternal {
             $cesResult = Test-ADCSEndpoint -Url $cesUrl -EndpointName "CES" -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
             if ($cesResult.IsADCSEndpoint) {
                 $result.Endpoints.CES.Available = $true
+                $result.Endpoints.CES.AvailableHttps = $true
                 $result.Endpoints.CES.AuthMethods = $cesResult.AuthMethods -join ', '
                 $result.Success = $true
                 Write-Log "[ScanADCS] CES available (HTTP $($cesResult.StatusCode)), Auth: $($cesResult.AuthMethods -join ', ')"
@@ -44749,6 +44774,7 @@ function Invoke-ADCSScanInternal {
         $ndesResult = Test-ADCSEndpoint -Url $ndesUrl -EndpointName "NDES" -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
         if ($ndesResult.IsADCSEndpoint) {
             $result.Endpoints.NDES.Available = $true
+            $result.Endpoints.NDES.AvailableHttps = $true
             $result.Endpoints.NDES.AuthMethods = $ndesResult.AuthMethods -join ', '
             $result.Success = $true
             Write-Log "[ScanADCS] NDES HTTPS available (HTTP $($ndesResult.StatusCode)), Auth: $($ndesResult.AuthMethods -join ', ')"
@@ -44762,6 +44788,7 @@ function Invoke-ADCSScanInternal {
             $ndesHttpResult = Test-ADCSEndpoint -Url $ndesHttpUrl -EndpointName "NDES" -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
             if ($ndesHttpResult.IsADCSEndpoint) {
                 $result.Endpoints.NDES.Available = $true
+                $result.Endpoints.NDES.AvailableHttp = $true
                 $result.Endpoints.NDES.AuthMethods = $ndesHttpResult.AuthMethods -join ', '
                 $result.Success = $true
                 Write-Log "[ScanADCS] NDES HTTP available (HTTP $($ndesHttpResult.StatusCode)), Auth: $($ndesHttpResult.AuthMethods -join ', ')"
@@ -44769,6 +44796,11 @@ function Invoke-ADCSScanInternal {
         }
     } else {
         Write-Log "[ScanADCS] Skipping CEP/CES/NDES tests - server not reachable"
+    }
+    foreach ($epName in @('CertSrv', 'CEP', 'CES', 'NDES')) {
+        $ep = $result.Endpoints.$epName
+        if ($ep.AvailableHttp)  { $result.HttpAvailable  = $true }
+        if ($ep.AvailableHttps) { $result.HttpsAvailable = $true }
     }
     if (-not $result.Success) {
         $result.Error = "No ADCS web enrollment endpoints found (server may be offline or not running ADCS web services)"
@@ -59350,19 +59382,17 @@ function Get-ADCSVulnerabilities {
                             }
                             if (@($activeEndpoints).Count -gt 0) {
                                 $endpointsWithAuth = @()
-                                $httpAvailable = $webEnrollmentResult.HttpAvailable
-                                $httpsAvailable = $webEnrollmentResult.HttpsAvailable
                                 foreach ($ep in $activeEndpoints) {
                                     $authMethods = $endpointAuthMethods[$ep]
                                     $epData = $webEnrollmentResult.Endpoints.$ep
-                                    if ($httpAvailable) {
+                                    if ($epData.AvailableHttp) {
                                         $epString = "$ep via HTTP"
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
                                         }
                                         $endpointsWithAuth += $epString
                                     }
-                                    if ($httpsAvailable) {
+                                    if ($epData.AvailableHttps) {
                                         $epString = "$ep via HTTPS"
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
@@ -59451,17 +59481,15 @@ function Get-ADCSVulnerabilities {
                             }
                             if (@($activeEndpoints).Count -gt 0) {
                                 $endpointsWithAuth = @()
-                                $httpAvailable = $webEnrollmentResult.HttpAvailable
-                                $httpsAvailable = $webEnrollmentResult.HttpsAvailable
                                 foreach ($ep in $activeEndpoints) {
                                     $authMethods = $endpointAuthMethods[$ep]
                                     $epData = $webEnrollmentResult.Endpoints.$ep
-                                    if ($httpAvailable) {
+                                    if ($epData.AvailableHttp) {
                                         $epString = "$ep via HTTP"
                                         if ($authMethods) { $epString += " ($authMethods)" }
                                         $endpointsWithAuth += $epString
                                     }
-                                    if ($httpsAvailable) {
+                                    if ($epData.AvailableHttps) {
                                         $epString = "$ep via HTTPS"
                                         if ($authMethods) { $epString += " ($authMethods)" }
                                         if ($null -ne $epData.EPAEnabled) {
@@ -59511,6 +59539,9 @@ function Get-ADCSVulnerabilities {
                         }
                         $syntheticCA | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CertificateAuthority' -Force
                         Show-Object $syntheticCA
+                    }
+                    if (-not $skipHttpCheck) {
+                        Show-WebEndpointUnreachable -ProbeResult $webEnrollmentResult -Hostname $ca.DNSHostName -CheckLabel 'Web enrollment check'
                     }
                 } else {
                     if ($hasDangerousADPermissions) {
@@ -60202,7 +60233,6 @@ function Get-ExchangeInfrastructure {
                             $isInactive = $null -ne ($serverObject | Test-AccountActivity -IsInactive)
                             if ($isInactive) {
                                 Write-Log "[Get-ExchangeInfrastructure] Skipping HTTP check for $($exServer.DNSHostName) - server inactive"
-                                $serverObject | Add-Member -NotePropertyName "HttpCheckSkipped" -NotePropertyValue "Server inactive (no recent logon)" -Force
                             } else {
                                 $tcpReachable = $false
                                 $tcpClient = $null
@@ -60226,7 +60256,6 @@ function Get-ExchangeInfrastructure {
                                 }
                                 if (-not $tcpReachable) {
                                     Write-Log "[Get-ExchangeInfrastructure] Skipping HTTP check for $($exServer.DNSHostName) - TCP port 443 not reachable"
-                                    $serverObject | Add-Member -NotePropertyName "HttpCheckSkipped" -NotePropertyValue "Server not reachable (TCP 443 timeout)" -Force
                                 } else {
                                     Write-Log "[Get-ExchangeInfrastructure] Detecting Exchange endpoints and EPA for $($exServer.DNSHostName)..."
                                     try {
@@ -60249,6 +60278,7 @@ function Get-ExchangeInfrastructure {
                                         Write-Log "[Get-ExchangeInfrastructure] HTTP detection failed: $_"
                                     }
                                 }
+                                Show-WebEndpointUnreachable -ProbeResult $webEnrollmentResult -Hostname $exServer.DNSHostName -CheckLabel 'Exchange endpoint check'
                             }
                         }
                         if ($exServer.Roles -and @($exServer.Roles).Count -gt 0) {
@@ -60269,19 +60299,17 @@ function Get-ExchangeInfrastructure {
                             }
                             if (@($activeEndpoints).Count -gt 0) {
                                 $endpointsWithAuth = @()
-                                $httpAvailable = $webEnrollmentResult.HttpAvailable
-                                $httpsAvailable = $webEnrollmentResult.HttpsAvailable
                                 foreach ($ep in $activeEndpoints) {
                                     $authMethods = $endpointAuthMethods[$ep]
                                     $epData = $webEnrollmentResult.Endpoints.$ep
-                                    if ($httpAvailable) {
+                                    if ($epData.AvailableHttp) {
                                         $epString = "$ep via HTTP"
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
                                         }
                                         $endpointsWithAuth += $epString
                                     }
-                                    if ($httpsAvailable) {
+                                    if ($epData.AvailableHttps) {
                                         $epString = "$ep via HTTPS"
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
@@ -71452,7 +71480,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.2.0"
+$Script:adPEASVersion = "2.2.0+20260622-1057"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

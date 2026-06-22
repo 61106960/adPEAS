@@ -408,8 +408,9 @@ function Get-ExchangeInfrastructure {
                             $isInactive = $null -ne ($serverObject | Test-AccountActivity -IsInactive)
 
                             if ($isInactive) {
+                                # Deliberately silent: the INACTIVE activity marker on the card
+                                # already explains why no endpoints were probed.
                                 Write-Log "[Get-ExchangeInfrastructure] Skipping HTTP check for $($exServer.DNSHostName) - server inactive"
-                                $serverObject | Add-Member -NotePropertyName "HttpCheckSkipped" -NotePropertyValue "Server inactive (no recent logon)" -Force
                             } else {
                                 # Fast TCP reachability check before expensive HTTP tests
                                 # This avoids multiple 3-second timeouts for unreachable servers
@@ -436,7 +437,6 @@ function Get-ExchangeInfrastructure {
 
                                 if (-not $tcpReachable) {
                                     Write-Log "[Get-ExchangeInfrastructure] Skipping HTTP check for $($exServer.DNSHostName) - TCP port 443 not reachable"
-                                    $serverObject | Add-Member -NotePropertyName "HttpCheckSkipped" -NotePropertyValue "Server not reachable (TCP 443 timeout)" -Force
                                 } else {
                                     Write-Log "[Get-ExchangeInfrastructure] Detecting Exchange endpoints and EPA for $($exServer.DNSHostName)..."
 
@@ -466,6 +466,11 @@ function Get-ExchangeInfrastructure {
                                         Write-Log "[Get-ExchangeInfrastructure] HTTP detection failed: $_"
                                     }
                                 }
+
+                                # Active server, but the probe did not reach it (TCP port filtered
+                                # or HTTP/HTTPS blocked). Surface it the same way as other web checks
+                                # so a missing WebEndpoints row is not misread as "no web endpoints".
+                                Show-WebEndpointUnreachable -ProbeResult $webEnrollmentResult -Hostname $exServer.DNSHostName -CheckLabel 'Exchange endpoint check'
                             }
                         }
 
@@ -496,15 +501,16 @@ function Get-ExchangeInfrastructure {
 
                             if (@($activeEndpoints).Count -gt 0) {
                                 $endpointsWithAuth = @()
-                                $httpAvailable = $webEnrollmentResult.HttpAvailable
-                                $httpsAvailable = $webEnrollmentResult.HttpsAvailable
 
                                 foreach ($ep in $activeEndpoints) {
                                     $authMethods = $endpointAuthMethods[$ep]
                                     $epData = $webEnrollmentResult.Endpoints.$ep
 
-                                    # Show HTTP line if HTTP is available (no EPA - not applicable for HTTP)
-                                    if ($httpAvailable) {
+                                    # Render each endpoint by ITS OWN transport (not the global
+                                    # protocol flags) so an HTTPS-only endpoint such as EWS/MAPI is
+                                    # not dropped when only OWA was reachable via HTTP (and vice versa).
+                                    # Show HTTP line if reachable via HTTP (no EPA - not applicable for HTTP)
+                                    if ($epData.AvailableHttp) {
                                         $epString = "$ep via HTTP"
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
@@ -512,8 +518,8 @@ function Get-ExchangeInfrastructure {
                                         $endpointsWithAuth += $epString
                                     }
 
-                                    # Show HTTPS line if HTTPS is available (with EPA status if tested)
-                                    if ($httpsAvailable) {
+                                    # Show HTTPS line if reachable via HTTPS (with EPA status if tested)
+                                    if ($epData.AvailableHttps) {
                                         $epString = "$ep via HTTPS"
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"

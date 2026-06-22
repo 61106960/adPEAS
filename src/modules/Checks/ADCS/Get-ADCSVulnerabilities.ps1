@@ -506,15 +506,16 @@ function Get-ADCSVulnerabilities {
                                 # - HTTP + Negotiate = Hint (could have NTLM fallback)
                                 # - HTTPS + Negotiate only = Standard (Kerberos-only is secure)
                                 $endpointsWithAuth = @()
-                                $httpAvailable = $webEnrollmentResult.HttpAvailable
-                                $httpsAvailable = $webEnrollmentResult.HttpsAvailable
 
                                 foreach ($ep in $activeEndpoints) {
                                     $authMethods = $endpointAuthMethods[$ep]
                                     $epData = $webEnrollmentResult.Endpoints.$ep
 
-                                    # Show HTTP line if HTTP is available (no EPA - not applicable for HTTP)
-                                    if ($httpAvailable) {
+                                    # Render each endpoint by ITS OWN transport (not the global
+                                    # protocol flags) so HTTPS-only endpoints like CEP/CES are not
+                                    # dropped when CertSrv happens to be HTTP-only (and vice versa).
+                                    # Show HTTP line if reachable via HTTP (no EPA - not applicable for HTTP)
+                                    if ($epData.AvailableHttp) {
                                         $epString = "$ep via HTTP"
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
@@ -522,8 +523,8 @@ function Get-ADCSVulnerabilities {
                                         $endpointsWithAuth += $epString
                                     }
 
-                                    # Show HTTPS line if HTTPS is available (with EPA status if tested)
-                                    if ($httpsAvailable) {
+                                    # Show HTTPS line if reachable via HTTPS (with EPA status if tested)
+                                    if ($epData.AvailableHttps) {
                                         $epString = "$ep via HTTPS"
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
@@ -643,17 +644,16 @@ function Get-ADCSVulnerabilities {
 
                             if (@($activeEndpoints).Count -gt 0) {
                                 $endpointsWithAuth = @()
-                                $httpAvailable = $webEnrollmentResult.HttpAvailable
-                                $httpsAvailable = $webEnrollmentResult.HttpsAvailable
                                 foreach ($ep in $activeEndpoints) {
                                     $authMethods = $endpointAuthMethods[$ep]
                                     $epData = $webEnrollmentResult.Endpoints.$ep
-                                    if ($httpAvailable) {
+                                    # Render each endpoint by its own transport (see caComputer path above).
+                                    if ($epData.AvailableHttp) {
                                         $epString = "$ep via HTTP"
                                         if ($authMethods) { $epString += " ($authMethods)" }
                                         $endpointsWithAuth += $epString
                                     }
-                                    if ($httpsAvailable) {
+                                    if ($epData.AvailableHttps) {
                                         $epString = "$ep via HTTPS"
                                         if ($authMethods) { $epString += " ($authMethods)" }
                                         if ($null -ne $epData.EPAEnabled) {
@@ -707,6 +707,16 @@ function Get-ADCSVulnerabilities {
 
                         $syntheticCA | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CertificateAuthority' -Force
                         Show-Object $syntheticCA
+                    }
+
+                    # The web enrollment attributes (HttpAvailable / WebEnrollmentEndpoints,
+                    # i.e. the ESC8 surface) are only added when the HTTP/HTTPS probe reached
+                    # the CA. If the server was active and the probe was attempted but did not
+                    # succeed (endpoint blocked or filtered), note it explicitly so a missing
+                    # WebEnrollmentEndpoints row is not misread as "the CA has no web enrollment".
+                    # Skipped-for-inactivity is deliberately silent (the INACTIVE marker covers it).
+                    if (-not $skipHttpCheck) {
+                        Show-WebEndpointUnreachable -ProbeResult $webEnrollmentResult -Hostname $ca.DNSHostName -CheckLabel 'Web enrollment check'
                     }
                 } else {
                     # No DNS hostname - show permissions manually

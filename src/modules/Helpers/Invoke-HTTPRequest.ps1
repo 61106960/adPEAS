@@ -523,15 +523,18 @@ function Invoke-ExchangeScanInternal {
         Method           = $null
         # Endpoint availability with per-endpoint auth methods and EPA status
         # EPA is tested per endpoint because IIS allows different EPA settings per virtual directory
+        # Available = reachable via any transport; AvailableHttp / AvailableHttps record the
+        # specific transport(s) so endpoint lines can be rendered per endpoint instead of from
+        # the global HttpAvailable / HttpsAvailable flags.
         Endpoints        = [PSCustomObject]@{
-            OWA          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            ECP          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            EWS          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            Autodiscover = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            MAPI         = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            RPC          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            PowerShell   = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            ActiveSync   = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            OWA          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            ECP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            EWS          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            Autodiscover = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            MAPI         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            RPC          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            PowerShell   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            ActiveSync   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
         }
         # Protocol availability
         HttpAvailable    = $false
@@ -817,6 +820,7 @@ function Invoke-ExchangeScanInternal {
 
         if ($httpResult.IsExchangeEndpoint) {
             $result.HttpAvailable = $true
+            $result.Endpoints.OWA.AvailableHttp = $true
             # If OWA wasn't available via HTTPS, update it for HTTP
             if (-not $result.Endpoints.OWA.Available) {
                 $result.Endpoints.OWA.Available = $true
@@ -847,6 +851,18 @@ function Invoke-ExchangeScanInternal {
             $result.Error = "No Exchange endpoints found (server may be offline, blocking requests, or not Exchange)"
             Write-Log "[ScanExchange] No endpoints found for $targetHost"
         }
+    }
+
+    # Record per-endpoint transport and derive the global protocol flags. Every detected
+    # endpoint except the OWA HTTP fallback is served over HTTPS (all other probe URLs use
+    # https://), so a detected endpoint without an HTTP transport defaults to HTTPS. This makes
+    # HttpsAvailable reflect ANY endpoint (EWS/MAPI/RPC/... previously did not update it).
+    # Additive: never clears a flag.
+    foreach ($epName in @('OWA', 'ECP', 'EWS', 'Autodiscover', 'MAPI', 'RPC', 'PowerShell', 'ActiveSync')) {
+        $ep = $result.Endpoints.$epName
+        if ($ep.Available -and -not $ep.AvailableHttp) { $ep.AvailableHttps = $true }
+        if ($ep.AvailableHttp)  { $result.HttpAvailable  = $true }
+        if ($ep.AvailableHttps) { $result.HttpsAvailable = $true }
     }
 
     # Log summary of available endpoints with their auth methods
@@ -1347,11 +1363,15 @@ function Invoke-ADCSScanInternal {
         ServerHeader     = $null
         # Per-endpoint availability, auth methods, and EPA status
         # EPA is tested per endpoint because IIS allows different EPA settings per virtual directory
+        # Available = reachable via any transport; AvailableHttp / AvailableHttps record the
+        # specific transport(s) so endpoint lines can be rendered per endpoint instead of from
+        # the global HttpAvailable / HttpsAvailable flags. CEP/CES are HTTPS-only; CertSrv and
+        # NDES can appear on either transport.
         Endpoints        = [PSCustomObject]@{
-            CertSrv      = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /certsrv/
-            CEP          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /ADPolicyProvider_CEP_*/
-            CES          = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /<CAName>_CES_*/
-            NDES         = [PSCustomObject]@{ Available = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /CertSrv/mscep/
+            CertSrv      = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /certsrv/
+            CEP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /ADPolicyProvider_CEP_*/
+            CES          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /<CAName>_CES_*/
+            NDES         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /CertSrv/mscep/
         }
         # Legacy EPA properties (for backward compatibility) - reflects first endpoint with NTLM
         EPAEnabled       = $null         # $true = EPA active (secure), $false = EPA not active (ESC8 vulnerable), $null = not tested
@@ -1402,6 +1422,7 @@ function Invoke-ADCSScanInternal {
         $result.HttpsStatusCode = $httpsResult.StatusCode
         $result.Success = $true
         $result.Endpoints.CertSrv.Available = $true
+        $result.Endpoints.CertSrv.AvailableHttps = $true
         $result.Endpoints.CertSrv.AuthMethods = $httpsResult.AuthMethods -join ', '
 
         if ($httpsResult.ServerHeader) {
@@ -1427,6 +1448,7 @@ function Invoke-ADCSScanInternal {
         $result.HttpStatusCode = $httpResult.StatusCode
         $result.Success = $true
         $result.Endpoints.CertSrv.Available = $true
+        $result.Endpoints.CertSrv.AvailableHttp = $true
 
         # Update auth methods if not already set from HTTPS
         if ([string]::IsNullOrEmpty($result.Endpoints.CertSrv.AuthMethods) -and $httpResult.AuthMethods.Count -gt 0) {
@@ -1454,6 +1476,7 @@ function Invoke-ADCSScanInternal {
         $cepResult = Test-ADCSEndpoint -Url $cepUrl -EndpointName "CEP" -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
         if ($cepResult.IsADCSEndpoint) {
             $result.Endpoints.CEP.Available = $true
+            $result.Endpoints.CEP.AvailableHttps = $true
             $result.Endpoints.CEP.AuthMethods = $cepResult.AuthMethods -join ', '
             $result.Success = $true
             Write-Log "[ScanADCS] CEP available (HTTP $($cepResult.StatusCode)), Auth: $($cepResult.AuthMethods -join ', ')"
@@ -1472,6 +1495,7 @@ function Invoke-ADCSScanInternal {
             $cesResult = Test-ADCSEndpoint -Url $cesUrl -EndpointName "CES" -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
             if ($cesResult.IsADCSEndpoint) {
                 $result.Endpoints.CES.Available = $true
+                $result.Endpoints.CES.AvailableHttps = $true
                 $result.Endpoints.CES.AuthMethods = $cesResult.AuthMethods -join ', '
                 $result.Success = $true
                 Write-Log "[ScanADCS] CES available (HTTP $($cesResult.StatusCode)), Auth: $($cesResult.AuthMethods -join ', ')"
@@ -1490,6 +1514,7 @@ function Invoke-ADCSScanInternal {
         $ndesResult = Test-ADCSEndpoint -Url $ndesUrl -EndpointName "NDES" -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
         if ($ndesResult.IsADCSEndpoint) {
             $result.Endpoints.NDES.Available = $true
+            $result.Endpoints.NDES.AvailableHttps = $true
             $result.Endpoints.NDES.AuthMethods = $ndesResult.AuthMethods -join ', '
             $result.Success = $true
             Write-Log "[ScanADCS] NDES HTTPS available (HTTP $($ndesResult.StatusCode)), Auth: $($ndesResult.AuthMethods -join ', ')"
@@ -1506,6 +1531,7 @@ function Invoke-ADCSScanInternal {
             $ndesHttpResult = Test-ADCSEndpoint -Url $ndesHttpUrl -EndpointName "NDES" -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
             if ($ndesHttpResult.IsADCSEndpoint) {
                 $result.Endpoints.NDES.Available = $true
+                $result.Endpoints.NDES.AvailableHttp = $true
                 $result.Endpoints.NDES.AuthMethods = $ndesHttpResult.AuthMethods -join ', '
                 $result.Success = $true
                 Write-Log "[ScanADCS] NDES HTTP available (HTTP $($ndesHttpResult.StatusCode)), Auth: $($ndesHttpResult.AuthMethods -join ', ')"
@@ -1513,6 +1539,14 @@ function Invoke-ADCSScanInternal {
         }
     } else {
         Write-Log "[ScanADCS] Skipping CEP/CES/NDES tests - server not reachable"
+    }
+
+    # Derive the global protocol flags from the per-endpoint transport so they reflect ANY
+    # endpoint (CEP/CES/NDES previously did not update them). Additive: never clears a flag.
+    foreach ($epName in @('CertSrv', 'CEP', 'CES', 'NDES')) {
+        $ep = $result.Endpoints.$epName
+        if ($ep.AvailableHttp)  { $result.HttpAvailable  = $true }
+        if ($ep.AvailableHttps) { $result.HttpsAvailable = $true }
     }
 
     # Set error if nothing found
