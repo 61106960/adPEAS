@@ -159,6 +159,13 @@ $Script:PrimaryAttributes = @{
         'Scope', 'LinkedOUs', 'IsEffectiveSetting'
     )
 
+    # GPO-deployed dangerous registry settings (Get-GPORegistrySettings)
+    GPORegistrySetting = @(
+        'GPOName', 'Source', 'RegistryKey', 'ConfiguredValue',
+        'VulnerabilityName', 'RiskReason',
+        'LinkedOUs', 'LinkedOUCount'
+    )
+
     # Domain Password Policy (all attributes are security-relevant)
     DomainPasswordPolicy = @(
         'minPwdLength', 'passwordComplexity',

@@ -1,10 +1,10 @@
-<#
+﻿<#
 .SYNOPSIS
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-06-22 10:57:00
-    Version: 2.2.0+20260622-1057
+    Build: 2026-06-26 09:03:29
+    Version: 2.2.0+20260626-0903
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -150,10 +150,10 @@ function Get-ClassColor {
     - Name for Exchange group detection (optional, with SID)
 
     Categories returned by Test-IsPrivileged:
-    - "BroadGroup" → maps to BroadGroupClass (default: "Hint")
-    - "Privileged" → maps to PrivilegedClass (default: "Finding")
-    - "Standard"   → maps to DefaultClass (default: "Standard")
-    - "Unknown"    → maps to DefaultClass (default: "Standard")
+    - "BroadGroup" â†’ maps to BroadGroupClass (default: "Hint")
+    - "Privileged" â†’ maps to PrivilegedClass (default: "Finding")
+    - "Standard"   â†’ maps to DefaultClass (default: "Standard")
+    - "Unknown"    â†’ maps to DefaultClass (default: "Standard")
 
 .PARAMETER Principal
     The principal name to classify (e.g., "DOMAIN\User"). Will be resolved to SID.
@@ -1141,8 +1141,8 @@ $Script:WellKnownRIDs = @{
     - Short: Short form without prefix (optional, for common identities)
 
     Usage:
-    - ConvertFrom-SID uses $Script:SIDToName for SID → Name resolution
-    - ConvertTo-SID uses $Script:NameToSID for Name → SID resolution
+    - ConvertFrom-SID uses $Script:SIDToName for SID â†’ Name resolution
+    - ConvertTo-SID uses $Script:NameToSID for Name â†’ SID resolution
     - Both tables are auto-generated at module load time
 
     Reference: https://docs.microsoft.com/en-us/windows/security/identity-protection/access-control/security-identifiers
@@ -1160,7 +1160,7 @@ $Script:WellKnownIdentities = @(
     @{ SID = 'S-1-3-4';     Name = 'Owner Rights' }
 
     # NT AUTHORITY (S-1-5-x)
-    # NOTE: Localized names (German NT-AUTORITÄT, French AUTORITE NT, etc.) are automatically resolved via NTAccount.Translate() in ConvertTo-SID.
+    # NOTE: Localized names (German NT-AUTORITÃ„T, French AUTORITE NT, etc.) are automatically resolved via NTAccount.Translate() in ConvertTo-SID.
     @{ SID = 'S-1-5-1';     Name = 'NT AUTHORITY\Dialup' }
     @{ SID = 'S-1-5-2';     Name = 'NT AUTHORITY\Network';        Short = 'Network' }
     @{ SID = 'S-1-5-3';     Name = 'NT AUTHORITY\Batch' }
@@ -1219,10 +1219,10 @@ $Script:WellKnownIdentities = @(
 # Auto-generated Lookup Tables (built from WellKnownIdentities)
 # ============================================================================
 
-# SID → Name lookup (for ConvertFrom-SID)
+# SID â†’ Name lookup (for ConvertFrom-SID)
 $Script:SIDToName = @{}
 
-# Name → SID lookup (for ConvertTo-SID)
+# Name â†’ SID lookup (for ConvertTo-SID)
 # Includes: canonical names and short forms
 $Script:NameToSID = @{}
 
@@ -1231,13 +1231,13 @@ foreach ($identity in $Script:WellKnownIdentities) {
     $sid = $identity.SID
     $name = $identity.Name
 
-    # SID → Name (always the canonical name)
+    # SID â†’ Name (always the canonical name)
     $Script:SIDToName[$sid] = $name
 
-    # Name → SID (canonical name)
+    # Name â†’ SID (canonical name)
     $Script:NameToSID[$name] = $sid
 
-    # Short form → SID (if defined)
+    # Short form â†’ SID (if defined)
     if ($identity.Short) {
         $Script:NameToSID[$identity.Short] = $sid
     }
@@ -2568,6 +2568,397 @@ function Test-IsExcludedFromProtectedUsers {
     return $result
 }
 
+
+
+
+# ----- adPEAS-RegistryKeys.ps1 -----
+
+<#
+.SYNOPSIS
+    Central definition of security-relevant registry values deployed via Group Policy.
+
+.DESCRIPTION
+    Single source of truth for the Get-GPORegistrySettings check. Each entry describes
+    a registry value that, WHEN ACTIVELY SET to a specific value, enables or facilitates
+    an attack (credential theft, lateral movement, privilege escalation, defense evasion).
+
+    Design principle (matches CLAUDE.md focus): only POSITIVELY SET values are flagged.
+    Absence of a hardening value is NOT a finding here, because GPO/SYSVOL parsing cannot
+    reliably distinguish "not configured in this GPO" from "secure" - flagging absence
+    would produce false negatives presented as secure.
+
+    Both GPO registry delivery mechanisms are matched against this table:
+      - Administrative Templates  -> Registry.pol  (PReg binary format)
+      - Group Policy Preferences  -> Registry.xml  (XML format)
+
+    Match types:
+      Equals        - DWORD value equals MatchValue
+      LessOrEqual   - DWORD value <= MatchValue
+      GreaterThan   - DWORD value > MatchValue
+      Present       - value exists at all (used for REG_SD allow-lists)
+      UrlNotHttps   - REG_SZ value starts with http:// (cleartext, not https)
+
+    Hive/Key matching: the Key field holds the path WITHOUT the hive prefix. The hive is
+    derived from the source (Machine\Registry.pol -> HKLM, User\Registry.pol -> HKCU) or
+    read explicitly from Registry.xml. Key comparison is case-insensitive with leading
+    backslashes stripped.
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+    Part of adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
+
+    References:
+      - OneLogon / Zerologon allow-list:  https://github.com/rub-softsec/onelogon
+      - AlwaysInstallElevated:            https://docs.specterops.io/ghostpack-docs/SharpUp-mdx/checks/alwaysinstallelevated
+      - LocalAccountTokenFilterPolicy:    https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/
+      - RDP Restricted Admin (PtH):       https://www.levelblue.com/blogs/spiderlabs-blog/restricted-admin-mode-circumventing-mfa-on-rdp-logons/
+      - PrintNightmare / Point and Print: https://itm4n.github.io/printnightmare-exploitation/
+      - WSUS over HTTP (MITM -> SYSTEM):  https://trustedsec.com/blog/wsus-is-sus-ntlm-relay-attacks-in-plain-sight
+#>
+
+# =============================================================================
+# CENTRAL DANGEROUS REGISTRY KEY TABLE
+# =============================================================================
+# ConsoleClass: 'Finding' (red) for Critical/High, 'Hint' (yellow) for Medium.
+# FindingId links each entry to its tooltip in adPEAS-FindingDefinitions.ps1.
+# VulnerabilityName is the displayed (and trigger-matched) label - keep it stable.
+$Script:DangerousRegistryKeys = @(
+
+    # =========================================================================
+    # TIER 1 - directly exploitable, "set = vulnerability"
+    # =========================================================================
+
+    @{
+        Id                = 'WDIGEST'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\SecurityProviders\WDigest'
+        ValueName         = 'UseLogonCredential'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_WDIGEST'
+        VulnerabilityName = 'WDigest cleartext credential caching enabled'
+        RiskReason        = 'LSASS caches plaintext credentials, recoverable with Mimikatz sekurlsa::wdigest'
+    }
+    @{
+        Id                = 'ONELOGON'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\Netlogon\Parameters'
+        ValueName         = 'VulnerableChannelAllowList'
+        Match             = 'Present'
+        MatchValue        = $null
+        Severity          = 'Critical'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_ONELOGON'
+        VulnerabilityName = 'Vulnerable Netlogon secure channel allow-list (Zerologon/OneLogon)'
+        RiskReason        = 'Listed accounts may use insecure Netlogon - exploitable via OneLogon/Zerologon'
+    }
+    @{
+        Id                = 'AUTOLOGON'
+        Hive              = 'HKLM'
+        Key               = 'Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
+        ValueName         = 'AutoAdminLogon'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_AUTOLOGON'
+        VulnerabilityName = 'AutoAdminLogon enabled (automatic logon)'
+        RiskReason        = 'Automatic logon active - credentials often stored in DefaultPassword (see Credential Exposure)'
+    }
+    @{
+        Id                = 'LMCOMPAT'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\Lsa'
+        ValueName         = 'LmCompatibilityLevel'
+        Match             = 'LessOrEqual'
+        MatchValue        = 2
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_LMCOMPAT'
+        VulnerabilityName = 'Weak LM/NTLMv1 authentication allowed'
+        RiskReason        = 'LM/NTLMv1 responses use DES - crackable and enables NTLM relay / hash capture'
+    }
+    @{
+        Id                = 'NOLMHASH'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\Lsa'
+        ValueName         = 'NoLmHash'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_NOLMHASH'
+        VulnerabilityName = 'LM hash storage enabled'
+        RiskReason        = 'Weak LM hashes stored in the SAM - trivially cracked offline'
+    }
+    @{
+        Id                = 'REMOTEUAC'
+        Hive              = 'HKLM'
+        Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
+        ValueName         = 'LocalAccountTokenFilterPolicy'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_REMOTEUAC'
+        VulnerabilityName = 'Remote UAC token filtering disabled (LocalAccountTokenFilterPolicy)'
+        RiskReason        = 'Any local admin can pass-the-hash remotely to admin shares / WMI'
+    }
+    @{
+        Id                = 'AIE_HKLM'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\Installer'
+        ValueName         = 'AlwaysInstallElevated'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Critical'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_ALWAYSINSTALLELEVATED'
+        VulnerabilityName = 'AlwaysInstallElevated enabled (MSI install as SYSTEM)'
+        RiskReason        = 'Any user installs MSI as SYSTEM - requires both HKLM and HKCU set'
+    }
+    @{
+        Id                = 'AIE_HKCU'
+        Hive              = 'HKCU'
+        Key               = 'Software\Policies\Microsoft\Windows\Installer'
+        ValueName         = 'AlwaysInstallElevated'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Critical'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_ALWAYSINSTALLELEVATED'
+        VulnerabilityName = 'AlwaysInstallElevated enabled (MSI install as SYSTEM)'
+        RiskReason        = 'Any user installs MSI as SYSTEM - requires both HKLM and HKCU set'
+    }
+    @{
+        Id                = 'ENABLELUA'
+        Hive              = 'HKLM'
+        Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
+        ValueName         = 'EnableLUA'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_ENABLELUA'
+        VulnerabilityName = 'User Account Control (UAC) disabled'
+        RiskReason        = 'UAC off - no token filtering, all local admins usable for remote pass-the-hash'
+    }
+    @{
+        Id                = 'RESTRICTEDADMIN'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\Lsa'
+        ValueName         = 'DisableRestrictedAdmin'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_RESTRICTEDADMIN'
+        VulnerabilityName = 'RDP Restricted Admin mode enabled (Pass-the-Hash over RDP)'
+        RiskReason        = 'RDP accepts hash-based auth - enables PtH over RDP and MFA bypass'
+    }
+    @{
+        Id                = 'PNP_NOWARN'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+        ValueName         = 'NoWarningNoElevationOnInstall'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_POINT_AND_PRINT'
+        VulnerabilityName = 'Point and Print allows non-admin printer driver installation (PrintNightmare)'
+        RiskReason        = 'No elevation prompt on driver install - PrintNightmare-style code execution'
+    }
+    @{
+        Id                = 'PNP_DRVADMIN'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+        ValueName         = 'RestrictDriverInstallationToAdministrators'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_POINT_AND_PRINT'
+        VulnerabilityName = 'Point and Print allows non-admin printer driver installation (PrintNightmare)'
+        RiskReason        = 'Driver install not restricted to admins - PrintNightmare-style code execution'
+    }
+    @{
+        Id                = 'WSUS_HTTP'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\WindowsUpdate'
+        ValueName         = 'WUServer'
+        Match             = 'UrlNotHttps'
+        MatchValue        = $null
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_WSUS_HTTP'
+        VulnerabilityName = 'WSUS update server configured over cleartext HTTP'
+        RiskReason        = 'Update traffic over HTTP - MITM injects updates for SYSTEM-level RCE'
+    }
+
+    # =========================================================================
+    # TIER 2 - defenses explicitly disabled / weakened (only flagged when set)
+    # =========================================================================
+
+    @{
+        Id                = 'DEFENDER_OFF'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows Defender'
+        ValueName         = 'DisableAntiSpyware'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_DEFENDER_DISABLED'
+        VulnerabilityName = 'Microsoft Defender Antivirus disabled via GPO'
+        RiskReason        = 'Endpoint AV disabled centrally - removes a key detection layer'
+    }
+    @{
+        Id                = 'DEFENDER_RTP'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows Defender\Real-Time Protection'
+        ValueName         = 'DisableRealtimeMonitoring'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_DEFENDER_DISABLED'
+        VulnerabilityName = 'Microsoft Defender Antivirus disabled via GPO'
+        RiskReason        = 'Real-time protection disabled centrally - removes a key detection layer'
+    }
+    @{
+        Id                = 'RUNASPPL_OFF'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\Lsa'
+        ValueName         = 'RunAsPPL'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_RUNASPPL'
+        VulnerabilityName = 'LSA Protection (RunAsPPL) explicitly disabled'
+        RiskReason        = 'LSASS not protected - eases credential dumping from memory'
+    }
+    @{
+        Id                = 'CREDGUARD_OFF'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\Lsa'
+        ValueName         = 'LsaCfgFlags'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_CREDGUARD'
+        VulnerabilityName = 'Credential Guard explicitly disabled'
+        RiskReason        = 'Credential Guard off - derived credentials exposed in LSASS'
+    }
+    @{
+        Id                = 'FILTERADMINTOKEN'
+        Hive              = 'HKLM'
+        Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
+        ValueName         = 'FilterAdministratorToken'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_FILTERADMINTOKEN'
+        VulnerabilityName = 'Built-in Administrator (RID-500) UAC token filtering disabled'
+        RiskReason        = 'RID-500 admin usable for remote pass-the-hash'
+    }
+    @{
+        Id                = 'CREDSSP_ORACLE'
+        Hive              = 'HKLM'
+        Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
+        ValueName         = 'AllowEncryptionOracle'
+        Match             = 'Equals'
+        MatchValue        = 2
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_CREDSSP_ORACLE'
+        VulnerabilityName = 'CredSSP encryption oracle set to Vulnerable (CVE-2018-0886)'
+        RiskReason        = 'CredSSP accepts unpatched clients - MITM remote code execution'
+    }
+    @{
+        Id                = 'MACHINE_PW_NOCHANGE'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\Netlogon\Parameters'
+        ValueName         = 'DisablePasswordChange'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_MACHINE_PASSWORD_STATIC'
+        VulnerabilityName = 'Machine account password rotation disabled'
+        RiskReason        = 'Static machine password - enables long-lived silver ticket persistence'
+    }
+    @{
+        Id                = 'MACHINE_PW_REFUSE'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\Netlogon\Parameters'
+        ValueName         = 'RefusePasswordChange'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_MACHINE_PASSWORD_STATIC'
+        VulnerabilityName = 'Machine account password rotation disabled'
+        RiskReason        = 'Static machine password - enables long-lived silver ticket persistence'
+    }
+    @{
+        Id                = 'NULL_RESTRICTANON'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\Lsa'
+        ValueName         = 'RestrictAnonymous'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_NULL_SESSION'
+        VulnerabilityName = 'Anonymous (null session) enumeration enabled'
+        RiskReason        = 'Null sessions can enumerate shares/accounts - reconnaissance aid'
+    }
+    @{
+        Id                = 'NULL_RESTRICTANONSAM'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\Lsa'
+        ValueName         = 'RestrictAnonymousSAM'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_NULL_SESSION'
+        VulnerabilityName = 'Anonymous (null session) enumeration enabled'
+        RiskReason        = 'Null sessions can enumerate SAM accounts - reconnaissance aid'
+    }
+    @{
+        Id                = 'NULL_EVERYONE_ANON'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\Lsa'
+        ValueName         = 'EveryoneIncludesAnonymous'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_NULL_SESSION'
+        VulnerabilityName = 'Anonymous (null session) enumeration enabled'
+        RiskReason        = 'Anonymous users gain Everyone rights - broadens null session access'
+    }
+    @{
+        Id                = 'SMB_SIGN_OFF'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\LanManServer\Parameters'
+        ValueName         = 'RequireSecuritySignature'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SMB_SIGNING'
+        VulnerabilityName = 'SMB server signing not required'
+        RiskReason        = 'SMB signing not enforced - enables SMB/NTLM relay attacks'
+    }
+)
 
 
 
@@ -4172,9 +4563,9 @@ function Write-adPEASHeader {
 # These attributes are always shown in the main/primary section (in order)
 #
 # DESIGN: User and Computer share a harmonized structure for consistency:
-#   1. Identity → 2. OS (Computer only) → 3. Groups → 4. SPNs → 5. Credentials
-#   → 6. Description → 7. Delegation → 8. UAC → 9. Timestamps → 10. Activity
-#   → 11. SID History → 12. Security Findings → 13. Roasting Hashes (User only)
+#   1. Identity â†’ 2. OS (Computer only) â†’ 3. Groups â†’ 4. SPNs â†’ 5. Credentials
+#   â†’ 6. Description â†’ 7. Delegation â†’ 8. UAC â†’ 9. Timestamps â†’ 10. Activity
+#   â†’ 11. SID History â†’ 12. Security Findings â†’ 13. Roasting Hashes (User only)
 #
 $Script:PrimaryAttributes = @{
 
@@ -4312,6 +4703,13 @@ $Script:PrimaryAttributes = @{
         'Scope', 'LinkedOUs', 'IsEffectiveSetting'
     )
 
+    # GPO-deployed dangerous registry settings (Get-GPORegistrySettings)
+    GPORegistrySetting = @(
+        'GPOName', 'Source', 'RegistryKey', 'ConfiguredValue',
+        'VulnerabilityName', 'RiskReason',
+        'LinkedOUs', 'LinkedOUCount'
+    )
+
     # Domain Password Policy (all attributes are security-relevant)
     DomainPasswordPolicy = @(
         'minPwdLength', 'passwordComplexity',
@@ -4399,8 +4797,8 @@ $Script:PrimaryAttributes = @{
     # Domain Trust object (from Get-DomainTrusts)
     # Primary: trust identity only. All boolean flags are Extended but get auto-promoted
     # to Primary when their severity is non-Standard (Finding/Hint/Secure).
-    # This means: isQuarantined=False on external trusts (Finding) → promoted to Primary.
-    #             isQuarantined=False on within-forest trusts (Standard) → stays Extended.
+    # This means: isQuarantined=False on external trusts (Finding) â†’ promoted to Primary.
+    #             isQuarantined=False on within-forest trusts (Standard) â†’ stays Extended.
     DomainTrust = @(
         'trustPartner',
         'flatName',
@@ -4577,7 +4975,7 @@ $Script:PrimaryAttributes = @{
     )
 
     # SCOM Group (from Get-SCOMInfrastructure)
-    # NOTE: Same rationale as SCCMGroup — excludes 'member' for performance
+    # NOTE: Same rationale as SCCMGroup â€” excludes 'member' for performance
     SCOMGroup = @(
         'sAMAccountName', 'description', 'MemberCount', 'memberOf', 'managedBy',
         'whenCreated', 'distinguishedName'
@@ -14003,6 +14401,535 @@ foreach ($oid in $linkedOIDs) {
         )
     }
 
+    # ========================================================================
+    # GPO-DEPLOYED DANGEROUS REGISTRY SETTINGS (Get-GPORegistrySettings)
+    # Triggered on the 'VulnerabilityName' attribute of GPORegistrySetting objects.
+    # ========================================================================
+
+    'REGISTRY_WDIGEST' = @{
+        Title = "WDigest Cleartext Credential Caching Enabled via GPO"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A Group Policy sets UseLogonCredential=1 under the WDigest provider. This forces LSASS to keep plaintext credentials in memory, reversing a key post-2014 hardening."
+        Impact = @(
+            "LSASS caches cleartext passwords for interactive/RDP sessions"
+            "Any local admin or SYSTEM can recover plaintext credentials from memory"
+            "Affects every computer where the GPO is applied"
+        )
+        Attack = @(
+            "1. Land on a host where the GPO applies"
+            "2. Dump LSASS (e.g. mimikatz sekurlsa::wdigest)"
+            "3. Read plaintext credentials of logged-on users"
+        )
+        Remediation = @(
+            "Set UseLogonCredential=0 (or remove the value) via GPO"
+            "Enable LSA Protection (RunAsPPL) and Credential Guard"
+        )
+        References = @(
+            @{ Title = "Mitigating WDigest credential theft"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/credentials-protection-management" }
+        )
+        Tools = @("Mimikatz", "pypykatz")
+        MITRE = "T1003.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'WDigest cleartext'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_ONELOGON' = @{
+        Title = "Vulnerable Netlogon Secure Channel Allow-List (Zerologon/OneLogon)"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "A Group Policy populates the Netlogon VulnerableChannelAllowList (the 'Allow vulnerable Netlogon secure channel connections' policy). Accounts on this list may use insecure Netlogon channels, re-opening Zerologon-class attacks against them (OneLogon)."
+        Impact = @(
+            "Listed machine/trust accounts can be attacked via insecure Netlogon"
+            "Enables meet-in-the-middle and brute-force secure-channel compromise"
+            "Can lead to domain controller / account takeover"
+        )
+        Attack = @(
+            "1. Identify accounts in the allow-list"
+            "2. Run the OneLogon attack against the insecure Netlogon channel"
+            "3. Compromise the targeted account / escalate"
+        )
+        Remediation = @(
+            "Remove all entries from the allow-list and delete the policy"
+            "Ensure all clients support secure Netlogon (RPC signing/sealing)"
+        )
+        References = @(
+            @{ Title = "OneLogon"; Url = "https://github.com/rub-softsec/onelogon" }
+            @{ Title = "Zerologon (CVE-2020-1472)"; Url = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2020-1472" }
+        )
+        Tools = @("OneLogon")
+        MITRE = "T1210"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Vulnerable Netlogon secure channel'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_AUTOLOGON' = @{
+        Title = "AutoAdminLogon Enabled via GPO"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Group Policy enables AutoAdminLogon (automatic logon at boot). The associated DefaultPassword is frequently stored in cleartext in the same Registry.xml and readable by any authenticated user (see Credential Exposure check)."
+        Impact = @(
+            "Automatic logon as a (often privileged) account"
+            "DefaultPassword commonly exposed in SYSVOL"
+            "Physical/console access yields an authenticated session"
+        )
+        Attack = @(
+            "1. Read Registry.xml from SYSVOL"
+            "2. Extract DefaultUserName/DefaultPassword if present"
+            "3. Use the credentials directly"
+        )
+        Remediation = @(
+            "Disable AutoAdminLogon via GPO; rotate any exposed password"
+            "Use Autopilot/MDT for unattended setups instead"
+        )
+        References = @(
+            @{ Title = "Turn on automatic logon"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/user-profiles-and-logon/turn-on-automatic-logon" }
+        )
+        Tools = @("Manual SYSVOL search")
+        MITRE = "T1552.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'AutoAdminLogon enabled'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_LMCOMPAT' = @{
+        Title = "Weak LM/NTLMv1 Authentication Allowed via GPO"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Group Policy sets LmCompatibilityLevel to 2 or lower, permitting LM and/or NTLMv1 network authentication. These use DES-based responses that are trivially crackable and enable NTLM relay/hash capture."
+        Impact = @(
+            "LM/NTLMv1 responses can be cracked to recover NT hashes"
+            "Facilitates NTLM relay and offline cracking"
+            "Weakens authentication across all affected hosts"
+        )
+        Attack = @(
+            "1. Coerce or capture an LM/NTLMv1 authentication"
+            "2. Crack the DES-based response (e.g. crack.sh)"
+            "3. Recover the NT hash and pass-the-hash"
+        )
+        Remediation = @(
+            "Set LmCompatibilityLevel to 5 (NTLMv2 only, refuse LM and NTLM)"
+        )
+        References = @(
+            @{ Title = "Network security: LAN Manager authentication level"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level" }
+        )
+        Tools = @("Responder", "hashcat")
+        MITRE = "T1557.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Weak LM/NTLMv1'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_NOLMHASH' = @{
+        Title = "LM Hash Storage Enabled via GPO"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Group Policy sets NoLmHash=0, allowing Windows to store the weak LM hash of passwords in the local SAM. LM hashes are trivially cracked offline."
+        Impact = @(
+            "LM hashes stored locally are easily cracked to plaintext"
+            "Compromise of one host's SAM exposes reusable passwords"
+        )
+        Attack = @(
+            "1. Dump the local SAM"
+            "2. Crack the LM hashes offline"
+            "3. Reuse recovered passwords"
+        )
+        Remediation = @(
+            "Set NoLmHash=1 (do not store LM hash on next password change)"
+        )
+        References = @(
+            @{ Title = "Do not store LAN Manager hash value"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-do-not-store-lan-manager-hash-value-on-next-password-change" }
+        )
+        Tools = @("secretsdump", "hashcat")
+        MITRE = "T1003.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'LM hash storage'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_REMOTEUAC' = @{
+        Title = "Remote UAC Token Filtering Disabled via GPO"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "A Group Policy sets LocalAccountTokenFilterPolicy=1, disabling remote UAC token filtering. Any local administrator (including local accounts) can then authenticate remotely with a full high-integrity token, enabling pass-the-hash to admin shares, WMI, and RPC."
+        Impact = @(
+            "Local admin accounts usable for remote pass-the-hash"
+            "Greatly eases lateral movement across the scope"
+        )
+        Attack = @(
+            "1. Obtain a local admin hash (e.g. from SAM)"
+            "2. Pass-the-hash to ADMIN$/WMI on other affected hosts"
+            "3. Move laterally"
+        )
+        Remediation = @(
+            "Remove LocalAccountTokenFilterPolicy or set it to 0"
+            "Use LAPS to ensure unique local admin passwords"
+        )
+        References = @(
+            @{ Title = "Pass-the-Hash is Dead: LocalAccountTokenFilterPolicy"; Url = "https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/" }
+        )
+        Tools = @("CrackMapExec", "impacket")
+        MITRE = "T1550.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Remote UAC token filtering'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_ALWAYSINSTALLELEVATED' = @{
+        Title = "AlwaysInstallElevated Enabled via GPO"
+        Risk = "Finding"
+        BaseScore = 65
+        Description = "A Group Policy sets AlwaysInstallElevated=1 in both HKLM and HKCU. Any user can then install a Windows Installer (MSI) package with SYSTEM privileges - a direct, reliable local privilege escalation. adPEAS only reports this when BOTH hives are set, which is the exploitable condition."
+        Impact = @(
+            "Any user installs MSI packages as SYSTEM"
+            "Direct local privilege escalation to SYSTEM"
+            "Applies to every computer in the GPO scope"
+        )
+        Attack = @(
+            "1. Craft a malicious MSI (e.g. msfvenom)"
+            "2. Run msiexec /quiet /i evil.msi as a standard user"
+            "3. Gain SYSTEM"
+        )
+        Remediation = @(
+            "Set AlwaysInstallElevated=0 in both HKLM and HKCU (or remove the policy)"
+        )
+        References = @(
+            @{ Title = "AlwaysInstallElevated"; Url = "https://docs.specterops.io/ghostpack-docs/SharpUp-mdx/checks/alwaysinstallelevated" }
+        )
+        Tools = @("SharpUp", "msfvenom")
+        MITRE = "T1548.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'AlwaysInstallElevated enabled'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_ENABLELUA' = @{
+        Title = "User Account Control (UAC) Disabled via GPO"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A Group Policy sets EnableLUA=0, turning UAC off entirely. Without UAC there is no token filtering, so all local administrators are usable for remote pass-the-hash, and elevation prompts are gone."
+        Impact = @(
+            "No UAC token filtering on affected hosts"
+            "All local admins usable for remote pass-the-hash"
+            "Malware runs elevated without prompts"
+        )
+        Attack = @(
+            "1. Obtain any local admin credential/hash"
+            "2. Authenticate remotely with full token"
+            "3. Move laterally / execute elevated"
+        )
+        Remediation = @(
+            "Set EnableLUA=1 and keep UAC enabled"
+        )
+        References = @(
+            @{ Title = "UAC and remote restrictions"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/user-account-control-and-remote-restriction" }
+        )
+        Tools = @("CrackMapExec")
+        MITRE = "T1548.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'User Account Control'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_RESTRICTEDADMIN' = @{
+        Title = "RDP Restricted Admin Mode Enabled via GPO"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A Group Policy sets DisableRestrictedAdmin=0, enabling RDP Restricted Admin mode. While intended to protect credentials, it lets RDP accept hash-based authentication - enabling Pass-the-Hash over RDP and bypassing some MFA solutions."
+        Impact = @(
+            "RDP accepts NT hash without plaintext password"
+            "Pass-the-Hash over RDP becomes possible"
+            "Can bypass RDP-layer MFA"
+        )
+        Attack = @(
+            "1. Obtain a local/domain admin NT hash"
+            "2. RDP with Restricted Admin using the hash (e.g. mstsc /restrictedadmin via Mimikatz)"
+            "3. Interactive admin session without the password"
+        )
+        Remediation = @(
+            "Set DisableRestrictedAdmin=1 unless a documented need exists"
+            "Monitor changes to this value as a compromise indicator"
+        )
+        References = @(
+            @{ Title = "Restricted Admin Mode - Circumventing MFA on RDP"; Url = "https://www.levelblue.com/blogs/spiderlabs-blog/restricted-admin-mode-circumventing-mfa-on-rdp-logons/" }
+        )
+        Tools = @("Mimikatz", "RestrictedAdmin")
+        MITRE = "T1550.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP Restricted Admin'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_POINT_AND_PRINT' = @{
+        Title = "Point and Print Allows Non-Admin Driver Installation (PrintNightmare)"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "A Group Policy weakens Point and Print so that non-administrators can install printer drivers without an elevation prompt (NoWarningNoElevationOnInstall=1) or RestrictDriverInstallationToAdministrators=0. This re-opens PrintNightmare-style remote code execution / local privilege escalation."
+        Impact = @(
+            "Non-admins install printer drivers (code) without prompts"
+            "Enables PrintNightmare-style RCE / SYSTEM escalation"
+            "Applies to every computer in the GPO scope"
+        )
+        Attack = @(
+            "1. Stand up a malicious print server / driver"
+            "2. Have the victim connect (Point and Print)"
+            "3. Driver executes as SYSTEM"
+        )
+        Remediation = @(
+            "Set RestrictDriverInstallationToAdministrators=1"
+            "Remove NoWarningNoElevationOnInstall=1"
+        )
+        References = @(
+            @{ Title = "A Practical Guide to PrintNightmare"; Url = "https://itm4n.github.io/printnightmare-exploitation/" }
+            @{ Title = "KB5005652"; Url = "https://support.microsoft.com/en-us/topic/kb5005652-873642bf-2634-49c5-a23b-6d8e9a302872" }
+        )
+        Tools = @("PrintNightmare PoCs")
+        MITRE = "T1547.012"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Point and Print'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_WSUS_HTTP' = @{
+        Title = "WSUS Update Server Configured over Cleartext HTTP"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "A Group Policy points clients to a WSUS server over cleartext HTTP (WUServer=http://...). Update traffic on the local subnet can be intercepted and tampered with, allowing an attacker to inject a malicious 'update' that executes as SYSTEM."
+        Impact = @(
+            "WSUS traffic is unauthenticated/cleartext"
+            "MITM can inject updates executed as SYSTEM"
+            "Mass compromise of all WSUS clients in scope"
+        )
+        Attack = @(
+            "1. MITM the client-to-WSUS HTTP traffic"
+            "2. Serve a malicious signed-binary command (e.g. PsExec)"
+            "3. Code executes as SYSTEM on clients"
+        )
+        Remediation = @(
+            "Reconfigure WSUS to use HTTPS (WUServer=https://...)"
+            "Enable TLS and proper certificate validation"
+        )
+        References = @(
+            @{ Title = "WSUS Is SUS: NTLM Relay Attacks"; Url = "https://trustedsec.com/blog/wsus-is-sus-ntlm-relay-attacks-in-plain-sight" }
+        )
+        Tools = @("PyWSUS", "wsuks")
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'WSUS update server'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_DEFENDER_DISABLED' = @{
+        Title = "Microsoft Defender Antivirus Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy disables Microsoft Defender Antivirus or its real-time protection (DisableAntiSpyware=1 / DisableRealtimeMonitoring=1). This removes a key endpoint detection layer across the scope. Note: on Windows 10 1903+ Tamper Protection may prevent the setting from taking effect."
+        Impact = @(
+            "Endpoint AV/real-time protection disabled centrally"
+            "Malware and credential theft tools run undetected"
+        )
+        Attack = @(
+            "1. Operate on hosts where Defender is off"
+            "2. Run tooling without AV interference"
+        )
+        Remediation = @(
+            "Remove the Defender disable policy; enable Tamper Protection"
+        )
+        References = @(
+            @{ Title = "Disabling LSA/Defender defences"; Url = "https://research.splunk.com/endpoint/45cd08f8-a2c9-4f4e-baab-e1a0c624b0ab/" }
+        )
+        Tools = @("-")
+        MITRE = "T1562.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Microsoft Defender Antivirus disabled'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_RUNASPPL' = @{
+        Title = "LSA Protection (RunAsPPL) Explicitly Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy explicitly sets RunAsPPL=0, disabling LSA Protection. Without it, LSASS is not run as a protected process, easing credential dumping from memory."
+        Impact = @(
+            "LSASS not protected against memory access/injection"
+            "Eases credential dumping (Mimikatz, comsvcs.dll)"
+        )
+        Attack = @(
+            "1. Land on an affected host as admin"
+            "2. Dump LSASS without bypassing PPL"
+        )
+        Remediation = @(
+            "Set RunAsPPL=1 to enable LSA Protection"
+        )
+        References = @(
+            @{ Title = "Do You Really Know About LSA Protection (RunAsPPL)?"; Url = "https://itm4n.github.io/lsass-runasppl/" }
+        )
+        Tools = @("Mimikatz")
+        MITRE = "T1562.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'LSA Protection'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_CREDGUARD' = @{
+        Title = "Credential Guard Explicitly Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy explicitly sets LsaCfgFlags=0, disabling Windows Defender Credential Guard. Derived domain credentials are then no longer isolated by virtualization-based security and remain exposed in LSASS."
+        Impact = @(
+            "Credential Guard isolation turned off"
+            "NTLM hashes / Kerberos TGTs exposed in LSASS"
+        )
+        Attack = @(
+            "1. Dump LSASS on an affected host"
+            "2. Recover usable credential material"
+        )
+        Remediation = @(
+            "Enable Credential Guard (LsaCfgFlags=1)"
+        )
+        References = @(
+            @{ Title = "Configure Credential Guard"; Url = "https://learn.microsoft.com/en-us/windows/security/identity-protection/credential-guard/configure" }
+        )
+        Tools = @("Mimikatz")
+        MITRE = "T1562.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Credential Guard explicitly disabled'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_FILTERADMINTOKEN' = @{
+        Title = "Built-in Administrator (RID-500) UAC Token Filtering Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets FilterAdministratorToken=0, exempting the built-in RID-500 Administrator (even if renamed) from UAC token filtering. This account can then be used for remote pass-the-hash."
+        Impact = @(
+            "RID-500 admin usable for remote pass-the-hash"
+            "Lateral movement via the built-in admin hash"
+        )
+        Attack = @(
+            "1. Recover the RID-500 hash (often shared via imaging)"
+            "2. Pass-the-hash remotely to affected hosts"
+        )
+        Remediation = @(
+            "Set FilterAdministratorToken=1; use LAPS for unique passwords"
+        )
+        References = @(
+            @{ Title = "LocalAccountTokenFilterPolicy / FilterAdministratorToken"; Url = "https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/" }
+        )
+        Tools = @("CrackMapExec")
+        MITRE = "T1550.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'RID-500'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_CREDSSP_ORACLE' = @{
+        Title = "CredSSP Encryption Oracle Set to Vulnerable via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets AllowEncryptionOracle=2 (Vulnerable), permitting CredSSP to talk to unpatched clients/servers. This re-opens CVE-2018-0886, enabling a man-in-the-middle to run code over RDP/CredSSP."
+        Impact = @(
+            "CredSSP accepts unpatched peers"
+            "MITM can achieve remote code execution over RDP"
+        )
+        Attack = @(
+            "1. MITM a CredSSP/RDP session"
+            "2. Exploit CVE-2018-0886 to run commands on the target"
+        )
+        Remediation = @(
+            "Set AllowEncryptionOracle to 0 (Force Updated Clients)"
+        )
+        References = @(
+            @{ Title = "CVE-2018-0886 CredSSP"; Url = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2018-0886" }
+        )
+        Tools = @("-")
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'CredSSP encryption oracle'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_MACHINE_PASSWORD_STATIC' = @{
+        Title = "Machine Account Password Rotation Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy disables automatic machine account password changes (DisablePasswordChange=1 or RefusePasswordChange=1). A static machine password enables long-lived silver-ticket persistence and offline attacks against the computer account."
+        Impact = @(
+            "Machine account password never rotates"
+            "Long-lived silver tickets remain valid"
+        )
+        Attack = @(
+            "1. Recover the machine account key once"
+            "2. Forge silver tickets that stay valid indefinitely"
+        )
+        Remediation = @(
+            "Re-enable machine password rotation (remove the value / set to 0)"
+        )
+        References = @(
+            @{ Title = "Domain member: Disable machine account password changes"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/domain-member-disable-machine-account-password-changes" }
+        )
+        Tools = @("Mimikatz", "impacket")
+        MITRE = "T1558.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Machine account password rotation'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_NULL_SESSION' = @{
+        Title = "Anonymous (Null Session) Enumeration Enabled via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy weakens anonymous access restrictions (RestrictAnonymous=0, RestrictAnonymousSAM=0, or EveryoneIncludesAnonymous=1). This allows unauthenticated null-session enumeration of shares, users, and policies - valuable reconnaissance for an attacker."
+        Impact = @(
+            "Unauthenticated enumeration of accounts/shares"
+            "Aids password spraying and target selection"
+        )
+        Attack = @(
+            "1. Connect with a null session"
+            "2. Enumerate users, groups, shares, password policy"
+        )
+        Remediation = @(
+            "Restore anonymous restrictions (RestrictAnonymous/SAM=1, EveryoneIncludesAnonymous=0)"
+        )
+        References = @(
+            @{ Title = "Null session enumeration"; Url = "https://www.blumira.com/integration/how-to-disable-null-session-in-windows/" }
+        )
+        Tools = @("enum4linux", "rpcclient")
+        MITRE = "T1087"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'null session'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_SMB_SIGNING' = @{
+        Title = "SMB Server Signing Not Required (Set via GPO)"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy explicitly sets RequireSecuritySignature=0 on the SMB server, so SMB signing is not enforced. This enables SMB/NTLM relay attacks against the affected hosts."
+        Impact = @(
+            "SMB signing not enforced"
+            "Enables SMB/NTLM relay to the host"
+        )
+        Attack = @(
+            "1. Coerce authentication from a victim"
+            "2. Relay it to an unsigned SMB target"
+            "3. Execute as the relayed identity"
+        )
+        Remediation = @(
+            "Set RequireSecuritySignature=1 to enforce SMB signing"
+        )
+        References = @(
+            @{ Title = "Microsoft network server: Digitally sign communications"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/microsoft-network-server-digitally-sign-communications-always" }
+        )
+        Tools = @("ntlmrelayx")
+        MITRE = "T1557.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'SMB server signing'; Severity = 'Hint' }
+        )
+    }
+
     # Hardcoded scriptPath (UNC or absolute local path)
     'SCRIPTPATH_HARDCODED' = @{
         Title = "Hardcoded Logon Script Path"
@@ -14802,10 +15729,10 @@ function Get-AttributeSeverity {
             if (-not $entry.SID) { continue }
             $privResult = Test-IsPrivileged -Identity $entry.SID
             if (-not $privResult.IsPrivileged) {
-                return 'Note'   # Non-Standard → auto-promoted to Primary
+                return 'Note'   # Non-Standard â†’ auto-promoted to Primary
             }
         }
-        return 'Standard'   # All privileged → stays in Extended
+        return 'Standard'   # All privileged â†’ stays in Extended
     }
 
     # Delegate to FindingDefinitions triggers (Single Source of Truth)
@@ -16306,7 +17233,7 @@ function Get-HtmlValueClassAttr {
     This file contains all scoring-related definitions used by the HTML report generator.
 
     Scoring Formula:
-    FINAL_SCORE = (BASE × IMPACT × EXPLOITABILITY × SECURITY) + CORRELATION
+    FINAL_SCORE = (BASE Ã— IMPACT Ã— EXPLOITABILITY Ã— SECURITY) + CORRELATION
 
 .NOTES
     Author: Alexander Sturz (@_61106960_)
@@ -16389,11 +17316,11 @@ $Script:ImpactMultipliers = @{
 # Password Age Modifiers (relative to domain maxPwdAge policy)
 # Example: If maxPwdAge=90 days and password is 450 days old = 5x policy = 1.4 modifier
 $Script:PasswordAgeModifiers = @{
-    'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
-    'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
-    'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
-    'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
-    'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
+    'multiplier_10x' = 1.6    # Password age >= 10Ã— maxPwdAge
+    'multiplier_5x'  = 1.4    # Password age >= 5Ã— maxPwdAge
+    'multiplier_3x'  = 1.3    # Password age >= 3Ã— maxPwdAge
+    'multiplier_2x'  = 1.2    # Password age >= 2Ã— maxPwdAge
+    'multiplier_1x'  = 1.1    # Password age >= 1Ã— maxPwdAge (over policy)
     'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 
@@ -17892,6 +18819,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "PowerShell scripts via psscripts.ini"
         )
         SecureMessage = "No scripts distributed via GPO. No Logon/Logoff/Startup/Shutdown scripts were found in Group Policy configurations."
+    }
+
+    'GPORegistrySetting' = @{
+        TitleFormat = "GPO Registry Setting: {Name}"
+        Module = "GPO"
+        Category = "GPO"
+        SectionTitle = "GPO Registry Settings"
+        Summary = "Detects security-relevant registry values deployed via Group Policy that, when set, enable an attack."
+        WhyItMatters = "Group Policy can push registry values to every linked system. A single value such as WDigest cleartext caching, AlwaysInstallElevated, RDP Restricted Admin, the Zerologon/OneLogon allow-list, Point and Print (PrintNightmare), or WSUS-over-HTTP turns the whole scope into an attack surface for credential theft, lateral movement, or privilege escalation. This check parses both delivery mechanisms (Registry.pol and Registry.xml) and reports only values that are actively set to a dangerous state. It sees what is deployed via GPO, not what is set locally on a host."
+        WhatWeCheck = @(
+            "Administrative Templates (Registry.pol, PReg binary)"
+            "Group Policy Preferences (Registry.xml)"
+            "Credential-theft enablers (WDigest, LM/NTLMv1, LSA/Credential Guard disabled)"
+            "Lateral-movement enablers (Remote UAC, RDP Restricted Admin, Zerologon allow-list)"
+            "Privilege-escalation enablers (AlwaysInstallElevated, Point and Print, WSUS over HTTP)"
+        )
+        SecureMessage = "No vulnerable registry settings deployed via GPO. No Group Policy was found pushing a registry value in a state that enables an attack."
     }
 
     # ============================================================================
@@ -21192,7 +22136,7 @@ function Connect-LDAP {
                 [switch]$BindSucceeded  # Set when Bind() succeeded but a subsequent SendRequest() failed
             )
             # Extract error message and code from exception chain
-            # PowerShell wraps .NET exceptions: MethodInvocationException → LdapException or DirectoryOperationException
+            # PowerShell wraps .NET exceptions: MethodInvocationException â†’ LdapException or DirectoryOperationException
             # - LdapException: has ErrorCode property (e.g., 49 = invalid credentials)
             # - DirectoryOperationException: thrown for LDAP result codes like StrongAuthRequired (8),
             #   but does NOT expose the numeric error code - must be identified by exception type
@@ -21258,7 +22202,7 @@ function Connect-LDAP {
                 default        { "GenericError" }
             }
 
-            # Override: LDAP 81 (SERVER_DOWN) after a successful Bind() is NOT a network error —
+            # Override: LDAP 81 (SERVER_DOWN) after a successful Bind() is NOT a network error â€”
             # the server IS reachable and authentication succeeded. The failure is in the LDAP
             # protocol layer (post-bind request processing). Use GenericError to avoid the
             # misleading "Server unreachable" title from NetworkError.
@@ -21676,9 +22620,9 @@ function Connect-LDAP {
                     # AD does NOT accept: domain.fqdn\user
 
                     # Determine correct format based on what user provided:
-                    # 1. If NetworkCredential.Domain is set → user specified DOMAIN\username → reconstruct it
-                    # 2. If username contains '@' → user specified UPN → keep it as-is
-                    # 3. Otherwise → bare username → auto-qualify with UPN format
+                    # 1. If NetworkCredential.Domain is set â†’ user specified DOMAIN\username â†’ reconstruct it
+                    # 2. If username contains '@' â†’ user specified UPN â†’ keep it as-is
+                    # 3. Otherwise â†’ bare username â†’ auto-qualify with UPN format
 
                     if (-not [string]::IsNullOrEmpty($CredDomain)) {
                         # User specified DOMAIN\username format - reconstruct it
@@ -23249,7 +24193,7 @@ function Connect-adPEAS {
                             # This happens when LDAP Channel Binding or LDAP Signing is enforced by domain policy
 
                             # Reclassify LDAP OperationsError (1) as AuthenticationFailed for SimpleBind
-                            # Empty password → anonymous bind succeeds → search fails with OperationsError = auth failure
+                            # Empty password â†’ anonymous bind succeeds â†’ search fails with OperationsError = auth failure
                             if (-not $Connection -and $Script:LastLDAPErrorCode -eq 1) {
                                 $Script:ConnectionState = "AuthenticationFailed"
                             }
@@ -25006,8 +25950,8 @@ function Invoke-LDAPSearch {
             # Build attribute list
             # CRITICAL: Pass $null (not @("*")) to SearchRequest when Properties is null
             # On Global Catalog (port 3268), @("*") behaves differently than $null:
-            # - $null → Returns all PAS attributes (correct for GC)
-            # - @("*") → May return DN-only for cross-partition objects (S.DS.P GC quirk)
+            # - $null â†’ Returns all PAS attributes (correct for GC)
+            # - @("*") â†’ May return DN-only for cross-partition objects (S.DS.P GC quirk)
             $AttributeList = $null
 
             # CountOnly: force "1.1" (no attributes) to minimize network traffic
@@ -25098,7 +26042,7 @@ function Invoke-LDAPSearch {
                         $Script:LDAPStatistics.TotalEstimatedBytes += 200
                         if ($SearchResponse.Entries) {
                             $Script:LDAPStatistics.TotalResults += $SearchResponse.Entries.Count
-                            # CountOnly still returns DNs — estimate ~120 bytes per entry (DN + envelope)
+                            # CountOnly still returns DNs â€” estimate ~120 bytes per entry (DN + envelope)
                             $Script:LDAPStatistics.TotalEstimatedBytes += $SearchResponse.Entries.Count * 120
                         }
                     }
@@ -25342,8 +26286,8 @@ function Invoke-LDAPSearch {
                     }
 
                     # protocolSettings - Exchange's per-user protocol overrides.
-                    # Each entry has the form '<Protocol>§<Enabled 0/1>§<UseDefaults 0/1>§<encoding flags...>'
-                    # with § = U+00A7. For security review only the protocol + enabled state matter;
+                    # Each entry has the form '<Protocol>Â§<Enabled 0/1>Â§<UseDefaults 0/1>Â§<encoding flags...>'
+                    # with Â§ = U+00A7. For security review only the protocol + enabled state matter;
                     # the trailing per-user encoding overrides (mail format, MIME charset, etc.) are noise.
                     if ($PropName -ieq "protocolSettings") {
                         $protoLines = @()
@@ -25728,7 +26672,7 @@ function Invoke-LDAPSearch {
                                     } elseif ($rbcdPrincipals.Count -gt 1) {
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $rbcdPrincipals
                                     } else {
-                                        # SD parsed but no Allow ACEs found — attribute is set but SD has no delegates.
+                                        # SD parsed but no Allow ACEs found â€” attribute is set but SD has no delegates.
                                         # Still set the property so it appears in display (attribute is present in AD).
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[SD present, no Allow ACEs]"
                                     }
@@ -30935,7 +31879,7 @@ function Get-CertificateTemplate {
                     $CAs = Get-DomainObject -LDAPFilter "(objectClass=pKIEnrollmentService)" -SearchBase $EnrollmentServicesBase -Properties @('cn', 'certificateTemplates') -Raw
 
                     if ($CAs) {
-                        # Build reverse map: template CN → list of CA names
+                        # Build reverse map: template CN â†’ list of CA names
                         foreach ($CA in @($CAs)) {
                             if ($CA.certificateTemplates) {
                                 $CAName = if ($CA.cn) { [string]$CA.cn } else { 'Unknown' }
@@ -38304,7 +39248,7 @@ ${nextIndex}Parameters=$scriptParamsVal
                                 $afterStartup = $startupIdx + '[Startup]'.Length
                                 $nextSectionIdx = $scriptsIniContent.IndexOf('[', $afterStartup)
                                 if ($nextSectionIdx -eq -1) {
-                                    # [Startup] is last section — append at end
+                                    # [Startup] is last section â€” append at end
                                     $scriptsIniContent = $scriptsIniContent.TrimEnd() + "`r`n" + $newEntry
                                 } else {
                                     # Insert before next section
@@ -38480,7 +39424,7 @@ ${nextIndex}Parameters=$scriptParamsVal
                                 $afterLogon = $logonIdx + '[Logon]'.Length
                                 $nextSectionIdx = $scriptsIniContent.IndexOf('[', $afterLogon)
                                 if ($nextSectionIdx -eq -1) {
-                                    # [Logon] is last section — append at end
+                                    # [Logon] is last section â€” append at end
                                     $scriptsIniContent = $scriptsIniContent.TrimEnd() + "`r`n" + $newEntry
                                 } else {
                                     # Insert before next section
@@ -39200,7 +40144,7 @@ function Sync-GPOSYSVOLPermissions {
         $emptyGuid = [System.Guid]::Empty
         $SYSVOLACEData = @()
         foreach ($ADACE in $ADACEs) {
-            # Skip object-specific ACEs — they grant rights only on specific AD attributes/properties
+            # Skip object-specific ACEs â€” they grant rights only on specific AD attributes/properties
             # and should not be mapped to NTFS permissions (would grant overly broad SYSVOL access)
             if ($ADACE.ObjectType -ne $emptyGuid) {
                 Write-Log "[Sync-GPOSYSVOLPermissions] Skipping object-specific ACE: Trustee=$($ADACE.IdentityReference.Value), ObjectType=$($ADACE.ObjectType)"
@@ -41945,7 +42889,7 @@ function ConvertFrom-SecurityDescriptor {
     and Get-ACEInheritanceSource.
 
     By using [SecurityIdentifier] as the identity type, all IdentityReferences
-    are guaranteed to be SIDs — no Windows name resolution is needed.
+    are guaranteed to be SIDs â€” no Windows name resolution is needed.
 
 .PARAMETER SecurityDescriptorBytes
     The raw nTSecurityDescriptor value. Can be:
@@ -42170,7 +43114,7 @@ function Resolve-SIDViaGC {
         # Use Invoke-LDAPSearch with GC connection
         # CRITICAL: Use -Raw flag to prevent infinite recursion via msDS-AllowedToActOnBehalfOfOtherIdentity
         # -Raw skips all attribute conversions (including Security Descriptor parsing which would call
-        # ConvertFrom-SID → Resolve-SIDViaGC again → infinite loop)
+        # ConvertFrom-SID â†’ Resolve-SIDViaGC again â†’ infinite loop)
         # We only need sAMAccountName + distinguishedName for SID resolution
         # With -Raw, explicit attribute list works correctly (no S.DS.P GC port 3268 bug)
         # Force array wrapping to prevent PowerShell unwrapping single results to scalar
@@ -42469,7 +43413,7 @@ function ConvertFrom-SID {
             Write-Log "[ConvertFrom-SID] Initialized bidirectional Name-to-SID cache"
         }
 
-        # Initialize Foreign Domain cache (SID Domain Part → Domain FQDN)
+        # Initialize Foreign Domain cache (SID Domain Part â†’ Domain FQDN)
         if (-not $Script:ForeignDomainCache) {
             $Script:ForeignDomainCache = @{}
             Write-Log "[ConvertFrom-SID] Initialized Foreign Domain cache"
@@ -42789,7 +43733,7 @@ function ConvertTo-LDAPSIDHex {
     Returns: "S-1-5-21-..."
 
 .EXAMPLE
-    "PRAXIS\Domänencomputer" | ConvertTo-SID
+    "PRAXIS\DomÃ¤nencomputer" | ConvertTo-SID
     Returns: "S-1-5-21-...-515"
 
 .OUTPUTS
@@ -42862,7 +43806,7 @@ function ConvertTo-SID {
         }
 
         # Try Windows API for localized account names (NT AUTHORITY, BUILTIN, etc.)
-        # This handles ANY Windows language (German NT-AUTORITÄT, French AUTORITE NT, etc.)
+        # This handles ANY Windows language (German NT-AUTORITÃ„T, French AUTORITE NT, etc.)
         # without requiring translation tables.
         # Skip Windows API for Distinguished Names - they need LDAP resolution
         if ($Identity -notmatch '^CN=') {
@@ -43098,12 +44042,12 @@ function ConvertTo-SID {
     - "Unknown": Could not resolve identity to SID
 
     Category Hierarchy (for IsPrivileged boolean):
-    - Privileged → IsPrivileged = $true
-    - Operator → IsPrivileged = $false (unless -IncludeOperators)
-    - BroadGroup → IsPrivileged = $false
-    - ExchangeService → IsPrivileged = $false (by-design permissions)
-    - Standard → IsPrivileged = $false
-    - Unknown → IsPrivileged = $null
+    - Privileged â†’ IsPrivileged = $true
+    - Operator â†’ IsPrivileged = $false (unless -IncludeOperators)
+    - BroadGroup â†’ IsPrivileged = $false
+    - ExchangeService â†’ IsPrivileged = $false (by-design permissions)
+    - Standard â†’ IsPrivileged = $false
+    - Unknown â†’ IsPrivileged = $null
 
 .PARAMETER Identity
     The identity to check. Accepts multiple formats:
@@ -43369,7 +44313,7 @@ function Test-IsExchangeServiceGroup {
             }
         }
 
-        # Session-level cache — same SIDs appear across hundreds of OUs
+        # Session-level cache â€” same SIDs appear across hundreds of OUs
         if (-not $Script:ExchangeGroupCache) {
             $Script:ExchangeGroupCache = @{}
         }
@@ -43597,7 +44541,7 @@ function Test-IsExchangeServer {
 
 .DESCRIPTION
     Uses a single LDAP query with LDAP_MATCHING_RULE_IN_CHAIN (1.2.840.113556.1.4.1941) to retrieve ALL groups where the identity is a direct or nested member.
-    Results are cached for subsequent lookups (SID → Array of Group SIDs).
+    Results are cached for subsequent lookups (SID â†’ Array of Group SIDs).
 
 .PARAMETER IdentitySID
     The SID of the identity to check.
@@ -43862,7 +44806,7 @@ function Test-IsPrivileged {
 
         # ===== PHASE 4: sIDHistory Check (SID History Injection Detection) =====
         # Check if this identity has privileged SIDs in sIDHistory attribute.
-        # Only domain SIDs (S-1-5-21-*) can have sIDHistory — well-known SIDs
+        # Only domain SIDs (S-1-5-21-*) can have sIDHistory â€” well-known SIDs
         # (SYSTEM, Administrators, Everyone, etc.) have no AD object to query.
         $isDomainSID = $sid -match '^S-1-5-21-'
         if ($Script:LdapConnection -and $isDomainSID) {
@@ -44466,7 +45410,7 @@ function Test-IsExpectedInScope {
                         $groupName = ConvertFrom-SID -SID $expectedGroupSID
                         if (-not $groupName) { $groupName = $expectedGroupSID }
 
-                        # Identity is member of an expected group → Attention (not Finding), because the explicit ACE is redundant but not a new attack vector
+                        # Identity is member of an expected group â†’ Attention (not Finding), because the explicit ACE is redundant but not a new attack vector
                         Write-Log "[Test-IsExpectedInScope] Identity $sid is member of expected group $groupName"
                         if ($ReturnDetails) {
                             return [PSCustomObject]@{
@@ -44839,7 +45783,7 @@ function ConvertFrom-GPPPassword {
 
             # Remove AES padding artifacts (null bytes and any trailing non-printable chars)
             # GPP passwords are ASCII-safe, so we can safely trim anything non-printable
-            # This handles: null bytes (0x00), and padding remnants like ఌ (0x0C0C), Ȃ (0x0202), ฎ (0x0E0E)
+            # This handles: null bytes (0x00), and padding remnants like à°Œ (0x0C0C), È‚ (0x0202), à¸Ž (0x0E0E)
             $cleanPassword = ""
             foreach ($char in $decryptedPassword.ToCharArray()) {
                 $code = [int]$char
@@ -44905,11 +45849,11 @@ function ConvertFrom-GPPPassword {
     Where XXXXXX and YYYYYY are 6-character checksums
 
     Escape Sequences (processed during decoding):
-    - @& → newline (chr(10))
-    - @# → carriage return (chr(13))
-    - @* → >
-    - @! → <
-    - @$ → @
+    - @& â†’ newline (chr(10))
+    - @# â†’ carriage return (chr(13))
+    - @* â†’ >
+    - @! â†’ <
+    - @$ â†’ @
 
 .PARAMETER EncodedScript
     The content of a .vbe file (VBScript Encoded).
@@ -49024,7 +49968,7 @@ function Get-CachedSYSVOLFiles {
 .DESCRIPTION
     Provides a content-level cache for SYSVOL files (e.g., GptTmpl.inf).
     Multiple check modules that read the same file per GPO will only trigger
-    one SMB read — subsequent calls return the cached content.
+    one SMB read â€” subsequent calls return the cached content.
 
     This complements Get-CachedSYSVOLFiles (which caches directory listings)
     by also caching the actual file content on demand.
@@ -52065,10 +53009,10 @@ function Update-KRBCredTicket {
         $pos += $totalLen
     }
 
-    # child[0] = [0] pvno       → keep original
-    # child[1] = [1] msg-type   → keep original
-    # child[2] = [2] tickets    → replace with new ticket
-    # child[3] = [3] enc-part   → modify pname if NewClientName provided, preserve rest
+    # child[0] = [0] pvno       â†’ keep original
+    # child[1] = [1] msg-type   â†’ keep original
+    # child[2] = [2] tickets    â†’ replace with new ticket
+    # child[3] = [3] enc-part   â†’ modify pname if NewClientName provided, preserve rest
 
     # Build new [2] tickets: context tag 2 wrapping SEQUENCE OF Ticket
     $newTicketsField = [byte[]](New-ASN1ContextTag -Tag 2 -Data (New-ASN1Sequence -Data $NewTicket))
@@ -52103,8 +53047,8 @@ function Update-KRBCredEncPartPName {
     .SYNOPSIS
         Updates the pname field in a KRB-CRED enc-part [3] while preserving all other fields as raw bytes.
     .DESCRIPTION
-        Parses the enc-part context tag [3] → EncryptedData → cipher → EncKrbCredPart [APPLICATION 29]
-        → KrbCredInfo SEQUENCE, then replaces only the [2] pname field with the new client name.
+        Parses the enc-part context tag [3] â†’ EncryptedData â†’ cipher â†’ EncKrbCredPart [APPLICATION 29]
+        â†’ KrbCredInfo SEQUENCE, then replaces only the [2] pname field with the new client name.
         All other fields (especially [0] key = session key) are preserved as raw bytes.
     #>
     [CmdletBinding()]
@@ -52116,7 +53060,7 @@ function Update-KRBCredEncPartPName {
         [string]$NewClientName
     )
 
-    # Parse context tag [3] → content is EncryptedData SEQUENCE
+    # Parse context tag [3] â†’ content is EncryptedData SEQUENCE
     $ctxTag3 = Read-ASN1Element -Data $EncPartRawBytes -Offset 0
 
     # Parse EncryptedData SEQUENCE: { [0] etype, [2] cipher }
@@ -52144,7 +53088,7 @@ function Update-KRBCredEncPartPName {
         throw "Update-KRBCredEncPartPName: cipher field [2] not found in EncryptedData"
     }
 
-    # Parse EncKrbCredPart [APPLICATION 29] → SEQUENCE → [0] ticket-info → SEQUENCE OF KrbCredInfo
+    # Parse EncKrbCredPart [APPLICATION 29] â†’ SEQUENCE â†’ [0] ticket-info â†’ SEQUENCE OF KrbCredInfo
     $app29 = Read-ASN1Element -Data $cipherContent -Offset 0
     $app29Seq = Read-ASN1Element -Data $app29.Content -Offset 0
     $app29Children = Read-ASN1Children -Data $app29Seq.Content
@@ -52162,7 +53106,7 @@ function Update-KRBCredEncPartPName {
         throw "Update-KRBCredEncPartPName: ticket-info [0] not found in EncKrbCredPart"
     }
 
-    # Parse SEQUENCE OF KrbCredInfo → get first KrbCredInfo SEQUENCE
+    # Parse SEQUENCE OF KrbCredInfo â†’ get first KrbCredInfo SEQUENCE
     $ticketInfoSeq = Read-ASN1Element -Data $ticketInfoChild.Content -Offset 0
     $credInfoElements = Read-ASN1Children -Data $ticketInfoSeq.Content
 
@@ -52196,7 +53140,7 @@ function Update-KRBCredEncPartPName {
         $ciPos += $fieldLen
     }
 
-    # Rebuild: KrbCredInfo SEQUENCE → SEQUENCE OF → [0] ticket-info → EncKrbCredPart SEQUENCE → APPLICATION 29
+    # Rebuild: KrbCredInfo SEQUENCE â†’ SEQUENCE OF â†’ [0] ticket-info â†’ EncKrbCredPart SEQUENCE â†’ APPLICATION 29
     $newCredInfoSeq = [byte[]](New-ASN1Sequence -Data ([byte[]]$newCredInfoContent.ToArray()))
     $newTicketInfoSeq = [byte[]](New-ASN1Sequence -Data $newCredInfoSeq)
     $newTicketInfoField = [byte[]](New-ASN1ContextTag -Tag 0 -Data $newTicketInfoSeq)
@@ -53538,7 +54482,7 @@ function Get-Hash {
         Computes multiple hash formats from a password, returned as hex strings for easy copy/paste.
 
         Always computed:
-        - RC4 (NT-Hash): MD4(UTF-16LE(password)) — no salt, domain-independent
+        - RC4 (NT-Hash): MD4(UTF-16LE(password)) â€” no salt, domain-independent
         - MD5, SHA1, SHA256, SHA512: Standard cryptographic hashes
 
         Computed when -UserName is provided:
@@ -53613,7 +54557,7 @@ function Get-Hash {
 
     if ($UserName) {
         # DCC (Domain Cached Credentials v1): MD4(NT-Hash || UTF-16LE(lowercase(username)))
-        # Also known as "mscache" — stored locally when DC is unreachable
+        # Also known as "mscache" â€” stored locally when DC is unreachable
         $userLower = [System.Text.Encoding]::Unicode.GetBytes($UserName.ToLower())
         $dccInput = New-Object byte[] ($ntHashBytes.Length + $userLower.Length)
         [Array]::Copy($ntHashBytes, 0, $dccInput, 0, $ntHashBytes.Length)
@@ -53622,13 +54566,13 @@ function Get-Hash {
         $dccHex = ($dccBytes | ForEach-Object { $_.ToString("X2") }) -join ''
 
         # DCC2 (Domain Cached Credentials v2): PBKDF2-HMAC-SHA1(DCC, lowercase(username), 10240, 16)
-        # Also known as "mscachev2" — used since Vista/2008
+        # Also known as "mscachev2" â€” used since Vista/2008
         # Manual PBKDF2 because Rfc2898DeriveBytes requires minimum 8-byte salt
         $dcc2Salt = [System.Text.Encoding]::UTF8.GetBytes($UserName.ToLower())
         $dcc2Iterations = 10240
         $dcc2Len = 16
 
-        # PBKDF2-HMAC-SHA1 (RFC 2898 Section 5.2) — single block (dkLen <= 20)
+        # PBKDF2-HMAC-SHA1 (RFC 2898 Section 5.2) â€” single block (dkLen <= 20)
         $saltBlock = New-Object byte[] ($dcc2Salt.Length + 4)
         [Array]::Copy($dcc2Salt, 0, $saltBlock, 0, $dcc2Salt.Length)
         $saltBlock[$saltBlock.Length - 1] = 1  # Block index 1 (big-endian)
@@ -54818,13 +55762,13 @@ function Get-KerberosChecksumNative {
     )
 
     # Map encryption type to checksum type
-    # AES256 (etype 18) → HMAC_SHA1_96_AES256 (checksum type 16)
-    # AES128 (etype 17) → HMAC_SHA1_96_AES128 (checksum type 15)
-    # RC4 (etype 23) → HMAC_MD5 (checksum type -138)
+    # AES256 (etype 18) â†’ HMAC_SHA1_96_AES256 (checksum type 16)
+    # AES128 (etype 17) â†’ HMAC_SHA1_96_AES128 (checksum type 15)
+    # RC4 (etype 23) â†’ HMAC_MD5 (checksum type -138)
     $checksumType = switch ($EncryptionType) {
-        18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
-        17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
-        23 { -138 }  # RC4 → HMAC_MD5
+        18 { 16 }    # AES256 â†’ HMAC_SHA1_96_AES256
+        17 { 15 }    # AES128 â†’ HMAC_SHA1_96_AES128
+        23 { -138 }  # RC4 â†’ HMAC_MD5
         default { throw "Unsupported encryption type for checksum: $EncryptionType" }
     }
 
@@ -58321,7 +59265,7 @@ function Invoke-KerberosAuth {
             )
 
             # AS-REP enc-part: RFC 4120 specifies key usage 3 (encrypted with client long-term key).
-            # RC4-HMAC against Windows KDCs uses key usage 8 instead — a historic Microsoft quirk
+            # RC4-HMAC against Windows KDCs uses key usage 8 instead â€” a historic Microsoft quirk
             # (early Win2000 KDC conflated AS-REP/TGS-REP enc-part) documented in RFC 4757.
             # MIT Kerberos and Impacket apply the same 3->8 remap for ARCFOUR_HMAC.
             $keyUsage = if ($EType -eq 23) { 8 } else { 3 }
@@ -62578,12 +63522,12 @@ function Invoke-RevertToSelf {
     Mode 1: Hostname to IP Resolution (-Name parameter)
         Returns: IP address string or $null
         Use case: Resolving explicit hostnames for TCP connections
-        Example: User specifies -Server "dc01.contoso.com" → resolve to IP
+        Example: User specifies -Server "dc01.contoso.com" â†’ resolve to IP
 
     Mode 2: Domain Controller Discovery (-Domain parameter)
         Returns: PSCustomObject with Hostname and IP
         Use case: Auto-discovering DC when no explicit server specified
-        Example: User only specifies -Domain "contoso.com" → find DC via SRV records
+        Example: User only specifies -Domain "contoso.com" â†’ find DC via SRV records
 
     Features:
     - Uses custom DNS server if specified via -DnsServer or $Script:LDAPContext['DnsServer']
@@ -62597,7 +63541,7 @@ function Invoke-RevertToSelf {
     DC Discovery Order:
     1. Query ALL SRV records for _ldap._tcp.dc._msdcs.<domain>
     2. Sort by Priority (lower = better) and Weight (higher = better)
-    3. For each DC: Resolve hostname → Test Port 88 + 389/636 → Return if reachable
+    3. For each DC: Resolve hostname â†’ Test Port 88 + 389/636 â†’ Return if reachable
     4. Fallback: Reverse DNS lookup via system DNS (with reachability test)
     5. Last resort: Direct A record lookup for domain name (with reachability test)
 
@@ -64446,7 +65390,7 @@ function Invoke-KerberosAuthFlow {
             }
 
             # Add authentication material based on what was provided
-            # For password-based auth, we implement EType fallback (AES256 → AES128 → RC4)
+            # For password-based auth, we implement EType fallback (AES256 â†’ AES128 â†’ RC4)
             # For hash/key-based auth, the EType is fixed by the key type
             if ($PSBoundParameters.ContainsKey('Password')) {
                 $KerbAuthParams['Password'] = $Password
@@ -65063,7 +66007,7 @@ function Get-ACEInheritanceSource {
         # Check each parent starting from immediate parent
         foreach ($parentDN in $parents) {
             try {
-                # Load parent ACL — use cache to avoid redundant LDAP queries
+                # Load parent ACL â€” use cache to avoid redundant LDAP queries
                 # Parent ACLs are shared by all child OUs, so caching is highly effective
                 $cacheKey = $parentDN.ToLowerInvariant()
                 $parentAccessRules = $null
@@ -65092,7 +66036,7 @@ function Get-ACEInheritanceSource {
                     if ($parentACE.IsInherited) { continue }
                     if ($parentACE.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
 
-                    # Match by SID (both are SecurityIdentifier — direct string comparison)
+                    # Match by SID (both are SecurityIdentifier â€” direct string comparison)
                     if ($parentACE.IdentityReference.Value -ne $aceIdentitySID) { continue }
 
                     # Relaxed matching: Check if the parent ACE could be the source
@@ -67244,34 +68188,34 @@ function Test-ExtendedProtection {
 
                     # EPA Detection after Type3 (priority order):
                     #
-                    # 1. "NTLM <base64blob>" — server sent a new Type2 challenge = NTLM restart.
+                    # 1. "NTLM <base64blob>" â€” server sent a new Type2 challenge = NTLM restart.
                     #    EPA rejects the Type3 (SEC_E_INVALID_TOKEN) and restarts negotiation.
                     #    Only NTLM without Negotiate prefix: IIS uses pure NTLM channel for the restart.
-                    #    → EPA ENABLED (High confidence)
+                    #    â†’ EPA ENABLED (High confidence)
                     #
-                    # 2. "NTLM" bare (no Negotiate prefix, no blob) — NTLM-only offer = restart signal.
+                    # 2. "NTLM" bare (no Negotiate prefix, no blob) â€” NTLM-only offer = restart signal.
                     #    Same meaning as above but without a blob attached.
-                    #    → EPA ENABLED (High confidence)
+                    #    â†’ EPA ENABLED (High confidence)
                     #
-                    # 3. "Negotiate,NTLM" or "Negotiate" (with or without blob) — blanke new Auth-Challenge.
+                    # 3. "Negotiate,NTLM" or "Negotiate" (with or without blob) â€” blanke new Auth-Challenge.
                     #    This is the normal IIS response when authentication FAILS (invalid credentials).
                     #    Both EPA=enabled and EPA=disabled can produce this, BUT:
-                    #    - When EPA=disabled: dummy Type3 passes the CBT check, fails on credentials → 401 Negotiate,NTLM
-                    #    - When EPA=enabled:  dummy Type3 fails the CBT check first → typically NTLM restart (case 1/2)
+                    #    - When EPA=disabled: dummy Type3 passes the CBT check, fails on credentials â†’ 401 Negotiate,NTLM
+                    #    - When EPA=enabled:  dummy Type3 fails the CBT check first â†’ typically NTLM restart (case 1/2)
                     #    If we reach this branch, CBT check passed (EPA not enforced) and only creds failed.
-                    #    → EPA DISABLED (Medium confidence)
+                    #    â†’ EPA DISABLED (Medium confidence)
                     #
                     # NOTE: The old pattern "NTLM\s*$" incorrectly matched "Negotiate,NTLM" because NTLM
                     # appears at the end of the string. Fixed by requiring NTLM NOT be preceded by "Negotiate,".
                     if ($wwwAuth -match 'NTLM\s+([A-Za-z0-9+/=]{20,})') {
-                        # Case 1: Server sent a new NTLM Type2 blob — genuine NTLM restart after EPA rejection
+                        # Case 1: Server sent a new NTLM Type2 blob â€” genuine NTLM restart after EPA rejection
                         $result.EPAEnabled = $true
                         $result.Confidence = "High"
                         $result.DiagnosticInfo = "Server sent new NTLM Type2 challenge after Type3 - EPA rejected the request due to missing Channel Binding Token"
                         Write-Log "[Test-ExtendedProtection] EPA ENABLED - Server restarted NTLM with new Type2 (CBT missing)"
                     }
                     elseif ($wwwAuth -match '(?<![,\s])NTLM\s*$' -or $wwwAuth -match '^NTLM\s*$') {
-                        # Case 2: Bare "NTLM" without Negotiate prefix — NTLM-only restart signal
+                        # Case 2: Bare "NTLM" without Negotiate prefix â€” NTLM-only restart signal
                         # Exclude "Negotiate,NTLM" which ends with NTLM but means normal auth failure
                         $result.EPAEnabled = $true
                         $result.Confidence = "High"
@@ -67279,14 +68223,14 @@ function Test-ExtendedProtection {
                         Write-Log "[Test-ExtendedProtection] EPA ENABLED - Bare NTLM offer after Type3 (CBT missing)"
                     }
                     elseif ($wwwAuth -match 'Negotiate\s+([A-Za-z0-9+/=]{20,})') {
-                        # Case 3a: Negotiate blob — Kerberos token or NTLM-via-Negotiate; auth failed on credentials
+                        # Case 3a: Negotiate blob â€” Kerberos token or NTLM-via-Negotiate; auth failed on credentials
                         $result.EPAEnabled = $false
                         $result.Confidence = "Medium"
                         $result.DiagnosticInfo = "Server returned 401 with Negotiate blob after Type3 - credentials rejected (CBT check passed, EPA not enforced)"
                         Write-Log "[Test-ExtendedProtection] EPA NOT enabled - auth failure with Negotiate blob (normal credential rejection)"
                     }
                     elseif ($wwwAuth -match 'Negotiate') {
-                        # Case 3b: "Negotiate" or "Negotiate,NTLM" — blanke new Auth-Challenge after credential failure
+                        # Case 3b: "Negotiate" or "Negotiate,NTLM" â€” blanke new Auth-Challenge after credential failure
                         # This is the standard IIS response when NTLM auth fails with invalid credentials
                         # and EPA is not blocking (EPA=disabled: CBT check passed, credential check failed)
                         $result.EPAEnabled = $false
@@ -74356,14 +75300,14 @@ function Invoke-TicketForge {
 .PARAMETER GroupRIDs
     Array of group RIDs to include in the PAC's GroupIds field.
 
-    Golden/Silver: Default @(512, 513, 518, 519, 520) — Domain Admins, Domain Users,
+    Golden/Silver: Default @(512, 513, 518, 519, 520) â€” Domain Admins, Domain Users,
     Schema Admins, Enterprise Admins, Group Policy Creator Owners. Specifying this
     parameter REPLACES the entire default list (e.g. @(512, 513, 518, 519, 520, 1337)
     to keep the defaults and add a custom one).
 
     Diamond: These RIDs are APPENDED to the user's real group memberships (parsed from
     the genuine PAC), not used as a replacement. If not specified, only Domain Admins
-    (512) is injected — the broader default set is itself a detection indicator and is
+    (512) is injected â€” the broader default set is itself a detection indicator and is
     therefore avoided for diamond tickets.
 
 .PARAMETER ExtraSIDs
@@ -84540,8 +85484,8 @@ function Get-ProtectedUsersStatus {
             # Get Tier-0 group SIDs from central definition
             $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
 
-            $tier0Accounts = @{}  # SID → Account object (deduplicated)
-            $tier0AccountGroups = @{}  # SID → Array of group names (for display)
+            $tier0Accounts = @{}  # SID â†’ Account object (deduplicated)
+            $tier0AccountGroups = @{}  # SID â†’ Array of group names (for display)
 
             foreach ($groupSID in $tier0GroupSIDs) {
                 $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
@@ -86825,9 +87769,9 @@ function Get-DangerousOUPermissions {
                         }
 
                         # Determine display severity:
-                        # - Exchange service groups → 'Attention' (yellow, by-design)
-                        # - Privileged accounts (Info from Get-OUPermissions) with -IncludePrivileged → 'Attention' (yellow)
-                        # - Non-privileged → original severity (Critical/High)
+                        # - Exchange service groups â†’ 'Attention' (yellow, by-design)
+                        # - Privileged accounts (Info from Get-OUPermissions) with -IncludePrivileged â†’ 'Attention' (yellow)
+                        # - Non-privileged â†’ original severity (Critical/High)
                         $isPrivilegedAccount = $finding.Severity -eq 'Info'
                         $displaySeverity = if ($isExchangeService) { 'Attention' }
                             elseif ($isPrivilegedAccount) { 'Attention' }
@@ -87267,9 +88211,9 @@ function Get-PasswordResetRights {
                     }
 
                     # Determine display severity:
-                    # - Exchange service groups → 'Attention' (yellow, by-design)
-                    # - Privileged accounts (Info from Get-OUPermissions) with -IncludePrivileged → 'Attention' (yellow)
-                    # - Non-privileged → original severity (Critical/High)
+                    # - Exchange service groups â†’ 'Attention' (yellow, by-design)
+                    # - Privileged accounts (Info from Get-OUPermissions) with -IncludePrivileged â†’ 'Attention' (yellow)
+                    # - Non-privileged â†’ original severity (Critical/High)
                     $isPrivilegedAccount = $finding.Severity -eq 'Info'
                     $displaySeverity = if ($isExchangeService) { 'Attention' }
                         elseif ($isPrivilegedAccount) { 'Attention' }
@@ -87779,7 +88723,7 @@ function Check-GPOAddComputerRights {
         $dcOUDN = "OU=Domain Controllers,$domainDN"
 
         # Build GPO precedence map using Get-GPOLinkage (which reliably reads gPLink via Invoke-LDAPSearch)
-        # Filter to DC OU and domain root — these are the containers that determine effective DC policy
+        # Filter to DC OU and domain root â€” these are the containers that determine effective DC policy
         Write-Log "[Check-GPOAddComputerRights] Building GPO precedence map from GPO linkage data"
         $Script:gpoAddComputerPrecedenceMap = @{}
 
@@ -90041,11 +90985,11 @@ function Get-GroupAssignmentSeverity {
     $risk = $config.Risk
 
     # Escalate severity if risky members (Everyone, Domain Users, etc.) are present
-    # Using standard adPEAS severity values: Note → Hint → Finding
+    # Using standard adPEAS severity values: Note â†’ Hint â†’ Finding
     if (@($RiskyMembers).Count -gt 0) {
         $riskyList = $RiskyMembers -join ', '
 
-        # Escalate: Note→Hint, Hint→Finding, Finding stays Finding
+        # Escalate: Noteâ†’Hint, Hintâ†’Finding, Finding stays Finding
         $severity = switch ($severity) {
             "Note"     { "Hint" }
             "Hint"     { "Finding" }
@@ -90204,7 +91148,7 @@ function Parse-GPPGroups {
     try {
         # Use XmlDocument.Load() to honor the XML encoding declaration / BOM.
         # Get-Content defaults to the ANSI code page in Windows PowerShell 5.1,
-        # which mojibakes UTF-8 Groups.xml (e.g. "Domänen-Benutzer" -> "DomÃ¤nen-Benutzer").
+        # which mojibakes UTF-8 Groups.xml (e.g. "DomÃ¤nen-Benutzer" -> "DomÃƒÂ¤nen-Benutzer").
         $xmlContent = New-Object System.Xml.XmlDocument
         $xmlContent.Load($FilePath)
         $findings = @()
@@ -90992,6 +91936,519 @@ function Parse-ScriptIni {
         Write-Log "[Parse-ScriptIni] Error parsing $FilePath : $_"
         return $null
     }
+}
+
+
+
+# ----- Get-GPORegistrySettings.ps1 -----
+
+function Get-GPORegistrySettings {
+    <#
+    .SYNOPSIS
+    Detects security-relevant registry values deployed via Group Policy that enable attacks.
+
+    .DESCRIPTION
+    Analyzes Group Policy Objects for registry values that, when actively set, enable or
+    facilitate credential theft, lateral movement, privilege escalation, or defense evasion.
+
+    Both GPO registry delivery mechanisms are parsed from SYSVOL:
+      - Administrative Templates -> Registry.pol  (PReg binary format)
+      - Group Policy Preferences -> Registry.xml  (XML format)
+
+    Matched values are defined centrally in adPEAS-RegistryKeys.ps1
+    ($Script:DangerousRegistryKeys). Only POSITIVELY SET values are reported - absence of a
+    hardening value is never reported as a finding, because GPO parsing cannot distinguish
+    "not configured in this GPO" from "secure".
+
+    Examples of detected settings: WDigest cleartext caching, the Zerologon/OneLogon
+    VulnerableChannelAllowList, AlwaysInstallElevated, RDP Restricted Admin, UAC disabled,
+    Point and Print (PrintNightmare), WSUS-over-HTTP, and explicitly disabled defenses.
+
+    Note: this check sees only what is DEPLOYED via GPO. Values set locally/directly on a
+    host (no Remote Registry) are out of scope by design.
+
+    Requires SMB access to \\domain\SYSVOL.
+
+    .PARAMETER Domain
+    Target domain (optional, uses current domain if not specified)
+
+    .PARAMETER Server
+    Domain Controller to query (optional, uses auto-discovery if not specified)
+
+    .PARAMETER Credential
+    PSCredential object for authentication (optional, uses current user if not specified)
+
+    .EXAMPLE
+    Get-GPORegistrySettings
+
+    .EXAMPLE
+    Get-GPORegistrySettings -Domain "contoso.com" -Credential (Get-Credential)
+
+    .NOTES
+    Category: GPO
+    Author: Alexander Sturz (@_61106960_)
+    #>
+
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+
+    begin {
+        Write-Log "[Get-GPORegistrySettings] Starting check"
+    }
+
+    process {
+        try {
+            # Ensure LDAP connection (displays error if needed)
+            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+                return
+            }
+
+            $Script:_gpoRegMatches = [System.Collections.ArrayList]::new()
+
+            Show-SubHeader "Searching for vulnerable registry settings deployed via GPO..." -ObjectType "GPORegistrySetting"
+
+            $gpos = Get-DomainGPO @PSBoundParameters
+
+            if (-not $gpos) {
+                Show-Line "No GPOs found in domain" -Class Note
+                return
+            }
+
+            $gpoLinkage = Get-GPOLinkage
+
+            # Build GPO GUID to name mapping
+            $gpoNameMap = @{}
+            foreach ($gpo in $gpos) {
+                $gpoNameMap[$gpo.Name] = $gpo.DisplayName
+            }
+
+            # Track SYSVOL access status (exception in Clear-SessionState - cleaned up inline below)
+            $Script:sysvolAccessible = $false
+
+            # SYSVOL Access with Credential Support
+            Invoke-SMBAccess -Description "Scanning GPO registry configuration files" -ScriptBlock {
+                $sysvolPath = "\\$($Script:LDAPContext.Server)\SYSVOL\$($Script:LDAPContext.Domain)\Policies"
+
+                if (-not (Test-Path $sysvolPath)) {
+                    return
+                }
+
+                $Script:sysvolAccessible = $true
+
+                # Single cached SYSVOL listing for both delivery mechanisms
+                $regFiles = @(Get-CachedSYSVOLFiles -Filter @("Registry.pol", "Registry.xml"))
+
+                if ($regFiles.Count -eq 0) {
+                    Write-Log "[Get-GPORegistrySettings] No Registry.pol/Registry.xml files found in SYSVOL"
+                    return
+                }
+
+                Write-Log "[Get-GPORegistrySettings] Found $($regFiles.Count) registry configuration file(s)"
+
+                $totalFiles = $regFiles.Count
+                $currentIndex = 0
+                foreach ($file in $regFiles) {
+                    $currentIndex++
+                    if ($totalFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning GPO registry settings" -Current $currentIndex -Total $totalFiles -ObjectName $file.Name }
+
+                    # Extract GPO GUID from path: ...\Policies\{GUID}\...
+                    if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') {
+                        continue
+                    }
+                    $gpoGUID = $Matches[1]
+                    $gpoName = if ($gpoNameMap.ContainsKey($gpoGUID)) { $gpoNameMap[$gpoGUID] } else { $gpoGUID }
+
+                    try {
+                        $records = @()
+                        if ($file.Name -ieq 'Registry.pol') {
+                            # Machine\Registry.pol -> HKLM, User\Registry.pol -> HKCU
+                            $hive = if ($file.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
+                            $records = @(Parse-PRegRecords -PolFilePath $file.FullName -Hive $hive)
+                            $source = 'Registry.pol'
+                        } else {
+                            $hive = 'HKLM/HKCU'
+                            $records = @(Parse-RegistryXml -XmlFilePath $file.FullName)
+                            $source = 'Registry.xml'
+                        }
+                        if ($records.Count -gt 0) {
+                            Write-Log "[Get-GPORegistrySettings] Analyzing GPO '$gpoName' - $source ($hive): $($records.Count) registry value(s)"
+                        }
+
+                        foreach ($record in $records) {
+                            $entry = Test-DangerousRegistryRecord -Record $record
+                            if ($entry) {
+                                [void]$Script:_gpoRegMatches.Add([PSCustomObject]@{
+                                    GPOGUID = $gpoGUID
+                                    GPOName = $gpoName
+                                    Source  = $source
+                                    Entry   = $entry
+                                    Record  = $record
+                                })
+                            }
+                        }
+                    } catch {
+                        Write-Log "[Get-GPORegistrySettings] Error parsing $($file.FullName): $_"
+                    }
+                }
+                if ($totalFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning GPO registry settings" -Completed }
+            }
+
+            # Retrieve results and clean up Script-scoped temp variables
+            $rawMatches = @($Script:_gpoRegMatches)
+            $sysvolAccessible = $Script:sysvolAccessible
+            $Script:_gpoRegMatches = $null
+            $Script:sysvolAccessible = $null
+
+            if (-not $sysvolAccessible) {
+                if ((Test-SysvolAccessible) -eq $false) {
+                    Show-Line "Skipped - SYSVOL not accessible" -Class Hint
+                } else {
+                    Show-Line "SYSVOL access failed - cannot analyze GPO registry settings - SMB access failed (authentication/network issue)" -Class Finding
+                }
+                return
+            }
+
+            # Resolve findings (handles AlwaysInstallElevated two-hive correlation)
+            $findings = @(Resolve-RegistryFindings -RawMatches $rawMatches)
+
+            if ($findings.Count -gt 0) {
+                Show-Line "Found $($findings.Count) vulnerable registry setting(s) deployed via GPO" -Class Hint
+
+                foreach ($finding in $findings) {
+                    $linkedOUs = @()
+                    if ($gpoLinkage.ContainsKey($finding.GPOGUID)) {
+                        $linkedOUs = $gpoLinkage[$finding.GPOGUID]
+                    }
+                    if ($linkedOUs.Count -gt 0) {
+                        $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+                    }
+                    $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
+                    $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
+                    Show-Object $finding
+                }
+            } else {
+                Show-Line "No vulnerable registry settings deployed via GPO" -Class Note
+            }
+
+        } catch {
+            Write-Log "[Get-GPORegistrySettings] Error: $_" -Level Error
+        }
+    }
+
+    end {
+        Write-Log "[Get-GPORegistrySettings] Check completed"
+    }
+}
+
+# =============================================================================
+# Helper: Evaluate one normalized registry record against the dangerous-key table
+# =============================================================================
+function Test-DangerousRegistryRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Record
+    )
+
+    $recKey = ($Record.Key -replace '^\\+', '').TrimEnd('\').ToLower()
+    $recValueName = [string]$Record.ValueName
+    $recHive = [string]$Record.Hive
+
+    foreach ($entry in $Script:DangerousRegistryKeys) {
+        if ($entry.Hive -ne $recHive) { continue }
+        if (($entry.Key -replace '^\\+', '').TrimEnd('\').ToLower() -ne $recKey) { continue }
+        if ($entry.ValueName.ToLower() -ne $recValueName.ToLower()) { continue }
+
+        # Value name matched - now evaluate the dangerous condition
+        $isMatch = $false
+        switch ($entry.Match) {
+            'Present' {
+                $isMatch = $true
+            }
+            'Equals' {
+                if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -eq [int64]$entry.MatchValue) }
+            }
+            'LessOrEqual' {
+                if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -le [int64]$entry.MatchValue) }
+            }
+            'GreaterThan' {
+                if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -gt [int64]$entry.MatchValue) }
+            }
+            'UrlNotHttps' {
+                $sv = [string]$Record.ValueString
+                if ($sv -and $sv.Trim().ToLower().StartsWith('http://')) { $isMatch = $true }
+            }
+        }
+
+        if ($isMatch) {
+            return $entry
+        }
+    }
+
+    return $null
+}
+
+# =============================================================================
+# Helper: Build display findings from raw matches (AlwaysInstallElevated correlation)
+# =============================================================================
+function Resolve-RegistryFindings {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        [array]$RawMatches
+    )
+
+    $findings = @()
+    $aieMatches = @()
+
+    foreach ($m in $RawMatches) {
+        if ($m.Entry.Id -eq 'AIE_HKLM' -or $m.Entry.Id -eq 'AIE_HKCU') {
+            $aieMatches += $m
+            continue
+        }
+        $findings += (New-RegistryFinding -RegMatch $m)
+    }
+
+    # AlwaysInstallElevated is only exploitable when BOTH HKLM and HKCU are set to 1
+    # within the same GPO. Single-hive matches are suppressed.
+    $aieByGpo = $aieMatches | Group-Object -Property GPOGUID
+    foreach ($group in $aieByGpo) {
+        $ids = @($group.Group | ForEach-Object { $_.Entry.Id } | Sort-Object -Unique)
+        if ($ids -contains 'AIE_HKLM' -and $ids -contains 'AIE_HKCU') {
+            $hklmMatch = @($group.Group | Where-Object { $_.Entry.Id -eq 'AIE_HKLM' })[0]
+            $finding = New-RegistryFinding -RegMatch $hklmMatch
+            $finding.RegistryKey = 'HKLM+HKCU\Software\Policies\Microsoft\Windows\Installer\AlwaysInstallElevated'
+            $finding.ConfiguredValue = '1 (both HKLM and HKCU)'
+            $findings += $finding
+        } else {
+            Write-Log "[Get-GPORegistrySettings] AlwaysInstallElevated set in only one hive for GPO $($group.Name) - not exploitable, skipping"
+        }
+    }
+
+    return $findings
+}
+
+# =============================================================================
+# Helper: Construct a display object for a single match
+# =============================================================================
+function New-RegistryFinding {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        $RegMatch
+    )
+
+    $entry = $RegMatch.Entry
+    $record = $RegMatch.Record
+
+    # Human-readable configured value
+    $configured = '(value present)'
+    if ($null -ne $record.ValueInt) {
+        $configured = [string]$record.ValueInt
+    } elseif ($record.ValueString) {
+        $configured = [string]$record.ValueString
+    }
+
+    return [PSCustomObject][ordered]@{
+        GPOName           = $RegMatch.GPOName
+        Source            = $RegMatch.Source
+        RegistryKey       = "$($entry.Hive)\$($entry.Key)\$($entry.ValueName)"
+        ConfiguredValue   = $configured
+        VulnerabilityName = $entry.VulnerabilityName
+        RiskReason        = $entry.RiskReason
+        Severity          = $entry.Severity
+        GPOGUID           = $RegMatch.GPOGUID
+    }
+}
+
+# =============================================================================
+# Parser: Registry.pol (PReg binary format)
+# Format: "PReg" + version(4) + records of [key;value;type;size;data]
+# Strings are null-terminated UTF-16LE; separators ';' '[' ']' are UTF-16LE literals.
+# Ref: https://learn.microsoft.com/en-us/previous-versions/windows/desktop/policy/registry-policy-file-format
+# =============================================================================
+function Parse-PRegRecords {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$PolFilePath,
+
+        [Parameter(Mandatory=$true)]
+        [string]$Hive
+    )
+
+    $records = @()
+
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($PolFilePath)
+        if ($bytes.Length -lt 8) { return $records }
+        if ([System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'PReg') {
+            Write-Log "[Read-PRegRecords] Invalid PReg header: $PolFilePath"
+            return $records
+        }
+
+        $pos = 8  # skip signature(4) + version(4)
+        $len = $bytes.Length
+
+        # Local reader for null-terminated UTF-16LE strings; advances $pos past terminator
+        $readString = {
+            param([ref]$p)
+            $start = $p.Value
+            while (($p.Value + 1) -lt $len) {
+                if ($bytes[$p.Value] -eq 0 -and $bytes[$p.Value + 1] -eq 0) { break }
+                $p.Value += 2
+            }
+            $strLen = $p.Value - $start
+            $s = ''
+            if ($strLen -gt 0) { $s = [System.Text.Encoding]::Unicode.GetString($bytes, $start, $strLen) }
+            $p.Value += 2  # consume null terminator
+            return $s
+        }
+
+        $openBracket = 0x5B   # [
+        $semicolon   = 0x3B   # ;
+
+        while ($pos -lt $len) {
+            # Find next '[' (0x5B 0x00)
+            if (-not ($bytes[$pos] -eq $openBracket -and ($pos + 1) -lt $len -and $bytes[$pos + 1] -eq 0)) {
+                $pos += 2
+                continue
+            }
+            $pos += 2
+
+            $ref = [ref]$pos
+            $key = (& $readString $ref)
+            # expect ';'
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            $pos += 2
+
+            $valueName = (& $readString $ref)
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            $pos += 2
+
+            if (($pos + 4) -gt $len) { break }
+            $type = [System.BitConverter]::ToUInt32($bytes, $pos)
+            $pos += 4
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            $pos += 2
+
+            if (($pos + 4) -gt $len) { break }
+            $size = [System.BitConverter]::ToUInt32($bytes, $pos)
+            $pos += 4
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            $pos += 2
+
+            if (($pos + $size) -gt $len) { break }
+            $data = New-Object byte[] $size
+            if ($size -gt 0) { [System.Array]::Copy($bytes, $pos, $data, 0, $size) }
+            $pos += $size
+
+            # Decode value depending on registry type
+            $valueInt = $null
+            $valueString = $null
+            switch ($type) {
+                4  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }      # REG_DWORD
+                5  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }      # REG_DWORD_BIG_ENDIAN (rare)
+                11 { if ($data.Length -ge 8) { $valueInt = [System.BitConverter]::ToUInt64($data, 0) } }      # REG_QWORD
+                1  { $valueString = [System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0) }       # REG_SZ
+                2  { $valueString = [System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0) }       # REG_EXPAND_SZ
+                7  { $valueString = ([System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0)) }     # REG_MULTI_SZ
+            }
+
+            $records += [PSCustomObject]@{
+                Hive        = $Hive
+                Key         = $key
+                ValueName   = $valueName
+                Type        = $type
+                ValueInt    = $valueInt
+                ValueString = $valueString
+            }
+
+            # expect ']' - if not present, the loop's resync will find the next '['
+        }
+    } catch {
+        Write-Log "[Read-PRegRecords] Error parsing $PolFilePath : $_"
+    }
+
+    return $records
+}
+
+# =============================================================================
+# Parser: Registry.xml (Group Policy Preferences format)
+# =============================================================================
+function Parse-RegistryXml {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$XmlFilePath
+    )
+
+    $records = @()
+
+    try {
+        [xml]$xml = Get-Content -Path $XmlFilePath -ErrorAction Stop
+
+        $regNodes = $xml.SelectNodes("//Registry")
+        if (-not $regNodes) { return $records }
+
+        foreach ($node in $regNodes) {
+            $props = $node.Properties
+            if (-not $props) { continue }
+
+            # Normalize hive
+            $hiveRaw = [string]$props.hive
+            $hive = $null
+            switch -Wildcard ($hiveRaw.ToUpper()) {
+                'HKEY_LOCAL_MACHINE*' { $hive = 'HKLM' }
+                'HKLM*'               { $hive = 'HKLM' }
+                'HKEY_CURRENT_USER*'  { $hive = 'HKCU' }
+                'HKCU*'               { $hive = 'HKCU' }
+                default               { $hive = $hiveRaw }
+            }
+
+            $type = [string]$props.type
+            $rawValue = [string]$props.value
+
+            $valueInt = $null
+            $valueString = $null
+            if ($type -match 'DWORD|QWORD') {
+                # GPP stores DWORD/QWORD values as hexadecimal in the XML value attribute
+                $parsed = $null
+                if ($rawValue -match '^[0-9A-Fa-f]+$') {
+                    try { $parsed = [System.Convert]::ToInt64($rawValue, 16) } catch { $parsed = $null }
+                }
+                if ($null -eq $parsed -and $rawValue -match '^\d+$') {
+                    try { $parsed = [System.Convert]::ToInt64($rawValue, 10) } catch { $parsed = $null }
+                }
+                $valueInt = $parsed
+            } else {
+                $valueString = $rawValue
+            }
+
+            $records += [PSCustomObject]@{
+                Hive        = $hive
+                Key         = [string]$props.key
+                ValueName   = [string]$props.name
+                Type        = $type
+                ValueInt    = $valueInt
+                ValueString = $valueString
+            }
+        }
+    } catch {
+        Write-Log "[Read-RegistryXmlRecords] Error parsing $XmlFilePath : $_"
+    }
+
+    return $records
 }
 
 
@@ -93744,7 +95201,7 @@ function Get-SCCMInfrastructure {
                     }
                     $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue "$memberCount member(s)" -Force
                     # Remove member attribute to prevent Extended-attribute rendering from triggering
-                    # per-DN SID resolution (Convert-DNsToMemberInfo → ConvertTo-SID per member)
+                    # per-DN SID resolution (Convert-DNsToMemberInfo â†’ ConvertTo-SID per member)
                     $group.PSObject.Properties.Remove('member')
                     $group | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMGroup' -Force
                     Show-Object $group
@@ -93952,7 +95409,7 @@ function Get-SCOMInfrastructure {
                     }
                     $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue "$memberCount member(s)" -Force
                     # Remove member attribute to prevent Extended-attribute rendering from triggering
-                    # per-DN SID resolution (Convert-DNsToMemberInfo → ConvertTo-SID per member)
+                    # per-DN SID resolution (Convert-DNsToMemberInfo â†’ ConvertTo-SID per member)
                     $group.PSObject.Properties.Remove('member')
                     $group | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMGroup' -Force
                     Show-Object $group
@@ -95657,15 +97114,15 @@ function Get-PasswordInDescription {
 
             # Exclusion patterns (skip if line matches these - password policy text, help, etc.)
             # Conservative approach: better to show a false positive than to hide a real password
-            # Only exact terms — no wildcards for foreign words we haven't verified in real AD data
+            # Only exact terms â€” no wildcards for foreign words we haven't verified in real AD data
             $exclusionPatterns = @(
                 # Policy/guideline text (EN/DE/IT/RO)
                 'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
                 '\bparol[ae]?\s*(policy|politica|cerinta)',
                 # Modal verbs: "password must/should..." (EN/DE/NO/IT/RO)
-                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
+                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|mÃ¥|bÃ¸r|deve|trebuie)\s+',
                 # Technical terms: length, complexity, expiry (EN/DE/NO/IT)
-                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
+                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utlÃ¸p|lunghezza|scadenza)',
                 # Reset/change/recover (EN/IT/RO)
                 'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
                 '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
@@ -95688,7 +97145,7 @@ function Get-PasswordInDescription {
             foreach ($objectType in @('User', 'Computer')) {
                 Write-Log "[Get-PasswordInDescription] Checking $objectType accounts..."
 
-                # Phase 1: Lightweight query — only fetch description + info (DN is always included)
+                # Phase 1: Lightweight query â€” only fetch description + info (DN is always included)
                 # This avoids loading ALL properties for potentially thousands of objects
                 $candidates = if ($objectType -eq 'User') {
                     Get-DomainUser -LDAPFilter "(|(description=*)(info=*))" -Properties "description","info" @connectionParams
@@ -103902,7 +105359,7 @@ function Compare-adPEASReport {
             $sharedCategories = @($baselineCategories | Where-Object { $_ -in $currentCategories })
 
             # Separate scope-only findings from real added/removed
-            # Findings in non-overlapping categories are NOT real changes — they reflect
+            # Findings in non-overlapping categories are NOT real changes â€” they reflect
             # different scan scopes (e.g., one scan ran -Module Accounts, the other ran all modules)
             $scopeOnlyBaseline = @()
             $scopeOnlyCurrent = @()
@@ -107270,7 +108727,7 @@ function Collect-BHEnterpriseCAs {
                 unresolvedpublishedtemplates        = @()
                 whencreated                         = ConvertTo-UnixTimestamp $ca.Created
             }
-            # CARegistryData must be top-level (not inside Properties) — nested dicts inside
+            # CARegistryData must be top-level (not inside Properties) â€” nested dicts inside
             # Properties cause Neo4j Map{} errors when BH CE writes them as node properties.
             CARegistryData          = $null
             HttpEnrollmentEndpoints = @()
@@ -107827,7 +109284,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.2.0+20260622-1057"
+$Script:adPEASVersion = "2.2.0+20260626-0903"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -108609,6 +110066,7 @@ try {
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOLocalGroupMembership' -Title 'GPO Local Group Membership' -Check { Get-GPOLocalGroupMembership }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScriptPaths' -Title 'GPO Script Paths' -Check { Get-GPOScriptPaths }
+            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPORegistrySettings' -Title 'GPO Registry Settings' -Check { Get-GPORegistrySettings }
         } catch {
             Write-Warning "[adPEAS] Error executing GPO Module: $_"
         }

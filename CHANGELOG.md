@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`Get-GPORegistrySettings` — new GPO check** that flags security-relevant
+  registry values deployed via Group Policy which, *when actively set*, enable an
+  attack (credential theft, lateral movement, privilege escalation, defense evasion).
+  Only positively-set values are reported — absence of a hardening value is never
+  flagged, because GPO/SYSVOL parsing cannot distinguish "not configured in this GPO"
+  from "secure". Both delivery mechanisms are parsed from SYSVOL: Administrative
+  Templates (`Registry.pol`, PReg binary format) **and** Group Policy Preferences
+  (`Registry.xml`). The dangerous-value catalogue is centralised in
+  `adPEAS-RegistryKeys.ps1` (`$Script:DangerousRegistryKeys`) and covers, among others:
+  the Zerologon/OneLogon `VulnerableChannelAllowList` (Critical), `AlwaysInstallElevated`
+  (Critical, only when **both** HKLM and HKCU are set), WDigest cleartext caching,
+  `LocalAccountTokenFilterPolicy`/`EnableLUA` (remote pass-the-hash), RDP Restricted
+  Admin, Point and Print (PrintNightmare), WSUS-over-HTTP, weak LM/NTLMv1, plus
+  explicitly disabled defenses (Defender, LSA Protection, Credential Guard, SMB signing).
+  Each finding is mapped to the affected OUs / domain-wide scope via GPO links and ships
+  with an HTML report card and hover tooltip. Scope is GPO-deployed values only — values
+  set locally on a host are out of scope by design (no Remote Registry; consistent with
+  the LDAP+SMB, no-RSAT model). Inspired by OneLogon (https://github.com/rub-softsec/onelogon).
+
 ## [2.2.0] - 2026-06-21
 
 ### Added

@@ -8493,6 +8493,535 @@ foreach ($oid in $linkedOIDs) {
         )
     }
 
+    # ========================================================================
+    # GPO-DEPLOYED DANGEROUS REGISTRY SETTINGS (Get-GPORegistrySettings)
+    # Triggered on the 'VulnerabilityName' attribute of GPORegistrySetting objects.
+    # ========================================================================
+
+    'REGISTRY_WDIGEST' = @{
+        Title = "WDigest Cleartext Credential Caching Enabled via GPO"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A Group Policy sets UseLogonCredential=1 under the WDigest provider. This forces LSASS to keep plaintext credentials in memory, reversing a key post-2014 hardening."
+        Impact = @(
+            "LSASS caches cleartext passwords for interactive/RDP sessions"
+            "Any local admin or SYSTEM can recover plaintext credentials from memory"
+            "Affects every computer where the GPO is applied"
+        )
+        Attack = @(
+            "1. Land on a host where the GPO applies"
+            "2. Dump LSASS (e.g. mimikatz sekurlsa::wdigest)"
+            "3. Read plaintext credentials of logged-on users"
+        )
+        Remediation = @(
+            "Set UseLogonCredential=0 (or remove the value) via GPO"
+            "Enable LSA Protection (RunAsPPL) and Credential Guard"
+        )
+        References = @(
+            @{ Title = "Mitigating WDigest credential theft"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/credentials-protection-management" }
+        )
+        Tools = @("Mimikatz", "pypykatz")
+        MITRE = "T1003.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'WDigest cleartext'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_ONELOGON' = @{
+        Title = "Vulnerable Netlogon Secure Channel Allow-List (Zerologon/OneLogon)"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "A Group Policy populates the Netlogon VulnerableChannelAllowList (the 'Allow vulnerable Netlogon secure channel connections' policy). Accounts on this list may use insecure Netlogon channels, re-opening Zerologon-class attacks against them (OneLogon)."
+        Impact = @(
+            "Listed machine/trust accounts can be attacked via insecure Netlogon"
+            "Enables meet-in-the-middle and brute-force secure-channel compromise"
+            "Can lead to domain controller / account takeover"
+        )
+        Attack = @(
+            "1. Identify accounts in the allow-list"
+            "2. Run the OneLogon attack against the insecure Netlogon channel"
+            "3. Compromise the targeted account / escalate"
+        )
+        Remediation = @(
+            "Remove all entries from the allow-list and delete the policy"
+            "Ensure all clients support secure Netlogon (RPC signing/sealing)"
+        )
+        References = @(
+            @{ Title = "OneLogon"; Url = "https://github.com/rub-softsec/onelogon" }
+            @{ Title = "Zerologon (CVE-2020-1472)"; Url = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2020-1472" }
+        )
+        Tools = @("OneLogon")
+        MITRE = "T1210"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Vulnerable Netlogon secure channel'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_AUTOLOGON' = @{
+        Title = "AutoAdminLogon Enabled via GPO"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Group Policy enables AutoAdminLogon (automatic logon at boot). The associated DefaultPassword is frequently stored in cleartext in the same Registry.xml and readable by any authenticated user (see Credential Exposure check)."
+        Impact = @(
+            "Automatic logon as a (often privileged) account"
+            "DefaultPassword commonly exposed in SYSVOL"
+            "Physical/console access yields an authenticated session"
+        )
+        Attack = @(
+            "1. Read Registry.xml from SYSVOL"
+            "2. Extract DefaultUserName/DefaultPassword if present"
+            "3. Use the credentials directly"
+        )
+        Remediation = @(
+            "Disable AutoAdminLogon via GPO; rotate any exposed password"
+            "Use Autopilot/MDT for unattended setups instead"
+        )
+        References = @(
+            @{ Title = "Turn on automatic logon"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/user-profiles-and-logon/turn-on-automatic-logon" }
+        )
+        Tools = @("Manual SYSVOL search")
+        MITRE = "T1552.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'AutoAdminLogon enabled'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_LMCOMPAT' = @{
+        Title = "Weak LM/NTLMv1 Authentication Allowed via GPO"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Group Policy sets LmCompatibilityLevel to 2 or lower, permitting LM and/or NTLMv1 network authentication. These use DES-based responses that are trivially crackable and enable NTLM relay/hash capture."
+        Impact = @(
+            "LM/NTLMv1 responses can be cracked to recover NT hashes"
+            "Facilitates NTLM relay and offline cracking"
+            "Weakens authentication across all affected hosts"
+        )
+        Attack = @(
+            "1. Coerce or capture an LM/NTLMv1 authentication"
+            "2. Crack the DES-based response (e.g. crack.sh)"
+            "3. Recover the NT hash and pass-the-hash"
+        )
+        Remediation = @(
+            "Set LmCompatibilityLevel to 5 (NTLMv2 only, refuse LM and NTLM)"
+        )
+        References = @(
+            @{ Title = "Network security: LAN Manager authentication level"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level" }
+        )
+        Tools = @("Responder", "hashcat")
+        MITRE = "T1557.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Weak LM/NTLMv1'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_NOLMHASH' = @{
+        Title = "LM Hash Storage Enabled via GPO"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Group Policy sets NoLmHash=0, allowing Windows to store the weak LM hash of passwords in the local SAM. LM hashes are trivially cracked offline."
+        Impact = @(
+            "LM hashes stored locally are easily cracked to plaintext"
+            "Compromise of one host's SAM exposes reusable passwords"
+        )
+        Attack = @(
+            "1. Dump the local SAM"
+            "2. Crack the LM hashes offline"
+            "3. Reuse recovered passwords"
+        )
+        Remediation = @(
+            "Set NoLmHash=1 (do not store LM hash on next password change)"
+        )
+        References = @(
+            @{ Title = "Do not store LAN Manager hash value"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-do-not-store-lan-manager-hash-value-on-next-password-change" }
+        )
+        Tools = @("secretsdump", "hashcat")
+        MITRE = "T1003.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'LM hash storage'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_REMOTEUAC' = @{
+        Title = "Remote UAC Token Filtering Disabled via GPO"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "A Group Policy sets LocalAccountTokenFilterPolicy=1, disabling remote UAC token filtering. Any local administrator (including local accounts) can then authenticate remotely with a full high-integrity token, enabling pass-the-hash to admin shares, WMI, and RPC."
+        Impact = @(
+            "Local admin accounts usable for remote pass-the-hash"
+            "Greatly eases lateral movement across the scope"
+        )
+        Attack = @(
+            "1. Obtain a local admin hash (e.g. from SAM)"
+            "2. Pass-the-hash to ADMIN$/WMI on other affected hosts"
+            "3. Move laterally"
+        )
+        Remediation = @(
+            "Remove LocalAccountTokenFilterPolicy or set it to 0"
+            "Use LAPS to ensure unique local admin passwords"
+        )
+        References = @(
+            @{ Title = "Pass-the-Hash is Dead: LocalAccountTokenFilterPolicy"; Url = "https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/" }
+        )
+        Tools = @("CrackMapExec", "impacket")
+        MITRE = "T1550.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Remote UAC token filtering'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_ALWAYSINSTALLELEVATED' = @{
+        Title = "AlwaysInstallElevated Enabled via GPO"
+        Risk = "Finding"
+        BaseScore = 65
+        Description = "A Group Policy sets AlwaysInstallElevated=1 in both HKLM and HKCU. Any user can then install a Windows Installer (MSI) package with SYSTEM privileges - a direct, reliable local privilege escalation. adPEAS only reports this when BOTH hives are set, which is the exploitable condition."
+        Impact = @(
+            "Any user installs MSI packages as SYSTEM"
+            "Direct local privilege escalation to SYSTEM"
+            "Applies to every computer in the GPO scope"
+        )
+        Attack = @(
+            "1. Craft a malicious MSI (e.g. msfvenom)"
+            "2. Run msiexec /quiet /i evil.msi as a standard user"
+            "3. Gain SYSTEM"
+        )
+        Remediation = @(
+            "Set AlwaysInstallElevated=0 in both HKLM and HKCU (or remove the policy)"
+        )
+        References = @(
+            @{ Title = "AlwaysInstallElevated"; Url = "https://docs.specterops.io/ghostpack-docs/SharpUp-mdx/checks/alwaysinstallelevated" }
+        )
+        Tools = @("SharpUp", "msfvenom")
+        MITRE = "T1548.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'AlwaysInstallElevated enabled'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_ENABLELUA' = @{
+        Title = "User Account Control (UAC) Disabled via GPO"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A Group Policy sets EnableLUA=0, turning UAC off entirely. Without UAC there is no token filtering, so all local administrators are usable for remote pass-the-hash, and elevation prompts are gone."
+        Impact = @(
+            "No UAC token filtering on affected hosts"
+            "All local admins usable for remote pass-the-hash"
+            "Malware runs elevated without prompts"
+        )
+        Attack = @(
+            "1. Obtain any local admin credential/hash"
+            "2. Authenticate remotely with full token"
+            "3. Move laterally / execute elevated"
+        )
+        Remediation = @(
+            "Set EnableLUA=1 and keep UAC enabled"
+        )
+        References = @(
+            @{ Title = "UAC and remote restrictions"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/user-account-control-and-remote-restriction" }
+        )
+        Tools = @("CrackMapExec")
+        MITRE = "T1548.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'User Account Control'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_RESTRICTEDADMIN' = @{
+        Title = "RDP Restricted Admin Mode Enabled via GPO"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A Group Policy sets DisableRestrictedAdmin=0, enabling RDP Restricted Admin mode. While intended to protect credentials, it lets RDP accept hash-based authentication - enabling Pass-the-Hash over RDP and bypassing some MFA solutions."
+        Impact = @(
+            "RDP accepts NT hash without plaintext password"
+            "Pass-the-Hash over RDP becomes possible"
+            "Can bypass RDP-layer MFA"
+        )
+        Attack = @(
+            "1. Obtain a local/domain admin NT hash"
+            "2. RDP with Restricted Admin using the hash (e.g. mstsc /restrictedadmin via Mimikatz)"
+            "3. Interactive admin session without the password"
+        )
+        Remediation = @(
+            "Set DisableRestrictedAdmin=1 unless a documented need exists"
+            "Monitor changes to this value as a compromise indicator"
+        )
+        References = @(
+            @{ Title = "Restricted Admin Mode - Circumventing MFA on RDP"; Url = "https://www.levelblue.com/blogs/spiderlabs-blog/restricted-admin-mode-circumventing-mfa-on-rdp-logons/" }
+        )
+        Tools = @("Mimikatz", "RestrictedAdmin")
+        MITRE = "T1550.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP Restricted Admin'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_POINT_AND_PRINT' = @{
+        Title = "Point and Print Allows Non-Admin Driver Installation (PrintNightmare)"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "A Group Policy weakens Point and Print so that non-administrators can install printer drivers without an elevation prompt (NoWarningNoElevationOnInstall=1) or RestrictDriverInstallationToAdministrators=0. This re-opens PrintNightmare-style remote code execution / local privilege escalation."
+        Impact = @(
+            "Non-admins install printer drivers (code) without prompts"
+            "Enables PrintNightmare-style RCE / SYSTEM escalation"
+            "Applies to every computer in the GPO scope"
+        )
+        Attack = @(
+            "1. Stand up a malicious print server / driver"
+            "2. Have the victim connect (Point and Print)"
+            "3. Driver executes as SYSTEM"
+        )
+        Remediation = @(
+            "Set RestrictDriverInstallationToAdministrators=1"
+            "Remove NoWarningNoElevationOnInstall=1"
+        )
+        References = @(
+            @{ Title = "A Practical Guide to PrintNightmare"; Url = "https://itm4n.github.io/printnightmare-exploitation/" }
+            @{ Title = "KB5005652"; Url = "https://support.microsoft.com/en-us/topic/kb5005652-873642bf-2634-49c5-a23b-6d8e9a302872" }
+        )
+        Tools = @("PrintNightmare PoCs")
+        MITRE = "T1547.012"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Point and Print'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_WSUS_HTTP' = @{
+        Title = "WSUS Update Server Configured over Cleartext HTTP"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "A Group Policy points clients to a WSUS server over cleartext HTTP (WUServer=http://...). Update traffic on the local subnet can be intercepted and tampered with, allowing an attacker to inject a malicious 'update' that executes as SYSTEM."
+        Impact = @(
+            "WSUS traffic is unauthenticated/cleartext"
+            "MITM can inject updates executed as SYSTEM"
+            "Mass compromise of all WSUS clients in scope"
+        )
+        Attack = @(
+            "1. MITM the client-to-WSUS HTTP traffic"
+            "2. Serve a malicious signed-binary command (e.g. PsExec)"
+            "3. Code executes as SYSTEM on clients"
+        )
+        Remediation = @(
+            "Reconfigure WSUS to use HTTPS (WUServer=https://...)"
+            "Enable TLS and proper certificate validation"
+        )
+        References = @(
+            @{ Title = "WSUS Is SUS: NTLM Relay Attacks"; Url = "https://trustedsec.com/blog/wsus-is-sus-ntlm-relay-attacks-in-plain-sight" }
+        )
+        Tools = @("PyWSUS", "wsuks")
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'WSUS update server'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_DEFENDER_DISABLED' = @{
+        Title = "Microsoft Defender Antivirus Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy disables Microsoft Defender Antivirus or its real-time protection (DisableAntiSpyware=1 / DisableRealtimeMonitoring=1). This removes a key endpoint detection layer across the scope. Note: on Windows 10 1903+ Tamper Protection may prevent the setting from taking effect."
+        Impact = @(
+            "Endpoint AV/real-time protection disabled centrally"
+            "Malware and credential theft tools run undetected"
+        )
+        Attack = @(
+            "1. Operate on hosts where Defender is off"
+            "2. Run tooling without AV interference"
+        )
+        Remediation = @(
+            "Remove the Defender disable policy; enable Tamper Protection"
+        )
+        References = @(
+            @{ Title = "Disabling LSA/Defender defences"; Url = "https://research.splunk.com/endpoint/45cd08f8-a2c9-4f4e-baab-e1a0c624b0ab/" }
+        )
+        Tools = @("-")
+        MITRE = "T1562.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Microsoft Defender Antivirus disabled'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_RUNASPPL' = @{
+        Title = "LSA Protection (RunAsPPL) Explicitly Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy explicitly sets RunAsPPL=0, disabling LSA Protection. Without it, LSASS is not run as a protected process, easing credential dumping from memory."
+        Impact = @(
+            "LSASS not protected against memory access/injection"
+            "Eases credential dumping (Mimikatz, comsvcs.dll)"
+        )
+        Attack = @(
+            "1. Land on an affected host as admin"
+            "2. Dump LSASS without bypassing PPL"
+        )
+        Remediation = @(
+            "Set RunAsPPL=1 to enable LSA Protection"
+        )
+        References = @(
+            @{ Title = "Do You Really Know About LSA Protection (RunAsPPL)?"; Url = "https://itm4n.github.io/lsass-runasppl/" }
+        )
+        Tools = @("Mimikatz")
+        MITRE = "T1562.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'LSA Protection'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_CREDGUARD' = @{
+        Title = "Credential Guard Explicitly Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy explicitly sets LsaCfgFlags=0, disabling Windows Defender Credential Guard. Derived domain credentials are then no longer isolated by virtualization-based security and remain exposed in LSASS."
+        Impact = @(
+            "Credential Guard isolation turned off"
+            "NTLM hashes / Kerberos TGTs exposed in LSASS"
+        )
+        Attack = @(
+            "1. Dump LSASS on an affected host"
+            "2. Recover usable credential material"
+        )
+        Remediation = @(
+            "Enable Credential Guard (LsaCfgFlags=1)"
+        )
+        References = @(
+            @{ Title = "Configure Credential Guard"; Url = "https://learn.microsoft.com/en-us/windows/security/identity-protection/credential-guard/configure" }
+        )
+        Tools = @("Mimikatz")
+        MITRE = "T1562.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Credential Guard explicitly disabled'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_FILTERADMINTOKEN' = @{
+        Title = "Built-in Administrator (RID-500) UAC Token Filtering Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets FilterAdministratorToken=0, exempting the built-in RID-500 Administrator (even if renamed) from UAC token filtering. This account can then be used for remote pass-the-hash."
+        Impact = @(
+            "RID-500 admin usable for remote pass-the-hash"
+            "Lateral movement via the built-in admin hash"
+        )
+        Attack = @(
+            "1. Recover the RID-500 hash (often shared via imaging)"
+            "2. Pass-the-hash remotely to affected hosts"
+        )
+        Remediation = @(
+            "Set FilterAdministratorToken=1; use LAPS for unique passwords"
+        )
+        References = @(
+            @{ Title = "LocalAccountTokenFilterPolicy / FilterAdministratorToken"; Url = "https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/" }
+        )
+        Tools = @("CrackMapExec")
+        MITRE = "T1550.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'RID-500'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_CREDSSP_ORACLE' = @{
+        Title = "CredSSP Encryption Oracle Set to Vulnerable via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets AllowEncryptionOracle=2 (Vulnerable), permitting CredSSP to talk to unpatched clients/servers. This re-opens CVE-2018-0886, enabling a man-in-the-middle to run code over RDP/CredSSP."
+        Impact = @(
+            "CredSSP accepts unpatched peers"
+            "MITM can achieve remote code execution over RDP"
+        )
+        Attack = @(
+            "1. MITM a CredSSP/RDP session"
+            "2. Exploit CVE-2018-0886 to run commands on the target"
+        )
+        Remediation = @(
+            "Set AllowEncryptionOracle to 0 (Force Updated Clients)"
+        )
+        References = @(
+            @{ Title = "CVE-2018-0886 CredSSP"; Url = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2018-0886" }
+        )
+        Tools = @("-")
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'CredSSP encryption oracle'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_MACHINE_PASSWORD_STATIC' = @{
+        Title = "Machine Account Password Rotation Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy disables automatic machine account password changes (DisablePasswordChange=1 or RefusePasswordChange=1). A static machine password enables long-lived silver-ticket persistence and offline attacks against the computer account."
+        Impact = @(
+            "Machine account password never rotates"
+            "Long-lived silver tickets remain valid"
+        )
+        Attack = @(
+            "1. Recover the machine account key once"
+            "2. Forge silver tickets that stay valid indefinitely"
+        )
+        Remediation = @(
+            "Re-enable machine password rotation (remove the value / set to 0)"
+        )
+        References = @(
+            @{ Title = "Domain member: Disable machine account password changes"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/domain-member-disable-machine-account-password-changes" }
+        )
+        Tools = @("Mimikatz", "impacket")
+        MITRE = "T1558.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Machine account password rotation'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_NULL_SESSION' = @{
+        Title = "Anonymous (Null Session) Enumeration Enabled via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy weakens anonymous access restrictions (RestrictAnonymous=0, RestrictAnonymousSAM=0, or EveryoneIncludesAnonymous=1). This allows unauthenticated null-session enumeration of shares, users, and policies - valuable reconnaissance for an attacker."
+        Impact = @(
+            "Unauthenticated enumeration of accounts/shares"
+            "Aids password spraying and target selection"
+        )
+        Attack = @(
+            "1. Connect with a null session"
+            "2. Enumerate users, groups, shares, password policy"
+        )
+        Remediation = @(
+            "Restore anonymous restrictions (RestrictAnonymous/SAM=1, EveryoneIncludesAnonymous=0)"
+        )
+        References = @(
+            @{ Title = "Null session enumeration"; Url = "https://www.blumira.com/integration/how-to-disable-null-session-in-windows/" }
+        )
+        Tools = @("enum4linux", "rpcclient")
+        MITRE = "T1087"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'null session'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_SMB_SIGNING' = @{
+        Title = "SMB Server Signing Not Required (Set via GPO)"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy explicitly sets RequireSecuritySignature=0 on the SMB server, so SMB signing is not enforced. This enables SMB/NTLM relay attacks against the affected hosts."
+        Impact = @(
+            "SMB signing not enforced"
+            "Enables SMB/NTLM relay to the host"
+        )
+        Attack = @(
+            "1. Coerce authentication from a victim"
+            "2. Relay it to an unsigned SMB target"
+            "3. Execute as the relayed identity"
+        )
+        Remediation = @(
+            "Set RequireSecuritySignature=1 to enforce SMB signing"
+        )
+        References = @(
+            @{ Title = "Microsoft network server: Digitally sign communications"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/microsoft-network-server-digitally-sign-communications-always" }
+        )
+        Tools = @("ntlmrelayx")
+        MITRE = "T1557.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'SMB server signing'; Severity = 'Hint' }
+        )
+    }
+
     # Hardcoded scriptPath (UNC or absolute local path)
     'SCRIPTPATH_HARDCODED' = @{
         Title = "Hardcoded Logon Script Path"

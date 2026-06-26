@@ -187,7 +187,7 @@ Compare-adPEASReport -Baseline ".\scan_q1.json" -Current ".\scan_q2.json" -Outpu
 | `Delegation` | Unconstrained, constrained, resource-based constrained delegation |
 | `ADCS` | Certificate templates, ESC1–ESC15 vulnerabilities |
 | `Accounts` | Privileged accounts, protected users, service accounts, SID history |
-| `GPO` | GPO permissions, local group membership via GPO |
+| `GPO` | GPO permissions, local group membership, scheduled tasks, scripts, and dangerous registry settings (WDigest, AlwaysInstallElevated, OneLogon/Zerologon, PrintNightmare, …) deployed via GPO |
 | `Computer` | LAPS, outdated systems, infrastructure servers |
 | `Application` | Exchange, SCCM, SCOM infrastructure |
 | `Bloodhound` | BloodHound CE data collection |

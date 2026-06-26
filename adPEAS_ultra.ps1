@@ -1,4 +1,4 @@
-$Script:SeverityClasses = @{
+﻿$Script:SeverityClasses = @{
 	Finding  = 'Finding'
 	Secure   = 'Secure'
 	Hint     = 'Hint'
@@ -1167,6 +1167,333 @@ function Test-IsExcludedFromProtectedUsers {
 	}
 	return $result
 }
+$Script:DangerousRegistryKeys = @(
+	@{
+	    Id                = 'WDIGEST'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Control\SecurityProviders\WDigest'
+	    ValueName         = 'UseLogonCredential'
+	    Match             = 'Equals'
+	    MatchValue        = 1
+	    Severity          = 'High'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_WDIGEST'
+	    VulnerabilityName = 'WDigest cleartext credential caching enabled'
+	    RiskReason        = 'LSASS caches plaintext credentials, recoverable with Mimikatz sekurlsa::wdigest'
+	}
+	@{
+	    Id                = 'ONELOGON'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Services\Netlogon\Parameters'
+	    ValueName         = 'VulnerableChannelAllowList'
+	    Match             = 'Present'
+	    MatchValue        = $null
+	    Severity          = 'Critical'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_ONELOGON'
+	    VulnerabilityName = 'Vulnerable Netlogon secure channel allow-list (Zerologon/OneLogon)'
+	    RiskReason        = 'Listed accounts may use insecure Netlogon - exploitable via OneLogon/Zerologon'
+	}
+	@{
+	    Id                = 'AUTOLOGON'
+	    Hive              = 'HKLM'
+	    Key               = 'Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
+	    ValueName         = 'AutoAdminLogon'
+	    Match             = 'Equals'
+	    MatchValue        = 1
+	    Severity          = 'High'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_AUTOLOGON'
+	    VulnerabilityName = 'AutoAdminLogon enabled (automatic logon)'
+	    RiskReason        = 'Automatic logon active - credentials often stored in DefaultPassword (see Credential Exposure)'
+	}
+	@{
+	    Id                = 'LMCOMPAT'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Control\Lsa'
+	    ValueName         = 'LmCompatibilityLevel'
+	    Match             = 'LessOrEqual'
+	    MatchValue        = 2
+	    Severity          = 'High'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_LMCOMPAT'
+	    VulnerabilityName = 'Weak LM/NTLMv1 authentication allowed'
+	    RiskReason        = 'LM/NTLMv1 responses use DES - crackable and enables NTLM relay / hash capture'
+	}
+	@{
+	    Id                = 'NOLMHASH'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Control\Lsa'
+	    ValueName         = 'NoLmHash'
+	    Match             = 'Equals'
+	    MatchValue        = 0
+	    Severity          = 'High'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_NOLMHASH'
+	    VulnerabilityName = 'LM hash storage enabled'
+	    RiskReason        = 'Weak LM hashes stored in the SAM - trivially cracked offline'
+	}
+	@{
+	    Id                = 'REMOTEUAC'
+	    Hive              = 'HKLM'
+	    Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
+	    ValueName         = 'LocalAccountTokenFilterPolicy'
+	    Match             = 'Equals'
+	    MatchValue        = 1
+	    Severity          = 'High'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_REMOTEUAC'
+	    VulnerabilityName = 'Remote UAC token filtering disabled (LocalAccountTokenFilterPolicy)'
+	    RiskReason        = 'Any local admin can pass-the-hash remotely to admin shares / WMI'
+	}
+	@{
+	    Id                = 'AIE_HKLM'
+	    Hive              = 'HKLM'
+	    Key               = 'Software\Policies\Microsoft\Windows\Installer'
+	    ValueName         = 'AlwaysInstallElevated'
+	    Match             = 'Equals'
+	    MatchValue        = 1
+	    Severity          = 'Critical'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_ALWAYSINSTALLELEVATED'
+	    VulnerabilityName = 'AlwaysInstallElevated enabled (MSI install as SYSTEM)'
+	    RiskReason        = 'Any user installs MSI as SYSTEM - requires both HKLM and HKCU set'
+	}
+	@{
+	    Id                = 'AIE_HKCU'
+	    Hive              = 'HKCU'
+	    Key               = 'Software\Policies\Microsoft\Windows\Installer'
+	    ValueName         = 'AlwaysInstallElevated'
+	    Match             = 'Equals'
+	    MatchValue        = 1
+	    Severity          = 'Critical'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_ALWAYSINSTALLELEVATED'
+	    VulnerabilityName = 'AlwaysInstallElevated enabled (MSI install as SYSTEM)'
+	    RiskReason        = 'Any user installs MSI as SYSTEM - requires both HKLM and HKCU set'
+	}
+	@{
+	    Id                = 'ENABLELUA'
+	    Hive              = 'HKLM'
+	    Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
+	    ValueName         = 'EnableLUA'
+	    Match             = 'Equals'
+	    MatchValue        = 0
+	    Severity          = 'High'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_ENABLELUA'
+	    VulnerabilityName = 'User Account Control (UAC) disabled'
+	    RiskReason        = 'UAC off - no token filtering, all local admins usable for remote pass-the-hash'
+	}
+	@{
+	    Id                = 'RESTRICTEDADMIN'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Control\Lsa'
+	    ValueName         = 'DisableRestrictedAdmin'
+	    Match             = 'Equals'
+	    MatchValue        = 0
+	    Severity          = 'High'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_RESTRICTEDADMIN'
+	    VulnerabilityName = 'RDP Restricted Admin mode enabled (Pass-the-Hash over RDP)'
+	    RiskReason        = 'RDP accepts hash-based auth - enables PtH over RDP and MFA bypass'
+	}
+	@{
+	    Id                = 'PNP_NOWARN'
+	    Hive              = 'HKLM'
+	    Key               = 'Software\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+	    ValueName         = 'NoWarningNoElevationOnInstall'
+	    Match             = 'Equals'
+	    MatchValue        = 1
+	    Severity          = 'High'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_POINT_AND_PRINT'
+	    VulnerabilityName = 'Point and Print allows non-admin printer driver installation (PrintNightmare)'
+	    RiskReason        = 'No elevation prompt on driver install - PrintNightmare-style code execution'
+	}
+	@{
+	    Id                = 'PNP_DRVADMIN'
+	    Hive              = 'HKLM'
+	    Key               = 'Software\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+	    ValueName         = 'RestrictDriverInstallationToAdministrators'
+	    Match             = 'Equals'
+	    MatchValue        = 0
+	    Severity          = 'High'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_POINT_AND_PRINT'
+	    VulnerabilityName = 'Point and Print allows non-admin printer driver installation (PrintNightmare)'
+	    RiskReason        = 'Driver install not restricted to admins - PrintNightmare-style code execution'
+	}
+	@{
+	    Id                = 'WSUS_HTTP'
+	    Hive              = 'HKLM'
+	    Key               = 'Software\Policies\Microsoft\Windows\WindowsUpdate'
+	    ValueName         = 'WUServer'
+	    Match             = 'UrlNotHttps'
+	    MatchValue        = $null
+	    Severity          = 'High'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_WSUS_HTTP'
+	    VulnerabilityName = 'WSUS update server configured over cleartext HTTP'
+	    RiskReason        = 'Update traffic over HTTP - MITM injects updates for SYSTEM-level RCE'
+	}
+	@{
+	    Id                = 'DEFENDER_OFF'
+	    Hive              = 'HKLM'
+	    Key               = 'Software\Policies\Microsoft\Windows Defender'
+	    ValueName         = 'DisableAntiSpyware'
+	    Match             = 'Equals'
+	    MatchValue        = 1
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_DEFENDER_DISABLED'
+	    VulnerabilityName = 'Microsoft Defender Antivirus disabled via GPO'
+	    RiskReason        = 'Endpoint AV disabled centrally - removes a key detection layer'
+	}
+	@{
+	    Id                = 'DEFENDER_RTP'
+	    Hive              = 'HKLM'
+	    Key               = 'Software\Policies\Microsoft\Windows Defender\Real-Time Protection'
+	    ValueName         = 'DisableRealtimeMonitoring'
+	    Match             = 'Equals'
+	    MatchValue        = 1
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_DEFENDER_DISABLED'
+	    VulnerabilityName = 'Microsoft Defender Antivirus disabled via GPO'
+	    RiskReason        = 'Real-time protection disabled centrally - removes a key detection layer'
+	}
+	@{
+	    Id                = 'RUNASPPL_OFF'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Control\Lsa'
+	    ValueName         = 'RunAsPPL'
+	    Match             = 'Equals'
+	    MatchValue        = 0
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_RUNASPPL'
+	    VulnerabilityName = 'LSA Protection (RunAsPPL) explicitly disabled'
+	    RiskReason        = 'LSASS not protected - eases credential dumping from memory'
+	}
+	@{
+	    Id                = 'CREDGUARD_OFF'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Control\Lsa'
+	    ValueName         = 'LsaCfgFlags'
+	    Match             = 'Equals'
+	    MatchValue        = 0
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_CREDGUARD'
+	    VulnerabilityName = 'Credential Guard explicitly disabled'
+	    RiskReason        = 'Credential Guard off - derived credentials exposed in LSASS'
+	}
+	@{
+	    Id                = 'FILTERADMINTOKEN'
+	    Hive              = 'HKLM'
+	    Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
+	    ValueName         = 'FilterAdministratorToken'
+	    Match             = 'Equals'
+	    MatchValue        = 0
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_FILTERADMINTOKEN'
+	    VulnerabilityName = 'Built-in Administrator (RID-500) UAC token filtering disabled'
+	    RiskReason        = 'RID-500 admin usable for remote pass-the-hash'
+	}
+	@{
+	    Id                = 'CREDSSP_ORACLE'
+	    Hive              = 'HKLM'
+	    Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
+	    ValueName         = 'AllowEncryptionOracle'
+	    Match             = 'Equals'
+	    MatchValue        = 2
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_CREDSSP_ORACLE'
+	    VulnerabilityName = 'CredSSP encryption oracle set to Vulnerable (CVE-2018-0886)'
+	    RiskReason        = 'CredSSP accepts unpatched clients - MITM remote code execution'
+	}
+	@{
+	    Id                = 'MACHINE_PW_NOCHANGE'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Services\Netlogon\Parameters'
+	    ValueName         = 'DisablePasswordChange'
+	    Match             = 'Equals'
+	    MatchValue        = 1
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_MACHINE_PASSWORD_STATIC'
+	    VulnerabilityName = 'Machine account password rotation disabled'
+	    RiskReason        = 'Static machine password - enables long-lived silver ticket persistence'
+	}
+	@{
+	    Id                = 'MACHINE_PW_REFUSE'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Services\Netlogon\Parameters'
+	    ValueName         = 'RefusePasswordChange'
+	    Match             = 'Equals'
+	    MatchValue        = 1
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_MACHINE_PASSWORD_STATIC'
+	    VulnerabilityName = 'Machine account password rotation disabled'
+	    RiskReason        = 'Static machine password - enables long-lived silver ticket persistence'
+	}
+	@{
+	    Id                = 'NULL_RESTRICTANON'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Control\Lsa'
+	    ValueName         = 'RestrictAnonymous'
+	    Match             = 'Equals'
+	    MatchValue        = 0
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_NULL_SESSION'
+	    VulnerabilityName = 'Anonymous (null session) enumeration enabled'
+	    RiskReason        = 'Null sessions can enumerate shares/accounts - reconnaissance aid'
+	}
+	@{
+	    Id                = 'NULL_RESTRICTANONSAM'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Control\Lsa'
+	    ValueName         = 'RestrictAnonymousSAM'
+	    Match             = 'Equals'
+	    MatchValue        = 0
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_NULL_SESSION'
+	    VulnerabilityName = 'Anonymous (null session) enumeration enabled'
+	    RiskReason        = 'Null sessions can enumerate SAM accounts - reconnaissance aid'
+	}
+	@{
+	    Id                = 'NULL_EVERYONE_ANON'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Control\Lsa'
+	    ValueName         = 'EveryoneIncludesAnonymous'
+	    Match             = 'Equals'
+	    MatchValue        = 1
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_NULL_SESSION'
+	    VulnerabilityName = 'Anonymous (null session) enumeration enabled'
+	    RiskReason        = 'Anonymous users gain Everyone rights - broadens null session access'
+	}
+	@{
+	    Id                = 'SMB_SIGN_OFF'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Services\LanManServer\Parameters'
+	    ValueName         = 'RequireSecuritySignature'
+	    Match             = 'Equals'
+	    MatchValue        = 0
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_SMB_SIGNING'
+	    VulnerabilityName = 'SMB server signing not required'
+	    RiskReason        = 'SMB signing not enforced - enables SMB/NTLM relay attacks'
+	}
+)
 $Script:Win32ErrorCodes = @{
 	0     = @{ Name = 'ERROR_SUCCESS';                    Message = 'Success';                        Category = 'Success' }
 	5     = @{ Name = 'ERROR_ACCESS_DENIED';              Message = 'Access denied';                  Category = 'AccessDenied' }
@@ -2060,6 +2387,11 @@ $Script:PrimaryAttributes = @{
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
 	    'LDAPSigning', 'ChannelBinding', 'AnonymousBinding',
 	    'Scope', 'LinkedOUs', 'IsEffectiveSetting'
+	)
+	GPORegistrySetting = @(
+	    'GPOName', 'Source', 'RegistryKey', 'ConfiguredValue',
+	    'VulnerabilityName', 'RiskReason',
+	    'LinkedOUs', 'LinkedOUCount'
 	)
 	DomainPasswordPolicy = @(
 	    'minPwdLength', 'passwordComplexity',
@@ -10530,6 +10862,511 @@ foreach ($oid in $linkedOIDs) {
 	        @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '\[EPA:\s*Disabled\]'; Severity = 'Finding'; SeverityOnly = $true }
 	    )
 	}
+	'REGISTRY_WDIGEST' = @{
+	    Title = "WDigest Cleartext Credential Caching Enabled via GPO"
+	    Risk = "Finding"
+	    BaseScore = 50
+	    Description = "A Group Policy sets UseLogonCredential=1 under the WDigest provider. This forces LSASS to keep plaintext credentials in memory, reversing a key post-2014 hardening."
+	    Impact = @(
+	        "LSASS caches cleartext passwords for interactive/RDP sessions"
+	        "Any local admin or SYSTEM can recover plaintext credentials from memory"
+	        "Affects every computer where the GPO is applied"
+	    )
+	    Attack = @(
+	        "1. Land on a host where the GPO applies"
+	        "2. Dump LSASS (e.g. mimikatz sekurlsa::wdigest)"
+	        "3. Read plaintext credentials of logged-on users"
+	    )
+	    Remediation = @(
+	        "Set UseLogonCredential=0 (or remove the value) via GPO"
+	        "Enable LSA Protection (RunAsPPL) and Credential Guard"
+	    )
+	    References = @(
+	        @{ Title = "Mitigating WDigest credential theft"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/credentials-protection-management" }
+	    )
+	    Tools = @("Mimikatz", "pypykatz")
+	    MITRE = "T1003.001"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'WDigest cleartext'; Severity = 'Finding' }
+	    )
+	}
+	'REGISTRY_ONELOGON' = @{
+	    Title = "Vulnerable Netlogon Secure Channel Allow-List (Zerologon/OneLogon)"
+	    Risk = "Finding"
+	    BaseScore = 70
+	    Description = "A Group Policy populates the Netlogon VulnerableChannelAllowList (the 'Allow vulnerable Netlogon secure channel connections' policy). Accounts on this list may use insecure Netlogon channels, re-opening Zerologon-class attacks against them (OneLogon)."
+	    Impact = @(
+	        "Listed machine/trust accounts can be attacked via insecure Netlogon"
+	        "Enables meet-in-the-middle and brute-force secure-channel compromise"
+	        "Can lead to domain controller / account takeover"
+	    )
+	    Attack = @(
+	        "1. Identify accounts in the allow-list"
+	        "2. Run the OneLogon attack against the insecure Netlogon channel"
+	        "3. Compromise the targeted account / escalate"
+	    )
+	    Remediation = @(
+	        "Remove all entries from the allow-list and delete the policy"
+	        "Ensure all clients support secure Netlogon (RPC signing/sealing)"
+	    )
+	    References = @(
+	        @{ Title = "OneLogon"; Url = "https://github.com/rub-softsec/onelogon" }
+	        @{ Title = "Zerologon (CVE-2020-1472)"; Url = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2020-1472" }
+	    )
+	    Tools = @("OneLogon")
+	    MITRE = "T1210"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Vulnerable Netlogon secure channel'; Severity = 'Finding' }
+	    )
+	}
+	'REGISTRY_AUTOLOGON' = @{
+	    Title = "AutoAdminLogon Enabled via GPO"
+	    Risk = "Finding"
+	    BaseScore = 45
+	    Description = "A Group Policy enables AutoAdminLogon (automatic logon at boot). The associated DefaultPassword is frequently stored in cleartext in the same Registry.xml and readable by any authenticated user (see Credential Exposure check)."
+	    Impact = @(
+	        "Automatic logon as a (often privileged) account"
+	        "DefaultPassword commonly exposed in SYSVOL"
+	        "Physical/console access yields an authenticated session"
+	    )
+	    Attack = @(
+	        "1. Read Registry.xml from SYSVOL"
+	        "2. Extract DefaultUserName/DefaultPassword if present"
+	        "3. Use the credentials directly"
+	    )
+	    Remediation = @(
+	        "Disable AutoAdminLogon via GPO; rotate any exposed password"
+	        "Use Autopilot/MDT for unattended setups instead"
+	    )
+	    References = @(
+	        @{ Title = "Turn on automatic logon"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/user-profiles-and-logon/turn-on-automatic-logon" }
+	    )
+	    Tools = @("Manual SYSVOL search")
+	    MITRE = "T1552.001"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'AutoAdminLogon enabled'; Severity = 'Finding' }
+	    )
+	}
+	'REGISTRY_LMCOMPAT' = @{
+	    Title = "Weak LM/NTLMv1 Authentication Allowed via GPO"
+	    Risk = "Finding"
+	    BaseScore = 45
+	    Description = "A Group Policy sets LmCompatibilityLevel to 2 or lower, permitting LM and/or NTLMv1 network authentication. These use DES-based responses that are trivially crackable and enable NTLM relay/hash capture."
+	    Impact = @(
+	        "LM/NTLMv1 responses can be cracked to recover NT hashes"
+	        "Facilitates NTLM relay and offline cracking"
+	        "Weakens authentication across all affected hosts"
+	    )
+	    Attack = @(
+	        "1. Coerce or capture an LM/NTLMv1 authentication"
+	        "2. Crack the DES-based response (e.g. crack.sh)"
+	        "3. Recover the NT hash and pass-the-hash"
+	    )
+	    Remediation = @(
+	        "Set LmCompatibilityLevel to 5 (NTLMv2 only, refuse LM and NTLM)"
+	    )
+	    References = @(
+	        @{ Title = "Network security: LAN Manager authentication level"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level" }
+	    )
+	    Tools = @("Responder", "hashcat")
+	    MITRE = "T1557.001"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Weak LM/NTLMv1'; Severity = 'Finding' }
+	    )
+	}
+	'REGISTRY_NOLMHASH' = @{
+	    Title = "LM Hash Storage Enabled via GPO"
+	    Risk = "Finding"
+	    BaseScore = 45
+	    Description = "A Group Policy sets NoLmHash=0, allowing Windows to store the weak LM hash of passwords in the local SAM. LM hashes are trivially cracked offline."
+	    Impact = @(
+	        "LM hashes stored locally are easily cracked to plaintext"
+	        "Compromise of one host's SAM exposes reusable passwords"
+	    )
+	    Attack = @(
+	        "1. Dump the local SAM"
+	        "2. Crack the LM hashes offline"
+	        "3. Reuse recovered passwords"
+	    )
+	    Remediation = @(
+	        "Set NoLmHash=1 (do not store LM hash on next password change)"
+	    )
+	    References = @(
+	        @{ Title = "Do not store LAN Manager hash value"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-do-not-store-lan-manager-hash-value-on-next-password-change" }
+	    )
+	    Tools = @("secretsdump", "hashcat")
+	    MITRE = "T1003.002"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'LM hash storage'; Severity = 'Finding' }
+	    )
+	}
+	'REGISTRY_REMOTEUAC' = @{
+	    Title = "Remote UAC Token Filtering Disabled via GPO"
+	    Risk = "Finding"
+	    BaseScore = 55
+	    Description = "A Group Policy sets LocalAccountTokenFilterPolicy=1, disabling remote UAC token filtering. Any local administrator (including local accounts) can then authenticate remotely with a full high-integrity token, enabling pass-the-hash to admin shares, WMI, and RPC."
+	    Impact = @(
+	        "Local admin accounts usable for remote pass-the-hash"
+	        "Greatly eases lateral movement across the scope"
+	    )
+	    Attack = @(
+	        "1. Obtain a local admin hash (e.g. from SAM)"
+	        "2. Pass-the-hash to ADMIN$/WMI on other affected hosts"
+	        "3. Move laterally"
+	    )
+	    Remediation = @(
+	        "Remove LocalAccountTokenFilterPolicy or set it to 0"
+	        "Use LAPS to ensure unique local admin passwords"
+	    )
+	    References = @(
+	        @{ Title = "Pass-the-Hash is Dead: LocalAccountTokenFilterPolicy"; Url = "https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/" }
+	    )
+	    Tools = @("CrackMapExec", "impacket")
+	    MITRE = "T1550.002"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Remote UAC token filtering'; Severity = 'Finding' }
+	    )
+	}
+	'REGISTRY_ALWAYSINSTALLELEVATED' = @{
+	    Title = "AlwaysInstallElevated Enabled via GPO"
+	    Risk = "Finding"
+	    BaseScore = 65
+	    Description = "A Group Policy sets AlwaysInstallElevated=1 in both HKLM and HKCU. Any user can then install a Windows Installer (MSI) package with SYSTEM privileges - a direct, reliable local privilege escalation. adPEAS only reports this when BOTH hives are set, which is the exploitable condition."
+	    Impact = @(
+	        "Any user installs MSI packages as SYSTEM"
+	        "Direct local privilege escalation to SYSTEM"
+	        "Applies to every computer in the GPO scope"
+	    )
+	    Attack = @(
+	        "1. Craft a malicious MSI (e.g. msfvenom)"
+	        "2. Run msiexec /quiet /i evil.msi as a standard user"
+	        "3. Gain SYSTEM"
+	    )
+	    Remediation = @(
+	        "Set AlwaysInstallElevated=0 in both HKLM and HKCU (or remove the policy)"
+	    )
+	    References = @(
+	        @{ Title = "AlwaysInstallElevated"; Url = "https://docs.specterops.io/ghostpack-docs/SharpUp-mdx/checks/alwaysinstallelevated" }
+	    )
+	    Tools = @("SharpUp", "msfvenom")
+	    MITRE = "T1548.002"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'AlwaysInstallElevated enabled'; Severity = 'Finding' }
+	    )
+	}
+	'REGISTRY_ENABLELUA' = @{
+	    Title = "User Account Control (UAC) Disabled via GPO"
+	    Risk = "Finding"
+	    BaseScore = 50
+	    Description = "A Group Policy sets EnableLUA=0, turning UAC off entirely. Without UAC there is no token filtering, so all local administrators are usable for remote pass-the-hash, and elevation prompts are gone."
+	    Impact = @(
+	        "No UAC token filtering on affected hosts"
+	        "All local admins usable for remote pass-the-hash"
+	        "Malware runs elevated without prompts"
+	    )
+	    Attack = @(
+	        "1. Obtain any local admin credential/hash"
+	        "2. Authenticate remotely with full token"
+	        "3. Move laterally / execute elevated"
+	    )
+	    Remediation = @(
+	        "Set EnableLUA=1 and keep UAC enabled"
+	    )
+	    References = @(
+	        @{ Title = "UAC and remote restrictions"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/user-account-control-and-remote-restriction" }
+	    )
+	    Tools = @("CrackMapExec")
+	    MITRE = "T1548.002"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'User Account Control'; Severity = 'Finding' }
+	    )
+	}
+	'REGISTRY_RESTRICTEDADMIN' = @{
+	    Title = "RDP Restricted Admin Mode Enabled via GPO"
+	    Risk = "Finding"
+	    BaseScore = 50
+	    Description = "A Group Policy sets DisableRestrictedAdmin=0, enabling RDP Restricted Admin mode. While intended to protect credentials, it lets RDP accept hash-based authentication - enabling Pass-the-Hash over RDP and bypassing some MFA solutions."
+	    Impact = @(
+	        "RDP accepts NT hash without plaintext password"
+	        "Pass-the-Hash over RDP becomes possible"
+	        "Can bypass RDP-layer MFA"
+	    )
+	    Attack = @(
+	        "1. Obtain a local/domain admin NT hash"
+	        "2. RDP with Restricted Admin using the hash (e.g. mstsc /restrictedadmin via Mimikatz)"
+	        "3. Interactive admin session without the password"
+	    )
+	    Remediation = @(
+	        "Set DisableRestrictedAdmin=1 unless a documented need exists"
+	        "Monitor changes to this value as a compromise indicator"
+	    )
+	    References = @(
+	        @{ Title = "Restricted Admin Mode - Circumventing MFA on RDP"; Url = "https://www.levelblue.com/blogs/spiderlabs-blog/restricted-admin-mode-circumventing-mfa-on-rdp-logons/" }
+	    )
+	    Tools = @("Mimikatz", "RestrictedAdmin")
+	    MITRE = "T1550.002"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP Restricted Admin'; Severity = 'Finding' }
+	    )
+	}
+	'REGISTRY_POINT_AND_PRINT' = @{
+	    Title = "Point and Print Allows Non-Admin Driver Installation (PrintNightmare)"
+	    Risk = "Finding"
+	    BaseScore = 55
+	    Description = "A Group Policy weakens Point and Print so that non-administrators can install printer drivers without an elevation prompt (NoWarningNoElevationOnInstall=1) or RestrictDriverInstallationToAdministrators=0. This re-opens PrintNightmare-style remote code execution / local privilege escalation."
+	    Impact = @(
+	        "Non-admins install printer drivers (code) without prompts"
+	        "Enables PrintNightmare-style RCE / SYSTEM escalation"
+	        "Applies to every computer in the GPO scope"
+	    )
+	    Attack = @(
+	        "1. Stand up a malicious print server / driver"
+	        "2. Have the victim connect (Point and Print)"
+	        "3. Driver executes as SYSTEM"
+	    )
+	    Remediation = @(
+	        "Set RestrictDriverInstallationToAdministrators=1"
+	        "Remove NoWarningNoElevationOnInstall=1"
+	    )
+	    References = @(
+	        @{ Title = "A Practical Guide to PrintNightmare"; Url = "https://itm4n.github.io/printnightmare-exploitation/" }
+	        @{ Title = "KB5005652"; Url = "https://support.microsoft.com/en-us/topic/kb5005652-873642bf-2634-49c5-a23b-6d8e9a302872" }
+	    )
+	    Tools = @("PrintNightmare PoCs")
+	    MITRE = "T1547.012"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Point and Print'; Severity = 'Finding' }
+	    )
+	}
+	'REGISTRY_WSUS_HTTP' = @{
+	    Title = "WSUS Update Server Configured over Cleartext HTTP"
+	    Risk = "Finding"
+	    BaseScore = 55
+	    Description = "A Group Policy points clients to a WSUS server over cleartext HTTP (WUServer=http://...). Update traffic on the local subnet can be intercepted and tampered with, allowing an attacker to inject a malicious 'update' that executes as SYSTEM."
+	    Impact = @(
+	        "WSUS traffic is unauthenticated/cleartext"
+	        "MITM can inject updates executed as SYSTEM"
+	        "Mass compromise of all WSUS clients in scope"
+	    )
+	    Attack = @(
+	        "1. MITM the client-to-WSUS HTTP traffic"
+	        "2. Serve a malicious signed-binary command (e.g. PsExec)"
+	        "3. Code executes as SYSTEM on clients"
+	    )
+	    Remediation = @(
+	        "Reconfigure WSUS to use HTTPS (WUServer=https://...)"
+	        "Enable TLS and proper certificate validation"
+	    )
+	    References = @(
+	        @{ Title = "WSUS Is SUS: NTLM Relay Attacks"; Url = "https://trustedsec.com/blog/wsus-is-sus-ntlm-relay-attacks-in-plain-sight" }
+	    )
+	    Tools = @("PyWSUS", "wsuks")
+	    MITRE = "T1557"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'WSUS update server'; Severity = 'Finding' }
+	    )
+	}
+	'REGISTRY_DEFENDER_DISABLED' = @{
+	    Title = "Microsoft Defender Antivirus Disabled via GPO"
+	    Risk = "Hint"
+	    BaseScore = 30
+	    Description = "A Group Policy disables Microsoft Defender Antivirus or its real-time protection (DisableAntiSpyware=1 / DisableRealtimeMonitoring=1). This removes a key endpoint detection layer across the scope. Note: on Windows 10 1903+ Tamper Protection may prevent the setting from taking effect."
+	    Impact = @(
+	        "Endpoint AV/real-time protection disabled centrally"
+	        "Malware and credential theft tools run undetected"
+	    )
+	    Attack = @(
+	        "1. Operate on hosts where Defender is off"
+	        "2. Run tooling without AV interference"
+	    )
+	    Remediation = @(
+	        "Remove the Defender disable policy; enable Tamper Protection"
+	    )
+	    References = @(
+	        @{ Title = "Disabling LSA/Defender defences"; Url = "https://research.splunk.com/endpoint/45cd08f8-a2c9-4f4e-baab-e1a0c624b0ab/" }
+	    )
+	    Tools = @("-")
+	    MITRE = "T1562.001"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Microsoft Defender Antivirus disabled'; Severity = 'Hint' }
+	    )
+	}
+	'REGISTRY_RUNASPPL' = @{
+	    Title = "LSA Protection (RunAsPPL) Explicitly Disabled via GPO"
+	    Risk = "Hint"
+	    BaseScore = 30
+	    Description = "A Group Policy explicitly sets RunAsPPL=0, disabling LSA Protection. Without it, LSASS is not run as a protected process, easing credential dumping from memory."
+	    Impact = @(
+	        "LSASS not protected against memory access/injection"
+	        "Eases credential dumping (Mimikatz, comsvcs.dll)"
+	    )
+	    Attack = @(
+	        "1. Land on an affected host as admin"
+	        "2. Dump LSASS without bypassing PPL"
+	    )
+	    Remediation = @(
+	        "Set RunAsPPL=1 to enable LSA Protection"
+	    )
+	    References = @(
+	        @{ Title = "Do You Really Know About LSA Protection (RunAsPPL)?"; Url = "https://itm4n.github.io/lsass-runasppl/" }
+	    )
+	    Tools = @("Mimikatz")
+	    MITRE = "T1562.001"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'LSA Protection'; Severity = 'Hint' }
+	    )
+	}
+	'REGISTRY_CREDGUARD' = @{
+	    Title = "Credential Guard Explicitly Disabled via GPO"
+	    Risk = "Hint"
+	    BaseScore = 30
+	    Description = "A Group Policy explicitly sets LsaCfgFlags=0, disabling Windows Defender Credential Guard. Derived domain credentials are then no longer isolated by virtualization-based security and remain exposed in LSASS."
+	    Impact = @(
+	        "Credential Guard isolation turned off"
+	        "NTLM hashes / Kerberos TGTs exposed in LSASS"
+	    )
+	    Attack = @(
+	        "1. Dump LSASS on an affected host"
+	        "2. Recover usable credential material"
+	    )
+	    Remediation = @(
+	        "Enable Credential Guard (LsaCfgFlags=1)"
+	    )
+	    References = @(
+	        @{ Title = "Configure Credential Guard"; Url = "https://learn.microsoft.com/en-us/windows/security/identity-protection/credential-guard/configure" }
+	    )
+	    Tools = @("Mimikatz")
+	    MITRE = "T1562.001"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Credential Guard explicitly disabled'; Severity = 'Hint' }
+	    )
+	}
+	'REGISTRY_FILTERADMINTOKEN' = @{
+	    Title = "Built-in Administrator (RID-500) UAC Token Filtering Disabled via GPO"
+	    Risk = "Hint"
+	    BaseScore = 30
+	    Description = "A Group Policy sets FilterAdministratorToken=0, exempting the built-in RID-500 Administrator (even if renamed) from UAC token filtering. This account can then be used for remote pass-the-hash."
+	    Impact = @(
+	        "RID-500 admin usable for remote pass-the-hash"
+	        "Lateral movement via the built-in admin hash"
+	    )
+	    Attack = @(
+	        "1. Recover the RID-500 hash (often shared via imaging)"
+	        "2. Pass-the-hash remotely to affected hosts"
+	    )
+	    Remediation = @(
+	        "Set FilterAdministratorToken=1; use LAPS for unique passwords"
+	    )
+	    References = @(
+	        @{ Title = "LocalAccountTokenFilterPolicy / FilterAdministratorToken"; Url = "https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/" }
+	    )
+	    Tools = @("CrackMapExec")
+	    MITRE = "T1550.002"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'RID-500'; Severity = 'Hint' }
+	    )
+	}
+	'REGISTRY_CREDSSP_ORACLE' = @{
+	    Title = "CredSSP Encryption Oracle Set to Vulnerable via GPO"
+	    Risk = "Hint"
+	    BaseScore = 30
+	    Description = "A Group Policy sets AllowEncryptionOracle=2 (Vulnerable), permitting CredSSP to talk to unpatched clients/servers. This re-opens CVE-2018-0886, enabling a man-in-the-middle to run code over RDP/CredSSP."
+	    Impact = @(
+	        "CredSSP accepts unpatched peers"
+	        "MITM can achieve remote code execution over RDP"
+	    )
+	    Attack = @(
+	        "1. MITM a CredSSP/RDP session"
+	        "2. Exploit CVE-2018-0886 to run commands on the target"
+	    )
+	    Remediation = @(
+	        "Set AllowEncryptionOracle to 0 (Force Updated Clients)"
+	    )
+	    References = @(
+	        @{ Title = "CVE-2018-0886 CredSSP"; Url = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2018-0886" }
+	    )
+	    Tools = @("-")
+	    MITRE = "T1557"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'CredSSP encryption oracle'; Severity = 'Hint' }
+	    )
+	}
+	'REGISTRY_MACHINE_PASSWORD_STATIC' = @{
+	    Title = "Machine Account Password Rotation Disabled via GPO"
+	    Risk = "Hint"
+	    BaseScore = 30
+	    Description = "A Group Policy disables automatic machine account password changes (DisablePasswordChange=1 or RefusePasswordChange=1). A static machine password enables long-lived silver-ticket persistence and offline attacks against the computer account."
+	    Impact = @(
+	        "Machine account password never rotates"
+	        "Long-lived silver tickets remain valid"
+	    )
+	    Attack = @(
+	        "1. Recover the machine account key once"
+	        "2. Forge silver tickets that stay valid indefinitely"
+	    )
+	    Remediation = @(
+	        "Re-enable machine password rotation (remove the value / set to 0)"
+	    )
+	    References = @(
+	        @{ Title = "Domain member: Disable machine account password changes"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/domain-member-disable-machine-account-password-changes" }
+	    )
+	    Tools = @("Mimikatz", "impacket")
+	    MITRE = "T1558.002"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Machine account password rotation'; Severity = 'Hint' }
+	    )
+	}
+	'REGISTRY_NULL_SESSION' = @{
+	    Title = "Anonymous (Null Session) Enumeration Enabled via GPO"
+	    Risk = "Hint"
+	    BaseScore = 25
+	    Description = "A Group Policy weakens anonymous access restrictions (RestrictAnonymous=0, RestrictAnonymousSAM=0, or EveryoneIncludesAnonymous=1). This allows unauthenticated null-session enumeration of shares, users, and policies - valuable reconnaissance for an attacker."
+	    Impact = @(
+	        "Unauthenticated enumeration of accounts/shares"
+	        "Aids password spraying and target selection"
+	    )
+	    Attack = @(
+	        "1. Connect with a null session"
+	        "2. Enumerate users, groups, shares, password policy"
+	    )
+	    Remediation = @(
+	        "Restore anonymous restrictions (RestrictAnonymous/SAM=1, EveryoneIncludesAnonymous=0)"
+	    )
+	    References = @(
+	        @{ Title = "Null session enumeration"; Url = "https://www.blumira.com/integration/how-to-disable-null-session-in-windows/" }
+	    )
+	    Tools = @("enum4linux", "rpcclient")
+	    MITRE = "T1087"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'null session'; Severity = 'Hint' }
+	    )
+	}
+	'REGISTRY_SMB_SIGNING' = @{
+	    Title = "SMB Server Signing Not Required (Set via GPO)"
+	    Risk = "Hint"
+	    BaseScore = 30
+	    Description = "A Group Policy explicitly sets RequireSecuritySignature=0 on the SMB server, so SMB signing is not enforced. This enables SMB/NTLM relay attacks against the affected hosts."
+	    Impact = @(
+	        "SMB signing not enforced"
+	        "Enables SMB/NTLM relay to the host"
+	    )
+	    Attack = @(
+	        "1. Coerce authentication from a victim"
+	        "2. Relay it to an unsigned SMB target"
+	        "3. Execute as the relayed identity"
+	    )
+	    Remediation = @(
+	        "Set RequireSecuritySignature=1 to enforce SMB signing"
+	    )
+	    References = @(
+	        @{ Title = "Microsoft network server: Digitally sign communications"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/microsoft-network-server-digitally-sign-communications-always" }
+	    )
+	    Tools = @("ntlmrelayx")
+	    MITRE = "T1557.001"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = 'SMB server signing'; Severity = 'Hint' }
+	    )
+	}
 	'SCRIPTPATH_HARDCODED' = @{
 	    Title = "Hardcoded Logon Script Path"
 	    Risk = "Hint"
@@ -11025,10 +11862,10 @@ function Get-AttributeSeverity {
 	        if (-not $entry.SID) { continue }
 	        $privResult = Test-IsPrivileged -Identity $entry.SID
 	        if (-not $privResult.IsPrivileged) {
-	            return 'Note'   # Non-Standard → auto-promoted to Primary
+	            return 'Note'   # Non-Standard â†’ auto-promoted to Primary
 	        }
 	    }
-	    return 'Standard'   # All privileged → stays in Extended
+	    return 'Standard'   # All privileged â†’ stays in Extended
 	}
 	$triggerSeverity = Get-SeverityFromTrigger -Name $Name -Value $Value `
 	    -IsComputer $IsComputer -SourceObject $SourceObject
@@ -12119,11 +12956,11 @@ $Script:ImpactMultipliers = @{
 	'none'  = 1.0    # Standard user accounts - base impact
 }
 $Script:PasswordAgeModifiers = @{
-	'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
-	'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
-	'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
-	'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
-	'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
+	'multiplier_10x' = 1.6    # Password age >= 10Ã— maxPwdAge
+	'multiplier_5x'  = 1.4    # Password age >= 5Ã— maxPwdAge
+	'multiplier_3x'  = 1.3    # Password age >= 3Ã— maxPwdAge
+	'multiplier_2x'  = 1.2    # Password age >= 2Ã— maxPwdAge
+	'multiplier_1x'  = 1.1    # Password age >= 1Ã— maxPwdAge (over policy)
 	'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 $Script:PasswordLengthModifiers = @{
@@ -13375,6 +14212,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "PowerShell scripts via psscripts.ini"
 	    )
 	    SecureMessage = "No scripts distributed via GPO. No Logon/Logoff/Startup/Shutdown scripts were found in Group Policy configurations."
+	}
+	'GPORegistrySetting' = @{
+	    TitleFormat = "GPO Registry Setting: {Name}"
+	    Module = "GPO"
+	    Category = "GPO"
+	    SectionTitle = "GPO Registry Settings"
+	    Summary = "Detects security-relevant registry values deployed via Group Policy that, when set, enable an attack."
+	    WhyItMatters = "Group Policy can push registry values to every linked system. A single value such as WDigest cleartext caching, AlwaysInstallElevated, RDP Restricted Admin, the Zerologon/OneLogon allow-list, Point and Print (PrintNightmare), or WSUS-over-HTTP turns the whole scope into an attack surface for credential theft, lateral movement, or privilege escalation. This check parses both delivery mechanisms (Registry.pol and Registry.xml) and reports only values that are actively set to a dangerous state. It sees what is deployed via GPO, not what is set locally on a host."
+	    WhatWeCheck = @(
+	        "Administrative Templates (Registry.pol, PReg binary)"
+	        "Group Policy Preferences (Registry.xml)"
+	        "Credential-theft enablers (WDigest, LM/NTLMv1, LSA/Credential Guard disabled)"
+	        "Lateral-movement enablers (Remote UAC, RDP Restricted Admin, Zerologon allow-list)"
+	        "Privilege-escalation enablers (AlwaysInstallElevated, Point and Print, WSUS over HTTP)"
+	    )
+	    SecureMessage = "No vulnerable registry settings deployed via GPO. No Group Policy was found pushing a registry value in a state that enables an attack."
 	}
 	'BloodHoundCollector' = @{
 	    TitleFormat = "BloodHound Collection: {Name}"
@@ -34829,9 +35682,9 @@ function Get-KerberosChecksumNative {
 	    [int]$EncryptionType
 	)
 	$checksumType = switch ($EncryptionType) {
-	    18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
-	    17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
-	    23 { -138 }  # RC4 → HMAC_MD5
+	    18 { 16 }    # AES256 â†’ HMAC_SHA1_96_AES256
+	    17 { 15 }    # AES128 â†’ HMAC_SHA1_96_AES128
+	    23 { -138 }  # RC4 â†’ HMAC_MD5
 	    default { throw "Unsupported encryption type for checksum: $EncryptionType" }
 	}
 	if ((Initialize-KerbCryptoInterop) -and $Script:KerbCryptoHasChecksum) {
@@ -52731,8 +53584,8 @@ function Get-ProtectedUsersStatus {
 	            }
 	        }
 	        $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
-	        $tier0Accounts = @{}  # SID → Account object (deduplicated)
-	        $tier0AccountGroups = @{}  # SID → Array of group names (for display)
+	        $tier0Accounts = @{}  # SID â†’ Account object (deduplicated)
+	        $tier0AccountGroups = @{}  # SID â†’ Array of group names (for display)
 	        foreach ($groupSID in $tier0GroupSIDs) {
 	            $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
 	            if (-not $groupObj) {
@@ -56570,6 +57423,349 @@ function Parse-ScriptIni {
 	    return $null
 	}
 }
+function Get-GPORegistrySettings {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [string]$Domain,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Server,
+	    [Parameter(Mandatory=$false)]
+	    [System.Management.Automation.PSCredential]$Credential
+	)
+	begin {
+	}
+	process {
+	    try {
+	        if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+	            return
+	        }
+	        $Script:_gpoRegMatches = [System.Collections.ArrayList]::new()
+	        Show-SubHeader "Searching for vulnerable registry settings deployed via GPO..." -ObjectType "GPORegistrySetting"
+	        $gpos = Get-DomainGPO @PSBoundParameters
+	        if (-not $gpos) {
+	            Show-Line "No GPOs found in domain" -Class Note
+	            return
+	        }
+	        $gpoLinkage = Get-GPOLinkage
+	        $gpoNameMap = @{}
+	        foreach ($gpo in $gpos) {
+	            $gpoNameMap[$gpo.Name] = $gpo.DisplayName
+	        }
+	        $Script:sysvolAccessible = $false
+	        Invoke-SMBAccess -Description "Scanning GPO registry configuration files" -ScriptBlock {
+	            $sysvolPath = "\\$($Script:LDAPContext.Server)\SYSVOL\$($Script:LDAPContext.Domain)\Policies"
+	            if (-not (Test-Path $sysvolPath)) {
+	                return
+	            }
+	            $Script:sysvolAccessible = $true
+	            $regFiles = @(Get-CachedSYSVOLFiles -Filter @("Registry.pol", "Registry.xml"))
+	            if ($regFiles.Count -eq 0) {
+	                return
+	            }
+	            $totalFiles = $regFiles.Count
+	            $currentIndex = 0
+	            foreach ($file in $regFiles) {
+	                $currentIndex++
+	                if ($totalFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning GPO registry settings" -Current $currentIndex -Total $totalFiles -ObjectName $file.Name }
+	                if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') {
+	                    continue
+	                }
+	                $gpoGUID = $Matches[1]
+	                $gpoName = if ($gpoNameMap.ContainsKey($gpoGUID)) { $gpoNameMap[$gpoGUID] } else { $gpoGUID }
+	                try {
+	                    $records = @()
+	                    if ($file.Name -ieq 'Registry.pol') {
+	                        $hive = if ($file.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
+	                        $records = @(Parse-PRegRecords -PolFilePath $file.FullName -Hive $hive)
+	                        $source = 'Registry.pol'
+	                    } else {
+	                        $hive = 'HKLM/HKCU'
+	                        $records = @(Parse-RegistryXml -XmlFilePath $file.FullName)
+	                        $source = 'Registry.xml'
+	                    }
+	                    if ($records.Count -gt 0) {
+	                    }
+	                    foreach ($record in $records) {
+	                        $entry = Test-DangerousRegistryRecord -Record $record
+	                        if ($entry) {
+	                            [void]$Script:_gpoRegMatches.Add([PSCustomObject]@{
+	                                GPOGUID = $gpoGUID
+	                                GPOName = $gpoName
+	                                Source  = $source
+	                                Entry   = $entry
+	                                Record  = $record
+	                            })
+	                        }
+	                    }
+	                } catch {
+	                }
+	            }
+	            if ($totalFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning GPO registry settings" -Completed }
+	        }
+	        $rawMatches = @($Script:_gpoRegMatches)
+	        $sysvolAccessible = $Script:sysvolAccessible
+	        $Script:_gpoRegMatches = $null
+	        $Script:sysvolAccessible = $null
+	        if (-not $sysvolAccessible) {
+	            if ((Test-SysvolAccessible) -eq $false) {
+	                Show-Line "Skipped - SYSVOL not accessible" -Class Hint
+	            } else {
+	                Show-Line "SYSVOL access failed - cannot analyze GPO registry settings - SMB access failed (authentication/network issue)" -Class Finding
+	            }
+	            return
+	        }
+	        $findings = @(Resolve-RegistryFindings -RawMatches $rawMatches)
+	        if ($findings.Count -gt 0) {
+	            Show-Line "Found $($findings.Count) vulnerable registry setting(s) deployed via GPO" -Class Hint
+	            foreach ($finding in $findings) {
+	                $linkedOUs = @()
+	                if ($gpoLinkage.ContainsKey($finding.GPOGUID)) {
+	                    $linkedOUs = $gpoLinkage[$finding.GPOGUID]
+	                }
+	                if ($linkedOUs.Count -gt 0) {
+	                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+	                }
+	                $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
+	                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
+	                Show-Object $finding
+	            }
+	        } else {
+	            Show-Line "No vulnerable registry settings deployed via GPO" -Class Note
+	        }
+	    } catch {
+	    }
+	}
+	end {
+	}
+}
+function Test-DangerousRegistryRecord {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    $Record
+	)
+	$recKey = ($Record.Key -replace '^\\+', '').TrimEnd('\').ToLower()
+	$recValueName = [string]$Record.ValueName
+	$recHive = [string]$Record.Hive
+	foreach ($entry in $Script:DangerousRegistryKeys) {
+	    if ($entry.Hive -ne $recHive) { continue }
+	    if (($entry.Key -replace '^\\+', '').TrimEnd('\').ToLower() -ne $recKey) { continue }
+	    if ($entry.ValueName.ToLower() -ne $recValueName.ToLower()) { continue }
+	    $isMatch = $false
+	    switch ($entry.Match) {
+	        'Present' {
+	            $isMatch = $true
+	        }
+	        'Equals' {
+	            if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -eq [int64]$entry.MatchValue) }
+	        }
+	        'LessOrEqual' {
+	            if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -le [int64]$entry.MatchValue) }
+	        }
+	        'GreaterThan' {
+	            if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -gt [int64]$entry.MatchValue) }
+	        }
+	        'UrlNotHttps' {
+	            $sv = [string]$Record.ValueString
+	            if ($sv -and $sv.Trim().ToLower().StartsWith('http://')) { $isMatch = $true }
+	        }
+	    }
+	    if ($isMatch) {
+	        return $entry
+	    }
+	}
+	return $null
+}
+function Resolve-RegistryFindings {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [AllowEmptyCollection()]
+	    [array]$RawMatches
+	)
+	$findings = @()
+	$aieMatches = @()
+	foreach ($m in $RawMatches) {
+	    if ($m.Entry.Id -eq 'AIE_HKLM' -or $m.Entry.Id -eq 'AIE_HKCU') {
+	        $aieMatches += $m
+	        continue
+	    }
+	    $findings += (New-RegistryFinding -RegMatch $m)
+	}
+	$aieByGpo = $aieMatches | Group-Object -Property GPOGUID
+	foreach ($group in $aieByGpo) {
+	    $ids = @($group.Group | ForEach-Object { $_.Entry.Id } | Sort-Object -Unique)
+	    if ($ids -contains 'AIE_HKLM' -and $ids -contains 'AIE_HKCU') {
+	        $hklmMatch = @($group.Group | Where-Object { $_.Entry.Id -eq 'AIE_HKLM' })[0]
+	        $finding = New-RegistryFinding -RegMatch $hklmMatch
+	        $finding.RegistryKey = 'HKLM+HKCU\Software\Policies\Microsoft\Windows\Installer\AlwaysInstallElevated'
+	        $finding.ConfiguredValue = '1 (both HKLM and HKCU)'
+	        $findings += $finding
+	    } else {
+	    }
+	}
+	return $findings
+}
+function New-RegistryFinding {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    $RegMatch
+	)
+	$entry = $RegMatch.Entry
+	$record = $RegMatch.Record
+	$configured = '(value present)'
+	if ($null -ne $record.ValueInt) {
+	    $configured = [string]$record.ValueInt
+	} elseif ($record.ValueString) {
+	    $configured = [string]$record.ValueString
+	}
+	return [PSCustomObject][ordered]@{
+	    GPOName           = $RegMatch.GPOName
+	    Source            = $RegMatch.Source
+	    RegistryKey       = "$($entry.Hive)\$($entry.Key)\$($entry.ValueName)"
+	    ConfiguredValue   = $configured
+	    VulnerabilityName = $entry.VulnerabilityName
+	    RiskReason        = $entry.RiskReason
+	    Severity          = $entry.Severity
+	    GPOGUID           = $RegMatch.GPOGUID
+	}
+}
+function Parse-PRegRecords {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [string]$PolFilePath,
+	    [Parameter(Mandatory=$true)]
+	    [string]$Hive
+	)
+	$records = @()
+	try {
+	    $bytes = [System.IO.File]::ReadAllBytes($PolFilePath)
+	    if ($bytes.Length -lt 8) { return $records }
+	    if ([System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'PReg') {
+	        return $records
+	    }
+	    $pos = 8  # skip signature(4) + version(4)
+	    $len = $bytes.Length
+	    $readString = {
+	        param([ref]$p)
+	        $start = $p.Value
+	        while (($p.Value + 1) -lt $len) {
+	            if ($bytes[$p.Value] -eq 0 -and $bytes[$p.Value + 1] -eq 0) { break }
+	            $p.Value += 2
+	        }
+	        $strLen = $p.Value - $start
+	        $s = ''
+	        if ($strLen -gt 0) { $s = [System.Text.Encoding]::Unicode.GetString($bytes, $start, $strLen) }
+	        $p.Value += 2  # consume null terminator
+	        return $s
+	    }
+	    $openBracket = 0x5B   # [
+	    $semicolon   = 0x3B   # ;
+	    while ($pos -lt $len) {
+	        if (-not ($bytes[$pos] -eq $openBracket -and ($pos + 1) -lt $len -and $bytes[$pos + 1] -eq 0)) {
+	            $pos += 2
+	            continue
+	        }
+	        $pos += 2
+	        $ref = [ref]$pos
+	        $key = (& $readString $ref)
+	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+	        $pos += 2
+	        $valueName = (& $readString $ref)
+	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+	        $pos += 2
+	        if (($pos + 4) -gt $len) { break }
+	        $type = [System.BitConverter]::ToUInt32($bytes, $pos)
+	        $pos += 4
+	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+	        $pos += 2
+	        if (($pos + 4) -gt $len) { break }
+	        $size = [System.BitConverter]::ToUInt32($bytes, $pos)
+	        $pos += 4
+	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+	        $pos += 2
+	        if (($pos + $size) -gt $len) { break }
+	        $data = New-Object byte[] $size
+	        if ($size -gt 0) { [System.Array]::Copy($bytes, $pos, $data, 0, $size) }
+	        $pos += $size
+	        $valueInt = $null
+	        $valueString = $null
+	        switch ($type) {
+	            4  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }      # REG_DWORD
+	            5  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }      # REG_DWORD_BIG_ENDIAN (rare)
+	            11 { if ($data.Length -ge 8) { $valueInt = [System.BitConverter]::ToUInt64($data, 0) } }      # REG_QWORD
+	            1  { $valueString = [System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0) }       # REG_SZ
+	            2  { $valueString = [System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0) }       # REG_EXPAND_SZ
+	            7  { $valueString = ([System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0)) }     # REG_MULTI_SZ
+	        }
+	        $records += [PSCustomObject]@{
+	            Hive        = $Hive
+	            Key         = $key
+	            ValueName   = $valueName
+	            Type        = $type
+	            ValueInt    = $valueInt
+	            ValueString = $valueString
+	        }
+	    }
+	} catch {
+	}
+	return $records
+}
+function Parse-RegistryXml {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [string]$XmlFilePath
+	)
+	$records = @()
+	try {
+	    [xml]$xml = Get-Content -Path $XmlFilePath -ErrorAction Stop
+	    $regNodes = $xml.SelectNodes("//Registry")
+	    if (-not $regNodes) { return $records }
+	    foreach ($node in $regNodes) {
+	        $props = $node.Properties
+	        if (-not $props) { continue }
+	        $hiveRaw = [string]$props.hive
+	        $hive = $null
+	        switch -Wildcard ($hiveRaw.ToUpper()) {
+	            'HKEY_LOCAL_MACHINE*' { $hive = 'HKLM' }
+	            'HKLM*'               { $hive = 'HKLM' }
+	            'HKEY_CURRENT_USER*'  { $hive = 'HKCU' }
+	            'HKCU*'               { $hive = 'HKCU' }
+	            default               { $hive = $hiveRaw }
+	        }
+	        $type = [string]$props.type
+	        $rawValue = [string]$props.value
+	        $valueInt = $null
+	        $valueString = $null
+	        if ($type -match 'DWORD|QWORD') {
+	            $parsed = $null
+	            if ($rawValue -match '^[0-9A-Fa-f]+$') {
+	                try { $parsed = [System.Convert]::ToInt64($rawValue, 16) } catch { $parsed = $null }
+	            }
+	            if ($null -eq $parsed -and $rawValue -match '^\d+$') {
+	                try { $parsed = [System.Convert]::ToInt64($rawValue, 10) } catch { $parsed = $null }
+	            }
+	            $valueInt = $parsed
+	        } else {
+	            $valueString = $rawValue
+	        }
+	        $records += [PSCustomObject]@{
+	            Hive        = $hive
+	            Key         = [string]$props.key
+	            ValueName   = [string]$props.name
+	            Type        = $type
+	            ValueInt    = $valueInt
+	            ValueString = $valueString
+	        }
+	    }
+	} catch {
+	}
+	return $records
+}
 function Get-ADCSTemplate {
 	[CmdletBinding()]
 	param(
@@ -59478,8 +60674,8 @@ function Get-PasswordInDescription {
 	        $exclusionPatterns = @(
 	            'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
 	            '\bparol[ae]?\s*(policy|politica|cerinta)',
-	            'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
-	            'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
+	            'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|mÃ¥|bÃ¸r|deve|trebuie)\s+',
+	            'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utlÃ¸p|lunghezza|scadenza)',
 	            'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
 	            '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
 	            '(minimum|maximum)\s+passw\S*',
@@ -68988,7 +70184,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.2.0+20260622-1057"
+$Script:adPEASVersion = "2.2.0+20260626-0903"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -69429,6 +70625,7 @@ try {
 	        Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOLocalGroupMembership' -Title 'GPO Local Group Membership' -Check { Get-GPOLocalGroupMembership }
 	        Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks }
 	        Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScriptPaths' -Title 'GPO Script Paths' -Check { Get-GPOScriptPaths }
+	        Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPORegistrySettings' -Title 'GPO Registry Settings' -Check { Get-GPORegistrySettings }
 	    } catch {
 	        Write-Warning "[adPEAS] Error executing GPO Module: $_"
 	    }

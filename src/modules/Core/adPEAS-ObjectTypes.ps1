@@ -1275,6 +1275,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "No scripts distributed via GPO. No Logon/Logoff/Startup/Shutdown scripts were found in Group Policy configurations."
     }
 
+    'GPORegistrySetting' = @{
+        TitleFormat = "GPO Registry Setting: {Name}"
+        Module = "GPO"
+        Category = "GPO"
+        SectionTitle = "GPO Registry Settings"
+        Summary = "Detects security-relevant registry values deployed via Group Policy that, when set, enable an attack."
+        WhyItMatters = "Group Policy can push registry values to every linked system. A single value such as WDigest cleartext caching, AlwaysInstallElevated, RDP Restricted Admin, the Zerologon/OneLogon allow-list, Point and Print (PrintNightmare), or WSUS-over-HTTP turns the whole scope into an attack surface for credential theft, lateral movement, or privilege escalation. This check parses both delivery mechanisms (Registry.pol and Registry.xml) and reports only values that are actively set to a dangerous state. It sees what is deployed via GPO, not what is set locally on a host."
+        WhatWeCheck = @(
+            "Administrative Templates (Registry.pol, PReg binary)"
+            "Group Policy Preferences (Registry.xml)"
+            "Credential-theft enablers (WDigest, LM/NTLMv1, LSA/Credential Guard disabled)"
+            "Lateral-movement enablers (Remote UAC, RDP Restricted Admin, Zerologon allow-list)"
+            "Privilege-escalation enablers (AlwaysInstallElevated, Point and Print, WSUS over HTTP)"
+        )
+        SecureMessage = "No vulnerable registry settings deployed via GPO. No Group Policy was found pushing a registry value in a state that enables an attack."
+    }
+
     # ============================================================================
     # BLOODHOUND COLLECTOR
     # ============================================================================

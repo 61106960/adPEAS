@@ -95,6 +95,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Core\adPEAS-GUIDs.ps1"
     . "$Script:ScriptPath\modules\Core\adPEAS-OIDs.ps1"
     . "$Script:ScriptPath\modules\Core\adPEAS-SIDs.ps1"
+    . "$Script:ScriptPath\modules\Core\adPEAS-RegistryKeys.ps1"
     . "$Script:ScriptPath\modules\Core\adPEAS-ErrorCodes.ps1"
     . "$Script:ScriptPath\modules\Core\adPEAS-InputValidation.ps1"
     . "$Script:ScriptPath\modules\Core\Write-adPEASOutput.ps1"
@@ -226,6 +227,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOLocalGroupMembership.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOScheduledTasks.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOScriptPaths.ps1"
+    . "$Script:ScriptPath\modules\Checks\GPO\Get-GPORegistrySettings.ps1"
     . "$Script:ScriptPath\modules\Checks\ADCS\Get-ADCSTemplate.ps1"
     . "$Script:ScriptPath\modules\Checks\ADCS\Get-ADCSVulnerabilities.ps1"
     . "$Script:ScriptPath\modules\Checks\Application\Get-ExchangeInfrastructure.ps1"
@@ -1001,6 +1003,7 @@ try {
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOLocalGroupMembership' -Title 'GPO Local Group Membership' -Check { Get-GPOLocalGroupMembership }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScriptPaths' -Title 'GPO Script Paths' -Check { Get-GPOScriptPaths }
+            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPORegistrySettings' -Title 'GPO Registry Settings' -Check { Get-GPORegistrySettings }
         } catch {
             Write-Warning "[adPEAS] Error executing GPO Module: $_"
         }
