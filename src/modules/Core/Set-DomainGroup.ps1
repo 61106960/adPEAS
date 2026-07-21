@@ -808,17 +808,22 @@ function Set-DomainGroup {
             }
 
         } catch {
-            Write-Log "[Set-DomainGroup] Error: $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error) instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify group '$Identity'"
+            Write-Log ("[Set-DomainGroup] Error: " + $writeError.Formatted)
 
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = $PSCmdlet.ParameterSetName
-                    Group = $Identity
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = $PSCmdlet.ParameterSetName
+                    Group      = $Identity
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             } else {
-                Write-Error "[Set-DomainGroup] $($_.Exception.Message)"
+                Write-Error ("[Set-DomainGroup] Failed to modify group '$Identity'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             }
         } finally {
             # No cleanup needed - ModifyRequest does not create persistent objects

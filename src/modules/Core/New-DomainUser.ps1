@@ -283,13 +283,18 @@ function New-DomainUser {
             }
         }
         catch {
-            Write-Error "[New-DomainUser] Failed to create user '$Name': $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error), instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "create user '$Name'"
+            Write-Error ("[New-DomainUser] Failed to create user '$Name'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = "CreateUser"
-                    User = $Name
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = "CreateUser"
+                    User       = $Name
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             }
         }

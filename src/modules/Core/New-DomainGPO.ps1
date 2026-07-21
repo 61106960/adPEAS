@@ -389,13 +389,18 @@ function New-DomainGPO {
             }
         }
         catch {
-            Write-Error "[New-DomainGPO] Failed to create GPO '$DisplayName': $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error), instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "create GPO '$DisplayName'"
+            Write-Error ("[New-DomainGPO] Failed to create GPO '$DisplayName'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = "CreateGPO"
+                    Operation   = "CreateGPO"
                     DisplayName = $DisplayName
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Success     = $false
+                    ResultCode  = $writeError.ResultCode
+                    ResultName  = $writeError.ResultName
+                    Message     = $writeError.Formatted
                 }
             }
         }

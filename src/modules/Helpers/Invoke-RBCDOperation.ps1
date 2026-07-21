@@ -207,7 +207,10 @@ function Invoke-RBCDOperation {
                 }
             }
         } catch {
-            throw "Failed to configure RBCD: $_"
+            # Decode the LDAP write failure (LDAP ResultCode + AD server sub-error) so a
+            # rejected RBCD write on a hardened target names the real cause.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "configure RBCD on '$TargetSAMAccountName'"
+            throw ("Failed to configure RBCD on '$TargetSAMAccountName'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
         }
     }
     else {
@@ -452,7 +455,9 @@ function Invoke-RBCDOperation {
                 }
             }
         } catch {
-            throw "Failed to clear RBCD: $_"
+            # Decode the LDAP write failure (LDAP ResultCode + AD server sub-error).
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "clear RBCD on '$TargetSAMAccountName'"
+            throw ("Failed to clear RBCD on '$TargetSAMAccountName'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
         }
     }
 }

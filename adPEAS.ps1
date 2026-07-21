@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-06-26 09:03:29
-    Version: 2.2.0+20260626-0903
+    Build: 2026-07-21 16:27:11
+    Version: 2.2.0+20260721-1627
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -3109,6 +3109,37 @@ $Script:LDAPErrorCodes = @{
 }
 
 # =============================================================================
+# AD Extended (sub) Error Codes
+# =============================================================================
+# When a directory WRITE operation (Add/Modify/Delete) is rejected, AD DS embeds
+# an 8-hex-digit Win32/directory sub-error at the START of the server-side
+# ErrorMessage, e.g.:
+#   "0000216D: SvcErr: DSID-031A125C, problem 5003 (WILL_NOT_PERFORM), data 0"
+# The LDAP ResultCode alone (e.g. 53 UnwillingToPerform) is not actionable - this
+# sub-error is what tells a tester the real reason (quota, access rights, etc.).
+$Script:ADExtendedErrorCodes = @{
+    0x00000005 = @{ Name = 'ERROR_ACCESS_DENIED';                    Hint = 'Access denied. Your account lacks the required rights on the target object or OU.' }
+    0x0000052D = @{ Name = 'ERROR_PASSWORD_RESTRICTION';             Hint = 'The password does not meet the domain password policy (length, complexity, or history).' }
+    0x00002071 = @{ Name = 'ERROR_DS_ATTRIBUTE_OR_VALUE_EXISTS';     Hint = 'The attribute or value already exists on the object.' }
+    0x00002075 = @{ Name = 'ERROR_DS_NO_PARENT_OBJECT';              Hint = 'The target container/OU does not exist. Check the -OrganizationalUnit distinguishedName.' }
+    0x00002094 = @{ Name = 'ERROR_DS_OBJ_STRING_NAME_EXISTS';        Hint = 'An object with this name already exists. Choose a different name or delete the existing object first.' }
+    0x00002098 = @{ Name = 'ERROR_DS_INSUFF_ACCESS_RIGHTS';          Hint = 'Insufficient access rights. Your account is not delegated to create/modify this object. After AD hardening the "Create Computer Objects" / write permission on the target OU is commonly removed.' }
+    0x0000216D = @{ Name = 'ERROR_DS_MACHINE_ACCOUNT_QUOTA_EXCEEDED'; Hint = 'The MachineAccountQuota (ms-DS-MachineAccountQuota) is exhausted or set to 0. A common AD hardening step is to set the quota to 0 so non-admins cannot join computers. Use an account delegated "Create Computer Objects" on the target OU, or raise the quota.' }
+}
+
+# =============================================================================
+# LDAP ResultCode hints for WRITE operations (fallback when no AD sub-error is present)
+# =============================================================================
+$Script:LDAPWriteResultHints = @{
+    8  = 'The server requires stronger authentication (LDAP signing/channel binding or LDAPS). Reconnect with -UseLDAPS or a sealed Kerberos bind.'
+    19 = 'Constraint violation - a value violates a policy (e.g. the password does not meet the domain password policy, or an attribute constraint).'
+    32 = 'The target container/OU does not exist. Check the target distinguishedName.'
+    50 = 'Insufficient access rights - your account is not delegated to perform this write on the target object/OU.'
+    53 = 'The Domain Controller is unwilling to perform the operation. See the server sub-error above for the specific reason (frequently MachineAccountQuota or a hardening policy).'
+    68 = 'The object already exists.'
+}
+
+# =============================================================================
 # Category Definitions
 # =============================================================================
 $Script:ErrorCategories = @{
@@ -3628,6 +3659,177 @@ function Test-LDAPErrorNotFound {
     }
 
     return $false
+}
+
+
+# =============================================================================
+# Resolve-LDAPWriteError
+# =============================================================================
+function Resolve-LDAPWriteError {
+    <#
+    .SYNOPSIS
+        Decodes an exception from an LDAP write operation into a tester-actionable message.
+
+    .DESCRIPTION
+        Directory write operations (AddRequest/ModifyRequest/DeleteRequest) via
+        $Script:LdapConnection.SendRequest() throw a DirectoryOperationException on
+        failure. PowerShell wraps that in a MethodInvocationException, so the raw
+        error a user sees is the generic ".NET" message (e.g. "The server cannot
+        handle directory requests.") with no LDAP ResultCode and no AD sub-error.
+
+        This function unwraps the inner exception chain, extracts the LDAP ResultCode
+        and the server-side ErrorMessage, decodes the AD extended sub-error (the
+        8-hex-digit prefix, e.g. 0000216D = MachineAccountQuota exceeded), and returns
+        a structured object plus a formatted, actionable hint. It also degrades
+        gracefully when the failure was re-thrown as a plain string message.
+
+    .PARAMETER Exception
+        The exception to decode (typically $_.Exception from a catch block).
+
+    .PARAMETER Operation
+        Short description of the attempted operation, used in the formatted output
+        (e.g. "create computer 'BadPC$'").
+
+    .EXAMPLE
+        catch {
+            $info = Resolve-LDAPWriteError -Exception $_.Exception -Operation "create computer '$Name'"
+            Write-Error "Failed to $($info.Operation).`n  $($info.Formatted)"
+        }
+
+    .NOTES
+        Author: Alexander Sturz (@_61106960_)
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [System.Exception]$Exception,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Operation = 'LDAP write operation'
+    )
+
+    # Walk the InnerException chain to find the underlying directory exception.
+    # PowerShell wraps .NET method exceptions in a MethodInvocationException, so the
+    # DirectoryOperationException/LdapException is usually one or more levels down.
+    $dirEx = $null
+    $ldapEx = $null
+    $messageChain = New-Object System.Collections.Generic.List[string]
+    $cursor = $Exception
+    $depth = 0
+    while ($cursor -and $depth -lt 10) {
+        if ($cursor.Message) { $messageChain.Add($cursor.Message) }
+        $typeName = $cursor.GetType().FullName
+        if (-not $dirEx -and $typeName -eq 'System.DirectoryServices.Protocols.DirectoryOperationException') {
+            $dirEx = $cursor
+        }
+        if (-not $ldapEx -and $typeName -eq 'System.DirectoryServices.Protocols.LdapException') {
+            $ldapEx = $cursor
+        }
+        $cursor = $cursor.InnerException
+        $depth++
+    }
+
+    $resultCode = $null
+    $resultName = $null
+    $serverMessage = $null
+
+    if ($dirEx -and $dirEx.Response) {
+        $resultCode = [int]$dirEx.Response.ResultCode
+        $resultName = [string]$dirEx.Response.ResultCode
+        $serverMessage = $dirEx.Response.ErrorMessage
+    }
+    elseif ($ldapEx) {
+        $resultCode = [int]$ldapEx.ErrorCode
+        $resultName = (ConvertFrom-LDAPError -ErrorCode $resultCode).Name
+        $serverMessage = $ldapEx.ServerErrorMessage
+    }
+
+    # Text to scan for the AD extended sub-error: prefer the server ErrorMessage,
+    # otherwise the concatenated exception-chain messages (covers re-thrown strings).
+    $scanText = $serverMessage
+    if (-not $scanText) { $scanText = ($messageChain -join ' ') }
+
+    # If no ResultCode was found via exception type, try to recover it from the
+    # message text (e.g. a re-thrown "... failed: UnwillingToPerform - ..." string).
+    if ($null -eq $resultCode -and $scanText) {
+        $resultNameMap = @{
+            'UnwillingToPerform'       = 53
+            'InsufficientAccessRights' = 50
+            'ConstraintViolation'      = 19
+            'EntryAlreadyExists'       = 68
+            'NoSuchObject'             = 32
+            'StrongAuthRequired'       = 8
+        }
+        foreach ($rn in $resultNameMap.Keys) {
+            if ($scanText -match $rn) {
+                $resultCode = $resultNameMap[$rn]
+                $resultName = $rn
+                break
+            }
+        }
+    }
+
+    # Parse the AD extended sub-error (8-hex-digit code). Anchored form is the
+    # canonical AD layout; the loose 0000xxxx form catches it embedded in free text.
+    $extCode = $null
+    $extHex = $null
+    $extName = $null
+    $extHint = $null
+    if ($scanText) {
+        if ($scanText -match '(^|[^0-9A-Fa-f])([0-9A-Fa-f]{8})\s*:') {
+            $extHex = $matches[2].ToUpper()
+        }
+        elseif ($scanText -match '\b(0000[0-9A-Fa-f]{4})\b') {
+            $extHex = $matches[1].ToUpper()
+        }
+        if ($extHex) {
+            $extCode = [Convert]::ToInt32($extHex, 16)
+            $extInfo = $Script:ADExtendedErrorCodes[$extCode]
+            if ($extInfo) {
+                $extName = $extInfo.Name
+                $extHint = $extInfo.Hint
+            }
+        }
+    }
+
+    # Choose the most specific hint available: sub-error first, then ResultCode.
+    $hint = $extHint
+    if (-not $hint -and $null -ne $resultCode -and $Script:LDAPWriteResultHints.ContainsKey($resultCode)) {
+        $hint = $Script:LDAPWriteResultHints[$resultCode]
+    }
+
+    # Build a formatted, tester-friendly multi-line message.
+    $lines = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $resultCode) {
+        $lines.Add(("LDAP result: {0} ({1})" -f $resultCode, $resultName))
+    }
+    if ($extHex) {
+        if ($extName) {
+            $lines.Add(("Server sub-error: {0} ({1})" -f $extHex, $extName))
+        } else {
+            $lines.Add(("Server sub-error: {0}" -f $extHex))
+        }
+    }
+    if ($hint) {
+        $lines.Add(("Likely cause: {0}" -f $hint))
+    }
+    if ($lines.Count -eq 0) {
+        # Nothing structured could be extracted - surface the raw message so the
+        # tester is never left with less information than before.
+        $lines.Add($Exception.Message)
+    }
+
+    return [PSCustomObject]@{
+        Operation     = $Operation
+        ResultCode    = $resultCode
+        ResultName    = $resultName
+        ExtendedCode  = $extCode
+        ExtendedHex   = $extHex
+        ExtendedName  = $extName
+        Hint          = $hint
+        ServerMessage = $serverMessage
+        Formatted     = ($lines -join ([Environment]::NewLine + '  '))
+    }
 }
 
 
@@ -29204,13 +29406,18 @@ function Set-DomainObject {
                         return $false
                     }
                 } catch {
-                    Write-Log "[Set-DomainObject] Failed to commit ACL changes: $_"
+                    # Decode the LDAP write failure into an actionable message (LDAP
+                    # ResultCode + AD server sub-error) instead of the generic text.
+                    $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify ACL on '$ObjectDN'"
+                    Write-Log ("[Set-DomainObject] Failed to commit ACL changes: " + $writeError.Formatted)
                     if ($PassThru) {
                         return [PSCustomObject]@{
-                            Operation = $PSCmdlet.ParameterSetName
-                            Object = $ObjectDN
-                            Success = $false
-                            Message = $_.Exception.Message
+                            Operation  = $PSCmdlet.ParameterSetName
+                            Object     = $ObjectDN
+                            Success    = $false
+                            ResultCode = $writeError.ResultCode
+                            ResultName = $writeError.ResultName
+                            Message    = $writeError.Formatted
                         }
                     }
                     return $false
@@ -29416,13 +29623,18 @@ function Set-DomainObject {
                         return $false
                     }
                 } catch {
-                    Write-Error "[Set-DomainObject] Failed to commit changes: $_"
+                    # Decode the LDAP write failure into an actionable message (LDAP
+                    # ResultCode + AD server sub-error) instead of the generic text.
+                    $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify object '$ObjectDN'"
+                    Write-Error ("[Set-DomainObject] Failed to commit changes." + [Environment]::NewLine + '  ' + $writeError.Formatted)
                     if ($PassThru) {
                         return [PSCustomObject]@{
-                            Operation = "SetAttributes"
-                            Object = $ObjectDN
-                            Success = $false
-                            Message = $_.Exception.Message
+                            Operation  = "SetAttributes"
+                            Object     = $ObjectDN
+                            Success    = $false
+                            ResultCode = $writeError.ResultCode
+                            ResultName = $writeError.ResultName
+                            Message    = $writeError.Formatted
                         }
                     }
                     return $false
@@ -29444,13 +29656,18 @@ function Set-DomainObject {
             }
 
         } catch {
-            Write-Error "[Set-DomainObject] Error: $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error) instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify object '$Identity'"
+            Write-Error ("[Set-DomainObject] Error." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = $PSCmdlet.ParameterSetName
-                    Object = $Identity
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = $PSCmdlet.ParameterSetName
+                    Object     = $Identity
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             }
             return $false
@@ -35230,22 +35447,29 @@ function Set-DomainUser {
             }
 
         } catch {
-            Write-Log "[Set-DomainUser] Error: $_"
-
             $UserIdentifier = $Identity
-            $ErrorMsg = $_.Exception.Message
 
-            # Translate auth errors for password operations
-            if ($PSCmdlet.ParameterSetName -in @('SetPassword', 'ChangePassword') -and $ErrorMsg -match "user name or password is incorrect|password is incorrect") {
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error) instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify user '$UserIdentifier'"
+            $ErrorMsg = $writeError.Formatted
+            Write-Log ("[Set-DomainUser] Error: " + $ErrorMsg)
+
+            # Translate auth errors for password operations (takes precedence over the
+            # generic decode - it points at the specific credential/channel requirement).
+            $authErrorPattern = "user name or password is incorrect|password is incorrect"
+            if (($PSCmdlet.ParameterSetName -in @('SetPassword', 'ChangePassword')) -and (($writeError.ServerMessage -match $authErrorPattern) -or ($_.Exception.Message -match $authErrorPattern))) {
                 $ErrorMsg = "Authentication failed for password operation on '$UserIdentifier'. This typically occurs when using a computer account or non-interactive session. Try using explicit credentials with -Credential or -Username/-Password, or use LDAPS (-UseLDAPS) for unicodePwd support."
             }
 
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = $PSCmdlet.ParameterSetName
-                    User = $UserIdentifier
-                    Success = $false
-                    Message = $ErrorMsg
+                    Operation  = $PSCmdlet.ParameterSetName
+                    User       = $UserIdentifier
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $ErrorMsg
                 }
             } else {
                 Write-Warning "[!] $ErrorMsg"
@@ -36076,17 +36300,22 @@ function Set-DomainGroup {
             }
 
         } catch {
-            Write-Log "[Set-DomainGroup] Error: $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error) instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify group '$Identity'"
+            Write-Log ("[Set-DomainGroup] Error: " + $writeError.Formatted)
 
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = $PSCmdlet.ParameterSetName
-                    Group = $Identity
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = $PSCmdlet.ParameterSetName
+                    Group      = $Identity
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             } else {
-                Write-Error "[Set-DomainGroup] $($_.Exception.Message)"
+                Write-Error ("[Set-DomainGroup] Failed to modify group '$Identity'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             }
         } finally {
             # No cleanup needed - ModifyRequest does not create persistent objects
@@ -37753,17 +37982,22 @@ function Set-DomainComputer {
             }
 
         } catch {
-            Write-Log "[Set-DomainComputer] Error: $_"
-
             $ComputerIdentifier = $Identity
-            $ErrorMsg = $_.Exception.Message
+
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error) instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify computer '$ComputerIdentifier'"
+            $ErrorMsg = $writeError.Formatted
+            Write-Log ("[Set-DomainComputer] Error: " + $ErrorMsg)
 
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = $PSCmdlet.ParameterSetName
-                    Computer = $ComputerIdentifier
-                    Success = $false
-                    Message = $ErrorMsg
+                    Operation  = $PSCmdlet.ParameterSetName
+                    Computer   = $ComputerIdentifier
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $ErrorMsg
                 }
             } else {
                 Write-Warning "[!] $ErrorMsg"
@@ -40055,17 +40289,22 @@ $ruleEntryXml
             }
 
         } catch {
-            Write-Log "[Set-DomainGPO] Error: $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error) instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify GPO '$Identity'"
+            Write-Log ("[Set-DomainGPO] Error: " + $writeError.Formatted)
 
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = $PSCmdlet.ParameterSetName
-                    GPO = $Identity
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = $PSCmdlet.ParameterSetName
+                    GPO        = $Identity
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             } else {
-                Write-Error "[Set-DomainGPO] $($_.Exception.Message)"
+                Write-Error ("[Set-DomainGPO] Failed to modify GPO '$Identity'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             }
         }
     }
@@ -41196,13 +41435,18 @@ function New-DomainUser {
             }
         }
         catch {
-            Write-Error "[New-DomainUser] Failed to create user '$Name': $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error), instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "create user '$Name'"
+            Write-Error ("[New-DomainUser] Failed to create user '$Name'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = "CreateUser"
-                    User = $Name
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = "CreateUser"
+                    User       = $Name
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             }
         }
@@ -41542,13 +41786,21 @@ function New-DomainComputer {
             }
         }
         catch {
-            Write-Error "[New-DomainComputer] Failed to create computer '$Name': $_"
+            # Decode the LDAP write failure into an actionable message. SendRequest()
+            # throws a DirectoryOperationException whose server ErrorMessage carries the
+            # real reason (e.g. MachineAccountQuota, insufficient rights) - the generic
+            # ".NET" message alone ("The server cannot handle directory requests.") does
+            # not help a tester diagnose a post-hardening rejection.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "create computer '$Name'"
+            Write-Error ("[New-DomainComputer] Failed to create computer '$Name'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = "CreateComputer"
-                    Computer = $Name
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = "CreateComputer"
+                    Computer   = $Name
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             }
         }
@@ -41757,13 +42009,18 @@ function New-DomainGroup {
             }
         }
         catch {
-            Write-Error "[New-DomainGroup] Failed to create group '$Name': $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error), instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "create group '$Name'"
+            Write-Error ("[New-DomainGroup] Failed to create group '$Name'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = "CreateGroup"
-                    Group = $Name
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = "CreateGroup"
+                    Group      = $Name
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             }
         }
@@ -42165,13 +42422,18 @@ function New-DomainGPO {
             }
         }
         catch {
-            Write-Error "[New-DomainGPO] Failed to create GPO '$DisplayName': $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error), instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "create GPO '$DisplayName'"
+            Write-Error ("[New-DomainGPO] Failed to create GPO '$DisplayName'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = "CreateGPO"
+                    Operation   = "CreateGPO"
                     DisplayName = $DisplayName
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Success     = $false
+                    ResultCode  = $writeError.ResultCode
+                    ResultName  = $writeError.ResultName
+                    Message     = $writeError.Formatted
                 }
             }
         }
@@ -72056,7 +72318,10 @@ function Invoke-RBCDOperation {
                 }
             }
         } catch {
-            throw "Failed to configure RBCD: $_"
+            # Decode the LDAP write failure (LDAP ResultCode + AD server sub-error) so a
+            # rejected RBCD write on a hardened target names the real cause.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "configure RBCD on '$TargetSAMAccountName'"
+            throw ("Failed to configure RBCD on '$TargetSAMAccountName'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
         }
     }
     else {
@@ -72301,7 +72566,9 @@ function Invoke-RBCDOperation {
                 }
             }
         } catch {
-            throw "Failed to clear RBCD: $_"
+            # Decode the LDAP write failure (LDAP ResultCode + AD server sub-error).
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "clear RBCD on '$TargetSAMAccountName'"
+            throw ("Failed to clear RBCD on '$TargetSAMAccountName'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
         }
     }
 }
@@ -72667,7 +72934,10 @@ function Invoke-ShadowCredentialOperation {
                 }
             }
         } catch {
-            throw "Failed to add Shadow Credential: $_"
+            # Decode the LDAP write failure (LDAP ResultCode + AD server sub-error) so a
+            # rejected msDS-KeyCredentialLink write on a hardened target names the cause.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "add Shadow Credential to '$TargetSAMAccountName'"
+            throw ("Failed to add Shadow Credential to '$TargetSAMAccountName'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
         } finally {
             # Ensure RSA key is disposed even on error
             if ($RSA) { $RSA.Dispose() }
@@ -72949,7 +73219,9 @@ function Invoke-ShadowCredentialOperation {
                 }
             }
         } catch {
-            throw "Failed to clear Shadow Credentials: $_"
+            # Decode the LDAP write failure (LDAP ResultCode + AD server sub-error).
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "clear Shadow Credentials on '$TargetSAMAccountName'"
+            throw ("Failed to clear Shadow Credentials on '$TargetSAMAccountName'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
         }
     }
 }
@@ -109284,7 +109556,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.2.0+20260626-0903"
+$Script:adPEASVersion = "2.2.0+20260721-1627"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

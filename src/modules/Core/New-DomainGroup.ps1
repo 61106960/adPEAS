@@ -196,13 +196,18 @@ function New-DomainGroup {
             }
         }
         catch {
-            Write-Error "[New-DomainGroup] Failed to create group '$Name': $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error), instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "create group '$Name'"
+            Write-Error ("[New-DomainGroup] Failed to create group '$Name'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = "CreateGroup"
-                    Group = $Name
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = "CreateGroup"
+                    Group      = $Name
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             }
         }

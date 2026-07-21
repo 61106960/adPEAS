@@ -1649,17 +1649,22 @@ function Set-DomainComputer {
             }
 
         } catch {
-            Write-Log "[Set-DomainComputer] Error: $_"
-
             $ComputerIdentifier = $Identity
-            $ErrorMsg = $_.Exception.Message
+
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error) instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify computer '$ComputerIdentifier'"
+            $ErrorMsg = $writeError.Formatted
+            Write-Log ("[Set-DomainComputer] Error: " + $ErrorMsg)
 
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = $PSCmdlet.ParameterSetName
-                    Computer = $ComputerIdentifier
-                    Success = $false
-                    Message = $ErrorMsg
+                    Operation  = $PSCmdlet.ParameterSetName
+                    Computer   = $ComputerIdentifier
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $ErrorMsg
                 }
             } else {
                 Write-Warning "[!] $ErrorMsg"

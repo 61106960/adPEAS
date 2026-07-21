@@ -1972,22 +1972,29 @@ function Set-DomainUser {
             }
 
         } catch {
-            Write-Log "[Set-DomainUser] Error: $_"
-
             $UserIdentifier = $Identity
-            $ErrorMsg = $_.Exception.Message
 
-            # Translate auth errors for password operations
-            if ($PSCmdlet.ParameterSetName -in @('SetPassword', 'ChangePassword') -and $ErrorMsg -match "user name or password is incorrect|password is incorrect") {
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error) instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify user '$UserIdentifier'"
+            $ErrorMsg = $writeError.Formatted
+            Write-Log ("[Set-DomainUser] Error: " + $ErrorMsg)
+
+            # Translate auth errors for password operations (takes precedence over the
+            # generic decode - it points at the specific credential/channel requirement).
+            $authErrorPattern = "user name or password is incorrect|password is incorrect"
+            if (($PSCmdlet.ParameterSetName -in @('SetPassword', 'ChangePassword')) -and (($writeError.ServerMessage -match $authErrorPattern) -or ($_.Exception.Message -match $authErrorPattern))) {
                 $ErrorMsg = "Authentication failed for password operation on '$UserIdentifier'. This typically occurs when using a computer account or non-interactive session. Try using explicit credentials with -Credential or -Username/-Password, or use LDAPS (-UseLDAPS) for unicodePwd support."
             }
 
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = $PSCmdlet.ParameterSetName
-                    User = $UserIdentifier
-                    Success = $false
-                    Message = $ErrorMsg
+                    Operation  = $PSCmdlet.ParameterSetName
+                    User       = $UserIdentifier
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $ErrorMsg
                 }
             } else {
                 Write-Warning "[!] $ErrorMsg"

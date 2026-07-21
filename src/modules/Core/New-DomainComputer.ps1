@@ -327,13 +327,21 @@ function New-DomainComputer {
             }
         }
         catch {
-            Write-Error "[New-DomainComputer] Failed to create computer '$Name': $_"
+            # Decode the LDAP write failure into an actionable message. SendRequest()
+            # throws a DirectoryOperationException whose server ErrorMessage carries the
+            # real reason (e.g. MachineAccountQuota, insufficient rights) - the generic
+            # ".NET" message alone ("The server cannot handle directory requests.") does
+            # not help a tester diagnose a post-hardening rejection.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "create computer '$Name'"
+            Write-Error ("[New-DomainComputer] Failed to create computer '$Name'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = "CreateComputer"
-                    Computer = $Name
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = "CreateComputer"
+                    Computer   = $Name
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             }
         }

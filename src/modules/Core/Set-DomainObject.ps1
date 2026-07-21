@@ -500,13 +500,18 @@ function Set-DomainObject {
                         return $false
                     }
                 } catch {
-                    Write-Log "[Set-DomainObject] Failed to commit ACL changes: $_"
+                    # Decode the LDAP write failure into an actionable message (LDAP
+                    # ResultCode + AD server sub-error) instead of the generic text.
+                    $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify ACL on '$ObjectDN'"
+                    Write-Log ("[Set-DomainObject] Failed to commit ACL changes: " + $writeError.Formatted)
                     if ($PassThru) {
                         return [PSCustomObject]@{
-                            Operation = $PSCmdlet.ParameterSetName
-                            Object = $ObjectDN
-                            Success = $false
-                            Message = $_.Exception.Message
+                            Operation  = $PSCmdlet.ParameterSetName
+                            Object     = $ObjectDN
+                            Success    = $false
+                            ResultCode = $writeError.ResultCode
+                            ResultName = $writeError.ResultName
+                            Message    = $writeError.Formatted
                         }
                     }
                     return $false
@@ -712,13 +717,18 @@ function Set-DomainObject {
                         return $false
                     }
                 } catch {
-                    Write-Error "[Set-DomainObject] Failed to commit changes: $_"
+                    # Decode the LDAP write failure into an actionable message (LDAP
+                    # ResultCode + AD server sub-error) instead of the generic text.
+                    $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify object '$ObjectDN'"
+                    Write-Error ("[Set-DomainObject] Failed to commit changes." + [Environment]::NewLine + '  ' + $writeError.Formatted)
                     if ($PassThru) {
                         return [PSCustomObject]@{
-                            Operation = "SetAttributes"
-                            Object = $ObjectDN
-                            Success = $false
-                            Message = $_.Exception.Message
+                            Operation  = "SetAttributes"
+                            Object     = $ObjectDN
+                            Success    = $false
+                            ResultCode = $writeError.ResultCode
+                            ResultName = $writeError.ResultName
+                            Message    = $writeError.Formatted
                         }
                     }
                     return $false
@@ -740,13 +750,18 @@ function Set-DomainObject {
             }
 
         } catch {
-            Write-Error "[Set-DomainObject] Error: $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error) instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify object '$Identity'"
+            Write-Error ("[Set-DomainObject] Error." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = $PSCmdlet.ParameterSetName
-                    Object = $Identity
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = $PSCmdlet.ParameterSetName
+                    Object     = $Identity
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             }
             return $false

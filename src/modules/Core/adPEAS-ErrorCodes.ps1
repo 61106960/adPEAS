@@ -143,6 +143,37 @@ $Script:LDAPErrorCodes = @{
 }
 
 # =============================================================================
+# AD Extended (sub) Error Codes
+# =============================================================================
+# When a directory WRITE operation (Add/Modify/Delete) is rejected, AD DS embeds
+# an 8-hex-digit Win32/directory sub-error at the START of the server-side
+# ErrorMessage, e.g.:
+#   "0000216D: SvcErr: DSID-031A125C, problem 5003 (WILL_NOT_PERFORM), data 0"
+# The LDAP ResultCode alone (e.g. 53 UnwillingToPerform) is not actionable - this
+# sub-error is what tells a tester the real reason (quota, access rights, etc.).
+$Script:ADExtendedErrorCodes = @{
+    0x00000005 = @{ Name = 'ERROR_ACCESS_DENIED';                    Hint = 'Access denied. Your account lacks the required rights on the target object or OU.' }
+    0x0000052D = @{ Name = 'ERROR_PASSWORD_RESTRICTION';             Hint = 'The password does not meet the domain password policy (length, complexity, or history).' }
+    0x00002071 = @{ Name = 'ERROR_DS_ATTRIBUTE_OR_VALUE_EXISTS';     Hint = 'The attribute or value already exists on the object.' }
+    0x00002075 = @{ Name = 'ERROR_DS_NO_PARENT_OBJECT';              Hint = 'The target container/OU does not exist. Check the -OrganizationalUnit distinguishedName.' }
+    0x00002094 = @{ Name = 'ERROR_DS_OBJ_STRING_NAME_EXISTS';        Hint = 'An object with this name already exists. Choose a different name or delete the existing object first.' }
+    0x00002098 = @{ Name = 'ERROR_DS_INSUFF_ACCESS_RIGHTS';          Hint = 'Insufficient access rights. Your account is not delegated to create/modify this object. After AD hardening the "Create Computer Objects" / write permission on the target OU is commonly removed.' }
+    0x0000216D = @{ Name = 'ERROR_DS_MACHINE_ACCOUNT_QUOTA_EXCEEDED'; Hint = 'The MachineAccountQuota (ms-DS-MachineAccountQuota) is exhausted or set to 0. A common AD hardening step is to set the quota to 0 so non-admins cannot join computers. Use an account delegated "Create Computer Objects" on the target OU, or raise the quota.' }
+}
+
+# =============================================================================
+# LDAP ResultCode hints for WRITE operations (fallback when no AD sub-error is present)
+# =============================================================================
+$Script:LDAPWriteResultHints = @{
+    8  = 'The server requires stronger authentication (LDAP signing/channel binding or LDAPS). Reconnect with -UseLDAPS or a sealed Kerberos bind.'
+    19 = 'Constraint violation - a value violates a policy (e.g. the password does not meet the domain password policy, or an attribute constraint).'
+    32 = 'The target container/OU does not exist. Check the target distinguishedName.'
+    50 = 'Insufficient access rights - your account is not delegated to perform this write on the target object/OU.'
+    53 = 'The Domain Controller is unwilling to perform the operation. See the server sub-error above for the specific reason (frequently MachineAccountQuota or a hardening policy).'
+    68 = 'The object already exists.'
+}
+
+# =============================================================================
 # Category Definitions
 # =============================================================================
 $Script:ErrorCategories = @{
@@ -662,5 +693,176 @@ function Test-LDAPErrorNotFound {
     }
 
     return $false
+}
+
+
+# =============================================================================
+# Resolve-LDAPWriteError
+# =============================================================================
+function Resolve-LDAPWriteError {
+    <#
+    .SYNOPSIS
+        Decodes an exception from an LDAP write operation into a tester-actionable message.
+
+    .DESCRIPTION
+        Directory write operations (AddRequest/ModifyRequest/DeleteRequest) via
+        $Script:LdapConnection.SendRequest() throw a DirectoryOperationException on
+        failure. PowerShell wraps that in a MethodInvocationException, so the raw
+        error a user sees is the generic ".NET" message (e.g. "The server cannot
+        handle directory requests.") with no LDAP ResultCode and no AD sub-error.
+
+        This function unwraps the inner exception chain, extracts the LDAP ResultCode
+        and the server-side ErrorMessage, decodes the AD extended sub-error (the
+        8-hex-digit prefix, e.g. 0000216D = MachineAccountQuota exceeded), and returns
+        a structured object plus a formatted, actionable hint. It also degrades
+        gracefully when the failure was re-thrown as a plain string message.
+
+    .PARAMETER Exception
+        The exception to decode (typically $_.Exception from a catch block).
+
+    .PARAMETER Operation
+        Short description of the attempted operation, used in the formatted output
+        (e.g. "create computer 'BadPC$'").
+
+    .EXAMPLE
+        catch {
+            $info = Resolve-LDAPWriteError -Exception $_.Exception -Operation "create computer '$Name'"
+            Write-Error "Failed to $($info.Operation).`n  $($info.Formatted)"
+        }
+
+    .NOTES
+        Author: Alexander Sturz (@_61106960_)
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [System.Exception]$Exception,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Operation = 'LDAP write operation'
+    )
+
+    # Walk the InnerException chain to find the underlying directory exception.
+    # PowerShell wraps .NET method exceptions in a MethodInvocationException, so the
+    # DirectoryOperationException/LdapException is usually one or more levels down.
+    $dirEx = $null
+    $ldapEx = $null
+    $messageChain = New-Object System.Collections.Generic.List[string]
+    $cursor = $Exception
+    $depth = 0
+    while ($cursor -and $depth -lt 10) {
+        if ($cursor.Message) { $messageChain.Add($cursor.Message) }
+        $typeName = $cursor.GetType().FullName
+        if (-not $dirEx -and $typeName -eq 'System.DirectoryServices.Protocols.DirectoryOperationException') {
+            $dirEx = $cursor
+        }
+        if (-not $ldapEx -and $typeName -eq 'System.DirectoryServices.Protocols.LdapException') {
+            $ldapEx = $cursor
+        }
+        $cursor = $cursor.InnerException
+        $depth++
+    }
+
+    $resultCode = $null
+    $resultName = $null
+    $serverMessage = $null
+
+    if ($dirEx -and $dirEx.Response) {
+        $resultCode = [int]$dirEx.Response.ResultCode
+        $resultName = [string]$dirEx.Response.ResultCode
+        $serverMessage = $dirEx.Response.ErrorMessage
+    }
+    elseif ($ldapEx) {
+        $resultCode = [int]$ldapEx.ErrorCode
+        $resultName = (ConvertFrom-LDAPError -ErrorCode $resultCode).Name
+        $serverMessage = $ldapEx.ServerErrorMessage
+    }
+
+    # Text to scan for the AD extended sub-error: prefer the server ErrorMessage,
+    # otherwise the concatenated exception-chain messages (covers re-thrown strings).
+    $scanText = $serverMessage
+    if (-not $scanText) { $scanText = ($messageChain -join ' ') }
+
+    # If no ResultCode was found via exception type, try to recover it from the
+    # message text (e.g. a re-thrown "... failed: UnwillingToPerform - ..." string).
+    if ($null -eq $resultCode -and $scanText) {
+        $resultNameMap = @{
+            'UnwillingToPerform'       = 53
+            'InsufficientAccessRights' = 50
+            'ConstraintViolation'      = 19
+            'EntryAlreadyExists'       = 68
+            'NoSuchObject'             = 32
+            'StrongAuthRequired'       = 8
+        }
+        foreach ($rn in $resultNameMap.Keys) {
+            if ($scanText -match $rn) {
+                $resultCode = $resultNameMap[$rn]
+                $resultName = $rn
+                break
+            }
+        }
+    }
+
+    # Parse the AD extended sub-error (8-hex-digit code). Anchored form is the
+    # canonical AD layout; the loose 0000xxxx form catches it embedded in free text.
+    $extCode = $null
+    $extHex = $null
+    $extName = $null
+    $extHint = $null
+    if ($scanText) {
+        if ($scanText -match '(^|[^0-9A-Fa-f])([0-9A-Fa-f]{8})\s*:') {
+            $extHex = $matches[2].ToUpper()
+        }
+        elseif ($scanText -match '\b(0000[0-9A-Fa-f]{4})\b') {
+            $extHex = $matches[1].ToUpper()
+        }
+        if ($extHex) {
+            $extCode = [Convert]::ToInt32($extHex, 16)
+            $extInfo = $Script:ADExtendedErrorCodes[$extCode]
+            if ($extInfo) {
+                $extName = $extInfo.Name
+                $extHint = $extInfo.Hint
+            }
+        }
+    }
+
+    # Choose the most specific hint available: sub-error first, then ResultCode.
+    $hint = $extHint
+    if (-not $hint -and $null -ne $resultCode -and $Script:LDAPWriteResultHints.ContainsKey($resultCode)) {
+        $hint = $Script:LDAPWriteResultHints[$resultCode]
+    }
+
+    # Build a formatted, tester-friendly multi-line message.
+    $lines = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $resultCode) {
+        $lines.Add(("LDAP result: {0} ({1})" -f $resultCode, $resultName))
+    }
+    if ($extHex) {
+        if ($extName) {
+            $lines.Add(("Server sub-error: {0} ({1})" -f $extHex, $extName))
+        } else {
+            $lines.Add(("Server sub-error: {0}" -f $extHex))
+        }
+    }
+    if ($hint) {
+        $lines.Add(("Likely cause: {0}" -f $hint))
+    }
+    if ($lines.Count -eq 0) {
+        # Nothing structured could be extracted - surface the raw message so the
+        # tester is never left with less information than before.
+        $lines.Add($Exception.Message)
+    }
+
+    return [PSCustomObject]@{
+        Operation     = $Operation
+        ResultCode    = $resultCode
+        ResultName    = $resultName
+        ExtendedCode  = $extCode
+        ExtendedHex   = $extHex
+        ExtendedName  = $extName
+        Hint          = $hint
+        ServerMessage = $serverMessage
+        Formatted     = ($lines -join ([Environment]::NewLine + '  '))
+    }
 }
 

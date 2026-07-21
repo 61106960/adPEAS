@@ -29,6 +29,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   set locally on a host are out of scope by design (no Remote Registry; consistent with
   the LDAP+SMB, no-RSAT model). Inspired by OneLogon (https://github.com/rub-softsec/onelogon).
 
+### Fixed
+
+- **Actionable error messages for directory write operations.** When a write
+  (`New-DomainComputer`/`User`/`Group`/`GPO`, `Set-Domain*`, RBCD and Shadow
+  Credential operations) is rejected by a Domain Controller — common after AD
+  hardening — the LDAP `SendRequest` throws a `DirectoryOperationException` that
+  PowerShell wraps, so the tester previously saw only the generic
+  *"The server cannot handle directory requests."* with no LDAP result code and no
+  AD sub-error. A new `Resolve-LDAPWriteError` decoder (`adPEAS-ErrorCodes.ps1`)
+  unwraps the exception chain, extracts the LDAP `ResultCode` and the server-side
+  extended sub-error (the 8-hex-digit prefix, e.g. `0000216D` =
+  MachineAccountQuota exhausted/`0`, `00002098` = insufficient access rights), and
+  emits a *"Likely cause: …"* hint. Falls back to the raw message when the failure
+  is not a directory write, so no information is ever lost. `-PassThru` result
+  objects now also carry `ResultCode`/`ResultName`.
+
 ## [2.2.0] - 2026-06-21
 
 ### Added

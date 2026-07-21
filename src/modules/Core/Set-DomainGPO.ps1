@@ -2272,17 +2272,22 @@ $ruleEntryXml
             }
 
         } catch {
-            Write-Log "[Set-DomainGPO] Error: $_"
+            # Decode the LDAP write failure into an actionable message (LDAP ResultCode
+            # + AD server sub-error) instead of the generic ".NET" exception text.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify GPO '$Identity'"
+            Write-Log ("[Set-DomainGPO] Error: " + $writeError.Formatted)
 
             if ($PassThru) {
                 return [PSCustomObject]@{
-                    Operation = $PSCmdlet.ParameterSetName
-                    GPO = $Identity
-                    Success = $false
-                    Message = $_.Exception.Message
+                    Operation  = $PSCmdlet.ParameterSetName
+                    GPO        = $Identity
+                    Success    = $false
+                    ResultCode = $writeError.ResultCode
+                    ResultName = $writeError.ResultName
+                    Message    = $writeError.Formatted
                 }
             } else {
-                Write-Error "[Set-DomainGPO] $($_.Exception.Message)"
+                Write-Error ("[Set-DomainGPO] Failed to modify GPO '$Identity'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
             }
         }
     }

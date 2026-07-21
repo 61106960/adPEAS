@@ -355,7 +355,10 @@ function Invoke-ShadowCredentialOperation {
                 }
             }
         } catch {
-            throw "Failed to add Shadow Credential: $_"
+            # Decode the LDAP write failure (LDAP ResultCode + AD server sub-error) so a
+            # rejected msDS-KeyCredentialLink write on a hardened target names the cause.
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "add Shadow Credential to '$TargetSAMAccountName'"
+            throw ("Failed to add Shadow Credential to '$TargetSAMAccountName'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
         } finally {
             # Ensure RSA key is disposed even on error
             if ($RSA) { $RSA.Dispose() }
@@ -637,7 +640,9 @@ function Invoke-ShadowCredentialOperation {
                 }
             }
         } catch {
-            throw "Failed to clear Shadow Credentials: $_"
+            # Decode the LDAP write failure (LDAP ResultCode + AD server sub-error).
+            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "clear Shadow Credentials on '$TargetSAMAccountName'"
+            throw ("Failed to clear Shadow Credentials on '$TargetSAMAccountName'." + [Environment]::NewLine + '  ' + $writeError.Formatted)
         }
     }
 }
