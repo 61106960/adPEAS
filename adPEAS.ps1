@@ -1,10 +1,10 @@
-﻿<#
+<#
 .SYNOPSIS
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-07-22 09:04:33
-    Version: 2.2.0+20260722-0904
+    Build: 2026-07-22 13:55:15
+    Version: 2.3.0
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -150,10 +150,10 @@ function Get-ClassColor {
     - Name for Exchange group detection (optional, with SID)
 
     Categories returned by Test-IsPrivileged:
-    - "BroadGroup" â†’ maps to BroadGroupClass (default: "Hint")
-    - "Privileged" â†’ maps to PrivilegedClass (default: "Finding")
-    - "Standard"   â†’ maps to DefaultClass (default: "Standard")
-    - "Unknown"    â†’ maps to DefaultClass (default: "Standard")
+    - "BroadGroup" → maps to BroadGroupClass (default: "Hint")
+    - "Privileged" → maps to PrivilegedClass (default: "Finding")
+    - "Standard"   → maps to DefaultClass (default: "Standard")
+    - "Unknown"    → maps to DefaultClass (default: "Standard")
 
 .PARAMETER Principal
     The principal name to classify (e.g., "DOMAIN\User"). Will be resolved to SID.
@@ -1141,8 +1141,8 @@ $Script:WellKnownRIDs = @{
     - Short: Short form without prefix (optional, for common identities)
 
     Usage:
-    - ConvertFrom-SID uses $Script:SIDToName for SID â†’ Name resolution
-    - ConvertTo-SID uses $Script:NameToSID for Name â†’ SID resolution
+    - ConvertFrom-SID uses $Script:SIDToName for SID → Name resolution
+    - ConvertTo-SID uses $Script:NameToSID for Name → SID resolution
     - Both tables are auto-generated at module load time
 
     Reference: https://docs.microsoft.com/en-us/windows/security/identity-protection/access-control/security-identifiers
@@ -1160,7 +1160,7 @@ $Script:WellKnownIdentities = @(
     @{ SID = 'S-1-3-4';     Name = 'Owner Rights' }
 
     # NT AUTHORITY (S-1-5-x)
-    # NOTE: Localized names (German NT-AUTORITÃ„T, French AUTORITE NT, etc.) are automatically resolved via NTAccount.Translate() in ConvertTo-SID.
+    # NOTE: Localized names (German NT-AUTORITÄT, French AUTORITE NT, etc.) are automatically resolved via NTAccount.Translate() in ConvertTo-SID.
     @{ SID = 'S-1-5-1';     Name = 'NT AUTHORITY\Dialup' }
     @{ SID = 'S-1-5-2';     Name = 'NT AUTHORITY\Network';        Short = 'Network' }
     @{ SID = 'S-1-5-3';     Name = 'NT AUTHORITY\Batch' }
@@ -1219,10 +1219,10 @@ $Script:WellKnownIdentities = @(
 # Auto-generated Lookup Tables (built from WellKnownIdentities)
 # ============================================================================
 
-# SID â†’ Name lookup (for ConvertFrom-SID)
+# SID → Name lookup (for ConvertFrom-SID)
 $Script:SIDToName = @{}
 
-# Name â†’ SID lookup (for ConvertTo-SID)
+# Name → SID lookup (for ConvertTo-SID)
 # Includes: canonical names and short forms
 $Script:NameToSID = @{}
 
@@ -1231,13 +1231,13 @@ foreach ($identity in $Script:WellKnownIdentities) {
     $sid = $identity.SID
     $name = $identity.Name
 
-    # SID â†’ Name (always the canonical name)
+    # SID → Name (always the canonical name)
     $Script:SIDToName[$sid] = $name
 
-    # Name â†’ SID (canonical name)
+    # Name → SID (canonical name)
     $Script:NameToSID[$name] = $sid
 
-    # Short form â†’ SID (if defined)
+    # Short form → SID (if defined)
     if ($identity.Short) {
         $Script:NameToSID[$identity.Short] = $sid
     }
@@ -4765,9 +4765,9 @@ function Write-adPEASHeader {
 # These attributes are always shown in the main/primary section (in order)
 #
 # DESIGN: User and Computer share a harmonized structure for consistency:
-#   1. Identity â†’ 2. OS (Computer only) â†’ 3. Groups â†’ 4. SPNs â†’ 5. Credentials
-#   â†’ 6. Description â†’ 7. Delegation â†’ 8. UAC â†’ 9. Timestamps â†’ 10. Activity
-#   â†’ 11. SID History â†’ 12. Security Findings â†’ 13. Roasting Hashes (User only)
+#   1. Identity → 2. OS (Computer only) → 3. Groups → 4. SPNs → 5. Credentials
+#   → 6. Description → 7. Delegation → 8. UAC → 9. Timestamps → 10. Activity
+#   → 11. SID History → 12. Security Findings → 13. Roasting Hashes (User only)
 #
 $Script:PrimaryAttributes = @{
 
@@ -4999,8 +4999,8 @@ $Script:PrimaryAttributes = @{
     # Domain Trust object (from Get-DomainTrusts)
     # Primary: trust identity only. All boolean flags are Extended but get auto-promoted
     # to Primary when their severity is non-Standard (Finding/Hint/Secure).
-    # This means: isQuarantined=False on external trusts (Finding) â†’ promoted to Primary.
-    #             isQuarantined=False on within-forest trusts (Standard) â†’ stays Extended.
+    # This means: isQuarantined=False on external trusts (Finding) → promoted to Primary.
+    #             isQuarantined=False on within-forest trusts (Standard) → stays Extended.
     DomainTrust = @(
         'trustPartner',
         'flatName',
@@ -5177,7 +5177,7 @@ $Script:PrimaryAttributes = @{
     )
 
     # SCOM Group (from Get-SCOMInfrastructure)
-    # NOTE: Same rationale as SCCMGroup â€” excludes 'member' for performance
+    # NOTE: Same rationale as SCCMGroup — excludes 'member' for performance
     SCOMGroup = @(
         'sAMAccountName', 'description', 'MemberCount', 'memberOf', 'managedBy',
         'whenCreated', 'distinguishedName'
@@ -15931,10 +15931,10 @@ function Get-AttributeSeverity {
             if (-not $entry.SID) { continue }
             $privResult = Test-IsPrivileged -Identity $entry.SID
             if (-not $privResult.IsPrivileged) {
-                return 'Note'   # Non-Standard â†’ auto-promoted to Primary
+                return 'Note'   # Non-Standard → auto-promoted to Primary
             }
         }
-        return 'Standard'   # All privileged â†’ stays in Extended
+        return 'Standard'   # All privileged → stays in Extended
     }
 
     # Delegate to FindingDefinitions triggers (Single Source of Truth)
@@ -17435,7 +17435,7 @@ function Get-HtmlValueClassAttr {
     This file contains all scoring-related definitions used by the HTML report generator.
 
     Scoring Formula:
-    FINAL_SCORE = (BASE Ã— IMPACT Ã— EXPLOITABILITY Ã— SECURITY) + CORRELATION
+    FINAL_SCORE = (BASE × IMPACT × EXPLOITABILITY × SECURITY) + CORRELATION
 
 .NOTES
     Author: Alexander Sturz (@_61106960_)
@@ -17518,11 +17518,11 @@ $Script:ImpactMultipliers = @{
 # Password Age Modifiers (relative to domain maxPwdAge policy)
 # Example: If maxPwdAge=90 days and password is 450 days old = 5x policy = 1.4 modifier
 $Script:PasswordAgeModifiers = @{
-    'multiplier_10x' = 1.6    # Password age >= 10Ã— maxPwdAge
-    'multiplier_5x'  = 1.4    # Password age >= 5Ã— maxPwdAge
-    'multiplier_3x'  = 1.3    # Password age >= 3Ã— maxPwdAge
-    'multiplier_2x'  = 1.2    # Password age >= 2Ã— maxPwdAge
-    'multiplier_1x'  = 1.1    # Password age >= 1Ã— maxPwdAge (over policy)
+    'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
+    'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
+    'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
+    'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
+    'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
     'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 
@@ -22338,7 +22338,7 @@ function Connect-LDAP {
                 [switch]$BindSucceeded  # Set when Bind() succeeded but a subsequent SendRequest() failed
             )
             # Extract error message and code from exception chain
-            # PowerShell wraps .NET exceptions: MethodInvocationException â†’ LdapException or DirectoryOperationException
+            # PowerShell wraps .NET exceptions: MethodInvocationException → LdapException or DirectoryOperationException
             # - LdapException: has ErrorCode property (e.g., 49 = invalid credentials)
             # - DirectoryOperationException: thrown for LDAP result codes like StrongAuthRequired (8),
             #   but does NOT expose the numeric error code - must be identified by exception type
@@ -22404,7 +22404,7 @@ function Connect-LDAP {
                 default        { "GenericError" }
             }
 
-            # Override: LDAP 81 (SERVER_DOWN) after a successful Bind() is NOT a network error â€”
+            # Override: LDAP 81 (SERVER_DOWN) after a successful Bind() is NOT a network error —
             # the server IS reachable and authentication succeeded. The failure is in the LDAP
             # protocol layer (post-bind request processing). Use GenericError to avoid the
             # misleading "Server unreachable" title from NetworkError.
@@ -22822,9 +22822,9 @@ function Connect-LDAP {
                     # AD does NOT accept: domain.fqdn\user
 
                     # Determine correct format based on what user provided:
-                    # 1. If NetworkCredential.Domain is set â†’ user specified DOMAIN\username â†’ reconstruct it
-                    # 2. If username contains '@' â†’ user specified UPN â†’ keep it as-is
-                    # 3. Otherwise â†’ bare username â†’ auto-qualify with UPN format
+                    # 1. If NetworkCredential.Domain is set → user specified DOMAIN\username → reconstruct it
+                    # 2. If username contains '@' → user specified UPN → keep it as-is
+                    # 3. Otherwise → bare username → auto-qualify with UPN format
 
                     if (-not [string]::IsNullOrEmpty($CredDomain)) {
                         # User specified DOMAIN\username format - reconstruct it
@@ -24395,7 +24395,7 @@ function Connect-adPEAS {
                             # This happens when LDAP Channel Binding or LDAP Signing is enforced by domain policy
 
                             # Reclassify LDAP OperationsError (1) as AuthenticationFailed for SimpleBind
-                            # Empty password â†’ anonymous bind succeeds â†’ search fails with OperationsError = auth failure
+                            # Empty password → anonymous bind succeeds → search fails with OperationsError = auth failure
                             if (-not $Connection -and $Script:LastLDAPErrorCode -eq 1) {
                                 $Script:ConnectionState = "AuthenticationFailed"
                             }
@@ -26152,8 +26152,8 @@ function Invoke-LDAPSearch {
             # Build attribute list
             # CRITICAL: Pass $null (not @("*")) to SearchRequest when Properties is null
             # On Global Catalog (port 3268), @("*") behaves differently than $null:
-            # - $null â†’ Returns all PAS attributes (correct for GC)
-            # - @("*") â†’ May return DN-only for cross-partition objects (S.DS.P GC quirk)
+            # - $null → Returns all PAS attributes (correct for GC)
+            # - @("*") → May return DN-only for cross-partition objects (S.DS.P GC quirk)
             $AttributeList = $null
 
             # CountOnly: force "1.1" (no attributes) to minimize network traffic
@@ -26244,7 +26244,7 @@ function Invoke-LDAPSearch {
                         $Script:LDAPStatistics.TotalEstimatedBytes += 200
                         if ($SearchResponse.Entries) {
                             $Script:LDAPStatistics.TotalResults += $SearchResponse.Entries.Count
-                            # CountOnly still returns DNs â€” estimate ~120 bytes per entry (DN + envelope)
+                            # CountOnly still returns DNs — estimate ~120 bytes per entry (DN + envelope)
                             $Script:LDAPStatistics.TotalEstimatedBytes += $SearchResponse.Entries.Count * 120
                         }
                     }
@@ -26488,8 +26488,8 @@ function Invoke-LDAPSearch {
                     }
 
                     # protocolSettings - Exchange's per-user protocol overrides.
-                    # Each entry has the form '<Protocol>Â§<Enabled 0/1>Â§<UseDefaults 0/1>Â§<encoding flags...>'
-                    # with Â§ = U+00A7. For security review only the protocol + enabled state matter;
+                    # Each entry has the form '<Protocol>§<Enabled 0/1>§<UseDefaults 0/1>§<encoding flags...>'
+                    # with § = U+00A7. For security review only the protocol + enabled state matter;
                     # the trailing per-user encoding overrides (mail format, MIME charset, etc.) are noise.
                     if ($PropName -ieq "protocolSettings") {
                         $protoLines = @()
@@ -26874,7 +26874,7 @@ function Invoke-LDAPSearch {
                                     } elseif ($rbcdPrincipals.Count -gt 1) {
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $rbcdPrincipals
                                     } else {
-                                        # SD parsed but no Allow ACEs found â€” attribute is set but SD has no delegates.
+                                        # SD parsed but no Allow ACEs found — attribute is set but SD has no delegates.
                                         # Still set the property so it appears in display (attribute is present in AD).
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[SD present, no Allow ACEs]"
                                     }
@@ -32096,7 +32096,7 @@ function Get-CertificateTemplate {
                     $CAs = Get-DomainObject -LDAPFilter "(objectClass=pKIEnrollmentService)" -SearchBase $EnrollmentServicesBase -Properties @('cn', 'certificateTemplates') -Raw
 
                     if ($CAs) {
-                        # Build reverse map: template CN â†’ list of CA names
+                        # Build reverse map: template CN → list of CA names
                         foreach ($CA in @($CAs)) {
                             if ($CA.certificateTemplates) {
                                 $CAName = if ($CA.cn) { [string]$CA.cn } else { 'Unknown' }
@@ -39482,7 +39482,7 @@ ${nextIndex}Parameters=$scriptParamsVal
                                 $afterStartup = $startupIdx + '[Startup]'.Length
                                 $nextSectionIdx = $scriptsIniContent.IndexOf('[', $afterStartup)
                                 if ($nextSectionIdx -eq -1) {
-                                    # [Startup] is last section â€” append at end
+                                    # [Startup] is last section — append at end
                                     $scriptsIniContent = $scriptsIniContent.TrimEnd() + "`r`n" + $newEntry
                                 } else {
                                     # Insert before next section
@@ -39658,7 +39658,7 @@ ${nextIndex}Parameters=$scriptParamsVal
                                 $afterLogon = $logonIdx + '[Logon]'.Length
                                 $nextSectionIdx = $scriptsIniContent.IndexOf('[', $afterLogon)
                                 if ($nextSectionIdx -eq -1) {
-                                    # [Logon] is last section â€” append at end
+                                    # [Logon] is last section — append at end
                                     $scriptsIniContent = $scriptsIniContent.TrimEnd() + "`r`n" + $newEntry
                                 } else {
                                     # Insert before next section
@@ -40383,7 +40383,7 @@ function Sync-GPOSYSVOLPermissions {
         $emptyGuid = [System.Guid]::Empty
         $SYSVOLACEData = @()
         foreach ($ADACE in $ADACEs) {
-            # Skip object-specific ACEs â€” they grant rights only on specific AD attributes/properties
+            # Skip object-specific ACEs — they grant rights only on specific AD attributes/properties
             # and should not be mapped to NTFS permissions (would grant overly broad SYSVOL access)
             if ($ADACE.ObjectType -ne $emptyGuid) {
                 Write-Log "[Sync-GPOSYSVOLPermissions] Skipping object-specific ACE: Trustee=$($ADACE.IdentityReference.Value), ObjectType=$($ADACE.ObjectType)"
@@ -43151,7 +43151,7 @@ function ConvertFrom-SecurityDescriptor {
     and Get-ACEInheritanceSource.
 
     By using [SecurityIdentifier] as the identity type, all IdentityReferences
-    are guaranteed to be SIDs â€” no Windows name resolution is needed.
+    are guaranteed to be SIDs — no Windows name resolution is needed.
 
 .PARAMETER SecurityDescriptorBytes
     The raw nTSecurityDescriptor value. Can be:
@@ -43376,7 +43376,7 @@ function Resolve-SIDViaGC {
         # Use Invoke-LDAPSearch with GC connection
         # CRITICAL: Use -Raw flag to prevent infinite recursion via msDS-AllowedToActOnBehalfOfOtherIdentity
         # -Raw skips all attribute conversions (including Security Descriptor parsing which would call
-        # ConvertFrom-SID â†’ Resolve-SIDViaGC again â†’ infinite loop)
+        # ConvertFrom-SID → Resolve-SIDViaGC again → infinite loop)
         # We only need sAMAccountName + distinguishedName for SID resolution
         # With -Raw, explicit attribute list works correctly (no S.DS.P GC port 3268 bug)
         # Force array wrapping to prevent PowerShell unwrapping single results to scalar
@@ -43675,7 +43675,7 @@ function ConvertFrom-SID {
             Write-Log "[ConvertFrom-SID] Initialized bidirectional Name-to-SID cache"
         }
 
-        # Initialize Foreign Domain cache (SID Domain Part â†’ Domain FQDN)
+        # Initialize Foreign Domain cache (SID Domain Part → Domain FQDN)
         if (-not $Script:ForeignDomainCache) {
             $Script:ForeignDomainCache = @{}
             Write-Log "[ConvertFrom-SID] Initialized Foreign Domain cache"
@@ -43995,7 +43995,7 @@ function ConvertTo-LDAPSIDHex {
     Returns: "S-1-5-21-..."
 
 .EXAMPLE
-    "PRAXIS\DomÃ¤nencomputer" | ConvertTo-SID
+    "PRAXIS\Domänencomputer" | ConvertTo-SID
     Returns: "S-1-5-21-...-515"
 
 .OUTPUTS
@@ -44068,7 +44068,7 @@ function ConvertTo-SID {
         }
 
         # Try Windows API for localized account names (NT AUTHORITY, BUILTIN, etc.)
-        # This handles ANY Windows language (German NT-AUTORITÃ„T, French AUTORITE NT, etc.)
+        # This handles ANY Windows language (German NT-AUTORITÄT, French AUTORITE NT, etc.)
         # without requiring translation tables.
         # Skip Windows API for Distinguished Names - they need LDAP resolution
         if ($Identity -notmatch '^CN=') {
@@ -44304,12 +44304,12 @@ function ConvertTo-SID {
     - "Unknown": Could not resolve identity to SID
 
     Category Hierarchy (for IsPrivileged boolean):
-    - Privileged â†’ IsPrivileged = $true
-    - Operator â†’ IsPrivileged = $false (unless -IncludeOperators)
-    - BroadGroup â†’ IsPrivileged = $false
-    - ExchangeService â†’ IsPrivileged = $false (by-design permissions)
-    - Standard â†’ IsPrivileged = $false
-    - Unknown â†’ IsPrivileged = $null
+    - Privileged → IsPrivileged = $true
+    - Operator → IsPrivileged = $false (unless -IncludeOperators)
+    - BroadGroup → IsPrivileged = $false
+    - ExchangeService → IsPrivileged = $false (by-design permissions)
+    - Standard → IsPrivileged = $false
+    - Unknown → IsPrivileged = $null
 
 .PARAMETER Identity
     The identity to check. Accepts multiple formats:
@@ -44575,7 +44575,7 @@ function Test-IsExchangeServiceGroup {
             }
         }
 
-        # Session-level cache â€” same SIDs appear across hundreds of OUs
+        # Session-level cache — same SIDs appear across hundreds of OUs
         if (-not $Script:ExchangeGroupCache) {
             $Script:ExchangeGroupCache = @{}
         }
@@ -44803,7 +44803,7 @@ function Test-IsExchangeServer {
 
 .DESCRIPTION
     Uses a single LDAP query with LDAP_MATCHING_RULE_IN_CHAIN (1.2.840.113556.1.4.1941) to retrieve ALL groups where the identity is a direct or nested member.
-    Results are cached for subsequent lookups (SID â†’ Array of Group SIDs).
+    Results are cached for subsequent lookups (SID → Array of Group SIDs).
 
 .PARAMETER IdentitySID
     The SID of the identity to check.
@@ -45068,7 +45068,7 @@ function Test-IsPrivileged {
 
         # ===== PHASE 4: sIDHistory Check (SID History Injection Detection) =====
         # Check if this identity has privileged SIDs in sIDHistory attribute.
-        # Only domain SIDs (S-1-5-21-*) can have sIDHistory â€” well-known SIDs
+        # Only domain SIDs (S-1-5-21-*) can have sIDHistory — well-known SIDs
         # (SYSTEM, Administrators, Everyone, etc.) have no AD object to query.
         $isDomainSID = $sid -match '^S-1-5-21-'
         if ($Script:LdapConnection -and $isDomainSID) {
@@ -45672,7 +45672,7 @@ function Test-IsExpectedInScope {
                         $groupName = ConvertFrom-SID -SID $expectedGroupSID
                         if (-not $groupName) { $groupName = $expectedGroupSID }
 
-                        # Identity is member of an expected group â†’ Attention (not Finding), because the explicit ACE is redundant but not a new attack vector
+                        # Identity is member of an expected group → Attention (not Finding), because the explicit ACE is redundant but not a new attack vector
                         Write-Log "[Test-IsExpectedInScope] Identity $sid is member of expected group $groupName"
                         if ($ReturnDetails) {
                             return [PSCustomObject]@{
@@ -46045,7 +46045,7 @@ function ConvertFrom-GPPPassword {
 
             # Remove AES padding artifacts (null bytes and any trailing non-printable chars)
             # GPP passwords are ASCII-safe, so we can safely trim anything non-printable
-            # This handles: null bytes (0x00), and padding remnants like à°Œ (0x0C0C), È‚ (0x0202), à¸Ž (0x0E0E)
+            # This handles: null bytes (0x00), and padding remnants like ఌ (0x0C0C), Ȃ (0x0202), ฎ (0x0E0E)
             $cleanPassword = ""
             foreach ($char in $decryptedPassword.ToCharArray()) {
                 $code = [int]$char
@@ -46111,11 +46111,11 @@ function ConvertFrom-GPPPassword {
     Where XXXXXX and YYYYYY are 6-character checksums
 
     Escape Sequences (processed during decoding):
-    - @& â†’ newline (chr(10))
-    - @# â†’ carriage return (chr(13))
-    - @* â†’ >
-    - @! â†’ <
-    - @$ â†’ @
+    - @& → newline (chr(10))
+    - @# → carriage return (chr(13))
+    - @* → >
+    - @! → <
+    - @$ → @
 
 .PARAMETER EncodedScript
     The content of a .vbe file (VBScript Encoded).
@@ -49513,7 +49513,19 @@ function Ensure-LDAPConnection {
                 $ConnectionParams['UseLDAPS'] = $true  # Schannel requires LDAPS
             }
 
-            Connect-LDAP @ConnectionParams | Out-Null
+            # Connect-LDAP returns its DomainInfo hashtable (truthy) on success and
+            # $null on failure. IMPORTANT: it does NOT throw on a failed bind - it
+            # displays the specific error (e.g. LDAP 49) and returns $null, leaving any
+            # pre-existing $Script:LDAPContext / $Script:LdapConnection intact. We must
+            # therefore check the return value: if we blindly reported success here, the
+            # caller would silently operate under the STALE previous session - a
+            # different identity than the explicitly requested Domain/Server/Credential.
+            $NewConnection = Connect-LDAP @ConnectionParams
+
+            if (-not $NewConnection) {
+                Write-Log "[Ensure-LDAPConnection] Connection attempt failed - no valid session established (Connect-LDAP already displayed the reason)"
+                return $false
+            }
 
             # Use centrally determined authenticated user from Connect-LDAP
             $UsernameDisplay = $Script:LDAPContext.AuthenticatedUser
@@ -50230,7 +50242,7 @@ function Get-CachedSYSVOLFiles {
 .DESCRIPTION
     Provides a content-level cache for SYSVOL files (e.g., GptTmpl.inf).
     Multiple check modules that read the same file per GPO will only trigger
-    one SMB read â€” subsequent calls return the cached content.
+    one SMB read — subsequent calls return the cached content.
 
     This complements Get-CachedSYSVOLFiles (which caches directory listings)
     by also caching the actual file content on demand.
@@ -53271,10 +53283,10 @@ function Update-KRBCredTicket {
         $pos += $totalLen
     }
 
-    # child[0] = [0] pvno       â†’ keep original
-    # child[1] = [1] msg-type   â†’ keep original
-    # child[2] = [2] tickets    â†’ replace with new ticket
-    # child[3] = [3] enc-part   â†’ modify pname if NewClientName provided, preserve rest
+    # child[0] = [0] pvno       → keep original
+    # child[1] = [1] msg-type   → keep original
+    # child[2] = [2] tickets    → replace with new ticket
+    # child[3] = [3] enc-part   → modify pname if NewClientName provided, preserve rest
 
     # Build new [2] tickets: context tag 2 wrapping SEQUENCE OF Ticket
     $newTicketsField = [byte[]](New-ASN1ContextTag -Tag 2 -Data (New-ASN1Sequence -Data $NewTicket))
@@ -53309,8 +53321,8 @@ function Update-KRBCredEncPartPName {
     .SYNOPSIS
         Updates the pname field in a KRB-CRED enc-part [3] while preserving all other fields as raw bytes.
     .DESCRIPTION
-        Parses the enc-part context tag [3] â†’ EncryptedData â†’ cipher â†’ EncKrbCredPart [APPLICATION 29]
-        â†’ KrbCredInfo SEQUENCE, then replaces only the [2] pname field with the new client name.
+        Parses the enc-part context tag [3] → EncryptedData → cipher → EncKrbCredPart [APPLICATION 29]
+        → KrbCredInfo SEQUENCE, then replaces only the [2] pname field with the new client name.
         All other fields (especially [0] key = session key) are preserved as raw bytes.
     #>
     [CmdletBinding()]
@@ -53322,7 +53334,7 @@ function Update-KRBCredEncPartPName {
         [string]$NewClientName
     )
 
-    # Parse context tag [3] â†’ content is EncryptedData SEQUENCE
+    # Parse context tag [3] → content is EncryptedData SEQUENCE
     $ctxTag3 = Read-ASN1Element -Data $EncPartRawBytes -Offset 0
 
     # Parse EncryptedData SEQUENCE: { [0] etype, [2] cipher }
@@ -53350,7 +53362,7 @@ function Update-KRBCredEncPartPName {
         throw "Update-KRBCredEncPartPName: cipher field [2] not found in EncryptedData"
     }
 
-    # Parse EncKrbCredPart [APPLICATION 29] â†’ SEQUENCE â†’ [0] ticket-info â†’ SEQUENCE OF KrbCredInfo
+    # Parse EncKrbCredPart [APPLICATION 29] → SEQUENCE → [0] ticket-info → SEQUENCE OF KrbCredInfo
     $app29 = Read-ASN1Element -Data $cipherContent -Offset 0
     $app29Seq = Read-ASN1Element -Data $app29.Content -Offset 0
     $app29Children = Read-ASN1Children -Data $app29Seq.Content
@@ -53368,7 +53380,7 @@ function Update-KRBCredEncPartPName {
         throw "Update-KRBCredEncPartPName: ticket-info [0] not found in EncKrbCredPart"
     }
 
-    # Parse SEQUENCE OF KrbCredInfo â†’ get first KrbCredInfo SEQUENCE
+    # Parse SEQUENCE OF KrbCredInfo → get first KrbCredInfo SEQUENCE
     $ticketInfoSeq = Read-ASN1Element -Data $ticketInfoChild.Content -Offset 0
     $credInfoElements = Read-ASN1Children -Data $ticketInfoSeq.Content
 
@@ -53402,7 +53414,7 @@ function Update-KRBCredEncPartPName {
         $ciPos += $fieldLen
     }
 
-    # Rebuild: KrbCredInfo SEQUENCE â†’ SEQUENCE OF â†’ [0] ticket-info â†’ EncKrbCredPart SEQUENCE â†’ APPLICATION 29
+    # Rebuild: KrbCredInfo SEQUENCE → SEQUENCE OF → [0] ticket-info → EncKrbCredPart SEQUENCE → APPLICATION 29
     $newCredInfoSeq = [byte[]](New-ASN1Sequence -Data ([byte[]]$newCredInfoContent.ToArray()))
     $newTicketInfoSeq = [byte[]](New-ASN1Sequence -Data $newCredInfoSeq)
     $newTicketInfoField = [byte[]](New-ASN1ContextTag -Tag 0 -Data $newTicketInfoSeq)
@@ -54744,7 +54756,7 @@ function Get-Hash {
         Computes multiple hash formats from a password, returned as hex strings for easy copy/paste.
 
         Always computed:
-        - RC4 (NT-Hash): MD4(UTF-16LE(password)) â€” no salt, domain-independent
+        - RC4 (NT-Hash): MD4(UTF-16LE(password)) — no salt, domain-independent
         - MD5, SHA1, SHA256, SHA512: Standard cryptographic hashes
 
         Computed when -UserName is provided:
@@ -54819,7 +54831,7 @@ function Get-Hash {
 
     if ($UserName) {
         # DCC (Domain Cached Credentials v1): MD4(NT-Hash || UTF-16LE(lowercase(username)))
-        # Also known as "mscache" â€” stored locally when DC is unreachable
+        # Also known as "mscache" — stored locally when DC is unreachable
         $userLower = [System.Text.Encoding]::Unicode.GetBytes($UserName.ToLower())
         $dccInput = New-Object byte[] ($ntHashBytes.Length + $userLower.Length)
         [Array]::Copy($ntHashBytes, 0, $dccInput, 0, $ntHashBytes.Length)
@@ -54828,13 +54840,13 @@ function Get-Hash {
         $dccHex = ($dccBytes | ForEach-Object { $_.ToString("X2") }) -join ''
 
         # DCC2 (Domain Cached Credentials v2): PBKDF2-HMAC-SHA1(DCC, lowercase(username), 10240, 16)
-        # Also known as "mscachev2" â€” used since Vista/2008
+        # Also known as "mscachev2" — used since Vista/2008
         # Manual PBKDF2 because Rfc2898DeriveBytes requires minimum 8-byte salt
         $dcc2Salt = [System.Text.Encoding]::UTF8.GetBytes($UserName.ToLower())
         $dcc2Iterations = 10240
         $dcc2Len = 16
 
-        # PBKDF2-HMAC-SHA1 (RFC 2898 Section 5.2) â€” single block (dkLen <= 20)
+        # PBKDF2-HMAC-SHA1 (RFC 2898 Section 5.2) — single block (dkLen <= 20)
         $saltBlock = New-Object byte[] ($dcc2Salt.Length + 4)
         [Array]::Copy($dcc2Salt, 0, $saltBlock, 0, $dcc2Salt.Length)
         $saltBlock[$saltBlock.Length - 1] = 1  # Block index 1 (big-endian)
@@ -56024,13 +56036,13 @@ function Get-KerberosChecksumNative {
     )
 
     # Map encryption type to checksum type
-    # AES256 (etype 18) â†’ HMAC_SHA1_96_AES256 (checksum type 16)
-    # AES128 (etype 17) â†’ HMAC_SHA1_96_AES128 (checksum type 15)
-    # RC4 (etype 23) â†’ HMAC_MD5 (checksum type -138)
+    # AES256 (etype 18) → HMAC_SHA1_96_AES256 (checksum type 16)
+    # AES128 (etype 17) → HMAC_SHA1_96_AES128 (checksum type 15)
+    # RC4 (etype 23) → HMAC_MD5 (checksum type -138)
     $checksumType = switch ($EncryptionType) {
-        18 { 16 }    # AES256 â†’ HMAC_SHA1_96_AES256
-        17 { 15 }    # AES128 â†’ HMAC_SHA1_96_AES128
-        23 { -138 }  # RC4 â†’ HMAC_MD5
+        18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
+        17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
+        23 { -138 }  # RC4 → HMAC_MD5
         default { throw "Unsupported encryption type for checksum: $EncryptionType" }
     }
 
@@ -59527,7 +59539,7 @@ function Invoke-KerberosAuth {
             )
 
             # AS-REP enc-part: RFC 4120 specifies key usage 3 (encrypted with client long-term key).
-            # RC4-HMAC against Windows KDCs uses key usage 8 instead â€” a historic Microsoft quirk
+            # RC4-HMAC against Windows KDCs uses key usage 8 instead — a historic Microsoft quirk
             # (early Win2000 KDC conflated AS-REP/TGS-REP enc-part) documented in RFC 4757.
             # MIT Kerberos and Impacket apply the same 3->8 remap for ARCFOUR_HMAC.
             $keyUsage = if ($EType -eq 23) { 8 } else { 3 }
@@ -63784,12 +63796,12 @@ function Invoke-RevertToSelf {
     Mode 1: Hostname to IP Resolution (-Name parameter)
         Returns: IP address string or $null
         Use case: Resolving explicit hostnames for TCP connections
-        Example: User specifies -Server "dc01.contoso.com" â†’ resolve to IP
+        Example: User specifies -Server "dc01.contoso.com" → resolve to IP
 
     Mode 2: Domain Controller Discovery (-Domain parameter)
         Returns: PSCustomObject with Hostname and IP
         Use case: Auto-discovering DC when no explicit server specified
-        Example: User only specifies -Domain "contoso.com" â†’ find DC via SRV records
+        Example: User only specifies -Domain "contoso.com" → find DC via SRV records
 
     Features:
     - Uses custom DNS server if specified via -DnsServer or $Script:LDAPContext['DnsServer']
@@ -63803,7 +63815,7 @@ function Invoke-RevertToSelf {
     DC Discovery Order:
     1. Query ALL SRV records for _ldap._tcp.dc._msdcs.<domain>
     2. Sort by Priority (lower = better) and Weight (higher = better)
-    3. For each DC: Resolve hostname â†’ Test Port 88 + 389/636 â†’ Return if reachable
+    3. For each DC: Resolve hostname → Test Port 88 + 389/636 → Return if reachable
     4. Fallback: Reverse DNS lookup via system DNS (with reachability test)
     5. Last resort: Direct A record lookup for domain name (with reachability test)
 
@@ -65652,7 +65664,7 @@ function Invoke-KerberosAuthFlow {
             }
 
             # Add authentication material based on what was provided
-            # For password-based auth, we implement EType fallback (AES256 â†’ AES128 â†’ RC4)
+            # For password-based auth, we implement EType fallback (AES256 → AES128 → RC4)
             # For hash/key-based auth, the EType is fixed by the key type
             if ($PSBoundParameters.ContainsKey('Password')) {
                 $KerbAuthParams['Password'] = $Password
@@ -66269,7 +66281,7 @@ function Get-ACEInheritanceSource {
         # Check each parent starting from immediate parent
         foreach ($parentDN in $parents) {
             try {
-                # Load parent ACL â€” use cache to avoid redundant LDAP queries
+                # Load parent ACL — use cache to avoid redundant LDAP queries
                 # Parent ACLs are shared by all child OUs, so caching is highly effective
                 $cacheKey = $parentDN.ToLowerInvariant()
                 $parentAccessRules = $null
@@ -66298,7 +66310,7 @@ function Get-ACEInheritanceSource {
                     if ($parentACE.IsInherited) { continue }
                     if ($parentACE.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
 
-                    # Match by SID (both are SecurityIdentifier â€” direct string comparison)
+                    # Match by SID (both are SecurityIdentifier — direct string comparison)
                     if ($parentACE.IdentityReference.Value -ne $aceIdentitySID) { continue }
 
                     # Relaxed matching: Check if the parent ACE could be the source
@@ -68450,34 +68462,34 @@ function Test-ExtendedProtection {
 
                     # EPA Detection after Type3 (priority order):
                     #
-                    # 1. "NTLM <base64blob>" â€” server sent a new Type2 challenge = NTLM restart.
+                    # 1. "NTLM <base64blob>" — server sent a new Type2 challenge = NTLM restart.
                     #    EPA rejects the Type3 (SEC_E_INVALID_TOKEN) and restarts negotiation.
                     #    Only NTLM without Negotiate prefix: IIS uses pure NTLM channel for the restart.
-                    #    â†’ EPA ENABLED (High confidence)
+                    #    → EPA ENABLED (High confidence)
                     #
-                    # 2. "NTLM" bare (no Negotiate prefix, no blob) â€” NTLM-only offer = restart signal.
+                    # 2. "NTLM" bare (no Negotiate prefix, no blob) — NTLM-only offer = restart signal.
                     #    Same meaning as above but without a blob attached.
-                    #    â†’ EPA ENABLED (High confidence)
+                    #    → EPA ENABLED (High confidence)
                     #
-                    # 3. "Negotiate,NTLM" or "Negotiate" (with or without blob) â€” blanke new Auth-Challenge.
+                    # 3. "Negotiate,NTLM" or "Negotiate" (with or without blob) — blanke new Auth-Challenge.
                     #    This is the normal IIS response when authentication FAILS (invalid credentials).
                     #    Both EPA=enabled and EPA=disabled can produce this, BUT:
-                    #    - When EPA=disabled: dummy Type3 passes the CBT check, fails on credentials â†’ 401 Negotiate,NTLM
-                    #    - When EPA=enabled:  dummy Type3 fails the CBT check first â†’ typically NTLM restart (case 1/2)
+                    #    - When EPA=disabled: dummy Type3 passes the CBT check, fails on credentials → 401 Negotiate,NTLM
+                    #    - When EPA=enabled:  dummy Type3 fails the CBT check first → typically NTLM restart (case 1/2)
                     #    If we reach this branch, CBT check passed (EPA not enforced) and only creds failed.
-                    #    â†’ EPA DISABLED (Medium confidence)
+                    #    → EPA DISABLED (Medium confidence)
                     #
                     # NOTE: The old pattern "NTLM\s*$" incorrectly matched "Negotiate,NTLM" because NTLM
                     # appears at the end of the string. Fixed by requiring NTLM NOT be preceded by "Negotiate,".
                     if ($wwwAuth -match 'NTLM\s+([A-Za-z0-9+/=]{20,})') {
-                        # Case 1: Server sent a new NTLM Type2 blob â€” genuine NTLM restart after EPA rejection
+                        # Case 1: Server sent a new NTLM Type2 blob — genuine NTLM restart after EPA rejection
                         $result.EPAEnabled = $true
                         $result.Confidence = "High"
                         $result.DiagnosticInfo = "Server sent new NTLM Type2 challenge after Type3 - EPA rejected the request due to missing Channel Binding Token"
                         Write-Log "[Test-ExtendedProtection] EPA ENABLED - Server restarted NTLM with new Type2 (CBT missing)"
                     }
                     elseif ($wwwAuth -match '(?<![,\s])NTLM\s*$' -or $wwwAuth -match '^NTLM\s*$') {
-                        # Case 2: Bare "NTLM" without Negotiate prefix â€” NTLM-only restart signal
+                        # Case 2: Bare "NTLM" without Negotiate prefix — NTLM-only restart signal
                         # Exclude "Negotiate,NTLM" which ends with NTLM but means normal auth failure
                         $result.EPAEnabled = $true
                         $result.Confidence = "High"
@@ -68485,14 +68497,14 @@ function Test-ExtendedProtection {
                         Write-Log "[Test-ExtendedProtection] EPA ENABLED - Bare NTLM offer after Type3 (CBT missing)"
                     }
                     elseif ($wwwAuth -match 'Negotiate\s+([A-Za-z0-9+/=]{20,})') {
-                        # Case 3a: Negotiate blob â€” Kerberos token or NTLM-via-Negotiate; auth failed on credentials
+                        # Case 3a: Negotiate blob — Kerberos token or NTLM-via-Negotiate; auth failed on credentials
                         $result.EPAEnabled = $false
                         $result.Confidence = "Medium"
                         $result.DiagnosticInfo = "Server returned 401 with Negotiate blob after Type3 - credentials rejected (CBT check passed, EPA not enforced)"
                         Write-Log "[Test-ExtendedProtection] EPA NOT enabled - auth failure with Negotiate blob (normal credential rejection)"
                     }
                     elseif ($wwwAuth -match 'Negotiate') {
-                        # Case 3b: "Negotiate" or "Negotiate,NTLM" â€” blanke new Auth-Challenge after credential failure
+                        # Case 3b: "Negotiate" or "Negotiate,NTLM" — blanke new Auth-Challenge after credential failure
                         # This is the standard IIS response when NTLM auth fails with invalid credentials
                         # and EPA is not blocking (EPA=disabled: CBT check passed, credential check failed)
                         $result.EPAEnabled = $false
@@ -75572,14 +75584,14 @@ function Invoke-TicketForge {
 .PARAMETER GroupRIDs
     Array of group RIDs to include in the PAC's GroupIds field.
 
-    Golden/Silver: Default @(512, 513, 518, 519, 520) â€” Domain Admins, Domain Users,
+    Golden/Silver: Default @(512, 513, 518, 519, 520) — Domain Admins, Domain Users,
     Schema Admins, Enterprise Admins, Group Policy Creator Owners. Specifying this
     parameter REPLACES the entire default list (e.g. @(512, 513, 518, 519, 520, 1337)
     to keep the defaults and add a custom one).
 
     Diamond: These RIDs are APPENDED to the user's real group memberships (parsed from
     the genuine PAC), not used as a replacement. If not specified, only Domain Admins
-    (512) is injected â€” the broader default set is itself a detection indicator and is
+    (512) is injected — the broader default set is itself a detection indicator and is
     therefore avoided for diamond tickets.
 
 .PARAMETER ExtraSIDs
@@ -85778,8 +85790,8 @@ function Get-ProtectedUsersStatus {
             # Get Tier-0 group SIDs from central definition
             $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
 
-            $tier0Accounts = @{}  # SID â†’ Account object (deduplicated)
-            $tier0AccountGroups = @{}  # SID â†’ Array of group names (for display)
+            $tier0Accounts = @{}  # SID → Account object (deduplicated)
+            $tier0AccountGroups = @{}  # SID → Array of group names (for display)
 
             foreach ($groupSID in $tier0GroupSIDs) {
                 $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
@@ -88063,9 +88075,9 @@ function Get-DangerousOUPermissions {
                         }
 
                         # Determine display severity:
-                        # - Exchange service groups â†’ 'Attention' (yellow, by-design)
-                        # - Privileged accounts (Info from Get-OUPermissions) with -IncludePrivileged â†’ 'Attention' (yellow)
-                        # - Non-privileged â†’ original severity (Critical/High)
+                        # - Exchange service groups → 'Attention' (yellow, by-design)
+                        # - Privileged accounts (Info from Get-OUPermissions) with -IncludePrivileged → 'Attention' (yellow)
+                        # - Non-privileged → original severity (Critical/High)
                         $isPrivilegedAccount = $finding.Severity -eq 'Info'
                         $displaySeverity = if ($isExchangeService) { 'Attention' }
                             elseif ($isPrivilegedAccount) { 'Attention' }
@@ -88505,9 +88517,9 @@ function Get-PasswordResetRights {
                     }
 
                     # Determine display severity:
-                    # - Exchange service groups â†’ 'Attention' (yellow, by-design)
-                    # - Privileged accounts (Info from Get-OUPermissions) with -IncludePrivileged â†’ 'Attention' (yellow)
-                    # - Non-privileged â†’ original severity (Critical/High)
+                    # - Exchange service groups → 'Attention' (yellow, by-design)
+                    # - Privileged accounts (Info from Get-OUPermissions) with -IncludePrivileged → 'Attention' (yellow)
+                    # - Non-privileged → original severity (Critical/High)
                     $isPrivilegedAccount = $finding.Severity -eq 'Info'
                     $displaySeverity = if ($isExchangeService) { 'Attention' }
                         elseif ($isPrivilegedAccount) { 'Attention' }
@@ -89017,7 +89029,7 @@ function Check-GPOAddComputerRights {
         $dcOUDN = "OU=Domain Controllers,$domainDN"
 
         # Build GPO precedence map using Get-GPOLinkage (which reliably reads gPLink via Invoke-LDAPSearch)
-        # Filter to DC OU and domain root â€” these are the containers that determine effective DC policy
+        # Filter to DC OU and domain root — these are the containers that determine effective DC policy
         Write-Log "[Check-GPOAddComputerRights] Building GPO precedence map from GPO linkage data"
         $Script:gpoAddComputerPrecedenceMap = @{}
 
@@ -91279,11 +91291,11 @@ function Get-GroupAssignmentSeverity {
     $risk = $config.Risk
 
     # Escalate severity if risky members (Everyone, Domain Users, etc.) are present
-    # Using standard adPEAS severity values: Note â†’ Hint â†’ Finding
+    # Using standard adPEAS severity values: Note → Hint → Finding
     if (@($RiskyMembers).Count -gt 0) {
         $riskyList = $RiskyMembers -join ', '
 
-        # Escalate: Noteâ†’Hint, Hintâ†’Finding, Finding stays Finding
+        # Escalate: Note→Hint, Hint→Finding, Finding stays Finding
         $severity = switch ($severity) {
             "Note"     { "Hint" }
             "Hint"     { "Finding" }
@@ -91442,7 +91454,7 @@ function Parse-GPPGroups {
     try {
         # Use XmlDocument.Load() to honor the XML encoding declaration / BOM.
         # Get-Content defaults to the ANSI code page in Windows PowerShell 5.1,
-        # which mojibakes UTF-8 Groups.xml (e.g. "DomÃ¤nen-Benutzer" -> "DomÃƒÂ¤nen-Benutzer").
+        # which mojibakes UTF-8 Groups.xml (e.g. "Domänen-Benutzer" -> "DomÃ¤nen-Benutzer").
         $xmlContent = New-Object System.Xml.XmlDocument
         $xmlContent.Load($FilePath)
         $findings = @()
@@ -95495,7 +95507,7 @@ function Get-SCCMInfrastructure {
                     }
                     $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue "$memberCount member(s)" -Force
                     # Remove member attribute to prevent Extended-attribute rendering from triggering
-                    # per-DN SID resolution (Convert-DNsToMemberInfo â†’ ConvertTo-SID per member)
+                    # per-DN SID resolution (Convert-DNsToMemberInfo → ConvertTo-SID per member)
                     $group.PSObject.Properties.Remove('member')
                     $group | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMGroup' -Force
                     Show-Object $group
@@ -95703,7 +95715,7 @@ function Get-SCOMInfrastructure {
                     }
                     $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue "$memberCount member(s)" -Force
                     # Remove member attribute to prevent Extended-attribute rendering from triggering
-                    # per-DN SID resolution (Convert-DNsToMemberInfo â†’ ConvertTo-SID per member)
+                    # per-DN SID resolution (Convert-DNsToMemberInfo → ConvertTo-SID per member)
                     $group.PSObject.Properties.Remove('member')
                     $group | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMGroup' -Force
                     Show-Object $group
@@ -97408,15 +97420,15 @@ function Get-PasswordInDescription {
 
             # Exclusion patterns (skip if line matches these - password policy text, help, etc.)
             # Conservative approach: better to show a false positive than to hide a real password
-            # Only exact terms â€” no wildcards for foreign words we haven't verified in real AD data
+            # Only exact terms — no wildcards for foreign words we haven't verified in real AD data
             $exclusionPatterns = @(
                 # Policy/guideline text (EN/DE/IT/RO)
                 'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
                 '\bparol[ae]?\s*(policy|politica|cerinta)',
                 # Modal verbs: "password must/should..." (EN/DE/NO/IT/RO)
-                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|mÃ¥|bÃ¸r|deve|trebuie)\s+',
+                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
                 # Technical terms: length, complexity, expiry (EN/DE/NO/IT)
-                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utlÃ¸p|lunghezza|scadenza)',
+                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
                 # Reset/change/recover (EN/IT/RO)
                 'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
                 '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
@@ -97439,7 +97451,7 @@ function Get-PasswordInDescription {
             foreach ($objectType in @('User', 'Computer')) {
                 Write-Log "[Get-PasswordInDescription] Checking $objectType accounts..."
 
-                # Phase 1: Lightweight query â€” only fetch description + info (DN is always included)
+                # Phase 1: Lightweight query — only fetch description + info (DN is always included)
                 # This avoids loading ALL properties for potentially thousands of objects
                 $candidates = if ($objectType -eq 'User') {
                     Get-DomainUser -LDAPFilter "(|(description=*)(info=*))" -Properties "description","info" @connectionParams
@@ -105653,7 +105665,7 @@ function Compare-adPEASReport {
             $sharedCategories = @($baselineCategories | Where-Object { $_ -in $currentCategories })
 
             # Separate scope-only findings from real added/removed
-            # Findings in non-overlapping categories are NOT real changes â€” they reflect
+            # Findings in non-overlapping categories are NOT real changes — they reflect
             # different scan scopes (e.g., one scan ran -Module Accounts, the other ran all modules)
             $scopeOnlyBaseline = @()
             $scopeOnlyCurrent = @()
@@ -109021,7 +109033,7 @@ function Collect-BHEnterpriseCAs {
                 unresolvedpublishedtemplates        = @()
                 whencreated                         = ConvertTo-UnixTimestamp $ca.Created
             }
-            # CARegistryData must be top-level (not inside Properties) â€” nested dicts inside
+            # CARegistryData must be top-level (not inside Properties) — nested dicts inside
             # Properties cause Neo4j Map{} errors when BH CE writes them as node properties.
             CARegistryData          = $null
             HttpEnrollmentEndpoints = @()
@@ -109578,7 +109590,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.2.0+20260722-0904"
+$Script:adPEASVersion = "2.3.0"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

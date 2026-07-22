@@ -177,7 +177,19 @@ function Ensure-LDAPConnection {
                 $ConnectionParams['UseLDAPS'] = $true  # Schannel requires LDAPS
             }
 
-            Connect-LDAP @ConnectionParams | Out-Null
+            # Connect-LDAP returns its DomainInfo hashtable (truthy) on success and
+            # $null on failure. IMPORTANT: it does NOT throw on a failed bind - it
+            # displays the specific error (e.g. LDAP 49) and returns $null, leaving any
+            # pre-existing $Script:LDAPContext / $Script:LdapConnection intact. We must
+            # therefore check the return value: if we blindly reported success here, the
+            # caller would silently operate under the STALE previous session - a
+            # different identity than the explicitly requested Domain/Server/Credential.
+            $NewConnection = Connect-LDAP @ConnectionParams
+
+            if (-not $NewConnection) {
+                Write-Log "[Ensure-LDAPConnection] Connection attempt failed - no valid session established (Connect-LDAP already displayed the reason)"
+                return $false
+            }
 
             # Use centrally determined authenticated user from Connect-LDAP
             $UsernameDisplay = $Script:LDAPContext.AuthenticatedUser

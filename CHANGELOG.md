@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-07-22
+
 ### Added
 
 - **`Get-GPORegistrySettings` — new GPO check** that flags security-relevant
@@ -30,6 +32,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the LDAP+SMB, no-RSAT model). Inspired by OneLogon (https://github.com/rub-softsec/onelogon).
 
 ### Fixed
+
+- **Silent fallback to a stale session when an explicit `-Credential` bind
+  failed.** `Connect-LDAP` does not throw on a failed bind — it displays the
+  reason (e.g. LDAP 49 invalid credentials) and returns `$null`, leaving any
+  pre-existing session in `$Script:LDAPContext`/`$Script:LdapConnection` intact.
+  `Ensure-LDAPConnection` discarded that return value (`| Out-Null`) and then
+  reported *"Successfully connected"* using the stale context, so a command run
+  with wrong/mistyped credentials (e.g. `Set-DomainUser -Credential …`) silently
+  proceeded under the **previous** identity instead of failing. It now checks the
+  `Connect-LDAP` return value and returns `$false` on failure, so the caller aborts
+  with the real authentication error instead of operating as the wrong principal.
+
+- **Consistent web endpoint reporting for ADCS/Exchange probes.** When a web
+  endpoint probe ran against a reachable, active server but did not succeed (e.g.
+  a CA's web enrollment endpoint blocked during a VPN scan), it silently produced
+  no output — indistinguishable from "the service exposes no web endpoint". A
+  central `Show-WebEndpointUnreachable` (`Core/adPEAS-Messages`) now emits a
+  uniform Note for both ADCS and Exchange; inactivity-skipped servers stay silent.
+  Additionally, HTTP/HTTPS availability is now tracked per endpoint
+  (`AvailableHttp`/`AvailableHttps`) in `Invoke-HTTPRequest`, so HTTPS-only
+  endpoints (ADCS CEP/CES, Exchange EWS/MAPI/RPC/PowerShell/ActiveSync) are no
+  longer dropped from the endpoint list; global transport flags are derived
+  additively so HTTP-only, HTTPS-only and mixed cases all render correctly.
 
 - **Actionable error messages for directory write operations.** When a write
   (`New-DomainComputer`/`User`/`Group`/`GPO`, `Set-Domain*`, RBCD and Shadow
