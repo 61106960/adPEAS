@@ -68,11 +68,18 @@ function Get-DomainPasswordPolicy {
             # Get-DomainObject may return single object or array - normalize to single object
             $domainPolicy = if ($domainPolicyResults -is [array]) { $domainPolicyResults[0] } else { $domainPolicyResults }
 
-            # Extract and convert values
-            # Invoke-LDAPSearch returns pre-converted values:
+            # Extract and convert values.
+            # NOTE: The interval attributes (minPwdAge, maxPwdAge, lockoutDuration,
+            # lockOutObservationWindow) arrive as the RAW negative 100-nanosecond
+            # interval string (e.g. "-18000000000"), NOT pre-formatted - they are
+            # currently routed through Invoke-LDAPSearch's FileTime branch, whose
+            # [DateTime]::FromFileTime() throws on these negative deltas and falls back
+            # to the raw value. The "(\d+) days/minutes" regex branches below are kept
+            # as a defensive path in case that ever changes. The critical part is the
+            # Int64.MinValue (0x8000000000000000) "never" sentinel, which must be
+            # recognised before dividing - otherwise it yields a nonsensical value
+            # (e.g. lockoutDuration = 15372286728 minutes).
             # - minPwdLength, lockoutThreshold: integer as string (e.g., "7")
-            # - minPwdAge, maxPwdAge: formatted string (e.g., "42 days", "Not set", "Never")
-            # - lockoutDuration, lockOutObservationWindow: formatted string (e.g., "30 minutes")
             # - pwdProperties: flag array (e.g., @("DOMAIN_PASSWORD_COMPLEX", ...))
 
             $minPwdLength = if ($domainPolicy.minPwdLength) {
@@ -110,21 +117,36 @@ function Get-DomainPasswordPolicy {
                 try { [int]$domainPolicy.lockoutThreshold } catch { 0 }
             } else { 0 }
 
-            # lockoutDuration: pre-formatted by Invoke-LDAPSearch as "N minutes", "Not set", or "Never"
+            # lockoutDuration: raw negative 100ns interval, or "Not set"/"Never".
+            # 0 or Int64.MinValue ("never" sentinel) => locked until manual unlock.
             $lockoutDuration = if ($domainPolicy.lockoutDuration -and $domainPolicy.lockoutDuration -notmatch "Not set|Never") {
                 if ($domainPolicy.lockoutDuration -match "(\d+)\s+minutes?") {
                     [int]$matches[1]
                 } else {
-                    try { [Math]::Abs([int64]$domainPolicy.lockoutDuration / 600000000) } catch { 0 }
+                    try {
+                        $durValue = [int64]$domainPolicy.lockoutDuration
+                        if ($durValue -eq [int64]::MinValue) {
+                            0  # "never" sentinel -> displayed as "Forever (manual unlock)"
+                        } else {
+                            [Math]::Abs($durValue / 600000000)
+                        }
+                    } catch { 0 }
                 }
             } else { 0 }
 
-            # lockoutWindow: pre-formatted by Invoke-LDAPSearch as "N minutes", "Not set", or "Never"
+            # lockoutWindow: raw negative 100ns interval, or "Not set"/"Never".
             $lockoutWindow = if ($domainPolicy.lockOutObservationWindow -and $domainPolicy.lockOutObservationWindow -notmatch "Not set|Never") {
                 if ($domainPolicy.lockOutObservationWindow -match "(\d+)\s+minutes?") {
                     [int]$matches[1]
                 } else {
-                    try { [Math]::Abs([int64]$domainPolicy.lockOutObservationWindow / 600000000) } catch { 0 }
+                    try {
+                        $windowValue = [int64]$domainPolicy.lockOutObservationWindow
+                        if ($windowValue -eq [int64]::MinValue) {
+                            0  # "never" sentinel -> displayed as "N/A"
+                        } else {
+                            [Math]::Abs($windowValue / 600000000)
+                        }
+                    } catch { 0 }
                 }
             } else { 0 }
 

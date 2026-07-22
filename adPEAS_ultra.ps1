@@ -52481,14 +52481,28 @@ function Get-DomainPasswordPolicy {
 	            if ($domainPolicy.lockoutDuration -match "(\d+)\s+minutes?") {
 	                [int]$matches[1]
 	            } else {
-	                try { [Math]::Abs([int64]$domainPolicy.lockoutDuration / 600000000) } catch { 0 }
+	                try {
+	                    $durValue = [int64]$domainPolicy.lockoutDuration
+	                    if ($durValue -eq [int64]::MinValue) {
+	                        0  # "never" sentinel -> displayed as "Forever (manual unlock)"
+	                    } else {
+	                        [Math]::Abs($durValue / 600000000)
+	                    }
+	                } catch { 0 }
 	            }
 	        } else { 0 }
 	        $lockoutWindow = if ($domainPolicy.lockOutObservationWindow -and $domainPolicy.lockOutObservationWindow -notmatch "Not set|Never") {
 	            if ($domainPolicy.lockOutObservationWindow -match "(\d+)\s+minutes?") {
 	                [int]$matches[1]
 	            } else {
-	                try { [Math]::Abs([int64]$domainPolicy.lockOutObservationWindow / 600000000) } catch { 0 }
+	                try {
+	                    $windowValue = [int64]$domainPolicy.lockOutObservationWindow
+	                    if ($windowValue -eq [int64]::MinValue) {
+	                        0  # "never" sentinel -> displayed as "N/A"
+	                    } else {
+	                        [Math]::Abs($windowValue / 600000000)
+	                    }
+	                } catch { 0 }
 	            }
 	        } else { 0 }
 	        $pwdPropsValue = $domainPolicy.pwdProperties
@@ -70349,7 +70363,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.2.0+20260721-1627"
+$Script:adPEASVersion = "2.2.0+20260722-0904"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -45,6 +45,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   is not a directory write, so no information is ever lost. `-PassThru` result
   objects now also carry `ResultCode`/`ResultName`.
 
+- **`lockoutDuration` nonsensical value in the password policy check.** When a
+  domain sets the account lockout duration to "until an administrator unlocks"
+  (AD stores this as the `Int64.MinValue` / `0x8000000000000000` "never" sentinel),
+  `Get-DomainPasswordPolicy` divided the sentinel instead of recognising it and
+  printed `lockoutDuration: 15372286728.0913 minutes`. It now applies the same
+  `Int64.MinValue` guard that `maxPwdAge` already had, to both `lockoutDuration`
+  (→ *"Forever (manual unlock)"*) and `lockoutObservationWindow`. Normal values are
+  unchanged. (Root cause is a latent mislabelling of the interval attributes as
+  FileTime attributes in `Invoke-LDAPSearch`, left in place because the BloodHound
+  collector deliberately relies on the raw passthrough.)
+
 ## [2.2.0] - 2026-06-21
 
 ### Added
