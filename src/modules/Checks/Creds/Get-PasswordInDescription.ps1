@@ -94,15 +94,17 @@ function Get-PasswordInDescription {
 
             # Exclusion patterns (skip if line matches these - password policy text, help, etc.)
             # Conservative approach: better to show a false positive than to hide a real password
-            # Only exact terms — no wildcards for foreign words we haven't verified in real AD data
+            # Only exact terms - no wildcards for foreign words we haven't verified in real AD data
             $exclusionPatterns = @(
                 # Policy/guideline text (EN/DE/IT/RO)
                 'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
                 '\bparol[ae]?\s*(policy|politica|cerinta)',
                 # Modal verbs: "password must/should..." (EN/DE/NO/IT/RO)
-                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
+                # Norwegian letters are written as regex \u escapes to keep this file pure ASCII:
+                # \u00E5 = a with ring, \u00F8 = o with stroke
+                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|m\u00E5|b\u00F8r|deve|trebuie)\s+',
                 # Technical terms: length, complexity, expiry (EN/DE/NO/IT)
-                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
+                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utl\u00F8p|lunghezza|scadenza)',
                 # Reset/change/recover (EN/IT/RO)
                 'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
                 '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
@@ -125,7 +127,7 @@ function Get-PasswordInDescription {
             foreach ($objectType in @('User', 'Computer')) {
                 Write-Log "[Get-PasswordInDescription] Checking $objectType accounts..."
 
-                # Phase 1: Lightweight query — only fetch description + info (DN is always included)
+                # Phase 1: Lightweight query - only fetch description + info (DN is always included)
                 # This avoids loading ALL properties for potentially thousands of objects
                 $candidates = if ($objectType -eq 'User') {
                     Get-DomainUser -LDAPFilter "(|(description=*)(info=*))" -Properties "description","info" @connectionParams

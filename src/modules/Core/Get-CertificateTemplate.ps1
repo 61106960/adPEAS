@@ -344,7 +344,7 @@ function Get-CertificateTemplate {
                     $CAs = Get-DomainObject -LDAPFilter "(objectClass=pKIEnrollmentService)" -SearchBase $EnrollmentServicesBase -Properties @('cn', 'certificateTemplates') -Raw
 
                     if ($CAs) {
-                        # Build reverse map: template CN → list of CA names
+                        # Build reverse map: template CN -> list of CA names
                         foreach ($CA in @($CAs)) {
                             if ($CA.certificateTemplates) {
                                 $CAName = if ($CA.cn) { [string]$CA.cn } else { 'Unknown' }

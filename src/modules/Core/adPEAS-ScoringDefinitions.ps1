@@ -6,7 +6,7 @@
     This file contains all scoring-related definitions used by the HTML report generator.
 
     Scoring Formula:
-    FINAL_SCORE = (BASE × IMPACT × EXPLOITABILITY × SECURITY) + CORRELATION
+    FINAL_SCORE = (BASE x IMPACT x EXPLOITABILITY x SECURITY) + CORRELATION
 
 .NOTES
     Author: Alexander Sturz (@_61106960_)
@@ -89,11 +89,11 @@ $Script:ImpactMultipliers = @{
 # Password Age Modifiers (relative to domain maxPwdAge policy)
 # Example: If maxPwdAge=90 days and password is 450 days old = 5x policy = 1.4 modifier
 $Script:PasswordAgeModifiers = @{
-    'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
-    'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
-    'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
-    'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
-    'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
+    'multiplier_10x' = 1.6    # Password age >= 10x maxPwdAge
+    'multiplier_5x'  = 1.4    # Password age >= 5x maxPwdAge
+    'multiplier_3x'  = 1.3    # Password age >= 3x maxPwdAge
+    'multiplier_2x'  = 1.2    # Password age >= 2x maxPwdAge
+    'multiplier_1x'  = 1.1    # Password age >= 1x maxPwdAge (over policy)
     'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 

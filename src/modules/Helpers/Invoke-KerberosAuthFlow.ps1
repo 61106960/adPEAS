@@ -295,7 +295,7 @@ function Invoke-KerberosAuthFlow {
             }
 
             # Add authentication material based on what was provided
-            # For password-based auth, we implement EType fallback (AES256 → AES128 → RC4)
+            # For password-based auth, we implement EType fallback (AES256 -> AES128 -> RC4)
             # For hash/key-based auth, the EType is fixed by the key type
             if ($PSBoundParameters.ContainsKey('Password')) {
                 $KerbAuthParams['Password'] = $Password

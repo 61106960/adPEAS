@@ -2515,7 +2515,7 @@ function Collect-BHEnterpriseCAs {
                 unresolvedpublishedtemplates        = @()
                 whencreated                         = ConvertTo-UnixTimestamp $ca.Created
             }
-            # CARegistryData must be top-level (not inside Properties) — nested dicts inside
+            # CARegistryData must be top-level (not inside Properties) - nested dicts inside
             # Properties cause Neo4j Map{} errors when BH CE writes them as node properties.
             CARegistryData          = $null
             HttpEnrollmentEndpoints = @()

@@ -258,7 +258,7 @@ function Get-CachedSYSVOLFiles {
 .DESCRIPTION
     Provides a content-level cache for SYSVOL files (e.g., GptTmpl.inf).
     Multiple check modules that read the same file per GPO will only trigger
-    one SMB read — subsequent calls return the cached content.
+    one SMB read - subsequent calls return the cached content.
 
     This complements Get-CachedSYSVOLFiles (which caches directory listings)
     by also caching the actual file content on demand.

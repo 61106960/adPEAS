@@ -137,7 +137,7 @@ function Connect-LDAP {
                 [switch]$BindSucceeded  # Set when Bind() succeeded but a subsequent SendRequest() failed
             )
             # Extract error message and code from exception chain
-            # PowerShell wraps .NET exceptions: MethodInvocationException → LdapException or DirectoryOperationException
+            # PowerShell wraps .NET exceptions: MethodInvocationException -> LdapException or DirectoryOperationException
             # - LdapException: has ErrorCode property (e.g., 49 = invalid credentials)
             # - DirectoryOperationException: thrown for LDAP result codes like StrongAuthRequired (8),
             #   but does NOT expose the numeric error code - must be identified by exception type
@@ -203,7 +203,7 @@ function Connect-LDAP {
                 default        { "GenericError" }
             }
 
-            # Override: LDAP 81 (SERVER_DOWN) after a successful Bind() is NOT a network error —
+            # Override: LDAP 81 (SERVER_DOWN) after a successful Bind() is NOT a network error -
             # the server IS reachable and authentication succeeded. The failure is in the LDAP
             # protocol layer (post-bind request processing). Use GenericError to avoid the
             # misleading "Server unreachable" title from NetworkError.
@@ -621,9 +621,9 @@ function Connect-LDAP {
                     # AD does NOT accept: domain.fqdn\user
 
                     # Determine correct format based on what user provided:
-                    # 1. If NetworkCredential.Domain is set → user specified DOMAIN\username → reconstruct it
-                    # 2. If username contains '@' → user specified UPN → keep it as-is
-                    # 3. Otherwise → bare username → auto-qualify with UPN format
+                    # 1. If NetworkCredential.Domain is set -> user specified DOMAIN\username -> reconstruct it
+                    # 2. If username contains '@' -> user specified UPN -> keep it as-is
+                    # 3. Otherwise -> bare username -> auto-qualify with UPN format
 
                     if (-not [string]::IsNullOrEmpty($CredDomain)) {
                         # User specified DOMAIN\username format - reconstruct it

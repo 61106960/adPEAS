@@ -62,7 +62,7 @@ function ConvertFrom-SID {
             Write-Log "[ConvertFrom-SID] Initialized bidirectional Name-to-SID cache"
         }
 
-        # Initialize Foreign Domain cache (SID Domain Part → Domain FQDN)
+        # Initialize Foreign Domain cache (SID Domain Part -> Domain FQDN)
         if (-not $Script:ForeignDomainCache) {
             $Script:ForeignDomainCache = @{}
             Write-Log "[ConvertFrom-SID] Initialized Foreign Domain cache"

@@ -34,8 +34,8 @@
     Returns: "S-1-5-21-..."
 
 .EXAMPLE
-    "PRAXIS\Domänencomputer" | ConvertTo-SID
-    Returns: "S-1-5-21-...-515"
+    "CONTOSO\Ordinateurs du domaine" | ConvertTo-SID
+    Returns: "S-1-5-21-...-515"   (localized name for the "Domain Computers" group)
 
 .OUTPUTS
     String - SID in format "S-1-5-..." or $null if not resolvable
@@ -107,7 +107,7 @@ function ConvertTo-SID {
         }
 
         # Try Windows API for localized account names (NT AUTHORITY, BUILTIN, etc.)
-        # This handles ANY Windows language (German NT-AUTORITÄT, French AUTORITE NT, etc.)
+        # This handles ANY Windows language (e.g. the German or French spelling of "NT AUTHORITY")
         # without requiring translation tables.
         # Skip Windows API for Distinguished Names - they need LDAP resolution
         if ($Identity -notmatch '^CN=') {

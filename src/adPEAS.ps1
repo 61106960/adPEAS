@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
@@ -470,7 +470,7 @@ function Invoke-adPEAS {
     )
 
     # Reset script variables for each invocation
-    # NOTE: $StartTime is intentionally local — it is only consumed within this invocation.
+    # NOTE: $StartTime is intentionally local - it is only consumed within this invocation.
     # Making it $Script: would expose it to Clear-SessionState (called by Connect-adPEAS on
     # repeated invocations), which would null it before the duration calculation at the end.
     $StartTime = Get-Date
@@ -776,7 +776,7 @@ try {
     # ===== Kerberos Session Health Check =====
     # For Kerberos-based sessions, verify the TGT is still valid before starting module execution
     # This catches overnight ticket expiration early, instead of failing on every individual check
-    # Reset SessionInvalid flag from any previous failed run — give fresh TGT check a fair chance
+    # Reset SessionInvalid flag from any previous failed run - give fresh TGT check a fair chance
     if ($Script:LDAPContext -and $Script:LDAPContext['SessionInvalid']) {
         $Script:LDAPContext.Remove('SessionInvalid')
         Write-Log "[adPEAS] Cleared SessionInvalid flag from previous run"
@@ -795,7 +795,7 @@ try {
         $Module = @('Domain','Creds','Rights','Delegation','ADCS','Accounts','GPO','Computer','Application','Bloodhound')
     }
 
-    # OPSEC mode excludes BloodHound collection entirely — drop it from the list
+    # OPSEC mode excludes BloodHound collection entirely - drop it from the list
     # so the displayed module list and progress counter reflect what will actually run.
     if ($OPSEC) {
         $Module = @($Module | Where-Object { $_ -ne 'Bloodhound' })

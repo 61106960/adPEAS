@@ -19,9 +19,9 @@
 # These attributes are always shown in the main/primary section (in order)
 #
 # DESIGN: User and Computer share a harmonized structure for consistency:
-#   1. Identity → 2. OS (Computer only) → 3. Groups → 4. SPNs → 5. Credentials
-#   → 6. Description → 7. Delegation → 8. UAC → 9. Timestamps → 10. Activity
-#   → 11. SID History → 12. Security Findings → 13. Roasting Hashes (User only)
+#   1. Identity -> 2. OS (Computer only) -> 3. Groups -> 4. SPNs -> 5. Credentials
+#   -> 6. Description -> 7. Delegation -> 8. UAC -> 9. Timestamps -> 10. Activity
+#   -> 11. SID History -> 12. Security Findings -> 13. Roasting Hashes (User only)
 #
 $Script:PrimaryAttributes = @{
 
@@ -253,8 +253,8 @@ $Script:PrimaryAttributes = @{
     # Domain Trust object (from Get-DomainTrusts)
     # Primary: trust identity only. All boolean flags are Extended but get auto-promoted
     # to Primary when their severity is non-Standard (Finding/Hint/Secure).
-    # This means: isQuarantined=False on external trusts (Finding) → promoted to Primary.
-    #             isQuarantined=False on within-forest trusts (Standard) → stays Extended.
+    # This means: isQuarantined=False on external trusts (Finding) -> promoted to Primary.
+    #             isQuarantined=False on within-forest trusts (Standard) -> stays Extended.
     DomainTrust = @(
         'trustPartner',
         'flatName',
@@ -431,7 +431,7 @@ $Script:PrimaryAttributes = @{
     )
 
     # SCOM Group (from Get-SCOMInfrastructure)
-    # NOTE: Same rationale as SCCMGroup — excludes 'member' for performance
+    # NOTE: Same rationale as SCCMGroup - excludes 'member' for performance
     SCOMGroup = @(
         'sAMAccountName', 'description', 'MemberCount', 'memberOf', 'managedBy',
         'whenCreated', 'distinguishedName'

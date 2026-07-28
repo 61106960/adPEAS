@@ -60,7 +60,7 @@ function Get-ACEInheritanceSource {
         # Check each parent starting from immediate parent
         foreach ($parentDN in $parents) {
             try {
-                # Load parent ACL — use cache to avoid redundant LDAP queries
+                # Load parent ACL - use cache to avoid redundant LDAP queries
                 # Parent ACLs are shared by all child OUs, so caching is highly effective
                 $cacheKey = $parentDN.ToLowerInvariant()
                 $parentAccessRules = $null
@@ -89,7 +89,7 @@ function Get-ACEInheritanceSource {
                     if ($parentACE.IsInherited) { continue }
                     if ($parentACE.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
 
-                    # Match by SID (both are SecurityIdentifier — direct string comparison)
+                    # Match by SID (both are SecurityIdentifier - direct string comparison)
                     if ($parentACE.IdentityReference.Value -ne $aceIdentitySID) { continue }
 
                     # Relaxed matching: Check if the parent ACE could be the source

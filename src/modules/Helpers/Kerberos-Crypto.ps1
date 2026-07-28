@@ -850,7 +850,7 @@ function Get-Hash {
         Computes multiple hash formats from a password, returned as hex strings for easy copy/paste.
 
         Always computed:
-        - RC4 (NT-Hash): MD4(UTF-16LE(password)) — no salt, domain-independent
+        - RC4 (NT-Hash): MD4(UTF-16LE(password)) - no salt, domain-independent
         - MD5, SHA1, SHA256, SHA512: Standard cryptographic hashes
 
         Computed when -UserName is provided:
@@ -925,7 +925,7 @@ function Get-Hash {
 
     if ($UserName) {
         # DCC (Domain Cached Credentials v1): MD4(NT-Hash || UTF-16LE(lowercase(username)))
-        # Also known as "mscache" — stored locally when DC is unreachable
+        # Also known as "mscache" - stored locally when DC is unreachable
         $userLower = [System.Text.Encoding]::Unicode.GetBytes($UserName.ToLower())
         $dccInput = New-Object byte[] ($ntHashBytes.Length + $userLower.Length)
         [Array]::Copy($ntHashBytes, 0, $dccInput, 0, $ntHashBytes.Length)
@@ -934,13 +934,13 @@ function Get-Hash {
         $dccHex = ($dccBytes | ForEach-Object { $_.ToString("X2") }) -join ''
 
         # DCC2 (Domain Cached Credentials v2): PBKDF2-HMAC-SHA1(DCC, lowercase(username), 10240, 16)
-        # Also known as "mscachev2" — used since Vista/2008
+        # Also known as "mscachev2" - used since Vista/2008
         # Manual PBKDF2 because Rfc2898DeriveBytes requires minimum 8-byte salt
         $dcc2Salt = [System.Text.Encoding]::UTF8.GetBytes($UserName.ToLower())
         $dcc2Iterations = 10240
         $dcc2Len = 16
 
-        # PBKDF2-HMAC-SHA1 (RFC 2898 Section 5.2) — single block (dkLen <= 20)
+        # PBKDF2-HMAC-SHA1 (RFC 2898 Section 5.2) - single block (dkLen <= 20)
         $saltBlock = New-Object byte[] ($dcc2Salt.Length + 4)
         [Array]::Copy($dcc2Salt, 0, $saltBlock, 0, $dcc2Salt.Length)
         $saltBlock[$saltBlock.Length - 1] = 1  # Block index 1 (big-endian)
@@ -2130,13 +2130,13 @@ function Get-KerberosChecksumNative {
     )
 
     # Map encryption type to checksum type
-    # AES256 (etype 18) → HMAC_SHA1_96_AES256 (checksum type 16)
-    # AES128 (etype 17) → HMAC_SHA1_96_AES128 (checksum type 15)
-    # RC4 (etype 23) → HMAC_MD5 (checksum type -138)
+    # AES256 (etype 18) -> HMAC_SHA1_96_AES256 (checksum type 16)
+    # AES128 (etype 17) -> HMAC_SHA1_96_AES128 (checksum type 15)
+    # RC4 (etype 23) -> HMAC_MD5 (checksum type -138)
     $checksumType = switch ($EncryptionType) {
-        18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
-        17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
-        23 { -138 }  # RC4 → HMAC_MD5
+        18 { 16 }    # AES256 -> HMAC_SHA1_96_AES256
+        17 { 15 }    # AES128 -> HMAC_SHA1_96_AES128
+        23 { -138 }  # RC4 -> HMAC_MD5
         default { throw "Unsupported encryption type for checksum: $EncryptionType" }
     }
 

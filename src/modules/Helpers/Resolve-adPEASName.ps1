@@ -8,12 +8,12 @@
     Mode 1: Hostname to IP Resolution (-Name parameter)
         Returns: IP address string or $null
         Use case: Resolving explicit hostnames for TCP connections
-        Example: User specifies -Server "dc01.contoso.com" → resolve to IP
+        Example: User specifies -Server "dc01.contoso.com" -> resolve to IP
 
     Mode 2: Domain Controller Discovery (-Domain parameter)
         Returns: PSCustomObject with Hostname and IP
         Use case: Auto-discovering DC when no explicit server specified
-        Example: User only specifies -Domain "contoso.com" → find DC via SRV records
+        Example: User only specifies -Domain "contoso.com" -> find DC via SRV records
 
     Features:
     - Uses custom DNS server if specified via -DnsServer or $Script:LDAPContext['DnsServer']
@@ -27,7 +27,7 @@
     DC Discovery Order:
     1. Query ALL SRV records for _ldap._tcp.dc._msdcs.<domain>
     2. Sort by Priority (lower = better) and Weight (higher = better)
-    3. For each DC: Resolve hostname → Test Port 88 + 389/636 → Return if reachable
+    3. For each DC: Resolve hostname -> Test Port 88 + 389/636 -> Return if reachable
     4. Fallback: Reverse DNS lookup via system DNS (with reachability test)
     5. Last resort: Direct A record lookup for domain name (with reachability test)
 

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Exports adPEAS findings to an interactive HTML report.
 

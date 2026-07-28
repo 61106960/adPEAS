@@ -102,7 +102,7 @@ function ConvertFrom-GPPPassword {
 
             # Remove AES padding artifacts (null bytes and any trailing non-printable chars)
             # GPP passwords are ASCII-safe, so we can safely trim anything non-printable
-            # This handles: null bytes (0x00), and padding remnants like ఌ (0x0C0C), Ȃ (0x0202), ฎ (0x0E0E)
+            # This handles: null bytes (0x00), and padding remnants like U+0C0C, U+0202, U+0E0E
             $cleanPassword = ""
             foreach ($char in $decryptedPassword.ToCharArray()) {
                 $code = [int]$char

@@ -390,7 +390,7 @@ function Get-SCCMInfrastructure {
                     }
                     $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue "$memberCount member(s)" -Force
                     # Remove member attribute to prevent Extended-attribute rendering from triggering
-                    # per-DN SID resolution (Convert-DNsToMemberInfo → ConvertTo-SID per member)
+                    # per-DN SID resolution (Convert-DNsToMemberInfo -> ConvertTo-SID per member)
                     $group.PSObject.Properties.Remove('member')
                     $group | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMGroup' -Force
                     Show-Object $group

@@ -13,11 +13,11 @@
     Where XXXXXX and YYYYYY are 6-character checksums
 
     Escape Sequences (processed during decoding):
-    - @& → newline (chr(10))
-    - @# → carriage return (chr(13))
-    - @* → >
-    - @! → <
-    - @$ → @
+    - @& -> newline (chr(10))
+    - @# -> carriage return (chr(13))
+    - @* -> >
+    - @! -> <
+    - @$ -> @
 
 .PARAMETER EncodedScript
     The content of a .vbe file (VBScript Encoded).

@@ -1117,7 +1117,7 @@ function Connect-adPEAS {
                             # This happens when LDAP Channel Binding or LDAP Signing is enforced by domain policy
 
                             # Reclassify LDAP OperationsError (1) as AuthenticationFailed for SimpleBind
-                            # Empty password → anonymous bind succeeds → search fails with OperationsError = auth failure
+                            # Empty password -> anonymous bind succeeds -> search fails with OperationsError = auth failure
                             if (-not $Connection -and $Script:LastLDAPErrorCode -eq 1) {
                                 $Script:ConnectionState = "AuthenticationFailed"
                             }

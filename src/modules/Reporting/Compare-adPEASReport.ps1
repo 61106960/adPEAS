@@ -194,7 +194,7 @@ function Compare-adPEASReport {
             $sharedCategories = @($baselineCategories | Where-Object { $_ -in $currentCategories })
 
             # Separate scope-only findings from real added/removed
-            # Findings in non-overlapping categories are NOT real changes — they reflect
+            # Findings in non-overlapping categories are NOT real changes - they reflect
             # different scan scopes (e.g., one scan ran -Module Accounts, the other ran all modules)
             $scopeOnlyBaseline = @()
             $scopeOnlyCurrent = @()

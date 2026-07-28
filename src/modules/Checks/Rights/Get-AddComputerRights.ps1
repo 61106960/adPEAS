@@ -326,7 +326,7 @@ function Check-GPOAddComputerRights {
         $dcOUDN = "OU=Domain Controllers,$domainDN"
 
         # Build GPO precedence map using Get-GPOLinkage (which reliably reads gPLink via Invoke-LDAPSearch)
-        # Filter to DC OU and domain root — these are the containers that determine effective DC policy
+        # Filter to DC OU and domain root - these are the containers that determine effective DC policy
         Write-Log "[Check-GPOAddComputerRights] Building GPO precedence map from GPO linkage data"
         $Script:gpoAddComputerPrecedenceMap = @{}
 

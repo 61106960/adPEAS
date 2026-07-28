@@ -1465,7 +1465,7 @@ ${nextIndex}Parameters=$scriptParamsVal
                                 $afterStartup = $startupIdx + '[Startup]'.Length
                                 $nextSectionIdx = $scriptsIniContent.IndexOf('[', $afterStartup)
                                 if ($nextSectionIdx -eq -1) {
-                                    # [Startup] is last section — append at end
+                                    # [Startup] is last section - append at end
                                     $scriptsIniContent = $scriptsIniContent.TrimEnd() + "`r`n" + $newEntry
                                 } else {
                                     # Insert before next section
@@ -1641,7 +1641,7 @@ ${nextIndex}Parameters=$scriptParamsVal
                                 $afterLogon = $logonIdx + '[Logon]'.Length
                                 $nextSectionIdx = $scriptsIniContent.IndexOf('[', $afterLogon)
                                 if ($nextSectionIdx -eq -1) {
-                                    # [Logon] is last section — append at end
+                                    # [Logon] is last section - append at end
                                     $scriptsIniContent = $scriptsIniContent.TrimEnd() + "`r`n" + $newEntry
                                 } else {
                                     # Insert before next section
@@ -2366,7 +2366,7 @@ function Sync-GPOSYSVOLPermissions {
         $emptyGuid = [System.Guid]::Empty
         $SYSVOLACEData = @()
         foreach ($ADACE in $ADACEs) {
-            # Skip object-specific ACEs — they grant rights only on specific AD attributes/properties
+            # Skip object-specific ACEs - they grant rights only on specific AD attributes/properties
             # and should not be mapped to NTFS permissions (would grant overly broad SYSVOL access)
             if ($ADACE.ObjectType -ne $emptyGuid) {
                 Write-Log "[Sync-GPOSYSVOLPermissions] Skipping object-specific ACE: Trustee=$($ADACE.IdentityReference.Value), ObjectType=$($ADACE.ObjectType)"

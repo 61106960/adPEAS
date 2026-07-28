@@ -154,7 +154,7 @@ function Resolve-SIDViaGC {
         # Use Invoke-LDAPSearch with GC connection
         # CRITICAL: Use -Raw flag to prevent infinite recursion via msDS-AllowedToActOnBehalfOfOtherIdentity
         # -Raw skips all attribute conversions (including Security Descriptor parsing which would call
-        # ConvertFrom-SID → Resolve-SIDViaGC again → infinite loop)
+        # ConvertFrom-SID -> Resolve-SIDViaGC again -> infinite loop)
         # We only need sAMAccountName + distinguishedName for SID resolution
         # With -Raw, explicit attribute list works correctly (no S.DS.P GC port 3268 bug)
         # Force array wrapping to prevent PowerShell unwrapping single results to scalar

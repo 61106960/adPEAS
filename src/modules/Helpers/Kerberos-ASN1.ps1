@@ -2410,10 +2410,10 @@ function Update-KRBCredTicket {
         $pos += $totalLen
     }
 
-    # child[0] = [0] pvno       → keep original
-    # child[1] = [1] msg-type   → keep original
-    # child[2] = [2] tickets    → replace with new ticket
-    # child[3] = [3] enc-part   → modify pname if NewClientName provided, preserve rest
+    # child[0] = [0] pvno       -> keep original
+    # child[1] = [1] msg-type   -> keep original
+    # child[2] = [2] tickets    -> replace with new ticket
+    # child[3] = [3] enc-part   -> modify pname if NewClientName provided, preserve rest
 
     # Build new [2] tickets: context tag 2 wrapping SEQUENCE OF Ticket
     $newTicketsField = [byte[]](New-ASN1ContextTag -Tag 2 -Data (New-ASN1Sequence -Data $NewTicket))
@@ -2448,8 +2448,8 @@ function Update-KRBCredEncPartPName {
     .SYNOPSIS
         Updates the pname field in a KRB-CRED enc-part [3] while preserving all other fields as raw bytes.
     .DESCRIPTION
-        Parses the enc-part context tag [3] → EncryptedData → cipher → EncKrbCredPart [APPLICATION 29]
-        → KrbCredInfo SEQUENCE, then replaces only the [2] pname field with the new client name.
+        Parses the enc-part context tag [3] -> EncryptedData -> cipher -> EncKrbCredPart [APPLICATION 29]
+        -> KrbCredInfo SEQUENCE, then replaces only the [2] pname field with the new client name.
         All other fields (especially [0] key = session key) are preserved as raw bytes.
     #>
     [CmdletBinding()]
@@ -2461,7 +2461,7 @@ function Update-KRBCredEncPartPName {
         [string]$NewClientName
     )
 
-    # Parse context tag [3] → content is EncryptedData SEQUENCE
+    # Parse context tag [3] -> content is EncryptedData SEQUENCE
     $ctxTag3 = Read-ASN1Element -Data $EncPartRawBytes -Offset 0
 
     # Parse EncryptedData SEQUENCE: { [0] etype, [2] cipher }
@@ -2489,7 +2489,7 @@ function Update-KRBCredEncPartPName {
         throw "Update-KRBCredEncPartPName: cipher field [2] not found in EncryptedData"
     }
 
-    # Parse EncKrbCredPart [APPLICATION 29] → SEQUENCE → [0] ticket-info → SEQUENCE OF KrbCredInfo
+    # Parse EncKrbCredPart [APPLICATION 29] -> SEQUENCE -> [0] ticket-info -> SEQUENCE OF KrbCredInfo
     $app29 = Read-ASN1Element -Data $cipherContent -Offset 0
     $app29Seq = Read-ASN1Element -Data $app29.Content -Offset 0
     $app29Children = Read-ASN1Children -Data $app29Seq.Content
@@ -2507,7 +2507,7 @@ function Update-KRBCredEncPartPName {
         throw "Update-KRBCredEncPartPName: ticket-info [0] not found in EncKrbCredPart"
     }
 
-    # Parse SEQUENCE OF KrbCredInfo → get first KrbCredInfo SEQUENCE
+    # Parse SEQUENCE OF KrbCredInfo -> get first KrbCredInfo SEQUENCE
     $ticketInfoSeq = Read-ASN1Element -Data $ticketInfoChild.Content -Offset 0
     $credInfoElements = Read-ASN1Children -Data $ticketInfoSeq.Content
 
@@ -2541,7 +2541,7 @@ function Update-KRBCredEncPartPName {
         $ciPos += $fieldLen
     }
 
-    # Rebuild: KrbCredInfo SEQUENCE → SEQUENCE OF → [0] ticket-info → EncKrbCredPart SEQUENCE → APPLICATION 29
+    # Rebuild: KrbCredInfo SEQUENCE -> SEQUENCE OF -> [0] ticket-info -> EncKrbCredPart SEQUENCE -> APPLICATION 29
     $newCredInfoSeq = [byte[]](New-ASN1Sequence -Data ([byte[]]$newCredInfoContent.ToArray()))
     $newTicketInfoSeq = [byte[]](New-ASN1Sequence -Data $newCredInfoSeq)
     $newTicketInfoField = [byte[]](New-ASN1ContextTag -Tag 0 -Data $newTicketInfoSeq)

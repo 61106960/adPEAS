@@ -244,11 +244,11 @@ function Get-GroupAssignmentSeverity {
     $risk = $config.Risk
 
     # Escalate severity if risky members (Everyone, Domain Users, etc.) are present
-    # Using standard adPEAS severity values: Note → Hint → Finding
+    # Using standard adPEAS severity values: Note -> Hint -> Finding
     if (@($RiskyMembers).Count -gt 0) {
         $riskyList = $RiskyMembers -join ', '
 
-        # Escalate: Note→Hint, Hint→Finding, Finding stays Finding
+        # Escalate: Note->Hint, Hint->Finding, Finding stays Finding
         $severity = switch ($severity) {
             "Note"     { "Hint" }
             "Hint"     { "Finding" }
@@ -407,7 +407,8 @@ function Parse-GPPGroups {
     try {
         # Use XmlDocument.Load() to honor the XML encoding declaration / BOM.
         # Get-Content defaults to the ANSI code page in Windows PowerShell 5.1,
-        # which mojibakes UTF-8 Groups.xml (e.g. "Domänen-Benutzer" -> "DomÃ¤nen-Benutzer").
+        # which mojibakes UTF-8 Groups.xml: a localized group name containing an umlaut
+        # then decodes into two wrong characters and no longer matches.
         $xmlContent = New-Object System.Xml.XmlDocument
         $xmlContent.Load($FilePath)
         $findings = @()

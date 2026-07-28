@@ -122,8 +122,8 @@ function Get-ProtectedUsersStatus {
             # Get Tier-0 group SIDs from central definition
             $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
 
-            $tier0Accounts = @{}  # SID → Account object (deduplicated)
-            $tier0AccountGroups = @{}  # SID → Array of group names (for display)
+            $tier0Accounts = @{}  # SID -> Account object (deduplicated)
+            $tier0AccountGroups = @{}  # SID -> Array of group names (for display)
 
             foreach ($groupSID in $tier0GroupSIDs) {
                 $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]

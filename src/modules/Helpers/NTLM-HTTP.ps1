@@ -901,34 +901,34 @@ function Test-ExtendedProtection {
 
                     # EPA Detection after Type3 (priority order):
                     #
-                    # 1. "NTLM <base64blob>" — server sent a new Type2 challenge = NTLM restart.
+                    # 1. "NTLM <base64blob>" - server sent a new Type2 challenge = NTLM restart.
                     #    EPA rejects the Type3 (SEC_E_INVALID_TOKEN) and restarts negotiation.
                     #    Only NTLM without Negotiate prefix: IIS uses pure NTLM channel for the restart.
-                    #    → EPA ENABLED (High confidence)
+                    #    -> EPA ENABLED (High confidence)
                     #
-                    # 2. "NTLM" bare (no Negotiate prefix, no blob) — NTLM-only offer = restart signal.
+                    # 2. "NTLM" bare (no Negotiate prefix, no blob) - NTLM-only offer = restart signal.
                     #    Same meaning as above but without a blob attached.
-                    #    → EPA ENABLED (High confidence)
+                    #    -> EPA ENABLED (High confidence)
                     #
-                    # 3. "Negotiate,NTLM" or "Negotiate" (with or without blob) — blanke new Auth-Challenge.
+                    # 3. "Negotiate,NTLM" or "Negotiate" (with or without blob) - blanke new Auth-Challenge.
                     #    This is the normal IIS response when authentication FAILS (invalid credentials).
                     #    Both EPA=enabled and EPA=disabled can produce this, BUT:
-                    #    - When EPA=disabled: dummy Type3 passes the CBT check, fails on credentials → 401 Negotiate,NTLM
-                    #    - When EPA=enabled:  dummy Type3 fails the CBT check first → typically NTLM restart (case 1/2)
+                    #    - When EPA=disabled: dummy Type3 passes the CBT check, fails on credentials -> 401 Negotiate,NTLM
+                    #    - When EPA=enabled:  dummy Type3 fails the CBT check first -> typically NTLM restart (case 1/2)
                     #    If we reach this branch, CBT check passed (EPA not enforced) and only creds failed.
-                    #    → EPA DISABLED (Medium confidence)
+                    #    -> EPA DISABLED (Medium confidence)
                     #
                     # NOTE: The old pattern "NTLM\s*$" incorrectly matched "Negotiate,NTLM" because NTLM
                     # appears at the end of the string. Fixed by requiring NTLM NOT be preceded by "Negotiate,".
                     if ($wwwAuth -match 'NTLM\s+([A-Za-z0-9+/=]{20,})') {
-                        # Case 1: Server sent a new NTLM Type2 blob — genuine NTLM restart after EPA rejection
+                        # Case 1: Server sent a new NTLM Type2 blob - genuine NTLM restart after EPA rejection
                         $result.EPAEnabled = $true
                         $result.Confidence = "High"
                         $result.DiagnosticInfo = "Server sent new NTLM Type2 challenge after Type3 - EPA rejected the request due to missing Channel Binding Token"
                         Write-Log "[Test-ExtendedProtection] EPA ENABLED - Server restarted NTLM with new Type2 (CBT missing)"
                     }
                     elseif ($wwwAuth -match '(?<![,\s])NTLM\s*$' -or $wwwAuth -match '^NTLM\s*$') {
-                        # Case 2: Bare "NTLM" without Negotiate prefix — NTLM-only restart signal
+                        # Case 2: Bare "NTLM" without Negotiate prefix - NTLM-only restart signal
                         # Exclude "Negotiate,NTLM" which ends with NTLM but means normal auth failure
                         $result.EPAEnabled = $true
                         $result.Confidence = "High"
@@ -936,14 +936,14 @@ function Test-ExtendedProtection {
                         Write-Log "[Test-ExtendedProtection] EPA ENABLED - Bare NTLM offer after Type3 (CBT missing)"
                     }
                     elseif ($wwwAuth -match 'Negotiate\s+([A-Za-z0-9+/=]{20,})') {
-                        # Case 3a: Negotiate blob — Kerberos token or NTLM-via-Negotiate; auth failed on credentials
+                        # Case 3a: Negotiate blob - Kerberos token or NTLM-via-Negotiate; auth failed on credentials
                         $result.EPAEnabled = $false
                         $result.Confidence = "Medium"
                         $result.DiagnosticInfo = "Server returned 401 with Negotiate blob after Type3 - credentials rejected (CBT check passed, EPA not enforced)"
                         Write-Log "[Test-ExtendedProtection] EPA NOT enabled - auth failure with Negotiate blob (normal credential rejection)"
                     }
                     elseif ($wwwAuth -match 'Negotiate') {
-                        # Case 3b: "Negotiate" or "Negotiate,NTLM" — blanke new Auth-Challenge after credential failure
+                        # Case 3b: "Negotiate" or "Negotiate,NTLM" - blanke new Auth-Challenge after credential failure
                         # This is the standard IIS response when NTLM auth fails with invalid credentials
                         # and EPA is not blocking (EPA=disabled: CBT check passed, credential check failed)
                         $result.EPAEnabled = $false

@@ -239,9 +239,9 @@ function Get-PasswordResetRights {
                     }
 
                     # Determine display severity:
-                    # - Exchange service groups → 'Attention' (yellow, by-design)
-                    # - Privileged accounts (Info from Get-OUPermissions) with -IncludePrivileged → 'Attention' (yellow)
-                    # - Non-privileged → original severity (Critical/High)
+                    # - Exchange service groups -> 'Attention' (yellow, by-design)
+                    # - Privileged accounts (Info from Get-OUPermissions) with -IncludePrivileged -> 'Attention' (yellow)
+                    # - Non-privileged -> original severity (Critical/High)
                     $isPrivilegedAccount = $finding.Severity -eq 'Info'
                     $displaySeverity = if ($isExchangeService) { 'Attention' }
                         elseif ($isPrivilegedAccount) { 'Attention' }

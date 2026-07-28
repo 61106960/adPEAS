@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     PAC (Privilege Attribute Certificate) structure builder for Kerberos Golden Tickets.
 

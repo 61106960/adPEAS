@@ -87,10 +87,10 @@ function Get-AttributeSeverity {
             if (-not $entry.SID) { continue }
             $privResult = Test-IsPrivileged -Identity $entry.SID
             if (-not $privResult.IsPrivileged) {
-                return 'Note'   # Non-Standard → auto-promoted to Primary
+                return 'Note'   # Non-Standard -> auto-promoted to Primary
             }
         }
-        return 'Standard'   # All privileged → stays in Extended
+        return 'Standard'   # All privileged -> stays in Extended
     }
 
     # Delegate to FindingDefinitions triggers (Single Source of Truth)

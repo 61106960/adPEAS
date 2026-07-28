@@ -67,14 +67,14 @@ function Invoke-TicketForge {
 .PARAMETER GroupRIDs
     Array of group RIDs to include in the PAC's GroupIds field.
 
-    Golden/Silver: Default @(512, 513, 518, 519, 520) — Domain Admins, Domain Users,
+    Golden/Silver: Default @(512, 513, 518, 519, 520) - Domain Admins, Domain Users,
     Schema Admins, Enterprise Admins, Group Policy Creator Owners. Specifying this
     parameter REPLACES the entire default list (e.g. @(512, 513, 518, 519, 520, 1337)
     to keep the defaults and add a custom one).
 
     Diamond: These RIDs are APPENDED to the user's real group memberships (parsed from
     the genuine PAC), not used as a replacement. If not specified, only Domain Admins
-    (512) is injected — the broader default set is itself a detection indicator and is
+    (512) is injected - the broader default set is itself a detection indicator and is
     therefore avoided for diamond tickets.
 
 .PARAMETER ExtraSIDs

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Central finding definitions and trigger-based severity/tooltip system for adPEAS.
 
@@ -7149,7 +7149,7 @@ foreach ($oid in $linkedOIDs) {
         Triggers = @(
             # Dangerous: broad groups that allow any authenticated user to join computers
             @{ Attribute = 'accounts'; Pattern = 'Authenticated Users|Everyone|INTERACTIVE|NETWORK'; Severity = 'Hint' }
-            # Restricted: all other values (e.g., Administrators only) → secure configuration
+            # Restricted: all other values (e.g., Administrators only) -> secure configuration
             @{ Attribute = 'accounts'; ExcludePattern = 'Authenticated Users|Everyone|INTERACTIVE|NETWORK'; Severity = 'Secure' }
         )
     }
@@ -9031,7 +9031,7 @@ foreach ($oid in $linkedOIDs) {
         Impact = @(
             "UNC paths can point to attacker-controlled SMB servers, enabling code execution on user logon"
             "Absolute local paths bypass NETLOGON share protections and GPO-based script management"
-            "Logon scripts execute with the user's privileges — privileged accounts amplify the risk"
+            "Logon scripts execute with the user's privileges - privileged accounts amplify the risk"
             "An attacker who can modify scriptPath can achieve persistence without touching NETLOGON"
         )
         Attack = @(
@@ -9151,7 +9151,7 @@ function Export-FindingDefinitionsJson {
 }
 
 # =============================================================================
-# BUILD INVERTED INDEX for fast attribute → FindingId + Severity lookup
+# BUILD INVERTED INDEX for fast attribute -> FindingId + Severity lookup
 # =============================================================================
 # Reads Triggers from each FindingDefinition and builds an inverted index.
 # Used by Get-FindingIdForAttribute (tooltip lookup) and Get-SeverityFromTrigger (severity).

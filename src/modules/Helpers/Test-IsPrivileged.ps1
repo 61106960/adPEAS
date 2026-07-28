@@ -37,12 +37,12 @@
     - "Unknown": Could not resolve identity to SID
 
     Category Hierarchy (for IsPrivileged boolean):
-    - Privileged → IsPrivileged = $true
-    - Operator → IsPrivileged = $false (unless -IncludeOperators)
-    - BroadGroup → IsPrivileged = $false
-    - ExchangeService → IsPrivileged = $false (by-design permissions)
-    - Standard → IsPrivileged = $false
-    - Unknown → IsPrivileged = $null
+    - Privileged -> IsPrivileged = $true
+    - Operator -> IsPrivileged = $false (unless -IncludeOperators)
+    - BroadGroup -> IsPrivileged = $false
+    - ExchangeService -> IsPrivileged = $false (by-design permissions)
+    - Standard -> IsPrivileged = $false
+    - Unknown -> IsPrivileged = $null
 
 .PARAMETER Identity
     The identity to check. Accepts multiple formats:
@@ -308,7 +308,7 @@ function Test-IsExchangeServiceGroup {
             }
         }
 
-        # Session-level cache — same SIDs appear across hundreds of OUs
+        # Session-level cache - same SIDs appear across hundreds of OUs
         if (-not $Script:ExchangeGroupCache) {
             $Script:ExchangeGroupCache = @{}
         }
@@ -536,7 +536,7 @@ function Test-IsExchangeServer {
 
 .DESCRIPTION
     Uses a single LDAP query with LDAP_MATCHING_RULE_IN_CHAIN (1.2.840.113556.1.4.1941) to retrieve ALL groups where the identity is a direct or nested member.
-    Results are cached for subsequent lookups (SID → Array of Group SIDs).
+    Results are cached for subsequent lookups (SID -> Array of Group SIDs).
 
 .PARAMETER IdentitySID
     The SID of the identity to check.
@@ -801,7 +801,7 @@ function Test-IsPrivileged {
 
         # ===== PHASE 4: sIDHistory Check (SID History Injection Detection) =====
         # Check if this identity has privileged SIDs in sIDHistory attribute.
-        # Only domain SIDs (S-1-5-21-*) can have sIDHistory — well-known SIDs
+        # Only domain SIDs (S-1-5-21-*) can have sIDHistory - well-known SIDs
         # (SYSTEM, Administrators, Everyone, etc.) have no AD object to query.
         $isDomainSID = $sid -match '^S-1-5-21-'
         if ($Script:LdapConnection -and $isDomainSID) {
@@ -1405,7 +1405,7 @@ function Test-IsExpectedInScope {
                         $groupName = ConvertFrom-SID -SID $expectedGroupSID
                         if (-not $groupName) { $groupName = $expectedGroupSID }
 
-                        # Identity is member of an expected group → Attention (not Finding), because the explicit ACE is redundant but not a new attack vector
+                        # Identity is member of an expected group -> Attention (not Finding), because the explicit ACE is redundant but not a new attack vector
                         Write-Log "[Test-IsExpectedInScope] Identity $sid is member of expected group $groupName"
                         if ($ReturnDetails) {
                             return [PSCustomObject]@{

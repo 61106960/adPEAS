@@ -126,10 +126,10 @@ function Get-ClassColor {
     - Name for Exchange group detection (optional, with SID)
 
     Categories returned by Test-IsPrivileged:
-    - "BroadGroup" → maps to BroadGroupClass (default: "Hint")
-    - "Privileged" → maps to PrivilegedClass (default: "Finding")
-    - "Standard"   → maps to DefaultClass (default: "Standard")
-    - "Unknown"    → maps to DefaultClass (default: "Standard")
+    - "BroadGroup" -> maps to BroadGroupClass (default: "Hint")
+    - "Privileged" -> maps to PrivilegedClass (default: "Finding")
+    - "Standard"   -> maps to DefaultClass (default: "Standard")
+    - "Unknown"    -> maps to DefaultClass (default: "Standard")
 
 .PARAMETER Principal
     The principal name to classify (e.g., "DOMAIN\User"). Will be resolved to SID.

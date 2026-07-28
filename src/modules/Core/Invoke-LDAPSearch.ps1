@@ -382,8 +382,8 @@ function Invoke-LDAPSearch {
             # Build attribute list
             # CRITICAL: Pass $null (not @("*")) to SearchRequest when Properties is null
             # On Global Catalog (port 3268), @("*") behaves differently than $null:
-            # - $null → Returns all PAS attributes (correct for GC)
-            # - @("*") → May return DN-only for cross-partition objects (S.DS.P GC quirk)
+            # - $null -> Returns all PAS attributes (correct for GC)
+            # - @("*") -> May return DN-only for cross-partition objects (S.DS.P GC quirk)
             $AttributeList = $null
 
             # CountOnly: force "1.1" (no attributes) to minimize network traffic
@@ -474,7 +474,7 @@ function Invoke-LDAPSearch {
                         $Script:LDAPStatistics.TotalEstimatedBytes += 200
                         if ($SearchResponse.Entries) {
                             $Script:LDAPStatistics.TotalResults += $SearchResponse.Entries.Count
-                            # CountOnly still returns DNs — estimate ~120 bytes per entry (DN + envelope)
+                            # CountOnly still returns DNs - estimate ~120 bytes per entry (DN + envelope)
                             $Script:LDAPStatistics.TotalEstimatedBytes += $SearchResponse.Entries.Count * 120
                         }
                     }
@@ -718,8 +718,9 @@ function Invoke-LDAPSearch {
                     }
 
                     # protocolSettings - Exchange's per-user protocol overrides.
-                    # Each entry has the form '<Protocol>§<Enabled 0/1>§<UseDefaults 0/1>§<encoding flags...>'
-                    # with § = U+00A7. For security review only the protocol + enabled state matter;
+                    # Each entry has the form '<Protocol>SEP<Enabled 0/1>SEP<UseDefaults 0/1>SEP<encoding flags...>'
+                    # where SEP is U+00A7 (section sign, see the Split below). For security review
+                    # only the protocol + enabled state matter;
                     # the trailing per-user encoding overrides (mail format, MIME charset, etc.) are noise.
                     if ($PropName -ieq "protocolSettings") {
                         $protoLines = @()
@@ -1129,7 +1130,7 @@ function Invoke-LDAPSearch {
                                     } elseif ($rbcdPrincipals.Count -gt 1) {
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $rbcdPrincipals
                                     } else {
-                                        # SD parsed but no Allow ACEs found — attribute is set but SD has no delegates.
+                                        # SD parsed but no Allow ACEs found - attribute is set but SD has no delegates.
                                         # Still set the property so it appears in display (attribute is present in AD).
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "[SD present, no Allow ACEs]"
                                     }

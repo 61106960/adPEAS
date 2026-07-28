@@ -851,8 +851,8 @@ $Script:WellKnownRIDs = @{
     - Short: Short form without prefix (optional, for common identities)
 
     Usage:
-    - ConvertFrom-SID uses $Script:SIDToName for SID → Name resolution
-    - ConvertTo-SID uses $Script:NameToSID for Name → SID resolution
+    - ConvertFrom-SID uses $Script:SIDToName for SID -> Name resolution
+    - ConvertTo-SID uses $Script:NameToSID for Name -> SID resolution
     - Both tables are auto-generated at module load time
 
     Reference: https://docs.microsoft.com/en-us/windows/security/identity-protection/access-control/security-identifiers
@@ -870,7 +870,7 @@ $Script:WellKnownIdentities = @(
     @{ SID = 'S-1-3-4';     Name = 'Owner Rights' }
 
     # NT AUTHORITY (S-1-5-x)
-    # NOTE: Localized names (German NT-AUTORITÄT, French AUTORITE NT, etc.) are automatically resolved via NTAccount.Translate() in ConvertTo-SID.
+    # NOTE: Localized names (e.g. the German or French spelling of "NT AUTHORITY") are automatically resolved via NTAccount.Translate() in ConvertTo-SID.
     @{ SID = 'S-1-5-1';     Name = 'NT AUTHORITY\Dialup' }
     @{ SID = 'S-1-5-2';     Name = 'NT AUTHORITY\Network';        Short = 'Network' }
     @{ SID = 'S-1-5-3';     Name = 'NT AUTHORITY\Batch' }
@@ -929,10 +929,10 @@ $Script:WellKnownIdentities = @(
 # Auto-generated Lookup Tables (built from WellKnownIdentities)
 # ============================================================================
 
-# SID → Name lookup (for ConvertFrom-SID)
+# SID -> Name lookup (for ConvertFrom-SID)
 $Script:SIDToName = @{}
 
-# Name → SID lookup (for ConvertTo-SID)
+# Name -> SID lookup (for ConvertTo-SID)
 # Includes: canonical names and short forms
 $Script:NameToSID = @{}
 
@@ -941,13 +941,13 @@ foreach ($identity in $Script:WellKnownIdentities) {
     $sid = $identity.SID
     $name = $identity.Name
 
-    # SID → Name (always the canonical name)
+    # SID -> Name (always the canonical name)
     $Script:SIDToName[$sid] = $name
 
-    # Name → SID (canonical name)
+    # Name -> SID (canonical name)
     $Script:NameToSID[$name] = $sid
 
-    # Short form → SID (if defined)
+    # Short form -> SID (if defined)
     if ($identity.Short) {
         $Script:NameToSID[$identity.Short] = $sid
     }

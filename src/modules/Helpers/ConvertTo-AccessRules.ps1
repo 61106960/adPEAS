@@ -13,7 +13,7 @@
     and Get-ACEInheritanceSource.
 
     By using [SecurityIdentifier] as the identity type, all IdentityReferences
-    are guaranteed to be SIDs — no Windows name resolution is needed.
+    are guaranteed to be SIDs - no Windows name resolution is needed.
 
 .PARAMETER SecurityDescriptorBytes
     The raw nTSecurityDescriptor value. Can be:
