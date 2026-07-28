@@ -68,6 +68,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Helper: Read a source file as UTF-8, independent of PowerShell version
+#
+# Get-Content without -Encoding is version-dependent: Windows PowerShell 5.1 falls back
+# to the system ANSI code page for files that have no BOM, which corrupts every non-ASCII
+# character in the source modules (e.g. an em dash becomes three characters, one of which
+# PowerShell treats as a string delimiter). PowerShell 7+ assumes UTF-8 instead.
+# ReadAllText honors a BOM when present and decodes as UTF-8 otherwise, in both versions.
+function Read-BuildFile {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Path
+    )
+    return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+}
+
 # Helper: Write file with retry logic (handles Dropbox/AV/editor file locks)
 # Writes to a temp file first, then moves to target to minimize lock window
 function Write-BuildFile {
@@ -80,7 +94,16 @@ function Write-BuildFile {
     $tempPath = "$Path.tmp.$PID"
     try {
         # Write to temp file (no lock contention)
-        $Content | Out-File -FilePath $tempPath -Encoding UTF8 -ErrorAction Stop
+        #
+        # IMPORTANT: Write UTF-8 WITH BOM explicitly. Out-File -Encoding UTF8 is
+        # version-dependent - Windows PowerShell 5.1 emits a BOM, PowerShell 7+ does not.
+        # A build produced under PowerShell 7 would therefore be unreadable for the
+        # Windows PowerShell 5.1 target: without a BOM it decodes the file as ANSI and
+        # every non-ASCII character breaks, which can abort parsing entirely.
+        if (-not $Content.EndsWith("`n")) {
+            $Content += "`r`n"
+        }
+        [System.IO.File]::WriteAllText($tempPath, $Content, (New-Object System.Text.UTF8Encoding($true)))
 
         # Move temp to target with retry (target may be locked by Dropbox/AV)
         for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
@@ -126,7 +149,7 @@ Write-Host "[Build] Output: $ReleasePath (project root)" -ForegroundColor Gray
 # READ MODULE LIST AND VERSION FROM SOURCE
 # ========================================
 $MainScriptPath = Join-Path $SourcePath "adPEAS.ps1"
-$MainScriptContent = Get-Content $MainScriptPath -Raw
+$MainScriptContent = Read-BuildFile -Path $MainScriptPath
 
 # Extract base version from src/adPEAS.ps1
 if ($MainScriptContent -match '\$Script:adPEASVersion = "([^"]*)"') {
@@ -229,7 +252,7 @@ foreach ($Module in $CoreModules) {
     Write-Host "[Build]     - $ModuleName" -ForegroundColor DarkGray
 
     $ReadableOutput += "# ----- $ModuleName -----`n"
-    $Content = Get-Content $ModulePath -Raw
+    $Content = Read-BuildFile -Path $ModulePath
     # Remove Export-ModuleMember lines (not needed in standalone)
     $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
     $ReadableOutput += $Content
@@ -249,7 +272,7 @@ foreach ($Module in $HelperModules) {
     Write-Host "[Build]     - $ModuleName" -ForegroundColor DarkGray
 
     $ReadableOutput += "# ----- $ModuleName -----`n"
-    $Content = Get-Content $ModulePath -Raw
+    $Content = Read-BuildFile -Path $ModulePath
     $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
     $ReadableOutput += $Content
     $ReadableOutput += "`n"
@@ -268,7 +291,7 @@ foreach ($Module in $CheckModules) {
     Write-Host "[Build]     - $ModuleName" -ForegroundColor DarkGray
 
     $ReadableOutput += "# ----- $ModuleName -----`n"
-    $Content = Get-Content $ModulePath -Raw
+    $Content = Read-BuildFile -Path $ModulePath
     $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
     $ReadableOutput += $Content
     $ReadableOutput += "`n"
@@ -293,9 +316,9 @@ $DiffTemplateExists = Test-Path $DiffTemplatePath
 
 if ($TemplatesExist) {
     Write-Host "[Build]     - Loading HTML report templates from separate files..." -ForegroundColor DarkGray
-    $HtmlTemplate = Get-Content $HtmlTemplatePath -Raw -Encoding UTF8
-    $CssContent = Get-Content $CssPath -Raw -Encoding UTF8
-    $JsContent = Get-Content $JsPath -Raw -Encoding UTF8
+    $HtmlTemplate = Read-BuildFile -Path $HtmlTemplatePath
+    $CssContent = Read-BuildFile -Path $CssPath
+    $JsContent = Read-BuildFile -Path $JsPath
 
     # Combine templates: Replace {{CSS_CONTENT}} and {{JS_CONTENT}} placeholders
     $CombinedTemplate = $HtmlTemplate.Replace('{{CSS_CONTENT}}', $CssContent)
@@ -307,7 +330,7 @@ if ($TemplatesExist) {
 }
 
 if ($DiffTemplateExists) {
-    $DiffTemplateContent = Get-Content $DiffTemplatePath -Raw -Encoding UTF8
+    $DiffTemplateContent = Read-BuildFile -Path $DiffTemplatePath
     Write-Host "[Build]       Diff template: $($DiffTemplateContent.Length) bytes" -ForegroundColor DarkGray
 }
 
@@ -318,7 +341,7 @@ foreach ($Module in $ReportingModules) {
     Write-Host "[Build]     - $ModuleName" -ForegroundColor DarkGray
 
     $ReadableOutput += "# ----- $ModuleName -----`n"
-    $Content = Get-Content $ModulePath -Raw
+    $Content = Read-BuildFile -Path $ModulePath
     $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
 
     # For Compare-adPEASReport.ps1: Replace Get-DiffHTMLTemplate function with embedded template
@@ -398,7 +421,7 @@ foreach ($Module in $CollectorModules) {
     Write-Host "[Build]     - $ModuleName" -ForegroundColor DarkGray
 
     $ReadableOutput += "# ----- $ModuleName -----`n"
-    $Content = Get-Content $ModulePath -Raw
+    $Content = Read-BuildFile -Path $ModulePath
     $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
     $ReadableOutput += $Content
     $ReadableOutput += "`n"
@@ -431,7 +454,7 @@ if ($License) {
     }
     Write-Host "[Build]   - Embedding license from: $LicenseFilePath" -ForegroundColor Gray
     try {
-        $LicenseJsonRaw = Get-Content $LicenseFilePath -Raw -Encoding UTF8
+        $LicenseJsonRaw = Read-BuildFile -Path $LicenseFilePath
         $LicenseObj = $LicenseJsonRaw | ConvertFrom-Json
         if ($LicenseObj.Licensee -and $LicenseObj.ValidUntil -and $LicenseObj.Signature) {
             $LicenseBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($LicenseJsonRaw))
@@ -471,7 +494,7 @@ Write-Host "[Build] Size: $([Math]::Round($ReadableSize, 2)) KB" -ForegroundColo
 # ====================
 Write-Host "`n[Build] Creating minimized version: adPEAS_min.ps1" -ForegroundColor Yellow
 
-$MinContent = Get-Content $ReadableOutputPath -Raw
+$MinContent = Read-BuildFile -Path $ReadableOutputPath
 
 # Minimization (lighter than ultra, but no Synopsis preservation due to regex complexity)
 Write-Host "[Build]   - Removing comments..." -ForegroundColor Gray
@@ -504,7 +527,7 @@ Write-Host "[Build] Savings: $Savings %" -ForegroundColor Green
 # ====================
 Write-Host "`n[Build] Creating ultra-compressed version: adPEAS_ultra.ps1" -ForegroundColor Yellow
 
-$UltraContent = Get-Content $ReadableOutputPath -Raw
+$UltraContent = Read-BuildFile -Path $ReadableOutputPath
 
 # Ultra minimization
 Write-Host "[Build]   - Removing ALL comments (incl. Synopsis)..." -ForegroundColor Gray
@@ -559,7 +582,7 @@ Write-Host "[Build] Savings vs. Min: $UltraVsMinSavings %" -ForegroundColor Gree
 Write-Host "`n[Build] Creating obfuscated version: adPEAS_obf.ps1" -ForegroundColor Yellow
 
 # Use ultra version as base (smallest payload)
-$ObfSourceContent = Get-Content $UltraOutputPath -Raw
+$ObfSourceContent = Read-BuildFile -Path $UltraOutputPath
 
 Write-Host "[Build]   - Compressing with GZip..." -ForegroundColor Gray
 
