@@ -8,6 +8,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-07-28
+
+### Fixed
+
+- **Release artifacts could not be loaded by Windows PowerShell 5.1.** The
+  standalone builds of v2.3.0 (`adPEAS.ps1`, `adPEAS_min.ps1`,
+  `adPEAS_ultra.ps1`) aborted with four parser errors on the target runtime;
+  only `adPEAS_obf.ps1` was unaffected, because its loader stub is pure ASCII
+  and the payload travels as Base64. `Build-Release.ps1` used encoding defaults
+  that differ between PowerShell versions: `Out-File -Encoding UTF8` writes a
+  BOM in Windows PowerShell 5.1 but not in PowerShell 7+, and `Get-Content`
+  without `-Encoding` falls back to the system ANSI code page in 5.1 for files
+  that carry no BOM. A build produced under PowerShell 7 was therefore decoded
+  as ANSI by 5.1, where an em dash inside a string literal became three
+  characters — one of them a quotation mark that PowerShell treats as a string
+  delimiter, which ended the string early and aborted parsing. The build now
+  reads and writes UTF-8 explicitly so both PowerShell versions produce
+  identical output, and the sources are pure ASCII so the defect cannot be
+  reintroduced. **Users on PowerShell 5.1 must download the v2.3.1 artifacts —
+  the v2.3.0 ones do not run.**
+
+- **`msDS-ManagedPasswordId` was displayed as a meaningless constant.** The
+  MS-GKDI KEY_ID blob of a gMSA was rendered from its first 16 bytes, which hold
+  only Version, the `KDSK` magic, Flags and the L0 index — identical for every
+  gMSA and carrying no account-specific information. The Root Key Identifier
+  GUID lives at offset 24. The attribute now shows
+  `RootKeyId: <guid>, L0/L1/L2: <n>/<n>/<n>`, so gMSAs derived from the same KDS
+  root key can be correlated. This value is unrelated to the 64-character
+  "GMSA ID" reported by tools such as NetExec — that one is an HMAC-SHA256 over
+  the account and domain name, used to name the LSA secret on a member host.
+
 ## [2.3.0] - 2026-07-22
 
 ### Added

@@ -1,4 +1,4 @@
-$Script:SeverityClasses = @{
+﻿$Script:SeverityClasses = @{
     Finding  = 'Finding'
     Secure   = 'Secure'
     Hint     = 'Hint'
@@ -11521,7 +11521,7 @@ foreach ($oid in $linkedOIDs) {
         Impact = @(
             "UNC paths can point to attacker-controlled SMB servers, enabling code execution on user logon"
             "Absolute local paths bypass NETLOGON share protections and GPO-based script management"
-            "Logon scripts execute with the user's privileges — privileged accounts amplify the risk"
+            "Logon scripts execute with the user's privileges - privileged accounts amplify the risk"
             "An attacker who can modify scriptPath can achieve persistence without touching NETLOGON"
         )
         Attack = @(
@@ -12008,10 +12008,10 @@ function Get-AttributeSeverity {
             if (-not $entry.SID) { continue }
             $privResult = Test-IsPrivileged -Identity $entry.SID
             if (-not $privResult.IsPrivileged) {
-                return 'Note'   # Non-Standard → auto-promoted to Primary
+                return 'Note'   # Non-Standard -> auto-promoted to Primary
             }
         }
-        return 'Standard'   # All privileged → stays in Extended
+        return 'Standard'   # All privileged -> stays in Extended
     }
     $triggerSeverity = Get-SeverityFromTrigger -Name $Name -Value $Value `
         -IsComputer $IsComputer -SourceObject $SourceObject
@@ -13102,11 +13102,11 @@ $Script:ImpactMultipliers = @{
     'none'  = 1.0    # Standard user accounts - base impact
 }
 $Script:PasswordAgeModifiers = @{
-    'multiplier_10x' = 1.6    # Password age >= 10× maxPwdAge
-    'multiplier_5x'  = 1.4    # Password age >= 5× maxPwdAge
-    'multiplier_3x'  = 1.3    # Password age >= 3× maxPwdAge
-    'multiplier_2x'  = 1.2    # Password age >= 2× maxPwdAge
-    'multiplier_1x'  = 1.1    # Password age >= 1× maxPwdAge (over policy)
+    'multiplier_10x' = 1.6    # Password age >= 10x maxPwdAge
+    'multiplier_5x'  = 1.4    # Password age >= 5x maxPwdAge
+    'multiplier_3x'  = 1.3    # Password age >= 3x maxPwdAge
+    'multiplier_2x'  = 1.2    # Password age >= 2x maxPwdAge
+    'multiplier_1x'  = 1.1    # Password age >= 1x maxPwdAge (over policy)
     'within_policy'  = 1.0    # Password age < maxPwdAge
 }
 $Script:PasswordLengthModifiers = @{
@@ -19048,8 +19048,18 @@ function Invoke-LDAPSearch {
                             } elseif ($PropName -ieq "msDS-ManagedPasswordId" -or $PropName -ieq "msDS-ManagedPasswordPreviousId") {
                                 try {
                                     $PasswordIdBytes = $PropValue[0]
-                                    if ($PasswordIdBytes -is [byte[]]) {
-                                        $HexString = ($PasswordIdBytes[0..15] | ForEach-Object { $_.ToString('X2') }) -join '-'
+                                    if ($PasswordIdBytes -is [byte[]] -and $PasswordIdBytes.Length -ge 40 -and
+                                        $PasswordIdBytes[4] -eq 0x4B -and $PasswordIdBytes[5] -eq 0x44 -and
+                                        $PasswordIdBytes[6] -eq 0x53 -and $PasswordIdBytes[7] -eq 0x4B) {
+                                        $L0Index = [BitConverter]::ToInt32($PasswordIdBytes, 12)
+                                        $L1Index = [BitConverter]::ToInt32($PasswordIdBytes, 16)
+                                        $L2Index = [BitConverter]::ToInt32($PasswordIdBytes, 20)
+                                        $RootKeyBytes = [byte[]]::new(16)
+                                        [Array]::Copy($PasswordIdBytes, 24, $RootKeyBytes, 0, 16)
+                                        $RootKeyId = [System.Guid]::new($RootKeyBytes)
+                                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "RootKeyId: $($RootKeyId.ToString()), L0/L1/L2: $L0Index/$L1Index/$L2Index"
+                                    } elseif ($PasswordIdBytes -is [byte[]]) {
+                                        $HexString = ($PasswordIdBytes | ForEach-Object { $_.ToString('X2') }) -join '-'
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $HexString
                                     } else {
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
@@ -21202,58 +21212,6 @@ function Get-DomainUser {
                             $User.'msds-groupmsamembership' = $AllowedPrincipals
                         } catch {
                             Write-Log "[Get-DomainUser] Error parsing msds-groupmsamembership: $_"
-                        }
-                    }
-                    if ($User.'msds-managedpasswordid') {
-                        try {
-                            $PasswordIdBytes = $User.'msds-managedpasswordid'
-                            if ($PasswordIdBytes.Length -ge 16) {
-                                $GuidBytes = [byte[]]::new(16)
-                                [Array]::Copy($PasswordIdBytes, 0, $GuidBytes, 0, 16)
-                                $KeyGUID = [GUID]::new($GuidBytes)
-                                $TimeString = ""
-                                if ($PasswordIdBytes.Length -ge 24) {
-                                    $FileTimeBytes = [byte[]]::new(8)
-                                    [Array]::Copy($PasswordIdBytes, 16, $FileTimeBytes, 0, 8)
-                                    $FileTime = [BitConverter]::ToInt64($FileTimeBytes, 0)
-                                    if ($FileTime -ge 119600064000000000 -and $FileTime -lt 2650467743990000000) {
-                                        try {
-                                            $PasswordCreationTime = [DateTime]::FromFileTime($FileTime)
-                                            $TimeString = ", Created: $PasswordCreationTime"
-                                        } catch {}
-                                    }
-                                }
-                                $User.'msds-managedpasswordid' = "Key GUID: $($KeyGUID.ToString())$TimeString"
-                                Write-Log "[Get-DomainUser] gMSA '$($User.sAMAccountName)' current password key: $($KeyGUID.ToString())"
-                            }
-                        } catch {
-                            Write-Log "[Get-DomainUser] Error parsing msds-managedpasswordid: $_"
-                        }
-                    }
-                    if ($User.'msds-managedpasswordpreviousid') {
-                        try {
-                            $PrevPasswordIdBytes = $User.'msds-managedpasswordpreviousid'
-                            if ($PrevPasswordIdBytes.Length -ge 16) {
-                                $GuidBytes = [byte[]]::new(16)
-                                [Array]::Copy($PrevPasswordIdBytes, 0, $GuidBytes, 0, 16)
-                                $KeyGUID = [GUID]::new($GuidBytes)
-                                $TimeString = ""
-                                if ($PrevPasswordIdBytes.Length -ge 24) {
-                                    $FileTimeBytes = [byte[]]::new(8)
-                                    [Array]::Copy($PrevPasswordIdBytes, 16, $FileTimeBytes, 0, 8)
-                                    $FileTime = [BitConverter]::ToInt64($FileTimeBytes, 0)
-                                    if ($FileTime -ge 119600064000000000 -and $FileTime -lt 2650467743990000000) {
-                                        try {
-                                            $PrevPasswordCreationTime = [DateTime]::FromFileTime($FileTime)
-                                            $TimeString = ", Created: $PrevPasswordCreationTime"
-                                        } catch {}
-                                    }
-                                }
-                                $User.'msds-managedpasswordpreviousid' = "Key GUID: $($KeyGUID.ToString())$TimeString"
-                                Write-Log "[Get-DomainUser] gMSA '$($User.sAMAccountName)' previous password key: $($KeyGUID.ToString())"
-                            }
-                        } catch {
-                            Write-Log "[Get-DomainUser] Error parsing msds-managedpasswordpreviousid: $_"
                         }
                     }
                 }
@@ -37023,9 +36981,9 @@ function Get-KerberosChecksumNative {
         [int]$EncryptionType
     )
     $checksumType = switch ($EncryptionType) {
-        18 { 16 }    # AES256 → HMAC_SHA1_96_AES256
-        17 { 15 }    # AES128 → HMAC_SHA1_96_AES128
-        23 { -138 }  # RC4 → HMAC_MD5
+        18 { 16 }    # AES256 -> HMAC_SHA1_96_AES256
+        17 { 15 }    # AES128 -> HMAC_SHA1_96_AES128
+        23 { -138 }  # RC4 -> HMAC_MD5
         default { throw "Unsupported encryption type for checksum: $EncryptionType" }
     }
     Write-Verbose "[Get-KerberosChecksumNative] Called with: etype=$EncryptionType, checksumType=$checksumType, keyUsage=$KeyUsage, keyLen=$($Key.Length), dataLen=$($Data.Length)"
@@ -55894,8 +55852,8 @@ function Get-ProtectedUsersStatus {
             }
             Write-Log "[Get-ProtectedUsersStatus] Found $($protectedMemberSIDs.Count) members in Protected Users group"
             $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
-            $tier0Accounts = @{}  # SID → Account object (deduplicated)
-            $tier0AccountGroups = @{}  # SID → Array of group names (for display)
+            $tier0Accounts = @{}  # SID -> Account object (deduplicated)
+            $tier0AccountGroups = @{}  # SID -> Array of group names (for display)
             foreach ($groupSID in $tier0GroupSIDs) {
                 $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
                 if (-not $groupObj) {
@@ -63315,8 +63273,8 @@ function Get-PasswordInDescription {
             $exclusionPatterns = @(
                 'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
                 '\bparol[ae]?\s*(policy|politica|cerinta)',
-                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|må|bør|deve|trebuie)\s+',
-                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utløp|lunghezza|scadenza)',
+                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|m\u00E5|b\u00F8r|deve|trebuie)\s+',
+                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utl\u00F8p|lunghezza|scadenza)',
                 'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
                 '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
                 '(minimum|maximum)\s+passw\S*',
@@ -72870,7 +72828,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.3.0"
+$Script:adPEASVersion = "2.3.1"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -73485,4 +73443,3 @@ finally {
 }
 Show-Logo -Version $Script:adPEASVersion
 Get-adPEASHelp -Section QuickStart
-
