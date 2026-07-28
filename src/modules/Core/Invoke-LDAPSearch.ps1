@@ -1041,9 +1041,34 @@ function Invoke-LDAPSearch {
                                 }
                             } elseif ($PropName -ieq "msDS-ManagedPasswordId" -or $PropName -ieq "msDS-ManagedPasswordPreviousId") {
                                 try {
+                                    # MS-GKDI KEY_ID structure (used by gMSA/dMSA managed password IDs):
+                                    #   Offset  0: Version   (4 bytes, = 1)
+                                    #   Offset  4: Magic     (4 bytes, = "KDSK")
+                                    #   Offset  8: Flags     (4 bytes)
+                                    #   Offset 12: L0 Index  (4 bytes)
+                                    #   Offset 16: L1 Index  (4 bytes)
+                                    #   Offset 20: L2 Index  (4 bytes)
+                                    #   Offset 24: Root Key Identifier (16 bytes, GUID)
+                                    #   followed by length fields and domain/forest name (UTF-16)
+                                    # The Root Key Identifier tells us which KDS root key derived the password,
+                                    # the L0/L1/L2 indexes identify the key generation within that root key.
                                     $PasswordIdBytes = $PropValue[0]
-                                    if ($PasswordIdBytes -is [byte[]]) {
-                                        $HexString = ($PasswordIdBytes[0..15] | ForEach-Object { $_.ToString('X2') }) -join '-'
+                                    if ($PasswordIdBytes -is [byte[]] -and $PasswordIdBytes.Length -ge 40 -and
+                                        $PasswordIdBytes[4] -eq 0x4B -and $PasswordIdBytes[5] -eq 0x44 -and
+                                        $PasswordIdBytes[6] -eq 0x53 -and $PasswordIdBytes[7] -eq 0x4B) {
+
+                                        $L0Index = [BitConverter]::ToInt32($PasswordIdBytes, 12)
+                                        $L1Index = [BitConverter]::ToInt32($PasswordIdBytes, 16)
+                                        $L2Index = [BitConverter]::ToInt32($PasswordIdBytes, 20)
+
+                                        $RootKeyBytes = [byte[]]::new(16)
+                                        [Array]::Copy($PasswordIdBytes, 24, $RootKeyBytes, 0, 16)
+                                        $RootKeyId = [System.Guid]::new($RootKeyBytes)
+
+                                        $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value "RootKeyId: $($RootKeyId.ToString()), L0/L1/L2: $L0Index/$L1Index/$L2Index"
+                                    } elseif ($PasswordIdBytes -is [byte[]]) {
+                                        # Unknown structure - fall back to full hex representation
+                                        $HexString = ($PasswordIdBytes | ForEach-Object { $_.ToString('X2') }) -join '-'
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $HexString
                                     } else {
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]

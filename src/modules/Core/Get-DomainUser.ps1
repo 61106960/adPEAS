@@ -406,67 +406,8 @@ function Get-DomainUser {
                         }
                     }
 
-                    # Parse msDS-ManagedPasswordId
-                    if ($User.'msds-managedpasswordid') {
-                        try {
-                            $PasswordIdBytes = $User.'msds-managedpasswordid'
-                            if ($PasswordIdBytes.Length -ge 16) {
-                                $GuidBytes = [byte[]]::new(16)
-                                [Array]::Copy($PasswordIdBytes, 0, $GuidBytes, 0, 16)
-                                $KeyGUID = [GUID]::new($GuidBytes)
-
-                                $TimeString = ""
-                                if ($PasswordIdBytes.Length -ge 24) {
-                                    $FileTimeBytes = [byte[]]::new(8)
-                                    [Array]::Copy($PasswordIdBytes, 16, $FileTimeBytes, 0, 8)
-                                    $FileTime = [BitConverter]::ToInt64($FileTimeBytes, 0)
-
-                                    if ($FileTime -ge 119600064000000000 -and $FileTime -lt 2650467743990000000) {
-                                        try {
-                                            $PasswordCreationTime = [DateTime]::FromFileTime($FileTime)
-                                            $TimeString = ", Created: $PasswordCreationTime"
-                                        } catch {}
-                                    }
-                                }
-
-                                $User.'msds-managedpasswordid' = "Key GUID: $($KeyGUID.ToString())$TimeString"
-                                Write-Log "[Get-DomainUser] gMSA '$($User.sAMAccountName)' current password key: $($KeyGUID.ToString())"
-                            }
-                        } catch {
-                            Write-Log "[Get-DomainUser] Error parsing msds-managedpasswordid: $_"
-                        }
-                    }
-
-                    # Parse msDS-ManagedPasswordPreviousId
-                    if ($User.'msds-managedpasswordpreviousid') {
-                        try {
-                            $PrevPasswordIdBytes = $User.'msds-managedpasswordpreviousid'
-                            if ($PrevPasswordIdBytes.Length -ge 16) {
-                                $GuidBytes = [byte[]]::new(16)
-                                [Array]::Copy($PrevPasswordIdBytes, 0, $GuidBytes, 0, 16)
-                                $KeyGUID = [GUID]::new($GuidBytes)
-
-                                $TimeString = ""
-                                if ($PrevPasswordIdBytes.Length -ge 24) {
-                                    $FileTimeBytes = [byte[]]::new(8)
-                                    [Array]::Copy($PrevPasswordIdBytes, 16, $FileTimeBytes, 0, 8)
-                                    $FileTime = [BitConverter]::ToInt64($FileTimeBytes, 0)
-
-                                    if ($FileTime -ge 119600064000000000 -and $FileTime -lt 2650467743990000000) {
-                                        try {
-                                            $PrevPasswordCreationTime = [DateTime]::FromFileTime($FileTime)
-                                            $TimeString = ", Created: $PrevPasswordCreationTime"
-                                        } catch {}
-                                    }
-                                }
-
-                                $User.'msds-managedpasswordpreviousid' = "Key GUID: $($KeyGUID.ToString())$TimeString"
-                                Write-Log "[Get-DomainUser] gMSA '$($User.sAMAccountName)' previous password key: $($KeyGUID.ToString())"
-                            }
-                        } catch {
-                            Write-Log "[Get-DomainUser] Error parsing msds-managedpasswordpreviousid: $_"
-                        }
-                    }
+                    # NOTE: msDS-ManagedPasswordId and msDS-ManagedPasswordPreviousId are already
+                    # parsed into a readable form (RootKeyId + L0/L1/L2 indexes) by Invoke-LDAPSearch.
                 }
             }
 
