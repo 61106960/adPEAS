@@ -59,6 +59,16 @@ function Resolve-CrossDomainIdentity {
         TargetDomainFQDN = $null
     }
 
+    # A distinguished name is NEVER a DOMAIN\user string and must be excluded before the
+    # backslash split below. DNs legitimately contain backslashes as RFC 4514 escapes
+    # (e.g. "CN=Doe\, Jane (Contractor),...") - splitting on '\' would mistake the escaped
+    # comma for a NetBIOS domain separator, yielding Domain='CN=Doe', Identity=', Jane ...'
+    # and breaking every downstream lookup. NetBIOS domain names never start with CN=/OU=/DC=.
+    if ($Identity -match '^(CN|OU|DC)=') {
+        Write-Log "[Resolve-CrossDomainIdentity] Identity is a distinguished name - not DOMAIN\user, treating as local"
+        return $result
+    }
+
     # Check if Identity contains DOMAIN\username format
     if ($Identity -notmatch '^(.+)\\(.+)$') {
         # No domain prefix - local query
@@ -79,7 +89,14 @@ function Resolve-CrossDomainIdentity {
         return $result
     }
 
-    $currentDomain = $Script:LDAPContext.Domain.Split('.')[0]  # Extract NetBIOS from FQDN
+    # Prefer the authoritative NetBIOS name resolved from the crossRef at connect time.
+    # The first DNS label is NOT the NetBIOS name (e.g. domain "example.com"
+    # can have NetBIOS "CORP"); only fall back to the label guess if the crossRef lookup failed.
+    $currentDomain = if ($Script:LDAPContext.DomainNetBIOS) {
+        $Script:LDAPContext.DomainNetBIOS
+    } else {
+        $Script:LDAPContext.Domain.Split('.')[0]
+    }
 
     # Compare NetBIOS names (case-insensitive)
     if ($specifiedDomain -eq $currentDomain) {

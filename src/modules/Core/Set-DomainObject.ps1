@@ -295,8 +295,10 @@ function Set-DomainObject {
                     $SIDHex = ($SIDBytes | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
                     $IdentityFilter = "(objectSid=$SIDHex)"
                 } elseif ($Identity -match '^CN=.*|^OU=.*|^DC=.*') {
-                    # Distinguished Name
-                    $IdentityFilter = "(distinguishedName=$Identity)"
+                    # Distinguished Name - RFC 4515 escape before embedding in a filter so DNs that
+                    # contain '(' ')' or '*' (e.g. "CN=Doe\, Jane (Contractor),...") do not break it.
+                    $escapedIdentityDN = Escape-LDAPFilterDN -DistinguishedName $Identity
+                    $IdentityFilter = "(distinguishedName=$escapedIdentityDN)"
                 } elseif ($Identity -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
                     # GUID Format
                     $GUIDObj = [System.Guid]::Parse($Identity)

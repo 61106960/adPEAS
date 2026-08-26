@@ -772,6 +772,28 @@ function Invoke-LDAPSearch {
                         continue
                     }
 
+                    # msPKI-RA-Application-Policies / msPKI-RA-Policies - Registration Authority
+                    # requirements (ESC3 condition 2). Values are normally OIDs, but schema v3+/v4
+                    # templates may store non-OID qualifier strings here - those are passed through
+                    # unchanged so they stay visible instead of being mangled by the OID lookup.
+                    if ($PropName -iin @("msPKI-RA-Application-Policies", "msPKI-RA-Policies")) {
+                        $raNames = @()
+                        foreach ($raValue in @($PropValue)) {
+                            $raString = [string]$raValue
+                            if ($raString -match '^\d+(\.\d+)+$') {
+                                $raNames += (ConvertFrom-OID -OID $raString -IncludeOID)
+                            } elseif ($raString) {
+                                $raNames += $raString
+                            }
+                        }
+                        if ($raNames.Count -eq 1) {
+                            $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $raNames[0]
+                        } elseif ($raNames.Count -gt 1) {
+                            $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $raNames
+                        }
+                        continue
+                    }
+
                     # pKICriticalExtensions - Multi-valued OID array (convert to friendly names)
                     if ($PropName -ieq "pKICriticalExtensions") {
                         # Convert Critical Extensions OIDs to friendly names using central OID mapping

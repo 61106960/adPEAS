@@ -11,7 +11,7 @@ function Get-ADCSVulnerabilities {
     - CA Certificate Security: Weak algorithms, short keys, expired certificates
     - ESC1: Client Authentication + Enrollee-Supplied Subject
     - ESC2: Any Purpose EKU
-    - ESC3: Certificate Request Agent EKU
+    - ESC3: Certificate Request Agent EKU (condition 1) and on-behalf-of target templates (condition 2)
     - ESC4: Dangerous Template Permissions
     - ESC5: Vulnerable PKI Container Permissions
     - ESC9: No Security Extension + Client Authentication
@@ -971,6 +971,27 @@ function Get-ADCSVulnerabilities {
                 Write-Log "[Get-ADCSVulnerabilities] ESC13: Error loading issuance policy cache: $_" -Level Warning
             }
 
+            # Pre-pass: resolve enrollment privilege for every template once, and record which
+            # templates hand out enrollment agent certificates to non-privileged principals.
+            # ESC3 needs both halves of the chain and they can appear in any order in the result
+            # set, so the answer must be known before the first template is judged.
+            # The cache is keyed by DistinguishedName and reused in the main loop, so
+            # Test-AllEnrollmentPrivileged still runs exactly once per template.
+            $enrollPrivilegedCache = @{}
+            $agentTemplateNames = @()
+            foreach ($preTemplate in $templates) {
+                $preKey = [string]$preTemplate.DistinguishedName
+                $prePrivileged = Test-AllEnrollmentPrivileged -EnrollmentPrincipalSIDs $preTemplate.EnrollmentPrincipalSIDs -EnrollmentPrincipals $preTemplate.EnrollmentPrincipals -CredParams $CredParams
+                $enrollPrivilegedCache[$preKey] = $prePrivileged
+
+                if ($preTemplate.EnrollmentAgent -and -not $prePrivileged) {
+                    $agentTemplateNames += $preTemplate.Name
+                }
+            }
+            if (@($agentTemplateNames).Count -gt 0) {
+                Write-Log "[Get-ADCSVulnerabilities] ESC3 chain: $(@($agentTemplateNames).Count) enrollment agent template(s) enrollable by non-privileged principals: $($agentTemplateNames -join ', ')"
+            }
+
             # Step 3: Analyze Templates for Vulnerabilities (only enabled templates)
             $totalTemplates = @($templates).Count
             $currentIndex = 0
@@ -983,10 +1004,16 @@ function Get-ADCSVulnerabilities {
                 # Pre-check: Are ALL enrollment principals truly privileged?
                 # If yes, ESC1/2/3/9/15 are NOT real vulnerabilities (only admins can enroll)
                 # ESC4 (template permissions) is still checked regardless
-                $allEnrollmentPrivileged = Test-AllEnrollmentPrivileged -EnrollmentPrincipalSIDs $template.EnrollmentPrincipalSIDs -EnrollmentPrincipals $template.EnrollmentPrincipals -CredParams $CredParams
+                $allEnrollmentPrivileged = $enrollPrivilegedCache[[string]$template.DistinguishedName]
                 if ($allEnrollmentPrivileged) {
                     Write-Log "[Get-ADCSVulnerabilities] Template '$($template.Name)': All enrollment principals are truly privileged - skipping ESC1/2/3/9/15"
                 }
+
+                # Registration Authority barrier: a template that demands co-signatures cannot be
+                # enrolled directly, so the enrollment-driven ESCs below are only reachable once an
+                # enrollment agent certificate is in hand. This deliberately does NOT cover ESC4 -
+                # write access to the template lets an attacker drop the requirement first.
+                $requiresRASignature = $template.RASignatureCount -ge 1
 
                 # ===== ESC1: Client Authentication + Enrollee-Supplied Subject =====
                 # Only flag if non-privileged users can enroll
@@ -1004,17 +1031,15 @@ function Get-ADCSVulnerabilities {
                 # ===== ESC2: Any Purpose EKU =====
                 # Only flag if non-privileged users can enroll
                 if ($template.AnyPurpose -and -not $allEnrollmentPrivileged) {
-                    # Check if it's the dangerous variant (schema v1 + client auth, or schema v2+ with signatures)
+                    # Check if it's the dangerous variant (schema v1 needs client auth to matter)
+                    # A required RA co-signature no longer suppresses the finding here: it is a
+                    # barrier, not a fix, and is accounted for centrally by the ra_signature_gated
+                    # trigger so that ESC1/2/3/9/13/15 all treat it the same way.
                     $isDangerous = $false
-                    if ($template.SchemaVersion -eq 1 -and $template.ClientAuthentication) {
+                    if ($template.SchemaVersion -eq 1) {
+                        $isDangerous = [bool]$template.ClientAuthentication
+                    } else {
                         $isDangerous = $true
-                    } elseif ($template.SchemaVersion -ge 2 -and $template.RASignatureCount -gt 0) {
-                        # Check if RA policy requires "Any Purpose"
-                        if ($template.RAApplicationPolicies -contains '2.5.29.37.0') {
-                            $isDangerous = $true
-                        }
-                    } elseif ($template.SchemaVersion -ge 2 -and $template.RASignatureCount -eq 0) {
-                        $isDangerous = $true  # No signatures required
                     }
 
                     if ($isDangerous) {
@@ -1038,6 +1063,31 @@ function Get-ADCSVulnerabilities {
                         Severity = "High"
                         Description = "Template has 'Certificate Request Agent' EKU (1.3.6.1.4.1.311.20.2.1). Attacker can request certificates on behalf of other users."
                         Remediation = "Remove 'Certificate Request Agent' EKU unless required for legitimate enrollment agents."
+                        Reference = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc3"
+                    }
+                }
+
+                # ===== ESC3 (condition 2): Enrollment Agent Target Template =====
+                # The mirror image of the check above. This template does not hand out agent
+                # certificates - it is what an agent certificate is spent on. msPKI-RA-Signature >= 1
+                # combined with a Certificate Request Agent application policy means the CA issues it
+                # for whatever subject the co-signing agent names, so a client-auth template of this
+                # kind is a direct impersonation primitive for anyone holding an agent certificate.
+                # Note this is invisible to the condition 1 check: the Certificate Request Agent OID
+                # sits in msPKI-RA-Application-Policies here, not in the template's own EKUs.
+                if ($template.EnrollmentAgentSignatureRequired -and $template.ClientAuthentication -and -not $allEnrollmentPrivileged) {
+                    $chainNote = if (@($agentTemplateNames).Count -gt 0) {
+                        "At least one Certificate Request Agent template in this domain is enrollable by non-privileged principals, so the complete ESC3 chain is reachable without any pre-existing agent certificate - see the ESC3 findings in this section."
+                    } else {
+                        "No Certificate Request Agent template enrollable by non-privileged principals was found, so abuse requires an existing, stolen or CA-issued enrollment agent certificate."
+                    }
+
+                    $templateVulns += [PSCustomObject]@{
+                        ESC = "ESC3-TARGET"
+                        Title = "Enrollment Agent Target Template (ESC3 on-behalf-of)"
+                        Severity = if (@($agentTemplateNames).Count -gt 0) { "High" } else { "Medium" }
+                        Description = "Template requires $($template.RASignatureCount) enrollment agent co-signature(s) (msPKI-RA-Application-Policies contains 1.3.6.1.4.1.311.20.2.1) and supports client authentication. An enrollment agent can request a certificate for any principal from this template. $chainNote"
+                        Remediation = "Enable enrollment agent restrictions on the CA (certutil -setreg policy\EnableEnrollmentAgentRestrictions 1) and limit which templates and target principals each agent may use, OR require manager approval on this template."
                         Reference = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc3"
                     }
                 }
@@ -1226,6 +1276,16 @@ function Get-ADCSVulnerabilities {
                         Remediation = "Upgrade template to schema version 2+ OR remove 'Enrollee supplies subject' flag."
                         Reference = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc15"
                     }
+                }
+
+                # Record whether an enrollment agent certificate is obtainable in this domain.
+                # Deliberately NOT displayed: which template to abuse for that is the tester's
+                # call, and adPEAS already reports every candidate as its own ESC3 finding.
+                # The flag exists solely for the ra_signature_gated trigger - if an agent
+                # certificate is freely obtainable, the co-signature requirement is a formality
+                # and the enrollment-driven ESCs keep their full severity instead of being damped.
+                if ($requiresRASignature) {
+                    $template | Add-Member -NotePropertyName 'EnrollmentAgentChainReachable' -NotePropertyValue (@($agentTemplateNames).Count -gt 0) -Force
                 }
 
                 # Display findings for this template

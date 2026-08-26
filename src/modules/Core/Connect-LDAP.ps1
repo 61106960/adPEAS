@@ -892,6 +892,41 @@ function Connect-LDAP {
 
             $DomainInfo['DomainSID'] = $DomainSID
 
+            # ===== Phase 7b2: Resolve the TRUE NetBIOS domain name =====
+            # The NetBIOS name is NOT the first DNS label. A domain "example.com"
+            # can have the NetBIOS name "CORP". The only authoritative source is the crossRef
+            # object in the Partitions container (nETBIOSName keyed by nCName=<DomainDN>).
+            # Deriving it from Domain.Split('.')[0] is wrong for any domain that was renamed or
+            # provisioned with a NetBIOS name that differs from its DNS label. Resolve it once
+            # here so every consumer (Resolve-CrossDomainIdentity, Get-DomainInformation, etc.)
+            # can read LDAPContext.DomainNetBIOS instead of guessing.
+            $DomainNetBIOS = $null
+            try {
+                $ConfigNC = $RootDSEData["configurationNamingContext"]
+                if ($ConfigNC) {
+                    $PartitionsDN = "CN=Partitions,$ConfigNC"
+                    $CrossRefRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
+                        $PartitionsDN,
+                        "(&(objectClass=crossRef)(nCName=$DomainDN))",
+                        [System.DirectoryServices.Protocols.SearchScope]::OneLevel,
+                        @("nETBIOSName")
+                    )
+                    $CrossRefResponse = $Script:LdapConnection.SendRequest($CrossRefRequest)
+                    if ($CrossRefResponse -and $CrossRefResponse.Entries.Count -gt 0 -and $CrossRefResponse.Entries[0].Attributes["netbiosname"]) {
+                        $DomainNetBIOS = [string]$CrossRefResponse.Entries[0].Attributes["netbiosname"][0]
+                        Write-Log "[Connect-LDAP] Domain NetBIOS name (from crossRef): $DomainNetBIOS"
+                    }
+                }
+            } catch {
+                Write-Log "[Connect-LDAP] Could not resolve NetBIOS name from crossRef: $_"
+            }
+            if (-not $DomainNetBIOS) {
+                # Fallback only: first DNS label, upper-cased. Logged so the guess is traceable.
+                $DomainNetBIOS = ($Domain -split '\.')[0].ToUpper()
+                Write-Log "[Connect-LDAP] NetBIOS name not resolved via crossRef - falling back to DNS label guess: $DomainNetBIOS" -Level Warning
+            }
+            $DomainInfo['DomainNetBIOS'] = $DomainNetBIOS
+
             # ===== Phase 7c: Store Anonymous Access Results =====
             # Note: Display of anonymous access findings is handled by Get-DomainInformation
             $DomainInfo['AnonymousAccessEnabled'] = $Script:AnonymousAccessEnabled
@@ -978,8 +1013,10 @@ function Connect-LDAP {
                     } catch {
                         Write-Log "[Connect-LDAP] LDAP Who Am I? failed: $_ - falling back to LSA ticket cache"
 
-                        # Fallback: Query Kerberos ticket cache via native LSA API
-                        $DomainNetBIOS = $Domain.Split('.')[0].ToUpper()
+                        # Fallback: Query Kerberos ticket cache via native LSA API.
+                        # Reuse the NetBIOS name resolved via crossRef in Phase 7b2; only guess from
+                        # the DNS label if that lookup failed (it is guaranteed set, but guard anyway).
+                        if (-not $DomainNetBIOS) { $DomainNetBIOS = $Domain.Split('.')[0].ToUpper() }
                         try {
                             $TGTStatus = Test-KerberosTGTExists -Detailed -Force
                             if ($TGTStatus.Valid -and $TGTStatus.ClientName) {

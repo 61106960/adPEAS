@@ -801,7 +801,7 @@ function Set-DomainGPO {
                         Write-Log "[Set-DomainGPO] Found target: $TargetDN"
 
                         # Read current gPLink from target OU via Invoke-LDAPSearch
-                        $TargetLDAPResult = @(Invoke-LDAPSearch -Filter "(distinguishedName=$TargetDN)" -Properties @('gPLink') -SizeLimit 1)[0]
+                        $TargetLDAPResult = @(Invoke-LDAPSearch -Filter "(distinguishedName=$(Escape-LDAPFilterDN -DistinguishedName $TargetDN))" -Properties @('gPLink') -SizeLimit 1)[0]
                         $currentGPLink = if ($TargetLDAPResult -and $TargetLDAPResult.gPLink) { $TargetLDAPResult.gPLink } else { $null }
                         Write-Log "[Set-DomainGPO] Current gPLink: $currentGPLink"
 
@@ -892,7 +892,7 @@ function Set-DomainGPO {
                         Write-Log "[Set-DomainGPO] Found target: $TargetDN"
 
                         # Read current gPLink from target OU via Invoke-LDAPSearch
-                        $TargetLDAPResult = @(Invoke-LDAPSearch -Filter "(distinguishedName=$TargetDN)" -Properties @('gPLink') -SizeLimit 1)[0]
+                        $TargetLDAPResult = @(Invoke-LDAPSearch -Filter "(distinguishedName=$(Escape-LDAPFilterDN -DistinguishedName $TargetDN))" -Properties @('gPLink') -SizeLimit 1)[0]
                         $currentGPLink = if ($TargetLDAPResult -and $TargetLDAPResult.gPLink) { $TargetLDAPResult.gPLink } else { $null }
                         Write-Log "[Set-DomainGPO] Current gPLink: $currentGPLink"
 

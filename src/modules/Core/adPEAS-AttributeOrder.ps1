@@ -126,6 +126,11 @@ $Script:PrimaryAttributes = @{
         'ExtendedKeyUsage', 'CertificateNameFlagDisplay',
         # 4. Approval settings
         'ManagerApprovalRequired',
+        # 4b. Registration Authority requirement (ESC3 condition 2).
+        # A template that demands a co-signature from an enrollment agent is both a barrier for
+        # direct abuse and the target of an "enroll on behalf of" attack - it must be visible on
+        # the console, not only in the HTML extended block.
+        'RASignatureCount', 'RAApplicationPolicies',
         # 5. Enrollment
         'EnrollmentPrincipals',
         # 6. Security findings
@@ -485,6 +490,14 @@ $Script:ExcludeAttributes = @(
     'EnrolleeSuppliesSubject',
     # ClientAuthentication is redundant - already shown in ExtendedKeyUsage as "Client Authentication"
     'ClientAuthentication',
+    # EnrollmentAgentSignatureRequired is redundant for display - the underlying facts are shown as
+    # RASignatureCount and RAApplicationPolicies. The property is kept on the object because the
+    # ra_signature_gated finding trigger evaluates it via SourceObject.
+    'EnrollmentAgentSignatureRequired',
+    # EnrollmentAgentChainReachable records whether an enrollment agent certificate is obtainable
+    # in this domain. Never displayed - picking the template to abuse for that is the tester's
+    # call; the flag only feeds the ra_signature_gated severity trigger.
+    'EnrollmentAgentChainReachable',
     # Internal classification attribute for Exchange groups - not for display
     'dangerousRightsSeverity',
     # Operator Group internal counts - kept in object but not displayed

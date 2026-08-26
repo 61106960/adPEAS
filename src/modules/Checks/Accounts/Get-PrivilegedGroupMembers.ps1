@@ -192,8 +192,10 @@ function Get-PrivilegedGroupMembers {
                                 try {
                                     $gcConn = Get-GCConnection
                                     if ($gcConn) {
-                                        # Use Invoke-LDAPSearch with GC connection for full attribute conversion
-                                        $Member = @(Invoke-LDAPSearch -Filter "(&(objectClass=*)(distinguishedName=$MemberDN))" -SizeLimit 1 -LdapConnection $gcConn)[0]
+                                        # Use Invoke-LDAPSearch with GC connection for full attribute conversion.
+                                        # Escape the member DN (may contain '(' ')' '\,' - e.g. "CN=Doe\, Jane (Contractor),...").
+                                        $escapedMemberDN = Escape-LDAPFilterDN -DistinguishedName $MemberDN
+                                        $Member = @(Invoke-LDAPSearch -Filter "(&(objectClass=*)(distinguishedName=$escapedMemberDN))" -SizeLimit 1 -LdapConnection $gcConn)[0]
                                         if ($Member) {
                                             Write-Log "[Get-PrivilegedGroupMembers] GC resolved cross-domain member: $($Member.distinguishedName)"
                                         }

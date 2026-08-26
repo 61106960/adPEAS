@@ -250,8 +250,15 @@ function Get-CertificateTemplate {
             $Filter = "(objectClass=pKICertificateTemplate)"
 
             if ($PSCmdlet.ParameterSetName -eq 'Identity') {
-                # Search by name (cn or displayName)
-                $Filter = "(&(objectClass=pKICertificateTemplate)(|(cn=$Identity)(displayName=$Identity)(distinguishedName=$Identity)))"
+                if ($Identity -match '^CN=') {
+                    # DN lookup - RFC 4515 escape so '(' ')' in the DN do not break the filter.
+                    $escapedIdentityDN = Escape-LDAPFilterDN -DistinguishedName $Identity
+                    $Filter = "(&(objectClass=pKICertificateTemplate)(distinguishedName=$escapedIdentityDN))"
+                }
+                else {
+                    # Search by name (cn or displayName) - raw $Identity preserves wildcard support
+                    $Filter = "(&(objectClass=pKICertificateTemplate)(|(cn=$Identity)(displayName=$Identity)))"
+                }
             }
             elseif ($PSCmdlet.ParameterSetName -eq 'Filter') {
                 # Combine custom filter with objectClass filter
@@ -285,6 +292,11 @@ function Get-CertificateTemplate {
                     # Key and Signature Requirements
                     'msPKI-Minimal-Key-Size',
                     'msPKI-RA-Signature',
+                    # Registration Authority requirements (ESC3 condition 2 - on-behalf-of enrollment).
+                    # msPKI-RA-Application-Policies holds the application policy OIDs that the
+                    # co-signing certificate must carry; 1.3.6.1.4.1.311.20.2.1 = Certificate Request Agent.
+                    'msPKI-RA-Application-Policies',
+                    'msPKI-RA-Policies',
                     'pKIDefaultKeySpec',
                     'pKIKeyUsage',
                     # Schema and Versioning

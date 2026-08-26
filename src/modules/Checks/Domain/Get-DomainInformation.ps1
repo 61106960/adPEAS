@@ -91,9 +91,16 @@ function Get-DomainInformation {
                 $DomainObject = @(Get-DomainObject -LDAPFilter "(objectClass=domain)" -Scope Base @PSBoundParameters)[0]
 
                 if ($DomainObject) {
-                    if ($DomainObject.name) {
+                    # The domain object's 'name' attribute is the DNS label (e.g. "example"),
+                    # NOT the NetBIOS name. Use the authoritative value resolved from the crossRef at
+                    # connect time (LDAPContext.DomainNetBIOS); only fall back to 'name' if unavailable.
+                    if ($Script:LDAPContext.DomainNetBIOS) {
+                        $NetBIOSName = $Script:LDAPContext.DomainNetBIOS
+                        Write-Log "[Get-DomainInformation] NetBIOS name (from crossRef): $NetBIOSName"
+                    }
+                    elseif ($DomainObject.name) {
                         $NetBIOSName = $DomainObject.name
-                        Write-Log "[Get-DomainInformation] NetBIOS name found: $NetBIOSName"
+                        Write-Log "[Get-DomainInformation] NetBIOS name fallback (domain object name/DNS label): $NetBIOSName"
                     }
 
                     # Kerberos Policy
@@ -623,7 +630,10 @@ function Get-DomainInformation {
                     # Build site object with subnets and DCs
                     $siteSubnets = @($Subnets | Where-Object { $_.Site -eq $siteInfo.Name })
                     $subnetDisplay = if ($siteSubnets.Count -gt 0) {
-                        ($siteSubnets | ForEach-Object { $_.Name }) -join ", "
+                        # Join with newline (not ", ") so the renderer prints one subnet per line,
+                        # each padded to the value column - consistent with domainControllers above.
+                        # A comma-joined string renders as one long line that wraps out of alignment.
+                        ($siteSubnets | ForEach-Object { $_.Name }) -join "`n"
                     } else {
                         "(none)"
                     }

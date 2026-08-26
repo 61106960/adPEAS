@@ -523,7 +523,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Templates allowing enrollee-supplied SANs (ESC1)"
             "Any Purpose or SubCA templates (ESC2)"
-            "Certificate Request Agent templates (ESC3)"
+            "Certificate Request Agent templates (ESC3 condition 1)"
+            "Templates requiring an enrollment agent co-signature (ESC3 condition 2, on-behalf-of target)"
             "Template ACLs allowing modification (ESC4)"
             "Schema version and security extension inclusion (ESC9, ESC15)"
             "Issuance policies linked to AD groups (ESC13)"

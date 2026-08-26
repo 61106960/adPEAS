@@ -830,7 +830,8 @@ function Get-BHContainedByConfig {
         return $null
     }
     try {
-        $parentObj = @(Invoke-LDAPSearch -Filter "(distinguishedName=$parentDN)" -SearchBase $parentDN -Properties objectGUID -Scope Base)[0]
+        $escapedParentDN = Escape-LDAPFilterDN -DistinguishedName $parentDN
+        $parentObj = @(Invoke-LDAPSearch -Filter "(distinguishedName=$escapedParentDN)" -SearchBase $parentDN -Properties objectGUID -Scope Base)[0]
         if ($parentObj -and $parentObj.objectGUID) {
             $guid = ConvertTo-BHGuid -Value $parentObj.objectGUID
             $Script:ConfigContainerGuidCache[$parentDN] = $guid

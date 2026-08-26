@@ -8,7 +8,8 @@ function Get-ADCSTemplate {
     - EnrolleeSuppliesSubject (ESC1)
     - ClientAuthentication (ESC1)
     - AnyPurpose (ESC2)
-    - EnrollmentAgent (ESC3)
+    - EnrollmentAgent (ESC3 condition 1)
+    - EnrollmentAgentSignatureRequired (ESC3 condition 2)
     - NoSecurityExtension (ESC9)
     - ManagerApprovalRequired
     - ExportableKey
@@ -199,8 +200,22 @@ function Get-ADCSTemplate {
             )
 
             # EnrollmentAgent (Certificate Request Agent EKU)
+            # ESC3 condition 1: the certificate issued FROM this template is an enrollment agent
+            # certificate and can be used to co-sign requests on behalf of other principals.
             $template | Add-Member -NotePropertyName 'EnrollmentAgent' -NotePropertyValue (
                 $ekuString -match '1\.3\.6\.1\.4\.1\.311\.20\.2\.1'
+            )
+
+            # EnrollmentAgentSignatureRequired (ESC3 condition 2)
+            # The inverse of EnrollmentAgent: this template can only be issued when the request is
+            # co-signed by a certificate carrying the Certificate Request Agent application policy.
+            # Such a template is the TARGET of an "enroll on behalf of" attack - the agent picks the
+            # subject, so client-auth templates of this kind are a full impersonation primitive.
+            # RAApplicationPolicies carries friendly names ("Certificate Request Agent (Enrollment
+            # Agent) (1.3.6.1.4.1.311.20.2.1)"), so match on the OID rather than on the name.
+            $raPolicyString = @($template.RAApplicationPolicies) -join ' '
+            $template | Add-Member -NotePropertyName 'EnrollmentAgentSignatureRequired' -NotePropertyValue (
+                ($template.RASignatureCount -ge 1) -and ($raPolicyString -match '1\.3\.6\.1\.4\.1\.311\.20\.2\.1')
             )
 
             # ManagerApprovalRequired (PEND_ALL_REQUESTS)

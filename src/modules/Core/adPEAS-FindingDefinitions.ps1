@@ -676,7 +676,9 @@ Remove-CATemplate -Name "VulnerableTemplate" -Force
         Tools = @("Certify", "Certipy", "ForgeCert", "Rubeus")
         MITRE = "T1649"
         Triggers = @(
-            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC1'; Severity = 'Finding' }
+            # Negative lookahead prevents this definition from claiming ESC13 and ESC15,
+            # which both start with the literal "ESC1".
+            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC1(?!\d)'; Severity = 'Finding' }
             @{ Attribute = 'CertificateNameFlagDisplay'; Pattern = 'ENROLLEE_SUPPLIES_SUBJECT'; Severity = 'Finding' }
             @{ Attribute = 'EnrolleeSuppliesSubject'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
         )
@@ -906,8 +908,107 @@ Set-ADObject -Identity $templateDN -Replace @{'msPKI-Enrollment-Flag' = $newFlag
         Tools = @("Certify", "Certipy")
         MITRE = "T1649"
         Triggers = @(
-            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC3'; Severity = 'Finding' }
+            # Negative lookahead keeps this definition from claiming "ESC3-TARGET", which is the
+            # opposite side of the chain and has its own definition below.
+            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC3(?!-)'; Severity = 'Finding' }
             @{ Attribute = 'EnrollmentAgent'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
+        )
+    }
+
+    'ESC3_TARGET_TEMPLATE' = @{
+        Title = "ESC3 - Enrollment Agent Target Template (On-Behalf-Of Enrollment)"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "This certificate template requires the request to be co-signed by a Certificate Request Agent (msPKI-RA-Signature >= 1 with 1.3.6.1.4.1.311.20.2.1 in msPKI-RA-Application-Policies) and supports client authentication. It is the target half of ESC3: an enrollment agent chooses the subject, so anyone holding an enrollment agent certificate can obtain a client-authentication certificate for any principal permitted to enroll here - including privileged users. The co-signature requirement is not a security boundary unless enrollment agent restrictions are configured on the CA; by default a single enrollment agent certificate covers every template of this kind."
+        Impact = @(
+            "Holder of an enrollment agent certificate can request certificates for arbitrary principals"
+            "Resulting certificate authenticates via PKINIT/Schannel as the impersonated user"
+            "Without CA-side enrollment agent restrictions, one agent certificate covers all such templates"
+            "Broad enrollment scope (Domain Users, Authenticated Users) widens the set of impersonatable targets"
+        )
+        Attack = @(
+            "1. Attacker obtains an enrollment agent certificate (ESC3 condition 1 template, stolen key, or a legitimately issued agent certificate)"
+            "2. Builds a request against this template naming a privileged principal as the subject"
+            "3. Co-signs the request with the enrollment agent certificate (CMC full PKI request)"
+            "4. CA issues a client-authentication certificate for the named principal"
+            "5. Attacker authenticates as that principal via PKINIT"
+        )
+        Remediation = @(
+            "Enable enrollment agent restrictions on the CA and scope each agent to specific templates and target principals"
+            "Restrict enrollment on this template to the principals that actually need it"
+            "Require CA manager approval (CT_FLAG_PEND_ALL_REQUESTS) for this template"
+            "Audit which certificates carrying the Certificate Request Agent EKU have been issued and revoke unneeded ones"
+            "Unpublish the template from the CA if on-behalf-of enrollment is no longer used"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Enable and configure enrollment agent restrictions on the CA (run on the CA server)"
+                Command = @'
+# Without this setting ANY enrollment agent certificate can enroll on behalf of ANY user
+# for EVERY template that requires an agent signature.
+certutil -setreg policy\EnableEnrollmentAgentRestrictions 1
+
+$restrictionXml = @"
+<EnrollmentAgentRestrictions>
+  <EnrollmentAgentRestriction>
+    <EnrollmentAgentCertificate>
+      <Template>EnrollmentAgent</Template>
+    </EnrollmentAgentCertificate>
+    <Templates>
+      <Template>TargetTemplateName</Template>
+    </Templates>
+    <Permissions>
+      <Allow>DOMAIN\MDM-Enrollment-Targets</Allow>
+    </Permissions>
+  </EnrollmentAgentRestriction>
+</EnrollmentAgentRestrictions>
+"@
+
+$restrictionXml | Out-File "C:\EnrollmentAgentRestrictions.xml" -Encoding UTF8
+certutil -setreg policy\EnrollmentAgentRestrictions "@C:\EnrollmentAgentRestrictions.xml"
+
+net stop certsvc
+net start certsvc
+'@
+            }
+            @{
+                Description = "Require CA manager approval for this template (requires Enterprise Admin)"
+                Command = @'
+$templateName = "TargetTemplateName"
+$configNC = (Get-ADRootDSE).configurationNamingContext
+$templateDN = "CN=$templateName,CN=Certificate Templates,CN=Public Key Services,CN=Services,$configNC"
+
+$template = Get-ADObject -Identity $templateDN -Properties msPKI-Enrollment-Flag
+$newFlag = $template.'msPKI-Enrollment-Flag' -bor 0x00000002  # CT_FLAG_PEND_ALL_REQUESTS
+Set-ADObject -Identity $templateDN -Replace @{'msPKI-Enrollment-Flag' = $newFlag}
+'@
+            }
+            @{
+                Description = "List issued certificates that carry the Certificate Request Agent EKU (run on the CA server)"
+                Command = @'
+certutil -view -restrict "Disposition=20" -out "RequestID,CommonName,CertificateTemplate,NotAfter"
+# Cross-check the CertificateTemplate column against templates whose EKUs include
+# 1.3.6.1.4.1.311.20.2.1 and revoke agent certificates that are no longer needed:
+# certutil -revoke <RequestID> 4
+'@
+            }
+        )
+        References = @(
+            @{ Title = "Certified Pre-Owned - SpecterOps"; Url = "https://posts.specterops.io/certified-pre-owned-d95910965cd2" }
+            @{ Title = "AD CS ESC3 - Certipy Wiki"; Url = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc3" }
+            @{ Title = "Restricted Enrollment Agents - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/certificate-template-concepts" }
+        )
+        Tools = @("Certipy", "Certify")
+        MITRE = "T1649"
+        Triggers = @(
+            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC3-TARGET'; Severity = 'Finding' }
+            @{ Attribute = 'RAApplicationPolicies'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1'; Severity = 'Hint' }
+            # Central severity damping for every enrollment-driven ESC on this attribute.
+            # SeverityOnly means it decides the colour but never the tooltip, so ESC1/ESC2/ESC9/
+            # ESC13/ESC15 keep their own finding cards while being reported as a two-step attack
+            # rather than a direct one. Deliberately parked on this definition because this is
+            # where the co-signature mechanic is documented - see Test-CustomTrigger for the rules.
+            @{ Attribute = 'Vulnerabilities'; Custom = 'ra_signature_gated'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -9410,6 +9511,31 @@ function Test-CustomTrigger {
         # =====================================================================
         # Context-aware triggers (require SourceObject)
         # =====================================================================
+
+        'ra_signature_gated' {
+            # Certificate template only: true when a required enrollment agent co-signature makes
+            # the template's enrollment-driven ESC findings a two-step attack instead of a direct
+            # one. Used SeverityOnly, so it damps the colour without changing the finding card.
+            #
+            # Returns $false (no damping, full severity) in three cases:
+            #   - no co-signature is required at all
+            #   - the template is ESC4-vulnerable: write access lets an attacker drop the
+            #     msPKI-RA-Signature requirement before enrolling, so it is no barrier
+            #   - an enrollment agent template is enrollable by non-privileged principals, which
+            #     makes the co-signature a formality rather than an obstacle
+            if (-not $SourceObject) { return $false }
+
+            $raCount = $SourceObject.RASignatureCount
+            if ($null -eq $raCount) { return $false }
+            $raCountInt = 0
+            if (-not [int]::TryParse([string]$raCount, [ref]$raCountInt)) { return $false }
+            if ($raCountInt -lt 1) { return $false }
+
+            if ([string]$SourceObject.Vulnerabilities -match 'ESC4') { return $false }
+            if ($SourceObject.EnrollmentAgentChainReachable) { return $false }
+
+            return $true
+        }
 
         'is_not_computer' {
             # Returns true if the source object is NOT a computer account

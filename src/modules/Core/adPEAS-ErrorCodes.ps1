@@ -157,7 +157,10 @@ $Script:ADExtendedErrorCodes = @{
     0x00002071 = @{ Name = 'ERROR_DS_ATTRIBUTE_OR_VALUE_EXISTS';     Hint = 'The attribute or value already exists on the object.' }
     0x00002075 = @{ Name = 'ERROR_DS_NO_PARENT_OBJECT';              Hint = 'The target container/OU does not exist. Check the -OrganizationalUnit distinguishedName.' }
     0x00002094 = @{ Name = 'ERROR_DS_OBJ_STRING_NAME_EXISTS';        Hint = 'An object with this name already exists. Choose a different name or delete the existing object first.' }
-    0x00002098 = @{ Name = 'ERROR_DS_INSUFF_ACCESS_RIGHTS';          Hint = 'Insufficient access rights. Your account is not delegated to create/modify this object. After AD hardening the "Create Computer Objects" / write permission on the target OU is commonly removed.' }
+    # Generic on purpose: 0x2098 is returned for EVERY rejected write - object creation,
+    # attribute modification and DACL changes alike. The operation-specific advice lives in
+    # $Script:LDAPWriteOperationHints, which Resolve-LDAPWriteError appends as its own line.
+    0x00002098 = @{ Name = 'ERROR_DS_INSUFF_ACCESS_RIGHTS';          Hint = 'Insufficient access rights. The Domain Controller rejected the write - the bind account lacks the permission this operation needs on the target object.' }
     0x0000216D = @{ Name = 'ERROR_DS_MACHINE_ACCOUNT_QUOTA_EXCEEDED'; Hint = 'The MachineAccountQuota (ms-DS-MachineAccountQuota) is exhausted or set to 0. A common AD hardening step is to set the quota to 0 so non-admins cannot join computers. Use an account delegated "Create Computer Objects" on the target OU, or raise the quota.' }
 }
 
@@ -172,6 +175,38 @@ $Script:LDAPWriteResultHints = @{
     53 = 'The Domain Controller is unwilling to perform the operation. See the server sub-error above for the specific reason (frequently MachineAccountQuota or a hardening policy).'
     68 = 'The object already exists.'
 }
+
+# Operation-specific guidance for rejected writes (LDAP result 50 / sub-error 0x2098).
+# Evaluated in order against the caller's -Operation string; first match wins. This is kept
+# separate from the ResultCode and sub-error hints above because the DC returns the very same
+# code for every denied write - only the caller knows which attribute or object class it was
+# actually after, so only the caller's operation string can name the permission that is missing.
+$Script:LDAPWriteOperationHints = @(
+    @{
+        Pattern = 'shadow credential'
+        Hint    = 'Writing msDS-KeyCredentialLink needs GenericAll, GenericWrite, or an explicit WriteProperty ACE on msDS-KeyCredentialLink (5b47d60f-6090-40b2-9f37-2a4de88f3063) - or membership in Key Admins / Enterprise Key Admins. Note an account cannot write this attribute on its own USER object: self-write is a default on COMPUTER objects only. Windows Hello for Business registers user keys through AD FS or Azure AD Connect, not through the user, so being the target account grants nothing here. Verify with: Get-ObjectACL -Identity <target> -WriteOnly'
+    }
+    @{
+        Pattern = 'rbcd'
+        Hint    = 'Writing msDS-AllowedToActOnBehalfOfOtherIdentity needs GenericAll, GenericWrite, or an explicit WriteProperty ACE on that attribute of the target computer object. Verify with: Get-ObjectACL -Identity <target> -WriteOnly'
+    }
+    @{
+        Pattern = 'create computer'
+        Hint    = 'Creating a computer object needs Create Child (Computer Objects) on the target OU, plus a non-zero ms-DS-MachineAccountQuota when relying on the default user quota. Both are commonly removed during AD hardening.'
+    }
+    @{
+        Pattern = 'create (user|group|GPO)'
+        Hint    = 'Creating this object needs Create Child permission for the object class on the target container or OU.'
+    }
+    @{
+        Pattern = 'modify ACL'
+        Hint    = 'Writing the DACL needs WriteDacl on the target object, or ownership of it - an owner can always rewrite the DACL. Verify with: Get-ObjectACL -Identity <target> -DangerousOnly'
+    }
+    @{
+        Pattern = '^modify '
+        Hint    = 'Modifying this object needs GenericAll, GenericWrite, or a WriteProperty ACE covering the attribute being written. Verify with: Get-ObjectACL -Identity <target> -WriteOnly'
+    }
+)
 
 # =============================================================================
 # Category Definitions
@@ -722,7 +757,9 @@ function Resolve-LDAPWriteError {
 
     .PARAMETER Operation
         Short description of the attempted operation, used in the formatted output
-        (e.g. "create computer 'BadPC$'").
+        (e.g. "create computer 'BadPC$'"). On an access-rights rejection it also
+        selects the "Required rights" line from $Script:LDAPWriteOperationHints,
+        so keep the wording aligned with the patterns defined there.
 
     .EXAMPLE
         catch {
@@ -832,6 +869,19 @@ function Resolve-LDAPWriteError {
         $hint = $Script:LDAPWriteResultHints[$resultCode]
     }
 
+    # For an access-rights rejection the codes above can only say "denied" - which permission is
+    # missing depends entirely on what was being written. Derive that from the operation string
+    # so the message points at the right ACE instead of a generic delegation remark.
+    $operationHint = $null
+    if ($Operation -and ($resultCode -eq 50 -or $extCode -eq 0x00002098)) {
+        foreach ($rule in $Script:LDAPWriteOperationHints) {
+            if ($Operation -match $rule.Pattern) {
+                $operationHint = $rule.Hint
+                break
+            }
+        }
+    }
+
     # Build a formatted, tester-friendly multi-line message.
     $lines = New-Object System.Collections.Generic.List[string]
     if ($null -ne $resultCode) {
@@ -847,6 +897,9 @@ function Resolve-LDAPWriteError {
     if ($hint) {
         $lines.Add(("Likely cause: {0}" -f $hint))
     }
+    if ($operationHint) {
+        $lines.Add(("Required rights: {0}" -f $operationHint))
+    }
     if ($lines.Count -eq 0) {
         # Nothing structured could be extracted - surface the raw message so the
         # tester is never left with less information than before.
@@ -861,6 +914,7 @@ function Resolve-LDAPWriteError {
         ExtendedHex   = $extHex
         ExtendedName  = $extName
         Hint          = $hint
+        OperationHint = $operationHint
         ServerMessage = $serverMessage
         Formatted     = ($lines -join ([Environment]::NewLine + '  '))
     }

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-07-28 11:29:27
-    Version: 2.3.1
+    Build: 2026-08-26 16:08:21
+    Version: 2.3.2
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -1279,6 +1279,7 @@ $Script:OIDMap = @{
     "1.3.6.1.5.5.7.3.5"         = "IPSec End System"
     "1.3.6.1.5.5.7.3.6"         = "IPSec Tunnel"
     "1.3.6.1.5.5.7.3.7"         = "IPSec User"
+    "1.3.6.1.5.5.8.2.2"         = "IP Security IKE Intermediate"
     "1.3.6.1.5.5.7.3.8"         = "Time Stamping"
     "1.3.6.1.5.5.7.3.9"         = "OCSP Signing"
 
@@ -3123,7 +3124,10 @@ $Script:ADExtendedErrorCodes = @{
     0x00002071 = @{ Name = 'ERROR_DS_ATTRIBUTE_OR_VALUE_EXISTS';     Hint = 'The attribute or value already exists on the object.' }
     0x00002075 = @{ Name = 'ERROR_DS_NO_PARENT_OBJECT';              Hint = 'The target container/OU does not exist. Check the -OrganizationalUnit distinguishedName.' }
     0x00002094 = @{ Name = 'ERROR_DS_OBJ_STRING_NAME_EXISTS';        Hint = 'An object with this name already exists. Choose a different name or delete the existing object first.' }
-    0x00002098 = @{ Name = 'ERROR_DS_INSUFF_ACCESS_RIGHTS';          Hint = 'Insufficient access rights. Your account is not delegated to create/modify this object. After AD hardening the "Create Computer Objects" / write permission on the target OU is commonly removed.' }
+    # Generic on purpose: 0x2098 is returned for EVERY rejected write - object creation,
+    # attribute modification and DACL changes alike. The operation-specific advice lives in
+    # $Script:LDAPWriteOperationHints, which Resolve-LDAPWriteError appends as its own line.
+    0x00002098 = @{ Name = 'ERROR_DS_INSUFF_ACCESS_RIGHTS';          Hint = 'Insufficient access rights. The Domain Controller rejected the write - the bind account lacks the permission this operation needs on the target object.' }
     0x0000216D = @{ Name = 'ERROR_DS_MACHINE_ACCOUNT_QUOTA_EXCEEDED'; Hint = 'The MachineAccountQuota (ms-DS-MachineAccountQuota) is exhausted or set to 0. A common AD hardening step is to set the quota to 0 so non-admins cannot join computers. Use an account delegated "Create Computer Objects" on the target OU, or raise the quota.' }
 }
 
@@ -3138,6 +3142,38 @@ $Script:LDAPWriteResultHints = @{
     53 = 'The Domain Controller is unwilling to perform the operation. See the server sub-error above for the specific reason (frequently MachineAccountQuota or a hardening policy).'
     68 = 'The object already exists.'
 }
+
+# Operation-specific guidance for rejected writes (LDAP result 50 / sub-error 0x2098).
+# Evaluated in order against the caller's -Operation string; first match wins. This is kept
+# separate from the ResultCode and sub-error hints above because the DC returns the very same
+# code for every denied write - only the caller knows which attribute or object class it was
+# actually after, so only the caller's operation string can name the permission that is missing.
+$Script:LDAPWriteOperationHints = @(
+    @{
+        Pattern = 'shadow credential'
+        Hint    = 'Writing msDS-KeyCredentialLink needs GenericAll, GenericWrite, or an explicit WriteProperty ACE on msDS-KeyCredentialLink (5b47d60f-6090-40b2-9f37-2a4de88f3063) - or membership in Key Admins / Enterprise Key Admins. Note an account cannot write this attribute on its own USER object: self-write is a default on COMPUTER objects only. Windows Hello for Business registers user keys through AD FS or Azure AD Connect, not through the user, so being the target account grants nothing here. Verify with: Get-ObjectACL -Identity <target> -WriteOnly'
+    }
+    @{
+        Pattern = 'rbcd'
+        Hint    = 'Writing msDS-AllowedToActOnBehalfOfOtherIdentity needs GenericAll, GenericWrite, or an explicit WriteProperty ACE on that attribute of the target computer object. Verify with: Get-ObjectACL -Identity <target> -WriteOnly'
+    }
+    @{
+        Pattern = 'create computer'
+        Hint    = 'Creating a computer object needs Create Child (Computer Objects) on the target OU, plus a non-zero ms-DS-MachineAccountQuota when relying on the default user quota. Both are commonly removed during AD hardening.'
+    }
+    @{
+        Pattern = 'create (user|group|GPO)'
+        Hint    = 'Creating this object needs Create Child permission for the object class on the target container or OU.'
+    }
+    @{
+        Pattern = 'modify ACL'
+        Hint    = 'Writing the DACL needs WriteDacl on the target object, or ownership of it - an owner can always rewrite the DACL. Verify with: Get-ObjectACL -Identity <target> -DangerousOnly'
+    }
+    @{
+        Pattern = '^modify '
+        Hint    = 'Modifying this object needs GenericAll, GenericWrite, or a WriteProperty ACE covering the attribute being written. Verify with: Get-ObjectACL -Identity <target> -WriteOnly'
+    }
+)
 
 # =============================================================================
 # Category Definitions
@@ -3688,7 +3724,9 @@ function Resolve-LDAPWriteError {
 
     .PARAMETER Operation
         Short description of the attempted operation, used in the formatted output
-        (e.g. "create computer 'BadPC$'").
+        (e.g. "create computer 'BadPC$'"). On an access-rights rejection it also
+        selects the "Required rights" line from $Script:LDAPWriteOperationHints,
+        so keep the wording aligned with the patterns defined there.
 
     .EXAMPLE
         catch {
@@ -3798,6 +3836,19 @@ function Resolve-LDAPWriteError {
         $hint = $Script:LDAPWriteResultHints[$resultCode]
     }
 
+    # For an access-rights rejection the codes above can only say "denied" - which permission is
+    # missing depends entirely on what was being written. Derive that from the operation string
+    # so the message points at the right ACE instead of a generic delegation remark.
+    $operationHint = $null
+    if ($Operation -and ($resultCode -eq 50 -or $extCode -eq 0x00002098)) {
+        foreach ($rule in $Script:LDAPWriteOperationHints) {
+            if ($Operation -match $rule.Pattern) {
+                $operationHint = $rule.Hint
+                break
+            }
+        }
+    }
+
     # Build a formatted, tester-friendly multi-line message.
     $lines = New-Object System.Collections.Generic.List[string]
     if ($null -ne $resultCode) {
@@ -3813,6 +3864,9 @@ function Resolve-LDAPWriteError {
     if ($hint) {
         $lines.Add(("Likely cause: {0}" -f $hint))
     }
+    if ($operationHint) {
+        $lines.Add(("Required rights: {0}" -f $operationHint))
+    }
     if ($lines.Count -eq 0) {
         # Nothing structured could be extracted - surface the raw message so the
         # tester is never left with less information than before.
@@ -3827,6 +3881,7 @@ function Resolve-LDAPWriteError {
         ExtendedHex   = $extHex
         ExtendedName  = $extName
         Hint          = $hint
+        OperationHint = $operationHint
         ServerMessage = $serverMessage
         Formatted     = ($lines -join ([Environment]::NewLine + '  '))
     }
@@ -4872,6 +4927,11 @@ $Script:PrimaryAttributes = @{
         'ExtendedKeyUsage', 'CertificateNameFlagDisplay',
         # 4. Approval settings
         'ManagerApprovalRequired',
+        # 4b. Registration Authority requirement (ESC3 condition 2).
+        # A template that demands a co-signature from an enrollment agent is both a barrier for
+        # direct abuse and the target of an "enroll on behalf of" attack - it must be visible on
+        # the console, not only in the HTML extended block.
+        'RASignatureCount', 'RAApplicationPolicies',
         # 5. Enrollment
         'EnrollmentPrincipals',
         # 6. Security findings
@@ -5231,6 +5291,14 @@ $Script:ExcludeAttributes = @(
     'EnrolleeSuppliesSubject',
     # ClientAuthentication is redundant - already shown in ExtendedKeyUsage as "Client Authentication"
     'ClientAuthentication',
+    # EnrollmentAgentSignatureRequired is redundant for display - the underlying facts are shown as
+    # RASignatureCount and RAApplicationPolicies. The property is kept on the object because the
+    # ra_signature_gated finding trigger evaluates it via SourceObject.
+    'EnrollmentAgentSignatureRequired',
+    # EnrollmentAgentChainReachable records whether an enrollment agent certificate is obtainable
+    # in this domain. Never displayed - picking the template to abuse for that is the tester's
+    # call; the flag only feeds the ra_signature_gated severity trigger.
+    'EnrollmentAgentChainReachable',
     # Internal classification attribute for Exchange groups - not for display
     'dangerousRightsSeverity',
     # Operator Group internal counts - kept in object but not displayed
@@ -6786,7 +6854,9 @@ Remove-CATemplate -Name "VulnerableTemplate" -Force
         Tools = @("Certify", "Certipy", "ForgeCert", "Rubeus")
         MITRE = "T1649"
         Triggers = @(
-            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC1'; Severity = 'Finding' }
+            # Negative lookahead prevents this definition from claiming ESC13 and ESC15,
+            # which both start with the literal "ESC1".
+            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC1(?!\d)'; Severity = 'Finding' }
             @{ Attribute = 'CertificateNameFlagDisplay'; Pattern = 'ENROLLEE_SUPPLIES_SUBJECT'; Severity = 'Finding' }
             @{ Attribute = 'EnrolleeSuppliesSubject'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
         )
@@ -7016,8 +7086,107 @@ Set-ADObject -Identity $templateDN -Replace @{'msPKI-Enrollment-Flag' = $newFlag
         Tools = @("Certify", "Certipy")
         MITRE = "T1649"
         Triggers = @(
-            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC3'; Severity = 'Finding' }
+            # Negative lookahead keeps this definition from claiming "ESC3-TARGET", which is the
+            # opposite side of the chain and has its own definition below.
+            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC3(?!-)'; Severity = 'Finding' }
             @{ Attribute = 'EnrollmentAgent'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
+        )
+    }
+
+    'ESC3_TARGET_TEMPLATE' = @{
+        Title = "ESC3 - Enrollment Agent Target Template (On-Behalf-Of Enrollment)"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "This certificate template requires the request to be co-signed by a Certificate Request Agent (msPKI-RA-Signature >= 1 with 1.3.6.1.4.1.311.20.2.1 in msPKI-RA-Application-Policies) and supports client authentication. It is the target half of ESC3: an enrollment agent chooses the subject, so anyone holding an enrollment agent certificate can obtain a client-authentication certificate for any principal permitted to enroll here - including privileged users. The co-signature requirement is not a security boundary unless enrollment agent restrictions are configured on the CA; by default a single enrollment agent certificate covers every template of this kind."
+        Impact = @(
+            "Holder of an enrollment agent certificate can request certificates for arbitrary principals"
+            "Resulting certificate authenticates via PKINIT/Schannel as the impersonated user"
+            "Without CA-side enrollment agent restrictions, one agent certificate covers all such templates"
+            "Broad enrollment scope (Domain Users, Authenticated Users) widens the set of impersonatable targets"
+        )
+        Attack = @(
+            "1. Attacker obtains an enrollment agent certificate (ESC3 condition 1 template, stolen key, or a legitimately issued agent certificate)"
+            "2. Builds a request against this template naming a privileged principal as the subject"
+            "3. Co-signs the request with the enrollment agent certificate (CMC full PKI request)"
+            "4. CA issues a client-authentication certificate for the named principal"
+            "5. Attacker authenticates as that principal via PKINIT"
+        )
+        Remediation = @(
+            "Enable enrollment agent restrictions on the CA and scope each agent to specific templates and target principals"
+            "Restrict enrollment on this template to the principals that actually need it"
+            "Require CA manager approval (CT_FLAG_PEND_ALL_REQUESTS) for this template"
+            "Audit which certificates carrying the Certificate Request Agent EKU have been issued and revoke unneeded ones"
+            "Unpublish the template from the CA if on-behalf-of enrollment is no longer used"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Enable and configure enrollment agent restrictions on the CA (run on the CA server)"
+                Command = @'
+# Without this setting ANY enrollment agent certificate can enroll on behalf of ANY user
+# for EVERY template that requires an agent signature.
+certutil -setreg policy\EnableEnrollmentAgentRestrictions 1
+
+$restrictionXml = @"
+<EnrollmentAgentRestrictions>
+  <EnrollmentAgentRestriction>
+    <EnrollmentAgentCertificate>
+      <Template>EnrollmentAgent</Template>
+    </EnrollmentAgentCertificate>
+    <Templates>
+      <Template>TargetTemplateName</Template>
+    </Templates>
+    <Permissions>
+      <Allow>DOMAIN\MDM-Enrollment-Targets</Allow>
+    </Permissions>
+  </EnrollmentAgentRestriction>
+</EnrollmentAgentRestrictions>
+"@
+
+$restrictionXml | Out-File "C:\EnrollmentAgentRestrictions.xml" -Encoding UTF8
+certutil -setreg policy\EnrollmentAgentRestrictions "@C:\EnrollmentAgentRestrictions.xml"
+
+net stop certsvc
+net start certsvc
+'@
+            }
+            @{
+                Description = "Require CA manager approval for this template (requires Enterprise Admin)"
+                Command = @'
+$templateName = "TargetTemplateName"
+$configNC = (Get-ADRootDSE).configurationNamingContext
+$templateDN = "CN=$templateName,CN=Certificate Templates,CN=Public Key Services,CN=Services,$configNC"
+
+$template = Get-ADObject -Identity $templateDN -Properties msPKI-Enrollment-Flag
+$newFlag = $template.'msPKI-Enrollment-Flag' -bor 0x00000002  # CT_FLAG_PEND_ALL_REQUESTS
+Set-ADObject -Identity $templateDN -Replace @{'msPKI-Enrollment-Flag' = $newFlag}
+'@
+            }
+            @{
+                Description = "List issued certificates that carry the Certificate Request Agent EKU (run on the CA server)"
+                Command = @'
+certutil -view -restrict "Disposition=20" -out "RequestID,CommonName,CertificateTemplate,NotAfter"
+# Cross-check the CertificateTemplate column against templates whose EKUs include
+# 1.3.6.1.4.1.311.20.2.1 and revoke agent certificates that are no longer needed:
+# certutil -revoke <RequestID> 4
+'@
+            }
+        )
+        References = @(
+            @{ Title = "Certified Pre-Owned - SpecterOps"; Url = "https://posts.specterops.io/certified-pre-owned-d95910965cd2" }
+            @{ Title = "AD CS ESC3 - Certipy Wiki"; Url = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc3" }
+            @{ Title = "Restricted Enrollment Agents - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/certificate-template-concepts" }
+        )
+        Tools = @("Certipy", "Certify")
+        MITRE = "T1649"
+        Triggers = @(
+            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC3-TARGET'; Severity = 'Finding' }
+            @{ Attribute = 'RAApplicationPolicies'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1'; Severity = 'Hint' }
+            # Central severity damping for every enrollment-driven ESC on this attribute.
+            # SeverityOnly means it decides the colour but never the tooltip, so ESC1/ESC2/ESC9/
+            # ESC13/ESC15 keep their own finding cards while being reported as a two-step attack
+            # rather than a direct one. Deliberately parked on this definition because this is
+            # where the co-signature mechanic is documented - see Test-CustomTrigger for the rules.
+            @{ Attribute = 'Vulnerabilities'; Custom = 'ra_signature_gated'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -15521,6 +15690,31 @@ function Test-CustomTrigger {
         # Context-aware triggers (require SourceObject)
         # =====================================================================
 
+        'ra_signature_gated' {
+            # Certificate template only: true when a required enrollment agent co-signature makes
+            # the template's enrollment-driven ESC findings a two-step attack instead of a direct
+            # one. Used SeverityOnly, so it damps the colour without changing the finding card.
+            #
+            # Returns $false (no damping, full severity) in three cases:
+            #   - no co-signature is required at all
+            #   - the template is ESC4-vulnerable: write access lets an attacker drop the
+            #     msPKI-RA-Signature requirement before enrolling, so it is no barrier
+            #   - an enrollment agent template is enrollable by non-privileged principals, which
+            #     makes the co-signature a formality rather than an obstacle
+            if (-not $SourceObject) { return $false }
+
+            $raCount = $SourceObject.RASignatureCount
+            if ($null -eq $raCount) { return $false }
+            $raCountInt = 0
+            if (-not [int]::TryParse([string]$raCount, [ref]$raCountInt)) { return $false }
+            if ($raCountInt -lt 1) { return $false }
+
+            if ([string]$SourceObject.Vulnerabilities -match 'ESC4') { return $false }
+            if ($SourceObject.EnrollmentAgentChainReachable) { return $false }
+
+            return $true
+        }
+
         'is_not_computer' {
             # Returns true if the source object is NOT a computer account
             # Used for servicePrincipalName: SPNs on user accounts = Finding, on computers = expected
@@ -18271,7 +18465,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Templates allowing enrollee-supplied SANs (ESC1)"
             "Any Purpose or SubCA templates (ESC2)"
-            "Certificate Request Agent templates (ESC3)"
+            "Certificate Request Agent templates (ESC3 condition 1)"
+            "Templates requiring an enrollment agent co-signature (ESC3 condition 2, on-behalf-of target)"
             "Template ACLs allowing modification (ESC4)"
             "Schema version and security extension inclusion (ESC9, ESC15)"
             "Issuance policies linked to AD groups (ESC13)"
@@ -23093,6 +23288,41 @@ function Connect-LDAP {
 
             $DomainInfo['DomainSID'] = $DomainSID
 
+            # ===== Phase 7b2: Resolve the TRUE NetBIOS domain name =====
+            # The NetBIOS name is NOT the first DNS label. A domain "example.com"
+            # can have the NetBIOS name "CORP". The only authoritative source is the crossRef
+            # object in the Partitions container (nETBIOSName keyed by nCName=<DomainDN>).
+            # Deriving it from Domain.Split('.')[0] is wrong for any domain that was renamed or
+            # provisioned with a NetBIOS name that differs from its DNS label. Resolve it once
+            # here so every consumer (Resolve-CrossDomainIdentity, Get-DomainInformation, etc.)
+            # can read LDAPContext.DomainNetBIOS instead of guessing.
+            $DomainNetBIOS = $null
+            try {
+                $ConfigNC = $RootDSEData["configurationNamingContext"]
+                if ($ConfigNC) {
+                    $PartitionsDN = "CN=Partitions,$ConfigNC"
+                    $CrossRefRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
+                        $PartitionsDN,
+                        "(&(objectClass=crossRef)(nCName=$DomainDN))",
+                        [System.DirectoryServices.Protocols.SearchScope]::OneLevel,
+                        @("nETBIOSName")
+                    )
+                    $CrossRefResponse = $Script:LdapConnection.SendRequest($CrossRefRequest)
+                    if ($CrossRefResponse -and $CrossRefResponse.Entries.Count -gt 0 -and $CrossRefResponse.Entries[0].Attributes["netbiosname"]) {
+                        $DomainNetBIOS = [string]$CrossRefResponse.Entries[0].Attributes["netbiosname"][0]
+                        Write-Log "[Connect-LDAP] Domain NetBIOS name (from crossRef): $DomainNetBIOS"
+                    }
+                }
+            } catch {
+                Write-Log "[Connect-LDAP] Could not resolve NetBIOS name from crossRef: $_"
+            }
+            if (-not $DomainNetBIOS) {
+                # Fallback only: first DNS label, upper-cased. Logged so the guess is traceable.
+                $DomainNetBIOS = ($Domain -split '\.')[0].ToUpper()
+                Write-Log "[Connect-LDAP] NetBIOS name not resolved via crossRef - falling back to DNS label guess: $DomainNetBIOS" -Level Warning
+            }
+            $DomainInfo['DomainNetBIOS'] = $DomainNetBIOS
+
             # ===== Phase 7c: Store Anonymous Access Results =====
             # Note: Display of anonymous access findings is handled by Get-DomainInformation
             $DomainInfo['AnonymousAccessEnabled'] = $Script:AnonymousAccessEnabled
@@ -23179,8 +23409,10 @@ function Connect-LDAP {
                     } catch {
                         Write-Log "[Connect-LDAP] LDAP Who Am I? failed: $_ - falling back to LSA ticket cache"
 
-                        # Fallback: Query Kerberos ticket cache via native LSA API
-                        $DomainNetBIOS = $Domain.Split('.')[0].ToUpper()
+                        # Fallback: Query Kerberos ticket cache via native LSA API.
+                        # Reuse the NetBIOS name resolved via crossRef in Phase 7b2; only guess from
+                        # the DNS label if that lookup failed (it is guaranteed set, but guard anyway).
+                        if (-not $DomainNetBIOS) { $DomainNetBIOS = $Domain.Split('.')[0].ToUpper() }
                         try {
                             $TGTStatus = Test-KerberosTGTExists -Detailed -Force
                             if ($TGTStatus.Valid -and $TGTStatus.ClientName) {
@@ -26542,6 +26774,28 @@ function Invoke-LDAPSearch {
                         continue
                     }
 
+                    # msPKI-RA-Application-Policies / msPKI-RA-Policies - Registration Authority
+                    # requirements (ESC3 condition 2). Values are normally OIDs, but schema v3+/v4
+                    # templates may store non-OID qualifier strings here - those are passed through
+                    # unchanged so they stay visible instead of being mangled by the OID lookup.
+                    if ($PropName -iin @("msPKI-RA-Application-Policies", "msPKI-RA-Policies")) {
+                        $raNames = @()
+                        foreach ($raValue in @($PropValue)) {
+                            $raString = [string]$raValue
+                            if ($raString -match '^\d+(\.\d+)+$') {
+                                $raNames += (ConvertFrom-OID -OID $raString -IncludeOID)
+                            } elseif ($raString) {
+                                $raNames += $raString
+                            }
+                        }
+                        if ($raNames.Count -eq 1) {
+                            $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $raNames[0]
+                        } elseif ($raNames.Count -gt 1) {
+                            $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $raNames
+                        }
+                        continue
+                    }
+
                     # pKICriticalExtensions - Multi-valued OID array (convert to friendly names)
                     if ($PropName -ieq "pKICriticalExtensions") {
                         # Convert Critical Extensions OIDs to friendly names using central OID mapping
@@ -28125,8 +28379,12 @@ function Get-DomainObject {
                         $SIDHex = ($SIDBytes | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
                         $IdentityFilter = "(objectSid=$SIDHex)"
                     } elseif ($Identity -match '^CN=.*|^OU=.*|^DC=.*') {
-                        # Distinguished Name
-                        $IdentityFilter = "(distinguishedName=$Identity)"
+                        # Distinguished Name - MUST be RFC 4515 escaped before going into a filter.
+                        # DNs legitimately contain '(' ')' (e.g. "CN=Doe\, Jane (Contractor),...")
+                        # which are filter grammar characters; unescaped they produce an invalid
+                        # filter and the object silently drops out of every result.
+                        $escapedIdentityDN = Escape-LDAPFilterDN -DistinguishedName $Identity
+                        $IdentityFilter = "(distinguishedName=$escapedIdentityDN)"
                     } elseif ($Identity -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
                         # GUID Format (e.g., "bf967aba-0de6-11d0-a285-00aa003049e2")
                         $GUIDObj = [System.Guid]::Parse($Identity)
@@ -29227,8 +29485,10 @@ function Set-DomainObject {
                     $SIDHex = ($SIDBytes | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
                     $IdentityFilter = "(objectSid=$SIDHex)"
                 } elseif ($Identity -match '^CN=.*|^OU=.*|^DC=.*') {
-                    # Distinguished Name
-                    $IdentityFilter = "(distinguishedName=$Identity)"
+                    # Distinguished Name - RFC 4515 escape before embedding in a filter so DNs that
+                    # contain '(' ')' or '*' (e.g. "CN=Doe\, Jane (Contractor),...") do not break it.
+                    $escapedIdentityDN = Escape-LDAPFilterDN -DistinguishedName $Identity
+                    $IdentityFilter = "(distinguishedName=$escapedIdentityDN)"
                 } elseif ($Identity -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
                     # GUID Format
                     $GUIDObj = [System.Guid]::Parse($Identity)
@@ -31061,8 +31321,9 @@ function Get-DomainGPO {
             if ($Identity) {
                 # Check if DN, GUID or DisplayName
                 if ($Identity -match '^CN=.*') {
-                    # Distinguished Name
-                    $IdentityFilter = "(distinguishedName=$Identity)"
+                    # Distinguished Name - RFC 4515 escape so DNs containing '(' ')' or '*' stay valid
+                    $escapedIdentityDN = Escape-LDAPFilterDN -DistinguishedName $Identity
+                    $IdentityFilter = "(distinguishedName=$escapedIdentityDN)"
                     Write-Log "[Get-DomainGPO] Identity detected as DN"
                 } elseif ($Identity -match '^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$') {
                     # GUID format - remove curly braces if present
@@ -31969,8 +32230,15 @@ function Get-CertificateTemplate {
             $Filter = "(objectClass=pKICertificateTemplate)"
 
             if ($PSCmdlet.ParameterSetName -eq 'Identity') {
-                # Search by name (cn or displayName)
-                $Filter = "(&(objectClass=pKICertificateTemplate)(|(cn=$Identity)(displayName=$Identity)(distinguishedName=$Identity)))"
+                if ($Identity -match '^CN=') {
+                    # DN lookup - RFC 4515 escape so '(' ')' in the DN do not break the filter.
+                    $escapedIdentityDN = Escape-LDAPFilterDN -DistinguishedName $Identity
+                    $Filter = "(&(objectClass=pKICertificateTemplate)(distinguishedName=$escapedIdentityDN))"
+                }
+                else {
+                    # Search by name (cn or displayName) - raw $Identity preserves wildcard support
+                    $Filter = "(&(objectClass=pKICertificateTemplate)(|(cn=$Identity)(displayName=$Identity)))"
+                }
             }
             elseif ($PSCmdlet.ParameterSetName -eq 'Filter') {
                 # Combine custom filter with objectClass filter
@@ -32004,6 +32272,11 @@ function Get-CertificateTemplate {
                     # Key and Signature Requirements
                     'msPKI-Minimal-Key-Size',
                     'msPKI-RA-Signature',
+                    # Registration Authority requirements (ESC3 condition 2 - on-behalf-of enrollment).
+                    # msPKI-RA-Application-Policies holds the application policy OIDs that the
+                    # co-signing certificate must carry; 1.3.6.1.4.1.311.20.2.1 = Certificate Request Agent.
+                    'msPKI-RA-Application-Policies',
+                    'msPKI-RA-Policies',
                     'pKIDefaultKeySpec',
                     'pKIKeyUsage',
                     # Schema and Versioning
@@ -38785,7 +39058,7 @@ function Set-DomainGPO {
                         Write-Log "[Set-DomainGPO] Found target: $TargetDN"
 
                         # Read current gPLink from target OU via Invoke-LDAPSearch
-                        $TargetLDAPResult = @(Invoke-LDAPSearch -Filter "(distinguishedName=$TargetDN)" -Properties @('gPLink') -SizeLimit 1)[0]
+                        $TargetLDAPResult = @(Invoke-LDAPSearch -Filter "(distinguishedName=$(Escape-LDAPFilterDN -DistinguishedName $TargetDN))" -Properties @('gPLink') -SizeLimit 1)[0]
                         $currentGPLink = if ($TargetLDAPResult -and $TargetLDAPResult.gPLink) { $TargetLDAPResult.gPLink } else { $null }
                         Write-Log "[Set-DomainGPO] Current gPLink: $currentGPLink"
 
@@ -38876,7 +39149,7 @@ function Set-DomainGPO {
                         Write-Log "[Set-DomainGPO] Found target: $TargetDN"
 
                         # Read current gPLink from target OU via Invoke-LDAPSearch
-                        $TargetLDAPResult = @(Invoke-LDAPSearch -Filter "(distinguishedName=$TargetDN)" -Properties @('gPLink') -SizeLimit 1)[0]
+                        $TargetLDAPResult = @(Invoke-LDAPSearch -Filter "(distinguishedName=$(Escape-LDAPFilterDN -DistinguishedName $TargetDN))" -Properties @('gPLink') -SizeLimit 1)[0]
                         $currentGPLink = if ($TargetLDAPResult -and $TargetLDAPResult.gPLink) { $TargetLDAPResult.gPLink } else { $null }
                         Write-Log "[Set-DomainGPO] Current gPLink: $currentGPLink"
 
@@ -43452,6 +43725,16 @@ function Resolve-CrossDomainIdentity {
         TargetDomainFQDN = $null
     }
 
+    # A distinguished name is NEVER a DOMAIN\user string and must be excluded before the
+    # backslash split below. DNs legitimately contain backslashes as RFC 4514 escapes
+    # (e.g. "CN=Doe\, Jane (Contractor),...") - splitting on '\' would mistake the escaped
+    # comma for a NetBIOS domain separator, yielding Domain='CN=Doe', Identity=', Jane ...'
+    # and breaking every downstream lookup. NetBIOS domain names never start with CN=/OU=/DC=.
+    if ($Identity -match '^(CN|OU|DC)=') {
+        Write-Log "[Resolve-CrossDomainIdentity] Identity is a distinguished name - not DOMAIN\user, treating as local"
+        return $result
+    }
+
     # Check if Identity contains DOMAIN\username format
     if ($Identity -notmatch '^(.+)\\(.+)$') {
         # No domain prefix - local query
@@ -43472,7 +43755,14 @@ function Resolve-CrossDomainIdentity {
         return $result
     }
 
-    $currentDomain = $Script:LDAPContext.Domain.Split('.')[0]  # Extract NetBIOS from FQDN
+    # Prefer the authoritative NetBIOS name resolved from the crossRef at connect time.
+    # The first DNS label is NOT the NetBIOS name (e.g. domain "example.com"
+    # can have NetBIOS "CORP"); only fall back to the label guess if the crossRef lookup failed.
+    $currentDomain = if ($Script:LDAPContext.DomainNetBIOS) {
+        $Script:LDAPContext.DomainNetBIOS
+    } else {
+        $Script:LDAPContext.Domain.Split('.')[0]
+    }
 
     # Compare NetBIOS names (case-insensitive)
     if ($specifiedDomain -eq $currentDomain) {
@@ -72927,8 +73217,10 @@ function Invoke-ShadowCredentialOperation {
         Write-Log "$FunctionPrefix Clearing Shadow Credentials from: $TargetSAMAccountName"
 
         try {
-            # Read existing msDS-KeyCredentialLink values via Invoke-LDAPSearch
-            $SearchResult = Invoke-LDAPSearch -Filter "(distinguishedName=$TargetDN)" -Properties @('msDS-KeyCredentialLink') -SizeLimit 1
+            # Read existing msDS-KeyCredentialLink values via Invoke-LDAPSearch.
+            # Escape the target DN for the filter ('(' ')' '\,' would otherwise break it).
+            $escapedTargetDN = Escape-LDAPFilterDN -DistinguishedName $TargetDN
+            $SearchResult = Invoke-LDAPSearch -Filter "(distinguishedName=$escapedTargetDN)" -Properties @('msDS-KeyCredentialLink') -SizeLimit 1
             $ExistingCredentials = @()
             if ($SearchResult -and $SearchResult.'msDS-KeyCredentialLink') {
                 $RawValues = $SearchResult.'msDS-KeyCredentialLink'
@@ -82993,9 +83285,16 @@ function Get-DomainInformation {
                 $DomainObject = @(Get-DomainObject -LDAPFilter "(objectClass=domain)" -Scope Base @PSBoundParameters)[0]
 
                 if ($DomainObject) {
-                    if ($DomainObject.name) {
+                    # The domain object's 'name' attribute is the DNS label (e.g. "example"),
+                    # NOT the NetBIOS name. Use the authoritative value resolved from the crossRef at
+                    # connect time (LDAPContext.DomainNetBIOS); only fall back to 'name' if unavailable.
+                    if ($Script:LDAPContext.DomainNetBIOS) {
+                        $NetBIOSName = $Script:LDAPContext.DomainNetBIOS
+                        Write-Log "[Get-DomainInformation] NetBIOS name (from crossRef): $NetBIOSName"
+                    }
+                    elseif ($DomainObject.name) {
                         $NetBIOSName = $DomainObject.name
-                        Write-Log "[Get-DomainInformation] NetBIOS name found: $NetBIOSName"
+                        Write-Log "[Get-DomainInformation] NetBIOS name fallback (domain object name/DNS label): $NetBIOSName"
                     }
 
                     # Kerberos Policy
@@ -83525,7 +83824,10 @@ function Get-DomainInformation {
                     # Build site object with subnets and DCs
                     $siteSubnets = @($Subnets | Where-Object { $_.Site -eq $siteInfo.Name })
                     $subnetDisplay = if ($siteSubnets.Count -gt 0) {
-                        ($siteSubnets | ForEach-Object { $_.Name }) -join ", "
+                        # Join with newline (not ", ") so the renderer prints one subnet per line,
+                        # each padded to the value column - consistent with domainControllers above.
+                        # A comma-joined string renders as one long line that wraps out of alignment.
+                        ($siteSubnets | ForEach-Object { $_.Name }) -join "`n"
                     } else {
                         "(none)"
                     }
@@ -84838,8 +85140,10 @@ function Get-PrivilegedGroupMembers {
                                 try {
                                     $gcConn = Get-GCConnection
                                     if ($gcConn) {
-                                        # Use Invoke-LDAPSearch with GC connection for full attribute conversion
-                                        $Member = @(Invoke-LDAPSearch -Filter "(&(objectClass=*)(distinguishedName=$MemberDN))" -SizeLimit 1 -LdapConnection $gcConn)[0]
+                                        # Use Invoke-LDAPSearch with GC connection for full attribute conversion.
+                                        # Escape the member DN (may contain '(' ')' '\,' - e.g. "CN=Doe\, Jane (Contractor),...").
+                                        $escapedMemberDN = Escape-LDAPFilterDN -DistinguishedName $MemberDN
+                                        $Member = @(Invoke-LDAPSearch -Filter "(&(objectClass=*)(distinguishedName=$escapedMemberDN))" -SizeLimit 1 -LdapConnection $gcConn)[0]
                                         if ($Member) {
                                             Write-Log "[Get-PrivilegedGroupMembers] GC resolved cross-domain member: $($Member.distinguishedName)"
                                         }
@@ -92739,7 +93043,8 @@ function Get-ADCSTemplate {
     - EnrolleeSuppliesSubject (ESC1)
     - ClientAuthentication (ESC1)
     - AnyPurpose (ESC2)
-    - EnrollmentAgent (ESC3)
+    - EnrollmentAgent (ESC3 condition 1)
+    - EnrollmentAgentSignatureRequired (ESC3 condition 2)
     - NoSecurityExtension (ESC9)
     - ManagerApprovalRequired
     - ExportableKey
@@ -92930,8 +93235,22 @@ function Get-ADCSTemplate {
             )
 
             # EnrollmentAgent (Certificate Request Agent EKU)
+            # ESC3 condition 1: the certificate issued FROM this template is an enrollment agent
+            # certificate and can be used to co-sign requests on behalf of other principals.
             $template | Add-Member -NotePropertyName 'EnrollmentAgent' -NotePropertyValue (
                 $ekuString -match '1\.3\.6\.1\.4\.1\.311\.20\.2\.1'
+            )
+
+            # EnrollmentAgentSignatureRequired (ESC3 condition 2)
+            # The inverse of EnrollmentAgent: this template can only be issued when the request is
+            # co-signed by a certificate carrying the Certificate Request Agent application policy.
+            # Such a template is the TARGET of an "enroll on behalf of" attack - the agent picks the
+            # subject, so client-auth templates of this kind are a full impersonation primitive.
+            # RAApplicationPolicies carries friendly names ("Certificate Request Agent (Enrollment
+            # Agent) (1.3.6.1.4.1.311.20.2.1)"), so match on the OID rather than on the name.
+            $raPolicyString = @($template.RAApplicationPolicies) -join ' '
+            $template | Add-Member -NotePropertyName 'EnrollmentAgentSignatureRequired' -NotePropertyValue (
+                ($template.RASignatureCount -ge 1) -and ($raPolicyString -match '1\.3\.6\.1\.4\.1\.311\.20\.2\.1')
             )
 
             # ManagerApprovalRequired (PEND_ALL_REQUESTS)
@@ -93079,7 +93398,7 @@ function Get-ADCSVulnerabilities {
     - CA Certificate Security: Weak algorithms, short keys, expired certificates
     - ESC1: Client Authentication + Enrollee-Supplied Subject
     - ESC2: Any Purpose EKU
-    - ESC3: Certificate Request Agent EKU
+    - ESC3: Certificate Request Agent EKU (condition 1) and on-behalf-of target templates (condition 2)
     - ESC4: Dangerous Template Permissions
     - ESC5: Vulnerable PKI Container Permissions
     - ESC9: No Security Extension + Client Authentication
@@ -94039,6 +94358,27 @@ function Get-ADCSVulnerabilities {
                 Write-Log "[Get-ADCSVulnerabilities] ESC13: Error loading issuance policy cache: $_" -Level Warning
             }
 
+            # Pre-pass: resolve enrollment privilege for every template once, and record which
+            # templates hand out enrollment agent certificates to non-privileged principals.
+            # ESC3 needs both halves of the chain and they can appear in any order in the result
+            # set, so the answer must be known before the first template is judged.
+            # The cache is keyed by DistinguishedName and reused in the main loop, so
+            # Test-AllEnrollmentPrivileged still runs exactly once per template.
+            $enrollPrivilegedCache = @{}
+            $agentTemplateNames = @()
+            foreach ($preTemplate in $templates) {
+                $preKey = [string]$preTemplate.DistinguishedName
+                $prePrivileged = Test-AllEnrollmentPrivileged -EnrollmentPrincipalSIDs $preTemplate.EnrollmentPrincipalSIDs -EnrollmentPrincipals $preTemplate.EnrollmentPrincipals -CredParams $CredParams
+                $enrollPrivilegedCache[$preKey] = $prePrivileged
+
+                if ($preTemplate.EnrollmentAgent -and -not $prePrivileged) {
+                    $agentTemplateNames += $preTemplate.Name
+                }
+            }
+            if (@($agentTemplateNames).Count -gt 0) {
+                Write-Log "[Get-ADCSVulnerabilities] ESC3 chain: $(@($agentTemplateNames).Count) enrollment agent template(s) enrollable by non-privileged principals: $($agentTemplateNames -join ', ')"
+            }
+
             # Step 3: Analyze Templates for Vulnerabilities (only enabled templates)
             $totalTemplates = @($templates).Count
             $currentIndex = 0
@@ -94051,10 +94391,16 @@ function Get-ADCSVulnerabilities {
                 # Pre-check: Are ALL enrollment principals truly privileged?
                 # If yes, ESC1/2/3/9/15 are NOT real vulnerabilities (only admins can enroll)
                 # ESC4 (template permissions) is still checked regardless
-                $allEnrollmentPrivileged = Test-AllEnrollmentPrivileged -EnrollmentPrincipalSIDs $template.EnrollmentPrincipalSIDs -EnrollmentPrincipals $template.EnrollmentPrincipals -CredParams $CredParams
+                $allEnrollmentPrivileged = $enrollPrivilegedCache[[string]$template.DistinguishedName]
                 if ($allEnrollmentPrivileged) {
                     Write-Log "[Get-ADCSVulnerabilities] Template '$($template.Name)': All enrollment principals are truly privileged - skipping ESC1/2/3/9/15"
                 }
+
+                # Registration Authority barrier: a template that demands co-signatures cannot be
+                # enrolled directly, so the enrollment-driven ESCs below are only reachable once an
+                # enrollment agent certificate is in hand. This deliberately does NOT cover ESC4 -
+                # write access to the template lets an attacker drop the requirement first.
+                $requiresRASignature = $template.RASignatureCount -ge 1
 
                 # ===== ESC1: Client Authentication + Enrollee-Supplied Subject =====
                 # Only flag if non-privileged users can enroll
@@ -94072,17 +94418,15 @@ function Get-ADCSVulnerabilities {
                 # ===== ESC2: Any Purpose EKU =====
                 # Only flag if non-privileged users can enroll
                 if ($template.AnyPurpose -and -not $allEnrollmentPrivileged) {
-                    # Check if it's the dangerous variant (schema v1 + client auth, or schema v2+ with signatures)
+                    # Check if it's the dangerous variant (schema v1 needs client auth to matter)
+                    # A required RA co-signature no longer suppresses the finding here: it is a
+                    # barrier, not a fix, and is accounted for centrally by the ra_signature_gated
+                    # trigger so that ESC1/2/3/9/13/15 all treat it the same way.
                     $isDangerous = $false
-                    if ($template.SchemaVersion -eq 1 -and $template.ClientAuthentication) {
+                    if ($template.SchemaVersion -eq 1) {
+                        $isDangerous = [bool]$template.ClientAuthentication
+                    } else {
                         $isDangerous = $true
-                    } elseif ($template.SchemaVersion -ge 2 -and $template.RASignatureCount -gt 0) {
-                        # Check if RA policy requires "Any Purpose"
-                        if ($template.RAApplicationPolicies -contains '2.5.29.37.0') {
-                            $isDangerous = $true
-                        }
-                    } elseif ($template.SchemaVersion -ge 2 -and $template.RASignatureCount -eq 0) {
-                        $isDangerous = $true  # No signatures required
                     }
 
                     if ($isDangerous) {
@@ -94106,6 +94450,31 @@ function Get-ADCSVulnerabilities {
                         Severity = "High"
                         Description = "Template has 'Certificate Request Agent' EKU (1.3.6.1.4.1.311.20.2.1). Attacker can request certificates on behalf of other users."
                         Remediation = "Remove 'Certificate Request Agent' EKU unless required for legitimate enrollment agents."
+                        Reference = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc3"
+                    }
+                }
+
+                # ===== ESC3 (condition 2): Enrollment Agent Target Template =====
+                # The mirror image of the check above. This template does not hand out agent
+                # certificates - it is what an agent certificate is spent on. msPKI-RA-Signature >= 1
+                # combined with a Certificate Request Agent application policy means the CA issues it
+                # for whatever subject the co-signing agent names, so a client-auth template of this
+                # kind is a direct impersonation primitive for anyone holding an agent certificate.
+                # Note this is invisible to the condition 1 check: the Certificate Request Agent OID
+                # sits in msPKI-RA-Application-Policies here, not in the template's own EKUs.
+                if ($template.EnrollmentAgentSignatureRequired -and $template.ClientAuthentication -and -not $allEnrollmentPrivileged) {
+                    $chainNote = if (@($agentTemplateNames).Count -gt 0) {
+                        "At least one Certificate Request Agent template in this domain is enrollable by non-privileged principals, so the complete ESC3 chain is reachable without any pre-existing agent certificate - see the ESC3 findings in this section."
+                    } else {
+                        "No Certificate Request Agent template enrollable by non-privileged principals was found, so abuse requires an existing, stolen or CA-issued enrollment agent certificate."
+                    }
+
+                    $templateVulns += [PSCustomObject]@{
+                        ESC = "ESC3-TARGET"
+                        Title = "Enrollment Agent Target Template (ESC3 on-behalf-of)"
+                        Severity = if (@($agentTemplateNames).Count -gt 0) { "High" } else { "Medium" }
+                        Description = "Template requires $($template.RASignatureCount) enrollment agent co-signature(s) (msPKI-RA-Application-Policies contains 1.3.6.1.4.1.311.20.2.1) and supports client authentication. An enrollment agent can request a certificate for any principal from this template. $chainNote"
+                        Remediation = "Enable enrollment agent restrictions on the CA (certutil -setreg policy\EnableEnrollmentAgentRestrictions 1) and limit which templates and target principals each agent may use, OR require manager approval on this template."
                         Reference = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc3"
                     }
                 }
@@ -94294,6 +94663,16 @@ function Get-ADCSVulnerabilities {
                         Remediation = "Upgrade template to schema version 2+ OR remove 'Enrollee supplies subject' flag."
                         Reference = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc15"
                     }
+                }
+
+                # Record whether an enrollment agent certificate is obtainable in this domain.
+                # Deliberately NOT displayed: which template to abuse for that is the tester's
+                # call, and adPEAS already reports every candidate as its own ESC3 finding.
+                # The flag exists solely for the ra_signature_gated trigger - if an agent
+                # certificate is freely obtainable, the co-signature requirement is a formality
+                # and the enrollment-driven ESCs keep their full severity instead of being damped.
+                if ($requiresRASignature) {
+                    $template | Add-Member -NotePropertyName 'EnrollmentAgentChainReachable' -NotePropertyValue (@($agentTemplateNames).Count -gt 0) -Force
                 }
 
                 # Display findings for this template
@@ -107318,7 +107697,8 @@ function Get-BHContainedByConfig {
         return $null
     }
     try {
-        $parentObj = @(Invoke-LDAPSearch -Filter "(distinguishedName=$parentDN)" -SearchBase $parentDN -Properties objectGUID -Scope Base)[0]
+        $escapedParentDN = Escape-LDAPFilterDN -DistinguishedName $parentDN
+        $parentObj = @(Invoke-LDAPSearch -Filter "(distinguishedName=$escapedParentDN)" -SearchBase $parentDN -Properties objectGUID -Scope Base)[0]
         if ($parentObj -and $parentObj.objectGUID) {
             $guid = ConvertTo-BHGuid -Value $parentObj.objectGUID
             $Script:ConfigContainerGuidCache[$parentDN] = $guid
@@ -109560,7 +109940,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.3.1"
+$Script:adPEASVersion = "2.3.2"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

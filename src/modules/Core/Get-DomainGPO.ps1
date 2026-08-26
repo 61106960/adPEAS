@@ -184,8 +184,9 @@ function Get-DomainGPO {
             if ($Identity) {
                 # Check if DN, GUID or DisplayName
                 if ($Identity -match '^CN=.*') {
-                    # Distinguished Name
-                    $IdentityFilter = "(distinguishedName=$Identity)"
+                    # Distinguished Name - RFC 4515 escape so DNs containing '(' ')' or '*' stay valid
+                    $escapedIdentityDN = Escape-LDAPFilterDN -DistinguishedName $Identity
+                    $IdentityFilter = "(distinguishedName=$escapedIdentityDN)"
                     Write-Log "[Get-DomainGPO] Identity detected as DN"
                 } elseif ($Identity -match '^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$') {
                     # GUID format - remove curly braces if present

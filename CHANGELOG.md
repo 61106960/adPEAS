@@ -8,6 +8,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-08-26
+
+### Added
+
+- **AD CS ESC3 second condition (enrollment-agent target templates) is now
+  detected.** adPEAS flagged the template that *issues* an enrollment-agent
+  certificate (ESC3 condition 1), but not the template that *requires* an agent
+  co-signature and is the actual on-behalf-of target. A template with
+  `msPKI-RA-Signature >= 1`, the Certificate Request Agent policy in
+  `msPKI-RA-Application-Policies`, and client authentication is now reported as
+  `ESC3-TARGET`. Severity reflects whether an agent certificate is obtainable in
+  the domain. The RA attributes are now loaded and shown on the template.
+
+### Changed
+
+- **A required enrollment-agent signature no longer suppresses ESC findings
+  outright.** A template gated by `msPKI-RA-Signature` is a barrier, not a fix.
+  ESC1/2/9/13/15 on such templates are now reported with damped severity (unless
+  the agent certificate is freely obtainable, or the template is also
+  ESC4-writable) rather than hidden entirely.
+
+### Fixed
+
+- **Objects whose DN contains `(`, `)` or an escaped comma silently vanished
+  from all output.** A distinguished name such as `CN=Doe\, Jane (Contractor),...`
+  was interpolated raw into LDAP filters, where the parentheses are read as
+  filter grammar and produce an invalid filter — the DC returned an error and no
+  object. Every DN placed into a filter is now RFC 4515 escaped (`Get-DomainObject`,
+  `Set-DomainObject`, `Get-DomainGPO`, certificate templates, privileged group
+  membership, shadow-credential reads, GPO linking).
+- **The same DNs broke identity resolution before the query even ran.** The
+  cross-domain parser split `DOMAIN\user` on any backslash, so an RFC 4514
+  escaped comma was misread as a domain separator. Distinguished names are now
+  excluded from `DOMAIN\user` parsing.
+- **The NetBIOS domain name was misdetected when it differs from the DNS label.**
+  adPEAS derived it from the first DNS label instead of the true NetBIOS name. It
+  is now resolved authoritatively from the Partitions crossRef at connect time
+  and reused everywhere, fixing both the reported domain name and false
+  cross-domain detection for local `DOMAIN\user` identities.
+- **`InsufficientAccessRights` write errors gave misleading advice.** Every
+  denied LDAP write (`0x2098`) suggested the "Create Computer Objects" OU
+  permission, even for attribute writes like shadow credentials or RBCD. The
+  message is now operation-specific and names the actual permission required.
+- **Site subnets were not vertically aligned.** `Get-DomainInformation` rendered
+  a site's subnets as one long comma-separated line that wrapped out of column
+  alignment; they now print one per line like the other multi-value fields.
+
 ## [2.3.1] - 2026-07-28
 
 ### Fixed

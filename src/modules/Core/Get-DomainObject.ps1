@@ -308,8 +308,12 @@ function Get-DomainObject {
                         $SIDHex = ($SIDBytes | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
                         $IdentityFilter = "(objectSid=$SIDHex)"
                     } elseif ($Identity -match '^CN=.*|^OU=.*|^DC=.*') {
-                        # Distinguished Name
-                        $IdentityFilter = "(distinguishedName=$Identity)"
+                        # Distinguished Name - MUST be RFC 4515 escaped before going into a filter.
+                        # DNs legitimately contain '(' ')' (e.g. "CN=Doe\, Jane (Contractor),...")
+                        # which are filter grammar characters; unescaped they produce an invalid
+                        # filter and the object silently drops out of every result.
+                        $escapedIdentityDN = Escape-LDAPFilterDN -DistinguishedName $Identity
+                        $IdentityFilter = "(distinguishedName=$escapedIdentityDN)"
                     } elseif ($Identity -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
                         # GUID Format (e.g., "bf967aba-0de6-11d0-a285-00aa003049e2")
                         $GUIDObj = [System.Guid]::Parse($Identity)

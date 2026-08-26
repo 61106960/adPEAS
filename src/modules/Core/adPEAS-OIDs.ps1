@@ -30,6 +30,7 @@ $Script:OIDMap = @{
     "1.3.6.1.5.5.7.3.5"         = "IPSec End System"
     "1.3.6.1.5.5.7.3.6"         = "IPSec Tunnel"
     "1.3.6.1.5.5.7.3.7"         = "IPSec User"
+    "1.3.6.1.5.5.8.2.2"         = "IP Security IKE Intermediate"
     "1.3.6.1.5.5.7.3.8"         = "Time Stamping"
     "1.3.6.1.5.5.7.3.9"         = "OCSP Signing"
 

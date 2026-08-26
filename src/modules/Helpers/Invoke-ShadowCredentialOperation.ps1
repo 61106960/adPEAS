@@ -369,8 +369,10 @@ function Invoke-ShadowCredentialOperation {
         Write-Log "$FunctionPrefix Clearing Shadow Credentials from: $TargetSAMAccountName"
 
         try {
-            # Read existing msDS-KeyCredentialLink values via Invoke-LDAPSearch
-            $SearchResult = Invoke-LDAPSearch -Filter "(distinguishedName=$TargetDN)" -Properties @('msDS-KeyCredentialLink') -SizeLimit 1
+            # Read existing msDS-KeyCredentialLink values via Invoke-LDAPSearch.
+            # Escape the target DN for the filter ('(' ')' '\,' would otherwise break it).
+            $escapedTargetDN = Escape-LDAPFilterDN -DistinguishedName $TargetDN
+            $SearchResult = Invoke-LDAPSearch -Filter "(distinguishedName=$escapedTargetDN)" -Properties @('msDS-KeyCredentialLink') -SizeLimit 1
             $ExistingCredentials = @()
             if ($SearchResult -and $SearchResult.'msDS-KeyCredentialLink') {
                 $RawValues = $SearchResult.'msDS-KeyCredentialLink'
