@@ -534,16 +534,19 @@ function Export-DiffHtmlReport {
     $domain = $BaselineMeta.Domain
 
     # Replace placeholders
-    $html = $html -replace '{{DOMAIN}}', (ConvertTo-HtmlEncode $domain)
-    $html = $html -replace '{{NEW_COUNT}}', $Added.Count
-    $html = $html -replace '{{REMEDIATED_COUNT}}', $Removed.Count
-    $html = $html -replace '{{CHANGED_COUNT}}', $Changed.Count
-    $html = $html -replace '{{UNCHANGED_COUNT}}', $UnchangedCount
-    $html = $html -replace '{{BASELINE_INFO}}', (ConvertTo-HtmlEncode $baselineInfo)
-    $html = $html -replace '{{CURRENT_INFO}}', (ConvertTo-HtmlEncode $currentInfo)
-    $html = $html -replace '{{COMPARED_CATEGORIES}}', (ConvertTo-HtmlEncode $comparedCats)
-    $html = $html -replace '{{GENERATED}}', $generatedDate
-    $html = $html -replace '{{VERSION}}', $version
+    # Literal .Replace() for every token - a data value containing '$' + digits would otherwise be
+    # read as a regex capture-group reference by -replace and overflow Int32.MaxValue (see the
+    # detailed note in Export-HTMLReport.ps1). HTML-encoding does not escape '$'.
+    $html = $html.Replace('{{DOMAIN}}', [string](ConvertTo-HtmlEncode $domain))
+    $html = $html.Replace('{{NEW_COUNT}}', [string]$Added.Count)
+    $html = $html.Replace('{{REMEDIATED_COUNT}}', [string]$Removed.Count)
+    $html = $html.Replace('{{CHANGED_COUNT}}', [string]$Changed.Count)
+    $html = $html.Replace('{{UNCHANGED_COUNT}}', [string]$UnchangedCount)
+    $html = $html.Replace('{{BASELINE_INFO}}', [string](ConvertTo-HtmlEncode $baselineInfo))
+    $html = $html.Replace('{{CURRENT_INFO}}', [string](ConvertTo-HtmlEncode $currentInfo))
+    $html = $html.Replace('{{COMPARED_CATEGORIES}}', [string](ConvertTo-HtmlEncode $comparedCats))
+    $html = $html.Replace('{{GENERATED}}', [string]$generatedDate)
+    $html = $html.Replace('{{VERSION}}', [string]$version)
     $html = $html.Replace('{{DIFF_SECTIONS}}', $sectionsHtml.ToString())
 
     # Write file (UTF-8 without BOM, same as Export-HTMLReport)

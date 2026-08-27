@@ -244,7 +244,26 @@ function Get-DomainObject {
         [switch]$ReversibleEncryption,
 
         [Parameter(Mandatory=$false)]
-        [switch]$NotDelegated
+        [switch]$NotDelegated,
+
+        # Server-side password-age filter: return accounts whose password was last set at least
+        # N days ago (pwdLastSet older than the threshold). pwdLastSet=0 (never set / must change)
+        # is excluded. Value <= 0 disables the filter.
+        [Parameter(Mandatory=$false)]
+        [int]$PasswordAgeDays = 0,
+
+        # Server-side inactivity filter: return accounts that HAVE logged in at least once but not
+        # within the last N days (lastLogonTimestamp older than the threshold). Accounts that never
+        # logged in are excluded (they are "never used", not "inactive" - use -NeverLoggedIn).
+        # Note: lastLogonTimestamp replicates lazily (updated at most every ~9-14 days by design),
+        # so this is coarse-grained; the same limitation applies to any lastLogonTimestamp query.
+        # Value <= 0 disables the filter.
+        [Parameter(Mandatory=$false)]
+        [int]$InactiveDays = 0,
+
+        # Server-side filter: return accounts that have never logged in (lastLogonTimestamp absent).
+        [Parameter(Mandatory=$false)]
+        [switch]$NeverLoggedIn
     )
 
     begin {
@@ -435,6 +454,26 @@ function Get-DomainObject {
             # NotDelegated: NOT_DELEGATED (0x100000 = 1048576) flag set - protected from delegation
             if ($NotDelegated) {
                 $accountFilters += "(userAccountControl:1.2.840.113556.1.4.803:=1048576)"
+            }
+
+            # PasswordAgeDays: password last set at least N days ago (pwdLastSet <= threshold).
+            # pwdLastSet is a FileTime; (pwdLastSet>=1) excludes 0 (never set / must change).
+            if ($PasswordAgeDays -gt 0) {
+                $pwdThresholdFileTime = (Get-Date).AddDays(-$PasswordAgeDays).ToFileTime()
+                $accountFilters += "(&(pwdLastSet>=1)(pwdLastSet<=$pwdThresholdFileTime))"
+            }
+
+            # InactiveDays: has logged in once (lastLogonTimestamp present) but not within N days.
+            # An LDAP ordering match (<=) never matches an absent attribute, so this inherently
+            # excludes never-logged-in accounts; (lastLogonTimestamp>=1) makes that explicit.
+            if ($InactiveDays -gt 0) {
+                $logonThresholdFileTime = (Get-Date).AddDays(-$InactiveDays).ToFileTime()
+                $accountFilters += "(&(lastLogonTimestamp>=1)(lastLogonTimestamp<=$logonThresholdFileTime))"
+            }
+
+            # NeverLoggedIn: lastLogonTimestamp attribute is absent (account never authenticated).
+            if ($NeverLoggedIn) {
+                $accountFilters += "(!(lastLogonTimestamp=*))"
             }
 
             # Append all account filters to main filter

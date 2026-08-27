@@ -446,9 +446,18 @@ function Convert-SIDHistoryToRenderValues {
         if ($sidString) {
             $sidClass = Get-SIDHistoryClass -SID $sidString
             $resolvedName = ConvertFrom-SID -SID $sidString
-            $display = if ($resolvedName -and $resolvedName -ne $sidString) {
-                "$resolvedName ($sidString)"
-            } else { $sidString }
+            # ConvertFrom-SID returns a real name (e.g. "DOMAIN\user") for resolvable SIDs, but a
+            # decorated SID string for unresolvable ones ("<SID> (FOREIGN)", "<SID> (UNRESOLVABLE...)").
+            # Only append "($sidString)" when we actually resolved a NAME - otherwise the SID would be
+            # printed twice, e.g. "<SID> (FOREIGN) (<SID>)". Detect the decorated-SID case by checking
+            # whether the returned string already contains the raw SID.
+            $display = if ($resolvedName -and ($resolvedName -notlike "*$sidString*")) {
+                "$resolvedName ($sidString)"     # genuine name resolved
+            } elseif ($resolvedName) {
+                $resolvedName                    # already the SID (optionally with a (FOREIGN)/(UNRESOLVABLE) marker)
+            } else {
+                $sidString
+            }
 
             $findingId = Get-FindingIdForAttribute -Name 'sIDHistory' -Value $sidString
             $renderValues += New-RenderValue -Display $display -Severity $sidClass `
@@ -460,7 +469,7 @@ function Convert-SIDHistoryToRenderValues {
 
     $maxSev = Get-MaxSeverityFromValues -Values $renderValues
     return @{
-        DisplayName         = 'sIDHistory (SID History Injection risk!)'
+        DisplayName         = 'sIDHistory'
         RowType             = 'MultiValue'
         OverallSeverity     = $maxSev
         ForceAttributeClass = $true

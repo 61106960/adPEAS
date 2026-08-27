@@ -541,8 +541,27 @@ function Invoke-KerberosAuthFlow {
             }
             else {
                 # LDAP connection failed - determine the cause
+                # Cross-realm (user account in a different realm than the target) is the most
+                # specific case: adPEAS does not chase cross-realm Kerberos referrals (see Step 3),
+                # and Windows cannot obtain the referral natively when a custom DNS server is in use
+                # because the DC-locator SRV records are not resolvable. -NTHash/-AES have no NTLM
+                # fallback, so this fails hard. Name the real cause instead of a generic ticket error.
+                if ($UserRealm -and $UserRealm -ne $Domain) {
+                    throw ("Cross-realm Kerberos: the account is in realm '$UserRealm' but the target domain is " +
+                           "'$Domain'. A TGT was obtained from '$UserRealm', but the cross-realm referral to '$Domain' " +
+                           "could not be completed - adPEAS does not chase Kerberos referrals, so the final service " +
+                           "ticket must be obtained by the Windows stack. The adPEAS -DnsServer parameter only affects " +
+                           "adPEAS's own queries, NOT the Windows DC-locator, so Windows cannot resolve the KDC SRV " +
+                           "records for both realms. Fixes, in order of preference: " +
+                           "(1) set the Windows OS DNS to a server that resolves BOTH realms - then Windows chases the " +
+                           "referral natively and this exact command works (hosts-file patching cannot substitute, it " +
+                           "has no SRV records); " +
+                           "(2) authenticate with an account that lives in '$Domain' (same-realm Kerberos, no referral); " +
+                           "(3) supply a plaintext password instead of a hash so NTLM/SimpleBind can traverse the trust " +
+                           "(-NTHash/-AES are Kerberos-only and have no NTLM fallback).")
+                }
                 # Check if this is a hostname resolution issue (custom DNS without hosts patching)
-                if ($UsingCustomDns -and -not $HostsPatched) {
+                elseif ($UsingCustomDns -and -not $HostsPatched) {
                     # TGT, TGS, PTT all succeeded but LDAP failed
                     # This is almost certainly because Windows can't resolve the DC hostname
                     # to use the Kerberos ticket (SPN matching requires hostname resolution)

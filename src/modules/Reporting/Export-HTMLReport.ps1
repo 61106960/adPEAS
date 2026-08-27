@@ -140,22 +140,29 @@ function Export-HTMLReport {
         $scoringContext = Build-ScoringContext -AllFindings $findings
         $scoringContextJson = Repair-JsonUnicodeEscapes ($scoringContext | ConvertTo-Json -Depth 10 -Compress)
 
-        $html = $html -replace '{{DOMAIN}}', (ConvertTo-HtmlEncode $domain)
-        $html = $html -replace '{{SERVER}}', (ConvertTo-HtmlEncode $server)
-        $html = $html -replace '{{USER}}', (ConvertTo-HtmlEncode $user)
-        $html = $html -replace '{{GENERATED}}', $generatedDate
-        $html = $html -replace '{{VERSION}}', $version
-        $html = $html -replace '{{DEFAULT_THEME}}', $DefaultTheme.ToLower()
-        $html = $html -replace '{{FINDING_COUNT}}', $findingCount
-        $html = $html -replace '{{HINT_COUNT}}', $hintCount
-        $html = $html -replace '{{NOTE_COUNT}}', $noteCount
-        $html = $html -replace '{{SECURE_COUNT}}', $secureCount
-        $html = $html -replace '{{TOTAL_COUNT}}', $totalCount
-        $html = $html -replace '{{DISCLAIMER}}', (ConvertTo-HtmlEncode $disclaimer)
-        $html = $html -replace '{{NAVIGATION}}', $navHtml
-        $html = $html -replace '{{FINDINGS_SECTIONS}}', $sectionsHtml
-        # Use .Replace() instead of -replace for JSON to avoid regex backreference issues
-        # The JSON contains PowerShell code like "$_" which -replace interprets as regex capture groups
+        # Use literal .Replace() for ALL token substitutions, never -replace. The placeholders are
+        # literal "{{...}}" strings (no regex needed), and the replacement VALUES are data-derived:
+        # any value containing a '$' followed by digits (a SID, a managed-password ID, an account
+        # name, a description) is parsed by -replace's replacement engine as a capture-group
+        # reference "$<n>", and a long digit run overflows with "Capture group numbers must be less
+        # than or equal to Int32.MaxValue", aborting the whole report. HTML-encoding does not help -
+        # it does not escape '$'. .Replace() treats both arguments as literal text.
+        $html = $html.Replace('{{DOMAIN}}', [string](ConvertTo-HtmlEncode $domain))
+        $html = $html.Replace('{{SERVER}}', [string](ConvertTo-HtmlEncode $server))
+        $html = $html.Replace('{{USER}}', [string](ConvertTo-HtmlEncode $user))
+        $html = $html.Replace('{{GENERATED}}', [string]$generatedDate)
+        $html = $html.Replace('{{VERSION}}', [string]$version)
+        $html = $html.Replace('{{DEFAULT_THEME}}', [string]$DefaultTheme.ToLower())
+        $html = $html.Replace('{{FINDING_COUNT}}', [string]$findingCount)
+        $html = $html.Replace('{{HINT_COUNT}}', [string]$hintCount)
+        $html = $html.Replace('{{NOTE_COUNT}}', [string]$noteCount)
+        $html = $html.Replace('{{SECURE_COUNT}}', [string]$secureCount)
+        $html = $html.Replace('{{TOTAL_COUNT}}', [string]$totalCount)
+        $html = $html.Replace('{{DISCLAIMER}}', [string](ConvertTo-HtmlEncode $disclaimer))
+        $html = $html.Replace('{{NAVIGATION}}', [string]$navHtml)
+        $html = $html.Replace('{{FINDINGS_SECTIONS}}', [string]$sectionsHtml)
+        # JSON blobs likewise use .Replace() - they contain PowerShell code like "$_" that -replace
+        # would interpret as regex capture groups (same failure class as above).
         $html = $html.Replace('{{FINDING_DEFINITIONS_JSON}}', $findingDefsJson)
         $html = $html.Replace('{{CHECK_DESCRIPTIONS_JSON}}', $checkDefsJson)
         $html = $html.Replace('{{SCORING_CONTEXT_JSON}}', $scoringContextJson)

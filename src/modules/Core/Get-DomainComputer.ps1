@@ -195,6 +195,20 @@ function Get-DomainComputer {
         [Parameter(Mandatory=$false)]
         [switch]$Raw,
 
+        # Server-side filter: computers whose machine password was last set at least N days ago
+        # (stale machine account - normally rotated every ~30 days).
+        [Parameter(Mandatory=$false)]
+        [int]$PasswordAgeDays = 0,
+
+        # Server-side filter: computers that logged in once but not within the last N days
+        # (inactive). Never-logged-in computers are excluded (use -NeverLoggedIn). Coarse-grained.
+        [Parameter(Mandatory=$false)]
+        [int]$InactiveDays = 0,
+
+        # Server-side filter: computers that never logged in (lastLogonTimestamp absent).
+        [Parameter(Mandatory=$false)]
+        [switch]$NeverLoggedIn,
+
         [Parameter(Mandatory=$false)]
         [int]$ResultLimit = 0
     )
@@ -312,6 +326,9 @@ function Get-DomainComputer {
             if ($Disabled) { $GetParams['IsDisabled'] = $true }
             if ($SPN) { $GetParams['HasSPN'] = $true }
             if ($TrustedToAuth) { $GetParams['TrustedToAuthForDelegation'] = $true }
+            if ($PasswordAgeDays -gt 0) { $GetParams['PasswordAgeDays'] = $PasswordAgeDays }
+            if ($InactiveDays -gt 0) { $GetParams['InactiveDays'] = $InactiveDays }
+            if ($NeverLoggedIn) { $GetParams['NeverLoggedIn'] = $true }
             if ($ResultLimit -gt 0) { $GetParams['ResultLimit'] = $ResultLimit }
 
             $Computers = @(Get-DomainObject @GetParams)

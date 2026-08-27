@@ -8,6 +8,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-08-27
+
+### Added
+
+- **Server-side password-age and inactivity filters on `Get-DomainUser` and
+  `Get-DomainComputer`.** Three new parameters build the LDAP filter directly
+  instead of pulling all objects and filtering client-side: `-PasswordAgeDays <N>`
+  (password last set at least N days ago), `-InactiveDays <N>` (logged in once but
+  not within N days; never-logged-in accounts are excluded), and `-NeverLoggedIn`.
+  Implemented centrally in `Get-DomainObject`.
+
+### Fixed
+
+- **HTML report generation aborted when a finding value contained a `$` followed by
+  digits.** Template placeholders were substituted with `-replace`, whose replacement
+  engine reads `$<n>` as a capture-group reference; a long digit run overflowed with
+  "Capture group numbers must be less than or equal to Int32.MaxValue" and killed the
+  whole report. All placeholder substitutions now use literal `.Replace()` (main report
+  and comparison report).
+- **BloodHound collector crashed with "cannot call a method on a null-valued
+  expression" during OU/container collection.** After a disconnect/reconnect,
+  `Clear-SessionState` reset the DN caches to an empty hashtable (which the lazy build
+  guard treats as "already built") and left a sibling cache `$null`, so collection ran
+  on a half-built cache. Caches are now reset to `$null`, the build guard requires both
+  caches, and the consumers null-guard the lookup.
+- **BloodHound collection failures now report their origin without `-Verbose`.** A
+  failure previously showed only a generic message; the failing function and line are
+  now surfaced.
+- **Misleading Kerberos error for `KDC_ERR_ETYPE_NOSUPP` (etype 14).** The message
+  always suggested using `-AES256Key`, even when an AES key was already used. It is now
+  aware of the authentication method: with an AES key it points at a missing AES key on
+  the account; with an NT hash it points at RC4 being disabled.
+- **Cross-realm Kerberos failures are now explained precisely.** Authenticating as a
+  user from a different realm than the target (over a trust) failed with a generic
+  "ticket not usable" error. adPEAS does not chase cross-realm referrals; the message
+  now says so and lists the fixes (OS DNS resolving both realms, an account in the
+  target domain, or a plaintext password for NTLM).
+- **`sIDHistory` display printed each SID twice** (e.g. `<SID> (FOREIGN) (<SID>)`). A
+  SID is now shown once, resolved to a name only when a real name is available. The
+  verbose "(SID History Injection risk!)" suffix was removed from the label (it is
+  explained in the HTML tooltip).
+
 ## [2.3.2] - 2026-08-26
 
 ### Added

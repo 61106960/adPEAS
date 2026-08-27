@@ -246,6 +246,19 @@ function Get-DomainUser {
         [Parameter(Mandatory=$false)]
         [switch]$Raw,
 
+        # Server-side filter: users whose password was last set at least N days ago.
+        [Parameter(Mandatory=$false)]
+        [int]$PasswordAgeDays = 0,
+
+        # Server-side filter: users that logged in once but not within the last N days (inactive).
+        # Never-logged-in users are excluded (use -NeverLoggedIn). lastLogonTimestamp is coarse.
+        [Parameter(Mandatory=$false)]
+        [int]$InactiveDays = 0,
+
+        # Server-side filter: users that never logged in (lastLogonTimestamp absent).
+        [Parameter(Mandatory=$false)]
+        [switch]$NeverLoggedIn,
+
         [Parameter(Mandatory=$false)]
         [int]$ResultLimit = 0
     )
@@ -359,6 +372,9 @@ function Get-DomainUser {
             if ($AccountNeverExpires) { $GetParams['AccountNeverExpires'] = $true }
             if ($DESOnly) { $GetParams['DESOnly'] = $true }
             if ($ReversibleEncryption) { $GetParams['ReversibleEncryption'] = $true }
+            if ($PasswordAgeDays -gt 0) { $GetParams['PasswordAgeDays'] = $PasswordAgeDays }
+            if ($InactiveDays -gt 0) { $GetParams['InactiveDays'] = $InactiveDays }
+            if ($NeverLoggedIn) { $GetParams['NeverLoggedIn'] = $true }
             if ($ResultLimit -gt 0) { $GetParams['ResultLimit'] = $ResultLimit }
 
             $Users = @(Get-DomainObject @GetParams)

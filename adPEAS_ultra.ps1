@@ -12367,9 +12367,13 @@ function Convert-SIDHistoryToRenderValues {
 	    if ($sidString) {
 	        $sidClass = Get-SIDHistoryClass -SID $sidString
 	        $resolvedName = ConvertFrom-SID -SID $sidString
-	        $display = if ($resolvedName -and $resolvedName -ne $sidString) {
-	            "$resolvedName ($sidString)"
-	        } else { $sidString }
+	        $display = if ($resolvedName -and ($resolvedName -notlike "*$sidString*")) {
+	            "$resolvedName ($sidString)"     # genuine name resolved
+	        } elseif ($resolvedName) {
+	            $resolvedName                    # already the SID (optionally with a (FOREIGN)/(UNRESOLVABLE) marker)
+	        } else {
+	            $sidString
+	        }
 	        $findingId = Get-FindingIdForAttribute -Name 'sIDHistory' -Value $sidString
 	        $renderValues += New-RenderValue -Display $display -Severity $sidClass `
 	            -FindingId $findingId -RawValue $sidString -Metadata @{ ResolvedName = $resolvedName }
@@ -12378,7 +12382,7 @@ function Convert-SIDHistoryToRenderValues {
 	if ($renderValues.Count -eq 0) { return $null }
 	$maxSev = Get-MaxSeverityFromValues -Values $renderValues
 	return @{
-	    DisplayName         = 'sIDHistory (SID History Injection risk!)'
+	    DisplayName         = 'sIDHistory'
 	    RowType             = 'MultiValue'
 	    OverallSeverity     = $maxSev
 	    ForceAttributeClass = $true
@@ -15663,6 +15667,8 @@ function Show-ConnectionError {
 	    [ValidateSet("Kerberos", "LDAP", "Win32", "HRESULT")]
 	    [string]$ErrorCodeType,
 	    [Parameter(Mandatory=$false)]
+	    [string]$AuthMethod,
+	    [Parameter(Mandatory=$false)]
 	    [switch]$NoThrow
 	)
 	process {
@@ -15802,7 +15808,17 @@ function Show-ConnectionError {
 	                        $detailsArray += "Reason: KDC policy rejects the request (check account restrictions)."
 	                    }
 	                    14 {  # KDC_ERR_ETYPE_NOSUPP
-	                        $detailsArray += "Reason: RC4 encryption disabled - use -AES256Key instead of -NTHash"
+	                        if ($AuthMethod -in @('AES256','AES128')) {
+	                            $detailsArray += "Reason: The KDC has no AES key for this account. The account likely supports only RC4 (its AES keys were never generated - msDS-SupportedEncryptionTypes), or the key does not match the account."
+	                            $detailsArray += "Try: reset the account password to generate AES keys, or authenticate with its RC4 key via -NTHash (if RC4 is still enabled in the domain)."
+	                        }
+	                        elseif ($AuthMethod -eq 'NTHash') {
+	                            $detailsArray += "Reason: RC4 is disabled in this domain, so the RC4/NT hash cannot be used. Use -AES256Key (or -AES128Key) instead."
+	                        }
+	                        else {
+	                            $detailsArray += "Reason: The KDC does not support any of the offered Kerberos encryption types for this account (KDC_ERR_ETYPE_NOSUPP). RC4 may be disabled, or the account may lack AES keys."
+	                            $detailsArray += "Try: -AES256Key if you used an NT hash, or -NTHash if you used an AES key, depending on which encryption types the account actually supports."
+	                        }
 	                    }
 	                    18 {  # KDC_ERR_CLIENT_REVOKED
 	                        $detailsArray += "Reason: Account is disabled or locked out."
@@ -17236,7 +17252,7 @@ function Connect-adPEAS {
 	                        $KdcErrorCode = $KerbFlowResult.ErrorCode
 	                        $IsCrossDomain = $null -ne $UserRealm
 	                        if ($null -ne $KdcErrorCode -and $KdcErrorCode -in $Script:KDC_FATAL_ERROR_CODES -and -not $IsCrossDomain) {
-	                            Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -NoThrow
+	                            Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
 	                            return $null
 	                        }
 	                        if ($IsCrossDomain) {
@@ -17257,7 +17273,7 @@ function Connect-adPEAS {
 	                            }
 	                            else {
 	                                if ($null -ne $KdcErrorCode) {
-	                                    Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -NoThrow
+	                                    Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
 	                                } else {
 	                                    Show-ConnectionError -ErrorType "KerberosError" -Details $ErrorMessage -NoThrow
 	                                }
@@ -17527,7 +17543,7 @@ function Connect-adPEAS {
 	                    $Script:ConnectionState = "PKINITFailed"
 	                    $KdcErrorCode = $PKINITResult.ErrorCode
 	                    if ($null -ne $KdcErrorCode) {
-	                        Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -NoThrow
+	                        Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
 	                    } else {
 	                        Show-ConnectionError -ErrorType "KerberosError" -Details $ErrorMsg -NoThrow
 	                    }
@@ -17749,7 +17765,7 @@ function Connect-adPEAS {
 	                if (-not $KerberosAuthSuccess) {
 	                    $Script:ConnectionState = "HashAuthFailed"
 	                    if ($null -ne $KerberosErrorCode) {
-	                        Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KerberosErrorCode -ErrorCodeType "Kerberos" -NoThrow
+	                        Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KerberosErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
 	                    } else {
 	                        Show-ConnectionError -ErrorType "KerberosError" -Details $KerberosError -NoThrow
 	                    }
@@ -18134,9 +18150,11 @@ function Clear-SessionState {
 	$Script:GroupMembershipCache = @{}
 	$Script:CurrentUserTokenGroups = $null
 	$Script:ForeignDomainCache = @{}
-	$Script:ComputerHostnameCache = @{}
-	$Script:DNToIdentityCache = @{}
+	$Script:ComputerHostnameCache = $null
+	$Script:DNToIdentityCache = $null
+	$Script:ParentDNToChildren = $null
 	$Script:ConfigContainerGuidCache = $null
+	$Script:TemplateCNToOID = $null
 	if ($Script:CompletionCache) { Clear-CompletionCache }
 	$Script:CompletionCacheAttempted = $null
 	if ($Script:SMBShareAccessCache -and $Script:SMBShareAccessCache.Count -gt 0) {
@@ -19794,7 +19812,13 @@ function Get-DomainObject {
 	    [Parameter(Mandatory=$false)]
 	    [switch]$ReversibleEncryption,
 	    [Parameter(Mandatory=$false)]
-	    [switch]$NotDelegated
+	    [switch]$NotDelegated,
+	    [Parameter(Mandatory=$false)]
+	    [int]$PasswordAgeDays = 0,
+	    [Parameter(Mandatory=$false)]
+	    [int]$InactiveDays = 0,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$NeverLoggedIn
 	)
 	begin {
 	    $ConnectionParams = @{}
@@ -19903,6 +19927,17 @@ function Get-DomainObject {
 	        }
 	        if ($NotDelegated) {
 	            $accountFilters += "(userAccountControl:1.2.840.113556.1.4.803:=1048576)"
+	        }
+	        if ($PasswordAgeDays -gt 0) {
+	            $pwdThresholdFileTime = (Get-Date).AddDays(-$PasswordAgeDays).ToFileTime()
+	            $accountFilters += "(&(pwdLastSet>=1)(pwdLastSet<=$pwdThresholdFileTime))"
+	        }
+	        if ($InactiveDays -gt 0) {
+	            $logonThresholdFileTime = (Get-Date).AddDays(-$InactiveDays).ToFileTime()
+	            $accountFilters += "(&(lastLogonTimestamp>=1)(lastLogonTimestamp<=$logonThresholdFileTime))"
+	        }
+	        if ($NeverLoggedIn) {
+	            $accountFilters += "(!(lastLogonTimestamp=*))"
 	        }
 	        if ($accountFilters.Count -gt 0) {
 	            $allAccountFilters = $accountFilters -join ''
@@ -20893,6 +20928,12 @@ function Get-DomainUser {
 	    [Parameter(Mandatory=$false)]
 	    [switch]$Raw,
 	    [Parameter(Mandatory=$false)]
+	    [int]$PasswordAgeDays = 0,
+	    [Parameter(Mandatory=$false)]
+	    [int]$InactiveDays = 0,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$NeverLoggedIn,
+	    [Parameter(Mandatory=$false)]
 	    [int]$ResultLimit = 0
 	)
 	begin {
@@ -20964,6 +21005,9 @@ function Get-DomainUser {
 	        if ($AccountNeverExpires) { $GetParams['AccountNeverExpires'] = $true }
 	        if ($DESOnly) { $GetParams['DESOnly'] = $true }
 	        if ($ReversibleEncryption) { $GetParams['ReversibleEncryption'] = $true }
+	        if ($PasswordAgeDays -gt 0) { $GetParams['PasswordAgeDays'] = $PasswordAgeDays }
+	        if ($InactiveDays -gt 0) { $GetParams['InactiveDays'] = $InactiveDays }
+	        if ($NeverLoggedIn) { $GetParams['NeverLoggedIn'] = $true }
 	        if ($ResultLimit -gt 0) { $GetParams['ResultLimit'] = $ResultLimit }
 	        $Users = @(Get-DomainObject @GetParams)
 	        if ($ShowGMSADetails -and $GMSA -and $Users.Count -gt 0) {
@@ -21048,6 +21092,12 @@ function Get-DomainComputer {
 	    [Parameter(Mandatory=$false)]
 	    [switch]$Raw,
 	    [Parameter(Mandatory=$false)]
+	    [int]$PasswordAgeDays = 0,
+	    [Parameter(Mandatory=$false)]
+	    [int]$InactiveDays = 0,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$NeverLoggedIn,
+	    [Parameter(Mandatory=$false)]
 	    [int]$ResultLimit = 0
 	)
 	begin {
@@ -21124,6 +21174,9 @@ function Get-DomainComputer {
 	        if ($Disabled) { $GetParams['IsDisabled'] = $true }
 	        if ($SPN) { $GetParams['HasSPN'] = $true }
 	        if ($TrustedToAuth) { $GetParams['TrustedToAuthForDelegation'] = $true }
+	        if ($PasswordAgeDays -gt 0) { $GetParams['PasswordAgeDays'] = $PasswordAgeDays }
+	        if ($InactiveDays -gt 0) { $GetParams['InactiveDays'] = $InactiveDays }
+	        if ($NeverLoggedIn) { $GetParams['NeverLoggedIn'] = $true }
 	        if ($ResultLimit -gt 0) { $GetParams['ResultLimit'] = $ResultLimit }
 	        $Computers = @(Get-DomainObject @GetParams)
 	        return $Computers
@@ -41774,7 +41827,21 @@ function Invoke-KerberosAuthFlow {
 	            }
 	        }
 	        else {
-	            if ($UsingCustomDns -and -not $HostsPatched) {
+	            if ($UserRealm -and $UserRealm -ne $Domain) {
+	                throw ("Cross-realm Kerberos: the account is in realm '$UserRealm' but the target domain is " +
+	                       "'$Domain'. A TGT was obtained from '$UserRealm', but the cross-realm referral to '$Domain' " +
+	                       "could not be completed - adPEAS does not chase Kerberos referrals, so the final service " +
+	                       "ticket must be obtained by the Windows stack. The adPEAS -DnsServer parameter only affects " +
+	                       "adPEAS's own queries, NOT the Windows DC-locator, so Windows cannot resolve the KDC SRV " +
+	                       "records for both realms. Fixes, in order of preference: " +
+	                       "(1) set the Windows OS DNS to a server that resolves BOTH realms - then Windows chases the " +
+	                       "referral natively and this exact command works (hosts-file patching cannot substitute, it " +
+	                       "has no SRV records); " +
+	                       "(2) authenticate with an account that lives in '$Domain' (same-realm Kerberos, no referral); " +
+	                       "(3) supply a plaintext password instead of a hash so NTLM/SimpleBind can traverse the trust " +
+	                       "(-NTHash/-AES are Kerberos-only and have no NTLM fallback).")
+	            }
+	            elseif ($UsingCustomDns -and -not $HostsPatched) {
 	                $DnsHint = "Kerberos tickets obtained successfully, but LDAP connection failed. " +
 	                           "This is likely because Windows cannot resolve '$DCHostname' via system DNS. " +
 	                           "The Kerberos ticket was issued for SPN 'ldap/$DCHostname' but Windows cannot " +
@@ -61211,20 +61278,20 @@ function Export-HTMLReport {
 	    $checkDefsJson = Repair-JsonUnicodeEscapes (Export-CheckDescriptionsJson -Minified)
 	    $scoringContext = Build-ScoringContext -AllFindings $findings
 	    $scoringContextJson = Repair-JsonUnicodeEscapes ($scoringContext | ConvertTo-Json -Depth 10 -Compress)
-	    $html = $html -replace '{{DOMAIN}}', (ConvertTo-HtmlEncode $domain)
-	    $html = $html -replace '{{SERVER}}', (ConvertTo-HtmlEncode $server)
-	    $html = $html -replace '{{USER}}', (ConvertTo-HtmlEncode $user)
-	    $html = $html -replace '{{GENERATED}}', $generatedDate
-	    $html = $html -replace '{{VERSION}}', $version
-	    $html = $html -replace '{{DEFAULT_THEME}}', $DefaultTheme.ToLower()
-	    $html = $html -replace '{{FINDING_COUNT}}', $findingCount
-	    $html = $html -replace '{{HINT_COUNT}}', $hintCount
-	    $html = $html -replace '{{NOTE_COUNT}}', $noteCount
-	    $html = $html -replace '{{SECURE_COUNT}}', $secureCount
-	    $html = $html -replace '{{TOTAL_COUNT}}', $totalCount
-	    $html = $html -replace '{{DISCLAIMER}}', (ConvertTo-HtmlEncode $disclaimer)
-	    $html = $html -replace '{{NAVIGATION}}', $navHtml
-	    $html = $html -replace '{{FINDINGS_SECTIONS}}', $sectionsHtml
+	    $html = $html.Replace('{{DOMAIN}}', [string](ConvertTo-HtmlEncode $domain))
+	    $html = $html.Replace('{{SERVER}}', [string](ConvertTo-HtmlEncode $server))
+	    $html = $html.Replace('{{USER}}', [string](ConvertTo-HtmlEncode $user))
+	    $html = $html.Replace('{{GENERATED}}', [string]$generatedDate)
+	    $html = $html.Replace('{{VERSION}}', [string]$version)
+	    $html = $html.Replace('{{DEFAULT_THEME}}', [string]$DefaultTheme.ToLower())
+	    $html = $html.Replace('{{FINDING_COUNT}}', [string]$findingCount)
+	    $html = $html.Replace('{{HINT_COUNT}}', [string]$hintCount)
+	    $html = $html.Replace('{{NOTE_COUNT}}', [string]$noteCount)
+	    $html = $html.Replace('{{SECURE_COUNT}}', [string]$secureCount)
+	    $html = $html.Replace('{{TOTAL_COUNT}}', [string]$totalCount)
+	    $html = $html.Replace('{{DISCLAIMER}}', [string](ConvertTo-HtmlEncode $disclaimer))
+	    $html = $html.Replace('{{NAVIGATION}}', [string]$navHtml)
+	    $html = $html.Replace('{{FINDINGS_SECTIONS}}', [string]$sectionsHtml)
 	    $html = $html.Replace('{{FINDING_DEFINITIONS_JSON}}', $findingDefsJson)
 	    $html = $html.Replace('{{CHECK_DESCRIPTIONS_JSON}}', $checkDefsJson)
 	    $html = $html.Replace('{{SCORING_CONTEXT_JSON}}', $scoringContextJson)
@@ -67963,16 +68030,16 @@ function Export-DiffHtmlReport {
 	$version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
 	$generatedDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 	$domain = $BaselineMeta.Domain
-	$html = $html -replace '{{DOMAIN}}', (ConvertTo-HtmlEncode $domain)
-	$html = $html -replace '{{NEW_COUNT}}', $Added.Count
-	$html = $html -replace '{{REMEDIATED_COUNT}}', $Removed.Count
-	$html = $html -replace '{{CHANGED_COUNT}}', $Changed.Count
-	$html = $html -replace '{{UNCHANGED_COUNT}}', $UnchangedCount
-	$html = $html -replace '{{BASELINE_INFO}}', (ConvertTo-HtmlEncode $baselineInfo)
-	$html = $html -replace '{{CURRENT_INFO}}', (ConvertTo-HtmlEncode $currentInfo)
-	$html = $html -replace '{{COMPARED_CATEGORIES}}', (ConvertTo-HtmlEncode $comparedCats)
-	$html = $html -replace '{{GENERATED}}', $generatedDate
-	$html = $html -replace '{{VERSION}}', $version
+	$html = $html.Replace('{{DOMAIN}}', [string](ConvertTo-HtmlEncode $domain))
+	$html = $html.Replace('{{NEW_COUNT}}', [string]$Added.Count)
+	$html = $html.Replace('{{REMEDIATED_COUNT}}', [string]$Removed.Count)
+	$html = $html.Replace('{{CHANGED_COUNT}}', [string]$Changed.Count)
+	$html = $html.Replace('{{UNCHANGED_COUNT}}', [string]$UnchangedCount)
+	$html = $html.Replace('{{BASELINE_INFO}}', [string](ConvertTo-HtmlEncode $baselineInfo))
+	$html = $html.Replace('{{CURRENT_INFO}}', [string](ConvertTo-HtmlEncode $currentInfo))
+	$html = $html.Replace('{{COMPARED_CATEGORIES}}', [string](ConvertTo-HtmlEncode $comparedCats))
+	$html = $html.Replace('{{GENERATED}}', [string]$generatedDate)
+	$html = $html.Replace('{{VERSION}}', [string]$version)
 	$html = $html.Replace('{{DIFF_SECTIONS}}', $sectionsHtml.ToString())
 	$utf8NoBom = New-Object System.Text.UTF8Encoding $false
 	$resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
@@ -68715,10 +68782,15 @@ function Invoke-adPEASCollector {
 	        }
 	    }
 	    catch {
+	        $collectStack = $_.ScriptStackTrace
 	        if ($Script:WriteCollectionStatus) {
 	            & $Script:WriteCollectionStatus -Complete -Step 0 -Total 0
 	        }
 	        Write-Warning "[Invoke-adPEASCollector] BloodHound collection failed: $_"
+	        if ($collectStack) {
+	            $topFrames = (($collectStack -split "`r?`n" | Where-Object { $_ -match '\S' }) | Select-Object -First 3) -join [Environment]::NewLine
+	            Write-Warning "[Invoke-adPEASCollector] Failure origin (top of stack):$([Environment]::NewLine)$topFrames"
+	        }
 	    }
 	}
 	end {
@@ -68837,7 +68909,7 @@ function Get-CertificateProperties {
 }
 function Build-ComputerHostnameCache {
 	param([hashtable]$ConnectionParams = @{})
-	if ($Script:ComputerHostnameCache) { return }
+	if ($null -ne $Script:ComputerHostnameCache) { return }
 	$Script:ComputerHostnameCache = @{}
 	$computers = Get-DomainComputer -Properties sAMAccountName,dNSHostName,objectSid @ConnectionParams
 	foreach ($comp in @($computers)) {
@@ -68857,7 +68929,7 @@ function Build-ComputerHostnameCache {
 }
 function Build-DNIdentityCache {
 	param([hashtable]$ConnectionParams = @{})
-	if ($Script:DNToIdentityCache) { return }
+	if ($null -ne $Script:DNToIdentityCache -and $null -ne $Script:ParentDNToChildren) { return }
 	$Script:DNToIdentityCache = @{}
 	$Script:ParentDNToChildren = @{}
 	$allObjects = Get-DomainObject -LDAPFilter "(|(objectClass=user)(objectClass=group)(objectClass=organizationalUnit)(objectClass=container)(objectClass=groupPolicyContainer))" `
@@ -69811,7 +69883,7 @@ function Collect-BHOUs {
 	    $ouGuid = ConvertTo-BHGuid -Value $ou.objectGuid
 	    $childObjects = @()
 	    $ouDN = $ou.distinguishedName
-	    if ($Script:ParentDNToChildren.ContainsKey($ouDN)) {
+	    if ($Script:ParentDNToChildren -and $Script:ParentDNToChildren.ContainsKey($ouDN)) {
 	        $childObjects = @($Script:ParentDNToChildren[$ouDN])
 	    }
 	    $gpoLinks = @()
@@ -69884,7 +69956,7 @@ function Collect-BHContainers {
 	    $containerGuid = ConvertTo-BHGuid -Value $container.objectGuid
 	    $containerDN = $container.distinguishedName
 	    $childObjects = @()
-	    if ($Script:ParentDNToChildren.ContainsKey($containerDN)) {
+	    if ($Script:ParentDNToChildren -and $Script:ParentDNToChildren.ContainsKey($containerDN)) {
 	        $childObjects = @($Script:ParentDNToChildren[$containerDN])
 	    }
 	    $bhContainer = @{
@@ -70559,7 +70631,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.3.2"
+$Script:adPEASVersion = "2.4.0"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

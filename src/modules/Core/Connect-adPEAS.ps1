@@ -1006,7 +1006,7 @@ function Connect-adPEAS {
                             # which is expected - allow NTLM/SimpleBind fallback in that case
                             $IsCrossDomain = $null -ne $UserRealm
                             if ($null -ne $KdcErrorCode -and $KdcErrorCode -in $Script:KDC_FATAL_ERROR_CODES -and -not $IsCrossDomain) {
-                                Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -NoThrow
+                                Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
                                 return $null
                             }
                             if ($IsCrossDomain) {
@@ -1035,7 +1035,7 @@ function Connect-adPEAS {
                                 }
                                 else {
                                     if ($null -ne $KdcErrorCode) {
-                                        Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -NoThrow
+                                        Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
                                     } else {
                                         Show-ConnectionError -ErrorType "KerberosError" -Details $ErrorMessage -NoThrow
                                     }
@@ -1449,7 +1449,7 @@ function Connect-adPEAS {
                         # Use structured error code from result object (no fragile regex extraction)
                         $KdcErrorCode = $PKINITResult.ErrorCode
                         if ($null -ne $KdcErrorCode) {
-                            Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -NoThrow
+                            Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
                         } else {
                             Show-ConnectionError -ErrorType "KerberosError" -Details $ErrorMsg -NoThrow
                         }
@@ -1792,7 +1792,7 @@ function Connect-adPEAS {
                     if (-not $KerberosAuthSuccess) {
                         $Script:ConnectionState = "HashAuthFailed"
                         if ($null -ne $KerberosErrorCode) {
-                            Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KerberosErrorCode -ErrorCodeType "Kerberos" -NoThrow
+                            Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KerberosErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
                         } else {
                             Show-ConnectionError -ErrorType "KerberosError" -Details $KerberosError -NoThrow
                         }

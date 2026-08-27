@@ -83,6 +83,12 @@ function Show-ConnectionError {
         [ValidateSet("Kerberos", "LDAP", "Win32", "HRESULT")]
         [string]$ErrorCodeType,
 
+        # Authentication method that was in use (Connect-adPEAS parameter set name, e.g. 'AES256',
+        # 'AES128', 'NTHash', 'UsernamePassword'). Lets encryption-type errors give advice that
+        # matches what the caller actually did, instead of assuming an RC4/NTHash attempt.
+        [Parameter(Mandatory=$false)]
+        [string]$AuthMethod,
+
         [Parameter(Mandatory=$false)]
         [switch]$NoThrow
     )
@@ -251,7 +257,21 @@ function Show-ConnectionError {
                             $detailsArray += "Reason: KDC policy rejects the request (check account restrictions)."
                         }
                         14 {  # KDC_ERR_ETYPE_NOSUPP
-                            $detailsArray += "Reason: RC4 encryption disabled - use -AES256Key instead of -NTHash"
+                            # The KDC has no key for this account in any encryption type the client
+                            # offered. The right advice depends on what the caller actually sent -
+                            # the previous text assumed an RC4/NTHash attempt, which is wrong (and
+                            # confusing) when the caller already used an AES key.
+                            if ($AuthMethod -in @('AES256','AES128')) {
+                                $detailsArray += "Reason: The KDC has no AES key for this account. The account likely supports only RC4 (its AES keys were never generated - msDS-SupportedEncryptionTypes), or the key does not match the account."
+                                $detailsArray += "Try: reset the account password to generate AES keys, or authenticate with its RC4 key via -NTHash (if RC4 is still enabled in the domain)."
+                            }
+                            elseif ($AuthMethod -eq 'NTHash') {
+                                $detailsArray += "Reason: RC4 is disabled in this domain, so the RC4/NT hash cannot be used. Use -AES256Key (or -AES128Key) instead."
+                            }
+                            else {
+                                $detailsArray += "Reason: The KDC does not support any of the offered Kerberos encryption types for this account (KDC_ERR_ETYPE_NOSUPP). RC4 may be disabled, or the account may lack AES keys."
+                                $detailsArray += "Try: -AES256Key if you used an NT hash, or -NTHash if you used an AES key, depending on which encryption types the account actually supports."
+                            }
                         }
                         18 {  # KDC_ERR_CLIENT_REVOKED
                             $detailsArray += "Reason: Account is disabled or locked out."

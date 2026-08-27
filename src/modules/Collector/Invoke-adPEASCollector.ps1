@@ -481,13 +481,21 @@ function Invoke-adPEASCollector {
             }
         }
         catch {
+            $collectStack = $_.ScriptStackTrace
             Write-Log "[Invoke-adPEASCollector] Collection failed: $_" -Level Error
-            Write-Log $_.ScriptStackTrace
+            Write-Log $collectStack
             # Clear the inline progress lines using Script-scope function
             if ($Script:WriteCollectionStatus) {
                 & $Script:WriteCollectionStatus -Complete -Step 0 -Total 0
             }
             Write-Warning "[Invoke-adPEASCollector] BloodHound collection failed: $_"
+            # Surface the failure origin without requiring -Verbose. The full stack trace above
+            # only reaches the verbose stream; a collection failure should always be diagnosable,
+            # so show the top frames (function + line) that raised the error.
+            if ($collectStack) {
+                $topFrames = (($collectStack -split "`r?`n" | Where-Object { $_ -match '\S' }) | Select-Object -First 3) -join [Environment]::NewLine
+                Write-Warning "[Invoke-adPEASCollector] Failure origin (top of stack):$([Environment]::NewLine)$topFrames"
+            }
         }
     }
     end {
@@ -678,7 +686,9 @@ function Get-CertificateProperties {
 function Build-ComputerHostnameCache {
     param([hashtable]$ConnectionParams = @{})
 
-    if ($Script:ComputerHostnameCache) { return }
+    # Use $null check, not truthiness: an empty @{} left by Clear-SessionState is truthy and would
+    # make this skip the rebuild, leaving SPN/delegation resolution running on an empty cache.
+    if ($null -ne $Script:ComputerHostnameCache) { return }
     $Script:ComputerHostnameCache = @{}
 
     $computers = Get-DomainComputer -Properties sAMAccountName,dNSHostName,objectSid @ConnectionParams
@@ -717,7 +727,11 @@ function Build-ComputerHostnameCache {
 function Build-DNIdentityCache {
     param([hashtable]$ConnectionParams = @{})
 
-    if ($Script:DNToIdentityCache) { return }
+    # Both caches are built together and must be rebuilt together. Require BOTH to be non-null:
+    # a half-built state (e.g. DNToIdentityCache reset to @{} by Clear-SessionState while
+    # ParentDNToChildren is $null) would otherwise skip the rebuild and later crash Collect-BHOUs.
+    # Note @{} is truthy, so checking a single cache is not enough to detect "not built".
+    if ($null -ne $Script:DNToIdentityCache -and $null -ne $Script:ParentDNToChildren) { return }
     $Script:DNToIdentityCache = @{}
     $Script:ParentDNToChildren = @{}
 
@@ -2017,7 +2031,9 @@ function Collect-BHOUs {
         # Get child objects from pre-built DN identity cache (O(1) lookup)
         $childObjects = @()
         $ouDN = $ou.distinguishedName
-        if ($Script:ParentDNToChildren.ContainsKey($ouDN)) {
+        # Null-guard the cache (as Collect-BHDomain does): degrade to no children rather than crash
+        # if the cache was never built.
+        if ($Script:ParentDNToChildren -and $Script:ParentDNToChildren.ContainsKey($ouDN)) {
             $childObjects = @($Script:ParentDNToChildren[$ouDN])
         }
 
@@ -2112,7 +2128,8 @@ function Collect-BHContainers {
 
         # Get child objects from pre-built DN identity cache (O(1) lookup)
         $childObjects = @()
-        if ($Script:ParentDNToChildren.ContainsKey($containerDN)) {
+        # Null-guard the cache (as Collect-BHDomain does): degrade to no children rather than crash.
+        if ($Script:ParentDNToChildren -and $Script:ParentDNToChildren.ContainsKey($containerDN)) {
             $childObjects = @($Script:ParentDNToChildren[$containerDN])
         }
 

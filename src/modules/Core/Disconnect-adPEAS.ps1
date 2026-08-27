@@ -237,10 +237,18 @@ function Clear-SessionState {
     # Foreign domain cache (ConvertFrom-SID)
     $Script:ForeignDomainCache = @{}
 
-    # Collector caches (Invoke-adPEASCollector)
-    $Script:ComputerHostnameCache = @{}
-    $Script:DNToIdentityCache = @{}
+    # Collector caches (Invoke-adPEASCollector) - MUST be reset to $null, not @{}.
+    # These are lazy-built and their build guards use "if ($cache) { return }". An empty @{} is
+    # TRUTHY, so resetting to @{} makes the next collection skip rebuilding and run with an empty
+    # cache - group memberships and OU/container children come out empty, and the sibling
+    # ParentDNToChildren (previously omitted here entirely) stays $null and crashes Collect-BHOUs
+    # with "cannot call a method on a null-valued expression". Reset the full set the collector's
+    # end{} block clears, so "null means not built" holds after a disconnect/reconnect.
+    $Script:ComputerHostnameCache = $null
+    $Script:DNToIdentityCache = $null
+    $Script:ParentDNToChildren = $null
     $Script:ConfigContainerGuidCache = $null
+    $Script:TemplateCNToOID = $null
 
     # Tab-completion cache (Register-adPEASCompleters)
     if ($Script:CompletionCache) { Clear-CompletionCache }
