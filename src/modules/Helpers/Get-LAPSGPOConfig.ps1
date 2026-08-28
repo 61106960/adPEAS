@@ -1,22 +1,31 @@
 <#
 .SYNOPSIS
-    Extracts LAPS Legacy AdminAccountName from Group Policy Objects.
+    Extracts LAPS policy metadata (account name, password policy, backup/encryption settings)
+    from Group Policy Objects.
 
 .DESCRIPTION
-    Parses GPO Registry.pol files to find LAPS Legacy configuration.
-    Looks for: Software\Policies\Microsoft Services\AdmPwd\AdminAccountName
+    Parses GPO Registry.pol files to find LAPS settings, for both LAPS generations:
+    - Legacy LAPS:    Software\Policies\Microsoft Services\AdmPwd
+    - Windows LAPS:   Software\Microsoft\Windows\CurrentVersion\Policies\LAPS
 
-    Returns the configured admin account name, or "Administrator" (default) if not found.
+    These GPO settings are readable independently of LAPS password read permissions - they
+    disclose the managed account name and password policy even when the password itself is
+    not accessible to the current user, and can reveal misconfigurations (e.g. encryption
+    disabled, backup target disabled) before ever enumerating a single computer object.
 
 .PARAMETER DomainController
     Domain Controller to query. Uses current domain if not specified.
 
 .EXAMPLE
     Get-LAPSGPOConfig
-    Returns: @{ "Default Domain Policy" = "Administrator"; "LAPS Custom" = "LocalAdmin" }
+    Returns: @{
+        Legacy = @{ "Default Domain Policy" = @{ AdminAccountName = "Administrator"; PasswordLength = 14 } }
+        Native = @{ "LAPS Custom" = @{ AdministratorAccountName = "LocalAdmin"; ADPasswordEncryptionEnabled = 1 } }
+    }
 
 .OUTPUTS
-    Hashtable with GPO Name as key and AdminAccountName as value
+    Hashtable with two keys, 'Legacy' and 'Native', each a hashtable of GPO Name -> metadata
+    hashtable (only the fields actually configured in that GPO are present).
 
 .NOTES
     Author: Alexander Sturz (@_61106960_)
@@ -48,74 +57,39 @@ function Get-LAPSGPOConfig {
             Write-Log "[Get-LAPSGPOConfig] Querying GPOs for LAPS settings"
 
             $GPOFilter = "(objectClass=groupPolicyContainer)"
-            $GPOs = Invoke-LDAPSearch -Filter $GPOFilter -Properties @("displayName", "gPCFileSysPath", "cn")
+            $GPOs = Invoke-LDAPSearch -Filter $GPOFilter -Properties @("displayName", "cn")
 
-            $LAPSGPOSettings = @{}
+            $LAPSGPOSettings = @{ Legacy = @{}; Native = @{} }
 
             if (-not $GPOs -or $GPOs.Count -eq 0) {
                 Write-Log "[Get-LAPSGPOConfig] No GPOs found"
                 return $LAPSGPOSettings
             }
 
-            # Build GPO GUID-to-Name mapping and determine SYSVOL base path
+            # Build GPO GUID-to-Name mapping
             $gpoGuidToName = @{}
-            $sysvolBasePath = $null
-
             foreach ($GPO in $GPOs) {
-                $gpoName = $GPO.displayName
-                $gpoPath = $GPO.gPCFileSysPath
-                $gpoCN = $GPO.cn
-
-                if ($gpoCN) {
-                    $gpoGuidToName[$gpoCN.ToUpper()] = $gpoName
+                if ($GPO.cn) {
+                    $gpoGuidToName[$GPO.cn.ToUpper()] = $GPO.displayName
                 }
-
-                # Extract SYSVOL base path from first GPO that has one
-                if (-not $sysvolBasePath -and $gpoPath) {
-                    # Extract \\server\SYSVOL\domain\Policies from full path
-                    if ($gpoPath -match '^(\\\\[^\\]+\\[^\\]+\\[^\\]+\\Policies)') {
-                        $sysvolBasePath = $Matches[1]
-                    }
-                }
-            }
-
-            if (-not $sysvolBasePath) {
-                Write-Log "[Get-LAPSGPOConfig] Could not determine SYSVOL path"
-                return $LAPSGPOSettings
             }
 
             Write-Log "[Get-LAPSGPOConfig] Built mapping for $($gpoGuidToName.Count) GPOs"
-            Write-Log "[Get-LAPSGPOConfig] SYSVOL base path: $sysvolBasePath"
 
-            # Pre-resolve IP for hostname substitution when custom DNS is used
-            $resolvedSmbIP = $null
-            if ($Script:LDAPContext -and $Script:LDAPContext['DnsServer'] -and $Script:LDAPContext['ServerIP']) {
-                $resolvedSmbIP = $Script:LDAPContext['ServerIP']
-                Write-Log "[Get-LAPSGPOConfig] Using resolved IP for SMB access: $resolvedSmbIP"
+            $Script:lapsGPOResults = @{ Legacy = @{}; Native = @{} }
 
-                # Replace hostname with IP in SYSVOL path
-                if ($sysvolBasePath -match '^\\\\([^\\]+)\\') {
-                    $uncHost = $Matches[1]
-                    $ipTest = $null
-                    if (-not [System.Net.IPAddress]::TryParse($uncHost, [ref]$ipTest)) {
-                        $sysvolBasePath = $sysvolBasePath -replace "^\\\\[^\\]+\\", "\\$resolvedSmbIP\"
-                        Write-Log "[Get-LAPSGPOConfig] Converted UNC hostname to IP: $uncHost -> $resolvedSmbIP"
-                    }
-                }
-            }
-
-            $Script:lapsGPOResults = @{}
-
-            # PERFORMANCE FIX: Single recursive search for all Registry.pol files
-            # This avoids per-GPO SMB timeout delays by scanning SYSVOL once
+            # Uses the shared SYSVOL file cache (Get-CachedSYSVOLFiles, in Invoke-SMBAccess.ps1)
+            # instead of a self-built path from gPCFileSysPath. That attribute stores the domain
+            # DFS namespace path (\\domain\SYSVOL\...), which is a DIFFERENT SMB target than the
+            # DC hostname (\\dc01.domain\SYSVOL\...) Invoke-SMBAccess actually authenticates
+            # against - a client that can reach one may not be able to reach the other, and the
+            # mismatch fails silently (empty result, no error). Get-CachedSYSVOLFiles also shares
+            # its single SYSVOL walk with Get-GPORegistrySettings instead of scanning it twice.
             Invoke-SMBAccess -Description "Scanning GPO Registry.pol for LAPS settings" -ScriptBlock {
-                Write-Log "[Get-LAPSGPOConfig] Starting recursive search for Registry.pol files in: $sysvolBasePath"
-
                 try {
-                    # Single recursive search - finds all Registry.pol files at once
-                    $polFiles = Get-ChildItem -Path $sysvolBasePath -Filter "Registry.pol" -Recurse -ErrorAction SilentlyContinue
+                    $polFiles = @(Get-CachedSYSVOLFiles -Filter "Registry.pol")
 
-                    if (-not $polFiles -or $polFiles.Count -eq 0) {
+                    if ($polFiles.Count -eq 0) {
                         Write-Log "[Get-LAPSGPOConfig] No Registry.pol files found in SYSVOL"
                         return
                     }
@@ -136,11 +110,18 @@ function Get-LAPSGPOConfig {
                             Write-Log "[Get-LAPSGPOConfig] Checking GPO '$gpoName' at: $($polFile.FullName)"
 
                             try {
-                                $AdminAccountName = Parse-RegistryPolForLAPS -PolFilePath $polFile.FullName
+                                $Metadata = Get-LAPSMetadataFromPol -PolFilePath $polFile.FullName
 
-                                if ($AdminAccountName) {
-                                    $Script:lapsGPOResults[$gpoName] = $AdminAccountName
-                                    Write-Log "[Get-LAPSGPOConfig] Found LAPS setting in GPO '$gpoName': AdminAccountName = '$AdminAccountName'"
+                                # Carry the GUID so callers can resolve GPO links (Get-GPOLinkage)
+                                if ($Metadata.Legacy) {
+                                    $Metadata.Legacy['GPOGUID'] = $gpoGuid
+                                    $Script:lapsGPOResults.Legacy[$gpoName] = $Metadata.Legacy
+                                    Write-Log "[Get-LAPSGPOConfig] Found Legacy LAPS settings in GPO '$gpoName': $($Metadata.Legacy.Keys -join ', ')"
+                                }
+                                if ($Metadata.Native) {
+                                    $Metadata.Native['GPOGUID'] = $gpoGuid
+                                    $Script:lapsGPOResults.Native[$gpoName] = $Metadata.Native
+                                    Write-Log "[Get-LAPSGPOConfig] Found Windows LAPS settings in GPO '$gpoName': $($Metadata.Native.Keys -join ', ')"
                                 }
                             } catch {
                                 Write-Log "[Get-LAPSGPOConfig] Failed to parse Registry.pol for GPO '$gpoName': $_"
@@ -154,12 +135,12 @@ function Get-LAPSGPOConfig {
 
             $LAPSGPOSettings = $Script:lapsGPOResults
 
-            Write-Log "[Get-LAPSGPOConfig] Found LAPS settings in $($LAPSGPOSettings.Count) GPO(s)"
+            Write-Log "[Get-LAPSGPOConfig] Found LAPS settings in $($LAPSGPOSettings.Legacy.Count) Legacy and $($LAPSGPOSettings.Native.Count) Native GPO(s)"
             return $LAPSGPOSettings
 
         } catch {
             Write-Log "[Get-LAPSGPOConfig] Error: $_"
-            return @{}
+            return @{ Legacy = @{}; Native = @{} }
         }
     }
 
@@ -168,107 +149,86 @@ function Get-LAPSGPOConfig {
     }
 }
 
+# Legacy LAPS fields tracked from Software\Policies\Microsoft Services\AdmPwd
+$Script:LAPSLegacyMetadataFields = @('AdminAccountName', 'PasswordComplexity', 'PasswordLength', 'PasswordAgeDays')
+
+# Windows LAPS fields tracked from Software\Microsoft\Windows\CurrentVersion\Policies\LAPS
+# Reference: https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings
+$Script:LAPSNativeMetadataFields = @(
+    'AdministratorAccountName', 'PasswordComplexity', 'PasswordLength', 'PassphraseLength',
+    'PasswordAgeDays', 'BackupDirectory', 'ADPasswordEncryptionEnabled',
+    'ADPasswordEncryptionPrincipal', 'PasswordExpirationProtectionEnabled'
+)
+
 <#
 .SYNOPSIS
-    Parses a Registry.pol file for LAPS AdminAccountName setting.
+    Extracts LAPS metadata (account name, password policy, backup/encryption settings) from a
+    single Registry.pol file.
 
 .DESCRIPTION
-    Parses GPO Registry.pol (PReg format) and searches for:
-    Key: Software\Policies\Microsoft Services\AdmPwd
-    Value: AdminAccountName
+    Uses the shared binary PReg parser (Parse-PRegRecords, in Parse-RegistryPol.ps1) instead
+    of text/regex searching - Registry.pol is a binary format where the Type/Size DWORD
+    fields can contain arbitrary byte values, including embedded nulls that break a naive
+    "search for the next null terminator" approach.
+
+    Only fields explicitly set in this GPO are included - a field being absent means it falls
+    back to the Windows LAPS default for that setting, not that it was set to zero/empty.
+    Conversely, a present field can legitimately be 0 (e.g. ADPasswordEncryptionEnabled=0,
+    BackupDirectory=0/Disabled) - both are security-relevant and must not be treated as "unset".
 
 .PARAMETER PolFilePath
     Full path to Registry.pol file
 
 .OUTPUTS
-    String - AdminAccountName if found, null otherwise
+    Hashtable @{ Legacy = <hashtable|null>; Native = <hashtable|null> }
+    Legacy/Native are $null when this GPO has no settings for that LAPS generation, otherwise
+    a hashtable of FieldName -> value (string or int, whichever the registry type produced).
 
 .NOTES
     Internal helper function
-    PReg format: https://docs.microsoft.com/en-us/previous-versions/windows/desktop/policy/registry-policy-file-format
 #>
-function Parse-RegistryPolForLAPS {
+function Get-LAPSMetadataFromPol {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
         [string]$PolFilePath
     )
 
+    $result = @{ Legacy = $null; Native = $null }
+
     try {
-        # Read file as bytes
-        $FileBytes = [System.IO.File]::ReadAllBytes($PolFilePath)
+        $records = Parse-PRegRecords -PolFilePath $PolFilePath -Hive 'Machine'
 
-        # Check PReg header (0x50, 0x52, 0x65, 0x67 = "PReg")
-        if ($FileBytes.Length -lt 8) {
-            Write-Log "[Parse-RegistryPolForLAPS] File too small to be valid Registry.pol"
-            return $null
-        }
+        $legacyData = @{}
+        $nativeData = @{}
 
-        if ([System.Text.Encoding]::ASCII.GetString($FileBytes[0..3]) -ne "PReg") {
-            Write-Log "[Parse-RegistryPolForLAPS] Invalid PReg header"
-            return $null
-        }
+        foreach ($record in $records) {
+            # DWORD values land in ValueInt, REG_SZ/REG_EXPAND_SZ in ValueString - never
+            # collapse 0/empty-string via truthiness, both are meaningful configured values
+            $value = $null
+            if ($null -ne $record.ValueString) { $value = $record.ValueString }
+            elseif ($null -ne $record.ValueInt) { $value = $record.ValueInt }
+            if ($null -eq $value) { continue }
 
-        # Convert to string for searching (Unicode)
-        $FileString = [System.Text.Encoding]::Unicode.GetString($FileBytes)
-
-        # Search for LAPS Legacy registry key pattern
-        # Key: Software\Policies\Microsoft Services\AdmPwd
-        # Value: AdminAccountName
-
-        # Pattern 1: Exact LAPS path with AdminAccountName
-        if ($FileString -match 'Software\\Policies\\Microsoft Services\\AdmPwd.*?AdminAccountName.*?\x00([^\x00]+)\x00') {
-            $AdminAccountName = $Matches[1]
-            Write-Log "[Parse-RegistryPolForLAPS] Found AdminAccountName: '$AdminAccountName'"
-            return $AdminAccountName
-        }
-
-        # Pattern 2: More flexible search (in case of encoding issues)
-        if ($FileString -match 'AdmPwd.*?AdminAccountName') {
-            # Found the key, try to extract value
-            $StartIndex = $FileString.IndexOf("AdminAccountName")
-            if ($StartIndex -gt 0) {
-                # Look for next string value after AdminAccountName (skip separators and type/size fields)
-                # PReg format has: Value name, then ; then type (4 bytes) then ; then size (4 bytes) then ; then data
-                $SubString = $FileString.Substring($StartIndex)
-
-                # Find the data portion (after third semicolon)
-                $SemicolonCount = 0
-                $DataStart = -1
-                for ($i = 0; $i -lt $SubString.Length; $i++) {
-                    if ($SubString[$i] -eq ';') {
-                        $SemicolonCount++
-                        if ($SemicolonCount -eq 3) {
-                            $DataStart = $i + 2  # Skip semicolon and next byte
-                            break
-                        }
-                    }
-                }
-
-                if ($DataStart -gt 0 -and $DataStart -lt $SubString.Length) {
-                    # Extract string until next ] or null terminator
-                    $EndIndex = $SubString.IndexOf(']', $DataStart)
-                    if ($EndIndex -eq -1) { $EndIndex = $SubString.IndexOf([char]0x5D, $DataStart) }
-                    if ($EndIndex -eq -1) { $EndIndex = $SubString.Length }
-
-                    $ValueString = $SubString.Substring($DataStart, $EndIndex - $DataStart)
-                    # Clean up (remove null characters and control chars)
-                    $ValueString = $ValueString -replace '[\x00-\x1F\x5D]', ''
-                    $ValueString = $ValueString.Trim()
-
-                    if ($ValueString.Length -gt 0 -and $ValueString.Length -lt 50) {
-                        Write-Log "[Parse-RegistryPolForLAPS] Extracted AdminAccountName: '$ValueString'"
-                        return $ValueString
-                    }
-                }
+            if ($record.Key -ieq 'Software\Policies\Microsoft Services\AdmPwd' -and $record.ValueName -in $Script:LAPSLegacyMetadataFields) {
+                $legacyData[$record.ValueName] = $value
+            }
+            elseif ($record.Key -ieq 'Software\Microsoft\Windows\CurrentVersion\Policies\LAPS' -and $record.ValueName -in $Script:LAPSNativeMetadataFields) {
+                $nativeData[$record.ValueName] = $value
             }
         }
 
-        Write-Log "[Parse-RegistryPolForLAPS] No LAPS AdminAccountName found in Registry.pol"
-        return $null
+        if ($legacyData.Count -gt 0) { $result.Legacy = $legacyData }
+        if ($nativeData.Count -gt 0) { $result.Native = $nativeData }
+
+        if (-not $result.Legacy -and -not $result.Native) {
+            Write-Log "[Get-LAPSMetadataFromPol] No LAPS setting found in Registry.pol"
+        }
+
+        return $result
 
     } catch {
-        Write-Log "[Parse-RegistryPolForLAPS] Error parsing Registry.pol: $_"
-        return $null
+        Write-Log "[Get-LAPSMetadataFromPol] Error parsing Registry.pol: $_"
+        return $result
     }
 }

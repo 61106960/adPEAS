@@ -171,6 +171,15 @@ $Script:PrimaryAttributes = @{
         'LinkedOUs', 'LinkedOUCount'
     )
 
+    # LAPS policy settings deployed via GPO (Get-LAPSConfiguration, Step 3)
+    LAPSGPOConfig = @(
+        'GPOName', 'LAPSVersion', 'ManagedAccount',
+        'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
+        'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
+        'ExpirationProtection',
+        'LinkedOUs', 'LinkedOUCount'
+    )
+
     # Domain Password Policy (all attributes are security-relevant)
     DomainPasswordPolicy = @(
         'minPwdLength', 'passwordComplexity',

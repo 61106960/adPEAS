@@ -1666,11 +1666,20 @@ function Invoke-LDAPSearch {
                                     $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
                                 }
                             } elseif ($PropNameLower -eq 'mslaps-password') {
-                                # LAPS Native Password as string - Parse JSON
+                                # LAPS Native Plaintext Password - JSON format: {"n":"Account","t":"HexFILETIME","p":"Password"}
                                 try {
                                     $LAPSObj = $PropValue[0] | ConvertFrom-Json
                                     if ($LAPSObj.p) {
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $LAPSObj.p
+                                        if ($LAPSObj.n) {
+                                            $Obj | Add-Member -Force -MemberType NoteProperty -Name 'msLAPS-Account' -Value $LAPSObj.n
+                                        }
+                                        if ($LAPSObj.t) {
+                                            try {
+                                                $LAPSFileTime = [Convert]::ToInt64($LAPSObj.t, 16)
+                                                $Obj | Add-Member -Force -MemberType NoteProperty -Name 'msLAPS-Updated' -Value ([DateTime]::FromFileTimeUtc($LAPSFileTime))
+                                            } catch { }
+                                        }
                                     } else {
                                         $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
                                     }

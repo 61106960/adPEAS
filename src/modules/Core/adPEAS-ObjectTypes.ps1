@@ -1293,6 +1293,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "No vulnerable registry settings deployed via GPO. No Group Policy was found pushing a registry value in a state that enables an attack."
     }
 
+    'LAPSGPOConfig' = @{
+        TitleFormat = "LAPS GPO: {Name}"
+        Module = "Computer"
+        Category = "Computer"
+        SectionTitle = "LAPS GPO Configuration"
+        Summary = "Shows the LAPS policy settings deployed via Group Policy and where they apply."
+        WhyItMatters = "The LAPS policy in a GPO decides which local account is managed, how strong the password is, and - for Windows LAPS - whether the password is encrypted in Active Directory and escrowed there at all. These settings are readable from SYSVOL without any LAPS password permissions, so they disclose the managed account name and reveal misconfigurations before a single computer object is touched. A policy with encryption disabled writes the password in cleartext to msLAPS-Password, and a policy with the backup target disabled or pointed only at Microsoft Entra ID leaves this Active Directory without any escrowed password despite LAPS appearing to be deployed."
+        WhatWeCheck = @(
+            "Managed account name (AdminAccountName / AdministratorAccountName)"
+            "Windows LAPS AD password encryption and the principal allowed to decrypt"
+            "Windows LAPS backup target (Active Directory, Microsoft Entra ID, or disabled)"
+            "Password complexity, length, passphrase length and maximum age"
+            "Password expiration protection"
+            "The OUs, domains and sites each GPO is linked to"
+        )
+        SecureMessage = "No LAPS policy settings deployed via Group Policy were found."
+    }
+
     # ============================================================================
     # BLOODHOUND COLLECTOR
     # ============================================================================
