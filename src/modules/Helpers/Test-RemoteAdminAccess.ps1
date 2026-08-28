@@ -23,6 +23,18 @@
 
 .PARAMETER Credential
     Optional PSCredential for authentication. If not specified, uses current user context.
+    Cannot be combined with -Username/-Password.
+
+.PARAMETER Username
+    Username for authentication, as an alternative to -Credential.
+    Accepts 'user', 'DOMAIN\user' or 'user@domain.com'. A bare username is prefixed with the
+    NetBIOS name of the currently connected domain (if an adPEAS session exists), because SMB
+    and WMI would otherwise treat it as a local account on the target system.
+    Must be used together with -Password.
+
+.PARAMETER Password
+    Password for -Username. Accepts a plaintext string or a SecureString.
+    An empty string is allowed (accounts with PASSWD_NOTREQD).
 
 .PARAMETER Timeout
     Connection timeout in milliseconds. Default: 2000ms (2 seconds).
@@ -59,6 +71,14 @@
     Tests admin access using alternate credentials with extended timeout.
 
 .EXAMPLE
+    Test-RemoteAdminAccess -ComputerName "SERVER01" -Username "contoso\administrator" -Password "P@ssw0rd"
+    Tests admin access using username and password instead of a PSCredential object.
+
+.EXAMPLE
+    Get-DomainComputer -OperatingSystem "*Server*" | Test-RemoteAdminAccess -Username "j.doe" -Password "P@ssw0rd"
+    Tests admin access on all domain servers, the bare username is resolved against the connected domain.
+
+.EXAMPLE
     Test-RemoteAdminAccess -ComputerName "SERVER01" -Method WMI
     Tests admin access using WMI only (useful when SMB is blocked).
 
@@ -79,14 +99,25 @@
 #>
 
 function Test-RemoteAdminAccess {
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName='Credential')]
     param(
-        [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true, ParameterSetName='Credential')]
+        [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true, ParameterSetName='UsernamePassword')]
         [Alias('DNSHostName', 'Name', 'CN', 'IPAddress')]
         [string[]]$ComputerName,
 
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory=$false, ParameterSetName='Credential')]
         [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$true, ParameterSetName='UsernamePassword')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Username,
+
+        # Accepts SecureString or String (allows empty passwords for PASSWD_NOTREQD accounts)
+        [Parameter(Mandatory=$false, ParameterSetName='UsernamePassword')]
+        [AllowNull()]
+        [AllowEmptyString()]
+        $Password,
 
         [Parameter(Mandatory=$false)]
         [ValidateRange(500, 30000)]
@@ -105,6 +136,46 @@ function Test-RemoteAdminAccess {
     )
 
     begin {
+        # Build a PSCredential from -Username/-Password so that everything downstream
+        # only has to deal with $Credential
+        if ($PSCmdlet.ParameterSetName -eq 'UsernamePassword') {
+            # Empty string is falsy in PowerShell - check whether the parameter was passed at all
+            if (-not $PSBoundParameters.ContainsKey('Password')) {
+                throw "Parameter -Username requires -Password. Pass -Password '' for accounts with an empty password."
+            }
+
+            # -Password accepts a SecureString or a plaintext string
+            if ($Password -is [System.Security.SecureString]) {
+                $SecurePassword = $Password
+            }
+            else {
+                # ConvertTo-SecureString rejects empty strings, so build the SecureString manually
+                $PlainPassword = if ($null -eq $Password) { '' } else { [string]$Password }
+                $SecurePassword = New-Object System.Security.SecureString
+                foreach ($PasswordChar in $PlainPassword.ToCharArray()) {
+                    $SecurePassword.AppendChar($PasswordChar)
+                }
+                $SecurePassword.MakeReadOnly()
+            }
+
+            # A bare username would be treated as a local account by SMB/WMI - prefix the
+            # NetBIOS name of the connected domain, same normalization as Connect-adPEAS
+            $CredentialUsername = $Username
+            if ($Username -notmatch '\\' -and $Username -notmatch '@') {
+                if ($Script:LDAPContext -and $Script:LDAPContext['Domain']) {
+                    $NetBIOSDomain = ($Script:LDAPContext['Domain'] -split '\.')[0].ToUpper()
+                    $CredentialUsername = "$NetBIOSDomain\$Username"
+                    Write-Log "[Test-RemoteAdminAccess] Username normalized for SMB: $Username -> $CredentialUsername"
+                }
+                else {
+                    Write-Log "[Test-RemoteAdminAccess] No active session - using username as-is: $Username (target will treat it as a local account)"
+                }
+            }
+
+            $Credential = New-Object System.Management.Automation.PSCredential($CredentialUsername, $SecurePassword)
+            Write-Log "[Test-RemoteAdminAccess] Using credentials for user: $CredentialUsername"
+        }
+
         Write-Log "[Test-RemoteAdminAccess] Starting remote admin access check (Method=$Method, Fallback=$(-not $NoFallback))"
 
         # Collect all computer names from pipeline (HashSet for deduplication)
