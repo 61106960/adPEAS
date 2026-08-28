@@ -452,6 +452,12 @@ if ($License) {
         Write-Error "[Build] License file not found: $LicenseFilePath"
         return
     }
+    # Resolve to an absolute path via PowerShell's provider (uses $PWD).
+    # [System.IO.File]::ReadAllText resolves relative paths against
+    # [Environment]::CurrentDirectory, which can silently diverge from
+    # PowerShell's $PWD - Test-Path would find the file while ReadAllText
+    # looks for it in the wrong directory (e.g. the user profile).
+    $LicenseFilePath = (Resolve-Path $LicenseFilePath).Path
     Write-Host "[Build]   - Embedding license from: $LicenseFilePath" -ForegroundColor Gray
     try {
         $LicenseJsonRaw = Read-BuildFile -Path $LicenseFilePath
