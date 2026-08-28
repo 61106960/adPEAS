@@ -2561,6 +2561,13 @@ $Script:PrimaryAttributes = @{
 	    'VulnerabilityName', 'RiskReason',
 	    'LinkedOUs', 'LinkedOUCount'
 	)
+	LAPSGPOConfig = @(
+	    'GPOName', 'LAPSVersion', 'ManagedAccount',
+	    'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
+	    'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
+	    'ExpirationProtection',
+	    'LinkedOUs', 'LinkedOUCount'
+	)
 	DomainPasswordPolicy = @(
 	    'minPwdLength', 'passwordComplexity',
 	    'minPwdAge', 'maxPwdAge',
@@ -2931,6 +2938,7 @@ function New-RenderValue {
 	[CmdletBinding()]
 	param(
 	    [Parameter(Mandatory=$true)]
+	    [AllowEmptyString()]
 	    [string]$Display,
 	    [Parameter(Mandatory=$false)]
 	    [string]$Severity = 'Standard',
@@ -3003,9 +3011,12 @@ function Convert-DefaultToRenderValues {
 	    $lines = $Value -split "`n"
 	    $renderValues = @()
 	    foreach ($line in $lines) {
+	        $line = $line.TrimEnd("`r")
+	        if ([string]::IsNullOrWhiteSpace($line)) { continue }
 	        $lineMatch = Get-TriggerMatch -Name $Name -Value $line -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
 	        $renderValues += New-RenderValue -Display $line -Severity $lineMatch.Severity -FindingId $lineMatch.FindingId -RawValue $line
 	    }
+	    if ($renderValues.Count -eq 0) { return $null }
 	    $maxSev = Get-MaxSeverityFromValues -Values $renderValues
 	    return @{
 	        RowType         = 'MultiValue'
@@ -3020,9 +3031,11 @@ function Convert-DefaultToRenderValues {
 	        $renderValues = @()
 	        foreach ($item in $Value) {
 	            $itemDisplay = [string]$item.DisplayText
+	            if ([string]::IsNullOrEmpty($itemDisplay)) { continue }
 	            $itemMatch = Get-TriggerMatch -Name $Name -Value $item -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
 	            $renderValues += New-RenderValue -Display $itemDisplay -Severity $itemMatch.Severity -FindingId $itemMatch.FindingId -RawValue $item
 	        }
+	        if ($renderValues.Count -eq 0) { return $null }
 	        $maxSev = Get-MaxSeverityFromValues -Values $renderValues
 	        return @{
 	            RowType         = 'MultiValue'
@@ -11619,6 +11632,155 @@ foreach ($oid in $linkedOIDs) {
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'SMB server signing'; Severity = 'Hint' }
 	    )
 	}
+	'LAPS_GPO_ENCRYPTION_DISABLED' = @{
+	    Title = "Windows LAPS AD Password Encryption Disabled via GPO"
+	    Risk = "Finding"
+	    BaseScore = 55
+	    Description = "A Group Policy sets ADPasswordEncryptionEnabled=0 for Windows LAPS. The managed local administrator password is then written in cleartext to the msLAPS-Password attribute instead of the encrypted msLAPS-EncryptedPassword attribute. Encryption is what restricts decryption to the configured principal - without it, any identity that can read the attribute reads the password directly, with no decryption step and no separate authorization check."
+	    Impact = @(
+	        "Local administrator passwords are stored in cleartext in Active Directory"
+	        "Every identity with read access to msLAPS-Password obtains the password directly"
+	        "The ADPasswordEncryptionPrincipal restriction does not apply at all"
+	        "Affects every computer where the GPO is applied"
+	    )
+	    Attack = @(
+	        "1. Authenticate to LDAP as any account with read access to the attribute"
+	        "2. Query computers with (msLAPS-Password=*)"
+	        "3. Read the cleartext local administrator password"
+	        "4. Authenticate to the affected hosts as local administrator"
+	    )
+	    Remediation = @(
+	        "Set ADPasswordEncryptionEnabled=1 in the Windows LAPS policy"
+	        "Requires Domain Functional Level 2016 or later"
+	        "Configure ADPasswordEncryptionPrincipal to the group allowed to decrypt"
+	        "Review the ACLs on msLAPS-Password and rotate all affected passwords afterwards"
+	    )
+	    References = @(
+	        @{ Title = "Configure policy settings for Windows LAPS"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings" }
+	    )
+	    Tools = @("adPEAS", "LAPSToolkit")
+	    MITRE = "T1552"
+	    Triggers = @(
+	        @{ Attribute = 'PasswordEncryption'; Pattern = 'Disabled'; Severity = 'Finding' }
+	        @{ Attribute = 'PasswordEncryption'; Pattern = '^Enabled$'; Severity = 'Secure'; SeverityOnly = $true }
+	    )
+	}
+	'LAPS_GPO_NO_AD_BACKUP' = @{
+	    Title = "Windows LAPS Not Escrowing Passwords to This Active Directory"
+	    Risk = "Finding"
+	    BaseScore = 40
+	    Description = "A Group Policy configures Windows LAPS with a BackupDirectory that is either Disabled (0) or Microsoft Entra ID only (1). In both cases no password is escrowed to this on-premises Active Directory. LAPS appears to be deployed - the policy exists and the password is rotated locally - but the rotated password is not recoverable from this directory, so administrators may believe a break-glass path exists where none does."
+	    Impact = @(
+	        "No local administrator password is escrowed to this Active Directory"
+	        "Recovery of the managed account password from AD is impossible"
+	        "LAPS coverage reporting based on AD attributes is misleading for these hosts"
+	        "With BackupDirectory=0 the password is not backed up anywhere at all"
+	    )
+	    Attack = @(
+	        "1. Identify hosts in scope of this GPO"
+	        "2. Note that no LAPS attribute is populated for them in AD"
+	        "3. Local administrator passwords on these hosts are unmanaged from an AD perspective, and may be static or shared"
+	    )
+	    Remediation = @(
+	        "Set BackupDirectory=2 (Active Directory) for on-premises domain-joined devices"
+	        "Use BackupDirectory=1 only for Microsoft Entra joined devices"
+	        "Verify the LAPS schema is extended and the device OUs allow the computer to write its own password"
+	    )
+	    References = @(
+	        @{ Title = "Configure policy settings for Windows LAPS"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings" }
+	    )
+	    Tools = @("adPEAS")
+	    MITRE = "T1078.003"
+	    Triggers = @(
+	        @{ Attribute = 'BackupDirectory'; Pattern = 'Disabled|Microsoft Entra ID only'; Severity = 'Finding' }
+	        @{ Attribute = 'BackupDirectory'; Pattern = '^Active Directory$'; Severity = 'Secure'; SeverityOnly = $true }
+	    )
+	}
+	'LAPS_GPO_EXPIRATION_PROTECTION_DISABLED' = @{
+	    Title = "Windows LAPS Password Expiration Protection Disabled via GPO"
+	    Risk = "Hint"
+	    BaseScore = 20
+	    Description = "A Group Policy sets PasswordExpirationProtectionEnabled=0. Windows LAPS then no longer enforces its configured maximum password age against the expiration time stored in Active Directory, so an identity able to write the expiration attribute can push the next rotation arbitrarily far into the future and keep a known password valid."
+	    Impact = @(
+	        "The configured maximum password age is not enforced"
+	        "A writable expiration timestamp lets an attacker defer rotation indefinitely"
+	        "A compromised local administrator password may stay valid far beyond its intended lifetime"
+	    )
+	    Attack = @(
+	        "1. Obtain write access to the LAPS password expiration attribute on a computer object"
+	        "2. Set the expiration time far into the future"
+	        "3. A previously captured local administrator password remains valid"
+	    )
+	    Remediation = @(
+	        "Set PasswordExpirationProtectionEnabled=1 in the Windows LAPS policy"
+	        "Review write permissions on the LAPS expiration attributes of computer objects"
+	    )
+	    References = @(
+	        @{ Title = "Configure policy settings for Windows LAPS"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings" }
+	    )
+	    Tools = @("adPEAS")
+	    MITRE = "T1078.003"
+	    Triggers = @(
+	        @{ Attribute = 'ExpirationProtection'; Pattern = 'Disabled'; Severity = 'Hint' }
+	        @{ Attribute = 'ExpirationProtection'; Pattern = '^Enabled$'; Severity = 'Secure'; SeverityOnly = $true }
+	    )
+	}
+	'LAPS_GPO_WEAK_PASSWORD_COMPLEXITY' = @{
+	    Title = "Weak LAPS Password Complexity Configured via GPO"
+	    Risk = "Hint"
+	    BaseScore = 25
+	    Description = "A Group Policy configures a LAPS PasswordComplexity of 1, 2 or 3. Microsoft supports these values only for backward compatibility with legacy Microsoft LAPS and recommends 4 or higher. The generated local administrator passwords use a reduced character set, which lowers the cost of offline cracking should a password hash be recovered."
+	    Impact = @(
+	        "Generated passwords use a reduced character set"
+	        "Offline cracking of a recovered hash becomes substantially cheaper"
+	        "Applies to every computer in scope of the GPO"
+	    )
+	    Attack = @(
+	        "1. Recover a local administrator hash from an affected host"
+	        "2. Crack it against the reduced keyspace implied by the complexity setting"
+	        "3. Reuse the recovered password where LAPS has not yet rotated it"
+	    )
+	    Remediation = @(
+	        "Set PasswordComplexity to 4 or higher"
+	        "Ensure the configured PasswordLength is compatible with the local password policy"
+	    )
+	    References = @(
+	        @{ Title = "Configure policy settings for Windows LAPS"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings" }
+	    )
+	    Tools = @("hashcat")
+	    MITRE = "T1110.002"
+	    Triggers = @(
+	        @{ Attribute = 'PasswordComplexity'; Pattern = '^[123] '; Severity = 'Hint' }
+	    )
+	}
+	'LAPS_GPO_NOT_LINKED' = @{
+	    Title = "LAPS Policy Configured in an Unlinked GPO"
+	    Risk = "Hint"
+	    BaseScore = 15
+	    Description = "A Group Policy Object carries LAPS policy settings but is not linked to any OU, domain or site. The settings are therefore never applied to any computer. This usually means an intended LAPS rollout is silently incomplete, while the GPO's mere existence suggests to an administrator that LAPS is configured."
+	    Impact = @(
+	        "The LAPS settings in this GPO apply to no computer at all"
+	        "An intended LAPS rollout may be silently incomplete"
+	        "Hosts expected to be covered may have unmanaged local administrator passwords"
+	    )
+	    Attack = @(
+	        "1. Identify computers that were expected to be covered by this GPO"
+	        "2. Confirm they carry no LAPS attribute in Active Directory"
+	        "3. Target their local administrator accounts, which are likely static or shared"
+	    )
+	    Remediation = @(
+	        "Link the GPO to the OUs holding the computers it is meant to cover, or delete it"
+	        "Verify LAPS coverage against the actual computer objects afterwards"
+	    )
+	    References = @(
+	        @{ Title = "Windows LAPS overview"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-overview" }
+	    )
+	    Tools = @("adPEAS")
+	    MITRE = "T1078.003"
+	    Triggers = @(
+	        @{ Attribute = 'LinkedOUs'; Pattern = '^Not linked'; Severity = 'Hint' }
+	    )
+	}
 	'SCRIPTPATH_HARDCODED' = @{
 	    Title = "Hardcoded Logon Script Path"
 	    Risk = "Hint"
@@ -14496,6 +14658,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Privilege-escalation enablers (AlwaysInstallElevated, Point and Print, WSUS over HTTP)"
 	    )
 	    SecureMessage = "No vulnerable registry settings deployed via GPO. No Group Policy was found pushing a registry value in a state that enables an attack."
+	}
+	'LAPSGPOConfig' = @{
+	    TitleFormat = "LAPS GPO: {Name}"
+	    Module = "Computer"
+	    Category = "Computer"
+	    SectionTitle = "LAPS GPO Configuration"
+	    Summary = "Shows the LAPS policy settings deployed via Group Policy and where they apply."
+	    WhyItMatters = "The LAPS policy in a GPO decides which local account is managed, how strong the password is, and - for Windows LAPS - whether the password is encrypted in Active Directory and escrowed there at all. These settings are readable from SYSVOL without any LAPS password permissions, so they disclose the managed account name and reveal misconfigurations before a single computer object is touched. A policy with encryption disabled writes the password in cleartext to msLAPS-Password, and a policy with the backup target disabled or pointed only at Microsoft Entra ID leaves this Active Directory without any escrowed password despite LAPS appearing to be deployed."
+	    WhatWeCheck = @(
+	        "Managed account name (AdminAccountName / AdministratorAccountName)"
+	        "Windows LAPS AD password encryption and the principal allowed to decrypt"
+	        "Windows LAPS backup target (Active Directory, Microsoft Entra ID, or disabled)"
+	        "Password complexity, length, passphrase length and maximum age"
+	        "Password expiration protection"
+	        "The OUs, domains and sites each GPO is linked to"
+	    )
+	    SecureMessage = "No LAPS policy settings deployed via Group Policy were found."
 	}
 	'BloodHoundCollector' = @{
 	    TitleFormat = "BloodHound Collection: {Name}"
@@ -19450,6 +19629,15 @@ function Invoke-LDAPSearch {
 	                                $LAPSObj = $PropValue[0] | ConvertFrom-Json
 	                                if ($LAPSObj.p) {
 	                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $LAPSObj.p
+	                                    if ($LAPSObj.n) {
+	                                        $Obj | Add-Member -Force -MemberType NoteProperty -Name 'msLAPS-Account' -Value $LAPSObj.n
+	                                    }
+	                                    if ($LAPSObj.t) {
+	                                        try {
+	                                            $LAPSFileTime = [Convert]::ToInt64($LAPSObj.t, 16)
+	                                            $Obj | Add-Member -Force -MemberType NoteProperty -Name 'msLAPS-Updated' -Value ([DateTime]::FromFileTimeUtc($LAPSFileTime))
+	                                        } catch { }
+	                                    }
 	                                } else {
 	                                    $Obj | Add-Member -Force -MemberType NoteProperty -Name $PropName -Value $PropValue[0]
 	                                }
@@ -41860,6 +42048,88 @@ function Invoke-KerberosAuthFlow {
 	    return $Result
 	}
 }
+function Parse-PRegRecords {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [string]$PolFilePath,
+	    [Parameter(Mandatory=$true)]
+	    [string]$Hive
+	)
+	$records = @()
+	try {
+	    $bytes = [System.IO.File]::ReadAllBytes($PolFilePath)
+	    if ($bytes.Length -lt 8) { return $records }
+	    if ([System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'PReg') {
+	        return $records
+	    }
+	    $pos = 8  # skip signature(4) + version(4)
+	    $len = $bytes.Length
+	    $readString = {
+	        param([ref]$p)
+	        $start = $p.Value
+	        while (($p.Value + 1) -lt $len) {
+	            if ($bytes[$p.Value] -eq 0 -and $bytes[$p.Value + 1] -eq 0) { break }
+	            $p.Value += 2
+	        }
+	        $strLen = $p.Value - $start
+	        $s = ''
+	        if ($strLen -gt 0) { $s = [System.Text.Encoding]::Unicode.GetString($bytes, $start, $strLen) }
+	        $p.Value += 2  # consume null terminator
+	        return $s
+	    }
+	    $openBracket = 0x5B   # [
+	    $semicolon   = 0x3B   # ;
+	    while ($pos -lt $len) {
+	        if (-not ($bytes[$pos] -eq $openBracket -and ($pos + 1) -lt $len -and $bytes[$pos + 1] -eq 0)) {
+	            $pos += 2
+	            continue
+	        }
+	        $pos += 2
+	        $ref = [ref]$pos
+	        $key = (& $readString $ref)
+	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+	        $pos += 2
+	        $valueName = (& $readString $ref)
+	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+	        $pos += 2
+	        if (($pos + 4) -gt $len) { break }
+	        $type = [System.BitConverter]::ToUInt32($bytes, $pos)
+	        $pos += 4
+	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+	        $pos += 2
+	        if (($pos + 4) -gt $len) { break }
+	        $size = [System.BitConverter]::ToUInt32($bytes, $pos)
+	        $pos += 4
+	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+	        $pos += 2
+	        if (($pos + $size) -gt $len) { break }
+	        $data = New-Object byte[] $size
+	        if ($size -gt 0) { [System.Array]::Copy($bytes, $pos, $data, 0, $size) }
+	        $pos += $size
+	        $valueInt = $null
+	        $valueString = $null
+	        switch ($type) {
+	            4  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }      # REG_DWORD
+	            5  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }      # REG_DWORD_BIG_ENDIAN (rare)
+	            11 { if ($data.Length -ge 8) { $valueInt = [System.BitConverter]::ToUInt64($data, 0) } }      # REG_QWORD
+	            1  { $valueString = [System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0) }       # REG_SZ
+	            2  { $valueString = [System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0) }       # REG_EXPAND_SZ
+	            7  { $valueString = ([System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0)) }     # REG_MULTI_SZ
+	        }
+	        $records += [PSCustomObject]@{
+	            Hive        = $Hive
+	            Key         = $key
+	            ValueName   = $valueName
+	            Type        = $type
+	            ValueInt    = $valueInt
+	            ValueString = $valueString
+	        }
+	    }
+	} catch {
+	}
+	return $records
+}
 function Get-LAPSGPOConfig {
 	[CmdletBinding()]
 	param(
@@ -41875,45 +42145,22 @@ function Get-LAPSGPOConfig {
 	    }
 	    try {
 	        $GPOFilter = "(objectClass=groupPolicyContainer)"
-	        $GPOs = Invoke-LDAPSearch -Filter $GPOFilter -Properties @("displayName", "gPCFileSysPath", "cn")
-	        $LAPSGPOSettings = @{}
+	        $GPOs = Invoke-LDAPSearch -Filter $GPOFilter -Properties @("displayName", "cn")
+	        $LAPSGPOSettings = @{ Legacy = @{}; Native = @{} }
 	        if (-not $GPOs -or $GPOs.Count -eq 0) {
 	            return $LAPSGPOSettings
 	        }
 	        $gpoGuidToName = @{}
-	        $sysvolBasePath = $null
 	        foreach ($GPO in $GPOs) {
-	            $gpoName = $GPO.displayName
-	            $gpoPath = $GPO.gPCFileSysPath
-	            $gpoCN = $GPO.cn
-	            if ($gpoCN) {
-	                $gpoGuidToName[$gpoCN.ToUpper()] = $gpoName
-	            }
-	            if (-not $sysvolBasePath -and $gpoPath) {
-	                if ($gpoPath -match '^(\\\\[^\\]+\\[^\\]+\\[^\\]+\\Policies)') {
-	                    $sysvolBasePath = $Matches[1]
-	                }
+	            if ($GPO.cn) {
+	                $gpoGuidToName[$GPO.cn.ToUpper()] = $GPO.displayName
 	            }
 	        }
-	        if (-not $sysvolBasePath) {
-	            return $LAPSGPOSettings
-	        }
-	        $resolvedSmbIP = $null
-	        if ($Script:LDAPContext -and $Script:LDAPContext['DnsServer'] -and $Script:LDAPContext['ServerIP']) {
-	            $resolvedSmbIP = $Script:LDAPContext['ServerIP']
-	            if ($sysvolBasePath -match '^\\\\([^\\]+)\\') {
-	                $uncHost = $Matches[1]
-	                $ipTest = $null
-	                if (-not [System.Net.IPAddress]::TryParse($uncHost, [ref]$ipTest)) {
-	                    $sysvolBasePath = $sysvolBasePath -replace "^\\\\[^\\]+\\", "\\$resolvedSmbIP\"
-	                }
-	            }
-	        }
-	        $Script:lapsGPOResults = @{}
+	        $Script:lapsGPOResults = @{ Legacy = @{}; Native = @{} }
 	        Invoke-SMBAccess -Description "Scanning GPO Registry.pol for LAPS settings" -ScriptBlock {
 	            try {
-	                $polFiles = Get-ChildItem -Path $sysvolBasePath -Filter "Registry.pol" -Recurse -ErrorAction SilentlyContinue
-	                if (-not $polFiles -or $polFiles.Count -eq 0) {
+	                $polFiles = @(Get-CachedSYSVOLFiles -Filter "Registry.pol")
+	                if ($polFiles.Count -eq 0) {
 	                    return
 	                }
 	                foreach ($polFile in $polFiles) {
@@ -41924,9 +42171,14 @@ function Get-LAPSGPOConfig {
 	                            continue
 	                        }
 	                        try {
-	                            $AdminAccountName = Parse-RegistryPolForLAPS -PolFilePath $polFile.FullName
-	                            if ($AdminAccountName) {
-	                                $Script:lapsGPOResults[$gpoName] = $AdminAccountName
+	                            $Metadata = Get-LAPSMetadataFromPol -PolFilePath $polFile.FullName
+	                            if ($Metadata.Legacy) {
+	                                $Metadata.Legacy['GPOGUID'] = $gpoGuid
+	                                $Script:lapsGPOResults.Legacy[$gpoName] = $Metadata.Legacy
+	                            }
+	                            if ($Metadata.Native) {
+	                                $Metadata.Native['GPOGUID'] = $gpoGuid
+	                                $Script:lapsGPOResults.Native[$gpoName] = $Metadata.Native
 	                            }
 	                        } catch {
 	                        }
@@ -41938,62 +42190,48 @@ function Get-LAPSGPOConfig {
 	        $LAPSGPOSettings = $Script:lapsGPOResults
 	        return $LAPSGPOSettings
 	    } catch {
-	        return @{}
+	        return @{ Legacy = @{}; Native = @{} }
 	    }
 	}
 	end {
 	}
 }
-function Parse-RegistryPolForLAPS {
+$Script:LAPSLegacyMetadataFields = @('AdminAccountName', 'PasswordComplexity', 'PasswordLength', 'PasswordAgeDays')
+$Script:LAPSNativeMetadataFields = @(
+	'AdministratorAccountName', 'PasswordComplexity', 'PasswordLength', 'PassphraseLength',
+	'PasswordAgeDays', 'BackupDirectory', 'ADPasswordEncryptionEnabled',
+	'ADPasswordEncryptionPrincipal', 'PasswordExpirationProtectionEnabled'
+)
+function Get-LAPSMetadataFromPol {
 	[CmdletBinding()]
 	param(
 	    [Parameter(Mandatory=$true)]
 	    [string]$PolFilePath
 	)
+	$result = @{ Legacy = $null; Native = $null }
 	try {
-	    $FileBytes = [System.IO.File]::ReadAllBytes($PolFilePath)
-	    if ($FileBytes.Length -lt 8) {
-	        return $null
-	    }
-	    if ([System.Text.Encoding]::ASCII.GetString($FileBytes[0..3]) -ne "PReg") {
-	        return $null
-	    }
-	    $FileString = [System.Text.Encoding]::Unicode.GetString($FileBytes)
-	    if ($FileString -match 'Software\\Policies\\Microsoft Services\\AdmPwd.*?AdminAccountName.*?\x00([^\x00]+)\x00') {
-	        $AdminAccountName = $Matches[1]
-	        return $AdminAccountName
-	    }
-	    if ($FileString -match 'AdmPwd.*?AdminAccountName') {
-	        $StartIndex = $FileString.IndexOf("AdminAccountName")
-	        if ($StartIndex -gt 0) {
-	            $SubString = $FileString.Substring($StartIndex)
-	            $SemicolonCount = 0
-	            $DataStart = -1
-	            for ($i = 0; $i -lt $SubString.Length; $i++) {
-	                if ($SubString[$i] -eq ';') {
-	                    $SemicolonCount++
-	                    if ($SemicolonCount -eq 3) {
-	                        $DataStart = $i + 2  # Skip semicolon and next byte
-	                        break
-	                    }
-	                }
-	            }
-	            if ($DataStart -gt 0 -and $DataStart -lt $SubString.Length) {
-	                $EndIndex = $SubString.IndexOf(']', $DataStart)
-	                if ($EndIndex -eq -1) { $EndIndex = $SubString.IndexOf([char]0x5D, $DataStart) }
-	                if ($EndIndex -eq -1) { $EndIndex = $SubString.Length }
-	                $ValueString = $SubString.Substring($DataStart, $EndIndex - $DataStart)
-	                $ValueString = $ValueString -replace '[\x00-\x1F\x5D]', ''
-	                $ValueString = $ValueString.Trim()
-	                if ($ValueString.Length -gt 0 -and $ValueString.Length -lt 50) {
-	                    return $ValueString
-	                }
-	            }
+	    $records = Parse-PRegRecords -PolFilePath $PolFilePath -Hive 'Machine'
+	    $legacyData = @{}
+	    $nativeData = @{}
+	    foreach ($record in $records) {
+	        $value = $null
+	        if ($null -ne $record.ValueString) { $value = $record.ValueString }
+	        elseif ($null -ne $record.ValueInt) { $value = $record.ValueInt }
+	        if ($null -eq $value) { continue }
+	        if ($record.Key -ieq 'Software\Policies\Microsoft Services\AdmPwd' -and $record.ValueName -in $Script:LAPSLegacyMetadataFields) {
+	            $legacyData[$record.ValueName] = $value
+	        }
+	        elseif ($record.Key -ieq 'Software\Microsoft\Windows\CurrentVersion\Policies\LAPS' -and $record.ValueName -in $Script:LAPSNativeMetadataFields) {
+	            $nativeData[$record.ValueName] = $value
 	        }
 	    }
-	    return $null
+	    if ($legacyData.Count -gt 0) { $result.Legacy = $legacyData }
+	    if ($nativeData.Count -gt 0) { $result.Native = $nativeData }
+	    if (-not $result.Legacy -and -not $result.Native) {
+	    }
+	    return $result
 	} catch {
-	    return $null
+	    return $result
 	}
 }
 function Get-ACEInheritanceSource {
@@ -45068,13 +45306,21 @@ function Export-adPEASFile {
 	}
 }
 function Test-RemoteAdminAccess {
-	[CmdletBinding()]
+	[CmdletBinding(DefaultParameterSetName='Credential')]
 	param(
-	    [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+	    [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true, ParameterSetName='Credential')]
+	    [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true, ParameterSetName='UsernamePassword')]
 	    [Alias('DNSHostName', 'Name', 'CN', 'IPAddress')]
 	    [string[]]$ComputerName,
-	    [Parameter(Mandatory=$false)]
+	    [Parameter(Mandatory=$false, ParameterSetName='Credential')]
 	    [System.Management.Automation.PSCredential]$Credential,
+	    [Parameter(Mandatory=$true, ParameterSetName='UsernamePassword')]
+	    [ValidateNotNullOrEmpty()]
+	    [string]$Username,
+	    [Parameter(Mandatory=$false, ParameterSetName='UsernamePassword')]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    $Password,
 	    [Parameter(Mandatory=$false)]
 	    [ValidateRange(500, 30000)]
 	    [int]$Timeout = 2000,
@@ -45088,6 +45334,32 @@ function Test-RemoteAdminAccess {
 	    [switch]$NoFallback
 	)
 	begin {
+	    if ($PSCmdlet.ParameterSetName -eq 'UsernamePassword') {
+	        if (-not $PSBoundParameters.ContainsKey('Password')) {
+	            throw "Parameter -Username requires -Password. Pass -Password '' for accounts with an empty password."
+	        }
+	        if ($Password -is [System.Security.SecureString]) {
+	            $SecurePassword = $Password
+	        }
+	        else {
+	            $PlainPassword = if ($null -eq $Password) { '' } else { [string]$Password }
+	            $SecurePassword = New-Object System.Security.SecureString
+	            foreach ($PasswordChar in $PlainPassword.ToCharArray()) {
+	                $SecurePassword.AppendChar($PasswordChar)
+	            }
+	            $SecurePassword.MakeReadOnly()
+	        }
+	        $CredentialUsername = $Username
+	        if ($Username -notmatch '\\' -and $Username -notmatch '@') {
+	            if ($Script:LDAPContext -and $Script:LDAPContext['Domain']) {
+	                $NetBIOSDomain = ($Script:LDAPContext['Domain'] -split '\.')[0].ToUpper()
+	                $CredentialUsername = "$NetBIOSDomain\$Username"
+	            }
+	            else {
+	            }
+	        }
+	        $Credential = New-Object System.Management.Automation.PSCredential($CredentialUsername, $SecurePassword)
+	    }
 	    $allComputers = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 	    $forceSequential = $false
 	    $kerberosSession = $Script:LDAPContext -and $Script:LDAPContext['KerberosUsed']
@@ -52955,15 +53227,22 @@ function Get-LDAPConfiguration {
 	                return
 	            }
 	            $Script:sysvolAccessible = $true
-	            $totalGPOs = @($allGPOs).Count
+	            $gptTmplFiles = @(Get-CachedSYSVOLFiles -Filter "GptTmpl.inf")
+	            $gpoByGuid = @{}
+	            foreach ($g in $allGPOs) {
+	                if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
+	            }
+	            $totalGPOs = $gptTmplFiles.Count
 	            $currentGPOIndex = 0
-	            foreach ($gpo in $allGPOs) {
+	            foreach ($file in $gptTmplFiles) {
+	                if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+	                $gpo = $gpoByGuid[$Matches[1].ToUpper()]
+	                if (-not $gpo) { continue }
 	                $currentGPOIndex++
 	                if ($totalGPOs -gt $Script:ProgressThreshold) {
 	                    Show-Progress -Activity "Scanning LDAP configuration GPO settings" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.DisplayName
 	                }
-	                $gptTmplPath = Join-Path $sysvolPath "$($gpo.Name)\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
-	                $content = Get-CachedSYSVOLContent -Path $gptTmplPath
+	                $content = Get-CachedSYSVOLContent -Path $file.FullName
 	                if ($content) {
 	                    $ldapSigningValue = $null
 	                    $ldapChannelBindingValue = $null
@@ -53147,16 +53426,23 @@ function Get-SMBSigningStatus {
 	                return
 	            }
 	            $Script:sysvolAccessible = $true
-	            $totalGPOs = @($allGPOs).Count
+	            $gptTmplFiles = @(Get-CachedSYSVOLFiles -Filter "GptTmpl.inf")
+	            $gpoByGuid = @{}
+	            foreach ($g in $allGPOs) {
+	                if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
+	            }
+	            $totalGPOs = $gptTmplFiles.Count
 	            $currentGPOIndex = 0
-	            foreach ($gpo in $allGPOs) {
+	            foreach ($file in $gptTmplFiles) {
+	                if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+	                $gpoGUID = $Matches[1]
+	                $gpo = $gpoByGuid[$gpoGUID.ToUpper()]
+	                if (-not $gpo) { continue }
 	                $currentGPOIndex++
 	                if ($totalGPOs -gt $Script:ProgressThreshold) {
 	                    Show-Progress -Activity "Scanning SMB signing GPO settings" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.DisplayName
 	                }
-	                $gpoGUID = $gpo.Name
-	                $gptTmplPath = Join-Path $sysvolPath "$gpoGUID\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
-	                $content = Get-CachedSYSVOLContent -Path $gptTmplPath
+	                $content = Get-CachedSYSVOLContent -Path $file.FullName
 	                if ($content) {
 	                    if ($content -match '(?s)\[Registry Values\](.*?)(\[|$)') {
 	                        $registrySection = $Matches[1]
@@ -55865,15 +56151,22 @@ function Check-GPOAddComputerRights {
 	        if (-not (Test-Path $sysvolPath)) {
 	            return
 	        }
-	        $totalGPOs = @($gpos).Count
+	        $gptTmplFiles = @(Get-CachedSYSVOLFiles -Filter "GptTmpl.inf")
+	        $gpoByGuid = @{}
+	        foreach ($g in $gpos) {
+	            if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
+	        }
+	        $totalGPOs = $gptTmplFiles.Count
 	        $currentGPOIndex = 0
-	        foreach ($gpo in $gpos) {
+	        foreach ($file in $gptTmplFiles) {
+	            if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+	            $gpo = $gpoByGuid[$Matches[1].ToUpper()]
+	            if (-not $gpo) { continue }
 	            $currentGPOIndex++
 	            if ($totalGPOs -gt $Script:ProgressThreshold) {
 	                Show-Progress -Activity "Scanning GPO user rights assignment" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.DisplayName
 	            }
-	            $gptTmplPath = Join-Path $sysvolPath "$($gpo.Name)\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
-	            $content = Get-CachedSYSVOLContent -Path $gptTmplPath
+	            $content = Get-CachedSYSVOLContent -Path $file.FullName
 	            if ($content) {
 	                if ($content -match '(?is)\[Privilege Rights\](.*?)(\[|$)') {
 	                    $privilegeRightsSection = $Matches[1]
@@ -56010,15 +56303,22 @@ function Get-GPOUserRightsAssignment {
 	            if (-not (Test-Path $sysvolPath)) {
 	                return
 	            }
-	            $totalGPOs = @($gpos).Count
+	            $gptTmplFiles = @(Get-CachedSYSVOLFiles -Filter "GptTmpl.inf")
+	            $gpoByGuid = @{}
+	            foreach ($g in $gpos) {
+	                if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
+	            }
+	            $totalGPOs = $gptTmplFiles.Count
 	            $currentGPOIndex = 0
-	            foreach ($gpo in $gpos) {
+	            foreach ($file in $gptTmplFiles) {
+	                if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+	                $gpo = $gpoByGuid[$Matches[1].ToUpper()]
+	                if (-not $gpo) { continue }
 	                $currentGPOIndex++
 	                if ($totalGPOs -gt $Script:ProgressThreshold) {
 	                    Show-Progress -Activity "Scanning GPO user rights assignments" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.displayName
 	                }
-	                $gptTmplPath = Join-Path $sysvolPath "$($gpo.Name)\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
-	                $content = Get-CachedSYSVOLContent -Path $gptTmplPath
+	                $content = Get-CachedSYSVOLContent -Path $file.FullName
 	                if (-not $content) { continue }
 	                if ($content -notmatch '(?is)\[Privilege Rights\](.*?)(\[|$)') { continue }
 	                $section = $Matches[1]
@@ -56392,6 +56692,146 @@ function Get-LAPSPermissions {
 	end {
 	}
 }
+function Get-LAPSGPOFieldValues {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [AllowNull()]
+	    [hashtable]$GPOMetadataTable,
+	    [Parameter(Mandatory=$true)]
+	    [string]$FieldName
+	)
+	if (-not $GPOMetadataTable) { return @() }
+	$values = foreach ($metadata in $GPOMetadataTable.Values) {
+	    if ($metadata.ContainsKey($FieldName)) { $metadata[$FieldName] }
+	}
+	return @($values | Select-Object -Unique)
+}
+$Script:LAPSPasswordComplexityMap = @{
+	1 = 'Large letters'
+	2 = 'Large + small letters'
+	3 = 'Large + small letters + numbers'
+	4 = 'Large + small letters + numbers + special'
+	5 = 'Large + small letters + numbers + special (improved readability)'
+	6 = 'Passphrase (long words)'
+	7 = 'Passphrase (short words)'
+	8 = 'Passphrase (short words with unique prefixes)'
+}
+function New-LAPSGPOConfigObject {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [string]$GPOName,
+	    [Parameter(Mandatory=$true)]
+	    [hashtable]$Metadata,
+	    [Parameter(Mandatory=$true)]
+	    [ValidateSet('Windows LAPS', 'LAPS Legacy')]
+	    [string]$Generation,
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    [hashtable]$GPOLinkage
+	)
+	$isNative = ($Generation -eq 'Windows LAPS')
+	$accountField = if ($isNative) { 'AdministratorAccountName' } else { 'AdminAccountName' }
+	$obj = [PSCustomObject][ordered]@{
+	    GPOName     = $GPOName
+	    LAPSVersion = $Generation
+	}
+	$managedAccount = if ($Metadata.ContainsKey($accountField)) {
+	    [string]$Metadata[$accountField]
+	} else {
+	    'Administrator (built-in, RID 500)'
+	}
+	$obj | Add-Member -NotePropertyName 'ManagedAccount' -NotePropertyValue $managedAccount -Force
+	if ($isNative) {
+	    if ($Metadata.ContainsKey('BackupDirectory')) {
+	        $backupText = switch ([int]$Metadata['BackupDirectory']) {
+	            0       { 'Disabled - password is not escrowed anywhere' }
+	            1       { 'Microsoft Entra ID only - password is not escrowed to this Active Directory' }
+	            2       { 'Active Directory' }
+	            default { "Unknown ($($Metadata['BackupDirectory']))" }
+	        }
+	        $obj | Add-Member -NotePropertyName 'BackupDirectory' -NotePropertyValue $backupText -Force
+	    }
+	    if ($Metadata.ContainsKey('ADPasswordEncryptionEnabled')) {
+	        $encText = if ([int]$Metadata['ADPasswordEncryptionEnabled'] -eq 0) {
+	            'Disabled - password is stored UNENCRYPTED in msLAPS-Password'
+	        } else {
+	            'Enabled'
+	        }
+	        $obj | Add-Member -NotePropertyName 'PasswordEncryption' -NotePropertyValue $encText -Force
+	    }
+	    if ($Metadata.ContainsKey('ADPasswordEncryptionPrincipal')) {
+	        $obj | Add-Member -NotePropertyName 'EncryptionPrincipal' -NotePropertyValue ([string]$Metadata['ADPasswordEncryptionPrincipal']) -Force
+	    }
+	}
+	if ($Metadata.ContainsKey('PasswordComplexity')) {
+	    $complexityValue = [int]$Metadata['PasswordComplexity']
+	    $complexityText = if ($Script:LAPSPasswordComplexityMap.ContainsKey($complexityValue)) {
+	        "$complexityValue ($($Script:LAPSPasswordComplexityMap[$complexityValue]))"
+	    } else {
+	        [string]$complexityValue
+	    }
+	    $obj | Add-Member -NotePropertyName 'PasswordComplexity' -NotePropertyValue $complexityText -Force
+	}
+	foreach ($numericField in @('PasswordLength', 'PassphraseLength', 'PasswordAgeDays')) {
+	    if ($Metadata.ContainsKey($numericField)) {
+	        $obj | Add-Member -NotePropertyName $numericField -NotePropertyValue $Metadata[$numericField] -Force
+	    }
+	}
+	if ($isNative -and $Metadata.ContainsKey('PasswordExpirationProtectionEnabled')) {
+	    $expText = if ([int]$Metadata['PasswordExpirationProtectionEnabled'] -eq 0) {
+	        'Disabled - password max-age is not enforced'
+	    } else {
+	        'Enabled'
+	    }
+	    $obj | Add-Member -NotePropertyName 'ExpirationProtection' -NotePropertyValue $expText -Force
+	}
+	$gpoGuid = if ($Metadata.ContainsKey('GPOGUID')) { $Metadata['GPOGUID'] } else { $null }
+	$linkedOUs = @()
+	if ($gpoGuid -and $GPOLinkage -and $GPOLinkage.ContainsKey($gpoGuid)) {
+	    $linkedOUs = @($GPOLinkage[$gpoGuid])
+	}
+	if ($linkedOUs.Count -gt 0) {
+	    $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+	} elseif ($null -eq $GPOLinkage) {
+	    $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Unknown - GPO linkage could not be resolved' -Force
+	} else {
+	    $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Not linked - these settings apply nowhere' -Force
+	}
+	$obj | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
+	if ($gpoGuid) {
+	    $obj | Add-Member -NotePropertyName 'GPOGUID' -NotePropertyValue $gpoGuid -Force
+	}
+	$obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSGPOConfig' -Force
+	return $obj
+}
+function Get-LAPSGPOConfigObjects {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [hashtable]$LAPSGPOSettings
+	)
+	$gpoLinkage = $null
+	try {
+	    $gpoLinkage = Get-GPOLinkage
+	} catch {
+	}
+	$objects = @()
+	if ($LAPSGPOSettings.Native) {
+	    foreach ($gpoName in ($LAPSGPOSettings.Native.Keys | Sort-Object)) {
+	        $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Native[$gpoName] `
+	            -Generation 'Windows LAPS' -GPOLinkage $gpoLinkage
+	    }
+	}
+	if ($LAPSGPOSettings.Legacy) {
+	    foreach ($gpoName in ($LAPSGPOSettings.Legacy.Keys | Sort-Object)) {
+	        $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Legacy[$gpoName] `
+	            -Generation 'LAPS Legacy' -GPOLinkage $gpoLinkage
+	    }
+	}
+	return $objects
+}
 function Get-LAPSConfiguration {
 	[CmdletBinding()]
 	param(
@@ -56450,8 +56890,22 @@ function Get-LAPSConfiguration {
 	            LegacyPresent = $lapsLegacySchemaPresent
 	            NativePresent = $windowsLAPSSchemaPresent
 	        }
+	        $lapsGPOSettings = $null
+	        try {
+	            $lapsGPOSettings = Get-LAPSGPOConfig
+	        } catch {
+	        }
+	        $lapsGPOHasLegacy = $lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Legacy -and $lapsGPOSettings.Legacy.Count -gt 0
+	        $lapsGPOHasNative = $lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Native -and $lapsGPOSettings.Native.Count -gt 0
 	        if (-not $lapsLegacySchemaPresent -and -not $windowsLAPSSchemaPresent) {
-	            Show-Line "No LAPS schema found - LAPS is not deployed" -Class "Finding"
+	            if ($lapsGPOHasLegacy -or $lapsGPOHasNative) {
+	                Show-Line "LAPS GPO settings found, but the LAPS schema is NOT present in AD - LAPS is configured but completely non-functional!" -Class "Finding"
+	                foreach ($gpoConfigObject in @(Get-LAPSGPOConfigObjects -LAPSGPOSettings $lapsGPOSettings)) {
+	                    Show-Object $gpoConfigObject
+	                }
+	            } else {
+	                Show-Line "No LAPS schema found - LAPS is not deployed" -Class "Finding"
+	            }
 	            $allComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @PSBoundParameters | Test-AccountActivity -IsActive)
 	            $computersByOU = @{}
 	            foreach ($computer in $allComputers) {
@@ -56483,6 +56937,22 @@ function Get-LAPSConfiguration {
 	            Show-Line "LAPS Legacy schema present" -Class "Note"
 	        } elseif ($windowsLAPSSchemaPresent) {
 	            Show-Line "Windows LAPS Native schema present" -Class "Note"
+	        }
+	        if ($lapsGPOSettings -is [hashtable]) {
+	            if ($lapsGPOHasLegacy -or $lapsGPOHasNative) {
+	                Show-SubHeader "Analyzing LAPS configuration deployed via GPO..." -ObjectType "LAPSGPOConfig"
+	                $gpoConfigObjects = @(Get-LAPSGPOConfigObjects -LAPSGPOSettings $lapsGPOSettings)
+	                Show-Line "Found $($gpoConfigObjects.Count) GPO(s) deploying LAPS settings" -Class "Hint"
+	                foreach ($gpoConfigObject in $gpoConfigObjects) {
+	                    Show-Object $gpoConfigObject
+	                }
+	            } else {
+	                if ((Test-SysvolAccessible) -eq $false) {
+	                    Show-Line "Skipped - SYSVOL not accessible" -Class Hint
+	                } else {
+	                    Show-Line "No LAPS-related GPO settings found in SYSVOL - LAPS may be managed via Intune/CSP or local policy instead of GPO" -Class "Hint"
+	                }
+	            }
 	        }
 	        Show-SubHeader "Analyzing LAPS deployment coverage..." -ObjectType "LAPSConfiguration"
 	        $allEnabledComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @PSBoundParameters)
@@ -56557,24 +57027,6 @@ function Get-LAPSConfiguration {
 	            }
 	        } else {
 	            Show-Line "All computers (100%) have LAPS protection" -Class "Secure"
-	        }
-	        if ($lapsLegacySchemaPresent) {
-	            try {
-	                $lapsGPOSettings = Get-LAPSGPOConfig
-	                if ($lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Count -gt 0) {
-	                    $uniqueAccounts = @($lapsGPOSettings.Values | Select-Object -Unique)
-	                    if ($uniqueAccounts.Count -eq 1) {
-	                        $lapsAdminAccount = $uniqueAccounts[0]
-	                        Show-Line "LAPS Legacy GPO AdminAccountName: '$lapsAdminAccount'" -Class "Hint"
-	                    } elseif ($uniqueAccounts.Count -gt 1) {
-	                        $accountList = ($uniqueAccounts | Sort-Object) -join "', '"
-	                        Show-Line "LAPS Legacy GPO: Multiple AdminAccountNames: '$accountList' (varies by OU)" -Class "Hint"
-	                    }
-	                } elseif ((Test-SysvolAccessible) -eq $false) {
-	                    Show-Line "Skipped - SYSVOL not accessible" -Class Hint
-	                }
-	            } catch {
-	            }
 	        }
 	    } catch {
 	    }
@@ -58041,88 +58493,6 @@ function New-RegistryFinding {
 	    Severity          = $entry.Severity
 	    GPOGUID           = $RegMatch.GPOGUID
 	}
-}
-function Parse-PRegRecords {
-	[CmdletBinding()]
-	param(
-	    [Parameter(Mandatory=$true)]
-	    [string]$PolFilePath,
-	    [Parameter(Mandatory=$true)]
-	    [string]$Hive
-	)
-	$records = @()
-	try {
-	    $bytes = [System.IO.File]::ReadAllBytes($PolFilePath)
-	    if ($bytes.Length -lt 8) { return $records }
-	    if ([System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'PReg') {
-	        return $records
-	    }
-	    $pos = 8  # skip signature(4) + version(4)
-	    $len = $bytes.Length
-	    $readString = {
-	        param([ref]$p)
-	        $start = $p.Value
-	        while (($p.Value + 1) -lt $len) {
-	            if ($bytes[$p.Value] -eq 0 -and $bytes[$p.Value + 1] -eq 0) { break }
-	            $p.Value += 2
-	        }
-	        $strLen = $p.Value - $start
-	        $s = ''
-	        if ($strLen -gt 0) { $s = [System.Text.Encoding]::Unicode.GetString($bytes, $start, $strLen) }
-	        $p.Value += 2  # consume null terminator
-	        return $s
-	    }
-	    $openBracket = 0x5B   # [
-	    $semicolon   = 0x3B   # ;
-	    while ($pos -lt $len) {
-	        if (-not ($bytes[$pos] -eq $openBracket -and ($pos + 1) -lt $len -and $bytes[$pos + 1] -eq 0)) {
-	            $pos += 2
-	            continue
-	        }
-	        $pos += 2
-	        $ref = [ref]$pos
-	        $key = (& $readString $ref)
-	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
-	        $pos += 2
-	        $valueName = (& $readString $ref)
-	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
-	        $pos += 2
-	        if (($pos + 4) -gt $len) { break }
-	        $type = [System.BitConverter]::ToUInt32($bytes, $pos)
-	        $pos += 4
-	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
-	        $pos += 2
-	        if (($pos + 4) -gt $len) { break }
-	        $size = [System.BitConverter]::ToUInt32($bytes, $pos)
-	        $pos += 4
-	        if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
-	        $pos += 2
-	        if (($pos + $size) -gt $len) { break }
-	        $data = New-Object byte[] $size
-	        if ($size -gt 0) { [System.Array]::Copy($bytes, $pos, $data, 0, $size) }
-	        $pos += $size
-	        $valueInt = $null
-	        $valueString = $null
-	        switch ($type) {
-	            4  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }      # REG_DWORD
-	            5  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }      # REG_DWORD_BIG_ENDIAN (rare)
-	            11 { if ($data.Length -ge 8) { $valueInt = [System.BitConverter]::ToUInt64($data, 0) } }      # REG_QWORD
-	            1  { $valueString = [System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0) }       # REG_SZ
-	            2  { $valueString = [System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0) }       # REG_EXPAND_SZ
-	            7  { $valueString = ([System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0)) }     # REG_MULTI_SZ
-	        }
-	        $records += [PSCustomObject]@{
-	            Hive        = $Hive
-	            Key         = $key
-	            ValueName   = $valueName
-	            Type        = $type
-	            ValueInt    = $valueInt
-	            ValueString = $valueString
-	        }
-	    }
-	} catch {
-	}
-	return $records
 }
 function Parse-RegistryXml {
 	[CmdletBinding()]
@@ -70631,7 +71001,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.4.0"
+$Script:adPEASVersion = "2.4.1"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

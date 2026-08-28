@@ -8,6 +8,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-08-28
+
+### Added
+
+- **LAPS configuration deployed via Group Policy is now analyzed and reported.**
+  `Get-LAPSConfiguration` shows, per GPO and for both LAPS generations, the managed
+  account name, password complexity, length, passphrase length and maximum age, and
+  for Windows LAPS additionally the backup target, AD password encryption and the
+  principal allowed to decrypt. These settings are readable from SYSVOL without any
+  LAPS password permission, so they disclose the managed local administrator account
+  and reveal misconfigurations before a single computer object is touched. Every
+  entry lists the OUs, domains and sites its GPO is linked to.
+  New findings: AD password encryption disabled (the password is stored in cleartext
+  in `msLAPS-Password`), backup target disabled or set to Microsoft Entra ID only
+  (nothing is escrowed to this Active Directory), password expiration protection
+  disabled, weak password complexity, and LAPS settings in a GPO that is linked
+  nowhere. The GPO analysis now also runs when the LAPS schema is absent - a GPO
+  configuring LAPS without the schema extension is a critical misconfiguration that
+  was previously invisible.
+- **`Test-RemoteAdminAccess` accepts `-Username` and `-Password`** as an alternative
+  to `-Credential`. `-Password` takes a plaintext string or a SecureString and allows
+  an empty string. A bare username is resolved against the connected domain, because
+  SMB and WMI would otherwise treat it as a local account on the target.
+- **Windows LAPS plaintext passwords now expose `msLAPS-Account` and `msLAPS-Updated`.**
+  The JSON in `msLAPS-Password` was parsed but only the password was kept, so the
+  managed account name was dropped for plaintext LAPS while the encrypted path
+  reported it.
+
+### Fixed
+
+- **A blank line in a multi-line attribute value silently dropped the whole object
+  from the output.** An AD free-text field (`description`, `info`) containing a blank
+  line or a trailing newline aborted rendering; the calling check caught the error as
+  a generic warning, so the object was counted in the summary but never displayed.
+  Affected every check. Values with CRLF line endings also no longer keep a stray
+  carriage return in the display.
+- **The LAPS GPO scan found nothing when the client could not reach the SYSVOL DFS
+  path.** The scan built its path from `gPCFileSysPath` (the domain DFS namespace),
+  while SMB authenticates against the domain controller hostname - a different target.
+  The mismatch failed silently with an empty result and no error.
+- **The Windows LAPS policy registry root was wrong**, so Windows LAPS GPO settings
+  were never found. The correct GPO root is
+  `Software\Microsoft\Windows\CurrentVersion\Policies\LAPS`.
+- **`Registry.pol` was searched as text instead of parsed as the binary format it is.**
+  The Type/Size fields contain embedded nulls that break a "read to the next null
+  terminator" match, so the LAPS account name was never extracted correctly.
+
+### Changed
+
+- **Fewer SMB round-trips when scanning SYSVOL.** `Get-LDAPConfiguration`,
+  `Get-SMBSigningStatus`, `Get-AddComputerRights` and `Get-GPOUserRightsAssignment`
+  probed a constructed `GptTmpl.inf` path per GPO - one round-trip each for a file
+  most GPOs do not have. They now use the shared cached SYSVOL listing, which is also
+  what the LAPS GPO scan uses, so a single SYSVOL walk serves all GPO checks.
+- **`Get-LAPSConfiguration` reports in a more logical order:** schema detection, then
+  the GPO configuration, then deployment coverage.
+
 ## [2.4.0] - 2026-08-27
 
 ### Added
