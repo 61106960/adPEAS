@@ -76,19 +76,33 @@ function Get-SMBSigningStatus {
 
                 $Script:sysvolAccessible = $true
 
+                # Iterate the cached SYSVOL listing instead of probing a constructed path per GPO:
+                # most GPOs have no GptTmpl.inf, so per-GPO probing costs one SMB round-trip each
+                # for a file that usually does not exist.
+                $gptTmplFiles = @(Get-CachedSYSVOLFiles -Filter "GptTmpl.inf")
+
+                # GPO GUID -> GPO object, to resolve the file back to its GPO
+                $gpoByGuid = @{}
+                foreach ($g in $allGPOs) {
+                    if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
+                }
+
                 # Parse GPOs for SMB Signing settings
-                $totalGPOs = @($allGPOs).Count
+                $totalGPOs = $gptTmplFiles.Count
                 $currentGPOIndex = 0
-                foreach ($gpo in $allGPOs) {
+                foreach ($file in $gptTmplFiles) {
+                    # Extract GPO GUID from path: ...\Policies\{GUID}\Machine\...
+                    if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+                    $gpoGUID = $Matches[1]
+                    $gpo = $gpoByGuid[$gpoGUID.ToUpper()]
+                    if (-not $gpo) { continue }
+
                     $currentGPOIndex++
                     if ($totalGPOs -gt $Script:ProgressThreshold) {
                         Show-Progress -Activity "Scanning SMB signing GPO settings" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.DisplayName
                     }
-                    $gpoGUID = $gpo.Name
 
-                    $gptTmplPath = Join-Path $sysvolPath "$gpoGUID\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
-
-                    $content = Get-CachedSYSVOLContent -Path $gptTmplPath
+                    $content = Get-CachedSYSVOLContent -Path $file.FullName
                     if ($content) {
                         # Look for SMB Signing settings in [Registry Values] section
                         if ($content -match '(?s)\[Registry Values\](.*?)(\[|$)') {

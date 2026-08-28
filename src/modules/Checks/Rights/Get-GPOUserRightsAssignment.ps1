@@ -145,16 +145,31 @@ function Get-GPOUserRightsAssignment {
                     return
                 }
 
-                $totalGPOs = @($gpos).Count
+                # Iterate the cached SYSVOL listing instead of probing a constructed path per GPO:
+                # most GPOs have no GptTmpl.inf, so per-GPO probing costs one SMB round-trip each
+                # for a file that usually does not exist.
+                $gptTmplFiles = @(Get-CachedSYSVOLFiles -Filter "GptTmpl.inf")
+
+                # GPO GUID -> GPO object, to resolve the file back to its GPO
+                $gpoByGuid = @{}
+                foreach ($g in $gpos) {
+                    if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
+                }
+
+                $totalGPOs = $gptTmplFiles.Count
                 $currentGPOIndex = 0
-                foreach ($gpo in $gpos) {
+                foreach ($file in $gptTmplFiles) {
+                    # Extract GPO GUID from path: ...\Policies\{GUID}\Machine\...
+                    if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+                    $gpo = $gpoByGuid[$Matches[1].ToUpper()]
+                    if (-not $gpo) { continue }
+
                     $currentGPOIndex++
                     if ($totalGPOs -gt $Script:ProgressThreshold) {
                         Show-Progress -Activity "Scanning GPO user rights assignments" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.displayName
                     }
 
-                    $gptTmplPath = Join-Path $sysvolPath "$($gpo.Name)\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
-                    $content = Get-CachedSYSVOLContent -Path $gptTmplPath
+                    $content = Get-CachedSYSVOLContent -Path $file.FullName
                     if (-not $content) { continue }
                     if ($content -notmatch '(?is)\[Privilege Rights\](.*?)(\[|$)') { continue }
                     $section = $Matches[1]

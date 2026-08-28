@@ -95,17 +95,32 @@ function Get-LDAPConfiguration {
 
                 $Script:sysvolAccessible = $true
 
+                # Iterate the cached SYSVOL listing instead of probing a constructed path per GPO:
+                # most GPOs have no GptTmpl.inf, so per-GPO probing costs one SMB round-trip each
+                # for a file that usually does not exist.
+                $gptTmplFiles = @(Get-CachedSYSVOLFiles -Filter "GptTmpl.inf")
+
+                # GPO GUID -> GPO object, to resolve the file back to its GPO
+                $gpoByGuid = @{}
+                foreach ($g in $allGPOs) {
+                    if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
+                }
+
                 # Parse GPOs for LDAP Security settings
-                $totalGPOs = @($allGPOs).Count
+                $totalGPOs = $gptTmplFiles.Count
                 $currentGPOIndex = 0
-                foreach ($gpo in $allGPOs) {
+                foreach ($file in $gptTmplFiles) {
+                    # Extract GPO GUID from path: ...\Policies\{GUID}\Machine\...
+                    if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+                    $gpo = $gpoByGuid[$Matches[1].ToUpper()]
+                    if (-not $gpo) { continue }
+
                     $currentGPOIndex++
                     if ($totalGPOs -gt $Script:ProgressThreshold) {
                         Show-Progress -Activity "Scanning LDAP configuration GPO settings" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.DisplayName
                     }
-                    $gptTmplPath = Join-Path $sysvolPath "$($gpo.Name)\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
 
-                    $content = Get-CachedSYSVOLContent -Path $gptTmplPath
+                    $content = Get-CachedSYSVOLContent -Path $file.FullName
                     if ($content) {
                         # Initialize values
                         $ldapSigningValue = $null
