@@ -48,7 +48,11 @@ $Script:AttributeTransformers = @{}
 function New-RenderValue {
     [CmdletBinding()]
     param(
+        # AllowEmptyString: a blank display value must never abort rendering. Mandatory [string]
+        # otherwise rejects '' and the exception propagates out of Show-Object, so a single
+        # attribute with a blank line silently costs the caller the whole object.
         [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$Display,
 
         [Parameter(Mandatory=$false)]
@@ -170,9 +174,14 @@ function Convert-DefaultToRenderValues {
         $lines = $Value -split "`n"
         $renderValues = @()
         foreach ($line in $lines) {
+            # Blank lines carry no information and would render as empty rows. AD free-text
+            # attributes (description, info) routinely contain them and trailing newlines.
+            $line = $line.TrimEnd("`r")
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
             $lineMatch = Get-TriggerMatch -Name $Name -Value $line -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
             $renderValues += New-RenderValue -Display $line -Severity $lineMatch.Severity -FindingId $lineMatch.FindingId -RawValue $line
         }
+        if ($renderValues.Count -eq 0) { return $null }
         $maxSev = Get-MaxSeverityFromValues -Values $renderValues
         return @{
             RowType         = 'MultiValue'
@@ -191,9 +200,11 @@ function Convert-DefaultToRenderValues {
             $renderValues = @()
             foreach ($item in $Value) {
                 $itemDisplay = [string]$item.DisplayText
+                if ([string]::IsNullOrEmpty($itemDisplay)) { continue }
                 $itemMatch = Get-TriggerMatch -Name $Name -Value $item -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
                 $renderValues += New-RenderValue -Display $itemDisplay -Severity $itemMatch.Severity -FindingId $itemMatch.FindingId -RawValue $item
             }
+            if ($renderValues.Count -eq 0) { return $null }
             $maxSev = Get-MaxSeverityFromValues -Values $renderValues
             return @{
                 RowType         = 'MultiValue'
