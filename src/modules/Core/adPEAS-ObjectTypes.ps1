@@ -1282,15 +1282,33 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Category = "GPO"
         SectionTitle = "GPO Registry Settings"
         Summary = "Detects security-relevant registry values deployed via Group Policy that, when set, enable an attack."
-        WhyItMatters = "Group Policy can push registry values to every linked system. A single value such as WDigest cleartext caching, AlwaysInstallElevated, RDP Restricted Admin, the Zerologon/OneLogon allow-list, Point and Print (PrintNightmare), or WSUS-over-HTTP turns the whole scope into an attack surface for credential theft, lateral movement, or privilege escalation. This check parses both delivery mechanisms (Registry.pol and Registry.xml) and reports only values that are actively set to a dangerous state. It sees what is deployed via GPO, not what is set locally on a host."
+        WhyItMatters = "Group Policy can push registry values to every linked system. A single value such as WDigest cleartext caching, AlwaysInstallElevated, RDP Restricted Admin, the Zerologon/OneLogon allow-list, or WSUS-over-HTTP turns the whole scope into an attack surface for credential theft, lateral movement, or privilege escalation. This check parses both delivery mechanisms (Registry.pol and Registry.xml) and reports only values that are actively set to a dangerous state. It sees what is deployed via GPO, not what is set locally on a host."
         WhatWeCheck = @(
             "Administrative Templates (Registry.pol, PReg binary)"
             "Group Policy Preferences (Registry.xml)"
             "Credential-theft enablers (WDigest, LM/NTLMv1, LSA/Credential Guard disabled)"
             "Lateral-movement enablers (Remote UAC, RDP Restricted Admin, Zerologon allow-list)"
-            "Privilege-escalation enablers (AlwaysInstallElevated, Point and Print, WSUS over HTTP)"
+            "Privilege-escalation enablers (AlwaysInstallElevated, WSUS over HTTP)"
         )
         SecureMessage = "No vulnerable registry settings deployed via GPO. No Group Policy was found pushing a registry value in a state that enables an attack."
+    }
+
+    'PointAndPrintPolicy' = @{
+        TitleFormat = "Point and Print GPO: {Name}"
+        Module = "GPO"
+        Category = "GPO"
+        SectionTitle = "Point and Print Printer Driver Policies"
+        Summary = "Shows the Point and Print configuration deployed by each GPO and whether it lets a non-administrator install a printer driver."
+        WhyItMatters = "Installing a printer driver means running code as SYSTEM, so Point and Print decides who may execute code on every machine in the GPO scope. No single value settles that question. Since the August 2021 update, RestrictDriverInstallationToAdministrators blocks the install outright unless it is explicitly set to 0, which makes a lone prompt-suppression setting a very common but inert legacy leftover - and makes the combination of both values a straight path from any domain user to SYSTEM. The approved-server settings decide where a driver may come from, but they never compensate for a suppressed elevation prompt. Settings placed in User Configuration are ignored by Windows entirely and only look like a control."
+        WhatWeCheck = @(
+            "Point and Print Restrictions (Restricted, prompt settings, trusted servers, forest restriction)"
+            "RestrictDriverInstallationToAdministrators, the gate that overrides the prompt settings"
+            "Package Point and Print enforcement and its approved server list"
+            "Remote spooler RPC endpoint, queue-specific files, driver download over HTTP"
+            "The Security Option 'Devices: Prevent users from installing printer drivers' from GptTmpl.inf"
+            "The OUs, domains and sites each GPO is linked to"
+        )
+        SecureMessage = "No GPO configures Point and Print or printer driver policies. The Windows default since the August 2021 update limits printer driver installation to administrators."
     }
 
     'LAPSGPOConfig' = @{

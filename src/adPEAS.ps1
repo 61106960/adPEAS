@@ -177,6 +177,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Invoke-HostsFileManagement.ps1"
     . "$Script:ScriptPath\modules\Helpers\Invoke-KerberosAuthFlow.ps1"
     . "$Script:ScriptPath\modules\Helpers\Parse-RegistryPol.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Parse-RegistryXml.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-LAPSGPOConfig.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-OUPermissions.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-GPOLinkage.ps1"
@@ -229,6 +230,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOScheduledTasks.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOScriptPaths.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPORegistrySettings.ps1"
+    . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOPointAndPrint.ps1"
     . "$Script:ScriptPath\modules\Checks\ADCS\Get-ADCSTemplate.ps1"
     . "$Script:ScriptPath\modules\Checks\ADCS\Get-ADCSVulnerabilities.ps1"
     . "$Script:ScriptPath\modules\Checks\Application\Get-ExchangeInfrastructure.ps1"
@@ -1005,6 +1007,7 @@ try {
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScriptPaths' -Title 'GPO Script Paths' -Check { Get-GPOScriptPaths }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPORegistrySettings' -Title 'GPO Registry Settings' -Check { Get-GPORegistrySettings }
+            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPointAndPrint' -Title 'Point and Print Policies' -Check { Get-GPOPointAndPrint }
         } catch {
             Write-Warning "[adPEAS] Error executing GPO Module: $_"
         }

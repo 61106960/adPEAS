@@ -8,6 +8,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`Get-GPOPointAndPrint` - new GPO check for Point and Print printer driver policies.**
+  Installing a printer driver runs code as SYSTEM, so Point and Print decides who may
+  execute code on every machine in a GPO's scope. The check reports the complete
+  configuration of each GPO that deploys one and derives the verdict from the
+  combination of values rather than from any single value, because no single value
+  settles the question:
+  `RestrictDriverInstallationToAdministrators` blocks the install unless it is
+  explicitly `0`, and only then do `NoWarningNoElevationOnInstall=1` and
+  `UpdatePromptSettings=2` make the install silent. That combination is
+  PrintNightmare-style privilege escalation and is reported as Critical.
+  Also reported: where drivers may come from (Package Point and Print, its approved
+  server list, the legacy trusted-server and forest restrictions), the remote spooler
+  RPC endpoint (`RegisterSpoolerRemoteRpcEndPoint`), queue-specific files
+  (`CopyFilesPolicy`, CVE-2021-36958), driver download over HTTP
+  (`DisableWebPnPDownload`, `DisableHTTPPrinting`), and the Security Option
+  "Devices: Prevent users from installing printer drivers" read from `GptTmpl.inf`.
+  Settings are collected from Administrative Templates (`Registry.pol`), Group Policy
+  Preferences (`Registry.xml`) and `GptTmpl.inf`, and every entry lists the OUs,
+  domains and sites its GPO is linked to.
+
+### Changed
+
+- **Point and Print is no longer reported by `Get-GPORegistrySettings`.** Its two
+  entries flagged `NoWarningNoElevationOnInstall=1` and
+  `RestrictDriverInstallationToAdministrators=0` independently, each as High. Since the
+  August 2021 update the first is inert on its own, which made a very common pre-2021
+  legacy GPO a false positive, while the genuinely exploitable combination of both was
+  under-rated and split across two findings. Both values are now evaluated together by
+  `Get-GPOPointAndPrint`. A prompt suppression that is currently blocked by the default
+  is reported as a latent risk instead of a vulnerability, and approved-server
+  restrictions are reported as the driver source but never allowed to downgrade an
+  exploitable configuration - a suppressed elevation prompt overrides them.
+- **Group Policy Preferences `Registry.xml` parsing moved to a shared helper**
+  (`Parse-RegistryXml`), alongside the existing `Parse-PRegRecords`, so both GPO
+  registry checks read the same two delivery mechanisms through the same parsers.
+
 ## [2.4.1] - 2026-08-28
 
 ### Added

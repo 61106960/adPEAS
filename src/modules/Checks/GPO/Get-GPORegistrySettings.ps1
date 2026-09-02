@@ -18,7 +18,8 @@ function Get-GPORegistrySettings {
 
     Examples of detected settings: WDigest cleartext caching, the Zerologon/OneLogon
     VulnerableChannelAllowList, AlwaysInstallElevated, RDP Restricted Admin, UAC disabled,
-    Point and Print (PrintNightmare), WSUS-over-HTTP, and explicitly disabled defenses.
+    WSUS-over-HTTP, and explicitly disabled defenses. Point and Print has its own check
+    (Get-GPOPointAndPrint) because its exploitability depends on a combination of values.
 
     Note: this check sees only what is DEPLOYED via GPO. Values set locally/directly on a
     host (no Remote Registry) are out of scope by design.
@@ -327,75 +328,9 @@ function New-RegistryFinding {
     }
 }
 
-# =============================================================================
-# Parser: Registry.pol (PReg binary format)
-# See Parse-PRegRecords in modules/Helpers/Parse-RegistryPol.ps1 (shared with Get-LAPSGPOConfig)
-# =============================================================================
 
 # =============================================================================
-# Parser: Registry.xml (Group Policy Preferences format)
+# Parsers (shared helpers, both also used by Get-GPOPointAndPrint)
+#   Registry.pol (PReg binary) -> Parse-PRegRecords  in modules/Helpers/Parse-RegistryPol.ps1
+#   Registry.xml (GPP XML)     -> Parse-RegistryXml  in modules/Helpers/Parse-RegistryXml.ps1
 # =============================================================================
-function Parse-RegistryXml {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$XmlFilePath
-    )
-
-    $records = @()
-
-    try {
-        [xml]$xml = Get-Content -Path $XmlFilePath -ErrorAction Stop
-
-        $regNodes = $xml.SelectNodes("//Registry")
-        if (-not $regNodes) { return $records }
-
-        foreach ($node in $regNodes) {
-            $props = $node.Properties
-            if (-not $props) { continue }
-
-            # Normalize hive
-            $hiveRaw = [string]$props.hive
-            $hive = $null
-            switch -Wildcard ($hiveRaw.ToUpper()) {
-                'HKEY_LOCAL_MACHINE*' { $hive = 'HKLM' }
-                'HKLM*'               { $hive = 'HKLM' }
-                'HKEY_CURRENT_USER*'  { $hive = 'HKCU' }
-                'HKCU*'               { $hive = 'HKCU' }
-                default               { $hive = $hiveRaw }
-            }
-
-            $type = [string]$props.type
-            $rawValue = [string]$props.value
-
-            $valueInt = $null
-            $valueString = $null
-            if ($type -match 'DWORD|QWORD') {
-                # GPP stores DWORD/QWORD values as hexadecimal in the XML value attribute
-                $parsed = $null
-                if ($rawValue -match '^[0-9A-Fa-f]+$') {
-                    try { $parsed = [System.Convert]::ToInt64($rawValue, 16) } catch { $parsed = $null }
-                }
-                if ($null -eq $parsed -and $rawValue -match '^\d+$') {
-                    try { $parsed = [System.Convert]::ToInt64($rawValue, 10) } catch { $parsed = $null }
-                }
-                $valueInt = $parsed
-            } else {
-                $valueString = $rawValue
-            }
-
-            $records += [PSCustomObject]@{
-                Hive        = $hive
-                Key         = [string]$props.key
-                ValueName   = [string]$props.name
-                Type        = $type
-                ValueInt    = $valueInt
-                ValueString = $valueString
-            }
-        }
-    } catch {
-        Write-Log "[Read-RegistryXmlRecords] Error parsing $XmlFilePath : $_"
-    }
-
-    return $records
-}

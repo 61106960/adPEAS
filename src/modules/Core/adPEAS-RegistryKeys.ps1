@@ -37,7 +37,7 @@
       - AlwaysInstallElevated:            https://docs.specterops.io/ghostpack-docs/SharpUp-mdx/checks/alwaysinstallelevated
       - LocalAccountTokenFilterPolicy:    https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/
       - RDP Restricted Admin (PtH):       https://www.levelblue.com/blogs/spiderlabs-blog/restricted-admin-mode-circumventing-mfa-on-rdp-logons/
-      - PrintNightmare / Point and Print: https://itm4n.github.io/printnightmare-exploitation/
+      - Point and Print / PrintNightmare:  see Get-GPOPointAndPrint (dedicated check)
       - WSUS over HTTP (MITM -> SYSTEM):  https://trustedsec.com/blog/wsus-is-sus-ntlm-relay-attacks-in-plain-sight
 #>
 
@@ -182,32 +182,6 @@ $Script:DangerousRegistryKeys = @(
         FindingId         = 'REGISTRY_RESTRICTEDADMIN'
         VulnerabilityName = 'RDP Restricted Admin mode enabled (Pass-the-Hash over RDP)'
         RiskReason        = 'RDP accepts hash-based auth - enables PtH over RDP and MFA bypass'
-    }
-    @{
-        Id                = 'PNP_NOWARN'
-        Hive              = 'HKLM'
-        Key               = 'Software\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
-        ValueName         = 'NoWarningNoElevationOnInstall'
-        Match             = 'Equals'
-        MatchValue        = 1
-        Severity          = 'High'
-        ConsoleClass      = 'Finding'
-        FindingId         = 'REGISTRY_POINT_AND_PRINT'
-        VulnerabilityName = 'Point and Print allows non-admin printer driver installation (PrintNightmare)'
-        RiskReason        = 'No elevation prompt on driver install - PrintNightmare-style code execution'
-    }
-    @{
-        Id                = 'PNP_DRVADMIN'
-        Hive              = 'HKLM'
-        Key               = 'Software\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
-        ValueName         = 'RestrictDriverInstallationToAdministrators'
-        Match             = 'Equals'
-        MatchValue        = 0
-        Severity          = 'High'
-        ConsoleClass      = 'Finding'
-        FindingId         = 'REGISTRY_POINT_AND_PRINT'
-        VulnerabilityName = 'Point and Print allows non-admin printer driver installation (PrintNightmare)'
-        RiskReason        = 'Driver install not restricted to admins - PrintNightmare-style code execution'
     }
     @{
         Id                = 'WSUS_HTTP'

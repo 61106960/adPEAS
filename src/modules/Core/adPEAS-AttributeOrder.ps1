@@ -171,6 +171,20 @@ $Script:PrimaryAttributes = @{
         'LinkedOUs', 'LinkedOUCount'
     )
 
+    # Point and Print printer driver policy per GPO (Get-GPOPointAndPrint).
+    # Exploitability comes first: it is the verdict the whole check exists to produce, and
+    # the individual values below it are the evidence it was derived from.
+    PointAndPrintPolicy = @(
+        'GPOName', 'Scope', 'Source',
+        'Exploitability',
+        'DriverInstallRestriction', 'PointAndPrintRestrictions',
+        'NewConnectionPrompt', 'DriverUpdatePrompt',
+        'ApprovedDriverSource', 'ApprovedServerList',
+        'SpoolerClientConnections', 'QueueSpecificFiles',
+        'WebDriverDownload', 'HTTPPrinting', 'InstallDriversSecurityOption',
+        'LinkedOUs', 'LinkedOUCount'
+    )
+
     # LAPS policy settings deployed via GPO (Get-LAPSConfiguration, Step 3)
     LAPSGPOConfig = @(
         'GPOName', 'LAPSVersion', 'ManagedAccount',

@@ -8855,36 +8855,6 @@ foreach ($oid in $linkedOIDs) {
         )
     }
 
-    'REGISTRY_POINT_AND_PRINT' = @{
-        Title = "Point and Print Allows Non-Admin Driver Installation (PrintNightmare)"
-        Risk = "Finding"
-        BaseScore = 55
-        Description = "A Group Policy weakens Point and Print so that non-administrators can install printer drivers without an elevation prompt (NoWarningNoElevationOnInstall=1) or RestrictDriverInstallationToAdministrators=0. This re-opens PrintNightmare-style remote code execution / local privilege escalation."
-        Impact = @(
-            "Non-admins install printer drivers (code) without prompts"
-            "Enables PrintNightmare-style RCE / SYSTEM escalation"
-            "Applies to every computer in the GPO scope"
-        )
-        Attack = @(
-            "1. Stand up a malicious print server / driver"
-            "2. Have the victim connect (Point and Print)"
-            "3. Driver executes as SYSTEM"
-        )
-        Remediation = @(
-            "Set RestrictDriverInstallationToAdministrators=1"
-            "Remove NoWarningNoElevationOnInstall=1"
-        )
-        References = @(
-            @{ Title = "A Practical Guide to PrintNightmare"; Url = "https://itm4n.github.io/printnightmare-exploitation/" }
-            @{ Title = "KB5005652"; Url = "https://support.microsoft.com/en-us/topic/kb5005652-873642bf-2634-49c5-a23b-6d8e9a302872" }
-        )
-        Tools = @("PrintNightmare PoCs")
-        MITRE = "T1547.012"
-        Triggers = @(
-            @{ Attribute = 'VulnerabilityName'; Pattern = 'Point and Print'; Severity = 'Finding' }
-        )
-    }
-
     'REGISTRY_WSUS_HTTP' = @{
         Title = "WSUS Update Server Configured over Cleartext HTTP"
         Risk = "Finding"
@@ -9120,6 +9090,274 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "T1557.001"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'SMB server signing'; Severity = 'Hint' }
+        )
+    }
+
+    # ========================================================================
+    # POINT AND PRINT PRINTER DRIVER POLICIES (Get-GPOPointAndPrint)
+    # Triggered on the decoded attributes of PointAndPrintPolicy objects.
+    # 'Exploitability' carries the verdict, the other attributes carry the evidence.
+    # ========================================================================
+
+    'GPO_POINTANDPRINT_EXPLOITABLE' = @{
+        Title = "Point and Print Allows Silent Driver Installation by Non-Administrators (PrintNightmare)"
+        Risk = "Finding"
+        BaseScore = 75
+        Description = "A Group Policy combines RestrictDriverInstallationToAdministrators=0 with a suppressed elevation prompt (NoWarningNoElevationOnInstall=1 or UpdatePromptSettings=2). Installing a printer driver runs code as SYSTEM, so on every machine in this GPO's scope any domain user can execute code as SYSTEM by pointing the machine at a print server they control. This is the configuration PrintNightmare exploitation relies on."
+        Impact = @(
+            "Any authenticated user gains SYSTEM on every machine in the GPO scope"
+            "The driver payload runs before any user interaction, with no prompt shown"
+            "Approved-server restrictions do not help - a suppressed prompt overrides them"
+            "Works against fully patched machines, because the policy re-enables the behaviour"
+        )
+        Attack = @(
+            "1. Stand up a print server exposing a malicious printer driver"
+            "2. Have a machine in scope connect to that shared printer (Point and Print)"
+            "3. The driver is installed with no prompt and its payload runs as SYSTEM"
+        )
+        Remediation = @(
+            "Set RestrictDriverInstallationToAdministrators=1 (or remove the value to keep the secure default)"
+            "Remove NoWarningNoElevationOnInstall=1 and set UpdatePromptSettings=0"
+            "Keep 'Point and Print Restrictions' Enabled with warning and elevation prompt for install and update"
+        )
+        References = @(
+            @{ Title = "A Practical Guide to PrintNightmare"; Url = "https://itm4n.github.io/printnightmare-exploitation/" }
+            @{ Title = "KB5005652 - Point and Print default driver installation behavior"; Url = "https://support.microsoft.com/en-us/topic/kb5005652-873642bf-2634-49c5-a23b-6d8e9a302872" }
+        )
+        Tools = @("PrintNightmare PoCs", "SharpPrintNightmare")
+        MITRE = "T1547.012"
+        Triggers = @(
+            @{ Attribute = 'Exploitability'; Pattern = '^Exploitable'; Severity = 'Finding' }
+            @{ Attribute = 'NewConnectionPrompt'; Pattern = '^No warning and no elevation prompt'; Severity = 'Finding' }
+            @{ Attribute = 'DriverUpdatePrompt'; Pattern = '^No warning and no elevation prompt'; Severity = 'Finding' }
+            @{ Attribute = 'Exploitability'; Pattern = '^Hardened'; Severity = 'Secure'; SeverityOnly = $true }
+            @{ Attribute = 'Exploitability'; Pattern = '^Not applicable'; Severity = 'Standard'; SeverityOnly = $true }
+            @{ Attribute = 'NewConnectionPrompt'; Pattern = '^Warning and elevation prompt'; Severity = 'Secure'; SeverityOnly = $true }
+            @{ Attribute = 'DriverUpdatePrompt'; Pattern = '^Warning and elevation prompt'; Severity = 'Secure'; SeverityOnly = $true }
+            @{ Attribute = 'DriverUpdatePrompt'; Pattern = '^Warning only'; Severity = 'Hint'; SeverityOnly = $true }
+        )
+    }
+
+    'GPO_POINTANDPRINT_NONADMIN_INSTALL' = @{
+        Title = "Printer Driver Installation Opened to Non-Administrators"
+        Risk = "Hint"
+        BaseScore = 45
+        Description = "A Group Policy sets RestrictDriverInstallationToAdministrators=0, reversing the hardening Microsoft made the default with the August 2021 update. Non-administrators may install printer drivers again. An elevation prompt is still shown, so this is not silent code execution on its own - but it removes the only control that reliably blocks PrintNightmare, and a single additional prompt setting turns it into full privilege escalation."
+        Impact = @(
+            "The post-2021 default that blocks PrintNightmare is explicitly turned off"
+            "Users can be socially engineered through the remaining elevation prompt"
+            "Adding NoWarningNoElevationOnInstall=1 makes the attack silent"
+        )
+        Attack = @(
+            "1. Serve a malicious printer driver from a print server"
+            "2. Get a user in scope to connect to the printer and accept the prompt"
+            "3. The driver payload runs as SYSTEM"
+        )
+        Remediation = @(
+            "Set RestrictDriverInstallationToAdministrators=1, or remove the value entirely"
+            "Deploy printers centrally so that users never need to install a driver themselves"
+        )
+        References = @(
+            @{ Title = "KB5005010 - Restricting installation of new printer drivers"; Url = "https://support.microsoft.com/en-us/topic/kb5005010-restricting-installation-of-new-printer-drivers-after-applying-the-july-6-2021-updates-31b91c02-05bc-4ada-a7ea-183b129578a7" }
+        )
+        Tools = @("PrintNightmare PoCs")
+        MITRE = "T1547.012"
+        Triggers = @(
+            @{ Attribute = 'Exploitability'; Pattern = '^Weakened'; Severity = 'Hint' }
+            @{ Attribute = 'DriverInstallRestriction'; Pattern = '^Open to non-administrators'; Severity = 'Finding' }
+            @{ Attribute = 'DriverInstallRestriction'; Pattern = '^Limited to Administrators'; Severity = 'Secure'; SeverityOnly = $true }
+        )
+    }
+
+    'GPO_POINTANDPRINT_LATENT' = @{
+        Title = "Point and Print Elevation Prompts Suppressed but Currently Blocked"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy suppresses the Point and Print elevation prompt (NoWarningNoElevationOnInstall=1, UpdatePromptSettings=2, or the Point and Print Restrictions policy set to Disabled), but does not set RestrictDriverInstallationToAdministrators=0. Since the August 2021 update that value defaults to 1 and overrides every Point and Print prompt setting, so the machines are not exploitable today. This is almost always a pre-2021 legacy policy that nobody removed. It becomes immediate SYSTEM-level privilege escalation the moment anyone sets RestrictDriverInstallationToAdministrators=0, for example to make a legacy printer work."
+        Impact = @(
+            "No exploitation today on machines carrying the August 2021 update"
+            "One unrelated registry change turns this into domain-wide privilege escalation"
+            "Machines missing the 2021 update are exploitable right now"
+        )
+        Attack = @(
+            "1. Wait for or provoke RestrictDriverInstallationToAdministrators=0 (a common printer troubleshooting step)"
+            "2. Serve a malicious driver from a print server"
+            "3. The driver installs with no prompt and runs as SYSTEM"
+        )
+        Remediation = @(
+            "Remove the prompt suppression - set the Point and Print Restrictions policy to Enabled with warning and elevation prompt"
+            "Explicitly set RestrictDriverInstallationToAdministrators=1 so the block does not depend on a default"
+        )
+        References = @(
+            @{ Title = "A Practical Guide to PrintNightmare"; Url = "https://itm4n.github.io/printnightmare-exploitation/" }
+            @{ Title = "CIS Benchmark 18.7 Printers"; Url = "https://www.cisecurity.org/cis-benchmarks" }
+        )
+        Tools = @("PrintNightmare PoCs")
+        MITRE = "T1547.012"
+        Triggers = @(
+            @{ Attribute = 'Exploitability'; Pattern = '^Latent'; Severity = 'Hint' }
+            @{ Attribute = 'PointAndPrintRestrictions'; Pattern = '^Disabled'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_POINTANDPRINT_USER_SCOPE' = @{
+        Title = "Point and Print Restrictions Configured in User Configuration (Ignored by Windows)"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A Group Policy configures Point and Print Restrictions under User Configuration. Windows ignores these policies in the user policy context on Windows 7 and later, documented by Microsoft in KB2307161. Whatever this policy says, permissive or restrictive, it has no effect. A restrictive user-scope policy is the dangerous case: it looks like the setting is under control while the machines actually run on whatever the Computer Configuration says, or on the Windows default."
+        Impact = @(
+            "The setting has no effect at all on any machine"
+            "Hardening believed to be deployed is not deployed"
+            "Audits and change reviews that read the GPO see a control that does not exist"
+        )
+        Attack = @(
+            "1. Read the effective machine-scope configuration instead of this policy"
+            "2. Attack according to the Computer Configuration or the Windows default"
+        )
+        Remediation = @(
+            "Move the settings to Computer Configuration > Administrative Templates > Printers"
+            "Remove the User Configuration policy so it cannot be mistaken for a control"
+        )
+        References = @(
+            @{ Title = "KB2307161 - Point and Print Restrictions policies are ignored"; Url = "https://learn.microsoft.com/en-US/troubleshoot/windows-client/group-policy/point-print-restrictions-policies-ignored" }
+        )
+        Tools = @("Manual GPO review")
+        MITRE = "T1547.012"
+        Triggers = @(
+            @{ Attribute = 'Exploitability'; Pattern = '^Not assessed'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_POINTANDPRINT_DRIVER_SOURCE' = @{
+        Title = "Printer Drivers May Be Sourced from Any Print Server"
+        Risk = "Hint"
+        BaseScore = 35
+        Description = "The GPO does not effectively restrict which print server a driver may come from. Package Point and Print is the only restriction that holds: an approved-server list on its own is bypassable, because a client falls back to a non-package Point and Print connection whenever the package connection fails, including when the approved-server policy is what blocked it. Both PackagePointAndPrintOnly=1 and a populated approved-server list are required. The legacy TrustedServers/ServerList and InForest restrictions limit the source but do not enforce driver signing, and neither restriction has any effect once the elevation prompt is suppressed."
+        Impact = @(
+            "A driver may be pulled from an attacker-controlled print server"
+            "An approved-server list without package enforcement is bypassed by falling back"
+            "Package enforcement without a server list still allows any server to supply the driver"
+        )
+        Attack = @(
+            "1. Stand up a print server anywhere the client can reach"
+            "2. Offer a malicious driver from it, or fall back to non-package Point and Print"
+            "3. Combine with a suppressed prompt for silent SYSTEM execution"
+        )
+        Remediation = @(
+            "Enable 'Only use Package Point and print' (PackagePointAndPrintOnly=1)"
+            "Enable 'Package Point and print - Approved servers' and list the print servers explicitly"
+            "Set both policies together - the approved-server list alone is bypassable"
+        )
+        References = @(
+            @{ Title = "Package Point and print - Approved servers"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-client/printing/point-and-print-restrictions" }
+            @{ Title = "A Practical Guide to PrintNightmare"; Url = "https://itm4n.github.io/printnightmare-exploitation/" }
+        )
+        Tools = @("Rogue print server")
+        MITRE = "T1547.012"
+        Triggers = @(
+            @{ Attribute = 'ApprovedDriverSource'; Pattern = '^Not restricted in this GPO'; Severity = 'Hint' }
+            @{ Attribute = 'ApprovedDriverSource'; Pattern = 'bypassable'; Severity = 'Hint' }
+            @{ Attribute = 'ApprovedDriverSource'; Pattern = 'no approved server list'; Severity = 'Hint' }
+            @{ Attribute = 'ApprovedDriverSource'; Pattern = '^Approved package servers only'; Severity = 'Secure'; SeverityOnly = $true }
+            @{ Attribute = 'ApprovedDriverSource'; Pattern = '^Trusted servers only'; Severity = 'Note'; SeverityOnly = $true }
+            @{ Attribute = 'ApprovedDriverSource'; Pattern = '^Forest computers only'; Severity = 'Note'; SeverityOnly = $true }
+        )
+    }
+
+    'GPO_PRINT_SPOOLER_RPC' = @{
+        Title = "Print Spooler Accepts Remote Client Connections via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets RegisterSpoolerRemoteRpcEndPoint=1, which is what the policy 'Allow Print Spooler to accept client connections' writes when it is Enabled. The spooler then exposes its remote RPC endpoint. That endpoint is the entry point for the whole PrintNightmare family and for the MS-RPRN authentication coercion known as the PrinterBug, which is particularly damaging on a Domain Controller. Note the inverted encoding of this value: 2, not 0, is the hardened state."
+        Impact = @(
+            "Remote MS-RPRN/MS-PAR attack surface is reachable on every machine in scope"
+            "Enables PrinterBug coercion for NTLM relay, critical on Domain Controllers"
+            "Remote driver installation attacks become reachable over the network"
+        )
+        Attack = @(
+            "1. Locate machines with a reachable spooler RPC endpoint"
+            "2. Coerce authentication via MS-RPRN RpcRemoteFindFirstPrinterChangeNotification"
+            "3. Relay the coerced authentication, for example to AD CS or LDAP"
+        )
+        Remediation = @(
+            "Set 'Allow Print Spooler to accept client connections' to Disabled (writes the value 2)"
+            "Disable the Print Spooler service entirely on Domain Controllers and servers that do not print"
+        )
+        References = @(
+            @{ Title = "Disable RegisterSpoolerRemoteRpcEndPoint"; Url = "https://github.com/rdboboia/disable-RegisterSpoolerRemoteRpcEndPoint" }
+            @{ Title = "A Practical Guide to PrintNightmare"; Url = "https://itm4n.github.io/printnightmare-exploitation/" }
+        )
+        Tools = @("SpoolSample", "PetitPotam", "printerbug.py")
+        MITRE = "T1187"
+        Triggers = @(
+            @{ Attribute = 'SpoolerClientConnections'; Pattern = '^Accepted'; Severity = 'Hint' }
+            @{ Attribute = 'SpoolerClientConnections'; Pattern = '^Refused'; Severity = 'Secure'; SeverityOnly = $true }
+        )
+    }
+
+    'GPO_PRINT_QUEUE_SPECIFIC_FILES' = @{
+        Title = "Spooler Copies Arbitrary Queue-Specific Files via GPO"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Group Policy sets CopyFilesPolicy=2 ('Allow all queue-specific files'), which lets a print server hand the client arbitrary files that the spooler copies locally. This is the vector behind CVE-2021-36958: the file copy happens in a SYSTEM context and is not limited to the colour profiles the default permits. The default, and the value written when the policy limits the copy to colour profiles, is 1."
+        Impact = @(
+            "A print server can place arbitrary files on the client via the spooler"
+            "File write in a SYSTEM context leads to local code execution"
+            "Applies to every machine in the GPO scope"
+        )
+        Attack = @(
+            "1. Stand up a print server offering a queue with attacker-chosen queue-specific files"
+            "2. Have a client in scope connect to that queue"
+            "3. The spooler copies the files locally, enabling SYSTEM-level code execution"
+        )
+        Remediation = @(
+            "Set 'Manage processing of Queue-specific files' to 'Limit Queue-specific files to Color profiles' (value 1)"
+            "Or set it to 'Do not allow Queue-specific files' (value 0) where colour profiles are not needed"
+        )
+        References = @(
+            @{ Title = "CERT/CC VU#131152 - queue-specific files (CVE-2021-36958)"; Url = "https://kb.cert.org/vuls/id/131152" }
+        )
+        Tools = @("Rogue print server")
+        MITRE = "T1547.012"
+        Triggers = @(
+            @{ Attribute = 'QueueSpecificFiles'; Pattern = '^All queue-specific files'; Severity = 'Finding' }
+            @{ Attribute = 'QueueSpecificFiles'; Pattern = '^Blocked'; Severity = 'Secure'; SeverityOnly = $true }
+            @{ Attribute = 'QueueSpecificFiles'; Pattern = '^Color profiles only'; Severity = 'Secure'; SeverityOnly = $true }
+        )
+    }
+
+    'GPO_PRINT_DRIVER_HARDENING' = @{
+        Title = "Printer Driver Delivery Hardening Turned Off via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy explicitly disables one of the secondary printer driver controls: DisableWebPnPDownload=0 permits print driver packages to be downloaded over HTTP, or the Security Option 'Devices: Prevent users from installing printer drivers' (AddPrinterDrivers=0) allows any user to install a printer driver during the local add-printer flow. Neither of these is the control that blocks PrintNightmare - that remains RestrictDriverInstallationToAdministrators - but both widen the ways a driver can reach a machine, and both are recommended settings in the CIS Benchmarks and DISA STIG."
+        Impact = @(
+            "Driver packages may be fetched over unauthenticated HTTP and tampered with in transit"
+            "Non-administrators may install printer drivers through the local add-printer flow"
+            "Widens the set of paths by which attacker-supplied driver code reaches a machine"
+        )
+        Attack = @(
+            "1. Intercept the cleartext HTTP driver download and substitute a malicious package"
+            "2. Or have a user install an attacker-supplied driver via the local add-printer flow"
+            "3. The driver code runs in a privileged context"
+        )
+        Remediation = @(
+            "Enable 'Turn off downloading of print drivers over HTTP' (DisableWebPnPDownload=1)"
+            "Enable 'Devices: Prevent users from installing printer drivers' (AddPrinterDrivers=1)"
+        )
+        References = @(
+            @{ Title = "DISA STIG V-220815 - print driver download over HTTP"; Url = "https://www.stigviewer.com/stigs/microsoft_windows_10/2024-11-25/finding/V-220815" }
+            @{ Title = "Devices: Prevent users from installing printer drivers"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/devices-prevent-users-from-installing-printer-drivers" }
+        )
+        Tools = @("Manual GPO review")
+        MITRE = "T1547.012"
+        Triggers = @(
+            @{ Attribute = 'WebDriverDownload'; Pattern = '^Allowed'; Severity = 'Hint' }
+            @{ Attribute = 'InstallDriversSecurityOption'; Pattern = '^Any user'; Severity = 'Hint' }
+            @{ Attribute = 'WebDriverDownload'; Pattern = '^Blocked'; Severity = 'Secure'; SeverityOnly = $true }
+            @{ Attribute = 'InstallDriversSecurityOption'; Pattern = '^Only Administrators'; Severity = 'Secure'; SeverityOnly = $true }
+            @{ Attribute = 'HTTPPrinting'; Pattern = '^Allowed'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'HTTPPrinting'; Pattern = '^Blocked'; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
 
