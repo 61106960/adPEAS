@@ -661,8 +661,27 @@ function Test-IsPrivileged {
         $dn = $null
         $name = $null
 
+        # Order matters, and it is the reverse of what reads naturally. A value that
+        # arrives through the pipeline is wrapped in a PSObject, and "-is [PSCustomObject]"
+        # is true for that wrapper whatever it holds - a piped SID string satisfies it just
+        # as an AD object does. With the object branch first, every piped string fell into
+        # it, found no objectSid, and came back as Unknown, so the whole ValueFromPipeline
+        # contract this function advertises silently did nothing. Testing the concrete
+        # types first is reliable in both cases: "-is [string]" is true for a plain string
+        # and for a wrapped one alike.
+        if ($Identity -is [string]) {
+            if ($Identity -match '^S-1-\d+-\d+') {
+                $sid = $Identity
+            } else {
+                $sid = ConvertTo-SID -Identity $Identity
+                $name = $Identity
+            }
+        }
+        elseif ($Identity -is [System.Security.Principal.SecurityIdentifier]) {
+            $sid = $Identity.Value
+        }
         # Handle AD Objects (PSCustomObject/Hashtable with objectSid)
-        if ($Identity -is [PSCustomObject] -or $Identity -is [System.Collections.Hashtable]) {
+        elseif ($Identity -is [PSCustomObject] -or $Identity -is [System.Collections.Hashtable]) {
             if ($Identity.objectSid) {
                 $sid = $Identity.objectSid
             } elseif ($Identity.SID) {
@@ -677,17 +696,6 @@ function Test-IsPrivileged {
                 $name = $Identity.sAMAccountName
             } elseif ($Identity.name) {
                 $name = $Identity.name
-            }
-        }
-        elseif ($Identity -is [System.Security.Principal.SecurityIdentifier]) {
-            $sid = $Identity.Value
-        }
-        elseif ($Identity -is [string]) {
-            if ($Identity -match '^S-1-\d+-\d+') {
-                $sid = $Identity
-            } else {
-                $sid = ConvertTo-SID -Identity $Identity
-                $name = $Identity
             }
         }
 
@@ -827,6 +835,18 @@ function Test-IsPrivileged {
 
                         Write-Log "[Test-IsPrivileged] Found $($sidHistoryValues.Count) sIDHistory entries for $sid"
 
+                        # Read every entry before deciding, and keep the highest tier
+                        # found. Returning on the first entry that matched anything made
+                        # the verdict depend on the order the directory happened to return
+                        # sIDHistory in: an account carrying both an Operator SID and
+                        # Domain Admins was reported as an Operator whenever the operator
+                        # entry came first. A privileged injection is the finding, and a
+                        # lesser one sitting in front of it must not mask it.
+                        $historyPrivilegedSID = $null
+                        $historyPrivilegedReason = $null
+                        $historyOperatorSID = $null
+                        $historyOperatorReason = $null
+
                         foreach ($historySID in $sidHistoryValues) {
                             # Convert byte array to SID string if needed
                             $historySIDString = $null
@@ -849,61 +869,61 @@ function Test-IsPrivileged {
                             # Check if this sIDHistory SID is privileged
                             $historyRIDSuffix = Get-SIDRIDSuffix -SID $historySIDString
 
-                            # Check Operator SIDs in sIDHistory
-                            if ($historySIDString -in $Script:OperatorSIDs) {
-                                $result = [PSCustomObject]@{
-                                    IsPrivileged = $false
-                                    Category = 'Operator'
-                                    Reason = "sIDHistory contains Operator SID (SID History Injection risk)"
-                                    MatchedSID = $historySIDString
-                                    MatchedGroup = $null
-                                    Identity = $Identity
-                                }
-                                Write-Log "[Test-IsPrivileged] CRITICAL: sIDHistory contains Operator SID: $historySIDString"
-                                return (Complete-PrivilegedCheck -Result $result -CacheKey $cacheKey -NoCache:$NoCache -IncludeOperators:$IncludeOperators)
-                            }
-
-                            # Check Operator RID suffixes in sIDHistory (e.g., Cert Publishers -517)
-                            if ($historyRIDSuffix -and $historyRIDSuffix -in $Script:OperatorRIDSuffixes) {
-                                $result = [PSCustomObject]@{
-                                    IsPrivileged = $false
-                                    Category = 'Operator'
-                                    Reason = "sIDHistory contains Operator RID $historyRIDSuffix (SID History Injection risk)"
-                                    MatchedSID = $historySIDString
-                                    MatchedGroup = $null
-                                    Identity = $Identity
-                                }
-                                Write-Log "[Test-IsPrivileged] CRITICAL: sIDHistory contains Operator RID: $historySIDString"
-                                return (Complete-PrivilegedCheck -Result $result -CacheKey $cacheKey -NoCache:$NoCache -IncludeOperators:$IncludeOperators)
-                            }
-
                             # Check Privileged SIDs in sIDHistory
-                            if ($historySIDString -in $Script:PrivilegedSIDs) {
-                                $result = [PSCustomObject]@{
-                                    IsPrivileged = $false
-                                    Category = 'Privileged'
-                                    Reason = "sIDHistory contains privileged SID (SID History Injection risk)"
-                                    MatchedSID = $historySIDString
-                                    MatchedGroup = $null
-                                    Identity = $Identity
-                                }
+                            if (-not $historyPrivilegedSID -and $historySIDString -in $Script:PrivilegedSIDs) {
+                                $historyPrivilegedSID = $historySIDString
+                                $historyPrivilegedReason = "sIDHistory contains privileged SID (SID History Injection risk)"
                                 Write-Log "[Test-IsPrivileged] CRITICAL: sIDHistory contains privileged SID: $historySIDString"
-                                return (Complete-PrivilegedCheck -Result $result -CacheKey $cacheKey -NoCache:$NoCache -IncludeOperators:$IncludeOperators)
+                                continue
                             }
 
                             # Check Privileged RID suffixes in sIDHistory
-                            if ($historyRIDSuffix -and $historyRIDSuffix -in $Script:PrivilegedRIDSuffixes) {
-                                $result = [PSCustomObject]@{
-                                    IsPrivileged = $false
-                                    Category = 'Privileged'
-                                    Reason = "sIDHistory contains privileged RID $historyRIDSuffix (SID History Injection risk)"
-                                    MatchedSID = $historySIDString
-                                    MatchedGroup = $null
-                                    Identity = $Identity
-                                }
+                            if (-not $historyPrivilegedSID -and $historyRIDSuffix -and $historyRIDSuffix -in $Script:PrivilegedRIDSuffixes) {
+                                $historyPrivilegedSID = $historySIDString
+                                $historyPrivilegedReason = "sIDHistory contains privileged RID $historyRIDSuffix (SID History Injection risk)"
                                 Write-Log "[Test-IsPrivileged] CRITICAL: sIDHistory contains privileged RID: $historySIDString"
-                                return (Complete-PrivilegedCheck -Result $result -CacheKey $cacheKey -NoCache:$NoCache -IncludeOperators:$IncludeOperators)
+                                continue
                             }
+
+                            # Check Operator SIDs in sIDHistory
+                            if (-not $historyOperatorSID -and $historySIDString -in $Script:OperatorSIDs) {
+                                $historyOperatorSID = $historySIDString
+                                $historyOperatorReason = "sIDHistory contains Operator SID (SID History Injection risk)"
+                                Write-Log "[Test-IsPrivileged] CRITICAL: sIDHistory contains Operator SID: $historySIDString"
+                                continue
+                            }
+
+                            # Check Operator RID suffixes in sIDHistory (e.g., Cert Publishers -517)
+                            if (-not $historyOperatorSID -and $historyRIDSuffix -and $historyRIDSuffix -in $Script:OperatorRIDSuffixes) {
+                                $historyOperatorSID = $historySIDString
+                                $historyOperatorReason = "sIDHistory contains Operator RID $historyRIDSuffix (SID History Injection risk)"
+                                Write-Log "[Test-IsPrivileged] CRITICAL: sIDHistory contains Operator RID: $historySIDString"
+                                continue
+                            }
+                        }
+
+                        if ($historyPrivilegedSID) {
+                            $result = [PSCustomObject]@{
+                                IsPrivileged = $false
+                                Category = 'Privileged'
+                                Reason = $historyPrivilegedReason
+                                MatchedSID = $historyPrivilegedSID
+                                MatchedGroup = $null
+                                Identity = $Identity
+                            }
+                            return (Complete-PrivilegedCheck -Result $result -CacheKey $cacheKey -NoCache:$NoCache -IncludeOperators:$IncludeOperators)
+                        }
+
+                        if ($historyOperatorSID) {
+                            $result = [PSCustomObject]@{
+                                IsPrivileged = $false
+                                Category = 'Operator'
+                                Reason = $historyOperatorReason
+                                MatchedSID = $historyOperatorSID
+                                MatchedGroup = $null
+                                Identity = $Identity
+                            }
+                            return (Complete-PrivilegedCheck -Result $result -CacheKey $cacheKey -NoCache:$NoCache -IncludeOperators:$IncludeOperators)
                         }
                     }
                 }
@@ -926,7 +946,43 @@ function Test-IsPrivileged {
                     $domainSID = $Script:LDAPContext.DomainSID
                 }
 
-                # 5a. Check Operator group membership (local array comparison)
+                # Tier order matters here, and it is the reverse of what it used to be.
+                # An identity can be a member of many groups at once, and the first match
+                # wins. Checking Operator first meant a Domain Admin who was also in
+                # Backup Operators came back as Category 'Operator' with IsPrivileged
+                # $false: the checks that use this gate to suppress already-privileged
+                # principals then reported that Domain Admin as an unprivileged account
+                # holding dangerous rights, which sends the reader after an escalation
+                # path that does not exist. The highest privilege an identity holds is
+                # the one that describes it, so Privileged is evaluated first.
+
+                # 5a. Check Privileged group membership (local array comparison)
+                $privilegedGroupSIDs = @('S-1-5-32-544')  # BUILTIN\Administrators
+                if ($domainSID) {
+                    foreach ($suffix in $Script:PrivilegedRIDSuffixes) {
+                        $privilegedGroupSIDs += "$domainSID$suffix"
+                    }
+                }
+
+                foreach ($groupSID in $privilegedGroupSIDs) {
+                    if ($groupSID -in $groupMemberships) {
+                        $groupName = ConvertFrom-SID -SID $groupSID
+                        if (-not $groupName) { $groupName = $groupSID }
+
+                        $result = [PSCustomObject]@{
+                            IsPrivileged = $false
+                            Category = 'Privileged'
+                            Reason = "Member of privileged group"
+                            MatchedSID = $groupSID
+                            MatchedGroup = $groupName
+                            Identity = $Identity
+                        }
+                        Write-Log "[Test-IsPrivileged] Privileged via membership: $groupName"
+                        return (Complete-PrivilegedCheck -Result $result -CacheKey $cacheKey -NoCache:$NoCache -IncludeOperators:$IncludeOperators)
+                    }
+                }
+
+                # 5b. Check Operator group membership (local array comparison)
                 # First check static Operator SIDs
                 foreach ($opSID in $Script:OperatorSIDs) {
                     if ($opSID -in $groupMemberships) {
@@ -965,32 +1021,6 @@ function Test-IsPrivileged {
                             Write-Log "[Test-IsPrivileged] Operator via membership (RID suffix): $groupName"
                             return (Complete-PrivilegedCheck -Result $result -CacheKey $cacheKey -NoCache:$NoCache -IncludeOperators:$IncludeOperators)
                         }
-                    }
-                }
-
-                # 5b. Check Privileged group membership (local array comparison)
-                $privilegedGroupSIDs = @('S-1-5-32-544')  # BUILTIN\Administrators
-                if ($domainSID) {
-                    foreach ($suffix in $Script:PrivilegedRIDSuffixes) {
-                        $privilegedGroupSIDs += "$domainSID$suffix"
-                    }
-                }
-
-                foreach ($groupSID in $privilegedGroupSIDs) {
-                    if ($groupSID -in $groupMemberships) {
-                        $groupName = ConvertFrom-SID -SID $groupSID
-                        if (-not $groupName) { $groupName = $groupSID }
-
-                        $result = [PSCustomObject]@{
-                            IsPrivileged = $false
-                            Category = 'Privileged'
-                            Reason = "Member of privileged group"
-                            MatchedSID = $groupSID
-                            MatchedGroup = $groupName
-                            Identity = $Identity
-                        }
-                        Write-Log "[Test-IsPrivileged] Privileged via membership: $groupName"
-                        return (Complete-PrivilegedCheck -Result $result -CacheKey $cacheKey -NoCache:$NoCache -IncludeOperators:$IncludeOperators)
                     }
                 }
 

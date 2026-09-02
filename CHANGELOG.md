@@ -34,6 +34,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A Domain Admin who was also a Backup Operator was reported as unprivileged.**
+  `Test-IsPrivileged` is the identity gate nine checks use to decide whether a principal
+  holding a dangerous right is already privileged. It tested Operator membership before
+  privileged membership, and the first match won, so the lesser of two memberships
+  decided the verdict. The same inversion applied to `sIDHistory`, where the check
+  returned on the first entry that matched anything and so depended on the order the
+  directory happened to return the attribute in. The highest privilege an identity holds
+  now decides, in both places.
+- **`Test-IsPrivileged` did nothing useful when used from the pipeline.** A value arriving
+  through the pipeline is wrapped in a `PSObject`, and `-is [PSCustomObject]` is true for
+  that wrapper whatever it holds. The AD-object branch was tested first, so every piped
+  SID string fell into it, found no `objectSid`, and came back as `Unknown` - the
+  `ValueFromPipeline` the function advertises silently did nothing.
+- **A user principal name never resolved to a SID.** The UPN branch of `ConvertTo-SID`
+  built its LDAP filter and then fell through to the shared result handling without ever
+  running the query, so it returned `$null` and wrote that to the negative cache. UPN is
+  a documented input format.
+- **A distinguished name with a comma or parentheses in its RDN resolved to nothing.**
+  `ConvertTo-SID` escaped DNs with a chain of `-replace` calls, but a `-replace`
+  replacement string does not process backslash escapes: `'\\5c'` produced a literal
+  double backslash and `'\\28'` a backslash followed by `\28`. Every escape was malformed,
+  so `CN=Doe\, Jane (Contractor),...` built an invalid filter and matched nothing without
+  an error. It now uses `Escape-LDAPFilterDN`, which also knows that a DN out of AD is
+  already RFC 4514 escaped. The sAMAccountName and UPN filters in the same function are
+  escaped as well, so an account name holding `(`, `)` or `*` can no longer close the
+  filter early or turn an exact lookup into a wildcard search.
 - **A delegation inherited from the Certificate Templates container was invisible.** The
   three AD CS access-control checks asked the descriptor for explicit ACEs only, so an
   ESC4 or ESC5 grant authored on the parent container never produced a finding, although

@@ -140,8 +140,16 @@ function ConvertTo-SID {
                 Write-Log "[ConvertTo-SID] Resolving DN via Invoke-LDAPSearch: $Identity"
 
                 # Use Invoke-LDAPSearch with distinguishedName filter - more reliable than Base scope search
-                # Escape special LDAP filter characters in the DN
-                $escapedDN = $Identity -replace '\\', '\\5c' -replace '\(', '\\28' -replace '\)', '\\29' -replace '\*', '\\2a'
+                # Escaping goes through Escape-LDAPFilterDN, not through a chain of
+                # -replace calls. In a -replace the replacement string does not process
+                # backslash escapes, so '\\5c' produced a literal double backslash and
+                # '\\28' a backslash followed by "\28": every one of those escapes was
+                # malformed. A DN like "CN=Doe\, Jane (Contractor),..." - a comma in the
+                # display name plus a parenthetical suffix, which is an ordinary shape -
+                # then built an invalid filter, matched nothing, and resolved to $null
+                # without an error. The helper also knows that a DN out of AD is already
+                # RFC 4514 escaped and must not have its backslashes escaped again.
+                $escapedDN = Escape-LDAPFilterDN -DistinguishedName $Identity
                 $filter = "(distinguishedName=$escapedDN)"
                 Write-Log "[ConvertTo-SID] DN filter: $filter"
 
@@ -194,7 +202,15 @@ function ConvertTo-SID {
             # Format 2: UPN (user@domain.com)
             elseif ($Identity -match '^[^@]+@[^@]+\.[^@]+$') {
                 Write-Log "[ConvertTo-SID] Resolving UPN: $Identity"
-                $filter = "(userPrincipalName=$Identity)"
+                $filter = "(userPrincipalName=$(Escape-LDAPFilterValue -Value $Identity))"
+
+                # The search itself was missing here. Every other branch runs its query;
+                # this one only built the filter and fell through to the shared result
+                # handling below, where $results was still empty. A UPN therefore never
+                # resolved - it returned $null and was written to the negative cache, so
+                # the second lookup did not even try. UPN is a documented input format.
+                Write-Log "[ConvertTo-SID] LDAP Filter: $filter"
+                $results = Invoke-LDAPSearch -Filter $filter -Properties "objectSid","sAMAccountName","distinguishedName" -SizeLimit 1
             }
             # Format 3: DOMAIN\sAMAccountName (requires cross-domain resolution)
             elseif ($Identity -match '^([^\\]+)\\(.+)$') {
@@ -214,7 +230,7 @@ function ConvertTo-SID {
                     }
 
                     # Search in target domain via GC
-                    $filter = "(sAMAccountName=$($crossDomainInfo.Identity))"
+                    $filter = "(sAMAccountName=$(Escape-LDAPFilterValue -Value $crossDomainInfo.Identity))"
                     $searchBase = $crossDomainInfo.TargetDomainDN
 
                     Write-Log "[ConvertTo-SID] LDAP Filter: $filter (SearchBase: $searchBase)"
@@ -238,7 +254,7 @@ function ConvertTo-SID {
                     }
                 } else {
                     # Same domain - standard query
-                    $filter = "(sAMAccountName=$($crossDomainInfo.Identity))"
+                    $filter = "(sAMAccountName=$(Escape-LDAPFilterValue -Value $crossDomainInfo.Identity))"
                     Write-Log "[ConvertTo-SID] LDAP Filter: $filter"
                     $results = Invoke-LDAPSearch -Filter $filter -Properties "objectSid","sAMAccountName","distinguishedName" -SizeLimit 1
                 }
@@ -246,7 +262,7 @@ function ConvertTo-SID {
             # Format 4: sAMAccountName only (no domain prefix)
             else {
                 Write-Log "[ConvertTo-SID] Resolving sAMAccountName: $Identity"
-                $filter = "(sAMAccountName=$Identity)"
+                $filter = "(sAMAccountName=$(Escape-LDAPFilterValue -Value $Identity))"
 
                 Write-Log "[ConvertTo-SID] LDAP Filter: $filter"
                 $results = Invoke-LDAPSearch -Filter $filter -Properties "objectSid","sAMAccountName","distinguishedName" -SizeLimit 1
