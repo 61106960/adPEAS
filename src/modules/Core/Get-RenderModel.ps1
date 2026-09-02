@@ -386,19 +386,28 @@ function ConvertTo-ActivityDate {
     }
 
     if ($Value -is [string]) {
+        # Generalized Time (e.g. "20180101000000.0Z" / "20180101000000Z" / bare digits).
+        # Checked before the FileTime parse, and anchored to the end: without the
+        # trailing Z a generalized time is 14 plain digits, which [long]::TryParse
+        # happily accepts. "20180101000000" was then read as a FileTime and came back
+        # as 1601-01-24 - four centuries off, and silently, because a valid DateTime
+        # came out the other end. Add-ActivityStatus dates never-logged-on accounts by
+        # whenCreated, so that turned a brand new account into an ancient one and
+        # produced exactly the false positive the guard there exists to prevent.
+        # The anchor matters as much as the order: an 18-digit FileTime string starts
+        # with 14 digits too, and a loose prefix match would claim it.
+        if ($Value -match '^(\d{14})(?:\.\d+)?Z?$') {
+            $gtDate = [DateTime]::MinValue
+            if ([DateTime]::TryParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$gtDate)) {
+                return $gtDate.ToLocalTime()
+            }
+        }
+
         # FileTime stored as string
         $parsed = 0L
         if ([long]::TryParse($Value, [ref]$parsed)) {
             if ($parsed -le 0 -or $parsed -eq 9223372036854775807) { return $null }
             try { return [DateTime]::FromFileTime($parsed) } catch { return $null }
-        }
-
-        # Generalized Time (e.g. "20180101000000.0Z" / "20180101000000Z")
-        if ($Value -match '^(\d{14})') {
-            $gtDate = [DateTime]::MinValue
-            if ([DateTime]::TryParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$gtDate)) {
-                return $gtDate.ToLocalTime()
-            }
         }
 
         # Generic DateTime string

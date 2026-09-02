@@ -34,6 +34,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A creation date without a trailing `Z` was read as the year 1601.** A generalized time
+  is 14 plain digits when the `Z` is absent, which `[long]::TryParse` accepts, so
+  `ConvertTo-ActivityDate` parsed it as a FileTime and returned a date four centuries off
+  without failing. `Add-ActivityStatus` dates never-logged-on accounts by `whenCreated`,
+  so a brand new account was aged past every threshold and flagged as long abandoned -
+  the exact false positive the guard there exists to prevent.
 - **Access control entries silently disappeared when scanning a domain from outside it.**
   Four places read a DACL through the `.Access` property of `ActiveDirectorySecurity`.
   That property asks for the rules as `NTAccount`, so the scanning host has to resolve
