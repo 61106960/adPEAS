@@ -4472,8 +4472,10 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             # Order matters: specific (Custom) before general!
             # Within-forest trusts: SID Filtering disabled is by design (no tooltip, just Standard severity)
             @{ Attribute = 'isQuarantined'; Pattern = '^False$'; Custom = 'is_within_forest_trust'; Severity = 'Standard'; SeverityOnly = $true }
-            # External/Forest trusts: SID Filtering disabled = security risk
-            @{ Attribute = 'isQuarantined'; Pattern = '^False$'; Severity = 'Finding' }
+            # External/Forest trusts: SID Filtering disabled = security risk. The guard is
+            # what keeps the tooltip off a within-forest trust - the SeverityOnly trigger
+            # above sets no FindingId, so without it this one still supplied the card.
+            @{ Attribute = 'isQuarantined'; Pattern = '^False$'; Custom = 'is_not_within_forest_trust'; Severity = 'Finding' }
             # Enabled = Secure (no tooltip needed, just severity coloring)
             @{ Attribute = 'isQuarantined'; Pattern = '^True$'; Severity = 'Secure'; SeverityOnly = $true }
         )
@@ -4591,7 +4593,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Triggers = @(
             # Within-forest trusts are always transitive by design (no special coloring)
             @{ Attribute = 'isTransitive'; Pattern = '^True$'; Custom = 'is_within_forest_trust'; Severity = 'Standard'; SeverityOnly = $true }
-            @{ Attribute = 'isTransitive'; Pattern = '^True$'; Severity = 'Hint' }
+            @{ Attribute = 'isTransitive'; Pattern = '^True$'; Custom = 'is_not_within_forest_trust'; Severity = 'Hint' }
         )
     }
 
@@ -9993,6 +9995,20 @@ function Test-CustomTrigger {
                 return $true
             }
             return $false
+        }
+
+        'is_not_within_forest_trust' {
+            # The inverse, and it is not redundant. A SeverityOnly trigger sets the colour
+            # but never a FindingId, so the second pass still runs and the general trigger
+            # still attached the tooltip: a within-forest trust was coloured Standard while
+            # being told its disabled SID filtering was a security risk. Inside one forest
+            # that is how trusts are supposed to work. Guarding the general trigger keeps
+            # the tooltip off without changing the two-pass rule, which ESC3 relies on to
+            # damp a colour while deliberately keeping another definition's finding card.
+            if ($SourceObject -and $SourceObject.isWithinForest -eq $true) {
+                return $false
+            }
+            return $true
         }
 
         'is_gpo_finding_object' {

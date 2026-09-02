@@ -76,6 +76,16 @@ function Get-DomainInformation {
             $KerberosPolicy = $null
             $PdcFSMO = $null
 
+            # Resolved from the crossRef at connect time and therefore already known,
+            # whatever the domain object query below does. It used to be read inside that
+            # query's success branch, so an unreadable domain object - a permissions
+            # problem, a timeout - reported the NetBIOS name as "(not found)" even though
+            # the session had it in hand.
+            if ($Script:LDAPContext.DomainNetBIOS) {
+                $NetBIOSName = $Script:LDAPContext.DomainNetBIOS
+                Write-Log "[Get-DomainInformation] NetBIOS name (from crossRef): $NetBIOSName"
+            }
+
             # Use cached RootDSE data from LDAPContext (already available after Ensure-LDAPConnection)
             $DomainDN = $Script:LDAPContext.DomainDN
             $ForestDN = $Script:LDAPContext.RootDomainNamingContext
@@ -92,13 +102,9 @@ function Get-DomainInformation {
 
                 if ($DomainObject) {
                     # The domain object's 'name' attribute is the DNS label (e.g. "example"),
-                    # NOT the NetBIOS name. Use the authoritative value resolved from the crossRef at
-                    # connect time (LDAPContext.DomainNetBIOS); only fall back to 'name' if unavailable.
-                    if ($Script:LDAPContext.DomainNetBIOS) {
-                        $NetBIOSName = $Script:LDAPContext.DomainNetBIOS
-                        Write-Log "[Get-DomainInformation] NetBIOS name (from crossRef): $NetBIOSName"
-                    }
-                    elseif ($DomainObject.name) {
+                    # NOT the NetBIOS name. It is only a last resort for the case where the
+                    # crossRef lookup above produced nothing.
+                    if (-not $NetBIOSName -and $DomainObject.name) {
                         $NetBIOSName = $DomainObject.name
                         Write-Log "[Get-DomainInformation] NetBIOS name fallback (domain object name/DNS label): $NetBIOSName"
                     }

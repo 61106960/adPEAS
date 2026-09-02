@@ -34,6 +34,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **An empty Exchange group was reported as having one member.** `@($null)` is a
+  one-element array holding `$null`, so a group with no `member` attribute announced
+  "Found 1 member(s)", looped once over a null DN, and could never reach its own
+  "has no members (unusual)" branch. Affected Exchange Trusted Subsystem, Exchange
+  Windows Permissions and Organization Management.
+- **A disabled account lockout was rated one step below a short password.** A
+  `lockoutThreshold` of 0 means an attacker may guess without limit against every account
+  in the domain, which is the precondition password spraying needs. It now rates with the
+  critical weaknesses instead of as a hint.
+- **A within-forest trust was told its disabled SID filtering was a security risk.**
+  Inside a single forest that is how trusts work. The trigger that was meant to suppress
+  the finding only set the colour: a severity-only trigger contributes no finding id, so
+  the general trigger still supplied the tooltip. The same applied to trust transitivity.
+- **The NetBIOS domain name was thrown away when the domain object could not be read.**
+  It is resolved from the crossRef at connect time and needs no domain object, but was
+  only read inside that query's success branch, so a permissions problem turned a known
+  value into "(not found)".
+- **SCOM service accounts and security groups were introduced by the server help text.**
+  Both sections announced themselves with the SCOM server object type although
+  `SCOMServiceAccount` and `SCOMGroup` carry their own section titles and explanations.
 - **The SCCM and SCOM checks never reported a single server.** Both looped with
   `foreach ($server in ...)` while declaring a `[string]$Server` parameter. PowerShell
   keeps that type constraint on the loop variable, so every directory object was coerced

@@ -132,7 +132,7 @@ function Get-SCOMInfrastructure {
             }
 
             # ===== Step 3: SCOM Service Accounts =====
-            Show-SubHeader "Searching for SCOM service accounts..." -ObjectType "SCOMServer"
+            Show-SubHeader "Searching for SCOM service accounts..." -ObjectType "SCOMServiceAccount"
 
             $serviceAccounts = @()
 
@@ -160,7 +160,7 @@ function Get-SCOMInfrastructure {
             }
 
             # ===== Step 4: SCOM-Related Security Groups =====
-            Show-SubHeader "Searching for SCOM-related security groups..." -ObjectType "SCOMServer"
+            Show-SubHeader "Searching for SCOM-related security groups..." -ObjectType "SCOMGroup"
 
             # Broad LDAP query to get potential SCOM groups
             $allGroups = Get-DomainGroup -LDAPFilter "(|(cn=*SCOM*)(cn=*OpsMgr*)(cn=*Operations Manager*))" @PSBoundParameters

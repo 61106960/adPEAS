@@ -188,10 +188,15 @@ function Get-DomainPasswordPolicy {
             if (-not $complexityEnabled) { $policyWeaknesses += "no_complexity" }
             if ($reversibleEncryption) { $policyWeaknesses += "reversible_encryption" }
 
+            # A threshold of 0 disables account lockout outright: an attacker may guess
+            # without limit against every account in the domain, which is the precondition
+            # that makes password spraying work. That is not a moderate weakness - it ranks
+            # with a short minimum length, not below it.
+            if ($lockoutThreshold -eq 0) { $policyWeaknesses += "no_lockout" }
+
             # Check for moderate weaknesses (Hint)
             $moderateWeaknesses = @()
             if ($minPwdLength -ge 8 -and $minPwdLength -lt 14) { $moderateWeaknesses += "moderate_password_length" }
-            if ($lockoutThreshold -eq 0) { $moderateWeaknesses += "no_lockout" }
             if ($lockoutThreshold -gt 10) { $moderateWeaknesses += "high_lockout_threshold" }
             if ($maxPwdAge -eq 0) { $moderateWeaknesses += "password_never_expires" }
 

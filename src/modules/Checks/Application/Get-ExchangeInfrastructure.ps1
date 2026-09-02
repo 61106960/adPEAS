@@ -581,7 +581,12 @@ function Get-ExchangeInfrastructure {
                 $trustedSubsystem = @(Get-DomainGroup -Identity "Exchange Trusted Subsystem" @PSBoundParameters)[0]
 
                 if ($trustedSubsystem) {
-                    $members = @($trustedSubsystem.member)
+                    # Where-Object is not cosmetic: a group with no member attribute yields
+                    # $null, and @($null) is a one-element array holding $null. Without the
+                    # filter an empty group was announced as "1 member(s)", the loop ran once
+                    # with a $null DN, and the "no members (unusual)" branch below could
+                    # never be reached.
+                    $members = @($trustedSubsystem.member | Where-Object { $_ })
 
                     if (@($members).Count -gt 0) {
                         Show-Line "Found $(@($members).Count) member(s) in Exchange Trusted Subsystem:" -Class Hint
@@ -625,7 +630,7 @@ function Get-ExchangeInfrastructure {
                 $windowsPermissions = @(Get-DomainGroup -Identity "Exchange Windows Permissions" @PSBoundParameters)[0]
 
                 if ($windowsPermissions) {
-                    $members = @($windowsPermissions.member)
+                    $members = @($windowsPermissions.member | Where-Object { $_ })
 
                     if (@($members).Count -gt 0) {
                         Show-Line "Found $(@($members).Count) member(s) in Exchange Windows Permissions:" -Class Hint
@@ -665,7 +670,7 @@ function Get-ExchangeInfrastructure {
                 $orgManagement = @(Get-DomainGroup -Identity "Organization Management" @PSBoundParameters)[0]
 
                 if ($orgManagement) {
-                    $members = @($orgManagement.member)
+                    $members = @($orgManagement.member | Where-Object { $_ })
 
                     if (@($members).Count -gt 0) {
                         Show-Line "Found $(@($members).Count) member(s) in Organization Management:" -Class Hint
