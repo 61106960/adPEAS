@@ -34,6 +34,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A delegation inherited from the Certificate Templates container was invisible.** The
+  three AD CS access-control checks asked the descriptor for explicit ACEs only, so an
+  ESC4 or ESC5 grant authored on the parent container never produced a finding, although
+  it is exactly as exploitable as one written on the template. Every other read path in
+  adPEAS already reads inherited ACEs.
+- **An AD CS enrollment principal could be judged against another principal's SID.** The
+  name list and the SID list are paired by index, but a SID was appended only when the ACE
+  carried one, so a single principal without a SID shifted every later entry. That can
+  rate an unprivileged group as privileged and silently suppress ESC1, ESC2 and ESC3 for
+  the whole template.
+- **One failing query in `Get-InfrastructureServers` ended the whole check.** All six
+  sections shared a single try/catch, so an unreadable Exchange group took MSSQL, SCCM,
+  SCOM and Entra ID Connect down with it and the report showed nothing for them, which
+  reads exactly like a domain that has none of those. Each section now handles its own
+  errors and says when its result is unknown rather than empty.
 - **A password that could not be read was reported as readable.** `Get-LAPSCredentialAccess`
   and `Get-BitLockerRecoveryKeyAccess` trusted the ACL-gated presence filter and never
   looked at the value that came back, so an object returned without its secret was

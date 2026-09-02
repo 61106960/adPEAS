@@ -51,15 +51,19 @@ function Get-InfrastructureServers {
     }
 
     process {
+        # Every section runs under its own try/catch. One try around all six meant the
+        # first failure ended the check: an Exchange group that could not be read took
+        # MSSQL, SCCM, SCOM and Entra ID Connect down with it, and the report showed
+        # nothing for them - indistinguishable from a domain that has none of those.
+        # A failed section now says so and the remaining ones still run.
+        if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            return
+        }
+
+        # ===== Domain Controllers =====
+        Show-SubHeader "Searching for Domain Controllers..." -ObjectType "DomainController"
+
         try {
-            # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
-                return
-            }
-
-            # ===== Domain Controllers =====
-            Show-SubHeader "Searching for Domain Controllers..." -ObjectType "DomainController"
-
             # SERVER_TRUST_ACCOUNT (8192) alone misses read-only domain controllers: an RODC
             # computer account carries WORKSTATION_TRUST_ACCOUNT plus PARTIAL_SECRETS_ACCOUNT
             # (16777216) and primaryGroupID 521. An RODC holds credentials and is a domain
@@ -75,10 +79,15 @@ function Get-InfrastructureServers {
             } else {
                 Show-Line "No Domain Controllers found (unexpected)" -Class "Note"
             }
+        } catch {
+            Write-Log "[Get-InfrastructureServers] Domain Controller enumeration failed: $_" -Level Error
+            Show-Line "Domain Controller enumeration failed - result unknown, not empty" -Class "Note"
+        }
 
-            # ===== Exchange Servers =====
-            Show-SubHeader "Searching for Exchange Servers..." -ObjectType "ExchangeServer"
+        # ===== Exchange Servers =====
+        Show-SubHeader "Searching for Exchange Servers..." -ObjectType "ExchangeServer"
 
+        try {
             # Detect Exchange servers via "Exchange Servers" group membership
             $exchangeServers = @()
             $exchangeServersGroup = @(Get-DomainGroup -Identity "Exchange Servers" @PSBoundParameters)[0]
@@ -102,10 +111,15 @@ function Get-InfrastructureServers {
             } else {
                 Show-Line "No Exchange Servers found" -Class "Note"
             }
+        } catch {
+            Write-Log "[Get-InfrastructureServers] Exchange Server enumeration failed: $_" -Level Error
+            Show-Line "Exchange Server enumeration failed - result unknown, not empty" -Class "Note"
+        }
 
-            # ===== MSSQL Servers =====
-            Show-SubHeader "Searching for MSSQL Servers..." -ObjectType "MSSQLServer"
+        # ===== MSSQL Servers =====
+        Show-SubHeader "Searching for MSSQL Servers..." -ObjectType "MSSQLServer"
 
+        try {
             $mssqlServers = @(Get-DomainComputer -LDAPFilter "(servicePrincipalName=MSSQLSvc/*)" @PSBoundParameters | Test-AccountActivity -IsEnabled)
 
             if ($mssqlServers.Count -gt 0) {
@@ -117,10 +131,15 @@ function Get-InfrastructureServers {
             } else {
                 Show-Line "No MSSQL Servers found via SPN" -Class "Note"
             }
+        } catch {
+            Write-Log "[Get-InfrastructureServers] MSSQL Server enumeration failed: $_" -Level Error
+            Show-Line "MSSQL Server enumeration failed - result unknown, not empty" -Class "Note"
+        }
 
-            # ===== SCCM/ConfigMgr Servers =====
-            Show-SubHeader "Searching for SCCM/ConfigMgr Servers..." -ObjectType "SCCMServerBasic"
+        # ===== SCCM/ConfigMgr Servers =====
+        Show-SubHeader "Searching for SCCM/ConfigMgr Servers..." -ObjectType "SCCMServerBasic"
 
+        try {
             # SCCM SPNs: SMS_Site_*, SMS_MP, SMS_DP, CCMSetup, etc.
             $sccmServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=SMS*)(servicePrincipalName=CCM*))" @PSBoundParameters | Test-AccountActivity -IsEnabled)
 
@@ -133,10 +152,15 @@ function Get-InfrastructureServers {
             } else {
                 Show-Line "No SCCM Servers found via SPN" -Class "Note"
             }
+        } catch {
+            Write-Log "[Get-InfrastructureServers] SCCM Server enumeration failed: $_" -Level Error
+            Show-Line "SCCM Server enumeration failed - result unknown, not empty" -Class "Note"
+        }
 
-            # ===== SCOM Servers =====
-            Show-SubHeader "Searching for SCOM Servers..." -ObjectType "SCOMServerBasic"
+        # ===== SCOM Servers =====
+        Show-SubHeader "Searching for SCOM Servers..." -ObjectType "SCOMServerBasic"
 
+        try {
             # SCOM SPNs: MSOMHSvc (Health Service), MSOMSdkSvc (SDK Service)
             $scomServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=MSOMHSvc/*)(servicePrincipalName=MSOMSdkSvc/*))" @PSBoundParameters | Test-AccountActivity -IsEnabled)
 
@@ -149,10 +173,15 @@ function Get-InfrastructureServers {
             } else {
                 Show-Line "No SCOM Servers found via SPN" -Class "Note"
             }
+        } catch {
+            Write-Log "[Get-InfrastructureServers] SCOM Server enumeration failed: $_" -Level Error
+            Show-Line "SCOM Server enumeration failed - result unknown, not empty" -Class "Note"
+        }
 
-            # ===== Entra ID Connect (Azure AD Connect) =====
-            Show-SubHeader "Searching for Entra ID Connect..." -ObjectType "EntraConnect"
+        # ===== Entra ID Connect (Azure AD Connect) =====
+        Show-SubHeader "Searching for Entra ID Connect..." -ObjectType "EntraConnect"
 
+        try {
             $entraConnectIndicators = @()
 
             # Method 1: Look for MSOL_ accounts (service accounts created by Azure AD Connect)
@@ -194,9 +223,9 @@ function Get-InfrastructureServers {
             } else {
                 Show-Line "No Entra ID Connect servers found" -Class "Note"
             }
-
         } catch {
-            Write-Log "[Get-InfrastructureServers] Error: $_" -Level Error
+            Write-Log "[Get-InfrastructureServers] Entra ID Connect enumeration failed: $_" -Level Error
+            Show-Line "Entra ID Connect enumeration failed - result unknown, not empty" -Class "Note"
         }
     }
 

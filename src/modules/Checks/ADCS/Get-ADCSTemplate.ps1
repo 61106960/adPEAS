@@ -268,9 +268,15 @@ function Get-ADCSTemplate {
 
                     if ($hasEnroll -and $ace.Name -and $enrollmentPrincipals -notcontains $ace.Name) {
                         $enrollmentPrincipals += $ace.Name
-                        if ($ace.SID) {
-                            $enrollmentPrincipalSIDs += $ace.SID
-                        }
+                        # Append unconditionally, even when the ACE carries no SID. The
+                        # consumer pairs the two lists by index, and appending only the
+                        # SIDs that exist shifted every later entry by one: a principal
+                        # was then judged against another principal's SID. That can rate
+                        # an unprivileged group as privileged and silently suppress the
+                        # ESC1, ESC2 and ESC3 findings for the whole template. A $null
+                        # here makes the consumer fall back to the name, which is the
+                        # documented behaviour for a principal without a SID.
+                        $enrollmentPrincipalSIDs += $ace.SID
                     }
                 }
             }

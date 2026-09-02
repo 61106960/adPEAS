@@ -362,7 +362,7 @@ function Get-ADCSVulnerabilities {
                     }
 
                     if ($securityDescriptor) {
-                        $dacl = $securityDescriptor.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
+                        $dacl = $securityDescriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 
                         # Only check for dangerous AD object permissions (NOT CA permissions!)
                         # These allow modifying the CA's AD enrollment configuration
@@ -783,7 +783,7 @@ function Get-ADCSVulnerabilities {
                         if ($containerObj -and $containerObj.nTSecurityDescriptor) {
                             $secDescriptor = New-Object System.DirectoryServices.ActiveDirectorySecurity
                             $secDescriptor.SetSecurityDescriptorBinaryForm($containerObj.nTSecurityDescriptor)
-                            $dacl = $secDescriptor.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
+                            $dacl = $secDescriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 
                             # Convert to PSCustomObject format
                             foreach ($ace in $dacl) {
@@ -1106,7 +1106,15 @@ function Get-ADCSVulnerabilities {
                     }
 
                     if ($securityDescriptor) {
-                        $dacl = $securityDescriptor.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
+                        # Inherited ACEs are included on purpose. A grant that reaches the
+                        # template from the Certificate Templates container is exactly as
+                        # exploitable as one written on the template itself - the attacker
+                        # does not care where the permission was authored. Excluding them
+                        # hid whole ESC4 findings in domains that delegate at the container.
+                        # Every other read path in adPEAS reads inherited ACEs too; only the
+                        # two GPO write paths look at explicit ACEs alone, which is correct
+                        # there because they modify what is written on the object.
+                        $dacl = $securityDescriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 
                         $dangerousACEs = @()
                         # Note: WriteProperty is only dangerous if it applies to ALL properties (empty ObjectType)
