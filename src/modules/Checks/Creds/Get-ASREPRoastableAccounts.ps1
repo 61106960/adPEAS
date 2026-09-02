@@ -66,7 +66,10 @@ function Get-ASREPRoastableAccounts {
 
             Show-SubHeader "Searching for AS-REP Roastable accounts (DONT_REQ_PREAUTH)..." -ObjectType "ASREPRoastable"
 
-            $asrepRoastableUsers = Get-DomainUser -PreauthNotRequired -ShowOwner @connectionParams
+            # -Enabled for the same reason Get-KerberoastableAccounts uses it: a disabled
+            # account cannot be roasted, the KDC answers KDC_ERR_CLIENT_REVOKED, and
+            # reporting it is noise that hides the accounts an attacker can actually use.
+            $asrepRoastableUsers = Get-DomainUser -PreauthNotRequired -Enabled -ShowOwner @connectionParams
 
             if (@($asrepRoastableUsers).Count -gt 0) {
                 Show-Line "Found $(@($asrepRoastableUsers).Count) AS-REP Roastable account(s):" -Class "Finding"
@@ -88,7 +91,19 @@ function Get-ASREPRoastableAccounts {
                         $testDomain = if ($Domain) { $Domain } else { $Script:LDAPContext.Domain }
                         $testDC = if ($Server) { $Server } else { $Script:LDAPContext.Server }
 
-                        $roastResult = Invoke-ASREPRoast -SAMAccountName $user.sAMAccountName -Domain $testDomain -DomainController $testDC
+                        # Per-account try/catch, the same way Get-KerberoastableAccounts does
+                        # it. Without it a single exception unwound into the check's outer
+                        # catch: every account after the failing one was dropped and no
+                        # closing line was printed, so a partial result looked complete.
+                        $roastResult = $null
+                        try {
+                            $roastResult = Invoke-ASREPRoast -SAMAccountName $user.sAMAccountName -Domain $testDomain -DomainController $testDC
+                        } catch {
+                            Write-Log "[Get-ASREPRoastableAccounts] AS-REP roast failed for $($user.sAMAccountName): $_"
+                            $user | Add-Member -NotePropertyName 'ASREPRoastError' -NotePropertyValue "Failed: $_" -Force
+                        }
+
+                        if ($null -eq $roastResult) { $roastResult = [PSCustomObject]@{ Success = $false; Hash = $null; Error = $null } }
 
                         if ($roastResult.Success -and $roastResult.Hash) {
                             # Determine hashcat mode based on encryption type

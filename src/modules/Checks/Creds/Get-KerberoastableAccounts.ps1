@@ -69,8 +69,21 @@ function Get-KerberoastableAccounts {
 
             Show-SubHeader "Searching for Kerberoastable accounts (users with SPNs)..." -ObjectType "Kerberoastable"
 
-            # Use optimized filters: -SPN (has SPN), -Enabled (not disabled), additional filter: exclude krbtgt
-            $kerberoastableUsers = @(Get-DomainUser -SPN -Enabled -LDAPFilter "(!(samAccountName=krbtgt))" -ShowOwner @connectionParams)
+            # Use optimized filters: -SPN (has SPN), -Enabled (not disabled), additional filter: exclude krbtgt.
+            #
+            # krbtgt is excluded by its well-known RID (-502) rather than by its name. The
+            # account can be renamed, and a name-based exclusion then lets it into the
+            # report as a kerberoastable account - which it is by design and which nobody
+            # can act on. Project rule: identity checks are SID based, names are not stable.
+            # The name filter stays as the fallback for a session with no resolved domain SID.
+            $domainSID = $Script:LDAPContext['DomainSID']
+            $krbtgtExclusion = if ($domainSID) {
+                "(!(objectSid=$domainSID-502))"
+            } else {
+                Write-Log "[Get-KerberoastableAccounts] No domain SID in session - excluding krbtgt by name"
+                "(!(samAccountName=krbtgt))"
+            }
+            $kerberoastableUsers = @(Get-DomainUser -SPN -Enabled -LDAPFilter $krbtgtExclusion -ShowOwner @connectionParams)
 
             if (@($kerberoastableUsers).Count -gt 0) {
                 Show-Line "Found $(@($kerberoastableUsers).Count) kerberoastable user account(s):" -Class "Finding"
