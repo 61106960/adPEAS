@@ -507,7 +507,14 @@ function Get-CertificateTemplate {
                                     $CertEnrollGuid = [Guid]"0e10c968-78fb-11d2-90d4-00c04f79dc55"
                                     $AllExtendedRightsGuid = [Guid]"00000000-0000-0000-0000-000000000000"
 
-                                    $SD.Access | Where-Object {
+                                    # GetAccessRules with SecurityIdentifier, not .Access.
+                                    # .Access asks for the rules as NTAccount and silently
+                                    # drops every ACE whose SID the local machine cannot
+                                    # name-resolve, which against a foreign domain is all
+                                    # of them - a template enrollable by a domain group
+                                    # then looked like a template nobody can enroll, and
+                                    # ESC1, ESC2 and ESC3 lost their input.
+                                    $SD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object {
                                         $_.AccessControlType -eq 'Allow' -and
                                         ($_.ObjectType -eq $CertEnrollGuid -or $_.ObjectType -eq $AllExtendedRightsGuid)
                                     }

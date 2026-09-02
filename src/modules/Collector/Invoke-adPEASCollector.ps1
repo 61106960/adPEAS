@@ -1883,7 +1883,12 @@ function Collect-BHComputers {
             try {
                 $sd = New-Object System.DirectoryServices.ActiveDirectorySecurity
                 $sd.SetSecurityDescriptorBinaryForm($computer.'msDS-AllowedToActOnBehalfOfOtherIdentity')
-                foreach ($ace in $sd.Access) {
+                # GetAccessRules with SecurityIdentifier, not .Access: .Access resolves
+                # every SID to an NTAccount through the local machine and drops the ones
+                # it cannot, which against a foreign domain silently emptied the RBCD
+                # list. The principals in this descriptor are exactly the ones that can
+                # impersonate against the computer, so losing them loses the finding.
+                foreach ($ace in $sd.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
                     # Get SID - IdentityReference may be SecurityIdentifier or NTAccount
                     $sidValue = $null
                     $identRef = $ace.IdentityReference

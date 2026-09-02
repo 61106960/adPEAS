@@ -34,6 +34,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **Access control entries silently disappeared when scanning a domain from outside it.**
+  Four places read a DACL through the `.Access` property of `ActiveDirectorySecurity`.
+  That property asks for the rules as `NTAccount`, so the scanning host has to resolve
+  every SID to an account name - and it drops the entries it cannot resolve, without an
+  error. Against a domain the host is not joined to, which is how this tool is normally
+  used, that is every domain principal in the descriptor: the DACL came back holding the
+  built-in identities alone, or empty, and no check above could tell an empty ACL from an
+  unreadable one. `ConvertFrom-SecurityDescriptor` feeds `Get-ObjectACL`,
+  `Invoke-LDAPSearch` and `Get-OUPermissions`, so this reached every ACL-based check; the
+  other three sites were the AdminSDHolder analysis in `Get-PrivilegedGroupMembers`, the
+  enrollment detection in `Get-CertificateTemplate` that ESC1, ESC2 and ESC3 depend on,
+  and the RBCD parsing in the collector. All four now ask for
+  `SecurityIdentifier`, which needs no name resolution and cannot drop anything, and
+  resolve the display name through `ConvertFrom-SID` as CLAUDE.md requires.
 - **A Domain Admin who was also a Backup Operator was reported as unprivileged.**
   `Test-IsPrivileged` is the identity gate nine checks use to decide whether a principal
   holding a dangerous right is already privileged. It tested Operator membership before

@@ -822,7 +822,16 @@ function Get-PrivilegedGroupMembers {
                     # Deduplicate by tracking seen SIDs
                     $SeenSIDs = @{}
 
-                    foreach ($ACE in $SecurityDescriptor.Access) {
+                    # GetAccessRules with SecurityIdentifier, not .Access. .Access asks for
+                    # the rules as NTAccount, which makes the local machine name-resolve
+                    # every SID and silently drops the ones it cannot. Against a domain
+                    # this host is not joined to that is every domain principal, so the
+                    # AdminSDHolder DACL came back holding only built-in identities - and
+                    # a dangerous ACE on AdminSDHolder is a persistence mechanism that has
+                    # to be seen.
+                    $AdminSDHolderRules = $SecurityDescriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+
+                    foreach ($ACE in $AdminSDHolderRules) {
                         if ($ACE.AccessControlType -ne 'Allow' -or $ACE.IsInherited) { continue }
 
                         # Get SID - IdentityReference may be SecurityIdentifier or NTAccount

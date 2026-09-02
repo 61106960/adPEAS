@@ -54,36 +54,21 @@ function ConvertFrom-SecurityDescriptor {
         # Process each ACE into structured objects
         $ACEList = @()
 
-        foreach ($ACE in $SD.Access) {
-            # Get both SID and Name for each principal
-            $PrincipalSID = $null
-            $PrincipalName = $null
+        # GetAccessRules with SecurityIdentifier, not the .Access property. .Access asks
+        # for the rules as NTAccount, which makes the local machine resolve every SID to
+        # a name - and it silently drops the ACEs it cannot resolve. Against a domain the
+        # scanning host is not joined to, which is the normal case for this tool, that is
+        # every domain principal in the descriptor: the DACL came back with the built-in
+        # identities only, or empty, and no error anywhere. Asking for SecurityIdentifier
+        # needs no name resolution at all, so nothing can be dropped, and it is also what
+        # CLAUDE.md requires - identity decisions are made on the SID, and the display
+        # name comes from ConvertFrom-SID rather than from the host's own account
+        # database, which would hand back a localized name on a non-English host.
+        $AccessRules = $SD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 
-            # Try to translate IdentityReference to SID directly (works for any language)
-            try {
-                $sidObj = $ACE.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier])
-                $PrincipalSID = $sidObj.Value
-            } catch {
-                # Translate failed - IdentityReference might already be a SID string
-                $Principal = $ACE.IdentityReference.Value
-                if ($Principal -match '^S-1-') {
-                    $PrincipalSID = $Principal
-                }
-            }
-
-            # Get the display name
-            $Principal = $ACE.IdentityReference.Value
-            if ($Principal -match '^S-1-') {
-                # Principal is a SID - resolve to name for display
-                $PrincipalName = ConvertFrom-SID -SID $Principal
-            } else {
-                # Principal is already a name
-                $PrincipalName = $Principal
-                # If we didn't get SID via Translate, try ConvertTo-SID as fallback
-                if (-not $PrincipalSID) {
-                    $PrincipalSID = ConvertTo-SID -Identity $Principal
-                }
-            }
+        foreach ($ACE in $AccessRules) {
+            $PrincipalSID = $ACE.IdentityReference.Value
+            $PrincipalName = ConvertFrom-SID -SID $PrincipalSID
 
             $ACEType = $ACE.AccessControlType
             $Rights = $ACE.ActiveDirectoryRights -replace '\s', ''
