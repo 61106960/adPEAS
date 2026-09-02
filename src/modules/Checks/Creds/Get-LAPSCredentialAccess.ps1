@@ -116,20 +116,46 @@ function Get-LAPSCredentialAccess {
             }
 
             $readableComputers = @()
+            $withheldCount = 0
+
+            # The presence filter is ACL-gated, so a returned object is normally a readable
+            # one. Trust it only as far as the value that actually arrives: an object that
+            # comes back without the attribute is not a readable password, and counting it
+            # as one tells the operator they hold access they do not have. This check
+            # reports Finding, the most severe verdict the tool has, so a false positive
+            # here is expensive.
+            $hasValue = {
+                param($Object, $Attribute)
+                -not [string]::IsNullOrWhiteSpace([string]$Object.$Attribute)
+            }
 
             # Test Legacy LAPS - query for readable ms-Mcs-AdmPwd
             # ACL-based: attribute only returned if user has read permission
             if ($lapsLegacySchemaPresent) {
                 Write-Log "[Get-LAPSCredentialAccess] Querying for readable Legacy LAPS passwords"
                 $computersWithLegacy = @(Get-DomainComputer -LDAPFilter "(ms-Mcs-AdmPwd=*)" @PSBoundParameters)
-                $readableComputers += $computersWithLegacy
+                foreach ($comp in $computersWithLegacy) {
+                    if (& $hasValue $comp 'ms-Mcs-AdmPwd') {
+                        $readableComputers += $comp
+                    } else {
+                        $withheldCount++
+                        Write-Log "[Get-LAPSCredentialAccess] Legacy LAPS attribute withheld for '$($comp.distinguishedName)'"
+                    }
+                }
             }
 
             # Test Windows LAPS plaintext - query for msLAPS-Password attribute in AD
             if ($windowsLAPSSchemaPresent) {
                 Write-Log "[Get-LAPSCredentialAccess] Querying for readable Windows LAPS plaintext passwords"
                 $computersWithPlaintext = @(Get-DomainComputer -LDAPFilter "(msLAPS-Password=*)" @PSBoundParameters)
-                $readableComputers += $computersWithPlaintext
+                foreach ($comp in $computersWithPlaintext) {
+                    if (& $hasValue $comp 'msLAPS-Password') {
+                        $readableComputers += $comp
+                    } else {
+                        $withheldCount++
+                        Write-Log "[Get-LAPSCredentialAccess] Windows LAPS attribute withheld for '$($comp.distinguishedName)'"
+                    }
+                }
             }
 
             # Test Windows LAPS encrypted - optimized approach:
@@ -224,6 +250,13 @@ function Get-LAPSCredentialAccess {
                 if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS credential access" -Completed }
             } else {
                 Show-Line "No readable LAPS passwords found" -Class "Secure"
+            }
+
+            # Say so rather than staying silent: these computers do have a LAPS password
+            # stored, the directory just did not hand it over. That is a different fact
+            # from "no LAPS in this domain" and it changes what the reader does next.
+            if ($withheldCount -gt 0) {
+                Show-Line "$withheldCount computer(s) have a LAPS password stored that this account may not read" -Class "Note"
             }
 
         } catch {

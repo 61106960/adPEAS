@@ -34,6 +34,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A password that could not be read was reported as readable.** `Get-LAPSCredentialAccess`
+  and `Get-BitLockerRecoveryKeyAccess` trusted the ACL-gated presence filter and never
+  looked at the value that came back, so an object returned without its secret was
+  announced as a readable credential. The LAPS check reports Finding, the most severe
+  verdict the tool has. Both checks now report only the entries that actually carry a
+  value, and say separately how many secrets exist that the account may not read.
+- **The Norwegian and Esperanto spellings of "password" were never matched.** The pattern
+  `passw\S*` was documented as covering "passord" and "pasvorto", which it cannot: neither
+  word contains "w". A Norwegian description with a real password in it was invisible, and
+  the Norwegian terms in the exclusion list were unreachable for the same reason, so
+  Norwegian policy prose was reported as a credential mention. One shared token now covers
+  every spelling.
+- **A credential mention in the description hid an assignment in the info attribute.** The
+  first match ended the scan of the whole account, so an account was filed as a yellow
+  mention while an explicit password one attribute away went unread. Both attributes are
+  now read and the stronger hit decides.
 - **An empty Exchange group was reported as having one member.** `@($null)` is a
   one-element array holding `$null`, so a group with no `member` attribute announced
   "Found 1 member(s)", looped once over a null DN, and could never reach its own

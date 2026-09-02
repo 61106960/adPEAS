@@ -72,11 +72,22 @@ function Get-PasswordInDescription {
                 return
             }
 
+            # One token for every language variant of the word, used by all three pattern
+            # lists below so they cannot drift apart. It replaces a bare 'passw\S*', which
+            # was documented as covering Norwegian "passord" and Esperanto "pasvorto" but
+            # cannot: neither word contains "passw". Two consequences, both silent - a
+            # Norwegian description holding a real password was never matched, and the
+            # Norwegian exclusion terms further down (lengde, utloep, maa, boer) could
+            # never fire either, because they were anchored to the same impossible prefix.
+            #   sw\S*   password, passwd, passwort, passwuert   (EN/DE/LU)
+            #   sord    passord                                 (NO)
+            #   vorto   pasvorto                                (EO)
+            $pwToken = 'pas(?:sw\S*|sord|vorto)'
+
             # Tier 1: High-confidence patterns (password assignment with value)
-            # passw\S* covers: password, passwd, passwort, passord, passwuert, pasvorto (EN/DE/NO/LU/EO)
             $tier1Patterns = @(
-                @{ Pattern = 'passw\S*\s*[=:]\s*["''][^"'']{3,}["'']'; Description = "Password-variant assignment (quoted)" }
-                @{ Pattern = 'passw\S*\s*[=:]\s*(?!["''])\S{3,}'; Description = "Password-variant assignment (unquoted)" }
+                @{ Pattern = $pwToken + '\s*[=:]\s*["''][^"'']{3,}["'']'; Description = "Password-variant assignment (quoted)" }
+                @{ Pattern = $pwToken + '\s*[=:]\s*(?!["''])\S{3,}'; Description = "Password-variant assignment (unquoted)" }
                 @{ Pattern = 'pwd\s*[=:]\s*\S{3,}'; Description = "Pwd assignment" }
                 @{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" }
                 @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" }
@@ -86,7 +97,7 @@ function Get-PasswordInDescription {
 
             # Tier 2: Lower-confidence patterns (generic credential mentions)
             $tier2Patterns = @(
-                @{ Pattern = 'passw\S*'; Description = "Password-variant mention (EN/DE/NO/LU/EO)" }
+                @{ Pattern = $pwToken; Description = "Password-variant mention (EN/DE/NO/LU/EO)" }
                 @{ Pattern = '\bparol[ae]?\b'; Description = "Parola/parole/parol mention (RO/LV/IT)" }
                 @{ Pattern = '\bcred(ential)?s?\b'; Description = "Credential mention" }
                 @{ Pattern = '\b(secret|token)\s*[=:]\s*\S{5,}'; Description = "Secret/token assignment" }
@@ -97,27 +108,31 @@ function Get-PasswordInDescription {
             # Only exact terms - no wildcards for foreign words we haven't verified in real AD data
             $exclusionPatterns = @(
                 # Policy/guideline text (EN/DE/IT/RO)
-                'passw\S*\s*(policy|policies|requirement|guideline|richtlinie|anforderung)',
+                # Every concatenation is parenthesized on purpose: in PowerShell the comma
+                # binds tighter than +, so "$pwToken + 'a', $pwToken + 'b'" parses as
+                # "$pwToken + @('a', ...)" and collapses the whole list into one glued
+                # string. The exclusions then match nothing at all.
+                ($pwToken + '\s*(policy|policies|requirement|guideline|richtlinie|anforderung)'),
                 '\bparol[ae]?\s*(policy|politica|cerinta)',
                 # Modal verbs: "password must/should..." (EN/DE/NO/IT/RO)
                 # Norwegian letters are written as regex \u escapes to keep this file pure ASCII:
                 # \u00E5 = a with ring, \u00F8 = o with stroke
-                'passw\S*\s+(must|should|cannot|shall|muss|soll|darf|kann|m\u00E5|b\u00F8r|deve|trebuie)\s+',
+                ($pwToken + '\s+(must|should|cannot|shall|muss|soll|darf|kann|m\u00E5|b\u00F8r|deve|trebuie)\s+'),
                 # Technical terms: length, complexity, expiry (EN/DE/NO/IT)
-                'passw\S*\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utl\u00F8p|lunghezza|scadenza)',
+                ($pwToken + '\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utl\u00F8p|lunghezza|scadenza)'),
                 # Reset/change/recover (EN/IT/RO)
-                'passw\S*\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)',
+                ($pwToken + '\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)'),
                 '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
                 # Relative: "minimum/maximum password"
-                '(minimum|maximum)\s+passw\S*',
+                ('(minimum|maximum)\s+' + $pwToken),
                 # Imperative: "set/change/update your password" (EN)
-                '(set|change|update|reset)\s+(your|the|a)\s+passw\S*',
+                ('(set|change|update|reset)\s+(your|the|a)\s+' + $pwToken),
                 # Placeholders
-                'passw\S*\s*:\s*\*+',
-                'passw\S*\s*:\s*<[^>]+>',
+                ($pwToken + '\s*:\s*\*+'),
+                ($pwToken + '\s*:\s*<[^>]+>'),
                 # Prompts
-                'Enter\s+(your\s+)?passw\S*',
-                'passw\S*\s+prompt'
+                ('Enter\s+(your\s+)?' + $pwToken),
+                ($pwToken + '\s+prompt')
             )
 
             $findingCount = 0
@@ -155,6 +170,15 @@ function Get-PasswordInDescription {
                     if ($candidate.description) { $attributesToCheck += @{ Name = 'description'; Value = $candidate.description } }
                     if ($candidate.info) { $attributesToCheck += @{ Name = 'info'; Value = $candidate.info } }
 
+                    # Look at every attribute before reporting, and keep the strongest hit.
+                    # Reporting on the first hit meant description was allowed to decide the
+                    # severity for the whole account: a bare mention there ("password reset
+                    # by helpdesk") broke the loop as a Hint, and an actual assignment in
+                    # info was never examined. The account was filed one tier too low and
+                    # the credential the check exists to find went unreported.
+                    $bestTier = 0
+                    $bestAttrName = $null
+
                     foreach ($attr in $attributesToCheck) {
                         $attrValue = [string]$attr.Value
 
@@ -180,20 +204,10 @@ function Get-PasswordInDescription {
                         }
 
                         if ($isTier1) {
-                            $findingCount++
-                            # Phase 2: Re-fetch full object for Show-Object display
-                            $fullObj = if ($objectType -eq 'User') {
-                                @(Get-DomainUser -Identity $accountName -ShowOwner @connectionParams)[0]
-                            } else {
-                                @(Get-DomainComputer -Identity $accountName @connectionParams)[0]
-                            }
-                            if ($fullObj) {
-                                $fullObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordInDescription' -Force
-                                $fullObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue "$objectType - $($attr.Name) attribute" -Force
-                                Show-Line "Probable credential found in $($attr.Name) of $objectType '$($fullObj.sAMAccountName)'" -Class Finding
-                                Show-Object $fullObj
-                            }
-                            break  # One match per object is enough
+                            # Nothing outranks a tier 1 hit, so stop looking.
+                            $bestTier = 1
+                            $bestAttrName = $attr.Name
+                            break
                         }
 
                         # Check Tier 2 patterns (Hint)
@@ -206,21 +220,33 @@ function Get-PasswordInDescription {
                             }
                         }
 
-                        if ($isTier2) {
-                            $hintCount++
-                            # Phase 2: Re-fetch full object for Show-Object display
-                            $fullObj = if ($objectType -eq 'User') {
-                                @(Get-DomainUser -Identity $accountName -ShowOwner @connectionParams)[0]
+                        # Remember the first tier 2 hit, but keep reading: a later attribute
+                        # may still hold an assignment.
+                        if ($isTier2 -and $bestTier -eq 0) {
+                            $bestTier = 2
+                            $bestAttrName = $attr.Name
+                        }
+                    }
+
+                    if ($bestTier -gt 0) {
+                        # Phase 2: Re-fetch full object for Show-Object display
+                        $fullObj = if ($objectType -eq 'User') {
+                            @(Get-DomainUser -Identity $accountName -ShowOwner @connectionParams)[0]
+                        } else {
+                            @(Get-DomainComputer -Identity $accountName @connectionParams)[0]
+                        }
+
+                        if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
+
+                        if ($fullObj) {
+                            $fullObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordInDescription' -Force
+                            $fullObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue "$objectType - $bestAttrName attribute" -Force
+                            if ($bestTier -eq 1) {
+                                Show-Line "Probable credential found in $bestAttrName of $objectType '$($fullObj.sAMAccountName)'" -Class Finding
                             } else {
-                                @(Get-DomainComputer -Identity $accountName @connectionParams)[0]
+                                Show-Line "Possible credential mention in $bestAttrName of $objectType '$($fullObj.sAMAccountName)'" -Class Hint
                             }
-                            if ($fullObj) {
-                                $fullObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordInDescription' -Force
-                                $fullObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue "$objectType - $($attr.Name) attribute" -Force
-                                Show-Line "Possible credential mention in $($attr.Name) of $objectType '$($fullObj.sAMAccountName)'" -Class Hint
-                                Show-Object $fullObj
-                            }
-                            break  # One match per object is enough
+                            Show-Object $fullObj
                         }
                     }
                 }

@@ -134,6 +134,22 @@ function Get-BitLockerRecoveryKeyAccess {
             Write-Log "[Get-BitLockerRecoveryKeyAccess] Found $($recoveryObjects.Count) readable recovery key(s)"
 
             # ===== Step 3: Output =====
+            # The presence filter is ACL-gated, so a returned object is normally a readable
+            # one. Trust it only as far as the value that actually arrives: an object that
+            # comes back without the recovery password is not a readable key, and listing
+            # it as one hands the reader a row with a blank password and an access claim
+            # that is not true.
+            $withheldObjects = @($recoveryObjects | Where-Object {
+                [string]::IsNullOrWhiteSpace([string]$_.'msFVE-RecoveryPassword')
+            })
+            $recoveryObjects = @($recoveryObjects | Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_.'msFVE-RecoveryPassword')
+            })
+
+            if ($withheldObjects.Count -gt 0) {
+                Write-Log "[Get-BitLockerRecoveryKeyAccess] $($withheldObjects.Count) recovery object(s) returned without a readable password"
+            }
+
             if ($recoveryObjects.Count -gt 0) {
                 Show-Line "Found $($recoveryObjects.Count) readable BitLocker recovery key(s):" -Class "Hint"
 
@@ -183,6 +199,12 @@ function Get-BitLockerRecoveryKeyAccess {
                 if ($totalObjects -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking BitLocker recovery key access" -Completed }
             } else {
                 Show-Line "No readable BitLocker recovery keys found" -Class "Secure"
+            }
+
+            # These volumes do have a recovery key escrowed, the directory just did not hand
+            # it over. That is a different fact from "no BitLocker escrow here".
+            if ($withheldObjects.Count -gt 0) {
+                Show-Line "$($withheldObjects.Count) escrowed recovery key(s) exist that this account may not read" -Class "Note"
             }
 
         } catch {
