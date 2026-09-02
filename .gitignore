@@ -9,6 +9,9 @@ adPEAS_obf.ps1
 CLAUDE.md
 .vscode/
 
+# Internal test harness (not published)
+tests/
+
 # Logs & temp files
 *.log
 *.tmp
