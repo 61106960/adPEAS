@@ -116,7 +116,9 @@ function Get-DangerousOUPermissions {
 
             if (-not $OUs -or @($OUs).Count -eq 0) {
                 Write-Log "[Get-DangerousOUPermissions] No Organizational Units found"
-                Show-Line "No dangerous OU permissions detected" -Class Note
+                # Say what actually happened. "No dangerous OU permissions detected" here
+                # claimed a result for a scan that never examined a single OU.
+                Show-Line "No organizational units returned - OU permissions were not evaluated" -Class Note
                 return
             }
 

@@ -1132,9 +1132,18 @@ function Invoke-LDAPSearch {
                                     $SD = New-Object System.DirectoryServices.ActiveDirectorySecurity
                                     $SD.SetSecurityDescriptorBinaryForm($PropValue[0])
 
-                                    # Extract only Allow ACEs - these are the principals allowed to delegate
+                                    # Extract only Allow ACEs - these are the principals allowed to delegate.
+                                    #
+                                    # GetAccessRules, not the .Access property: .Access is an extended
+                                    # type member that Microsoft.PowerShell.Security registers. In a host
+                                    # where that module is not loaded the expression is $null with no
+                                    # error, the loop runs zero times, and EVERY RBCD target in the
+                                    # domain came back as "[SD present, no Allow ACEs]" - a silent total
+                                    # loss of the finding. Get-DomainUser already uses this call for the
+                                    # gMSA descriptor.
                                     $rbcdPrincipals = @()
-                                    foreach ($ACE in $SD.Access) {
+                                    $rbcdRules = $SD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+                                    foreach ($ACE in $rbcdRules) {
                                         if ($ACE.AccessControlType -eq 'Allow') {
                                             $Principal = $ACE.IdentityReference.Value
                                             # Resolve SID to name if needed
@@ -1143,6 +1152,11 @@ function Invoke-LDAPSearch {
                                             } else {
                                                 $PrincipalName = $Principal
                                             }
+                                            # Keep the SID when it cannot be resolved. Without this a
+                                            # deleted or foreign trustee became a $null entry, and a
+                                            # single one made the whole attribute $null - the resource
+                                            # then looked unconfigured.
+                                            if (-not $PrincipalName) { $PrincipalName = $Principal }
                                             $rbcdPrincipals += $PrincipalName
                                         }
                                     }

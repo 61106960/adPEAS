@@ -1128,8 +1128,12 @@ function Test-IsExpectedACLIdentity {
                 $result.SkipAllPropertiesOnly = $true
                 $result.Reason = "Legacy compatibility identity (has default read rights)"
             }
-            elseif ($SID -in $Script:BroadGroupSIDs) {
-                # Don't skip completely - only skip "All Properties" findings
+            elseif (($SID -in $Script:BroadGroupSIDs) -or (Test-IsBroadGroupRID -SID $SID)) {
+                # Don't skip completely - only skip "All Properties" findings.
+                # The RID check matters: Domain Users is domain-relative (-513) and lives
+                # in $Script:BroadGroupRIDSuffixes, not in the static SID list, so it used
+                # to keep the blanket read finding that Authenticated Users and Everyone
+                # were exempt from - the same default right treated two different ways.
                 $result.Skip = $false
                 $result.SkipAllPropertiesOnly = $true
                 $result.Reason = "Broad group (has default read rights)"

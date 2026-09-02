@@ -96,13 +96,20 @@ function Get-ManagedServiceAccountSecurity {
                         $hasBroadGroupAccess = $false
 
                         try {
-                            # msds-groupmsamembership is a security descriptor in binary format
-                            $sdBytes = if ($groupMsaMembership -is [byte[]]) {
-                                $groupMsaMembership
+                            # msds-groupmsamembership is a security descriptor in binary format.
+                            #
+                            # Assigned inside the branches, NOT from the if-expression. An
+                            # assignment from an if routes the value through the output stream,
+                            # which enumerates collections: a [byte[]] came back as [Object[]],
+                            # the -is [byte[]] guard below was therefore always false, and the
+                            # whole password-access analysis never ran. Every domain was told
+                            # its gMSA password access was properly restricted, no matter who
+                            # could actually read the passwords.
+                            $sdBytes = $null
+                            if ($groupMsaMembership -is [byte[]]) {
+                                $sdBytes = $groupMsaMembership
                             } elseif ($groupMsaMembership -is [System.DirectoryServices.ResultPropertyValueCollection]) {
-                                $groupMsaMembership[0]
-                            } else {
-                                $null
+                                $sdBytes = $groupMsaMembership[0]
                             }
 
                             if ($sdBytes -and $sdBytes -is [byte[]]) {

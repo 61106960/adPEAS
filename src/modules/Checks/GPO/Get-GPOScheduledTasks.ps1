@@ -180,13 +180,33 @@ function Get-GPOScheduledTasks {
             }
 
             if ($scheduledTasks.Count -gt 0) {
-                Show-Line "Found $($scheduledTasks.Count) scheduled task(s) distributed via GPO" -Class Hint
+                # Most severe first, and the computed risk actually reaches the reader.
+                # The whole severity analysis used to be discarded right before output:
+                # a SYSTEM task running from a UNC path rendered exactly like a benign one
+                # and the section was always announced in yellow.
+                $severityRank = @{ 'Finding' = 0; 'Hint' = 1; 'Note' = 2 }
+                $scheduledTasks = @($scheduledTasks | Sort-Object -Property `
+                    @{ Expression = { if ($severityRank.ContainsKey([string]$_._Severity)) { $severityRank[[string]$_._Severity] } else { 9 } } }, `
+                    @{ Expression = { $_.GPOName } })
+
+                $hasFinding = @($scheduledTasks | Where-Object { $_._Severity -eq 'Finding' }).Count -gt 0
+                $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
+                Show-Line "Found $($scheduledTasks.Count) scheduled task(s) distributed via GPO" -Class $headerClass
 
                 foreach ($task in $scheduledTasks) {
+                    $taskClass = if ($task._Severity) { [string]$task._Severity } else { 'Standard' }
+                    $taskRisk  = [string]$task._Risk
+
                     $task.PSObject.Properties.Remove('_Severity')
                     $task.PSObject.Properties.Remove('_Risk')
+
+                    # Keep the reason as a visible attribute. It is the only thing that
+                    # explains why one task is red and the next one is not.
+                    if ($taskRisk) {
+                        $task | Add-Member -NotePropertyName 'RiskReason' -NotePropertyValue $taskRisk -Force
+                    }
                     $task | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOScheduledTask' -Force
-                    Show-Object $task
+                    Show-Object $task -Class $taskClass
                 }
             } else {
                 Show-Line "No scheduled tasks distributed via GPO in $($gpos.Count) analyzed GPO(s)" -Class Note
@@ -229,7 +249,11 @@ function Parse-ScheduledTasksXML {
         $taskNodes = $xmlContent.SelectNodes("//Task | //TaskV2 | //ImmediateTask | //ImmediateTaskV2")
 
         foreach ($taskNode in $taskNodes) {
-            $taskName = if ($taskNode.Properties.name) { $taskNode.Properties.name } else { "Unnamed Task" }
+            # GetAttribute, not property access: $node.name returns the XmlElement's own Name
+            # member ("Properties") when the attribute is absent, so the fallback below was
+            # unreachable and such a task was reported under the name "Properties".
+            $taskNameAttribute = if ($taskNode.Properties) { [string]$taskNode.Properties.GetAttribute('name') } else { '' }
+            $taskName = if (-not [string]::IsNullOrWhiteSpace($taskNameAttribute)) { $taskNameAttribute } else { "Unnamed Task" }
             $runAs = if ($taskNode.Properties.runAs) { $taskNode.Properties.runAs } else { "Unknown" }
             $action = if ($taskNode.Properties.action) { $taskNode.Properties.action } else { "Unknown" }
 
@@ -287,8 +311,11 @@ function Parse-ScheduledTasksXML {
                         # Already a SID
                         $accountSID = $runAs
                     } else {
-                        # Try to resolve name to SID
-                        $accountSID = ConvertTo-SID -Name $runAs
+                        # Try to resolve name to SID.
+                        # ConvertTo-SID declares -Identity, not -Name. The wrong parameter name
+                        # threw a binding error that the surrounding catch swallowed, so a task
+                        # running as a named privileged account was never rated privileged.
+                        $accountSID = ConvertTo-SID -Identity $runAs
                     }
 
                     if ($accountSID) {

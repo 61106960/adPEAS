@@ -93,7 +93,13 @@ function Get-ADCSTemplate {
         }
 
         # Filter out any error markers (should be none at this point)
-        $templates = @($templateResults | Where-Object { $_._QueryError -ne $true })
+        # Drop nulls before anything else. Get-CertificateTemplate returns $null when the
+        # domain has no AD CS at all, and @($null) is a ONE-element array holding $null,
+        # which the _QueryError filter happily keeps. The empty guard below then never
+        # fired and an all-null placeholder was analysed as a real template - with no EKU
+        # it reads as Any Purpose and Client Authentication, so a domain without AD CS
+        # produced a phantom vulnerable template.
+        $templates = @($templateResults | Where-Object { $null -ne $_ -and $_._QueryError -ne $true })
 
         if (@($templates).Count -eq 0) {
             Write-Log "[Get-ADCSTemplate] No templates returned from Get-CertificateTemplate"

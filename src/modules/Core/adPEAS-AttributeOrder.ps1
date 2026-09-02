@@ -527,8 +527,9 @@ $Script:ExcludeAttributes = @(
     'MemberCount', 'ProtectedCount',
     # Internal adPEAS type markers and transport properties - not for display
     '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk',
-    # GPO check internal analysis flags - used for severity calculation, not for display
-    'GPOGUID', 'Risk', 'Severity',
+    # GPO check internal analysis flags - used for severity calculation, not for display.
+    # ConsoleClass decides the colour a row is rendered in and must not appear as a row.
+    'GPOGUID', 'Risk', 'Severity', 'ConsoleClass',
     'IsSystemAccount', 'IsPrivilegedAccount',
     'HasUNCPath', 'HasRiskyPath', 'HasUnquotedPath', 'IsPowerShell', 'IsScript',
     'RunsAsSystem', 'TargetGroupSID', 'MemberSIDs',

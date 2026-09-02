@@ -254,6 +254,12 @@ function Parse-ScriptIni {
                 continue
             }
 
+            # Hand-edited scripts.ini files quote paths that contain spaces. The quotes are
+            # not part of the path, and leaving them on made an absolute path fail both
+            # tests below, so it was rewritten as if it were relative and the extension
+            # based language detection fell through to Unknown.
+            $cmdLine = $cmdLine.Trim().Trim('"')
+
             # Resolve relative paths to full SYSVOL path
             # scripts.ini lives in .../Policies/{GUID}/Machine|User/Scripts/Scripts.ini
             # Relative scripts are stored in .../Policies/{GUID}/Machine|User/Scripts/<Section>/<script>

@@ -262,6 +262,48 @@ function Get-GroupAssignmentSeverity {
     return @{ Severity = $severity; Risk = $risk }
 }
 
+<#
+.SYNOPSIS
+    Normalizes one Restricted Groups entry to a SID.
+
+.DESCRIPTION
+    A [Group Membership] entry may name its principal either as a SID with the GptTmpl.inf
+    '*' prefix or as a plain account name. Only the SID form used to be parsed, so a
+    name-keyed entry - which the Group Policy editor writes for a group it cannot resolve
+    to a SID, and which is common on localized domains - produced no finding at all.
+
+    A name is resolved through ConvertTo-SID so every downstream comparison stays SID based
+    and language independent. An unresolvable name is returned unchanged, which simply fails
+    the later privileged-group lookup instead of throwing.
+
+.NOTES
+    Internal helper function
+#>
+function Resolve-RestrictedGroupSID {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Identity
+    )
+
+    $trimmed = ([string]$Identity).Trim().TrimStart('*').Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) { return $trimmed }
+    if ($trimmed -match '^S-1-') { return $trimmed }
+
+    try {
+        $resolved = ConvertTo-SID -Identity $trimmed
+        if ($resolved) {
+            Write-Log "[Resolve-RestrictedGroupSID] Resolved name '$trimmed' to $resolved"
+            return [string]$resolved
+        }
+    } catch {
+        Write-Log "[Resolve-RestrictedGroupSID] Could not resolve '$trimmed' to a SID: $_"
+    }
+
+    return $trimmed
+}
+
 # Helper Function: Parse Restricted Groups (GptTmpl.inf)
 function Parse-RestrictedGroups {
     [CmdletBinding()]
@@ -288,10 +330,14 @@ function Parse-RestrictedGroups {
             foreach ($line in $lines) {
                 $line = $line.Trim()
 
-                if ($line -match '^\*(.+?)__Members\s*=\s*(.+)$') {
+                if ($line -match '^\*?(.+?)__Members\s*=\s*(.+)$') {
                     # Variant 1: *LOCAL_GROUP_SID__Members = *SID1, *SID2
                     # The local group is on the LEFT, members are on the RIGHT
-                    $groupSID = $Matches[1]
+                    #
+                    # The leading * is optional because real GptTmpl.inf files also key the
+                    # entry by group NAME. Requiring the * dropped those lines without a
+                    # word, which was a silent detection gap on localized domains.
+                    $groupSID = Resolve-RestrictedGroupSID -Identity $Matches[1]
                     $memberSIDs = $Matches[2] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
 
                     if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
@@ -335,12 +381,14 @@ function Parse-RestrictedGroups {
                         }
                     }
                 }
-                elseif ($line -match '^\*(.+?)__Memberof\s*=\s*(.+)$') {
+                elseif ($line -match '^\*?(.+?)__Memberof\s*=\s*(.+)$') {
                     # Variant 2: *DOMAIN_SID__Memberof = *LOCAL_GROUP_SID1, *LOCAL_GROUP_SID2
                     # The account/group being added is on the LEFT, target local groups are on the RIGHT
                     # One finding per target local group (each may have different severity)
-                    $memberSID = $Matches[1]
-                    $targetGroupSIDs = $Matches[2] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
+                    # The leading * is optional here for the same reason as in variant 1.
+                    $memberSID = Resolve-RestrictedGroupSID -Identity $Matches[1]
+                    $targetGroupSIDs = $Matches[2] -split ',' |
+                        ForEach-Object { Resolve-RestrictedGroupSID -Identity $_ }
 
                     # Resolve the member name and check if it is itself a risky principal
                     $memberName = ""

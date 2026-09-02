@@ -769,9 +769,18 @@ function Get-OUPermissions {
                 # Note: LAPS attributes are only on Computer objects, so we check InheritedObjectType
                 if ($CheckType -contains 'LAPS') {
 
-                    $HasReadProperty = $ACE.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::ReadProperty
-                    $HasGenericAll = $ACE.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericAll
-                    $HasExtendedRight = $ACE.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight
+                    # GenericAll is a composite mask (0xf01ff) that already contains the
+                    # ReadProperty and ExtendedRight bits, so a bare -band against it
+                    # overlaps with almost any right. Testing for overlap made every
+                    # harmless Allow ACE without an ObjectType - ReadControl, Delete,
+                    # ListChildren - come back as an "All Properties includes LAPS"
+                    # finding. All bits must be present, the same way check 2 tests it.
+                    $GenericAllMask = [int][System.DirectoryServices.ActiveDirectoryRights]::GenericAll
+                    $RightsMask = [int]$ACE.ActiveDirectoryRights
+
+                    $HasReadProperty = ($RightsMask -band [int][System.DirectoryServices.ActiveDirectoryRights]::ReadProperty) -ne 0
+                    $HasGenericAll = (($RightsMask -band $GenericAllMask) -eq $GenericAllMask)
+                    $HasExtendedRight = ($RightsMask -band [int][System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight) -ne 0
 
                     if (($HasReadProperty -or $HasGenericAll -or $HasExtendedRight) -and $AppliesToComputers) {
                         # LAPS permissions on OUs can be configured in several ways:
@@ -833,7 +842,7 @@ function Get-OUPermissions {
                         }
 
                         # Windows LAPS - Plain Password (unencrypted mode)
-                        # GUID: 5B47D60F-6090-40B2-9F37-2A4DE88F3063
+                        # GUID: 35eb61e8-0ae2-4e1a-b60f-f6aa82d54867
                         $plainPwdMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-Password'].Guid)
                         if ($plainPwdMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }

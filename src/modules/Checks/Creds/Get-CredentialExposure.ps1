@@ -147,10 +147,13 @@ function Get-CredentialExposure {
                     @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" }
                 )
                 $tier2Patterns = @(
-                    @{ Pattern = "passw(or)?d"; Description = "Password mention" },
-                    @{ Pattern = "passwd"; Description = "Passwd mention" },
-                    @{ Pattern = "credential"; Description = "Credential mention" },
+                    # Ordered most specific first: the list is first-match-wins, and the generic
+                    # "passw(or)?d" also matches "passwd" and an XML password element, so those two
+                    # descriptions could never be produced while it came first.
                     @{ Pattern = "<passw[^>]*>[^<]+</passw"; Description = "XML password element" },
+                    @{ Pattern = "passwd"; Description = "Passwd mention" },
+                    @{ Pattern = "passw(or)?d"; Description = "Password mention" },
+                    @{ Pattern = "credential"; Description = "Credential mention" },
                     @{ Pattern = "(secret|token)\s*[=:]\s*\S{5,}"; Description = "Secret/token assignment" }
                 )
                 $exclusionPatterns = @(
@@ -292,7 +295,11 @@ function Get-CredentialExposure {
 
                                 $alreadyReported = $false
                                 foreach ($reported in $reportedLines.Keys) {
-                                    if ($trimmedLine -like "*$reported*") { $alreadyReported = $true; break }
+                                    # Contains, not -like: a previously reported line is DATA, not a
+                                    # wildcard pattern. A reported password containing * or ? made the
+                                    # pattern match unrelated later lines and silently swallowed real
+                                    # credentials found further down the same file.
+                                    if ($trimmedLine.Contains($reported)) { $alreadyReported = $true; break }
                                 }
                                 if ($alreadyReported) { continue }
 
@@ -311,8 +318,10 @@ function Get-CredentialExposure {
                                             filePath = $file.FullName
                                             matchedLine = $trimmedLine
                                         }
+                                        # Pattern hits in a script file are SYSVOLCredential, the same as in the
+                                        # domain scan. Tagging them GPPCredential here routed them to the wrong help text.
                                         Show-Line "Found credential pattern" -Class Finding
-                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
+                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
                                         Show-Object $credObj
                                         $reportedLines[$trimmedLine] = $true
@@ -331,7 +340,7 @@ function Get-CredentialExposure {
                                             matchedLine = $trimmedLine
                                         }
                                         Show-Line "Found possible sensitive information" -Class Hint
-                                            $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
+                                            $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
                                             Show-Object $credObj
                                         $reportedLines[$trimmedLine] = $true
@@ -401,14 +410,20 @@ function Get-CredentialExposure {
                 $sysvolFindingsCount = 0
 
                 if (-not (Test-Path $sysvolBase)) {
-                    Show-Line "SYSVOL access failed - cannot search for credentials - SMB access failed (authentication/network issue)" -Class "Finding"
+                    # Reported once, after the SMB block, where Test-SysvolAccessible can tell
+                    # "not reachable at all" from "reachable but this read failed". Emitting it
+                    # here as well printed the identical red line twice.
+                    Write-Log "[Get-CredentialExposure] SYSVOL path not accessible: $sysvolBase"
                 }
                 else {
                     $Script:sysvolAccessible = $true
                     Write-Log "[Get-CredentialExposure] SYSVOL accessible: $sysvolBase"
 
                     # Use cached SYSVOL file listing (builds cache on first call, reuses on subsequent calls)
-                    $allExtensions = @('*.xml','*.txt','*.bat','*.ini','*.conf','*.cnf','*.cmd','*.vbs','*.vbe','*.kix')
+                    # PowerShell is included because logon scripts in SYSVOL are commonly
+                    # .ps1 today. The custom-path branch already scanned them, so the domain
+                    # scan was the narrower of the two for no reason.
+                    $allExtensions = @('*.xml','*.txt','*.bat','*.ini','*.conf','*.cnf','*.cmd','*.vbs','*.vbe','*.kix','*.ps1','*.psm1')
                     $allFiles = @(Get-CachedSYSVOLFiles -Filter $allExtensions -SYSVOLPath $sysvolBase)
 
                     # Split into XML and script files locally (no additional SMB round-trips)
@@ -539,10 +554,13 @@ function Get-CredentialExposure {
                         )
 
                         $tier2Patterns = @(
-                            @{ Pattern = "passw(or)?d"; Description = "Password mention" },
-                            @{ Pattern = "passwd"; Description = "Passwd mention" },
-                            @{ Pattern = "credential"; Description = "Credential mention" },
+                            # Ordered most specific first: the list is first-match-wins, and the generic
+                            # "passw(or)?d" also matches "passwd" and an XML password element, so those two
+                            # descriptions could never be produced while it came first.
                             @{ Pattern = "<passw[^>]*>[^<]+</passw"; Description = "XML password element" },
+                            @{ Pattern = "passwd"; Description = "Passwd mention" },
+                            @{ Pattern = "passw(or)?d"; Description = "Password mention" },
+                            @{ Pattern = "credential"; Description = "Credential mention" },
                             @{ Pattern = "(secret|token)\s*[=:]\s*\S{5,}"; Description = "Secret/token assignment" }
                         )
 
@@ -641,7 +659,9 @@ function Get-CredentialExposure {
 
                                     $alreadyReported = $false
                                     foreach ($reported in $reportedLines.Keys) {
-                                        if ($trimmedLine -like "*$reported*") {
+                                        # Contains, not -like: see the identical guard in the
+                                        # custom-path branch. A reported line is data, not a pattern.
+                                        if ($trimmedLine.Contains($reported)) {
                                             $alreadyReported = $true
                                             break
                                         }

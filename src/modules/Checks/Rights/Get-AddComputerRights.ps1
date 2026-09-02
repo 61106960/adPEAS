@@ -81,7 +81,12 @@ function Get-AddComputerRights {
             # Escape DN for LDAP filter to prevent injection (RFC 4515)
             $escapedDomainDN = Escape-LDAPFilterDN -DistinguishedName $domainDN
             $domainResult = @(Get-DomainObject -LDAPFilter "(distinguishedName=$escapedDomainDN)" @connectionParams)[0]
-            $machineQuota = if ($domainResult -and $domainResult.'ms-DS-MachineAccountQuota') {
+            # $null -ne, not truthiness: a hardened quota of 0 is the whole point of this
+            # check, and it only survived a truthiness test because LDAP hands attribute
+            # values back as strings, where '0' happens to be true. Any normalization to
+            # [int] upstream would have turned "nobody may join" into the assumed default
+            # of 10, i.e. the exact opposite of the configuration.
+            $machineQuota = if ($domainResult -and $null -ne $domainResult.'ms-DS-MachineAccountQuota') {
                 $domainResult.'ms-DS-MachineAccountQuota'
             } else {
                 $null
@@ -413,10 +418,15 @@ function Check-GPOAddComputerRights {
                                 $accountName = ConvertFrom-SID -SID $account
                                 $accountNames += $accountName
 
-                                # SID-based detection (language-independent)
-                                # S-1-5-11 = Authenticated Users, S-1-1-0 = Everyone
-                                if ($account -match 'S-1-5-11') { $hasAuthenticatedUsers = $true }
-                                if ($account -match 'S-1-1-0')  { $hasEveryone = $true }
+                                # SID-based detection (language-independent).
+                                # S-1-5-11 = Authenticated Users, S-1-1-0 = Everyone.
+                                # Equality, not -match: the latter is a substring regex on
+                                # the raw INI entry, so a longer SID containing these as a
+                                # substring would also have counted. The entry may carry the
+                                # GptTmpl.inf '*' prefix.
+                                $accountSid = ([string]$account).Trim().TrimStart('*')
+                                if ($accountSid -eq 'S-1-5-11') { $hasAuthenticatedUsers = $true }
+                                if ($accountSid -eq 'S-1-1-0')  { $hasEveryone = $true }
                             }
 
                             # Get linkage data for Scope/LinkedOUs (same pattern as LDAP/SMB checks)

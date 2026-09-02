@@ -299,6 +299,18 @@ function Clear-SessionState {
     $Script:OUPermissionsCache = $null
 
     # Check module caches
+    # The tables below are published per invocation by a check's begin{} block, not at
+    # module load, so they are session state and belong here rather than being treated as
+    # constant lookup tables.
+    $Script:gpoAddComputerFindings = $null
+    $Script:gpoAddComputerPrecedenceMap = $null
+    $Script:gpoUserRightsSysvolScanned = $null
+    $Script:LocalGroupSIDs = $null
+    $Script:RiskySIDs = $null
+    $Script:GroupSeverityConfig = $null
+    $Script:RiskyPaths = $null
+    $Script:DangerousGPOAccessRights = $null
+
     $Script:LAPSSchemaInfo = $null
     $Script:BitLockerSchemaInfo = $null
     $Script:lapsGPOResults = $null

@@ -178,7 +178,20 @@ function Get-GPORegistrySettings {
             $findings = @(Resolve-RegistryFindings -RawMatches $rawMatches)
 
             if ($findings.Count -gt 0) {
-                Show-Line "Found $($findings.Count) vulnerable registry setting(s) deployed via GPO" -Class Hint
+                # Most severe first. Resolve-RegistryFindings appends the correlated
+                # AlwaysInstallElevated findings after the loop, so without sorting a
+                # Critical one landed behind the Medium ones in the console.
+                $severityRank = @{ 'Critical' = 0; 'High' = 1; 'Medium' = 2; 'Low' = 3; 'Info' = 4 }
+                $findings = @($findings | Sort-Object -Property `
+                    @{ Expression = { if ($severityRank.ContainsKey($_.Severity)) { $severityRank[$_.Severity] } else { 9 } } }, `
+                    @{ Expression = { $_.GPOName } })
+
+                # Red when at least one finding is a real vulnerability, yellow otherwise.
+                # The announcement used to be Hint unconditionally, so even a Critical
+                # AlwaysInstallElevated was introduced in yellow.
+                $hasFinding = @($findings | Where-Object { $_.ConsoleClass -eq 'Finding' }).Count -gt 0
+                $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
+                Show-Line "Found $($findings.Count) vulnerable registry setting(s) deployed via GPO" -Class $headerClass
 
                 foreach ($finding in $findings) {
                     $linkedOUs = @()
@@ -190,7 +203,12 @@ function Get-GPORegistrySettings {
                     }
                     $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
-                    Show-Object $finding
+
+                    # ConsoleClass is what the central table documents per entry. It was
+                    # carried all the way here and then never used, so the Finding/Hint
+                    # distinction the table defines had no effect on the output.
+                    $rowClass = if ($finding.ConsoleClass) { [string]$finding.ConsoleClass } else { 'Standard' }
+                    Show-Object $finding -Class $rowClass
                 }
             } else {
                 Show-Line "No vulnerable registry settings deployed via GPO" -Class Note
@@ -324,6 +342,9 @@ function New-RegistryFinding {
         VulnerabilityName = $entry.VulnerabilityName
         RiskReason        = $entry.RiskReason
         Severity          = $entry.Severity
+        # Carried through so the caller can render the row in the class the central table
+        # defines for it. Without it the field existed only in the table and nowhere else.
+        ConsoleClass      = $entry.ConsoleClass
         GPOGUID           = $RegMatch.GPOGUID
     }
 }

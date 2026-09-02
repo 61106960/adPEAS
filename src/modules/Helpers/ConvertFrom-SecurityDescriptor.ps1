@@ -89,16 +89,27 @@ function ConvertFrom-SecurityDescriptor {
             $Rights = $ACE.ActiveDirectoryRights -replace '\s', ''
             $RightsDisplay = $Rights
 
-            if ($Rights -match 'ExtendedRight' -and $ACE.ObjectType -ne [System.Guid]::Empty) {
-                $ObjectTypeGUID = $ACE.ObjectType.ToString()
-                $ExtendedRightName = Get-ExtendedRightName -GUID $ObjectTypeGUID
+            if ($Rights -match 'ExtendedRight') {
+                if ($ACE.ObjectType -ne [System.Guid]::Empty) {
+                    $ObjectTypeGUID = $ACE.ObjectType.ToString()
+                    $ExtendedRightName = Get-ExtendedRightName -GUID $ObjectTypeGUID
 
-                if ($ExtendedRightName) {
-                    # Known Extended Right - show friendly name
-                    $RightsDisplay = $Rights -replace 'ExtendedRight', "ExtendedRight ($ExtendedRightName)"
-                } else {
-                    # Unknown GUID - show GUID for reference
-                    $RightsDisplay = $Rights -replace 'ExtendedRight', "ExtendedRight ({$ObjectTypeGUID})"
+                    if ($ExtendedRightName) {
+                        # Known Extended Right - show friendly name
+                        $RightsDisplay = $Rights -replace 'ExtendedRight', "ExtendedRight ($ExtendedRightName)"
+                    } else {
+                        # Unknown GUID - show GUID for reference
+                        $RightsDisplay = $Rights -replace 'ExtendedRight', "ExtendedRight ({$ObjectTypeGUID})"
+                    }
+                }
+                else {
+                    # An empty ObjectType means ALL extended rights, which includes
+                    # Certificate-Enrollment. This case used to be left as the bare word
+                    # "ExtendedRight", so a consumer looking for the name never saw it -
+                    # Get-ADCSTemplate missed a template enrollable through an
+                    # All-Extended-Rights ACE. The word "ExtendedRight" stays in the string,
+                    # so anything matching on that keeps working.
+                    $RightsDisplay = $Rights -replace 'ExtendedRight', "ExtendedRight (All-Extended-Rights)"
                 }
             }
 

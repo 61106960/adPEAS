@@ -175,8 +175,12 @@ function Get-PasswordResetRights {
                             $memberDN = $member.distinguishedName
                             $memberName = $member.sAMAccountName
 
-                            # Extract parent OU/Container from member DN
-                            if ($memberDN -match '^CN=[^,]+,(.+)$') {
+                            # Extract parent OU/Container from member DN.
+                            # The separator is the first comma that is NOT escaped: a common
+                            # name like "Doe\, Jane" contains a literal comma, and splitting
+                            # on it produced a DN that does not exist ("Jane,OU=..."), so that
+                            # user's real OU was never analyzed.
+                            if ($memberDN -match '^CN=(?:[^,\\]|\\.)*,(.+)$') {
                                 $parentDN = $Matches[1]
 
                                 if (-not $privilegedOUs.ContainsKey($parentDN)) {

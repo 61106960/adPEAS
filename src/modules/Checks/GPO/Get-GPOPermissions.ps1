@@ -50,12 +50,22 @@ function Get-GPOPermissions {
         Write-Log "[Get-GPOPermissions] Starting check"
 
         # Dangerous ACE Types for GPOs
+        # Must cover everything Get-ObjectACL -DangerousOnly hands over, otherwise a
+        # matching ACE is reported with an empty label and the console line reads
+        # "CONTOSO\helpdesk ()". Deleting a linked GPO is a denial of service, so those
+        # rights belong in the list rather than being silently unnamed.
         $Script:DangerousGPOAccessRights = @(
             'GenericAll',
             'GenericWrite',
             'WriteProperty',
             'WriteDacl',
-            'WriteOwner'
+            'WriteOwner',
+            'CreateChild',
+            'DeleteChild',
+            'DeleteTree',
+            'Delete',
+            'Self',
+            'ExtendedRight'
         )
     }
 

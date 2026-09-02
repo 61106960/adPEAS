@@ -30,6 +30,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Preferences (`Registry.xml`) and `GptTmpl.inf`, and every entry lists the OUs,
   domains and sites its GPO is linked to.
 
+### Fixed
+
+Found while building the unit test suites, each reproduced before it was changed.
+
+- **The entire gMSA password-access analysis never ran.** In
+  `Get-ManagedServiceAccountSecurity` the security descriptor was assigned from an
+  if-expression, which routes the value through the output stream and enumerates it, so a
+  `[byte[]]` arrived as `[Object[]]` and the `-is [byte[]]` guard on the next line was
+  always false. Every domain was told its gMSA password access was properly restricted to
+  privileged accounts, however many broad groups could actually read the passwords.
+- **Every resource-based constrained delegation could disappear.** The decoder in
+  `Invoke-LDAPSearch` read the `.Access` property, which is an extended type member
+  registered by `Microsoft.PowerShell.Security`. Where that module is not loaded the
+  expression is `$null` with no error and every RBCD target came back as
+  "[SD present, no Allow ACEs]". It now uses `GetAccessRules`, and an unresolvable trustee
+  keeps its SID instead of becoming an empty entry that nulls the whole attribute.
+- **A domain without AD CS produced a phantom vulnerable certificate template.**
+  `@($null)` is a one-element array holding `$null`, which the query-error filter kept, so
+  the empty guard never fired and an all-null placeholder was analysed as a real template.
+  With no extended key usage it read as Any Purpose plus Client Authentication.
+- **A template enrollable through an All-Extended-Rights ACE was missed.**
+  `ConvertFrom-SecurityDescriptor` spelled out a right name only for an ACE carrying an
+  object type, so an ACE granting every extended right - Certificate-Enrollment included -
+  stayed the bare word `ExtendedRight` and no consumer recognised it.
+- **Windows LAPS read delegations were never detected.** `Get-OUPermissions` looks the
+  `msLAPS-*` schemaIDGUIDs up in `$Script:PropertyGUIDs`, which held only the two legacy
+  LAPS entries. Every comparison ran against `$null` and could never match, so a delegated
+  read on a Windows LAPS password attribute produced no finding at all and only the
+  "All Properties" fallback caught such a delegation. The static GUIDs were already present
+  in the same file, in `$Script:ReadPropertyAliases`.
+- **Anonymous LDAP binding was reported as restricted when it was allowed.**
+  `Get-LDAPConfiguration` matched the `RestrictAnonymous` value name with `.*?=`, which also
+  matched `RestrictAnonymousSAM`. In the usual DC baseline ordering the check read the SAM
+  value instead. All three value names are now anchored.
+- **Scheduled tasks running as a named privileged account were never rated privileged.**
+  `Get-GPOScheduledTasks` called `ConvertTo-SID -Name`, but the function declares
+  `-Identity`. The binding error was swallowed by the surrounding `catch`, so only a
+  `runAs` already given as a raw SID reached the privilege check.
+- **A failed SMB access was reported as a clean domain.** `Get-GPOUserRightsAssignment`
+  had no branch for "SYSVOL answers but this scan could not read it" and fell through to
+  its Secure message. Same for a failed AdminSDHolder read in `Get-PrivilegedGroupMembers`
+  and for an aborted `Get-DangerousACLs` run, which produced no output at all.
+- **A reported credential line was used as a wildcard pattern.** The duplicate suppression
+  in `Get-CredentialExposure` compared with `-like "*$reported*"`, so a password containing
+  `*` or `?` silently swallowed unrelated credentials found later in the same file.
+- **The domain scan ignored PowerShell scripts.** `Get-CredentialExposure` scanned `.ps1`
+  and `.psm1` in custom-path mode but not in SYSVOL, where logon scripts commonly are
+  PowerShell today.
+- **A quoted script path was mangled.** `Get-GPOScriptPaths` tested for an absolute path
+  without stripping surrounding quotes, so a quoted path was rewritten as if relative and
+  its language detection fell through to Unknown.
+- **A privileged user with a comma in their name was skipped.** `Get-PasswordResetRights`
+  derived the parent container with `^CN=[^,]+,(.+)$`, which splits on the escaped comma in
+  a name such as `Doe\, Jane` and produced a DN that does not exist.
+- **Restricted Groups entries keyed by group name were dropped.** Both
+  `__Members` and `__Memberof` variants required the GptTmpl.inf `*` SID prefix, which is a
+  detection gap on localized domains. Names are now resolved to a SID so every downstream
+  comparison stays SID based.
+- **The severity of a GPO scheduled task and of a GPO registry setting never reached the
+  report.** Both checks computed a per-row severity and discarded it immediately before
+  output, so a SYSTEM task on a UNC path rendered exactly like a benign one and a Critical
+  AlwaysInstallElevated was announced in yellow. Rows now carry their class, the reason is
+  a visible attribute, and results are ordered most severe first.
+- **A GPO ACE granting only delete rights was reported without a label**, rendering as
+  `CONTOSO\helpdesk ()`.
+- **Domain Users kept a blanket read finding that Authenticated Users and Everyone were
+  exempt from.** The OU identity gate consulted only the static well-known SID list, not
+  the domain-relative RID list Domain Users belongs to.
+- **The LAPS check over-detected.** `Get-OUPermissions` tested GenericAll with a bitwise
+  overlap against a composite mask, so almost any harmless Allow right came back as an
+  "All Properties includes LAPS" finding.
+- **A machine account quota of 0 depended on an accident.** `Get-AddComputerRights` used a
+  truthiness test that only worked because LDAP returns attribute values as strings.
+- Smaller corrections: the SMB failure message in `Get-CredentialExposure` was printed
+  twice; pattern hits in custom-path mode were tagged with the wrong object type; two
+  tier-2 credential patterns were unreachable behind a more generic one; a scheduled task
+  without a name attribute was reported as `Properties`; the membership path in
+  `Get-PrivilegedGroupMembers` used a stray `?` as its separator; broad SIDs were compared
+  with a substring regex instead of equality; and `Get-DangerousOUPermissions` claimed
+  "no dangerous OU permissions detected" when the domain had returned no OUs at all.
+
 ### Changed
 
 - **Point and Print is no longer reported by `Get-GPORegistrySettings`.** Its two

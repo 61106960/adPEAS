@@ -102,17 +102,26 @@ $Script:ExtendedRightsGUIDs = @{
 # PROPERTY GUIDs (Name -> GUID)
 # ============================================================================
 # Used for checking specific property access in ACLs
-# NOTE: Only STATIC schemaIDGUIDs are listed here. Windows LAPS (msLAPS-*) GUIDs
-#       are dynamically generated per Forest and cannot be statically defined.
 $Script:PropertyGUIDs = @{
     # Legacy LAPS (Microsoft LAPS / AdmPwd) - STATIC GUIDs
     'ms-Mcs-AdmPwd'                  = [GUID]'e5c0983d-b71e-4f1d-b798-9b0f5ecaeea3'
     'ms-Mcs-AdmPwdExpirationTime'    = [GUID]'e5c0983e-b71e-4f1d-b798-9b0f5ecaeea3'
 
-    # NOTE: Windows LAPS (msLAPS-*) schemaIDGUIDs are dynamically generated per Forest!
-    # Use Get-ADObject to query them at runtime if needed:
-    #   Get-ADObject -SearchBase (Get-ADRootDSE).SchemaNamingContext `
-    #       -Filter {lDAPDisplayName -like 'msLAPS-*'} -Properties schemaIDGUID
+    # Windows LAPS (v2, Server 2019+). These schemaIDGUIDs are static - Microsoft ships
+    # them with the schema extension, they are not generated per forest.
+    #
+    # A previous note here claimed the opposite and left the keys out. Get-OUPermissions
+    # looks all of them up by name, so every comparison ran against $null and could never
+    # match: a delegated read on a Windows LAPS password attribute produced no finding at
+    # all, and only the "All Properties" fallback caught such a delegation. The same values
+    # were already present below in $Script:ReadPropertyAliases.
+    'msLAPS-Password'                     = [GUID]'35eb61e8-0ae2-4e1a-b60f-f6aa82d54867'
+    'msLAPS-EncryptedPassword'            = [GUID]'cc635e81-fda1-4e92-96d2-cf5d9a958a4f'
+    'msLAPS-EncryptedPasswordHistory'     = [GUID]'b0449bea-a05e-47eb-b1ce-a1c72b9c4a89'
+    'msLAPS-EncryptedDSRMPassword'        = [GUID]'64397849-c0bb-47e5-9eb4-a13cc22ee13c'
+    'msLAPS-EncryptedDSRMPasswordHistory' = [GUID]'ddb68b4d-8037-4dbe-8721-fcc3d59b57a7'
+    'msLAPS-CurrentPasswordVersion'       = [GUID]'5d848c52-82d7-4014-867b-714b3e4b6685'
+    'msLAPS-PasswordExpirationTime'       = [GUID]'ec38fa45-104d-4ede-b3b1-4620e8594575'
 
     # Common properties (schemaIDGUIDs - actual attribute GUIDs)
     # NOTE: servicePrincipalName schemaIDGUID is the SAME GUID as Validated-SPN (f3a64788-...).

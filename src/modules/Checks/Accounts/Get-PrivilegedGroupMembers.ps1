@@ -212,7 +212,7 @@ function Get-PrivilegedGroupMembers {
                                     $NewPath = if ($MembershipPath -eq "Direct Member") {
                                         "via $($Member.sAMAccountName)"
                                     } else {
-                                        "$MembershipPath ? $($Member.sAMAccountName)"
+                                        "$MembershipPath -> $($Member.sAMAccountName)"
                                     }
 
                                     # Pass GC-resolved group object for cross-domain groups to avoid
@@ -922,11 +922,18 @@ function Get-PrivilegedGroupMembers {
                         Show-Object $finding
                     }
                 }
+                $adminSDHolderRead = $true
             } catch {
                 Write-Log "[Get-PrivilegedGroupMembers] Error checking AdminSDHolder: $_" -Level Error
+                $adminSDHolderRead = $false
             }
 
-            if (@($AdminSDHolderFindings).Count -eq 0) {
+            if (-not $adminSDHolderRead) {
+                # Without this branch a failed read fell through to the Secure message
+                # below, so a blind check was indistinguishable from a clean one.
+                Show-Line "AdminSDHolder could not be read - its ACLs were not evaluated" -Class Finding
+            }
+            elseif (@($AdminSDHolderFindings).Count -eq 0) {
                 Show-Line "AdminSDHolder ACLs are secure" -Class Secure
             }
 

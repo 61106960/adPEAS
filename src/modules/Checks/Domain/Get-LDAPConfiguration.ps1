@@ -133,13 +133,19 @@ function Get-LDAPConfiguration {
                             $registrySection = $Matches[1]
 
                             # GptTmpl.inf format: MACHINE\...\LDAPServerIntegrity=4,<value> (4 = REG_DWORD)
-                            if ($registrySection -match 'MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters\\LDAPServerIntegrity.*?=.*?4,(\d+)') {
+                            #
+                            # The value name is anchored with \s*=\s* instead of .*?=.*? on purpose.
+                            # The loose form also matched a LONGER value name sharing the same prefix:
+                            # 'RestrictAnonymous' matched 'RestrictAnonymousSAM=4,1', and since that
+                            # line comes first in a normal DC baseline, the check read the wrong value
+                            # and reported anonymous binding as restricted while it was allowed.
+                            if ($registrySection -match 'MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters\\LDAPServerIntegrity\s*=\s*4\s*,\s*(\d+)') {
                                 $ldapSigningValue = [int]$Matches[1]
                             }
-                            if ($registrySection -match 'MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters\\LdapEnforceChannelBinding.*?=.*?4,(\d+)') {
+                            if ($registrySection -match 'MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters\\LdapEnforceChannelBinding\s*=\s*4\s*,\s*(\d+)') {
                                 $ldapChannelBindingValue = [int]$Matches[1]
                             }
-                            if ($registrySection -match 'MACHINE\\System\\CurrentControlSet\\Control\\Lsa\\RestrictAnonymous.*?=.*?4,(\d+)') {
+                            if ($registrySection -match 'MACHINE\\System\\CurrentControlSet\\Control\\Lsa\\RestrictAnonymous\s*=\s*4\s*,\s*(\d+)') {
                                 $restrictAnonymous = [int]$Matches[1]
                             }
                         }

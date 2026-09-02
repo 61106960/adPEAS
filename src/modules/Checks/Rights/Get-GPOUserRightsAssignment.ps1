@@ -138,12 +138,19 @@ function Get-GPOUserRightsAssignment {
             $linkage = $gpoLinkage
             $Script:gpoUserRightsFindings = @()
 
+            # Records whether the Policies path was actually read. Without it an empty
+            # result cannot be told apart from a scan that never ran, and the check
+            # reported a failed SMB access as a clean domain. Cleared inline below.
+            $Script:gpoUserRightsSysvolScanned = $false
+
             Invoke-SMBAccess -Description "Scanning GPO user rights assignments" -ScriptBlock {
                 $sysvolPath = "\\$dcServer\SYSVOL\$domainFQDN\Policies"
                 if (-not (Test-Path $sysvolPath)) {
                     Write-Log "[Get-GPOUserRightsAssignment] SYSVOL path not accessible: $sysvolPath"
                     return
                 }
+
+                $Script:gpoUserRightsSysvolScanned = $true
 
                 # Iterate the cached SYSVOL listing instead of probing a constructed path per GPO:
                 # most GPOs have no GptTmpl.inf, so per-GPO probing costs one SMB round-trip each
@@ -259,6 +266,8 @@ function Get-GPOUserRightsAssignment {
 
             $findings = @($Script:gpoUserRightsFindings)
             $Script:gpoUserRightsFindings = $null
+            $sysvolScanned = [bool]$Script:gpoUserRightsSysvolScanned
+            $Script:gpoUserRightsSysvolScanned = $null
 
             if ($findings.Count -gt 0) {
                 # Header severity reflects the highest finding severity (red only if a real Finding exists)
@@ -274,6 +283,11 @@ function Get-GPOUserRightsAssignment {
             } elseif ((Test-SysvolAccessible) -eq $false) {
                 # SYSVOL could not be read - report honestly instead of implying a clean result
                 Show-Line "SYSVOL is not accessible - GPO user rights could not be evaluated" -Class "Note"
+            } elseif (-not $sysvolScanned) {
+                # SYSVOL answers in general, but this scan never got to read the Policies
+                # path. Without this branch the check fell through to the Secure message
+                # below and reported a blind scan as a clean domain.
+                Show-Line "SYSVOL access failed - GPO user rights could not be evaluated - SMB access failed (authentication/network issue)" -Class "Finding"
             } else {
                 Show-Line "No dangerous user rights assigned via GPO to non-privileged principals" -Class "Secure"
             }

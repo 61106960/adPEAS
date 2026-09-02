@@ -321,7 +321,11 @@ function Get-DangerousACLs {
             }
 
         } catch {
+            # Say so on the console, not only in the log. Logging alone made an aborted
+            # check indistinguishable from a domain with nothing to report: both produced
+            # no objects and no message at all.
             Write-Log "[Get-DangerousACLs] Error: $_" -Level Error
+            Show-Line "Error during check - domain root ACLs could not be evaluated: $_" -Class Finding
         }
     }
 
