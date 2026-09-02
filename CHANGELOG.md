@@ -34,6 +34,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **The SCCM and SCOM checks never reported a single server.** Both looped with
+  `foreach ($server in ...)` while declaring a `[string]$Server` parameter. PowerShell
+  keeps that type constraint on the loop variable, so every directory object was coerced
+  to its string form: in SCCM `distinguishedName` came back empty and the dedup guard
+  never fired, in SCOM `dNSHostName` came back null and the duplicate comparison ran
+  `$null -notin $null`, which is false. Both checks always printed "no servers found".
+  This is the collision CLAUDE.md warns about.
+- **Read-only domain controllers were missing from the infrastructure inventory.**
+  `Get-InfrastructureServers` filtered on `SERVER_TRUST_ACCOUNT` alone, but an RODC
+  computer account carries `WORKSTATION_TRUST_ACCOUNT` plus `PARTIAL_SECRETS_ACCOUNT` and
+  `primaryGroupID` 521. An RODC holds credentials and is a domain controller.
+- **A current Windows Server was indistinguishable from a network printer.** The
+  end-of-support dates for Windows Server 2019 and 2022 sat in a comment above the
+  lifecycle table instead of in it, so both came back as "no lifecycle data" - the same
+  answer the table gives for a Linux member or an appliance. They are now rows with the
+  dates that were already written down beside them. Windows 11 and Windows Server 2025
+  have no single published end date and are carried in a separate supported-without-date
+  list rather than being given an invented one. `Get-OutdatedComputers` now closes with a
+  count of the machines whose operating system it could not judge, so a clean result says
+  how much of the estate it actually covers.
+- **`Get-OutdatedComputers -InactiveDays` did nothing.** The parameter was declared,
+  defaulted and documented, but never reached `Test-AccountActivity`. Passing it now works
+  because `Test-AccountActivity` no longer turns an explicit window into an implicit
+  "inactive only" filter when the caller asked for `-IncludeDetails`, which is a request to
+  annotate every object rather than to filter.
 - **The entire gMSA password-access analysis never ran.** In
   `Get-ManagedServiceAccountSecurity` the security descriptor was assigned from an
   if-expression, which routes the value through the output stream and enumerates it, so a

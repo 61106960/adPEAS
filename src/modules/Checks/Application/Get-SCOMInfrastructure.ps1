@@ -101,16 +101,20 @@ function Get-SCOMInfrastructure {
             # ===== Step 2: Enumerate SCOM Management Servers =====
             Show-SubHeader "Searching for SCOM management servers..." -ObjectType "SCOMServer"
 
+            # $srv, not $server: the check declares a [string]$Server parameter, and PowerShell
+            # keeps that type constraint on the loop variable, so every AD object was coerced
+            # to its ToString() form. dNSHostName came back $null, the dedup comparison ran
+            # $null -notin $null (which is False) and no management server was ever reported.
             $scomServers = @()
 
             foreach ($spnPattern in $scomSPNPatterns) {
                 $servers = Get-DomainComputer -LDAPFilter "(servicePrincipalName=$spnPattern)" @PSBoundParameters
 
                 if ($servers) {
-                    foreach ($server in $servers) {
+                    foreach ($srv in $servers) {
                         # Avoid duplicates
-                        if ($server.dNSHostName -notin $scomServers.dNSHostName) {
-                            $scomServers += $server
+                        if ($srv.dNSHostName -notin $scomServers.dNSHostName) {
+                            $scomServers += $srv
                         }
                     }
                 }
@@ -119,9 +123,9 @@ function Get-SCOMInfrastructure {
             if (@($scomServers).Count -gt 0) {
                 Show-Line "Found $(@($scomServers).Count) SCOM management server(s)" -Class Hint
 
-                foreach ($server in $scomServers) {
-                    $server | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServer' -Force
-                    Show-Object $server
+                foreach ($srv in $scomServers) {
+                    $srv | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServer' -Force
+                    Show-Object $srv
                 }
             } else {
                 Show-Line "No SCOM management servers found via SPN detection" -Class Note

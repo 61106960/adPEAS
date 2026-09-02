@@ -204,7 +204,14 @@ function Test-AccountActivity {
         }
 
         # ===== Implicit -IsInactive when -InactiveDays is explicitly provided =====
-        if ($InactiveDays -gt 0 -and -not $IsActive -and -not $IsInactive) {
+        #
+        # -InactiveDays is documented as the WINDOW, not as a filter, and this convenience
+        # rule turns it into one. That is fine for a caller that only wants the inactive
+        # accounts, but it silently empties the result for a caller that wants every object
+        # annotated with a custom window - which is exactly what -IncludeDetails asks for.
+        # -IncludeDetails therefore suppresses the implicit filter; an explicit -IsInactive
+        # or -IsActive still works alongside it.
+        if ($InactiveDays -gt 0 -and -not $IsActive -and -not $IsInactive -and -not $IncludeDetails) {
             $IsInactive = $true
         }
 

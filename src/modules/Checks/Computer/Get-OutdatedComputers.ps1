@@ -83,11 +83,15 @@ function Get-OutdatedComputers {
             $computers = @(Get-DomainComputer -Enabled -Properties $FilterProperties @connectionParams)
 
             $inactiveFilteredCount = 0
+            $unknownOSCount = 0
             $outdatedComputerDNs = @()
 
             if (@($computers).Count -gt 0) {
-                # Get enabled computers with activity details
-                $computersWithActivity = $computers | Test-AccountActivity -IncludeDetails
+                # Get enabled computers with activity details.
+                # -InactiveDays has to be handed on: the parameter was declared, defaulted
+                # and documented here, but never reached Test-AccountActivity, which then
+                # fell back to the session default. "-InactiveDays 365" silently did nothing.
+                $computersWithActivity = $computers | Test-AccountActivity -IncludeDetails -InactiveDays $InactiveDays
 
                 $currentIndex = 0
                 $totalComputers = @($computersWithActivity).Count
@@ -108,6 +112,16 @@ function Get-OutdatedComputers {
 
                     # Check if OS is outdated using central lifecycle module
                     $eolCheck = Test-IsOutdatedOS -OSName $computer.operatingSystem -OSVersion $computer.operatingSystemVersion
+
+                    # An operating system the lifecycle table does not know cannot be judged.
+                    # Count it so the summary below can say how much of the estate the
+                    # statement actually covers - a Linux member, an appliance and a brand
+                    # new Windows build all land here and would otherwise be silently absent.
+                    # Counting only: this must never gate $eolCheck.IsOutdated, or a machine
+                    # whose EOL date is known would drop out of the result.
+                    if (-not $eolCheck.HasLifecycleData) {
+                        $unknownOSCount++
+                    }
 
                     if ($eolCheck.IsOutdated) {
                         # Check if computer is active
@@ -153,6 +167,12 @@ function Get-OutdatedComputers {
                 Show-Line "No active computers with outdated OS ($inactiveFilteredCount inactive accounts filtered)" -Class "Secure"
             } else {
                 Show-Line "No computers with outdated operating systems found" -Class "Secure"
+            }
+
+            # Say how many machines the lifecycle table could not judge, so the reader knows
+            # the scope of the statement above rather than assuming it covered everything.
+            if ($unknownOSCount -gt 0) {
+                Show-Line "$unknownOSCount computer(s) run an operating system the lifecycle table does not know - not evaluated" -Class "Note"
             }
 
         } catch {

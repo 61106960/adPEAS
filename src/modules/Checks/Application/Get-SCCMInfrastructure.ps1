@@ -262,13 +262,17 @@ function Get-SCCMInfrastructure {
             $seenServerDNs = @{}
 
             $servers = Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=SMS*)(servicePrincipalName=SMSSQLBKUP*))" @PSBoundParameters
+                # $srv, not $server: the check declares a [string]$Server parameter, and
+                # PowerShell keeps that type constraint on the loop variable. Every AD object
+                # was coerced to its ToString() form, distinguishedName came back empty, the
+                # dedup guard never fired and no SCCM site server was ever reported.
 
             if ($servers) {
-                foreach ($server in @($servers)) {
-                    $dn = $server.distinguishedName
+                foreach ($srv in @($servers)) {
+                    $dn = $srv.distinguishedName
                     if ($dn -and -not $seenServerDNs.ContainsKey($dn)) {
                         $seenServerDNs[$dn] = $true
-                        [void]$sccmServers.Add($server)
+                        [void]$sccmServers.Add($srv)
                     }
                 }
             }
@@ -276,9 +280,9 @@ function Get-SCCMInfrastructure {
             if ($sccmServers.Count -gt 0) {
                 Show-Line "Found $($sccmServers.Count) SCCM server(s)" -Class Hint
 
-                foreach ($server in $sccmServers) {
-                    $server | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMServer' -Force
-                    Show-Object $server
+                foreach ($srv in $sccmServers) {
+                    $srv | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMServer' -Force
+                    Show-Object $srv
                 }
             } else {
                 Show-Line "No SCCM servers found via SPN detection" -Class Note

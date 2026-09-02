@@ -55,12 +55,23 @@ $Script:WindowsLifecycle = @{
     'Windows Server 2012 R2' = '2026-10-13'   # ESU Year 3 ends (was 2023-10-10 without ESU)
     'Windows Server 2016'    = '2027-01-12'   # Extended support ends
 
-    # ===== Currently Supported (no EOL date yet or far future) =====
-    # Windows 11           - Support ongoing (version-dependent)
-    # Windows Server 2019  - Extended support: 2029-01-09
-    # Windows Server 2022  - Extended support: 2031-10-14
-    # Windows Server 2025  - Extended support: TBD
+    # Still supported, but the end date is published and belongs in the table. A future
+    # date already means "not outdated" - that is how the LTSC rows work. Leaving these
+    # in a comment made a current server indistinguishable from a network printer:
+    # both came back HasLifecycleData = $false.
+    'Windows Server 2019'    = '2029-01-09'   # Extended support ends
+    'Windows Server 2022'    = '2031-10-14'   # Extended support ends
 }
+
+# Products that are recognized and supported but have no single end-of-support date:
+# Windows 11 is versioned per build like the Windows 10 SAC channel, and the Windows
+# Server 2025 lifecycle was not published when this table was written. They must not be
+# given an invented date, but they must also not be reported as an unknown platform, so
+# they are carried here. Test-IsOutdatedOS treats them as known and not outdated.
+$Script:WindowsSupportedNoEOL = @(
+    'Windows 11'
+    'Windows Server 2025'
+)
 
 # =============================================================================
 # EXCHANGE LIFECYCLE DATA
@@ -344,6 +355,14 @@ function Test-IsOutdatedOS {
         EOLDate = $null
         DaysSinceEOL = $null
         HasLifecycleData = $false
+    }
+
+    # A recognized product whose support end date is not published yet. Known, not
+    # outdated, no date - EOLDate stays $null and the caller can tell it apart from a
+    # platform the tool has never heard of.
+    if ($Script:WindowsSupportedNoEOL -contains $normalizedOS) {
+        $result.HasLifecycleData = $true
+        return $result
     }
 
     if ($Script:WindowsLifecycle.ContainsKey($normalizedOS)) {
