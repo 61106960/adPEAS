@@ -20,7 +20,9 @@
     - Verbose: Detailed information (Write-Verbose) - DEFAULT
     - Debug: Debug information (Write-Debug)
     - Warning: Warning messages (Write-Warning)
-    - Error: Error messages (Write-Warning with [ERROR] prefix)
+    - Error: Error messages (Write-Warning; every call site prefixes its own message
+      text with "Error:", so the console line is not distinguishable from Warning by
+      Write-Log itself)
 
 .EXAMPLE
     Write-Log "[Get-DomainUser] Querying users..."
