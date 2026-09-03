@@ -19,7 +19,7 @@
 
 .EXAMPLE
     ConvertFrom-GPPPassword -EncryptedPassword "j1Uyj3Vx8TY9LtLZil2uAuZkFQA/4latT76ZwgdHdhw"
-    Returns: P@ssw0rd123
+    Returns: Local*P4ssword!
 
 .EXAMPLE
     # From XML parsing
@@ -91,36 +91,61 @@ function ConvertFrom-GPPPassword {
             $aes.Key = $aesKeyBytes
             $aes.IV = New-Object Byte[] 16  # IV is all zeros for GPP
             $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
-            $aes.Padding = [System.Security.Cryptography.PaddingMode]::Zeros
+            # PaddingMode::None, so the padding is removed here rather than by .NET.
+            # GPP files carry both schemes - PKCS7 from the Windows tooling, zero padding
+            # from some third-party writers - and .NET can only be told one of them. Asked
+            # for the wrong one it either throws or leaves the padding in place.
+            $aes.Padding = [System.Security.Cryptography.PaddingMode]::None
 
             # Decrypt
             $decryptor = $aes.CreateDecryptor()
             $decryptedBytes = $decryptor.TransformFinalBlock($encryptedBytes, 0, $encryptedBytes.Length)
 
-            # Convert to Unicode string and trim padding
-            $decryptedPassword = [System.Text.Encoding]::Unicode.GetString($decryptedBytes)
+            # Strip the block padding on the bytes, before anything is decoded.
+            #
+            # This replaces a filter that ran over the decoded characters and kept only
+            # U+0020-U+007E and U+0080-U+00FF, on the assumption that "GPP passwords are
+            # ASCII-safe". They are not: a Euro sign, a tab, or any Cyrillic, Greek or CJK
+            # character was silently dropped and the function returned a password that was
+            # not the password - "P@ss<euro>w0rd" came back as "P@ssw0rd". For a tool whose
+            # output someone then authenticates with, a quietly wrong credential is worse
+            # than a reported failure: it costs a failed logon against a monitored account.
+            #
+            # The filter existed because PaddingMode::Zeros leaves PKCS7 padding in the
+            # output, where bytes 0x0C or 0x02 decode to U+0C0C and U+0202 - the "padding
+            # artifacts" the old comment named. Removing the padding properly removes the
+            # reason for the filter.
+            $len = $decryptedBytes.Length
 
-            # Remove AES padding artifacts (null bytes and any trailing non-printable chars)
-            # GPP passwords are ASCII-safe, so we can safely trim anything non-printable
-            # This handles: null bytes (0x00), and padding remnants like U+0C0C, U+0202, U+0E0E
-            $cleanPassword = ""
-            foreach ($char in $decryptedPassword.ToCharArray()) {
-                $code = [int]$char
-                # Keep only printable ASCII range (space to tilde) and common extended chars
-                if ($code -ge 32 -and $code -le 126) {
-                    $cleanPassword += $char
+            # PKCS7: the last byte gives the pad length, and every padding byte repeats it.
+            if ($len -gt 0) {
+                $padLength = [int]$decryptedBytes[$len - 1]
+                if ($padLength -ge 1 -and $padLength -le 16 -and $padLength -le $len) {
+                    $isPKCS7 = $true
+                    for ($i = $len - $padLength; $i -lt $len; $i++) {
+                        if ($decryptedBytes[$i] -ne $padLength) { $isPKCS7 = $false; break }
+                    }
+                    if ($isPKCS7) { $len -= $padLength }
                 }
-                elseif ($code -ge 128 -and $code -le 255) {
-                    # Extended ASCII (accented chars, etc.) - keep these too
-                    $cleanPassword += $char
-                }
-                elseif ($code -eq 0) {
-                    # Null byte - stop here (rest is padding)
-                    break
-                }
-                # Skip other control chars and Unicode oddities (padding artifacts)
             }
-            $decryptedPassword = $cleanPassword
+
+            # Zero padding, removed in UTF-16 code units rather than in bytes. Any ASCII
+            # character ends in a zero byte in UTF-16LE - "abc" is 61 00 62 00 63 00 - so
+            # trimming single zero bytes would eat the encoding itself.
+            while ($len -ge 2 -and $decryptedBytes[$len - 1] -eq 0 -and $decryptedBytes[$len - 2] -eq 0) {
+                $len -= 2
+            }
+
+            # A UTF-16LE string is an even number of bytes. An odd count means the data was
+            # not what this function was told it was, and decoding it would invent a
+            # character out of one byte.
+            if (($len % 2) -ne 0) { $len-- }
+
+            $decryptedPassword = if ($len -gt 0) {
+                [System.Text.Encoding]::Unicode.GetString($decryptedBytes, 0, $len)
+            } else {
+                ''
+            }
 
             # Cleanup
             $decryptor.Dispose()

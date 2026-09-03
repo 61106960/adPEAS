@@ -34,6 +34,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A recovered GPP password could be a password nobody has.** `ConvertFrom-GPPPassword`
+  decrypted with `PaddingMode::Zeros`, which leaves PKCS7 padding in the output, and then
+  cleaned that up by filtering the decoded characters down to `U+0020-U+007E` and
+  `U+0080-U+00FF` on the assumption that "GPP passwords are ASCII-safe". They are not: a
+  euro sign, a tab, or any Cyrillic, Greek or CJK character was dropped without a word,
+  so `P@ss<euro>w0rd` was reported as `P@ssw0rd`. This is the one output an operator
+  authenticates with, and a quietly wrong credential costs a failed logon against an
+  account that may be monitored. The padding is now removed on the bytes - PKCS7 by its
+  length marker, zero padding in UTF-16 code units, because every ASCII character already
+  ends in a zero byte - and the decoded string is returned unfiltered. Round-tripped
+  against both padding schemes, which GPP files carry both of. The example in the
+  function's own documentation was also wrong and now states what it actually returns.
 - **One finding without a timestamp cost the reader the whole imported report.**
   `Import-FindingsFromCache` parsed the timestamp of every finding with an unguarded
   `[datetime]::Parse`, which throws on a missing value. The findings it reads come from a
