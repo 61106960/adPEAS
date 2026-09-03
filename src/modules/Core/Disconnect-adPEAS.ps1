@@ -324,6 +324,16 @@ function Clear-SessionState {
     $Script:CachedAllGPOs = $null
     $Script:CachedGPOLinkage = $null
 
+    # Kerberoast run state (Invoke-Kerberoast)
+    # KerberoastCredParams is a splat table that carries the PSCredential the caller
+    # passed - built in begin{}, never torn down. It outlived the session it belonged to,
+    # so a disconnect left the credential sitting in session state.
+    $Script:KerberoastCredParams = $null
+    $Script:UseInMemoryMethod = $null
+
+    # Progress throttling state (Show-Progress)
+    $Script:LastProgressUpdate = $null
+
     # Collector metadata (Invoke-adPEASCollector)
     $Script:CollectorVersion = $null
     $Script:JsonVersion = $null

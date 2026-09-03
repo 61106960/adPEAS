@@ -27,8 +27,17 @@
     ConvertFrom-VBE -EncodedScript $vbeContent
 
 .EXAMPLE
-    ConvertFrom-VBE -EncodedScript '#@~^DgAAAA==\ko$K6,JCV^GJqAQAAA==^#~@'
-    # Returns: MsgBox "Hello"
+    ConvertFrom-VBE -EncodedScript '#@~^CwAAAA==\ko$K6,JCbJZQMAAA==^#~@'
+    # Returns: MsgBox "Hi"
+    #
+    # The example this replaced claimed to decode to MsgBox "Hello" and did not: its
+    # payload contains a DEL byte that had been lost from the string literal, so it was
+    # one character short and decoded to garbage. This sample was taken from the Windows
+    # Script Encoder and deliberately encodes to printable characters only.
+    #
+    # The eight-character blocks either side of the payload are the encoder's length and
+    # checksum, not part of the encoded text. Real encoder output also ends in a NUL
+    # byte, which does not affect the match.
 
 .OUTPUTS
     String - Decoded VBScript source code
@@ -52,7 +61,7 @@ function ConvertFrom-VBE {
 
         # VBE decode table - 128 entries indexed DIRECTLY by byte value
         # Each entry contains 3 chars, selected by VBECombination[index % 64]
-        $script:VBEDecodings = @(
+        $VBEDecodings = @(
             [char[]]@(0x00, 0x00, 0x00),  # 0
             [char[]]@(0x01, 0x01, 0x01),  # 1
             [char[]]@(0x02, 0x02, 0x02),  # 2
@@ -185,7 +194,7 @@ function ConvertFrom-VBE {
 
         # Combination table - determines which of the 3 decoded chars to use
         # Index into this table is (position % 64)
-        $script:VBECombination = @(
+        $VBECombination = @(
             0, 1, 2, 0, 1, 2, 1, 2, 2, 1, 2, 1, 0, 2, 1, 2,
             0, 2, 1, 2, 0, 0, 1, 2, 2, 1, 0, 2, 1, 2, 2, 1,
             0, 0, 2, 1, 2, 1, 2, 0, 2, 0, 0, 1, 2, 0, 2, 1,
@@ -193,7 +202,7 @@ function ConvertFrom-VBE {
         )
 
         # Bad bytes that should not be decoded (passed through as-is)
-        $script:VBEBadBytes = @(60, 62, 64)  # < > @
+        $VBEBadBytes = @(60, 62, 64)  # < > @
     }
 
     process {
@@ -236,13 +245,13 @@ function ConvertFrom-VBE {
                     # Check if this byte should be decoded:
                     # (byte == 9 or (byte > 31 and byte < 128)) and byte not in bad_bytes
                     if (($byteValue -eq 9 -or ($byteValue -gt 31 -and $byteValue -lt 128)) -and
-                        $byteValue -notin $script:VBEBadBytes) {
+                        $byteValue -notin $VBEBadBytes) {
 
                         # Direct index into table (no offset subtraction)
                         # Table has 128 entries, index = byte value
-                        if ($byteValue -lt $script:VBEDecodings.Count) {
-                            $triplet = $script:VBEDecodings[$byteValue]
-                            $combinationIndex = $script:VBECombination[$index % 64]
+                        if ($byteValue -lt $VBEDecodings.Count) {
+                            $triplet = $VBEDecodings[$byteValue]
+                            $combinationIndex = $VBECombination[$index % 64]
                             $decodedChar = $triplet[$combinationIndex]
                             [void]$decoded.Append($decodedChar)
                         } else {

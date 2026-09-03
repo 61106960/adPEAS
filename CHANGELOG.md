@@ -34,6 +34,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **The DES key from `Primary:Kerberos` was never read.** `supplementalCredentials` holds
+  the Kerberos keys in two properties with two different layouts:
+  `Primary:Kerberos-Newer-Keys` is a `KERB_STORED_CREDENTIAL_NEW` with a 24-byte header
+  and 24-byte entries, `Primary:Kerberos` a `KERB_STORED_CREDENTIAL` with 16 and 20
+  (MS-SAMR 2.2.10.4/2.2.10.5/2.2.10.7). The fallback that reads the second one used the
+  first one's layout, which put every field eight bytes past where it lives - `KeyType`
+  landed on `KeyLength`, the test for DES-CBC-MD5 never matched, and the fallback
+  returned nothing. Silently: a key that is not found looks exactly like a key that is
+  not there.
+- **An entry declaring a zero-length key produced two bytes of the blob as if they were
+  key material.** The key was sliced with `$Data[$offset..($offset + $length - 1)]`, and
+  a length of zero makes that range count backwards - PowerShell reads `5..4` as
+  `@(5, 4)`. The bounds check in front of it cannot catch that, because `offset + 0` is
+  always inside the blob. Both parsers now share one extractor that copies the bytes
+  instead of slicing.
+- **A single empty property discarded the credentials next to it.** A property value of
+  zero length was stored as `$null`, the first consumer that touched it threw, and the
+  outer `catch` reported the whole `supplementalCredentials` attribute as unparseable -
+  so the AES keys beside it were lost as well.
+- **`WDigestHashes` was not always an array.** It came back as a bare string when exactly
+  one of the 29 slots was set and as `$null` when the blob was too short, though the
+  documented output is an array; indexing the string yields characters.
+  `ConvertFrom-SupplementalCredentials` also refused an empty or null blob at the
+  parameter binder, ahead of its own guard for exactly that case.
+- **`Invoke-Kerberoast` left the caller's credential in session state.** The splat table
+  it builds in `begin{}` carries the `PSCredential` and was never torn down, so it
+  outlived `Disconnect-adPEAS`. It is cleared in `Clear-SessionState` now, along with the
+  two other run-state variables that were missing there.
 - **gMSA passwords were never extracted at all in the built artifact.**
   `ConvertFrom-ManagedPassword` called `Get-NTHashFromPassword -Password`, naming the
   parameter of a second function of that name defined in the same file. `Kerberos-Crypto.ps1`

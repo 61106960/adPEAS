@@ -47,7 +47,13 @@
 function ConvertFrom-SupplementalCredentials {
     [CmdletBinding()]
     param(
+        # AllowNull/AllowEmptyCollection because the guard below is meant to answer for
+        # both. Without them the parameter binder throws first, so a caller handed an
+        # empty supplementalCredentials value gets a terminating error where the rest of
+        # this function's contract is to return $null.
         [Parameter(Mandatory=$true)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
         [byte[]]$Data
     )
 
@@ -81,6 +87,14 @@ function ConvertFrom-SupplementalCredentials {
             }
 
             # PropertyCount (2 bytes)
+            # A blob can end right after the signature - MS-SAMR notes that PropertyCount
+            # is absent when there are no properties. Without this test the read below
+            # throws and the caller is told the whole attribute failed to parse.
+            if ($offset + 2 -gt $Data.Length) {
+                Write-Log "[ConvertFrom-SupplementalCredentials] No PropertyCount present - structure carries no properties"
+                return $null
+            }
+
             $propertyCount = [BitConverter]::ToUInt16($Data, $offset)
             $offset += 2
 
@@ -131,9 +145,15 @@ function ConvertFrom-SupplementalCredentials {
                     continue
                 }
 
+                # Typed array rather than the output of a for loop. The loop form yields
+                # nothing at all for a zero-length value, so the property was stored as
+                # $null - and the consumers below then threw on it, which the outer catch
+                # turned into "the whole attribute failed to parse". One empty property
+                # was enough to throw away the Kerberos keys next to it.
                 try {
-                    $propertyValueBytes = for ($j = 0; $j -lt $propertyValueHex.Length; $j += 2) {
-                        [Convert]::ToByte($propertyValueHex.Substring($j, 2), 16)
+                    $propertyValueBytes = New-Object byte[] ($propertyValueHex.Length / 2)
+                    for ($j = 0; $j -lt $propertyValueHex.Length; $j += 2) {
+                        $propertyValueBytes[$j / 2] = [Convert]::ToByte($propertyValueHex.Substring($j, 2), 16)
                     }
                 }
                 catch {
@@ -176,15 +196,20 @@ function ConvertFrom-SupplementalCredentials {
             # Extract cleartext password
             $cleartextPassword = $null
             if ($properties.ContainsKey('Primary:CLEARTEXT')) {
-                $cleartextData = $properties['Primary:CLEARTEXT']
-                $cleartextPassword = [System.Text.Encoding]::Unicode.GetString($cleartextData)
+                $cleartextData = [byte[]]$properties['Primary:CLEARTEXT']
+                if ($cleartextData.Length -gt 0) {
+                    $cleartextPassword = [System.Text.Encoding]::Unicode.GetString($cleartextData)
+                }
             }
 
             # Extract WDigest hashes
+            # @(...) around the call because Parse-WDigestHashes returns a bare string
+            # when exactly one hash is set and nothing at all when none is - the
+            # documented output is an array, and indexing a string yields characters.
             $wdigestHashes = @()
             if ($properties.ContainsKey('Primary:WDigest')) {
                 $wdigestData = $properties['Primary:WDigest']
-                $wdigestHashes = Parse-WDigestHashes -Data $wdigestData
+                $wdigestHashes = @(Parse-WDigestHashes -Data $wdigestData)
             }
 
             # Return parsed credentials
@@ -202,6 +227,46 @@ function ConvertFrom-SupplementalCredentials {
             return $null
         }
     }
+}
+
+<#
+.SYNOPSIS
+Reads KeyLength bytes at KeyOffset out of a KERB_STORED_CREDENTIAL blob.
+
+.DESCRIPTION
+Internal helper. Both key parsers used to slice with $Data[$keyOffset..($keyOffset +
+$keyLength - 1)], which has two problems.
+
+A range index returns Object[] rather than byte[], and a KeyLength of 0 makes the range
+count backwards: PowerShell reads 5..4 as @(5, 4), so a key that is declared empty came
+back as two bytes in reverse order and was reported as a real key. The bounds check in
+front of it does not catch that, because offset + 0 is always within the blob.
+
+Returns an empty byte[] when the entry does not describe a readable key, which is what
+the callers test for.
+#>
+function Get-KeyBytesAt {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]]$Data,
+
+        [Parameter(Mandatory = $true)]
+        [uint32]$KeyOffset,
+
+        [Parameter(Mandatory = $true)]
+        [uint32]$KeyLength
+    )
+
+    $empty = New-Object byte[] 0
+
+    if ($KeyLength -eq 0) { return ,$empty }
+    if ($KeyOffset -ge $Data.Length) { return ,$empty }
+    if (([long]$KeyOffset + [long]$KeyLength) -gt $Data.Length) { return ,$empty }
+
+    $keyBytes = New-Object byte[] $KeyLength
+    [Array]::Copy($Data, $KeyOffset, $keyBytes, 0, $KeyLength)
+    return ,$keyBytes
 }
 
 # Helper function to parse KERB_STORED_CREDENTIAL_NEW
@@ -300,8 +365,8 @@ function Parse-KerberosNewerKeys {
             Write-Verbose "[Parse-KerberosNewerKeys] Entry ${i}: KeyType=${keyType}, KeyLength=${keyLength}, KeyOffset=${keyOffset}"
 
             # Extract key
-            if ($keyOffset -lt $Data.Length -and ($keyOffset + $keyLength) -le $Data.Length) {
-                $keyBytes = $Data[$keyOffset..($keyOffset + $keyLength - 1)]
+            $keyBytes = Get-KeyBytesAt -Data $Data -KeyOffset $keyOffset -KeyLength $keyLength
+            if ($keyBytes.Length -gt 0) {
                 $keyHex = ($keyBytes | ForEach-Object { $_.ToString('x2') }) -join ''
 
                 # Map KeyType to encryption type
@@ -326,7 +391,7 @@ function Parse-KerberosNewerKeys {
                     }
                 }
             } else {
-                Write-Verbose "[Parse-KerberosNewerKeys] Entry ${i}: KeyOffset out of bounds (offset=${keyOffset}, length=${keyLength}, dataSize=$($Data.Length))"
+                Write-Verbose "[Parse-KerberosNewerKeys] Entry ${i}: no usable key (offset=${keyOffset}, length=${keyLength}, dataSize=$($Data.Length))"
             }
         }
 
@@ -349,27 +414,42 @@ function Parse-KerberosKeys {
     param([byte[]]$Data)
 
     try {
-        # Similar to Parse-KerberosNewerKeys but looks for KeyType 3 (DES-CBC-MD5)
-        if ($Data.Length -lt 20) { return $null }
+        # Primary:Kerberos is KERB_STORED_CREDENTIAL (MS-SAMR 2.2.10.5), which is NOT the
+        # structure Primary:Kerberos-Newer-Keys uses. This function used to read it with
+        # the new format's layout and therefore never returned a key at all.
+        #
+        # KERB_STORED_CREDENTIAL header, 16 bytes:
+        #   Revision (2) Flags (2) CredentialCount (2) OldCredentialCount (2)
+        #   DefaultSaltLength (2) DefaultSaltMaximumLength (2) DefaultSaltOffset (4)
+        # The new format has ServiceCredentialCount, OlderCredentialCount and
+        # DefaultIterationCount on top of that - 24 bytes.
+        #
+        # KERB_KEY_DATA entry (MS-SAMR 2.2.10.4), 20 bytes:
+        #   Reserved1 (2) Reserved2 (2) Reserved3 (4) KeyType (4) KeyLength (4) KeyOffset (4)
+        # The new format's entry carries an IterationCount before KeyType - 24 bytes.
+        #
+        # Reading a 16-byte header as 20 and a 20-byte entry as 24 put every field eight
+        # bytes past where it lives: KeyType landed on KeyLength, so the KeyType 3 test
+        # never matched and the DES fallback silently produced nothing.
+        $headerLength = 16
+        $entryLength = 20
+
+        if ($Data.Length -lt $headerLength) { return $null }
 
         $offset = 0
-        $revision = [BitConverter]::ToUInt16($Data, $offset)
-        $offset += 2
+        $offset += 2  # Revision
         $offset += 2  # Flags
         $credentialCount = [BitConverter]::ToUInt16($Data, $offset)
         $offset += 2
-        $offset += 2  # ServiceCredentialCount
         $offset += 2  # OldCredentialCount
-        $offset += 2  # OlderCredentialCount
         $offset += 2  # DefaultSaltLength
         $offset += 2  # DefaultSaltMaximumLength
         $offset += 4  # DefaultSaltOffset
 
         for ($i = 0; $i -lt $credentialCount; $i++) {
-            if ($offset + 20 -gt $Data.Length) { break }
+            if ($offset + $entryLength -gt $Data.Length) { break }
 
-            $offset += 8  # Reserved
-            $offset += 4  # IterationCount
+            $offset += 8  # Reserved1 + Reserved2 + Reserved3
             $keyType = [BitConverter]::ToUInt32($Data, $offset)
             $offset += 4
             $keyLength = [BitConverter]::ToUInt32($Data, $offset)
@@ -377,9 +457,11 @@ function Parse-KerberosKeys {
             $keyOffset = [BitConverter]::ToUInt32($Data, $offset)
             $offset += 4
 
-            if ($keyType -eq 3 -and $keyOffset -lt $Data.Length -and ($keyOffset + $keyLength) -le $Data.Length) {  # DES-CBC-MD5
-                $keyBytes = $Data[$keyOffset..($keyOffset + $keyLength - 1)]
-                return ($keyBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+            if ($keyType -eq 3) {  # DES-CBC-MD5
+                $keyBytes = Get-KeyBytesAt -Data $Data -KeyOffset $keyOffset -KeyLength $keyLength
+                if ($keyBytes.Length -gt 0) {
+                    return ($keyBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+                }
             }
         }
 
