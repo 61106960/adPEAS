@@ -30,6 +30,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Preferences (`Registry.xml`) and `GptTmpl.inf`, and every entry lists the OUs,
   domains and sites its GPO is linked to.
 
+### Changed
+
+- **HTML report section badges: `Secure` now outranks `Hint`, matching the ranking
+  already used for attribute rows.** `Export-HTMLReport.ps1`'s `Get-GroupSeverity`
+  (picks the colour of a report section's badge) previously ranked `Hint` above
+  `Secure` with its own, separately-maintained priority table - a deliberate
+  divergence from the central ranking (`adPEAS-Types.ps1`'s `$Script:SeverityPriority`
+  and `Get-RenderModel.ps1`'s `Get-MaxSeverityFromValues`, both `Finding > Secure >
+  Hint > Note`), found while building the unit test suites and left as two
+  intentionally different answers pending a decision. Decided: unify on the central
+  ranking, so a section that is otherwise confirmed secure is not downgraded by a mere
+  Hint elsewhere in the same section. This visibly changes the badge colour of any
+  report section whose highest severity is a Secure finding alongside a Hint one.
+
 ### Fixed
 
 Found while building the unit test suites, each reproduced before it was changed.

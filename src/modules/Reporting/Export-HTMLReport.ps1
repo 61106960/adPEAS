@@ -818,7 +818,11 @@ function Get-GroupItemCount {
 function Get-GroupSeverity {
     param([array]$Findings)
 
-    $severityPriority = @{ 'Finding' = 4; 'Hint' = 3; 'Secure' = 2; 'Note' = 1; 'Standard' = 0 }
+    # Matches $Script:SeverityPriority (adPEAS-Types.ps1) and Get-MaxSeverityFromValues
+    # (Get-RenderModel.ps1): Secure outranks Hint everywhere in adPEAS now, not just for
+    # an attribute row - a confirmed-secure section badge should not be downgraded by a
+    # mere Hint elsewhere in the same section.
+    $severityPriority = @{ 'Finding' = 4; 'Secure' = 3; 'Hint' = 2; 'Note' = 1; 'Standard' = 0 }
     $highestPriority = 0
     $highestSeverity = 'Note'
 
