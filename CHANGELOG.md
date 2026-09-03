@@ -34,6 +34,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **`Search-Value` read square brackets in the search pattern as a wildcard character
+  class.** Searching for `[Backup]` matched every value containing any one of `B`, `a`,
+  `c`, `k`, `u` or `p` - nearly every object in a domain - with nothing in the output to
+  say why, and an unbalanced bracket such as `svc[1` threw a `WildcardPatternException`
+  once per property per object. Brackets are escaped now and mean themselves; `*` and `?`
+  keep working, which is what "wildcard search" in the help refers to. `-Exact` and
+  `-Regex` together, which used to let `-Exact` win silently, is now refused.
+- **`Test-AccountActivity -IncludeDetails` dropped every object on a second pass.**
+  `Add-Member` refuses to overwrite an existing member, so annotating the same object
+  twice - chaining two calls, or handing the same objects to another check - wrote an
+  error and emitted nothing at all, because `-PassThru` never ran. The annotation is
+  written with `-Force` now, so a second pass refreshes it. The help for
+  `-PasswordAgeDays` also claimed the threshold was exclusive while the code has always
+  included a password exactly N days old.
 - **One LAPS password in 256 lost its update timestamp.** Whether an
   `msLAPS-EncryptedPassword` blob carries the 16-byte header was decided by testing the
   first byte for `0x30`, the ASN.1 SEQUENCE tag. With a header present that byte is the

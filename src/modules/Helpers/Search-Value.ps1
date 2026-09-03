@@ -13,9 +13,11 @@
     Use -Property to restrict the search to specific attributes.
 
 .PARAMETER Pattern
-    The search pattern. By default used as wildcard (*Pattern*).
+    The search pattern. By default used as wildcard (*Pattern*), where * and ? keep
+    their wildcard meaning and square brackets are taken literally.
     With -Exact: exact string comparison.
     With -Regex: regular expression.
+    -Exact and -Regex are mutually exclusive.
 
 .PARAMETER InputObject
     The object to search (from pipeline).
@@ -70,6 +72,23 @@ function Search-Value {
         [switch]$Regex
     )
 
+    begin {
+        if ($Exact -and $Regex) {
+            throw "Parameters -Exact and -Regex are mutually exclusive"
+        }
+
+        # Square brackets are escaped so they mean themselves. PowerShell's -like reads
+        # them as a character class, so searching for "[Backup]" matched every value
+        # containing any one of B, a, c, k, u or p - which is nearly everything, with
+        # nothing in the output to say why. An unbalanced bracket was worse: "svc[1"
+        # threw a WildcardPatternException once per property per object.
+        #
+        # * and ? stay live: this is documented as a wildcard search and they are the
+        # only wildcards the documentation mentions. Escape the backtick first, or it
+        # would eat the escapes added after it.
+        $WildcardPattern = $Pattern.Replace('`', '``').Replace('[', '`[').Replace(']', '`]')
+    }
+
     process {
         # Get properties to search
         $propsToSearch = if ($Property) {
@@ -97,7 +116,7 @@ function Search-Value {
                 } elseif ($Regex) {
                     $val -match $Pattern
                 } else {
-                    $val -like "*$Pattern*"
+                    $val -like "*$WildcardPattern*"
                 }
 
                 if ($isMatch) {

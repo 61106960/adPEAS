@@ -52,7 +52,8 @@ function Test-AccountActivity {
     Filter for accounts that have logged in at least once.
 
     .PARAMETER PasswordAgeDays
-    Filter for accounts with password older than N days (exclusive: > not >=).
+    Filter for accounts whose password is at least N days old (inclusive: >= not >).
+    A password set exactly N days ago passes the filter.
 
     .PARAMETER PasswordChangedInYear
     Filter for accounts with password changed in specific year (e.g., 2020).
@@ -373,7 +374,12 @@ function Test-AccountActivity {
 
             # Add property to object
             # Note: Add-Member modifies the original object in-place, -PassThru returns it for pipeline
-            $ADObject | Add-Member -NotePropertyName "ActivityDetails" -NotePropertyValue $details -PassThru
+            #
+            # -Force because Add-Member refuses to overwrite an existing member. Without
+            # it, annotating the same object twice - chaining two calls, or handing the
+            # same objects to a second check - wrote an error and, worse, emitted nothing:
+            # -PassThru never ran, so every object silently dropped out of the pipeline.
+            $ADObject | Add-Member -Force -NotePropertyName "ActivityDetails" -NotePropertyValue $details -PassThru
         }
         else {
             # Return original object unchanged
