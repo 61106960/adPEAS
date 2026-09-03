@@ -452,8 +452,25 @@ function Import-FindingsFromCache {
             }
         }
 
+        # Guarded the same way Compare-adPEASReport guards the export date, and for the
+        # same reason: this file was written by some other run of adPEAS, possibly an
+        # older version, possibly edited by hand. [datetime]::Parse throws on a missing
+        # value, and an unguarded throw here ends the whole import - one finding without a
+        # timestamp would cost the reader the entire report. The timestamp is
+        # informational; the scan date the report shows comes from the cache metadata, not
+        # from here. InvariantCulture because Export-FindingsCache writes the round-trip
+        # format, which must not be read through the reader's local culture.
+        $timestamp = $null
+        if ($f.Timestamp) {
+            try {
+                $timestamp = [datetime]::Parse($f.Timestamp, [System.Globalization.CultureInfo]::InvariantCulture)
+            } catch {
+                Write-Log "[Import-FindingsFromCache] Unreadable timestamp, finding kept without one: $($f.Timestamp)"
+            }
+        }
+
         [PSCustomObject]@{
-            Timestamp           = [datetime]::Parse($f.Timestamp)
+            Timestamp           = $timestamp
             Category            = $f.Category
             CheckName           = $f.CheckName
             CheckTitle          = $f.CheckTitle

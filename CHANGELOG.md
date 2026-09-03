@@ -34,6 +34,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **One finding without a timestamp cost the reader the whole imported report.**
+  `Import-FindingsFromCache` parsed the timestamp of every finding with an unguarded
+  `[datetime]::Parse`, which throws on a missing value. The findings it reads come from a
+  JSON file written by some other run of adPEAS - an older version, a partial export, a
+  hand edit - so a single entry missing that field ended the import for all of them. The
+  timestamp is informational here; the scan date the report shows comes from the cache
+  metadata. It is now read the same way `Compare-adPEASReport` already reads the export
+  date: guarded, and with the invariant culture, since the export writes the round-trip
+  format and must not be read through the reader's local settings.
 - **The worst password policy was the one the risk scoring could not read.**
   `Build-ScoringContext` pulls the minimum password length, the maximum password age and
   the account lockout threshold back out of the strings `Get-DomainPasswordPolicy`
