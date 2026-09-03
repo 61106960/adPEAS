@@ -93,18 +93,6 @@ function ConvertTo-FormattedACE {
                     $TrusteeSID
                 }
 
-                # Parse Active Directory Rights (bitfield)
-                $RightsArray = @()
-                $ADRights = $ACE.ActiveDirectoryRights
-
-                # Use central AllActiveDirectoryRights from adPEAS-GUIDs.ps1
-                foreach ($Right in $Script:AllActiveDirectoryRights) {
-                    # Check if ALL bits of the right are set, not just ANY overlap using ($ADRights -band $Right) -eq $Right to prevent false positives
-                    if (($ADRights -band $Right) -eq $Right) {
-                        $RightsArray += $Right.ToString()
-                    }
-                }
-
                 # Extract ObjectType GUID (for extended rights/property access)
                 $ObjectTypeGuid = if ($ACE.ObjectType -and $ACE.ObjectType -ne [System.Guid]::Empty) {
                     $ACE.ObjectType.ToString()
@@ -115,11 +103,11 @@ function ConvertTo-FormattedACE {
                     Get-ExtendedRightName -GUID $ObjectTypeGuid
                 } else { $null }
 
-                # Replace ExtendedRight with specific name if resolved
-                if ($ObjectTypeName -and ($RightsArray -contains "ExtendedRight")) {
-                    $RightsArray = $RightsArray | Where-Object { $_ -ne "ExtendedRight" }
-                    $RightsArray += $ObjectTypeName
-                }
+                # Rights decomposition, including the substitution of a resolved extended
+                # right for the generic label, lives in ConvertTo-ADRightsList
+                # (adPEAS-GUIDs.ps1). Get-ObjectACL renders the same shape and used to
+                # carry a second copy of this loop, defects included.
+                $RightsArray = ConvertTo-ADRightsList -Rights $ACE.ActiveDirectoryRights -ExtendedRightName $ObjectTypeName
 
                 # Extract InheritedObjectType GUID
                 $InheritedObjectTypeGuid = if ($ACE.InheritedObjectType -and $ACE.InheritedObjectType -ne [System.Guid]::Empty) {

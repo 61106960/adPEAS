@@ -299,21 +299,6 @@ function Get-ObjectACL {
                     $TrusteeSID = $ACE.IdentityReference.Value
                     $TrusteeName = if (-not $NoResolveSIDs) { ConvertFrom-SID -SID $TrusteeSID } else { $TrusteeSID }
 
-                    # Parse rights
-                    $RightsArray = @()
-                    $ADRights = $ACE.ActiveDirectoryRights
-
-                    # Use central AllActiveDirectoryRights from adPEAS-GUIDs.ps1
-                    foreach ($Right in $Script:AllActiveDirectoryRights) {
-                        # IMPORTANT: Check if ALL bits of the right are set, not just ANY overlap
-                        # Using ($ADRights -band $Right) -eq $Right instead of just ($ADRights -band $Right)
-                        # because the latter returns true if ANY bits match (e.g., ReadProperty 0x10
-                        # would falsely match GenericAll 0xF01FF since they share bits)
-                        if (($ADRights -band $Right) -eq $Right) {
-                            $RightsArray += $Right.ToString()
-                        }
-                    }
-
                     # Resolve ObjectType GUID (extended rights, property sets)
                     $ObjectTypeGuid = if ($ACE.ObjectType -and $ACE.ObjectType -ne [System.Guid]::Empty) {
                         $ACE.ObjectType.ToString()
@@ -325,11 +310,11 @@ function Get-ObjectACL {
                         $ObjectTypeName = Get-ExtendedRightName -GUID $ObjectTypeGuid
                     }
 
-                    # Add extended right name to rights array if applicable
-                    if ($ObjectTypeName -and ($RightsArray -contains 'ExtendedRight')) {
-                        $RightsArray = $RightsArray | Where-Object { $_ -ne 'ExtendedRight' }
-                        $RightsArray += $ObjectTypeName
-                    }
+                    # Rights decomposition, including the substitution of a resolved
+                    # extended right for the generic label, lives in ConvertTo-ADRightsList
+                    # (adPEAS-GUIDs.ps1). ConvertTo-FormattedACE renders the same shape and
+                    # used to carry a second copy of this loop, defects included.
+                    $RightsArray = ConvertTo-ADRightsList -Rights $ACE.ActiveDirectoryRights -ExtendedRightName $ObjectTypeName
 
                     # InheritedObjectType
                     $InheritedObjectTypeGuid = if ($ACE.InheritedObjectType -and $ACE.InheritedObjectType -ne [System.Guid]::Empty) {

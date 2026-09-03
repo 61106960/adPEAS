@@ -34,6 +34,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **An ACE carrying a generic access right was displayed with an empty rights field.**
+  An ACE may hold GENERIC_ALL (`0x10000000`), GENERIC_READ, GENERIC_WRITE or
+  GENERIC_EXECUTE instead of the specific mask; the directory maps them at access-check
+  time (MS-ADTS 5.1.3.2). None of those bits matches any member of the
+  `ActiveDirectoryRights` enum - whose `GenericAll` is already the mapped `0x000F01FF` -
+  so the decomposition produced no names and `-ShowACE` printed nothing at all in the
+  Rights column. A resource-based constrained delegation descriptor is written exactly
+  that way (`O:BAD:(A;;GA;;;<sid>)`), including by adPEAS's own `Invoke-RBCDOperation`,
+  so the most permissive ACE there is came out blank. The mask is now mapped first.
+- **A resolved extended right was glued onto the right beside it.** Replacing the generic
+  `ExtendedRight` label filtered the list with `Where-Object` and appended with `+=`.
+  When exactly one other right survived the filter, the result collapsed to a string and
+  `+=` concatenated: an ACE with ReadProperty and ExtendedRight rendered as
+  `ReadPropertyDS-Replication-Get-Changes`.
+  Both defects existed in two copies, in `Get-ObjectACL` and in `ConvertTo-FormattedACE`.
+  The decomposition now lives once, in `ConvertTo-ADRightsList`.
+- **`ConvertTo-AccessRules` threw on an empty attribute value** instead of returning
+  `$null`: an empty array unwraps to `$null`, and the line reporting the unexpected type
+  called `GetType()` on it. It also answered `$null` for a valid descriptor that arrived
+  as `Object[]` rather than `byte[]`, which is what a plain `return` of a byte array
+  produces.
 - **A `userParameters` blob with exactly one Terminal Services setting was reported as a
   single letter.** `ConvertFrom-TSProperties` returned its lines with a plain `return`,
   which unrolls a one-element array to a bare string. `Invoke-LDAPSearch` tests

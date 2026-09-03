@@ -559,6 +559,96 @@ $Script:AllActiveDirectoryRights = @(
     [System.DirectoryServices.ActiveDirectoryRights]::Synchronize
 )
 
+<#
+.SYNOPSIS
+    Turns an ACE's ActiveDirectoryRights bitmask into the list of right names.
+
+.DESCRIPTION
+    Get-ObjectACL and ConvertTo-FormattedACE both render ACEs and used to carry their own
+    copy of this loop. Two defects lived in both copies.
+
+    The first was the generic access rights. An ACE can carry GENERIC_ALL (0x10000000),
+    GENERIC_READ (0x80000000), GENERIC_WRITE (0x40000000) or GENERIC_EXECUTE (0x20000000)
+    rather than the specific mask; the directory maps them at access-check time using the
+    generic mapping in MS-ADTS 5.1.3.2. None of those bits matches any member of the
+    ActiveDirectoryRights enum - the enum's GenericAll is already the mapped 0x000F01FF -
+    so the loop produced no names at all and the ACE was printed with an empty Rights
+    field. That is not a corner case: an RBCD descriptor is written as
+    "O:BAD:(A;;GA;;;<sid>)", which is what Invoke-RBCDOperation itself writes, so the
+    most permissive ACE there is displayed as blank. The mask is mapped here first, which
+    is what the directory grants.
+
+    The second was the substitution of a resolved extended right for the generic
+    "ExtendedRight" label. Filtering with Where-Object collapses a one-element result to a
+    bare string, and += on a string concatenates: an ACE holding ReadProperty and
+    ExtendedRight came out as "ReadPropertyDS-Replication-Get-Changes".
+
+.PARAMETER Rights
+    The ACE's ActiveDirectoryRights value (or the equivalent integer mask).
+
+.PARAMETER ExtendedRightName
+    Resolved name of the ACE's ObjectType, when it names an extended right. If given and
+    the mask carries ExtendedRight, it replaces the generic label.
+
+.OUTPUTS
+    [string[]] of right names, in the order of $Script:AllActiveDirectoryRights. Empty
+    when the mask carries no known right.
+#>
+function ConvertTo-ADRightsList {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Rights,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$ExtendedRightName
+    )
+
+    $empty = New-Object string[] 0
+    if ($null -eq $Rights) { return ,$empty }
+
+    # Via [long] and an explicit 32-bit mask. The value arrives either as an enum whose
+    # underlying Int32 is negative once the top bit is set (GENERIC_READ is -2147483648)
+    # or as the plain number 2147483648 - [int] handles the first and overflows on the
+    # second, [long] takes both and the mask normalises the sign.
+    $mask = ([long]$Rights) -band 0xFFFFFFFFL
+
+    # Generic mapping for directory objects, MS-ADTS 5.1.3.2
+    $genericMap = @(
+        @{ Bit = 0x80000000L; Mapped = 0x00020094L }  # GENERIC_READ
+        @{ Bit = 0x40000000L; Mapped = 0x00020028L }  # GENERIC_WRITE
+        @{ Bit = 0x20000000L; Mapped = 0x00020004L }  # GENERIC_EXECUTE
+        @{ Bit = 0x10000000L; Mapped = 0x000F01FFL }  # GENERIC_ALL
+    )
+    foreach ($generic in $genericMap) {
+        if (($mask -band $generic.Bit) -ne 0) {
+            $mask = ($mask -bor $generic.Mapped) -band (-bnot $generic.Bit)
+        }
+    }
+
+    $names = @()
+    foreach ($right in $Script:AllActiveDirectoryRights) {
+        # All bits of the right must be set, not merely one of them: ReadProperty (0x10)
+        # overlaps GenericAll (0xF01FF) and would otherwise match it.
+        $rightMask = ([long]$right) -band 0xFFFFFFFFL
+        if (($mask -band $rightMask) -eq $rightMask) {
+            $names += $right.ToString()
+        }
+    }
+
+    if ($ExtendedRightName -and ($names -contains 'ExtendedRight')) {
+        # @() around the filter: without it a single surviving entry is a string, and the
+        # += below then concatenates instead of appending.
+        $names = @($names | Where-Object { $_ -ne 'ExtendedRight' })
+        $names += $ExtendedRightName
+    }
+
+    return ,([string[]]$names)
+}
+
 # ============================================================================
 # Extended Rights Aliases (for SET operations via Set-DomainObject)
 # ============================================================================

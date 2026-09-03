@@ -38,9 +38,19 @@
 function ConvertTo-AccessRules {
     [CmdletBinding()]
     param(
+        # AllowNull/AllowEmptyCollection so the type test below decides, rather than the
+        # parameter binder throwing in front of it. An attribute that came back empty is
+        # a normal outcome of an ACL-filtered read, not a caller error.
         [Parameter(Mandatory=$true)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
         $SecurityDescriptorBytes
     )
+
+    if ($null -eq $SecurityDescriptorBytes) {
+        Write-Log "[ConvertTo-AccessRules] No security descriptor supplied"
+        return $null
+    }
 
     # Handle already-parsed ActiveDirectorySecurity objects
     if ($SecurityDescriptorBytes -is [System.DirectoryServices.ActiveDirectorySecurity]) {
@@ -51,11 +61,29 @@ function ConvertTo-AccessRules {
         # BUT: byte[] is also a System.Array, so check for byte[] first before unwrapping
         $sdBytes = $SecurityDescriptorBytes
         if ($sdBytes -is [System.Array] -and -not ($sdBytes -is [byte[]])) {
-            $sdBytes = $sdBytes[0]
+            # An Object[] is one of two things here: the single-element wrapper LDAP
+            # returns, or a byte array that lost its type on the way in - a function
+            # returning a byte[] with a plain return emits the bytes one at a time and
+            # the caller collects them into Object[]. The first element tells them apart,
+            # and getting it wrong means silently answering $null for a valid descriptor.
+            if ($sdBytes.Length -gt 0 -and $sdBytes[0] -is [byte]) {
+                $sdBytes = [byte[]]$sdBytes
+            } else {
+                $sdBytes = $sdBytes[0]
+            }
         }
 
         if (-not ($sdBytes -is [byte[]])) {
-            Write-Log "[ConvertTo-AccessRules] Unexpected type: $($sdBytes.GetType().FullName)"
+            # GetType() on the unwrapped value only after it is known to be non-null:
+            # an empty array unwraps to $null, and reporting the unexpected type then
+            # threw out of a function whose contract is to return $null.
+            $typeName = if ($null -eq $sdBytes) { '<null>' } else { $sdBytes.GetType().FullName }
+            Write-Log "[ConvertTo-AccessRules] Unexpected type: $typeName"
+            return $null
+        }
+
+        if ($sdBytes.Length -eq 0) {
+            Write-Log "[ConvertTo-AccessRules] Security descriptor is empty"
             return $null
         }
 
