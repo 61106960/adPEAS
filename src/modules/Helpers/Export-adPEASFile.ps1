@@ -10,9 +10,13 @@
     - Consistent error handling and logging
 
     Supports three export types:
-    - Text: Plain text content (UTF-8)
+    - Text: Plain text content (UTF-8, no BOM)
     - Json: PowerShell objects converted to JSON (UTF-8, no BOM)
     - Binary: Raw byte arrays
+
+    Text and Json write the same encoding on Windows PowerShell 5.1 and on PowerShell 7.
+    Both go through [IO.File]::WriteAllText rather than Out-File, whose UTF8 encoding
+    means "with BOM" on 5.1 and "without BOM" on 7.
 
 .PARAMETER Path
     The target file path. Can be:
@@ -138,6 +142,20 @@ function Export-adPEASFile {
                 if ($filename -ne $originalFilename) {
                     Write-Log "[Export-adPEASFile] Sanitized filename: '$originalFilename' -> '$filename'"
                 }
+
+                # A name made only of characters the sanitiser strips - "(temp)", say -
+                # comes out empty, and Join-Path with an empty child returns the directory
+                # itself. The export then tested and wrote against the parent directory:
+                # without -Force it reported "File already exists" about a folder, and with
+                # it, WriteAllText failed on a directory path. Say what actually went wrong.
+                if ([string]::IsNullOrEmpty($filename)) {
+                    return [PSCustomObject]@{
+                        Success = $false
+                        Path = $Path
+                        Message = "Filename '$originalFilename' contains no usable characters after sanitization"
+                        BytesWritten = 0
+                    }
+                }
             }
 
             # Reconstruct full path
@@ -153,7 +171,7 @@ function Export-adPEASFile {
             # Validate directory
             $targetDir = [System.IO.Path]::GetDirectoryName($resolvedPath)
 
-            if (-not (Test-Path -Path $targetDir -PathType Container)) {
+            if (-not (Test-Path -LiteralPath $targetDir -PathType Container -ErrorAction SilentlyContinue)) {
                 if ($CreateDirectory) {
                     Write-Log "[Export-adPEASFile] Creating directory: $targetDir"
                     New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
@@ -168,7 +186,7 @@ function Export-adPEASFile {
             }
 
             # Check existing file
-            if ((Test-Path -Path $resolvedPath) -and -not $Force) {
+            if ((Test-Path -LiteralPath $resolvedPath -ErrorAction SilentlyContinue) -and -not $Force) {
                 Write-Warning "[Export-adPEASFile] File already exists: $resolvedPath (use -Force to overwrite)"
                 return [PSCustomObject]@{
                     Success = $false
@@ -183,9 +201,21 @@ function Export-adPEASFile {
 
             switch ($Type) {
                 'Text' {
-                    # Text content - use Out-File with specified encoding
-                    $Content | Out-File -FilePath $resolvedPath -Encoding UTF8 -Force
-                    $bytesWritten = (Get-Item $resolvedPath).Length
+                    # Written the same way as the JSON branch, and for the same reason.
+                    # "Out-File -Encoding UTF8" writes a BOM on Windows PowerShell 5.1 and
+                    # none on PowerShell 7, so the same call produced different bytes
+                    # depending on which host ran it. Request-ADCSCertificate writes a
+                    # JSON key file through this branch, and a BOM in front of a JSON
+                    # document breaks any strict parser that later reads it.
+                    #
+                    # Out-String first so a non-string keeps the formatting Out-File gave
+                    # it; -Width high enough that a formatted table is not wrapped.
+                    $textContent = if ($Content -is [string]) { $Content } else { $Content | Out-String -Width 4096 }
+
+                    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+                    [System.IO.File]::WriteAllText($resolvedPath, $textContent, $utf8NoBom)
+
+                    $bytesWritten = (Get-Item -LiteralPath $resolvedPath).Length
                     Write-Log "[Export-adPEASFile] Wrote text file: $bytesWritten bytes"
                 }
 
@@ -201,7 +231,7 @@ function Export-adPEASFile {
                     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
                     [System.IO.File]::WriteAllText($resolvedPath, $jsonContent, $utf8NoBom)
 
-                    $bytesWritten = (Get-Item $resolvedPath).Length
+                    $bytesWritten = (Get-Item -LiteralPath $resolvedPath).Length
                     Write-Log "[Export-adPEASFile] Wrote JSON file: $bytesWritten bytes"
                 }
 

@@ -34,6 +34,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A ticket or certificate file whose name contains square brackets could not be read.**
+  `ConvertFrom-Base64OrFile` tested for the file with `Test-Path -Path`, which reads
+  brackets as a wildcard character class, so `admin[1].kirbi` did not match itself and a
+  valid ticket was reported as "neither a valid Base64 string nor an existing file path".
+  The `Resolve-Path` one line further down already used `-LiteralPath`. Windows PowerShell
+  5.1 also printed a raw "illegal character in path" error next to the returned result
+  whenever the input held a character no path may contain; that is suppressed now, since
+  the function answers through its result object.
+- **`Export-adPEASFile` wrote text with a BOM on Windows PowerShell 5.1 and without one on
+  PowerShell 7.** `Out-File -Encoding UTF8` means different things on the two hosts.
+  `Request-ADCSCertificate` writes a JSON key file through that branch, and a BOM in front
+  of a JSON document breaks a strict parser. Text now goes through
+  `[IO.File]::WriteAllText` like the JSON branch, so both write UTF-8 without a BOM on
+  either host. The directory and overwrite checks were switched to `-LiteralPath` for the
+  same reason as above, and a filename that the sanitizer empties out entirely - `(temp)`,
+  say - is now refused with that reason instead of silently targeting the parent
+  directory.
 - **`Search-Value` read square brackets in the search pattern as a wildcard character
   class.** Searching for `[Backup]` matched every value containing any one of `B`, `a`,
   `c`, `k`, `u` or `p` - nearly every object in a domain - with nothing in the output to

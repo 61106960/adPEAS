@@ -211,7 +211,16 @@ function ConvertFrom-Base64OrFile {
         Write-Log "[ConvertFrom-Base64OrFile] Trying as file path: $InputValue"
 
         # Check if file exists
-        if (Test-Path -Path $InputValue -PathType Leaf) {
+        # -LiteralPath, not -Path: -Path reads square brackets as a wildcard character
+        # class, so a file named "admin[1].kirbi" - which is what a browser download or a
+        # second export is called - did not match itself and the input was reported as
+        # "neither a valid Base64 string nor an existing file path". The Resolve-Path
+        # below already used -LiteralPath; this brings the existence test in line with it.
+        # -ErrorAction SilentlyContinue because Windows PowerShell 5.1 raises "illegal
+        # character in path" for an input containing | < > or a quote, and then returns
+        # $false anyway. A function whose contract is to report through its result object
+        # should not also print a raw PowerShell error next to the message it returns.
+        if (Test-Path -LiteralPath $InputValue -PathType Leaf -ErrorAction SilentlyContinue) {
             try {
                 # Resolve to a full filesystem path before handing it to .NET:
                 # [IO.File]::ReadAllBytes uses Environment.CurrentDirectory, not PowerShell's $PWD,
