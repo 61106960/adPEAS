@@ -61,5 +61,9 @@ function ConvertFrom-TSClientLicense {
     $lines += ("Version = 0x{0:X8}" -f $version)
     $lines += ("Issued = {0:yyyy-MM-dd HH:mm:ss} UTC" -f $issued)
     if ($productId) { $lines += "ProductID = '$productId'" }
-    return $lines
+
+    # Comma on purpose - see the note in ConvertFrom-TSProperties. This function always
+    # emits at least Version and Issued, so it never actually hit the one-element case,
+    # but the caller treats both return values the same way.
+    return ,$lines
 }

@@ -34,6 +34,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A `userParameters` blob with exactly one Terminal Services setting was reported as a
+  single letter.** `ConvertFrom-TSProperties` returned its lines with a plain `return`,
+  which unrolls a one-element array to a bare string. `Invoke-LDAPSearch` tests
+  `.Count -eq 1` - which is also true for a string - and then takes `[0]`, so the
+  attribute value became `T`. `ConvertFrom-TSClientLicense` returned the same shape and
+  is fixed alongside, though it always emits at least two lines and never hit it.
+- **`RECONNECT_SAME` led the `CtxCfgFlags1` flag list instead of closing it.** Its mask
+  was written as `0x80000000`, and PowerShell reads a hex literal that fills the sign bit
+  as a negative `Int32`. The `-band` still matched, because both sides widen to `Int64`
+  and the low 32 bits agree, but the key sorted below every other flag in a list the code
+  documents as ascending.
 - **The DES key from `Primary:Kerberos` was never read.** `supplementalCredentials` holds
   the Kerberos keys in two properties with two different layouts:
   `Primary:Kerberos-Newer-Keys` is a `KERB_STORED_CREDENTIAL_NEW` with a 24-byte header

@@ -103,7 +103,12 @@ function ConvertFrom-TSProperties {
         0x08000000 = 'DISABLE_EXE'
         0x10000000 = 'WALLPAPER_DISABLED'
         0x40000000 = 'LOGON_DISABLED'
-        0x80000000 = 'RECONNECT_SAME'
+        # Decimal, not 0x80000000: PowerShell reads a hex literal that fills the sign bit
+        # as a negative Int32, so the key would be -2147483648. The -band still matched
+        # (both sides widen to Int64 and the low 32 bits agree), but the key sorted below
+        # every other flag, which put RECONNECT_SAME first in a list documented as
+        # ascending. A decimal literal of this size is an Int64 and behaves.
+        2147483648 = 'RECONNECT_SAME'
     }
     # Sorted ascending key list so flag enumeration is deterministic
     $cfgFlagKeys = ($cfgFlags.Keys | Sort-Object)
@@ -176,5 +181,10 @@ function ConvertFrom-TSProperties {
     }
 
     if ($lines.Count -eq 0) { return $null }
-    return $lines
+
+    # Comma on purpose. A plain return unrolls a one-element array to a bare string, and
+    # the caller in Invoke-LDAPSearch tests .Count -eq 1 and then indexes [0] - which on
+    # a string is its first character. A user whose userParameters held exactly one
+    # recognised property therefore got "T" as the attribute value.
+    return ,$lines
 }
