@@ -318,7 +318,7 @@ function New-SANExtension {
     $sanOID = New-ASN1ObjectIdentifier -OID "2.5.29.17"
     $sanOctet = New-ASN1OctetString -Value $generalNamesSeq
 
-    return [byte[]](New-ASN1Sequence -Data ([byte[]]($sanOID + $sanOctet)))
+    return ,[byte[]](New-ASN1Sequence -Data ([byte[]]($sanOID + $sanOctet)))
 }
 
 <#
@@ -378,7 +378,7 @@ function New-NTDSCASecurityExtension {
     $extnValue = New-ASN1OctetString -Value $generalNamesSeq
 
     Write-Log "$FunctionPrefix Encoded NTDS CA Security Extension for SID $SID"
-    return [byte[]](New-ASN1Sequence -Data ([byte[]]($extOID + $extnValue)))
+    return ,[byte[]](New-ASN1Sequence -Data ([byte[]]($extOID + $extnValue)))
 }
 
 <#
@@ -452,7 +452,7 @@ function New-ApplicationPoliciesExtension {
     $extOID = New-ASN1ObjectIdentifier -OID "1.3.6.1.4.1.311.21.10"
     $extnValue = New-ASN1OctetString -Value $certPolicies
 
-    return [byte[]](New-ASN1Sequence -Data ([byte[]]($extOID + $extnValue)))
+    return ,[byte[]](New-ASN1Sequence -Data ([byte[]]($extOID + $extnValue)))
 }
 
 <#
@@ -468,7 +468,7 @@ function New-ASN1BMPString {
         [string]$Value
     )
     $bytes = [System.Text.Encoding]::BigEndianUnicode.GetBytes($Value)
-    return [byte[]](@(0x1E) + (New-ASN1Length -Length $bytes.Length) + $bytes)
+    return ,[byte[]](@(0x1E) + (New-ASN1Length -Length $bytes.Length) + $bytes)
 }
 
 <#

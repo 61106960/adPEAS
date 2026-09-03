@@ -34,6 +34,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **The same `Object[]`-instead-of-`byte[]` return defect documented below for the PAC
+  module (Golden/Silver/Diamond Ticket) also runs through the entire rest of the
+  Kerberos stack: the ASN.1 DER encoder every AS-REQ/TGS-REQ/KRB-CRED byte stream is
+  built from (`Kerberos-ASN1.ps1`), the crypto primitives that produce every
+  NT-Hash/derived key/RC4-HMAC and AES-CTS ciphertext (`Kerberos-Crypto.ps1`), PKINIT's
+  DH nonce/SHA-1/SHA-256/CMS-signature helpers, and one call site each in
+  AS-REP-Roasting, Kerberoasting, ticket forging, and the main Kerberos auth flow.**
+  Sweeping for the exact `return [byte[]](...)` shape already fixed in the PAC module
+  found it in another 30 places across `Kerberos-ASN1.ps1` alone; chasing why a bare
+  `return $variable` relay of an *already-correctly-typed* value still broke (it does -
+  even a `[byte[]]`-typed parameter, a `New-Object byte[]`, or a `List[byte].ToArray()`
+  unrolls to `Object[]` on a bare return, not just a fresh literal) turned up 9 more
+  there, then the same pattern throughout `Kerberos-Crypto.ps1`, `Invoke-PKINITAuth-
+  Native.ps1`, `Request-ADCSCertificate.ps1`, and one relay each in
+  `Invoke-ASREPRoast.ps1`, `Invoke-Kerberoast.ps1`, `Invoke-TicketForge.ps1`, and
+  `Invoke-KerberosAuth.ps1`. A further sweep for `return $variable[range]` - array
+  slicing produces `Object[]` independent of the source array's element type, so it
+  needed the leading comma *and* an explicit `[byte[]]` cast, unlike a plain variable
+  relay - found 6 more in `Kerberos-Crypto.ps1` alone, including both ticket-decryption
+  confounder-stripping functions (RC4-HMAC and AES-CTS) that every parsed AS-REP/TGS-REP
+  goes through. A `return $a + $b` sweep found the mirror image: `Encrypt-RC4HMAC` and
+  `Encrypt-AESCTS` - the functions that build every encrypted PA-DATA blob adPEAS
+  actually sends to a KDC - had the same defect from the opposite direction, a fresh `+`
+  concatenation returned bare. In total, about 70 return statements across 9 files.
+  Confirmed via a live loopback UDP/TCP round-trip that this is inert for the one traced
+  live-network path (`Invoke-ASREPRoast`'s raw `NetworkStream.Write`/`UdpClient.Send`
+  calls both tolerate an `Object[]` argument through PowerShell's own
+  single-applicable-overload coercion) - same latent-not-live risk as the PAC module: it
+  only bites the first caller that hands a result to an overload-ambiguous .NET method
+  instead of a typed parameter or an explicit cast. Fixed the same way throughout: a
+  leading comma on every affected return, with an explicit `[byte[]]` cast added
+  wherever the value is `Object[]` independent of the return statement itself (a fresh
+  array literal, a `+` concatenation, or a range slice).
+- **`New-ASN1Integer` threw `InvalidCastException` for any negative value** - its numeric
+  encoding path unconditionally cast to `[uint64]` before checking the sign, and
+  `[uint64](-138)` throws rather than wrapping. This is not a theoretical input:
+  `Request-ServiceTicket.ps1`'s S4U2Self checksum construction calls
+  `New-ASN1Integer -Value ([int32]-138)` (the well-known HMAC-MD5 checksum type KDCs use
+  for S4U2Self), so every constrained-delegation/RBCD abuse path that reaches an
+  S4U2Self request crashed before a single byte reached the wire. Fixed by routing
+  negative values through `BigInteger`, which already returns the minimal
+  two's-complement byte representation DER requires (verified against `-1`, `-127`,
+  `-128`/`-129` at the one/two-byte boundary, `-138`, `-1000`, and a value outside
+  `Int32`'s range).
+- **`Get-NTHashFromPassword` explicitly supports a blank password
+  (`[AllowEmptyString()]` on `-PlainPassword`, for `PASSWD_NOTREQD` accounts) but handed
+  the resulting empty byte array to `Get-MD4Hash`, whose `-Data` parameter was
+  `Mandatory` without `[AllowEmptyCollection()]` and rejected it outright.** Every
+  NT-Hash computation for a blank-password account threw before any Kerberos code ran.
+  Fixed by adding `[AllowEmptyCollection()]`; MD4's own padding already handles a
+  zero-length message correctly (confirmed against the RFC 1320 empty-string vector).
 - **Every structure builder in the PAC (Golden/Silver/Diamond Ticket) module returned
   `Object[]` where it documented, and its callers assumed, `byte[]`.** A bare
   `return [byte[]]$array` - even with the explicit cast right there - still hands the

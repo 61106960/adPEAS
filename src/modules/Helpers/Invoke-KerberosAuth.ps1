@@ -253,7 +253,7 @@ function Invoke-KerberosAuth {
 
             $encryptedData = New-KerberosEncryptedData -EType $EType -Cipher $encrypted
 
-            return $encryptedData
+            return ,$encryptedData
         }
 
         function New-KerberosASREQ {

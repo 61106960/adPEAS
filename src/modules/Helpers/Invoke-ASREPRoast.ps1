@@ -131,7 +131,7 @@ function Invoke-ASREPRoast {
             $asReqSeq = New-ASN1Sequence -Data $asReq
             $asReqApp = New-ASN1ApplicationTag -Tag 10 -Data $asReqSeq
 
-            return $asReqApp
+            return ,$asReqApp
         }
     }
 

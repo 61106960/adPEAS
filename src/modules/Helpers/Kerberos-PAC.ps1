@@ -389,7 +389,7 @@ function Write-SIDNDR {
 
     $sidBytes = ConvertFrom-SIDString -SIDString $SIDString
     if (-not $sidBytes) {
-        return [byte[]]@()
+        return ,[byte[]]@()
     }
 
     # NDR pointer to SID (conformant array)

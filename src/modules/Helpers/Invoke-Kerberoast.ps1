@@ -565,7 +565,7 @@ function Get-TicketFromApReq {
                     $ticketBytes = New-Object byte[] $ticketWrapperLen
                     [Array]::Copy($ApReqBytes, $offset, $ticketBytes, 0, $ticketWrapperLen)
                     Write-Log "[Get-TicketFromApReq] Extracted Ticket ($ticketWrapperLen bytes)"
-                    return $ticketBytes
+                    return ,$ticketBytes
                 } else {
                     Write-Log "[Get-TicketFromApReq] Expected Ticket (0x61), got 0x$($ApReqBytes[$offset].ToString('X2'))"
                     return $null

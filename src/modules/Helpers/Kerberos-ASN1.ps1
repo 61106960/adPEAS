@@ -70,7 +70,7 @@ function New-ASN1Length {
 
     if ($Length -lt 128) {
         # Short form: single byte
-        return [byte[]]@($Length)
+        return ,[byte[]]@($Length)
     }
     else {
         # Long form: first byte = 0x80 | number of length bytes
@@ -83,7 +83,7 @@ function New-ASN1Length {
         }
 
         $result = [byte[]]@(0x80 -bor $lengthBytes.Count) + $lengthBytes.ToArray()
-        return $result
+        return ,[byte[]]$result
     }
 }
 
@@ -169,6 +169,14 @@ function New-ASN1Integer {
         if ($Value -eq 0) {
             $bytes = @(0x00)
         }
+        elseif ($Value -lt 0) {
+            # [uint64]$Value below would throw for a negative value (e.g. the -138
+            # HMAC-MD5 checksum type S4U2Self sends). BigInteger.ToByteArray() already
+            # returns the minimal two's-complement representation, high bit set on the
+            # first byte, so no extra trimming is needed here.
+            $bytes = ([System.Numerics.BigInteger]$Value).ToByteArray()
+            [Array]::Reverse($bytes)
+        }
         else {
             $tempValue = [uint64]$Value
             $byteList = [System.Collections.Generic.List[byte]]::new()
@@ -202,7 +210,7 @@ function New-ASN1Integer {
     $tag = [byte]$Script:ASN1_INTEGER
     $lengthBytes = New-ASN1Length -Length $bytes.Length
 
-    return [byte[]](@($tag) + $lengthBytes + $bytes)
+    return ,[byte[]](@($tag) + $lengthBytes + $bytes)
 }
 
 <#
@@ -223,9 +231,9 @@ function New-ASN1OctetString {
     $lengthBytes = New-ASN1Length -Length $Value.Length
 
     if ($Value.Length -eq 0) {
-        return [byte[]](@($tag) + $lengthBytes)
+        return ,[byte[]](@($tag) + $lengthBytes)
     }
-    return [byte[]](@($tag) + $lengthBytes + $Value)
+    return ,[byte[]](@($tag) + $lengthBytes + $Value)
 }
 
 <#
@@ -250,7 +258,7 @@ function New-ASN1BitString {
     $content = @([byte]$UnusedBits) + $Value
     $lengthBytes = New-ASN1Length -Length $content.Length
 
-    return [byte[]](@($tag) + $lengthBytes + $content)
+    return ,[byte[]](@($tag) + $lengthBytes + $content)
 }
 
 <#
@@ -267,7 +275,7 @@ function New-ASN1Boolean {
     $tag = [byte]$Script:ASN1_BOOLEAN
     $content = if ($Value) { 0xFF } else { 0x00 }
 
-    return [byte[]]@($tag, 0x01, $content)
+    return ,[byte[]]@($tag, 0x01, $content)
 }
 
 <#
@@ -275,7 +283,7 @@ function New-ASN1Boolean {
     Encodes NULL in ASN.1 DER format.
 #>
 function New-ASN1Null {
-    return [byte[]]@($Script:ASN1_NULL, 0x00)
+    return ,[byte[]]@($Script:ASN1_NULL, 0x00)
 }
 
 <#
@@ -324,7 +332,7 @@ function New-ASN1ObjectIdentifier {
     $tag = [byte]$Script:ASN1_OBJECT_IDENTIFIER
     $lengthBytes = New-ASN1Length -Length $bytes.Count
 
-    return [byte[]](@($tag) + $lengthBytes + $bytes.ToArray())
+    return ,[byte[]](@($tag) + $lengthBytes + $bytes.ToArray())
 }
 
 #endregion
@@ -346,7 +354,7 @@ function New-ASN1GeneralString {
     $tag = [byte]$Script:ASN1_GENERAL_STRING
     $lengthBytes = New-ASN1Length -Length $bytes.Length
 
-    return [byte[]](@($tag) + $lengthBytes + $bytes)
+    return ,[byte[]](@($tag) + $lengthBytes + $bytes)
 }
 
 <#
@@ -364,7 +372,7 @@ function New-ASN1UTF8String {
     $tag = [byte]$Script:ASN1_UTF8_STRING
     $lengthBytes = New-ASN1Length -Length $bytes.Length
 
-    return [byte[]](@($tag) + $lengthBytes + $bytes)
+    return ,[byte[]](@($tag) + $lengthBytes + $bytes)
 }
 
 <#
@@ -382,7 +390,7 @@ function New-ASN1IA5String {
     $tag = [byte]$Script:ASN1_IA5_STRING
     $lengthBytes = New-ASN1Length -Length $bytes.Length
 
-    return [byte[]](@($tag) + $lengthBytes + $bytes)
+    return ,[byte[]](@($tag) + $lengthBytes + $bytes)
 }
 
 <#
@@ -400,7 +408,7 @@ function New-ASN1PrintableString {
     $tag = [byte]$Script:ASN1_PRINTABLE_STRING
     $lengthBytes = New-ASN1Length -Length $bytes.Length
 
-    return [byte[]](@($tag) + $lengthBytes + $bytes)
+    return ,[byte[]](@($tag) + $lengthBytes + $bytes)
 }
 
 #endregion
@@ -424,7 +432,7 @@ function New-ASN1GeneralizedTime {
     $tag = [byte]$Script:ASN1_GENERALIZED_TIME
     $lengthBytes = New-ASN1Length -Length $bytes.Length
 
-    return [byte[]](@($tag) + $lengthBytes + $bytes)
+    return ,[byte[]](@($tag) + $lengthBytes + $bytes)
 }
 
 <#
@@ -444,7 +452,7 @@ function New-ASN1UTCTime {
     $tag = [byte]$Script:ASN1_UTC_TIME
     $lengthBytes = New-ASN1Length -Length $bytes.Length
 
-    return [byte[]](@($tag) + $lengthBytes + $bytes)
+    return ,[byte[]](@($tag) + $lengthBytes + $bytes)
 }
 
 #endregion
@@ -472,7 +480,7 @@ function New-ASN1Sequence {
     $result.Add($tag)
     $result.AddRange([byte[]]$lengthBytes)
     $result.AddRange($dataBytes)
-    return [byte[]]$result.ToArray()
+    return ,[byte[]]$result.ToArray()
 }
 
 <#
@@ -496,7 +504,7 @@ function New-ASN1Set {
     $result.Add($tag)
     $result.AddRange([byte[]]$lengthBytes)
     $result.AddRange($dataBytes)
-    return [byte[]]$result.ToArray()
+    return ,[byte[]]$result.ToArray()
 }
 
 #endregion
@@ -540,7 +548,7 @@ function New-ASN1ContextTag {
     $result.Add($tagByte)
     $result.AddRange([byte[]]$lengthBytes)
     $result.AddRange($dataBytes)
-    return [byte[]]$result.ToArray()
+    return ,[byte[]]$result.ToArray()
 }
 
 <#
@@ -572,7 +580,7 @@ function New-ASN1ApplicationTag {
     $result.Add($tagByte)
     $result.AddRange([byte[]]$lengthBytes)
     $result.AddRange($dataBytes)
-    return [byte[]]$result.ToArray()
+    return ,[byte[]]$result.ToArray()
 }
 
 #endregion
@@ -1238,7 +1246,7 @@ function New-TicketFlags {
     )
 
     if ($RawFlags -and $RawFlags.Length -eq 4) {
-        return $RawFlags
+        return ,$RawFlags
     }
 
     # Build 32-bit flags (big-endian, MSB = bit 0)
@@ -1262,7 +1270,7 @@ function New-TicketFlags {
     if ($EncPaRep)                { $flags = $flags -bor (1 -shl (31 - $Script:TKT_FLAG_ENC_PA_REP)) }
 
     # Convert to big-endian bytes
-    return [byte[]]@(
+    return ,[byte[]]@(
         (($flags -shr 24) -band 0xFF),
         (($flags -shr 16) -band 0xFF),
         (($flags -shr 8) -band 0xFF),
@@ -2274,7 +2282,7 @@ function Update-TicketCipher {
     $newSeq = [byte[]](New-ASN1Sequence -Data ([byte[]]$newSeqParts.ToArray()))
     $newTicket = [byte[]](New-ASN1ApplicationTag -Tag 1 -Data $newSeq)
 
-    return $newTicket
+    return ,$newTicket
 }
 
 <#
@@ -2355,7 +2363,7 @@ function Update-EncTicketPartPAC {
     $newSeq = [byte[]](New-ASN1Sequence -Data ([byte[]]$newSeqParts.ToArray()))
     $newEncTicketPart = [byte[]](New-ASN1ApplicationTag -Tag 3 -Data $newSeq)
 
-    return $newEncTicketPart
+    return ,$newEncTicketPart
 }
 
 <#
@@ -2399,13 +2407,13 @@ function Extract-PACFromAuthData {
             if ($adType -eq 1 -and $adData) {
                 $nestedPac = Extract-PACFromAuthData -AuthDataBytes $adData
                 if ($nestedPac) {
-                    return $nestedPac
+                    return ,$nestedPac
                 }
             }
 
             # AD-WIN2K-PAC (128) contains the actual PAC
             if ($adType -eq 128 -and $adData) {
-                return $adData
+                return ,$adData
             }
         }
 
@@ -2576,7 +2584,7 @@ function Update-KRBCredTicket {
         Write-Verbose "[Update-KRBCredTicket] Updated pname in EncKrbCredPart to: $NewClientName"
     }
 
-    return $newKrbCred
+    return ,$newKrbCred
 }
 
 function Update-KRBCredEncPartPName {
@@ -2703,7 +2711,7 @@ function Update-KRBCredEncPartPName {
     $newEncDataSeq = [byte[]](New-ASN1Sequence -Data ([byte[]]$newEncDataContent.ToArray()))
 
     # Wrap in context tag [3]
-    return [byte[]](New-ASN1ContextTag -Tag 3 -Data $newEncDataSeq)
+    return ,[byte[]](New-ASN1ContextTag -Tag 3 -Data $newEncDataSeq)
 }
 
 function Update-KRBCredSName {
@@ -2754,7 +2762,7 @@ function Update-KRBCredSName {
         $nameSeq.AddRange([byte[]](New-ASN1GeneralString -Value $ServiceType))
         $nameSeq.AddRange([byte[]](New-ASN1GeneralString -Value $HostName))
         $snameContent.AddRange([byte[]](New-ASN1ContextTag -Tag 1 -Data (New-ASN1Sequence -Data ([byte[]]$nameSeq.ToArray()))))
-        return [byte[]](New-ASN1Sequence -Data ([byte[]]$snameContent.ToArray()))
+        return ,[byte[]](New-ASN1Sequence -Data ([byte[]]$snameContent.ToArray()))
     }
 
     # =====================================================
@@ -3002,7 +3010,7 @@ function Update-KRBCredSName {
 
     Write-Verbose "[Update-KRBCredSName] SPN substituted: $NewServiceType/$hostName (original: $($KRBCredBytes.Length) bytes, new: $($newKrbCred.Length) bytes)"
 
-    return $newKrbCred
+    return ,$newKrbCred
 }
 
 function Build-KRBCred {
@@ -3158,7 +3166,7 @@ function Build-KRBCred {
     $krbCredSeq = [byte[]](New-ASN1Sequence -Data ([byte[]]$krbCredContent.ToArray()))
     $krbCred = [byte[]](New-ASN1ApplicationTag -Tag 22 -Data $krbCredSeq)
 
-    return $krbCred
+    return ,$krbCred
 }
 
 #endregion

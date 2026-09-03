@@ -538,7 +538,7 @@ public class NCryptInterop
         $decryptedData = New-Object byte[] $pcbData
         [System.Runtime.InteropServices.Marshal]::Copy($ppbData, $decryptedData, 0, $pcbData)
 
-        return $decryptedData
+        return ,$decryptedData
 
     } finally {
         # Free allocated memory

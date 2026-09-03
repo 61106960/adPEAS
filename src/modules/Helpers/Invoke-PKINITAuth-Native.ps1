@@ -328,7 +328,7 @@ FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22
             $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
             $rng.GetBytes($nonce)
             $rng.Dispose()
-            return $nonce
+            return ,$nonce
         }
 
         function Get-SHA1Hash {
@@ -336,7 +336,7 @@ FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22
             $sha1 = [System.Security.Cryptography.SHA1]::Create()
             $hash = $sha1.ComputeHash($Data)
             $sha1.Dispose()
-            return $hash
+            return ,$hash
         }
 
         function Get-SHA256Hash {
@@ -344,7 +344,7 @@ FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22
             $sha256 = [System.Security.Cryptography.SHA256]::Create()
             $hash = $sha256.ComputeHash($Data)
             $sha256.Dispose()
-            return $hash
+            return ,$hash
         }
 
         #region AS-REQ Building
@@ -525,7 +525,7 @@ FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22
 
             $signedCms.ComputeSignature($signer)
 
-            return $signedCms.Encode()
+            return ,[byte[]]$signedCms.Encode()
         }
 
         function New-PA_PK_AS_REQ {
@@ -1022,7 +1022,7 @@ FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22
                 $counter++
             }
 
-            return [byte[]]$derivedKey.GetRange(0, $keyLength).ToArray()
+            return ,[byte[]]$derivedKey.GetRange(0, $keyLength).ToArray()
         }
 
         function Unprotect-KerberosData {

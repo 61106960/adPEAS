@@ -265,7 +265,7 @@ function Get-KeyUsageConstant {
         [byte]$Suffix
     )
 
-    return @(
+    return ,[byte[]]@(
         [byte](($KeyUsage -shr 24) -band 0xFF),
         [byte](($KeyUsage -shr 16) -band 0xFF),
         [byte](($KeyUsage -shr 8) -band 0xFF),
@@ -346,6 +346,7 @@ function Get-MD4Hash {
     #>
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [byte[]]$Data
     )
 
@@ -467,7 +468,7 @@ function Get-MD4Hash {
     [Array]::Copy([System.BitConverter]::GetBytes((ToUInt32 $C)), 0, $result, 8, 4)
     [Array]::Copy([System.BitConverter]::GetBytes((ToUInt32 $D)), 0, $result, 12, 4)
 
-    return $result
+    return ,$result
 }
 
 function Get-NTHashFromPassword {
@@ -535,7 +536,7 @@ function Invoke-RC4 {
         $result[$k] = $Data[$k] -bxor $S[($S[$i] + $S[$j]) % 256]
     }
 
-    return $result
+    return ,$result
 }
 
 function Encrypt-RC4HMAC {
@@ -590,7 +591,7 @@ function Encrypt-RC4HMAC {
     # Encrypted = RC4(K2, plaintext)
     $encrypted = Invoke-RC4 -Key $K2 -Data $plaintext
 
-    return $checksum + $encrypted
+    return ,[byte[]]($checksum + $encrypted)
 }
 
 function Decrypt-RC4HMAC {
@@ -647,7 +648,7 @@ function Decrypt-RC4HMAC {
     }
 
     # Return plaintext without confounder
-    return $decrypted[$Script:RC4_CONFOUNDER_SIZE..($decrypted.Length - 1)]
+    return ,[byte[]]$decrypted[$Script:RC4_CONFOUNDER_SIZE..($decrypted.Length - 1)]
 }
 
 function Invoke-NFold {
@@ -725,7 +726,7 @@ function Invoke-NFold {
         }
     }
 
-    return $out
+    return ,$out
 }
 
 function Get-AESDerivedKey {
@@ -780,7 +781,7 @@ function Get-AESDerivedKey {
                 $derivedKey += $currentBlock
             }
 
-            return $derivedKey[0..($KeyLength - 1)]
+            return ,[byte[]]$derivedKey[0..($KeyLength - 1)]
         }
         finally {
             $encryptor.Dispose()
@@ -839,7 +840,7 @@ function Get-AESKeyFromPassword {
     $constant = [System.Text.Encoding]::ASCII.GetBytes("kerberos")
     $finalKey = Get-AESDerivedKey -BaseKey $tempKey -Constant $constant -KeyLength $KeyLength
 
-    return $finalKey
+    return ,$finalKey
 }
 
 function Get-Hash {
@@ -1061,11 +1062,11 @@ function Invoke-AESCBC-CTS {
                 # Put second-to-last block (truncated) in last position
                 [Array]::Copy($ctext, $ctext.Length - 2 * $blockSize, $result, $beforeLastTwo + $blockSize, $lastLen)
 
-                return $result
+                return ,$result
             }
             else {
                 # Single block - return truncated to original length
-                return $ctext[0..($Data.Length - 1)]
+                return ,[byte[]]$ctext[0..($Data.Length - 1)]
             }
         }
         else {
@@ -1078,7 +1079,7 @@ function Invoke-AESCBC-CTS {
                 finally {
                     $decryptor.Dispose()
                 }
-                return $ptext[0..($Data.Length - 1)]
+                return ,[byte[]]$ptext[0..($Data.Length - 1)]
             }
 
             # Multiple blocks with CTS
@@ -1157,7 +1158,7 @@ function Invoke-AESCBC-CTS {
             [Array]::Copy($PnMinus1, 0, $result, $pnMinus1Offset, $blockSize)
             [Array]::Copy($Pn, 0, $result, $pnMinus1Offset + $blockSize, $lastLen)
 
-            return $result
+            return ,$result
         }
     }
     finally {
@@ -1221,7 +1222,7 @@ function Encrypt-AESCTS {
     $hmac = Get-HMACSHA1 -Key $Ki -Data $plaintext
     $checksum = $hmac[0..($Script:AES_CHECKSUM_SIZE - 1)]
 
-    return $encrypted + $checksum
+    return ,[byte[]]($encrypted + $checksum)
 }
 
 function Decrypt-AESCTS {
@@ -1279,7 +1280,7 @@ function Decrypt-AESCTS {
     }
 
     # Return plaintext without confounder
-    return $decrypted[$Script:AES_CONFOUNDER_SIZE..($decrypted.Length - 1)]
+    return ,[byte[]]$decrypted[$Script:AES_CONFOUNDER_SIZE..($decrypted.Length - 1)]
 }
 
 <#
@@ -1657,7 +1658,7 @@ function Send-KerberosRequest {
             $bytesRead += $chunkRead
         }
 
-        return $responseBytes
+        return ,$responseBytes
     }
     finally {
         if ($stream) { $stream.Close() }
@@ -2017,7 +2018,7 @@ function Protect-KerberosNative {
             $eType = [adPEAS.KERB_ETYPE]$EncryptionType
             $result = [adPEAS.KerbCrypto]::KerberosEncrypt($eType, $KeyUsage, $Key, $Data)
             Write-Verbose "[Protect-KerberosNative] Native encryption successful: input=$($Data.Length) output=$($result.Length)"
-            return $result
+            return ,$result
         }
         catch {
             Write-Verbose "[Protect-KerberosNative] Native encryption failed, falling back to PowerShell: $_"
@@ -2074,7 +2075,7 @@ function Unprotect-KerberosNative {
             $eType = [adPEAS.KERB_ETYPE]$EncryptionType
             $result = [adPEAS.KerbCrypto]::KerberosDecrypt($eType, $KeyUsage, $Key, $CipherText)
             Write-Verbose "[Unprotect-KerberosNative] Native decryption successful: input=$($CipherText.Length) output=$($result.Length)"
-            return $result
+            return ,$result
         }
         catch {
             Write-Verbose "[Unprotect-KerberosNative] Native decryption failed, falling back to PowerShell: $_"
@@ -2148,7 +2149,7 @@ function Get-KerberosChecksumNative {
             $result = [adPEAS.KerbCrypto]::KerberosChecksum($cksumType, $KeyUsage, $Key, $Data)
             Write-Verbose "[Get-KerberosChecksumNative] Native checksum successful: data=$($Data.Length) checksum=$($result.Length) bytes"
             Write-Verbose "[Get-KerberosChecksumNative] Checksum: $(($result | ForEach-Object { '{0:X2}' -f $_ }) -join '')"
-            return $result
+            return ,$result
         }
         catch {
             Write-Verbose "[Get-KerberosChecksumNative] Native checksum failed, falling back to PowerShell: $_"
@@ -2173,7 +2174,7 @@ function Get-KerberosChecksumNative {
             $kcConstant = Get-KeyUsageConstant -KeyUsage $KeyUsage -Suffix $Script:KC_CONSTANT_SUFFIX
             $checksumKey = Get-AESDerivedKey -BaseKey $Key -Constant $kcConstant -KeyLength $Key.Length
             $fullHmac = Get-HMACSHA1 -Key $checksumKey -Data $Data
-            return $fullHmac[0..11]  # Truncate to 12 bytes
+            return ,[byte[]]$fullHmac[0..11]  # Truncate to 12 bytes
         }
         default { throw "Unsupported encryption type: $EncryptionType" }
     }

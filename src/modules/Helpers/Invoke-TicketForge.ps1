@@ -559,7 +559,7 @@ function ConvertFrom-HexStringToBytes {
     for ($i = 0; $i -lt $length; $i++) {
         $bytes[$i] = [Convert]::ToByte($HexString.Substring($i * 2, 2), 16)
     }
-    return $bytes
+    return ,$bytes
 }
 
 #endregion
