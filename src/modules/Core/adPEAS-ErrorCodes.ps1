@@ -121,7 +121,17 @@ $Script:LDAPErrorCodes = @{
     4   = @{ Name = 'LDAP_SIZELIMIT_EXCEEDED';            Message = 'Size limit exceeded';            Category = 'LDAP' }
     7   = @{ Name = 'LDAP_AUTH_METHOD_NOT_SUPPORTED';     Message = 'Auth method not supported';      Category = 'AccessDenied' }
     8   = @{ Name = 'LDAP_STRONG_AUTH_REQUIRED';          Message = 'Strong auth required';           Category = 'AccessDenied' }
-    32  = @{ Name = 'LDAP_NO_SUCH_OBJECT';                Message = 'Object not found';               Category = 'LDAP' }
+    # Category 'LDAPNotFound', not 'LDAP': this is the same LDAP_NO_SUCH_OBJECT the
+    # HResult table's 0x80072030 entry already carries as 'LDAPNotFound' (IsError=$false,
+    # IsNotFound=$true) - a plain-integer lookup of the identical error must classify it
+    # the same way. Nothing currently reaches this table entry with code 32 in a way that
+    # depended on the old, inconsistent classification (Test-LDAPErrorNotFound decides
+    # the search-empty-result case independently via a direct HResult check, and
+    # Connect-LDAP.ps1's category switch maps both 'LDAP' and the 'default' case to the
+    # same "GenericError" outcome either way) - fixed for a caller that relies on
+    # ConvertFrom-LDAPError/Get-ExceptionErrorInfo's IsNotFound in the future, since nothing
+    # about "not found" changes depending on which of the two tables answered the lookup.
+    32  = @{ Name = 'LDAP_NO_SUCH_OBJECT';                Message = 'Object not found';               Category = 'LDAPNotFound' }
     49  = @{ Name = 'LDAP_INVALID_CREDENTIALS';           Message = 'Invalid credentials';            Category = 'AccessDenied' }
     50  = @{ Name = 'LDAP_INSUFFICIENT_RIGHTS';           Message = 'Insufficient access rights';     Category = 'AccessDenied' }
     51  = @{ Name = 'LDAP_BUSY';                          Message = 'Server busy';                    Category = 'Resource' }

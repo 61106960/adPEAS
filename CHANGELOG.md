@@ -34,6 +34,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **`LDAP_NO_SUCH_OBJECT` (error 32) was classified as an error by
+  `ConvertFrom-LDAPError`/`Get-ExceptionErrorInfo`, but as the expected, non-error case by
+  `ConvertFrom-HResult`'s equivalent entry (`0x80072030`) for the identical condition** -
+  the two tables disagreed about the same LDAP result code. Confirmed to be inert today:
+  the search path that matters (`Invoke-LDAPSearch`, "the SearchBase does not exist")
+  decides this independently through `Test-LDAPErrorNotFound`'s own HResult check, and
+  `Connect-LDAP.ps1`'s bind-time category switch maps both the old and the corrected
+  category to the same outcome. Aligned so a future caller of the plain-integer path gets
+  the same answer the HResult path already gives.
 - **A zero-length AV_PAIR in an NTLM Type2 (Challenge) message was decoded as one bogus
   character instead of an empty string.** `Read-NTLMAvPairs`, part of the EPA/NTLM-relay
   detection stack, sliced a value with `$offset..($offset + $avLen - 1)`. For `$avLen`
