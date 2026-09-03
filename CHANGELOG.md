@@ -34,6 +34,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **`Get-CurrentUserTokenGroups` returned an empty list, every time, for any user whose
+  `tokenGroups` held exactly one SID** (a lone-group account, or one in only its
+  primary group) **- the gate `Get-LAPSCredentialAccess`'s optimized Windows LAPS path
+  uses to decide whether the current user can locally decrypt a given computer's
+  password.** `byte[]` is itself an array, so `$tokenGroupsAttr -is [array]` - meant to
+  distinguish "one SID" from "several" - was `$true` either way; a lone SID's raw bytes
+  fell into the "already a list" branch and were iterated byte by byte, none of which
+  passed the inner `-is [byte[]]` check, so the account's only group membership was
+  silently dropped. Fixed with `-is [byte[]]`, the check that actually distinguishes
+  the two shapes. Two related defects surfaced fixing this:
+  - The same function's four return statements had the `Object[]`-vs-`byte[]` defect
+    documented below for the PAC module, in the shape it takes for a list of *strings*
+    rather than bytes: a bare `return` of an *empty* SID list collapses to `$null`
+    (not empty), and of a list with *exactly one* SID collapses to that bare string
+    (not a one-item array) - "`return $lines` vs. `return ,$lines`", an already-named
+    recurring pattern in this codebase's test notes. Fixed with a leading comma on all
+    four.
+  - This function's own call to `Invoke-LDAPSearch` is, uniquely among every call site
+    in this codebase, a plain assignment rather than the `@(Invoke-LDAPSearch ...)`
+    wrapping every other caller uses. A Base-scope self-lookup (what this function
+    queries) always returns exactly one result, which `Invoke-LDAPSearch`'s own bare
+    `return $OutputObjects` unrolls to that bare entry rather than a one-item array; a
+    bare `PSCustomObject` has no synthetic `.Count`, so this function's own connection
+    guard silently always read `$null -gt 0` as false and never got past it. **Fixed by
+    adding the same `@(Invoke-LDAPSearch ...)` wrapping every other call site already
+    uses - not by touching `Invoke-LDAPSearch` itself.** That was tried first and
+    reverted: every one of `Invoke-LDAPSearch`'s ~40 other call sites relies on its
+    return staying bare specifically *because* they wrap the call in `@(...)`, and `@()`
+    around a call that emits its whole result as a single (comma-forced) pipeline
+    object wraps that single object as the sole element of a *new* array instead of
+    collecting its actual entries - `@(Invoke-LDAPSearch ...)[0]` would silently become
+    the entire result set rather than the first row. `Invoke-LDAPSearch`'s bare return
+    is therefore deliberate, not an instance of the wider defect below - see
+    `LDAPSearchReturnContract.Tests.ps1` for the full account, including the general
+    rule this leaves for future changes to any function fixed elsewhere in this pass:
+    before comma-forcing a return, check whether any real caller wraps the *call site*
+    in `@(...)` - if one does, it depends on the unroll, and the fix belongs at the
+    caller instead.
 - **`New-DiamondTicket`'s encryption-type mismatch error named the wrong (generic)
   cipher label.** `$etypeNames.ContainsKey($ticketEType)` was always `$false`:
   `$ticketEType` comes from `Read-ASN1Integer`, which returns `[int64]`, and
