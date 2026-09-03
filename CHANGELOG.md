@@ -34,6 +34,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A Shadow Credential's device id was reported as a byte-reversed hex string.**
+  `ConvertFrom-KeyCredentialLink` sliced each LTV entry out of the blob with a range
+  index, which returns `Object[]` rather than `byte[]`. `BitConverter` coerces that, so
+  the timestamps came out right, but the GUID constructor does not: the DeviceId entry
+  threw, its catch fell back to a hex dump, and a device that is
+  `a1b2c3d4-1111-2222-3333-444455556666` was printed as
+  `d4c3b2a1111122223333444455556666`. The display string exists precisely so an operator
+  can pass that value to `-RemoveDeviceID`, and the reversed form matches no device, so
+  the removal quietly does nothing. `Invoke-ShadowCredentialOperation` parses the same
+  structure and already cast correctly; the shared helper now does the same, using
+  `Array::Copy` rather than a slice, and a plain assignment rather than one out of an
+  if-expression - the latter enumerates the result and would undo an explicit cast.
+  The structure comment also claimed a two-byte entry identifier; MS-ADTS 2.2.20 defines
+  one byte, which is what the code has always read.
 - **A disabled GPO link was reported as an active one, and enforcement was never seen.**
   A `gPLink` entry holds the GPO GUID and its option digit at opposite ends of a
   distinguished name - `[LDAP://cn={GUID},cn=policies,cn=system,DC=...;2]`.

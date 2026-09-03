@@ -8,7 +8,8 @@
 
     The structure is:
     - Version (4 bytes): 0x00000200 for version 2
-    - Entries: LTV format (Length 2 bytes, Type 2 bytes, Value variable)
+    - Entries: LTV format (Length 2 bytes, Identifier 1 byte, Value variable)
+      per MS-ADTS 2.2.20 - the identifier is one byte, not two
 
     Entry Types:
     - 0x0001: KeyID (SHA256 hash of public key)
@@ -141,7 +142,27 @@ function ConvertFrom-KeyCredentialLink {
                 }
 
                 # Extract entry data
-                $EntryData = if ($EntryLength -gt 0) { $KeyCredentialBytes[$Offset..($Offset + $EntryLength - 1)] } else { @() }
+                # The [byte[]] cast is what makes the entries below work. A range index on
+                # a PowerShell array returns Object[], not byte[], and the .NET methods
+                # that read these entries differ in how they take that: BitConverter
+                # coerces it, the GUID constructor does not. So the DeviceId entry threw,
+                # its catch fell back to a hex string, and every Shadow Credential was
+                # reported with a dash-less, byte-reversed identifier instead of its GUID -
+                # "d4c3b2a1111122223333444455556666" for a device that is actually
+                # a1b2c3d4-1111-2222-3333-444455556666. The display string exists so an
+                # operator can pass that value to -RemoveDeviceID, and the reversed form
+                # matches nothing, so the removal quietly does nothing.
+                # Invoke-ShadowCredentialOperation parses the same structure and already
+                # casts here; this brings the shared helper in line with it.
+                # Array::Copy rather than a range index, and a plain assignment rather than
+                # one out of an if-expression. Both of the shorter forms produce Object[]:
+                # a range index returns Object[] to begin with, and assigning the result of
+                # an if-expression enumerates whatever the branch produced, so even an
+                # explicit [byte[]] cast inside the branch is unrolled again on the way out.
+                $EntryData = New-Object byte[] $EntryLength
+                if ($EntryLength -gt 0) {
+                    [Array]::Copy($KeyCredentialBytes, $Offset, $EntryData, 0, $EntryLength)
+                }
                 $Offset += $EntryLength
 
                 # Parse based on entry type (1 byte identifier per MS-ADTS 2.2.19)
