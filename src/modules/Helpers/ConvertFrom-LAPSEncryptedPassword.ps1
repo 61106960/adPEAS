@@ -49,7 +49,13 @@ function ConvertFrom-LAPSEncryptedPassword {
 
     [CmdletBinding()]
     param(
+        # AllowNull/AllowEmptyCollection because the guards at the top of process{} answer
+        # for both cases. Without them the parameter binder throws in front of those
+        # guards, so a computer whose msLAPS-EncryptedPassword came back empty produced a
+        # terminating error instead of the documented $null.
         [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
         [byte[]]$Blob,
 
         [Parameter(Mandatory = $false)]
@@ -86,45 +92,65 @@ function ConvertFrom-LAPSEncryptedPassword {
 
             Write-Log "[ConvertFrom-LAPSEncryptedPassword] Blob size: $($Blob.Length) bytes, first bytes: $($Blob[0..15] -join ',')"
 
-            # Check if blob starts with ASN.1 SEQUENCE (0x30) - no header
-            # Or if it has a 16-byte header before CMS data
+            # Decide whether the blob carries the 16-byte header or is raw CMS.
+            #
+            # This used to be "first byte is 0x30 means raw CMS", because an ASN.1
+            # SEQUENCE starts with that tag. But with a header present the first byte is
+            # the low byte of the upper FILETIME DWORD, which is effectively random - the
+            # upper DWORD advances roughly every seven minutes - so one password update
+            # time in 256 produces a 0x30 there. Those computers had their header skipped:
+            # no update timestamp at all, and the CMS parse ran over the header bytes as
+            # well. In a domain of five thousand hosts that is around twenty of them, and
+            # nothing in the output says which.
+            #
+            # Decided on the header's own contents instead. Two independent signals, and
+            # either one is enough; both are essentially impossible to hit by accident in
+            # DER-encoded content.
             $encryptedData = $null
             $updateTimestamp = $null
 
-            if ($Blob[0] -eq 0x30) {
+            # Signal 1: bytes 0-7 reconstruct to a FILETIME in a plausible range.
+            # LAPS v2 stores the FILETIME as upper DWORD then lower DWORD, each
+            # little-endian: (HighDWORD << 32) | LowDWORD
+            $headerFileTime = $null
+            try {
+                $highDword = [BitConverter]::ToUInt32($Blob, 0)
+                $lowDword = [BitConverter]::ToUInt32($Blob, 4)
+                $headerFileTime = ([Int64]$highDword -shl 32) -bor [Int64]$lowDword
+            } catch {
+                Write-Log "[ConvertFrom-LAPSEncryptedPassword] Failed to read header timestamp: $_"
+            }
+
+            $minFileTime = 125911584000000000  # 2000-01-01
+            $maxFileTime = 157766880000000000  # 2100-01-01
+            $timestampPlausible = ($null -ne $headerFileTime -and
+                                   $headerFileTime -gt $minFileTime -and
+                                   $headerFileTime -lt $maxFileTime)
+
+            # Signal 2: bytes 8-11 hold a size that fits in what follows the header.
+            $headerSizeField = [BitConverter]::ToUInt32($Blob, 8)
+            $sizePlausible = ($headerSizeField -gt 0 -and
+                              $headerSizeField -le ($Blob.Length - $HeaderSize))
+
+            $hasHeader = ($timestampPlausible -or $sizePlausible)
+
+            if (-not $hasHeader -and $Blob[0] -eq 0x30) {
                 # Raw CMS EnvelopedData without header
-                Write-Log "[ConvertFrom-LAPSEncryptedPassword] Blob starts with ASN.1 SEQUENCE - no header"
+                Write-Log "[ConvertFrom-LAPSEncryptedPassword] Blob starts with ASN.1 SEQUENCE and carries no usable header"
                 $encryptedData = $Blob
             } else {
                 # Has 16-byte header - parse it
-                Write-Log "[ConvertFrom-LAPSEncryptedPassword] Parsing 16-byte header"
+                Write-Log "[ConvertFrom-LAPSEncryptedPassword] Parsing 16-byte header (timestamp plausible: $timestampPlausible, size plausible: $sizePlausible)"
 
-                # Extract timestamp from header (bytes 0-7)
-                # LAPS v2 uses Big-Endian format for FILETIME:
-                #   Bytes 0-3: High DWORD (Big-Endian stored as Little-Endian DWORD)
-                #   Bytes 4-7: Low DWORD (Big-Endian stored as Little-Endian DWORD)
-                # Reconstruct: (HighDWORD << 32) | LowDWORD
-                try {
-                    $highDword = [BitConverter]::ToUInt32($Blob, 0)
-                    $lowDword = [BitConverter]::ToUInt32($Blob, 4)
-                    $fileTime = ([Int64]$highDword -shl 32) -bor [Int64]$lowDword
-
-                    # Validate FILETIME is reasonable (between year 2000 and 2100)
-                    $minFileTime = 125911584000000000  # 2000-01-01
-                    $maxFileTime = 157766880000000000  # 2100-01-01
-
-                    if ($fileTime -gt $minFileTime -and $fileTime -lt $maxFileTime) {
-                        $updateTimestamp = [DateTime]::FromFileTimeUtc($fileTime)
-                        Write-Log "[ConvertFrom-LAPSEncryptedPassword] Header timestamp: $updateTimestamp"
-                    } else {
-                        Write-Log "[ConvertFrom-LAPSEncryptedPassword] Header timestamp out of valid range: $fileTime (raw bytes: $($Blob[0..7] -join ','))"
-                    }
-                } catch {
-                    Write-Log "[ConvertFrom-LAPSEncryptedPassword] Failed to parse header timestamp: $_"
+                if ($timestampPlausible) {
+                    $updateTimestamp = [DateTime]::FromFileTimeUtc($headerFileTime)
+                    Write-Log "[ConvertFrom-LAPSEncryptedPassword] Header timestamp: $updateTimestamp"
+                } else {
+                    Write-Log "[ConvertFrom-LAPSEncryptedPassword] Header timestamp out of valid range: $headerFileTime (raw bytes: $($Blob[0..7] -join ','))"
                 }
 
                 # Extract encrypted size from header (bytes 8-11)
-                $encryptedSize = [BitConverter]::ToUInt32($Blob, 8)
+                $encryptedSize = $headerSizeField
                 Write-Log "[ConvertFrom-LAPSEncryptedPassword] Header encrypted size: $encryptedSize"
 
                 # Extract flags (bytes 12-15)

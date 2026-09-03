@@ -21,7 +21,7 @@
     - ! (exclamation) - History expansion in some shells
 
     Included safe special characters:
-    - @ # ^ * ( ) _ - + = { } [ ] : . , ?
+    - @ # ^ * ( ) _ - + = { } [ ] : . , ? ~
 
 .PARAMETER Length
     Length of the password to generate. Default: 20. Minimum: 8.
@@ -85,8 +85,19 @@ function New-SafePassword {
             $Password = [System.Text.StringBuilder]::new($Length)
             $RandomBytes = New-Object byte[] 1
 
+            # Rejection sampling rather than a plain modulo. 256 is not a multiple of the
+            # alphabet size - 81 with the special characters, 62 without - so "byte % n"
+            # hands the first 256 mod n characters an extra chance each and skews the
+            # distribution. Bytes at or above the largest whole multiple of n are drawn
+            # again instead, which costs a few extra draws and leaves every character
+            # equally likely. This generates passwords that get set on real accounts.
+            $Limit = 256 - (256 % $CharArray.Length)
+
             for ($i = 0; $i -lt $Length; $i++) {
-                $RNG.GetBytes($RandomBytes)
+                do {
+                    $RNG.GetBytes($RandomBytes)
+                } while ([int]$RandomBytes[0] -ge $Limit)
+
                 $Index = [int]$RandomBytes[0] % $CharArray.Length
                 [void]$Password.Append($CharArray[$Index])
             }

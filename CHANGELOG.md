@@ -34,6 +34,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **One LAPS password in 256 lost its update timestamp.** Whether an
+  `msLAPS-EncryptedPassword` blob carries the 16-byte header was decided by testing the
+  first byte for `0x30`, the ASN.1 SEQUENCE tag. With a header present that byte is the
+  low byte of the upper FILETIME DWORD, which advances roughly every seven minutes and is
+  therefore effectively random - so one password update time in 256 was read as a
+  headerless CMS blob. Those hosts reported no update time at all, and the CMS metadata
+  scan ran across the header bytes as well. The header is now recognised by its own
+  contents: a plausible FILETIME, or a size field that fits what follows it.
+  `ConvertFrom-LAPSEncryptedPassword` also threw on an empty attribute value instead of
+  returning `$null`, ahead of its own guard for exactly that case.
+- **`New-SafePassword` did not draw uniformly from its alphabet.** A random byte was
+  mapped with a plain modulo, and 256 is not a multiple of the alphabet size (81 with
+  special characters, 62 without), so the first characters of the set came up about a
+  quarter more often than the rest - measured over 200,000 draws. Replaced with rejection
+  sampling. The documented character set also omitted `~`, which the generator has always
+  used.
 - **An ACE carrying a generic access right was displayed with an empty rights field.**
   An ACE may hold GENERIC_ALL (`0x10000000`), GENERIC_READ, GENERIC_WRITE or
   GENERIC_EXECUTE instead of the specific mask; the directory maps them at access-check
