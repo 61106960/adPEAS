@@ -34,6 +34,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A disabled GPO link was reported as an active one, and enforcement was never seen.**
+  A `gPLink` entry holds the GPO GUID and its option digit at opposite ends of a
+  distinguished name - `[LDAP://cn={GUID},cn=policies,cn=system,DC=...;2]`.
+  `Get-GPOLinkage` searched for both with one pattern that required the `;2` to follow the
+  closing brace directly, so it never matched, the options fell back to `0`, and every
+  link came back as `Enabled` with `IsEnforced` false. Five checks - LDAP configuration,
+  SMB signing, GPO permissions, add-computer rights and user rights assignment - filter on
+  `LinkStatus -ne 'Disabled'` before they report, so a policy whose link an administrator
+  had switched off was still reported as applying; and enforcement, which decides
+  precedence between containers, was invisible. Link order was wrong for the same reason,
+  because a disabled link was counted as one that applies. Each entry is now parsed as a
+  unit.
 - **A recovered GPP password could be a password nobody has.** `ConvertFrom-GPPPassword`
   decrypted with `PaddingMode::Zeros`, which leaves PKCS7 padding in the output, and then
   cleaned that up by filtering the decoded characters down to `U+0020-U+007E` and

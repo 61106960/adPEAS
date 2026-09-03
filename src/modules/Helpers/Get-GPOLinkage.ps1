@@ -86,46 +86,57 @@ function Get-GPOLinkage {
                 Write-Log "[Get-GPOLinkage] gPLink: $gPLink"
 
                 # Parse gPLink attribute, Format: [LDAP://cn={GUID},cn=policies,cn=system,DC=domain,DC=com;0][LDAP://cn={GUID2},...;1]
-                $guidPattern = '\{([0-9A-Fa-f\-]{36})\}'
-                $matches = [regex]::Matches($gPLink, $guidPattern)
+                #
+                # Each entry is parsed as a unit, because the GUID and its options are not
+                # adjacent. The previous version searched for the GUID and its option digit
+                # with one pattern - "\{GUID\};(\d+)" - which requires the ";0" to follow
+                # the closing brace directly. In a real gPLink the rest of the DN sits in
+                # between, so that pattern never matched, the options fell back to 0, and
+                # every link came back Enabled and not enforced. Five checks filter on
+                # "LinkStatus -ne 'Disabled'", so a GPO whose link an administrator had
+                # disabled was still reported as applying, and enforcement - which decides
+                # precedence between containers - was never seen at all.
+                $entryPattern = '\[LDAP://(?<dn>[^;\]]+);(?<options>\d+)\]'
+                $entries = [regex]::Matches($gPLink, $entryPattern)
 
-                # Compute link order per gPLink container: last non-disabled entry = link order 1 (highest priority)
-                # First pass: collect enabled GUIDs in forward order to determine their positions
+                # Link order counts only the entries that actually apply, and it counts
+                # from the end: the last enabled entry in the string wins within its
+                # container. Collected in a first pass so the order is known before any
+                # link object is built.
                 $enabledGUIDs = [System.Collections.Generic.List[string]]::new()
-                foreach ($m in $matches) {
-                    $g = "{$($m.Groups[1].Value.ToUpper())}"
-                    $lp = '(?i)' + [regex]::Escape($g) + ';(\d+)'
-                    $lo = if ($gPLink -match $lp) { [int]$Matches[1] } else { 0 }
-                    if (($lo -band 1) -eq 0) { $enabledGUIDs.Add($g) }  # bit 0 = disabled
+                foreach ($entry in $entries) {
+                    if ((([int]$entry.Groups['options'].Value) -band 1) -ne 0) { continue }  # bit 0 = disabled
+                    if ($entry.Groups['dn'].Value -match '\{([0-9A-Fa-f\-]{36})\}') {
+                        $enabledGUIDs.Add("{$($Matches[1].ToUpper())}")
+                    }
                 }
-                # Assign link order: last enabled entry = 1 (highest priority)
+
                 $linkOrderMap = @{}
                 $totalEnabled = $enabledGUIDs.Count
                 for ($idx = 0; $idx -lt $totalEnabled; $idx++) {
                     $linkOrderMap[$enabledGUIDs[$idx]] = $totalEnabled - $idx
                 }
 
-                foreach ($match in $matches) {
+                foreach ($entry in $entries) {
+                    $entryDN = $entry.Groups['dn'].Value
+                    if ($entryDN -notmatch '\{([0-9A-Fa-f\-]{36})\}') {
+                        Write-Log "[Get-GPOLinkage] Skipping gPLink entry without a GPO GUID: $entryDN"
+                        continue
+                    }
+
                     # Normalize GUID to uppercase for consistent hashtable key matching
                     # GPO Name attribute uses uppercase, gPLink may use lowercase
-                    $gpoGUID = "{$($match.Groups[1].Value.ToUpper())}"
+                    $gpoGUID = "{$($Matches[1].ToUpper())}"
+                    $linkOptions = [int]$entry.Groups['options'].Value
 
-                    Write-Log "[Get-GPOLinkage] Linked GPO: $gpoGUID"
-
-                    # Determine link status (enabled/disabled/enforced)
-                    # Use case-insensitive match since gPLink may have mixed case GUIDs
-                    $linkPattern = '(?i)' + [regex]::Escape($gpoGUID) + ';(\d+)'
-                    if ($gPLink -match $linkPattern) {
-                        $linkOptions = [int]$Matches[1]
-                    }
-                    else {
-                        $linkOptions = 0  # Default: Enabled
-                    }
+                    Write-Log "[Get-GPOLinkage] Linked GPO: $gpoGUID (options $linkOptions)"
 
                     # Decode link options
                     $isDisabled = ($linkOptions -band 1) -ne 0
                     $isEnforced = ($linkOptions -band 2) -ne 0
 
+                    # A disabled link does not apply, whether or not it is also enforced,
+                    # so that state is reported first.
                     $linkStatus = if ($isDisabled) {
                         "Disabled"
                     } elseif ($isEnforced) {
