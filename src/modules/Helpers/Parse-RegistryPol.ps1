@@ -106,11 +106,29 @@ function Parse-PRegRecords {
             $valueString = $null
             switch ($type) {
                 4  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }      # REG_DWORD
-                5  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }      # REG_DWORD_BIG_ENDIAN (rare)
+                5  {
+                    # REG_DWORD_BIG_ENDIAN. BitConverter reads in the machine's byte
+                    # order, so this used to come back byte-swapped: a stored 1 was
+                    # reported as 16777216, and a check comparing against 1 saw nothing.
+                    if ($data.Length -ge 4) {
+                        $beBytes = New-Object byte[] 4
+                        [System.Array]::Copy($data, 0, $beBytes, 0, 4)
+                        [System.Array]::Reverse($beBytes)
+                        $valueInt = [System.BitConverter]::ToUInt32($beBytes, 0)
+                    }
+                }
                 11 { if ($data.Length -ge 8) { $valueInt = [System.BitConverter]::ToUInt64($data, 0) } }      # REG_QWORD
                 1  { $valueString = [System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0) }       # REG_SZ
                 2  { $valueString = [System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0) }       # REG_EXPAND_SZ
-                7  { $valueString = ([System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0)) }     # REG_MULTI_SZ
+                7  {
+                    # REG_MULTI_SZ is a run of null-terminated strings closed by an extra
+                    # null. Trimming only the trailing nulls left the separators embedded
+                    # in the middle of the string, so "eins<NUL>zwei<NUL>drei" reached the
+                    # console and the report as one value with two null characters in it.
+                    # Joined with ", " instead, which reads and greps.
+                    $rawMulti = [System.Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0)
+                    $valueString = (($rawMulti -split "`0") | Where-Object { $_.Length -gt 0 }) -join ', '
+                }
             }
 
             $records += [PSCustomObject]@{

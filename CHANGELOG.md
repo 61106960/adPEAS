@@ -34,6 +34,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A GPP `Registry.xml` with no byte order mark was decoded wrongly on Windows
+  PowerShell 5.1.** `Parse-RegistryXml` read the file with `Get-Content` and no
+  `-Encoding`, which falls back to the ANSI code page on 5.1 - the runtime adPEAS ships
+  for - and to UTF-8 on PowerShell 7. A deployed path such as `C:\Geraete\setup.exe` with
+  an umlaut came back with the umlaut split into two characters, so the value reported was
+  not the value deployed. The file is loaded through `XmlDocument` now, which honours the
+  encoding declared in the XML prolog on both hosts. Its `XmlResolver` is cleared as well,
+  which changes nothing measurable - .NET already refused external entities and did not
+  fetch external DTDs on either host - but states the intent for a file that comes off
+  SYSVOL.
+- **`REG_MULTI_SZ` from a `Registry.pol` was reported as one string with null characters
+  in it.** Only the trailing nulls were trimmed, not the separators between the entries,
+  so a server list reached the console and the report as `srv01<NUL>srv02<NUL>srv03`. The
+  entries are joined with `, ` now. In the same parser, `REG_DWORD_BIG_ENDIAN` was read in
+  the machine's byte order, turning a stored `1` into `16777216`.
 - **A ticket or certificate file whose name contains square brackets could not be read.**
   `ConvertFrom-Base64OrFile` tested for the file with `Test-Path -Path`, which reads
   brackets as a wildcard character class, so `admin[1].kirbi` did not match itself and a

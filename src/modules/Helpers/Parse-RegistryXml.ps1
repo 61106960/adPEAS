@@ -30,7 +30,26 @@ function Parse-RegistryXml {
     $records = @()
 
     try {
-        [xml]$xml = Get-Content -Path $XmlFilePath -ErrorAction Stop
+        # Loaded through XmlDocument rather than "[xml](Get-Content ...)".
+        #
+        # Get-Content without -Encoding reads a file with no BOM as the ANSI code page on
+        # Windows PowerShell 5.1 and as UTF-8 on PowerShell 7. Registry.xml declares its
+        # own encoding in the prolog, and XmlDocument.Load honours that declaration on
+        # both hosts. Measured on 5.1: a BOM-less UTF-8 file containing the path
+        # "C:\Program Files\Geraete\setup.exe" (with an a-umlaut) came back with the
+        # umlaut split into two characters, so the deployed value was reported wrong.
+        #
+        # XmlResolver is cleared as well, as a statement of intent rather than a fix: this
+        # file comes off SYSVOL, which is the share these checks look at precisely because
+        # it may be writable by someone it should not be. Measured on both hosts, .NET
+        # already refuses an external entity in an attribute value and does not fetch an
+        # external DTD, so nothing was exploitable here - but that behaviour is a default
+        # that has changed across framework versions, and this makes it not depend on it.
+        $resolvedPath = (Resolve-Path -LiteralPath $XmlFilePath -ErrorAction Stop).ProviderPath
+
+        $xml = New-Object System.Xml.XmlDocument
+        $xml.XmlResolver = $null
+        $xml.Load($resolvedPath)
 
         $regNodes = $xml.SelectNodes("//Registry")
         if (-not $regNodes) { return $records }
