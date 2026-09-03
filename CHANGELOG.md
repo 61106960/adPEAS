@@ -34,6 +34,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **`New-DiamondTicket`'s encryption-type mismatch error named the wrong (generic)
+  cipher label.** `$etypeNames.ContainsKey($ticketEType)` was always `$false`:
+  `$ticketEType` comes from `Read-ASN1Integer`, which returns `[int64]`, and
+  `Hashtable.ContainsKey([int64]18)` never matches `[int32]`-keyed entries even for
+  the same numeric value - a non-generic `Hashtable` compares by CLR type, not just
+  value. An operator handed the wrong krbtgt key got "you need the krbtgt etype 18
+  key" instead of "...the krbtgt AES256-CTS key". Purely cosmetic - the actual
+  mismatch *detection* a few lines below (`-ne`, which does coerce numeric types) was
+  already correct - but the entire point of the message is telling the operator which
+  key to go get. The identical defect was already fixed at its other two occurrences
+  in this codebase (`Invoke-Kerberoast.ps1`, both carrying a comment naming this exact
+  cause); only this third occurrence had been missed. Fixed with the same `[int]` cast
+  used at the other two sites.
 - **The same `Object[]`-instead-of-`byte[]` return defect documented below for the PAC
   module (Golden/Silver/Diamond Ticket) also runs through the entire rest of the
   Kerberos stack: the ASN.1 DER encoder every AS-REQ/TGS-REQ/KRB-CRED byte stream is

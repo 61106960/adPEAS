@@ -963,7 +963,10 @@ function New-DiamondTicket {
         }
 
         # Validate that the provided key type matches the ticket's encryption type
-        $ticketEType = $krbCred.TicketEType
+        # [int] cast is required: Read-ASN1Integer returns etype as [int64], and
+        # Hashtable.ContainsKey([int64]18) is $false against [int32] keys - a
+        # different CLR type never matches, even for the same numeric value.
+        $ticketEType = [int]$krbCred.TicketEType
         $etypeNames = @{ 17 = "AES128-CTS"; 18 = "AES256-CTS"; 23 = "RC4-HMAC" }
         $ticketETypeName = if ($etypeNames.ContainsKey($ticketEType)) { $etypeNames[$ticketEType] } else { "etype $ticketEType" }
         $providedETypeName = if ($etypeNames.ContainsKey($EncryptionType)) { $etypeNames[$EncryptionType] } else { "etype $EncryptionType" }
