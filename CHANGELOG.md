@@ -34,6 +34,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A directory object could inject script into the generated HTML report.** The report
+  embeds three JSON documents as JavaScript literals inside a `<script>` block, and one of
+  them - the scoring context - is built from the scan findings, so it carries group names
+  and distinguished names out of the audited directory. Windows PowerShell escapes the
+  less-than sign as a `\u` sequence in `ConvertTo-Json` output precisely so that embedded
+  JSON cannot close the
+  surrounding tag, and `Repair-JsonUnicodeEscapes` converted every such escape back to a
+  raw character on the premise that they "display literally in HTML". They do not: a
+  JavaScript parser reads these documents and `\uXXXX` is an ordinary escape there, so the
+  un-escaping changed nothing a script sees and everything the HTML parser sees. An object
+  named `CN=</script><img src=x onerror=...>` ended the script block in the report a
+  consultant hands to a customer. The function is replaced by `Protect-JsonForScriptBlock`,
+  which escapes in that direction instead and is idempotent across both PowerShell
+  versions. It also removes a second transformation that collapsed four backslashes to two
+  in the raw JSON, which is one escape level and silently turned every UNC path in a
+  tooltip from `\\server\share` into `\server\share`.
+- **A long attribute name ended an object's console output with an exception.** The Secure
+  class is the one branch that computes its padding by hand instead of using `PadRight`,
+  and PowerShell throws on a negative repeat count rather than returning an empty string.
+  An attribute whose display name was longer than the alignment column therefore aborted
+  the rest of the object. Guarded in all four places that pad this way.
 - **A creation date without a trailing `Z` was read as the year 1601.** A generalized time
   is 14 plain digits when the `Z` is absent, which `[long]::TryParse` accepts, so
   `ConvertTo-ActivityDate` parsed it as a FileTime and returned a date four centuries off

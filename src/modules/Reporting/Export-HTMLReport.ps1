@@ -37,25 +37,35 @@ function ConvertTo-HtmlEncode {
     return $Text.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;').Replace('"', '&quot;').Replace("'", '&#39;')
 }
 
-# Helper function to fix JSON Unicode escapes from ConvertTo-Json
-# PowerShell's ConvertTo-Json escapes special characters as \uXXXX which displays literally in HTML
-function Repair-JsonUnicodeEscapes {
+# Makes a JSON document safe to embed as a JavaScript literal inside a <script> block.
+#
+# This replaces a function that did the exact opposite. It converted every \uXXXX escape
+# back to a raw character, on the premise that ConvertTo-Json escapes characters "which
+# display literally in HTML". That premise is wrong: these documents are assigned to a
+# const in report-scripts.js, so a JavaScript parser reads them, and \uXXXX is an ordinary
+# escape there - the value a script sees is identical either way. What the un-escaping did
+# change was the HTML parser's view. Windows PowerShell 5.1, the target runtime, escapes
+# "<" as \u003c precisely so that embedded JSON cannot close the surrounding tag; turning
+# that back into a raw "<" meant a directory object named "CN=</script><img src=x
+# onerror=...>" ended the script block in the generated report. The scoring context is
+# built from scan findings, so those strings come out of the directory being audited, and
+# the report a consultant hands to a customer must not execute them.
+#
+# It also collapsed four backslashes to two in the raw JSON text, which is one escape
+# level and not a display fix: a UNC path stored as "\\\\server\\share" decodes to
+# \\server\share, and after the collapse to \server\share. That silently corrupted every
+# path and every escaped DN that reached a tooltip.
+#
+# Escaping here is idempotent: on PowerShell 5.1 the characters already arrive in \uXXXX
+# form and nothing matches, while PowerShell 7 emits them raw and they are escaped now.
+function Protect-JsonForScriptBlock {
     param([string]$Json)
     if ([string]::IsNullOrEmpty($Json)) { return $Json }
 
-    # Convert Unicode escapes back to readable characters (e.g., \u0027 -> ')
-    $result = [System.Text.RegularExpressions.Regex]::Replace(
-        $Json,
-        '\\u([0-9a-fA-F]{4})',
-        { param($m) [char]::ConvertFromUtf32([Convert]::ToInt32($m.Groups[1].Value, 16)) }
-    )
-
-    # Fix double-escaped backslashes: PowerShell strings use \\ for single backslash,
-    # then ConvertTo-Json escapes each \ to \\, resulting in \\\\
-    # We need to convert \\\\ back to \\ for proper display in tooltips
-    $result = $result -replace '\\\\\\\\', '\\'
-
-    return $result
+    # "<" and ">" cannot appear in JSON outside a string value, so replacing them cannot
+    # break the grammar. "&" is escaped as well, so the same document stays safe if it is
+    # ever embedded somewhere the HTML entity parser runs.
+    return $Json.Replace('<', '\u003c').Replace('>', '\u003e').Replace('&', '\u0026')
 }
 
 function Export-HTMLReport {
@@ -131,14 +141,14 @@ function Export-HTMLReport {
         }
 
         # Export finding definitions as JSON for tooltips
-        $findingDefsJson = Repair-JsonUnicodeEscapes (Export-FindingDefinitionsJson -Minified)
+        $findingDefsJson = Protect-JsonForScriptBlock (Export-FindingDefinitionsJson -Minified)
 
         # Export check descriptions as JSON for help buttons
-        $checkDefsJson = Repair-JsonUnicodeEscapes (Export-CheckDescriptionsJson -Minified)
+        $checkDefsJson = Protect-JsonForScriptBlock (Export-CheckDescriptionsJson -Minified)
 
         # Build scoring context data for context-aware risk calculation
         $scoringContext = Build-ScoringContext -AllFindings $findings
-        $scoringContextJson = Repair-JsonUnicodeEscapes ($scoringContext | ConvertTo-Json -Depth 10 -Compress)
+        $scoringContextJson = Protect-JsonForScriptBlock ($scoringContext | ConvertTo-Json -Depth 10 -Compress)
 
         # Use literal .Replace() for ALL token substitutions, never -replace. The placeholders are
         # literal "{{...}}" strings (no regex needed), and the replacement VALUES are data-derived:

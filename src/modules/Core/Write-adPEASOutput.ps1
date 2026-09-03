@@ -184,8 +184,11 @@ function Write-adPEASAttribute {
             Write-Host $coloredText
         } elseif ($Class -eq "Secure") {
             # Special handling for Secure class (has background color), color ONLY the prefix+name and value, NOT the padding spaces
+            # Math::Max, because PowerShell throws on a negative repeat count rather than
+            # returning an empty string: a name longer than the alignment column would end
+            # the line with an exception instead of simply not padding.
             $nameOnlyWithColon = if ($Name) { "${Name}:" } else { "" }
-            $paddingSpaces = ' ' * ($paddingWidth - $nameOnlyWithColon.Length)
+            $paddingSpaces = ' ' * ([Math]::Max(0, $paddingWidth - $nameOnlyWithColon.Length))
 
             # Build: [colored prefix+name] [reset] [padding] [colored value] [reset]
             $coloredOutput = $classColor + $prefix + $nameOnlyWithColon + $ANSI["Reset"] +
@@ -212,7 +215,7 @@ function Write-adPEASAttribute {
                 $fileText = $classColor + $plainText + $ANSI["Reset"]
             } elseif ($Class -eq "Secure") {
                 $nameOnlyWithColon = if ($Name) { "${Name}:" } else { "" }
-                $paddingSpaces = ' ' * ($paddingWidth - $nameOnlyWithColon.Length)
+                $paddingSpaces = ' ' * ([Math]::Max(0, $paddingWidth - $nameOnlyWithColon.Length))
                 $fileText = $classColor + $prefix + $nameOnlyWithColon + $ANSI["Reset"] +
                             $paddingSpaces +
                             $classColor + $Value + $ANSI["Reset"]

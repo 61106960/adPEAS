@@ -115,7 +115,13 @@ function Render-ConsoleRow {
                 # Special handling for Secure class (has background color)
                 if ($attrClass -eq "Secure") {
                     $nameOnlyWithColon = "$($Row.Name):"
-                    $paddingSpaces = ' ' * ($attrPadding - $nameOnlyWithColon.Length)
+                    # Math::Max, because PowerShell throws on a negative repeat count
+                    # rather than returning an empty string. An attribute whose display
+                    # name is longer than the alignment column would otherwise end the
+                    # whole object's output with an exception, and only for the Secure
+                    # class, which is the one branch that pads by hand instead of using
+                    # PadRight.
+                    $paddingSpaces = ' ' * ([Math]::Max(0, $attrPadding - $nameOnlyWithColon.Length))
                     $coloredOutput = $attrColor + $attrPrefix + $nameOnlyWithColon + $ANSI["Reset"] + $paddingSpaces + $valColor + $firstVal.Value + $ANSI["Reset"]
                     Write-Host $coloredOutput
                 } else {
@@ -132,7 +138,7 @@ function Render-ConsoleRow {
                     $valColor = Get-ClassColor -Class $firstVal.Class
                     if ($attrClass -eq "Secure") {
                         $nameOnlyWithColon = "$($Row.Name):"
-                        $paddingSpaces = ' ' * ($attrPadding - $nameOnlyWithColon.Length)
+                        $paddingSpaces = ' ' * ([Math]::Max(0, $attrPadding - $nameOnlyWithColon.Length))
                         $fileText = $attrColor + $attrPrefix + $nameOnlyWithColon + $ANSI["Reset"] + $paddingSpaces + $valColor + $firstVal.Value + $ANSI["Reset"]
                     } else {
                         $fileText = $attrColor + $attrPrefix + $paddedAttrName + $ANSI["Reset"] + $valColor + $firstVal.Value + $ANSI["Reset"]
