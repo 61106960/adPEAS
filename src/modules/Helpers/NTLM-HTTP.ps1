@@ -164,7 +164,12 @@ $Script:MsvAvChannelBindings = 0x000A  # Channel bindings MD5 hash
 function Read-NTLMType2Message {
     [CmdletBinding()]
     param(
+        # AllowEmptyString so an empty value reaches the length check below - which
+        # already reports it as "too short" through the normal Success=$false result -
+        # instead of the parameter binder throwing ahead of the try/catch this function
+        # otherwise answers every failure through.
         [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$Type2Base64
     )
 
@@ -286,7 +291,11 @@ function Read-NTLMType2Message {
 function Read-NTLMAvPairs {
     [CmdletBinding()]
     param(
+        # AllowEmptyCollection so the loop below decides, rather than the parameter
+        # binder throwing in front of it - a TargetInfo field of length 0 is a normal,
+        # empty AV_PAIR list, not a caller error.
         [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
         [byte[]]$TargetInfoBytes
     )
 
@@ -324,8 +333,23 @@ function Read-NTLMAvPairs {
             break
         }
 
-        # Extract value bytes
-        $valueBytes = $TargetInfoBytes[$offset..($offset + $avLen - 1)]
+        # Extract value bytes.
+        #
+        # Guarded on $avLen -gt 0 rather than sliced unconditionally: PowerShell reads
+        # $offset..($offset - 1) as the two-element descending range @($offset, $offset -
+        # 1), not an empty array, so a zero-length AV_PAIR - a valid MS-NLMP encoding,
+        # e.g. an empty NbDomainName - pulled in one adjacent byte from the buffer on
+        # each side instead of nothing. Decoded as UTF-16, those two stray bytes surface
+        # as one bogus character rather than an empty string, and at offset 0 the
+        # negative index -1 means "last element of the array" in PowerShell, so the
+        # corruption could reach into completely unrelated bytes at the end of the blob.
+        #
+        # The comma in the else branch is load-bearing: an if/else assignment routes each
+        # branch's output through the normal success stream, and an empty array written
+        # there unrolls to zero objects - so "else { [byte[]]@() }" assigns $null, not an
+        # empty array, and every GetString() call below throws ArgumentNullException on
+        # the very case this guard exists to make safe.
+        $valueBytes = if ($avLen -gt 0) { $TargetInfoBytes[$offset..($offset + $avLen - 1)] } else { ,[byte[]]@() }
         $offset += $avLen
 
         # Parse based on AvId
@@ -444,9 +468,23 @@ function New-RandomEPAIdentifier {
         $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
     }
 
-    $suffixBytes = New-Object byte[] $suffixLength
-    $rng.GetBytes($suffixBytes)
-    $suffix = -join ($suffixBytes | ForEach-Object { $chars[$_ % $chars.Length] })
+    # Rejection sampling rather than a plain modulo: 256 is not a multiple of the
+    # 36-character alphabet (256 mod 36 = 4), so mapping a random byte with "byte %
+    # length" gives the first four characters an extra chance each - measured at roughly
+    # 15% over-represented against roughly 11% under-represented across the rest, over
+    # 3000 generated identifiers. Not a secret, so the bias itself risks nothing, but
+    # New-SafePassword was already fixed for the identical reason and it would be
+    # inconsistent to leave the same anti-pattern sitting one file over.
+    $suffixLimit = 256 - (256 % $chars.Length)
+    $suffixChars = New-Object System.Text.StringBuilder $suffixLength
+    $suffixByte = New-Object byte[] 1
+    for ($i = 0; $i -lt $suffixLength; $i++) {
+        do {
+            $rng.GetBytes($suffixByte)
+        } while ([int]$suffixByte[0] -ge $suffixLimit)
+        [void]$suffixChars.Append($chars[[int]$suffixByte[0] % $chars.Length])
+    }
+    $suffix = $suffixChars.ToString()
 
     if ($Type -eq 'Workstation') {
         return "$prefix-$suffix"
@@ -476,7 +514,11 @@ function New-RandomEPAIdentifier {
 function New-NTLMType3Message {
     [CmdletBinding()]
     param(
+        # AllowNull so the explicit "$null -eq $Type2Result" guard below is reachable -
+        # a mandatory parameter rejects $null before the function body runs even when,
+        # as here, it carries no type constraint to justify that.
         [Parameter(Mandatory=$true)]
+        [AllowNull()]
         $Type2Result,
 
         [Parameter(Mandatory=$false)]

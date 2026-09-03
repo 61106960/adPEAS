@@ -34,6 +34,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A zero-length AV_PAIR in an NTLM Type2 (Challenge) message was decoded as one bogus
+  character instead of an empty string.** `Read-NTLMAvPairs`, part of the EPA/NTLM-relay
+  detection stack, sliced a value with `$offset..($offset + $avLen - 1)`. For `$avLen`
+  of `0` PowerShell reads that as the two-element descending range
+  `@($offset, $offset - 1)`, not an empty one, so an empty `NbDomainName` or similar
+  pulled in one stray byte from each side of the intended (empty) slice; at offset `0`
+  the trailing `-1` means "last element of the array" in PowerShell, so the corruption
+  could reach into unrelated bytes at the far end of the buffer. Guarded on
+  `$avLen -gt 0` now. The empty-array branch of that guard needed a leading comma of its
+  own: an `if`/`else` assignment routes each branch's output through the normal success
+  stream, and an empty array written there unrolls to zero objects, so
+  `else { [byte[]]@() }` assigned `$null` rather than an empty array and broke every
+  string decode downstream on exactly the input the guard was meant to make safe.
+  `Read-NTLMAvPairs`, `Read-NTLMType2Message` and `New-NTLMType3Message` also rejected
+  `$null`/empty input at their parameter binders ahead of the guards their own bodies
+  already had for it - `AllowEmptyCollection`/`AllowEmptyString`/`AllowNull` added so a
+  computer's own explicit handling of that input is reachable.
+- **`New-RandomEPAIdentifier`'s suffix characters were not drawn uniformly.** Same
+  modulo-bias defect as `New-SafePassword` earlier in this list, for the same reason (256
+  is not a multiple of the 36-character alphabet) - not a secret, so the bias itself risks
+  nothing, but it would have been inconsistent to fix it in one file and leave the
+  identical pattern in the next.
 - **PKINIT certificate authentication found the wrong identity, or none at all, on
   German-locale Windows.** `Connect-adPEAS -Certificate` and `Get-CertificateInfo` both
   read which UPNs and DNS names a certificate's Subject Alternative Name carries from
