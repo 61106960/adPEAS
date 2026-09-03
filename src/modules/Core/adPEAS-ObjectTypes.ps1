@@ -1448,20 +1448,25 @@ function Get-ObjectTypeTitle {
     # Format the title using the template
     $title = $definition.TitleFormat
 
-    # Replace placeholders
-    $title = $title -replace '\{Name\}', $objName
-    $title = $title -replace '\{Context\}', $contextStr
+    # Replace placeholders. Literal .Replace(), not -replace: the replacement text is
+    # untrusted (an AD object name/context), and -replace treats it as a regex
+    # replacement pattern, where a literal '$' in the name silently corrupts the title
+    # ('$1' is read as a backreference, '$$' collapses to one '$') - the same defect
+    # class already fixed below for the generic {propertyName} fallback loop, just not
+    # yet here for the named placeholders.
+    $title = $title.Replace('{Name}', $objName)
+    $title = $title.Replace('{Context}', $contextStr)
 
     # Handle {DisplayName} placeholder - prefers displayName over sAMAccountName
     if ($title -match '\{DisplayName\}') {
         $displayName = if ($Object.displayName) { $Object.displayName } else { $objName }
-        $title = $title -replace '\{DisplayName\}', $displayName
+        $title = $title.Replace('{DisplayName}', $displayName)
     }
 
     # Handle {CAName} placeholder - used by CertificateAuthority titles
     if ($title -match '\{CAName\}') {
         $caName = if ($Object.caName) { $Object.caName } else { $objName }
-        $title = $title -replace '\{CAName\}', $caName
+        $title = $title.Replace('{CAName}', $caName)
     }
 
     # Handle DN placeholder if present
@@ -1470,9 +1475,9 @@ function Get-ObjectTypeTitle {
         $dn = $Object.distinguishedName
         if ($dn -match ',(.+)$') {
             $ouPath = $Matches[1]
-            $title = $title -replace '\{DN\}', $ouPath
+            $title = $title.Replace('{DN}', $ouPath)
         } else {
-            $title = $title -replace '\{DN\}', ''
+            $title = $title.Replace('{DN}', '')
         }
     }
 

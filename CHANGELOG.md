@@ -34,6 +34,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **`Get-ObjectTypeTitle` silently corrupted a report card's title whenever the
+  underlying AD object's name contained a `$`.** The `{Name}`/`{Context}`/
+  `{DisplayName}`/`{CAName}`/`{DN}` placeholder substitutions used PowerShell's
+  `-replace` with the untrusted AD name as the *replacement* argument -
+  `-replace`'s replacement text is a regex replacement pattern, not a literal string,
+  so `$1` in a name is read as a backreference (resolving to nothing, and swallowing
+  whatever followed it) and `$$` collapses to a single `$`. An ordinary AD computer
+  account's trailing `$` was already safe (not a valid backreference shape), which is
+  presumably why this went unnoticed, but any other `$`-containing name was not. This
+  is `Export-HTMLReport.ps1`'s only source for a finding's card title, so the
+  corruption reaches an actual report. Fixed with literal `.Replace()` - the exact
+  treatment the function's own generic `{propertyName}` fallback loop, a few lines
+  below, already uses for this same reason (with a comment naming it); the fix here
+  is extending that same treatment to the five named placeholders above it, which had
+  been missed.
 - **`Get-CurrentUserTokenGroups` returned an empty list, every time, for any user whose
   `tokenGroups` held exactly one SID** (a lone-group account, or one in only its
   primary group) **- the gate `Get-LAPSCredentialAccess`'s optimized Windows LAPS path
