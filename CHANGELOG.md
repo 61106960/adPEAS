@@ -34,6 +34,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **gMSA passwords were never extracted at all in the built artifact.**
+  `ConvertFrom-ManagedPassword` called `Get-NTHashFromPassword -Password`, naming the
+  parameter of a second function of that name defined in the same file. `Kerberos-Crypto.ps1`
+  defines the same name with a `-PlainPassword` parameter and is concatenated later in the
+  build, so its definition won: the call failed to bind, the outer `catch` swallowed the
+  error, and the function returned `$null`. Every group managed service account password
+  in a real scan produced nothing. The duplicate definition is removed.
+- **The NT hash of a gMSA password was computed from a mangled string.** The hash was taken
+  from the decoded password rather than from the bytes in the blob. A gMSA password is 256
+  bytes of randomness read as 128 UTF-16 code units, so about one unit in 32 falls in the
+  surrogate range and almost none of them pair up - with 128 units, roughly 98 percent of
+  real passwords contain at least one. Decoding those to a .NET string turns every unpaired
+  surrogate into `U+FFFD`, and a hash of the round-tripped string is not the account's NT
+  hash. It is now computed over the exact bytes, which is also what removed the need for
+  the duplicate hash function. The plaintext is still returned for display and is still
+  lossy for those passwords, which is unavoidable in a string and is why the hash may not
+  be derived from it.
 - **A Shadow Credential's device id was reported as a byte-reversed hex string.**
   `ConvertFrom-KeyCredentialLink` sliced each LTV entry out of the blob with a range
   index, which returns `Object[]` rather than `byte[]`. `BitConverter` coerces that, so

@@ -146,6 +146,11 @@ function ConvertFrom-ManagedPassword {
                 $currentPasswordLength = $currentPasswordEnd - $currentPasswordOffset
                 $currentPasswordBytes = New-Object byte[] $currentPasswordLength
                 [Array]::Copy($Blob, $currentPasswordOffset, $currentPasswordBytes, 0, $currentPasswordLength)
+
+                # The exact bytes are kept for the NT hash; the string is for display only
+                # and cannot be turned back into these bytes when the password contains an
+                # unpaired surrogate.
+                $currentPasswordExactBytes = Get-NullTerminatedUnicodeBytes -Bytes $currentPasswordBytes
                 $currentPassword = Read-NullTerminatedUnicodeString -Bytes $currentPasswordBytes
 
                 if ([string]::IsNullOrEmpty($currentPassword)) {
@@ -154,10 +159,12 @@ function ConvertFrom-ManagedPassword {
 
                 # Read previous password if present
                 $previousPassword = $null
+                $previousPasswordExactBytes = New-Object byte[] 0
                 if ($previousPasswordOffset -gt 0 -and $previousPasswordOffset -gt $currentPasswordOffset -and $previousPasswordOffset -lt $queryPasswordIntervalOffset) {
                     $previousPasswordLength = $queryPasswordIntervalOffset - $previousPasswordOffset
                     $previousPasswordBytes = New-Object byte[] $previousPasswordLength
                     [Array]::Copy($Blob, $previousPasswordOffset, $previousPasswordBytes, 0, $previousPasswordLength)
+                    $previousPasswordExactBytes = Get-NullTerminatedUnicodeBytes -Bytes $previousPasswordBytes
                     $previousPassword = Read-NullTerminatedUnicodeString -Bytes $previousPasswordBytes
                 }
 
@@ -176,16 +183,34 @@ function ConvertFrom-ManagedPassword {
 
                 Write-Log "[ConvertFrom-ManagedPassword] Password length: $($currentPassword.Length) chars, QueryInterval: $($queryPasswordInterval.TotalHours) hours"
 
-                # Calculate NT hashes
+                # Calculate NT hashes over the raw password bytes.
+                #
+                # Two things were wrong here. The hash was taken from the decoded string,
+                # which silently changes the bytes of any gMSA password containing an
+                # unpaired surrogate - see Get-NullTerminatedUnicodeBytes for why that is
+                # the normal case, not an edge one. And it called
+                # "Get-NTHashFromPassword -Password", a second function of that name
+                # defined further down this file. Kerberos-Crypto.ps1 defines the same
+                # name with a -PlainPassword parameter and is concatenated after this file
+                # in the build, so its definition won: the call failed to bind, the outer
+                # catch swallowed the error, and ConvertFrom-ManagedPassword returned
+                # $null. Every gMSA password extraction in the built artifact produced
+                # nothing at all. The duplicate has been removed.
                 $currentNTHash = $null
                 $previousNTHash = $null
 
-                if (-not [string]::IsNullOrEmpty($currentPassword)) {
-                    $currentNTHash = Get-NTHashFromPassword -Password $currentPassword
+                if ($currentPasswordExactBytes.Length -gt 0) {
+                    $hashBytes = Get-MD4Hash -Data $currentPasswordExactBytes
+                    if ($hashBytes) {
+                        $currentNTHash = ([BitConverter]::ToString($hashBytes) -replace '-', '')
+                    }
                 }
 
-                if (-not [string]::IsNullOrEmpty($previousPassword)) {
-                    $previousNTHash = Get-NTHashFromPassword -Password $previousPassword
+                if ($previousPasswordExactBytes.Length -gt 0) {
+                    $hashBytes = Get-MD4Hash -Data $previousPasswordExactBytes
+                    if ($hashBytes) {
+                        $previousNTHash = ([BitConverter]::ToString($hashBytes) -replace '-', '')
+                    }
                 }
 
                 # Build result object with all properties upfront
@@ -244,6 +269,51 @@ function ConvertFrom-ManagedPassword {
 }
 
 
+<#
+.SYNOPSIS
+Returns the bytes of a null-terminated UTF-16LE string, without the terminator.
+
+.DESCRIPTION
+Internal helper for ConvertFrom-ManagedPassword. The NT hash has to be computed over
+these bytes rather than over the decoded string.
+
+A gMSA password is 256 bytes of cryptographic randomness read as 128 UTF-16 code units,
+so roughly one unit in 32 falls in the surrogate range D800-DFFF and almost none of them
+form a valid pair. Decoding that to a .NET string replaces every unpaired surrogate with
+U+FFFD, and encoding the string back produces different bytes - so an NT hash taken from
+the round-tripped string is not the account's NT hash. With 128 units the chance of at
+least one surrogate is about 98 percent, which makes this the normal case rather than an
+edge one, and the hash is the value someone authenticates with.
+#>
+function Get-NullTerminatedUnicodeBytes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [byte[]]$Bytes
+    )
+
+    $empty = New-Object byte[] 0
+    if ($null -eq $Bytes -or $Bytes.Length -lt 2) { return ,$empty }
+
+    $effectiveLength = $Bytes.Length
+    if ($effectiveLength % 2 -ne 0) { $effectiveLength = $effectiveLength - 1 }
+    if ($effectiveLength -lt 2) { return ,$empty }
+
+    # Null terminator: two zero bytes on an even offset
+    $nullIndex = -1
+    for ($i = 0; $i -lt $effectiveLength; $i += 2) {
+        if ($Bytes[$i] -eq 0 -and $Bytes[$i + 1] -eq 0) { $nullIndex = $i; break }
+    }
+    if ($nullIndex -eq -1) { $nullIndex = $effectiveLength }
+    if ($nullIndex -eq 0) { return ,$empty }
+
+    $result = New-Object byte[] $nullIndex
+    [Array]::Copy($Bytes, 0, $result, 0, $nullIndex)
+    return ,$result
+}
+
+
 function Read-NullTerminatedUnicodeString {
     <#
     .SYNOPSIS
@@ -291,56 +361,4 @@ function Read-NullTerminatedUnicodeString {
 
     # Decode UTF-16LE string (excluding null terminator)
     return [System.Text.Encoding]::Unicode.GetString($Bytes, 0, $nullIndex)
-}
-
-
-function Get-NTHashFromPassword {
-    <#
-    .SYNOPSIS
-    Calculates the NT hash (MD4 of UTF-16LE password) for a given password string.
-    Internal helper function for ConvertFrom-ManagedPassword.
-
-    .DESCRIPTION
-    Uses the Get-MD4Hash function from Kerberos-Crypto.ps1 to compute the NT hash.
-    The NT hash is MD4(UTF-16LE(password)).
-
-    .PARAMETER Password
-    The plaintext password string.
-
-    .OUTPUTS
-    Hex string representation of the 16-byte NT hash (uppercase).
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        [string]$Password
-    )
-
-    if ([string]::IsNullOrEmpty($Password)) {
-        return $null
-    }
-
-    try {
-        # Convert password to UTF-16LE bytes
-        $passwordBytes = [System.Text.Encoding]::Unicode.GetBytes($Password)
-
-        # Calculate MD4 hash (NT hash = MD4(UTF-16LE(password)))
-        # Use the existing Get-MD4Hash function from Kerberos-Crypto.ps1
-        $ntHashBytes = Get-MD4Hash -Data $passwordBytes
-
-        if ($null -eq $ntHashBytes -or $ntHashBytes.Length -ne 16) {
-            Write-Log "[Get-NTHashFromPassword] Get-MD4Hash returned invalid result"
-            return $null
-        }
-
-        # Convert to hex string (uppercase for consistency)
-        $ntHashHex = ($ntHashBytes | ForEach-Object { $_.ToString("X2") }) -join ''
-
-        return $ntHashHex
-
-    } catch {
-        Write-Log "[Get-NTHashFromPassword] Error calculating NT hash: $_"
-        return $null
-    }
 }
