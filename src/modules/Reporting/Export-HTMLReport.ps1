@@ -347,6 +347,10 @@ function Build-ScoringContext {
         [array]$AllFindings
     )
 
+    # Rank for the tier upgrade-only comparison below: never let a later, lesser group
+    # downgrade a tier already established by an earlier one.
+    $tierRank = @{ 'none' = 0; 'tier2' = 1; 'tier1' = 2; 'tier0' = 3 }
+
     $scoringContext = @{
         # Map of account SID -> account info (memberOf, pwdLastSet, etc.)
         accounts = @{}
@@ -434,21 +438,34 @@ function Build-ScoringContext {
                     if ($grp.SID -notin $acctInfo.memberOfSIDs) {
                         $acctInfo.memberOfSIDs += $grp.SID
                     }
-                    # Check for Tier 0 admin groups (Domain Admins -512, Enterprise Admins -519, Schema Admins -518)
-                    if ($grp.SID -match '-512$' -or $grp.SID -match '-519$' -or $grp.SID -match '-518$') {
-                        $acctInfo.isAdmin = $true
-                        $acctInfo.adminTier = 'tier0'
+
+                    # Classify via the central Test-IsPrivileged categorization
+                    # ($Script:PrivilegedRIDSuffixes / $Script:OperatorRIDSuffixes in
+                    # adPEAS-SIDs.ps1) instead of an inline regex copy that had drifted
+                    # out of sync with it - Group Policy Creator Owners (-520) and Key
+                    # Admins/Enterprise Key Admins (-526/-527) are both direct paths to
+                    # domain takeover (GPO -> SYSTEM code execution; msDS-KeyCredentialLink
+                    # -> Shadow Credentials -> PKINIT -> UnPAC-the-Hash - adPEAS implements
+                    # both attacks itself) and are now tier0 like the identity gate already
+                    # considered them, not tier2. Cert Publishers (-517) is tier1: it can
+                    # write userCertificate but is not a direct takeover without a matching
+                    # altSecurityIdentities mapping or template, which the identity gate
+                    # already reflects by calling it Operator rather than Privileged.
+                    # A bare SID string never touches LDAP (Test-IsPrivileged's
+                    # sIDHistory/group-membership phases are gated on
+                    # $Script:LdapConnection, unset during offline report generation), so
+                    # this is safe to call here.
+                    $privCheck = Test-IsPrivileged -Identity $grp.SID
+                    $newTier = switch ($privCheck.Category) {
+                        'Privileged' { 'tier0' }
+                        'Operator'   { 'tier1' }
+                        default      { 'tier2' }
                     }
-                    # Tier 1: Operators (Account Ops -548, Server Ops -549, Backup Ops -551)
-                    elseif ($grp.SID -match '-(548|549|551)$' -and $acctInfo.adminTier -ne 'tier0') {
+                    if ($tierRank[$newTier] -gt $tierRank[$acctInfo.adminTier]) {
                         $acctInfo.isAdmin = $true
-                        $acctInfo.adminTier = 'tier1'
+                        $acctInfo.adminTier = $newTier
                     }
-                    # Tier 2: Other privileged
-                    elseif ($acctInfo.adminTier -eq 'none') {
-                        $acctInfo.isAdmin = $true
-                        $acctInfo.adminTier = 'tier2'
-                    }
+
                     # Protected Users group (SID ending with -525)
                     if ($grp.SID -match '-525$') {
                         $acctInfo.isProtectedUser = $true

@@ -43,6 +43,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   ranking, so a section that is otherwise confirmed secure is not downgraded by a mere
   Hint elsewhere in the same section. This visibly changes the badge colour of any
   report section whose highest severity is a Secure finding alongside a Hint one.
+- **HTML report risk score: the account tier classification now matches the identity
+  gate every check already uses.** `Build-ScoringContext` (the report's risk-scoring
+  layer) classified an account's highest privileged group membership with its own
+  inline regex, independently of `Test-IsPrivileged` (the identity gate every check
+  module already uses to decide "is this account already known to be privileged").
+  The two had drifted apart - not a documented decision, unlike the severity ordering
+  above - and Group Policy Creator Owners (-520) and Key Admins/Enterprise Key Admins
+  (-526/-527), each a direct path to domain takeover that adPEAS itself implements the
+  full attack chain for (GPO -> SYSTEM code execution; `msDS-KeyCredentialLink` ->
+  Shadow Credentials -> PKINIT -> UnPAC-the-Hash), scored only `tier2` instead of the
+  `tier0` the identity gate already considered them. Decided: `Build-ScoringContext`
+  now classifies every group through `Test-IsPrivileged` (the same central
+  `$Script:PrivilegedRIDSuffixes`/`$Script:OperatorRIDSuffixes` tables in
+  `adPEAS-SIDs.ps1`) instead of its own copy. Visibly raises the risk score of any
+  account whose only privileged membership is one of those two groups, and correctly
+  distinguishes the well-known BUILTIN Operator groups (Account/Server/Backup
+  Operators, real SID `S-1-5-32-nnn`) from a same-looking but nonexistent
+  domain-relative SID, which the old string-suffix regex could not tell apart.
 
 ### Fixed
 
