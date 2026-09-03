@@ -135,7 +135,19 @@ function ConvertTo-FlatByteArray {
         }
     }
 
-    return [byte[]]$result.ToArray()
+    # Comma-forced: a bare "return [byte[]]$result.ToArray()" still hands the caller
+    # Object[], not byte[], despite the explicit cast right here - the array literal is
+    # unrolled element-by-element through the function's output stream and PowerShell
+    # re-collects the pieces into a generically-typed array on the other side. Every
+    # builder in this file ends with "return ConvertTo-FlatByteArray $result" and relies
+    # on getting a real byte[] back - defeating the one purpose this function's own
+    # docstring states. Confirmed: fixing the type here is sufficient for every caller
+    # that merely forwards this result, including through several layers of "return
+    # ConvertTo-FlatByteArray ..." with no comma of their own - only a call site that
+    # itself builds a fresh array literal at the return statement needs its own comma.
+    # Build-PAC's existing "[byte[]](...)" casts around every builder call already worked
+    # around this same issue at the consumption side; they stay, now redundant but harmless.
+    return ,[byte[]]$result.ToArray()
 }
 
 function Write-UInt16LE {
@@ -146,7 +158,12 @@ function Write-UInt16LE {
     [CmdletBinding()]
     param([uint16]$Value)
 
-    return [byte[]]@(
+    # Comma-forced: a bare "return [byte[]]@(...)" hands the caller Object[], not byte[] -
+    # an array literal built fresh at the return statement is unrolled element-by-element
+    # through the output stream and re-collected generically on the caller's side, the
+    # explicit cast notwithstanding. See ConvertTo-FlatByteArray's comment for the full
+    # explanation; every Write-*LE primitive in this file had the same defect.
+    return ,[byte[]]@(
         ($Value -band 0xFF),
         (($Value -shr 8) -band 0xFF)
     )
@@ -160,7 +177,8 @@ function Write-UInt32LE {
     [CmdletBinding()]
     param([uint32]$Value)
 
-    return [byte[]]@(
+    # Comma-forced - see Write-UInt16LE just above for why.
+    return ,[byte[]]@(
         ($Value -band 0xFF),
         (($Value -shr 8) -band 0xFF),
         (($Value -shr 16) -band 0xFF),
@@ -180,7 +198,9 @@ function Write-Int32LE {
     if (-not [BitConverter]::IsLittleEndian) {
         [Array]::Reverse($bytes)
     }
-    return [byte[]]$bytes
+    # Comma-forced - see Write-UInt16LE above for why: $bytes is a fresh array
+    # (from BitConverter or the Reverse() above) and a bare return unrolls it.
+    return ,[byte[]]$bytes
 }
 
 function Write-UInt64LE {
@@ -195,7 +215,8 @@ function Write-UInt64LE {
     if (-not [BitConverter]::IsLittleEndian) {
         [Array]::Reverse($bytes)
     }
-    return [byte[]]$bytes
+    # Comma-forced - see Write-UInt16LE above for why.
+    return ,[byte[]]$bytes
 }
 
 function Write-Int64LE {
@@ -210,7 +231,8 @@ function Write-Int64LE {
     if (-not [BitConverter]::IsLittleEndian) {
         [Array]::Reverse($bytes)
     }
-    return [byte[]]$bytes
+    # Comma-forced - see Write-UInt16LE above for why.
+    return ,[byte[]]$bytes
 }
 
 function ConvertTo-FileTime {
@@ -322,7 +344,9 @@ function ConvertFrom-SIDString {
         $sid = New-Object System.Security.Principal.SecurityIdentifier($SIDString)
         $bytes = [byte[]]::new($sid.BinaryLength)
         $sid.GetBinaryForm($bytes, 0)
-        return $bytes
+        # Comma-forced - see Write-UInt16LE's comment for why a bare "return $bytes"
+        # would still hand the caller Object[] here.
+        return ,$bytes
     }
     catch {
         Write-Log "[ConvertFrom-SIDString] Failed to parse SID: $SIDString - $_" -Level Error
@@ -822,8 +846,17 @@ function Build-KerbValidationInfo {
     $lengthBytes = [BitConverter]::GetBytes([uint32]$objectBufferLength)
     [Array]::Copy($lengthBytes, 0, $ndrHeaderBytes, 8, 4)
 
-    # Combine NDR header + payload
-    return ($ndrHeaderBytes + $payload)
+    # Combine NDR header + payload.
+    #
+    # Both the cast and the comma are needed, and for two different reasons. The "+"
+    # operator on two byte[] arrays produces Object[] on its own, before this statement's
+    # return/pipeline step is even reached - unlike a straight variable or a cast array
+    # literal - so a comma alone (which only stops the *return* from unrolling an
+    # already-byte[] value) is not enough here; the concatenation itself needs the cast.
+    # And the cast alone is not enough either, for the same reason as every other
+    # function in this file: a fresh array built at the return statement still gets
+    # unrolled through the output stream without the comma.
+    return ,[byte[]]($ndrHeaderBytes + $payload)
 }
 
 # ============================================================================
@@ -1471,7 +1504,14 @@ function Complete-PACSignatures {
     # Insert KDC checksum
     [Array]::Copy($kdcChecksum, 0, $pac, $KDCChecksumOffset, $sigLength)
 
-    return $pac
+    # Comma-forced - see Write-UInt16LE's comment for why a bare "return $pac" would
+    # still hand the caller Object[] here. Confirmed inert for every current caller:
+    # New-EncTicketPart's -PACData parameter is itself [byte[]]-typed, so PowerShell's
+    # own parameter binder already coerced this back correctly at that boundary - but
+    # this is the final output of the whole PAC-building pipeline, the one place in this
+    # file where getting the type wrong would matter most if a future caller ever
+    # consumes it more directly.
+    return ,$pac
 }
 
 # ============================================================================

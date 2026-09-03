@@ -34,6 +34,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **Every structure builder in the PAC (Golden/Silver/Diamond Ticket) module returned
+  `Object[]` where it documented, and its callers assumed, `byte[]`.** A bare
+  `return [byte[]]$array` - even with the explicit cast right there - still hands the
+  caller `Object[]`: PowerShell unrolls a fresh array element-by-element through the
+  function's output stream and re-collects the pieces generically on the other side. All
+  21 structure-building functions in `Kerberos-PAC.ps1` had this, including
+  `ConvertTo-FlatByteArray`, whose own docstring states solving exactly this problem as
+  its reason to exist ("PowerShell's += operator on arrays creates Object[] instead of
+  byte[]. This function properly flattens ... into a single byte[]") - it wasn't, for any
+  caller across a function boundary.
+  Confirmed inert for every current caller: `Build-PAC` already defensively re-casts
+  every builder call with `[byte[]](...)` (with a comment naming this exact problem), and
+  everything one level up the call chain - `Complete-PACSignatures -PACData`,
+  `Read-KerbValidationInfo -Data`, `New-EncTicketPart -PACData` - declares a
+  `[byte[]]`-typed parameter, which PowerShell's parameter binder coerces correctly
+  regardless of what it receives. The risk was latent, not live: it only bites a caller
+  that passes the result straight into a .NET method with more than one applicable
+  overload rather than into a typed PowerShell parameter or an explicit cast -
+  `System.IO.BinaryWriter.Write` is exactly that shape, and is exactly what broke this
+  session's own test fixture for a different file (`NTLM-HTTP.ps1`) two fixes ago. Fixed
+  with a leading comma on each return statement, which stops the unrolling; three
+  functions needed an explicit `[byte[]]` cast alongside the comma as well, because the
+  value at the return statement was itself built fresh there (an array literal, or a `+`
+  concatenation of two `byte[]` arrays - which independently produces `Object[]` before
+  the return statement is even reached).
 - **`LDAP_NO_SUCH_OBJECT` (error 32) was classified as an error by
   `ConvertFrom-LDAPError`/`Get-ExceptionErrorInfo`, but as the expected, non-error case by
   `ConvertFrom-HResult`'s equivalent entry (`0x80072030`) for the identical condition** -
