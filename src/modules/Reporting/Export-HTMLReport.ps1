@@ -257,8 +257,10 @@ function Get-CardBasedCounts {
             $currentSubHeader = $finding.Text
             $currentFindings = @()
         }
-        elseif ($finding.Type -notin @('Header', 'SubHeader') -and $finding.Category -ne 'Unknown') {
+        elseif ($finding.Type -notin @('Header', 'SubHeader') -and $finding.Category -and $finding.Category -ne 'Unknown') {
             # Content finding
+            # Same guard as the other two grouping loops: a finding without a Category
+            # carries no check context and must not be grouped as if it did.
             $currentFindings += $finding
             $currentCategory = $finding.Category
         }
@@ -303,6 +305,43 @@ function Get-CardBasedCounts {
     - Credential exposure: encryption types, password policies
     This enables more accurate risk scoring based on actual impact.
 #>
+<#
+.SYNOPSIS
+    Reads a number back out of a password-policy value that was formatted for a human.
+.DESCRIPTION
+    Get-DomainPasswordPolicy renders its values for display: "14 characters", "90 days",
+    "After 5 failed attempts" - and, for the value zero, the word "Disabled", sometimes
+    with a parenthetical ("Disabled (Never expires)"). The scoring context needs the
+    numbers back.
+
+    The zero case is the reason this exists. Pulling the first digit run out of the string
+    works for every value except zero, because "Disabled" has no digits in it - and zero is
+    the dangerous state in each of these settings: no minimum password length, passwords
+    that never expire, no account lockout at all. Losing exactly those left the scoring
+    reading "unknown" for the worst configuration a domain can have.
+.OUTPUTS
+    [int] the value, or $null when the input carries no number and is not a disabled marker.
+#>
+function ConvertTo-PolicyNumber {
+    param($Value)
+
+    if ($null -eq $Value) { return $null }
+
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [double]) {
+        return [int]$Value
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+
+    # "Disabled" and "Disabled (Never expires)" both stand for the number zero.
+    if ($text -match '^\s*Disabled') { return 0 }
+
+    if ($text -match '(\d+)') { return [int]$Matches[1] }
+
+    return $null
+}
+
 function Build-ScoringContext {
     param(
         [array]$AllFindings
@@ -496,36 +535,22 @@ function Build-ScoringContext {
         if ($finding.CheckTitle -match 'Password Policy' -and $finding.Object) {
             $policyObj = $finding.Object
 
-            # Extract maxPwdAge (maximum password age in days)
-            if ($policyObj.maxPwdAge) {
-                $maxAge = $policyObj.maxPwdAge
-                # maxPwdAge can be in different formats: days as int, or timespan string
-                if ($maxAge -is [int] -or $maxAge -is [double]) {
-                    $scoringContext.domainInfo.maxPwdAgeDays = [int]$maxAge
-                } elseif ($maxAge -is [string] -and $maxAge -match '(\d+)') {
-                    $scoringContext.domainInfo.maxPwdAgeDays = [int]$matches[1]
-                }
-            }
+            # Every one of these three arrives as a string that Get-DomainPasswordPolicy
+            # formatted for a human, and for the value zero that string is "Disabled" -
+            # "Disabled", "Disabled (Never expires)". A digit match finds nothing in those,
+            # so the setting stayed unset in the scoring context and any calculation above
+            # it read "unknown" instead of "off". That is backwards: zero is the dangerous
+            # state in all three cases - no minimum length, passwords that never expire,
+            # and no account lockout at all, which is what makes password spraying work.
+            # ConvertTo-PolicyNumber maps the word back to the number it stands for.
+            $maxAgeDays = ConvertTo-PolicyNumber -Value $policyObj.maxPwdAge
+            if ($null -ne $maxAgeDays) { $scoringContext.domainInfo.maxPwdAgeDays = $maxAgeDays }
 
-            # Extract minPwdLength (handles both "12" and "12 characters" formats)
-            if ($policyObj.minPwdLength) {
-                $minLen = $policyObj.minPwdLength
-                if ($minLen -is [int]) {
-                    $scoringContext.domainInfo.minPwdLength = $minLen
-                } elseif ($minLen -is [string] -and $minLen -match '(\d+)') {
-                    $scoringContext.domainInfo.minPwdLength = [int]$matches[1]
-                }
-            }
+            $minLength = ConvertTo-PolicyNumber -Value $policyObj.minPwdLength
+            if ($null -ne $minLength) { $scoringContext.domainInfo.minPwdLength = $minLength }
 
-            # Extract lockout settings (handles both "5" and "After 5 failed attempts" formats)
-            if ($policyObj.lockoutThreshold) {
-                $lockout = $policyObj.lockoutThreshold
-                if ($lockout -is [int]) {
-                    $scoringContext.domainInfo.lockoutThreshold = $lockout
-                } elseif ($lockout -is [string] -and $lockout -match '(\d+)') {
-                    $scoringContext.domainInfo.lockoutThreshold = [int]$matches[1]
-                }
-            }
+            $lockoutThreshold = ConvertTo-PolicyNumber -Value $policyObj.lockoutThreshold
+            if ($null -ne $lockoutThreshold) { $scoringContext.domainInfo.lockoutThreshold = $lockoutThreshold }
 
             # Password complexity - pwdProperties is a bitmask
             # Bit 0 (value 1) = DOMAIN_PASSWORD_COMPLEX
@@ -604,7 +629,15 @@ function Build-ScoringContext {
         }
         else {
             # Content finding
-            if ($finding.Category -ne 'Unknown') {
+            # The null test is not redundant: $null -ne 'Unknown' is true, so a finding
+            # without a Category passed this guard and then hit .ToLower() on nothing.
+            # Findings do not always come from this process - Convert-adPEASReport reads
+            # them back out of a JSON export, and a file written by an older version, or
+            # edited by hand, simply has no Category property. The result was not a wrong
+            # line in the report but an exception that ended the whole conversion. A
+            # finding with no category has no check context, which is exactly what
+            # "Unknown" means here, so it is skipped the same way.
+            if ($finding.Category -and $finding.Category -ne 'Unknown') {
                 if (-not $currentCategory) {
                     $currentCategory = ($finding.Category.ToLower() -replace '\s+', '-') -replace '[^a-z0-9\-]', ''
                 }
@@ -923,7 +956,10 @@ function Build-FindingSectionsHtml {
         }
         else {
             # Skip findings with Category="Unknown" (they lack check context)
-            if ($finding.Category -eq 'Unknown') {
+            # A missing Category means the same thing and has to be skipped here too, or
+            # the .ToLower() a few lines down runs on nothing. See the note at the other
+            # grouping loop: these findings can come out of a JSON export.
+            if (-not $finding.Category -or $finding.Category -eq 'Unknown') {
                 continue
             }
 

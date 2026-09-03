@@ -34,6 +34,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **The worst password policy was the one the risk scoring could not read.**
+  `Build-ScoringContext` pulls the minimum password length, the maximum password age and
+  the account lockout threshold back out of the strings `Get-DomainPasswordPolicy`
+  formatted for display, by matching the first run of digits. For the value zero that
+  check renders the word "Disabled" - or "Disabled (Never expires)" - which carries no
+  digits at all, so the field stayed unset and the scoring above it read "unknown"
+  instead of "off". Zero is the dangerous setting in all three: no minimum length,
+  passwords that never expire, and no lockout at all, which is the precondition password
+  spraying needs. A new `ConvertTo-PolicyNumber` maps the word back to the number.
+- **A report converted from a JSON export could end with an exception.**
+  `Convert-adPEASReport` reads findings back out of a JSON file rather than from the
+  running scan, so a file written by an older version - or edited by hand - can be missing
+  the `Category` property. Three grouping loops guarded on `Category -ne 'Unknown'`, which
+  is true for a missing value, and two of them then called `.ToLower()` on it. The result
+  was not a wrong line in the report but a crash that ended the whole conversion. A
+  finding without a category has no check context, which is what "Unknown" already meant,
+  and it is now skipped the same way.
 - **A directory object could inject script into the generated HTML report.** The report
   embeds three JSON documents as JavaScript literals inside a `<script>` block, and one of
   them - the scoring context - is built from the scan findings, so it carries group names
