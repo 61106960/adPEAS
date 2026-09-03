@@ -38,6 +38,7 @@ $Script:ASN1_IA5_STRING        = 0x16
 $Script:ASN1_UTC_TIME          = 0x17
 $Script:ASN1_GENERALIZED_TIME  = 0x18
 $Script:ASN1_GENERAL_STRING    = 0x1B
+$Script:ASN1_BMP_STRING        = 0x1E
 
 # Tag class bits (bits 7-6)
 $Script:ASN1_CLASS_UNIVERSAL   = 0x00
@@ -833,6 +834,141 @@ function Read-ASN1String {
         "Unicode" { return [System.Text.Encoding]::Unicode.GetString($Content) }
         default { return [System.Text.Encoding]::ASCII.GetString($Content) }
     }
+}
+
+#endregion
+
+#region Certificate SubjectAlternativeName Decoder
+
+<#
+.SYNOPSIS
+    Decodes an X.509 SubjectAlternativeName extension's raw DER bytes into a
+    list of GeneralName entries.
+
+.DESCRIPTION
+    Get-CertificateInfo and Connect-adPEAS both need to know which UPNs and DNS
+    names a certificate's SAN carries, to decide what identity it authenticates
+    as for PKINIT. Both used to get that from X509Extension.Format($false) and a
+    regex over the result - "Principal Name=..." / "DNS Name=...".
+
+    Format() is locale-dependent: it goes through the OS's installed crypt32
+    resources, not .NET's thread culture (overriding CurrentUICulture makes no
+    difference - confirmed by testing). On de-DE Windows it produces
+    "Prinzipalname=..." and "DNS-Name=..." - note the hyphen in the German DNS
+    label, which the English regex would not match even if only the word order
+    were the problem. Neither identity is found, and a certificate whose only
+    SAN entry is a UPN falls through to the CN-based fallback with zero of its
+    actual SAN identities available - on the very host population most likely
+    to run a German-authored tool.
+
+    This decodes the extension's RawData instead: same bytes on every locale,
+    since GeneralName is a DER CHOICE keyed by context tag, not by the label a
+    formatter chooses to print (RFC 5280 SS4.2.1.6). Layout, confirmed against
+    real output from SubjectAlternativeNameBuilder:
+
+        GeneralNames ::= SEQUENCE OF GeneralName
+        GeneralName ::= CHOICE {
+            otherName [0] SEQUENCE { type-id OID, value [0] EXPLICIT ANY },
+            rfc822Name [1] IA5String,
+            dNSName [2] IA5String,
+            directoryName [4] Name,          -- not extracted, not needed here
+            uniformResourceIdentifier [6] IA5String,
+            iPAddress [7] OCTET STRING,
+            registeredID [8] OBJECT IDENTIFIER }
+
+    otherName is filtered by its type-id OID (1.3.6.1.4.1.311.20.2.3,
+    szOID_NT_PRINCIPAL_NAME) rather than assumed to always be a UPN - a
+    certificate can carry other otherName types (NTDS-CA-SECURITY-EXT and
+    similar), and only this one is a UPN.
+
+.PARAMETER RawData
+    The RawData of the certificate's SubjectAlternativeName extension (OID
+    2.5.29.17), i.e. $sanExtension.RawData.
+
+.OUTPUTS
+    Array of PSCustomObject { Type; Value }. Type is one of UPN, DNS, Email,
+    URI, IP, RegisteredID. Empty array (never $null) if the extension carries
+    none of these, or on a parse error.
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+    Reference: RFC 5280 SS4.2.1.6 (Subject Alternative Name)
+#>
+function ConvertFrom-SubjectAlternativeName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [byte[]]$RawData
+    )
+
+    # szOID_NT_PRINCIPAL_NAME - the only otherName type-id that means "this is a UPN"
+    $UPNTypeId = '1.3.6.1.4.1.311.20.2.3'
+
+    $entries = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+    if ($RawData.Length -eq 0) {
+        return ,[PSCustomObject[]]$entries.ToArray()
+    }
+
+    try {
+        $outer = Read-ASN1Element -Data $RawData -Offset 0
+        $names = Read-ASN1Children -Data $outer.Content
+
+        foreach ($name in $names) {
+            # RFC 5280's PKIX1Implicit88 module is IMPLICIT TAGS by default, so each
+            # GeneralName alternative below is read straight off its context tag number
+            # rather than through a further SEQUENCE/primitive-type header.
+            if ($name.TagNumber -eq 0 -and $name.IsConstructed) {
+                # otherName ::= SEQUENCE { type-id OID, value [0] EXPLICIT ANY }
+                $otherNameParts = Read-ASN1Children -Data $name.Content
+                if ($otherNameParts.Count -ge 2) {
+                    $typeId = Read-ASN1ObjectIdentifier -Content $otherNameParts[0].Content
+                    if ($typeId -eq $UPNTypeId -and $otherNameParts[1].Content.Length -gt 0) {
+                        # value is EXPLICIT: one more TLV layer wraps the actual string,
+                        # unlike the IMPLICIT tags used everywhere else in this CHOICE
+                        $inner = Read-ASN1Element -Data $otherNameParts[1].Content -Offset 0
+                        $stringEncoding = if ($inner.Tag -eq $Script:ASN1_BMP_STRING) { 'Unicode' } else { 'UTF8' }
+                        $upnValue = Read-ASN1String -Content $inner.Content -Encoding $stringEncoding
+                        $entries.Add([PSCustomObject]@{ Type = 'UPN'; Value = $upnValue })
+                    }
+                }
+            }
+            elseif ($name.TagNumber -eq 1 -and -not $name.IsConstructed) {
+                # rfc822Name (email)
+                $entries.Add([PSCustomObject]@{ Type = 'Email'; Value = (Read-ASN1String -Content $name.Content -Encoding ASCII) })
+            }
+            elseif ($name.TagNumber -eq 2 -and -not $name.IsConstructed) {
+                # dNSName
+                $entries.Add([PSCustomObject]@{ Type = 'DNS'; Value = (Read-ASN1String -Content $name.Content -Encoding ASCII) })
+            }
+            elseif ($name.TagNumber -eq 6 -and -not $name.IsConstructed) {
+                # uniformResourceIdentifier
+                $entries.Add([PSCustomObject]@{ Type = 'URI'; Value = (Read-ASN1String -Content $name.Content -Encoding ASCII) })
+            }
+            elseif ($name.TagNumber -eq 7 -and -not $name.IsConstructed) {
+                # iPAddress: 4 bytes (IPv4) or 16 bytes (IPv6), raw octets
+                if ($name.Content.Length -eq 4 -or $name.Content.Length -eq 16) {
+                    $ip = [System.Net.IPAddress]::new([byte[]]$name.Content)
+                    $entries.Add([PSCustomObject]@{ Type = 'IP'; Value = $ip.ToString() })
+                }
+            }
+            elseif ($name.TagNumber -eq 8 -and -not $name.IsConstructed) {
+                # registeredID
+                $entries.Add([PSCustomObject]@{ Type = 'RegisteredID'; Value = (Read-ASN1ObjectIdentifier -Content $name.Content) })
+            }
+            # directoryName [4] and any other GeneralName choice are intentionally
+            # skipped - neither caller of this function needs them.
+        }
+    }
+    catch {
+        Write-Log "[ConvertFrom-SubjectAlternativeName] Error parsing SAN: $_"
+    }
+
+    # Comma-forced: a SAN with exactly one entry would otherwise unroll to a bare
+    # PSCustomObject, and a caller doing foreach/Where-Object on the result would
+    # silently iterate its properties instead of a one-element list.
+    return ,[PSCustomObject[]]$entries.ToArray()
 }
 
 #endregion

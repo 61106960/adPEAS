@@ -34,6 +34,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **PKINIT certificate authentication found the wrong identity, or none at all, on
+  German-locale Windows.** `Connect-adPEAS -Certificate` and `Get-CertificateInfo` both
+  read which UPNs and DNS names a certificate's Subject Alternative Name carries from
+  `X509Extension.Format($false)` and a regex over the English labels
+  (`"Principal Name=..."`, `"DNS Name=..."`). `Format()` renders through the OS's
+  installed crypt32 language resources, not through .NET's thread culture - confirmed by
+  overriding `CurrentUICulture` and observing no change in the output - so on de-DE
+  Windows it produces `"Prinzipalname="` and `"DNS-Name="` (the DNS label differs too,
+  by more than word order). Neither regex ever matched. A certificate whose only SAN
+  entry was a UPN reported zero identities: `Connect-adPEAS` fell back to authenticating
+  as the CN, silently using the wrong principal, or failed outright if the CN did not
+  resolve to an account, and `Get-CertificateInfo` printed no usage hint at all. Fixed
+  by decoding the extension's raw DER bytes instead of its formatted text -
+  `ConvertFrom-SubjectAlternativeName` (new, in `Kerberos-ASN1.ps1`, reusing the
+  existing generic ASN.1 primitives) - which reads identically regardless of the host's
+  language, since a DER `GeneralName` is a `CHOICE` keyed by a context tag, not by
+  whatever label a formatter chooses to print. The otherName UPN case is filtered by its
+  own type-id OID (`1.3.6.1.4.1.311.20.2.3`) rather than assumed, since a certificate can
+  carry other otherName types.
+  Two further defects in `Get-CertificateInfo` came out of the same investigation.
+  A PKINIT-capable certificate with no SAN extension at all never reached its own CN
+  fallback - it was nested one level too deep, inside the `if ($sanExt)` block it needed
+  to run without. And a V2-only certificate template's OID was extracted from a
+  `"Template=([0-9.]+)"` regex over the same kind of locale-dependent `Format($false)`
+  string (`"Vorlage="` on de-DE), so `TemplateName` stayed empty for every V2-only
+  template on a German-locale host; it is now read from the extension's own DER bytes
+  (`CertificateTemplateInformation`'s first field is simply the template OID).
+- **An ECDSA certificate's key size was reported as blank.** `X509Certificate2.PublicKey.Key`
+  only ever resolves an RSA key on .NET Framework; for ECDSA it returns `$null` rather
+  than throwing, so the surrounding `try`/`catch` never caught it and
+  `Get-CertificateInfo` printed `"ECC ( bit)"`. Fixed by reading the key through
+  `ECDsaCertificateExtensions.GetECDsaPublicKey()`, the API meant for this, alongside the
+  existing RSA path.
 - **A GPP `Registry.xml` with no byte order mark was decoded wrongly on Windows
   PowerShell 5.1.** `Parse-RegistryXml` read the file with `Get-Content` and no
   `-Encoding`, which falls back to the ANSI code page on 5.1 - the runtime adPEAS ships

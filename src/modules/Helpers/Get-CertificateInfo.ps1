@@ -151,17 +151,32 @@ function Get-CertificateInfo {
             # === Parse all certificate data ===
 
             # --- Key Algorithm ---
+            #
+            # X509Certificate2.PublicKey.Key only ever resolves an RSA (or, on this old
+            # CAPI-era property, DSA) key. For an ECDSA certificate it is $null on .NET
+            # Framework - not an exception, so the surrounding try/catch never caught it -
+            # and every certificate ECDSA PKINIT relies on came out as "ECC ( bit)": the
+            # OID's friendly name with an empty key size, because $null.KeySize reads as
+            # $null rather than throwing. GetECDsaPublicKey() is the extension method
+            # meant for exactly this since RSA/ECDSA share no common key-reading API.
             $keyAlgo = "Unknown"
             try {
                 $pubKey = $cert.PublicKey.Key
                 if ($pubKey -is [System.Security.Cryptography.RSACryptoServiceProvider] -or $pubKey -is [System.Security.Cryptography.RSACng]) {
                     $keyAlgo = "RSA ($($pubKey.KeySize) bit)"
                 }
-                elseif ($pubKey -is [System.Security.Cryptography.ECDsaCng] -or $pubKey -is [System.Security.Cryptography.ECDsa]) {
-                    $keyAlgo = "ECDSA ($($pubKey.KeySize) bit)"
-                }
                 else {
-                    $keyAlgo = "$($cert.PublicKey.Oid.FriendlyName) ($($pubKey.KeySize) bit)"
+                    $ecdsaKey = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPublicKey($cert)
+                    if ($ecdsaKey) {
+                        $keyAlgo = "ECDSA ($($ecdsaKey.KeySize) bit)"
+                    }
+                    elseif ($pubKey) {
+                        $keyAlgo = "$($cert.PublicKey.Oid.FriendlyName) ($($pubKey.KeySize) bit)"
+                    }
+                    else {
+                        $keyAlgo = $cert.PublicKey.Oid.FriendlyName
+                        if (-not $keyAlgo) { $keyAlgo = "Unknown" }
+                    }
                 }
             }
             catch {
@@ -213,9 +228,27 @@ function Get-CertificateInfo {
             $templateName = if ($templateNameExt) { $templateNameExt.Format($false) } else { $null }
             $templateInfo = if ($templateInfoExt) { $templateInfoExt.Format($false) } else { $null }
 
-            # V2-only templates: extract OID from TemplateInfo as fallback for TemplateName
-            if (-not $templateName -and $templateInfo -match "Template=([0-9.]+)") {
-                $templateName = $Matches[1]
+            # V2-only templates: extract OID from TemplateInfo as fallback for TemplateName.
+            #
+            # Read from the extension's own DER bytes rather than the locale-dependent
+            # Format($false) string above (which is fine to show as-is - that string is
+            # for the operator's console, in their own language). CertificateTemplateInformation
+            # is SEQUENCE { templateID OID, templateMajorVersion INTEGER, ... } (RFC 2.5 /
+            # MS-WCCE 2.2.2.7.9), so the OID is simply the SEQUENCE's first child.
+            # Format($false) prints it as "Template=<oid>, ..." on en-US and
+            # "Vorlage=<oid>, ..." on de-DE, so the English-only regex this used to be
+            # never matched on German-locale Windows and TemplateName stayed empty for
+            # every V2-only template on such a host.
+            if (-not $templateName -and $templateInfoExt) {
+                try {
+                    $templateInfoRoot = Read-ASN1Element -Data $templateInfoExt.RawData -Offset 0
+                    $templateInfoFields = Read-ASN1Children -Data $templateInfoRoot.Content
+                    if ($templateInfoFields.Count -ge 1) {
+                        $templateName = Read-ASN1ObjectIdentifier -Content $templateInfoFields[0].Content
+                    }
+                } catch {
+                    Write-Log "$FunctionPrefix Failed to read template OID from TemplateInfo extension: $_"
+                }
             }
 
             # --- PKINIT Assessment ---
@@ -229,34 +262,50 @@ function Get-CertificateInfo {
                     $pkInitEKUs = @(Get-PKINITCapableEKUNames -Certificate $cert)
 
                     # Extract identities from SAN (same logic as Connect-adPEAS)
+                    #
+                    # ConvertFrom-SubjectAlternativeName (Kerberos-ASN1.ps1) reads the
+                    # extension's raw DER bytes rather than matching against
+                    # $sanExt.Format($false). Format() goes through the OS's installed
+                    # crypt32 language resources, not .NET's thread culture, and prints
+                    # "Prinzipalname=" / "DNS-Name=" on de-DE Windows - so the old regex
+                    # here (and the identical one in Connect-adPEAS) found zero UPN or
+                    # DNS identities on any German-locale host, which is a large part of
+                    # this tool's expected install base. Confirmed by testing: same input
+                    # certificate, en-US finds the UPN, de-DE finds nothing.
                     if ($sanExt) {
-                        $san = $sanExt.Format($false)
+                        $sanGeneralNames = ConvertFrom-SubjectAlternativeName -RawData $sanExt.RawData
 
                         # Collect UPNs
-                        $upnMatches = [regex]::Matches($san, "Principal Name[=:]([^,\r\n]+)")
-                        foreach ($m in $upnMatches) {
-                            $upnValue = $m.Groups[1].Value.Trim()
+                        foreach ($entry in ($sanGeneralNames | Where-Object { $_.Type -eq 'UPN' })) {
+                            $upnValue = $entry.Value
                             if ($upnValue -match "^([^@]+)@") {
                                 $identities += [PSCustomObject]@{ Type = "UPN"; Value = $upnValue; CName = $Matches[1] }
                             }
                         }
 
                         # Collect DNS names
-                        $dnsMatches = [regex]::Matches($san, "DNS Name=([^,\r\n]+)")
-                        foreach ($m in $dnsMatches) {
-                            $dnsValue = $m.Groups[1].Value.Trim()
+                        foreach ($entry in ($sanGeneralNames | Where-Object { $_.Type -eq 'DNS' })) {
+                            $dnsValue = $entry.Value
                             $hostPart = ($dnsValue -split '\.')[0]
                             $identities += [PSCustomObject]@{ Type = "DNS"; Value = $dnsValue; CName = "$hostPart`$" }
                         }
+                    }
 
-                        # CN fallback if no SAN identities
-                        if ($identities.Count -eq 0 -and $cert.Subject -match "CN=([^,]+)") {
-                            $cnValue = $Matches[1]
-                            if ($cnValue -match "^([^.]+)\.(.+\..+)$") {
-                                $identities += [PSCustomObject]@{ Type = "CN"; Value = $cnValue; CName = "$($Matches[1])`$" }
-                            } else {
-                                $identities += [PSCustomObject]@{ Type = "CN"; Value = $cnValue; CName = $cnValue }
-                            }
+                    # CN fallback if no SAN identities - this has to sit outside the
+                    # "if ($sanExt)" above, not inside it. A PKINIT-capable certificate
+                    # with no Subject Alternative Name extension at all is unusual but
+                    # valid, and Connect-adPEAS falls back to the CN for exactly that
+                    # case (its own identity extraction runs this check unconditionally).
+                    # Nested inside the SAN block, the fallback was unreachable whenever
+                    # $sanExt was $null, so such a certificate reported zero identities
+                    # and printed no Connect-adPEAS usage hint despite being PKINIT
+                    # capable.
+                    if ($identities.Count -eq 0 -and $cert.Subject -match "CN=([^,]+)") {
+                        $cnValue = $Matches[1]
+                        if ($cnValue -match "^([^.]+)\.(.+\..+)$") {
+                            $identities += [PSCustomObject]@{ Type = "CN"; Value = $cnValue; CName = "$($Matches[1])`$" }
+                        } else {
+                            $identities += [PSCustomObject]@{ Type = "CN"; Value = $cnValue; CName = $cnValue }
                         }
                     }
                 }

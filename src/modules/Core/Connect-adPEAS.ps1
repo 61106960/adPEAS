@@ -1218,12 +1218,19 @@ function Connect-adPEAS {
                         }
 
                         # Extract display identity from cert (for console output only, not for auth)
+                        #
+                        # ConvertFrom-SubjectAlternativeName (Kerberos-ASN1.ps1) reads the raw
+                        # DER bytes rather than matching Format($false) against an English
+                        # label. Format() goes through the OS's crypt32 language resources, not
+                        # .NET thread culture, so on de-DE Windows it prints "Prinzipalname="
+                        # and this always fell through to the generic "Certificate-based
+                        # (Schannel)" label instead of naming the UPN.
                         $CertDisplayName = "Certificate-based (Schannel)"
                         foreach ($ext in $Cert.Extensions) {
                             if ($ext.Oid.Value -eq "2.5.29.17") {
-                                $san = $ext.Format($false)
-                                if ($san -match "Principal Name[=:]([^,\r\n]+)") {
-                                    $CertDisplayName = $Matches[1].Trim()
+                                $upnEntry = ConvertFrom-SubjectAlternativeName -RawData $ext.RawData | Where-Object { $_.Type -eq 'UPN' } | Select-Object -First 1
+                                if ($upnEntry) {
+                                    $CertDisplayName = $upnEntry.Value.Trim()
                                     break
                                 }
                             }
@@ -1271,15 +1278,24 @@ function Connect-adPEAS {
                     $certIdentities = @()
 
                     # 1. Collect all UPNs from SAN
+                    #
+                    # ConvertFrom-SubjectAlternativeName (Kerberos-ASN1.ps1) reads the raw DER
+                    # bytes of the extension rather than matching regex against
+                    # $ext.Format($false). Format() renders through the OS's installed crypt32
+                    # language resources - not .NET's thread culture, confirmed by testing -
+                    # so on de-DE Windows it produces "Prinzipalname=" and "DNS-Name=" (note
+                    # the hyphen). Neither the UPN nor the DNS regex below ever matched on
+                    # such a host: every certificate authenticated with -Certificate fell
+                    # through to the CN-only fallback, and a multi-identity certificate's
+                    # -Username selection had nothing to select from.
                     foreach ($ext in $Cert.Extensions) {
                         if ($ext.Oid.Value -eq "2.5.29.17") {  # Subject Alternative Name
-                            $san = $ext.Format($false)
-                            Write-Log "[Connect-adPEAS] SAN Extension content: $san"
+                            $sanGeneralNames = ConvertFrom-SubjectAlternativeName -RawData $ext.RawData
+                            Write-Log "[Connect-adPEAS] SAN Extension: $($sanGeneralNames.Count) GeneralName entries"
 
-                            # Match all UPNs - Format: "Principal Name=user@domain.com" (may appear multiple times)
-                            $upnMatches = [regex]::Matches($san, "Principal Name[=:]([^,\r\n]+)")
-                            foreach ($m in $upnMatches) {
-                                $upnValue = $m.Groups[1].Value.Trim()
+                            # Collect all UPNs (may appear multiple times)
+                            foreach ($entry in ($sanGeneralNames | Where-Object { $_.Type -eq 'UPN' })) {
+                                $upnValue = $entry.Value
                                 if ($upnValue -match "^([^@]+)@") {
                                     $certIdentities += [PSCustomObject]@{
                                         Type = "UPN"
@@ -1290,10 +1306,9 @@ function Connect-adPEAS {
                                 }
                             }
 
-                            # Match all DNS names - Format: "DNS Name=srv-dc.contoso.com"
-                            $dnsMatches = [regex]::Matches($san, "DNS Name=([^,\r\n]+)")
-                            foreach ($m in $dnsMatches) {
-                                $dnsValue = $m.Groups[1].Value.Trim()
+                            # Collect all DNS names
+                            foreach ($entry in ($sanGeneralNames | Where-Object { $_.Type -eq 'DNS' })) {
+                                $dnsValue = $entry.Value
                                 $hostPart = ($dnsValue -split '\.')[0]
                                 $certIdentities += [PSCustomObject]@{
                                     Type = "DNS"
