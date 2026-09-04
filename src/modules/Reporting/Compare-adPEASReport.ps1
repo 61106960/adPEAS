@@ -141,50 +141,15 @@ function Compare-adPEASReport {
                 $_.Type -notin @('Header', 'SubHeader') -and $_.Category -ne 'Unknown'
             })
 
-            # 3. Build identity maps
-            $baselineMap = @{}
-            foreach ($f in $baselineComparable) {
-                $id = Get-FindingIdentity -Finding $f
-                if ($id) { $baselineMap[$id] = $f }
-            }
-            $currentMap = @{}
-            foreach ($f in $currentComparable) {
-                $id = Get-FindingIdentity -Finding $f
-                if ($id) { $currentMap[$id] = $f }
-            }
-
-            # 4. Compute diff
-            $added = [System.Collections.ArrayList]::new()
-            $removed = [System.Collections.ArrayList]::new()
-            $changed = [System.Collections.ArrayList]::new()
-            $unchangedCount = 0
-
-            # Find added and changed
-            foreach ($id in $currentMap.Keys) {
-                if (-not $baselineMap.ContainsKey($id)) {
-                    [void]$added.Add($currentMap[$id])
-                } else {
-                    $bf = $baselineMap[$id]
-                    $cf = $currentMap[$id]
-                    $severityChanged = $bf.Severity -ne $cf.Severity
-                    # For KeyValue findings, also detect value changes
-                    $valueChanged = $cf.Type -eq 'KeyValue' -and $bf.Value -ne $cf.Value
-                    # For Line findings, detect text changes (numbers were normalized in identity)
-                    $textChanged = $cf.Type -eq 'Line' -and $bf.Text -ne $cf.Text
-                    if ($severityChanged -or $valueChanged -or $textChanged) {
-                        [void]$changed.Add(@{ Baseline = $bf; Current = $cf; Identity = $id })
-                    } else {
-                        $unchangedCount++
-                    }
-                }
-            }
-
-            # Find removed
-            foreach ($id in $baselineMap.Keys) {
-                if (-not $currentMap.ContainsKey($id)) {
-                    [void]$removed.Add($baselineMap[$id])
-                }
-            }
+            # 3. + 4. Diff by identity. Get-FindingSetDiff buckets by identity instead of
+            # keying a single-value map, so a colliding identity (normalized Line text, the
+            # 'unknown' Object fallback) never silently drops a finding - see its own
+            # comment header for the matching rules.
+            $diffResult = Get-FindingSetDiff -BaselineFindings $baselineComparable -CurrentFindings $currentComparable
+            $added = $diffResult.Added
+            $removed = $diffResult.Removed
+            $changed = $diffResult.Changed
+            $unchangedCount = $diffResult.UnchangedCount
 
             # 5. Detect scope differences (categories only in one scan)
             $baselineCategories = @($baselineComparable | ForEach-Object { $_.Category } | Select-Object -Unique | Sort-Object)
@@ -325,6 +290,147 @@ function Compare-adPEASReport {
 
 <#
 .SYNOPSIS
+    Diffs two sets of findings by identity, without ever silently dropping one.
+.DESCRIPTION
+    Get-FindingIdentity is not guaranteed unique: normalized Line text and the 'unknown'
+    Object fallback can both legitimately collide, so two or more distinct findings can
+    share one identity. A single-value map (identity -> last finding wins) would silently
+    drop every finding but the last one under a collision - the comparison would look
+    clean while actually missing data.
+
+    This buckets both sides by identity (a list per identity, not one slot), then within
+    each bucket:
+      1. Matches byte-for-byte identical findings first (Get-FindingComparableSignature),
+         order-independent, and counts them unchanged. Two findings with the same
+         severity and the same Value/Text (as applicable) are indistinguishable, so which
+         one is "the same one" from the scan does not matter.
+      2. Pairs whatever is left over positionally and reports each pair as changed.
+      3. Whatever still does not have a partner is a real add or remove, not a
+         differently-ordered match - a bucket that grew has new findings in it, one that
+         shrank lost some.
+
+    A bucket of size 1 on each side degenerates to exactly the old single-value
+    comparison, so this only changes behaviour when an identity actually collides.
+.PARAMETER BaselineFindings
+    Findings from the older scan (already filtered to comparable types).
+.PARAMETER CurrentFindings
+    Findings from the newer scan (already filtered to comparable types).
+.OUTPUTS
+    A PSCustomObject with Added, Removed, Changed (each an ArrayList) and UnchangedCount,
+    matching the shape Compare-adPEASReport and Export-DiffHtmlReport already expect.
+#>
+function Get-FindingSetDiff {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        [array]$BaselineFindings,
+
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        [array]$CurrentFindings
+    )
+
+    # Bucket both sides by identity, preserving scan order within each bucket.
+    $baselineBuckets = @{}
+    foreach ($f in $BaselineFindings) {
+        $id = Get-FindingIdentity -Finding $f
+        if (-not $id) { continue }
+        if (-not $baselineBuckets.ContainsKey($id)) { $baselineBuckets[$id] = [System.Collections.ArrayList]::new() }
+        [void]$baselineBuckets[$id].Add($f)
+    }
+    $currentBuckets = @{}
+    foreach ($f in $CurrentFindings) {
+        $id = Get-FindingIdentity -Finding $f
+        if (-not $id) { continue }
+        if (-not $currentBuckets.ContainsKey($id)) { $currentBuckets[$id] = [System.Collections.ArrayList]::new() }
+        [void]$currentBuckets[$id].Add($f)
+    }
+
+    $added = [System.Collections.ArrayList]::new()
+    $removed = [System.Collections.ArrayList]::new()
+    $changed = [System.Collections.ArrayList]::new()
+    $unchangedCount = 0
+
+    $allIdentities = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($id in $baselineBuckets.Keys) { [void]$allIdentities.Add($id) }
+    foreach ($id in $currentBuckets.Keys) { [void]$allIdentities.Add($id) }
+
+    foreach ($id in $allIdentities) {
+        $bList = if ($baselineBuckets.ContainsKey($id)) { $baselineBuckets[$id] } else { [System.Collections.ArrayList]::new() }
+        $cList = if ($currentBuckets.ContainsKey($id)) { $currentBuckets[$id] } else { [System.Collections.ArrayList]::new() }
+
+        # Phase 1: exact-content matches, order-independent. Consumes matched items from
+        # a per-signature copy of the baseline list so a repeat signature on the current
+        # side (e.g. three identical 'unknown' findings) matches at most as many times as
+        # the baseline actually has.
+        $bySignature = @{}
+        foreach ($f in $bList) {
+            $sig = Get-FindingComparableSignature -Finding $f
+            if (-not $bySignature.ContainsKey($sig)) { $bySignature[$sig] = [System.Collections.ArrayList]::new() }
+            [void]$bySignature[$sig].Add($f)
+        }
+        $cRemaining = [System.Collections.ArrayList]::new()
+        foreach ($f in $cList) {
+            $sig = Get-FindingComparableSignature -Finding $f
+            if ($bySignature.ContainsKey($sig) -and $bySignature[$sig].Count -gt 0) {
+                $unchangedCount++
+                $bySignature[$sig].RemoveAt(0)
+            } else {
+                [void]$cRemaining.Add($f)
+            }
+        }
+        $bRemaining = [System.Collections.ArrayList]::new()
+        foreach ($sig in $bySignature.Keys) {
+            foreach ($f in $bySignature[$sig]) { [void]$bRemaining.Add($f) }
+        }
+
+        # Phase 2: pair whatever is left positionally and call it changed; a size mismatch
+        # after that is a real add or remove, not just a differently-ordered match.
+        $pairCount = [Math]::Min($bRemaining.Count, $cRemaining.Count)
+        for ($i = 0; $i -lt $pairCount; $i++) {
+            [void]$changed.Add(@{ Baseline = $bRemaining[$i]; Current = $cRemaining[$i]; Identity = $id })
+        }
+        for ($i = $pairCount; $i -lt $cRemaining.Count; $i++) { [void]$added.Add($cRemaining[$i]) }
+        for ($i = $pairCount; $i -lt $bRemaining.Count; $i++) { [void]$removed.Add($bRemaining[$i]) }
+    }
+
+    return [PSCustomObject]@{
+        Added          = $added
+        Removed        = $removed
+        Changed        = $changed
+        UnchangedCount = $unchangedCount
+    }
+}
+
+<#
+.SYNOPSIS
+    A signature that says whether two same-identity findings are indistinguishable.
+.DESCRIPTION
+    Severity plus the one extra field Compare-adPEASReport already treats as "this
+    finding changed" per type - Value for KeyValue, Text for Line, nothing extra for
+    Object (an Object finding's only change dimension is Severity; its content lives in
+    the identity already). Two findings with the same signature cannot be told apart by
+    anything the diff reports, so matching them regardless of scan order is correct, not
+    just convenient.
+#>
+function Get-FindingComparableSignature {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Finding
+    )
+
+    $extra = switch ($Finding.Type) {
+        'KeyValue' { $Finding.Value }
+        'Line'     { $Finding.Text }
+        default    { '' }
+    }
+    return "$($Finding.Severity)|$extra"
+}
+
+<#
+.SYNOPSIS
     Computes a stable identity string for a finding to enable cross-scan matching.
 .DESCRIPTION
     Generates a unique key from Category, CheckName, and type-specific identifiers
@@ -377,9 +483,17 @@ function Get-FindingIdentity {
             return "$prefix|KV|$($Finding.Key)"
         }
         'Line' {
-            # Normalize dynamic numbers so count changes don't create phantom diffs
-            # e.g., "Found 5 accounts" and "Found 3 accounts" match to same identity
-            $normalizedText = $Finding.Text -replace '\d+', '#'
+            # Normalize dynamic numbers so count changes don't create phantom diffs, e.g.
+            # "Found 5 accounts" and "Found 3 accounts" match to the same identity. Digits
+            # inside a quoted span are left alone: that is where adPEAS puts account and
+            # computer names ("Credential found for User 'svc01'" must stay distinct from
+            # '...svc02'), and a name is not a count. Get-FindingSetDiff below still
+            # tolerates a remaining collision without dropping a finding - this just makes
+            # one less likely.
+            $normalizedText = [regex]::Replace($Finding.Text, "'[^']*'|`"[^`"]*`"|\d+", {
+                param($m)
+                if ($m.Value -match '^\d+$') { '#' } else { $m.Value }
+            })
             return "$prefix|Line|$normalizedText"
         }
         default {

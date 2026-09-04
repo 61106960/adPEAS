@@ -81,6 +81,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **`Compare-adPEASReport` (scan-diff / `-Baseline`/`-Current`) silently dropped findings
+  when two of them shared the same identity key, keeping only the last one.** The two
+  scans were matched through a single hashtable keyed by `Get-FindingIdentity`
+  (`identity -> finding`), so a second finding under an already-used key overwrote the
+  first with no warning - and that key is not guaranteed unique by design: an Object
+  finding adPEAS could not identify at all falls back to the literal key `unknown`
+  (shared by every such finding from the same check), and the `Line` finding
+  number-normalisation (`"Found 5 accounts"`/`"Found 3 accounts"` -> the same identity,
+  intentionally) could not tell a count from a digit inside an account name, so
+  `Credential found for User 'svc01'` and `'svc02'` collided too. Redesigned rather than
+  patched, since neither cause could be fixed by tightening the key alone: the
+  `Line` normalisation now leaves digits inside a quoted span untouched (that is where
+  adPEAS puts account/computer names), and the diff itself no longer assumes a key is
+  unique - the new `Get-FindingSetDiff` buckets findings by identity instead of mapping
+  to a single slot, matches identical findings within a bucket first regardless of scan
+  order, then pairs whatever is left as changed, and only reports a real add/remove when
+  a bucket's size actually differs between scans. Nothing is silently dropped any more,
+  and `Added`/`Removed`/`Changed`/`UnchangedCount` now sum to exactly the number of
+  findings compared on each side - previously they counted distinct identities, which
+  under a collision was less than the actual finding count with no indication why.
 - **`Get-ObjectTypeTitle` silently corrupted a report card's title whenever the
   underlying AD object's name contained a `$`.** The `{Name}`/`{Context}`/
   `{DisplayName}`/`{CAName}`/`{DN}` placeholder substitutions used PowerShell's
