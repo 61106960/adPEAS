@@ -32,6 +32,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **An output path is no longer truncated at a dot that was never a file extension.**
+  `-Outputfile` and `-OutputPath` are documented as taking a path without an extension,
+  and one is dropped as a courtesy if the caller types it anyway, so that
+  `-Outputfile report.html` does not produce `report.html.html`. The courtesy applied to
+  anything `Path.HasExtension` recognised - which in a tool whose reports are usually
+  named after the audited domain is the common case, not the exotic one. `.com`, `.local`
+  and `.de` are indistinguishable from an extension, so `-Outputfile scan_contoso.com`
+  silently wrote `scan_contoso.html`, and `scan_v1.2` became `scan_v1`.
+
+  Only the three extensions adPEAS itself appends - `.html`, `.txt`, `.json`, in any
+  casing - are dropped now. **This changes file names:** a caller who passes a base path
+  ending in something dot-like now gets the file they asked for
+  (`scan_contoso.com.html`), where before they got a shortened one. Scripts that hard-code
+  the previously produced path need updating.
+
+  The rule lived in three hand-written copies (`adPEAS.ps1`, `Convert-adPEASReport`,
+  `Compare-adPEASReport`) and is now one function, `Get-adPEASOutputBasePath`.
 - **LDAP attribute conversion moved out of `Invoke-LDAPSearch` into its own function,
   `ConvertFrom-LDAPAttribute`.** Every attribute of every object adPEAS reads passes
   through this conversion, and all 45 checks see only its output, never the raw value -

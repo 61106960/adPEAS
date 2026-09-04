@@ -155,10 +155,9 @@ function Convert-adPEASReport {
             # 5. Resolve output path
             $resolvedBase = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
 
-            # Strip any existing extension from the base path
-            if ([System.IO.Path]::HasExtension($resolvedBase)) {
-                $resolvedBase = [System.IO.Path]::ChangeExtension($resolvedBase, $null).TrimEnd('.')
-            }
+            # Drop one of adPEAS's own extensions if the caller typed it; anything else is
+            # part of the name they chose. See Get-adPEASOutputBasePath.
+            $resolvedBase = Get-adPEASOutputBasePath $resolvedBase
 
             # Warn if output JSON would overwrite the input file
             $resolvedInput = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InputJson)

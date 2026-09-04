@@ -138,6 +138,7 @@ if ($Script:ScriptPath) {
 
     # Helper Modules
     . "$Script:ScriptPath\modules\Helpers\Format-adPEASDate.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Get-adPEASOutputBasePath.ps1"
     . "$Script:ScriptPath\modules\Helpers\Write-Log.ps1"
     . "$Script:ScriptPath\modules\Helpers\New-SafePassword.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertTo-FormattedACE.ps1"
@@ -537,11 +538,9 @@ function Invoke-adPEAS {
         # This is critical because relative paths may fail when functions change working directory
         $resolvedOutputfile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Outputfile)
 
-        # Strip any existing extension from the base path
-        $basePath = $resolvedOutputfile
-        if ([System.IO.Path]::HasExtension($resolvedOutputfile)) {
-            $basePath = [System.IO.Path]::ChangeExtension($resolvedOutputfile, $null).TrimEnd('.')
-        }
+        # Drop one of adPEAS's own extensions if the caller typed it; anything else is part
+        # of the name they chose. See Get-adPEASOutputBasePath.
+        $basePath = Get-adPEASOutputBasePath $resolvedOutputfile
 
         # Create directory if it doesn't exist
         $OutputDir = Split-Path -Parent $basePath

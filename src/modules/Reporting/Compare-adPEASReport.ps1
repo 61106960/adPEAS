@@ -76,10 +76,9 @@ function Compare-adPEASReport {
             # Configure file output if requested
             if ($OutputPath) {
                 $resolvedBase = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
-                # Strip any existing extension from the base path
-                if ([System.IO.Path]::HasExtension($resolvedBase)) {
-                    $resolvedBase = [System.IO.Path]::ChangeExtension($resolvedBase, $null).TrimEnd('.')
-                }
+                # Drop one of adPEAS's own extensions if the caller typed it; anything else
+                # is part of the name they chose. See Get-adPEASOutputBasePath.
+                $resolvedBase = Get-adPEASOutputBasePath $resolvedBase
                 $outputDir = Split-Path -Parent $resolvedBase
                 if ($outputDir -and -not (Test-Path $outputDir)) {
                     New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
