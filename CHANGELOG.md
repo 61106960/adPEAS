@@ -82,6 +82,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `Convert-ADIntervalToString` - the export formatter whose failure mode is silent, since
   anything it cannot read comes out as "Forever", which reads as a domain whose passwords
   never expire.
+- **The HTML report is grouped into cards once instead of three times.** A report is built
+  from one ordered list of findings by walking it and cutting it into cards at each
+  SubHeader. That walk existed three times - in `Get-CardBasedCounts` (the numbers at the
+  top and in the sidebar), in `Build-ScoringContext` (the `findingCards` array the
+  JavaScript scoring reads) and in `Build-FindingSectionsHtml` (the cards a reader sees) -
+  and the three did not agree on where a card ends. The counting walk ignored `Header`
+  entirely, so content sitting between a header and the next subheader was added to the
+  previous section's card: counted in the summary, rendered nowhere. The metadata walk
+  closed a card on `Header` unconditionally while the rendering walk did so only inside an
+  open section, so a group that never got a section produced a scoring entry but no card -
+  and since a card looks up `findingCards[N]` by its own index, every card after that
+  point read the next card's score and remediation text. Not reachable from a normal scan,
+  where output always starts with a header, but reachable through `Convert-adPEASReport`,
+  which reads findings back out of a JSON export. All three now consume
+  `Get-FindingCardGroups`, so the alignment is structural rather than coincidental; the
+  summary no longer counts items that are not rendered, and a section is emitted only when
+  it actually holds a card.
 - **`Secure` now outranks `Hint` everywhere in the HTML report - the summary counts, the
   card badge and the scoring metadata.** The ranking existed three times in
   `Export-HTMLReport.ps1`, as three near-identical loops: `Get-GroupSeverity` (feeds the

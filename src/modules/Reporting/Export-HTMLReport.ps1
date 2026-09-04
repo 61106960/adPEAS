@@ -211,6 +211,121 @@ function Export-HTMLReport {
     - KeyValue/Line groups (per SubHeader) count as 1 result each
     This ensures sidebar counts match card counts.
 #>
+function Get-FindingCardGroups {
+    [CmdletBinding()]
+    param(
+        [array]$AllFindings
+    )
+
+    # .ToArray() throughout, never @($list): wrapping a generic List in @() throws
+    # "Argument types do not match" on current PowerShell, and it would do so only once a
+    # group actually had findings in it - i.e. never in an empty-report smoke test.
+    $groups = New-Object System.Collections.Generic.List[object]
+
+    $currentSectionIndex = -1
+    $currentHeader       = $null
+    $currentSubHeader    = $null
+    $currentObjectType   = $null
+    $currentCategory     = $null
+    $currentFindings     = New-Object System.Collections.Generic.List[object]
+
+    foreach ($finding in $AllFindings) {
+
+        if ($finding.Type -eq 'Header') {
+            # A group only exists inside a section and under a subheader, and only if
+            # something landed in it. The counting loop used to ignore Header entirely, so
+            # content between a Header and the next SubHeader was added to the group of the
+            # previous section - counted at the top of the report, and rendered nowhere.
+            if ($currentHeader -and $currentSubHeader -and $currentFindings.Count -gt 0) {
+                [void]$groups.Add([PSCustomObject]@{
+                    SectionIndex = $currentSectionIndex
+                    Header       = $currentHeader
+                    Title        = $currentSubHeader
+                    ObjectType   = $currentObjectType
+                    Category     = $currentCategory
+                    Findings     = $currentFindings.ToArray()
+                })
+            }
+
+            $currentSectionIndex++
+            $currentHeader     = $finding.Text -replace '^\++\s*|\s*\++$', ''  # strip the +++++ decoration
+            $currentSubHeader  = $null
+            $currentObjectType = $null
+            $currentCategory   = $null
+            $currentFindings   = New-Object System.Collections.Generic.List[object]
+        }
+        elseif ($finding.Type -eq 'SubHeader') {
+            if ($currentHeader -and $currentSubHeader -and $currentFindings.Count -gt 0) {
+                [void]$groups.Add([PSCustomObject]@{
+                    SectionIndex = $currentSectionIndex
+                    Header       = $currentHeader
+                    Title        = $currentSubHeader
+                    ObjectType   = $currentObjectType
+                    Category     = $currentCategory
+                    Findings     = $currentFindings.ToArray()
+                })
+            }
+
+            $currentSubHeader  = $finding.Text
+            $currentObjectType = $finding.ObjectType   # may be $null
+            $currentFindings   = New-Object System.Collections.Generic.List[object]
+        }
+        else {
+            # A finding without a Category has no check context, and "Unknown" is what
+            # adPEAS puts on disclaimers, connection messages and progress lines. The null
+            # test is not redundant: $null -ne 'Unknown'. Findings do not always come from
+            # this process - Convert-adPEASReport reads them out of a JSON export, and a
+            # file from an older version simply has no Category property.
+            if (-not $finding.Category -or $finding.Category -eq 'Unknown') { continue }
+
+            # The section's category comes from its first content finding, which is what
+            # both the section id and the sidebar filter are built from.
+            if (-not $currentCategory) { $currentCategory = $finding.Category }
+
+            [void]$currentFindings.Add($finding)
+        }
+    }
+
+    if ($currentHeader -and $currentSubHeader -and $currentFindings.Count -gt 0) {
+        [void]$groups.Add([PSCustomObject]@{
+            SectionIndex = $currentSectionIndex
+            Header       = $currentHeader
+            Title        = $currentSubHeader
+            ObjectType   = $currentObjectType
+            Category     = $currentCategory
+            Findings     = $currentFindings.ToArray()
+        })
+    }
+
+    # Comma: a plain return emits the groups one at a time, and a single group would reach
+    # the caller as a bare object whose .Count is empty rather than 1.
+    return ,$groups.ToArray()
+}
+
+<#
+.SYNOPSIS
+    Turns a category name into the form used for DOM ids and filter attributes.
+.DESCRIPTION
+    The result ends up in a section id, in data-category on the section and on every card,
+    and in the sidebar's filter call - so it may only carry what an id may carry. The
+    sidebar builds the same value from the same input, which is what makes a filter click
+    match the sections it is supposed to show.
+#>
+function ConvertTo-CategorySlug {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [string]$Category
+    )
+
+    if (-not $Category) { return $null }
+    return (($Category.ToLower() -replace '\s+', '-') -replace '[^a-z0-9\-]', '')
+}
+
+<#
+.SYNOPSIS
+    Counts findings the way the report cards present them.
+#>
 function Get-CardBasedCounts {
     param(
         [array]$AllFindings
@@ -229,55 +344,22 @@ function Get-CardBasedCounts {
     # Track category counts
     $categoryCounts = @{}
 
-    # Process findings in order, grouping by SubHeader
-    $currentSubHeader = $null
-    $currentFindings = @()
-    $currentCategory = $null
-
-    foreach ($finding in $AllFindings) {
-        if ($finding.Type -eq 'SubHeader') {
-            # Process previous group if exists
-            if ($currentSubHeader -and $currentFindings.Count -gt 0) {
-                $groupCount = Get-GroupItemCount -Findings $currentFindings
-                $groupSeverity = Get-GroupSeverity -Findings $currentFindings
-
-                # Add to severity count
-                $counts[$groupSeverity] += $groupCount
-
-                # Add to category count
-                if ($currentCategory -and $currentCategory -ne 'Unknown') {
-                    if (-not $categoryCounts.ContainsKey($currentCategory)) {
-                        $categoryCounts[$currentCategory] = 0
-                    }
-                    $categoryCounts[$currentCategory] += $groupCount
-                }
-            }
-
-            # Start new group
-            $currentSubHeader = $finding.Text
-            $currentFindings = @()
-        }
-        elseif ($finding.Type -notin @('Header', 'SubHeader') -and $finding.Category -and $finding.Category -ne 'Unknown') {
-            # Content finding
-            # Same guard as the other two grouping loops: a finding without a Category
-            # carries no check context and must not be grouped as if it did.
-            $currentFindings += $finding
-            $currentCategory = $finding.Category
-        }
-    }
-
-    # Process last group
-    if ($currentSubHeader -and $currentFindings.Count -gt 0) {
-        $groupCount = Get-GroupItemCount -Findings $currentFindings
-        $groupSeverity = Get-GroupSeverity -Findings $currentFindings
+    # One grouping for the whole report: these numbers describe the cards a reader gets to
+    # see, card for card. They used to come from a loop of their own that ignored Header,
+    # so the summary could count items that were never rendered.
+    foreach ($group in (Get-FindingCardGroups -AllFindings $AllFindings)) {
+        $groupCount = Get-GroupItemCount -Findings $group.Findings
+        $groupSeverity = Get-GroupSeverity -Findings $group.Findings
 
         $counts[$groupSeverity] += $groupCount
 
-        if ($currentCategory -and $currentCategory -ne 'Unknown') {
-            if (-not $categoryCounts.ContainsKey($currentCategory)) {
-                $categoryCounts[$currentCategory] = 0
+        # The raw category name, because the sidebar shows it; it derives its own id from
+        # the same string via ConvertTo-CategorySlug.
+        if ($group.Category) {
+            if (-not $categoryCounts.ContainsKey($group.Category)) {
+                $categoryCounts[$group.Category] = 0
             }
-            $categoryCounts[$currentCategory] += $groupCount
+            $categoryCounts[$group.Category] += $groupCount
         }
     }
 
@@ -611,61 +693,20 @@ function Build-ScoringContext {
     # ========== NEW: Build findings metadata for JSON-based scoring ==========
     # This eliminates the need for DOM traversal in JavaScript
     # Each entry represents one finding card (SubHeader group)
+    # findingCards[N] is read by the card rendered with data-card-index="N", so this array
+    # and the cards have to be built from the same grouping. They used to be two loops with
+    # slightly different rules; where they disagreed, every card from that point on showed
+    # another card's score.
     $scoringContext.findingCards = @()
 
-    $currentSubHeader = $null
-    $currentCategory = $null
-    $currentObjectType = $null
-    $currentFindings = @()
+    foreach ($group in (Get-FindingCardGroups -AllFindings $AllFindings)) {
+        $cardMeta = Build-FindingCardMetadata `
+            -Title $group.Title `
+            -Category (ConvertTo-CategorySlug -Category $group.Category) `
+            -ObjectType $group.ObjectType `
+            -Findings $group.Findings `
+            -ScoringContext $scoringContext
 
-    foreach ($finding in $AllFindings) {
-        if ($finding.Type -eq 'Header') {
-            # Flush previous group
-            if ($currentSubHeader -and $currentFindings.Count -gt 0) {
-                $cardMeta = Build-FindingCardMetadata -Title $currentSubHeader -Category $currentCategory -ObjectType $currentObjectType -Findings $currentFindings -ScoringContext $scoringContext
-                if ($cardMeta) {
-                    $scoringContext.findingCards += $cardMeta
-                }
-            }
-            $currentSubHeader = $null
-            $currentCategory = $null
-            $currentObjectType = $null
-            $currentFindings = @()
-        }
-        elseif ($finding.Type -eq 'SubHeader') {
-            # Flush previous group
-            if ($currentSubHeader -and $currentFindings.Count -gt 0) {
-                $cardMeta = Build-FindingCardMetadata -Title $currentSubHeader -Category $currentCategory -ObjectType $currentObjectType -Findings $currentFindings -ScoringContext $scoringContext
-                if ($cardMeta) {
-                    $scoringContext.findingCards += $cardMeta
-                }
-            }
-            $currentSubHeader = $finding.Text
-            $currentObjectType = $finding.ObjectType
-            $currentFindings = @()
-        }
-        else {
-            # Content finding
-            # The null test is not redundant: $null -ne 'Unknown' is true, so a finding
-            # without a Category passed this guard and then hit .ToLower() on nothing.
-            # Findings do not always come from this process - Convert-adPEASReport reads
-            # them back out of a JSON export, and a file written by an older version, or
-            # edited by hand, simply has no Category property. The result was not a wrong
-            # line in the report but an exception that ended the whole conversion. A
-            # finding with no category has no check context, which is exactly what
-            # "Unknown" means here, so it is skipped the same way.
-            if ($finding.Category -and $finding.Category -ne 'Unknown') {
-                if (-not $currentCategory) {
-                    $currentCategory = ($finding.Category.ToLower() -replace '\s+', '-') -replace '[^a-z0-9\-]', ''
-                }
-                $currentFindings += $finding
-            }
-        }
-    }
-
-    # Flush last group
-    if ($currentSubHeader -and $currentFindings.Count -gt 0) {
-        $cardMeta = Build-FindingCardMetadata -Title $currentSubHeader -Category $currentCategory -ObjectType $currentObjectType -Findings $currentFindings -ScoringContext $scoringContext
         if ($cardMeta) {
             $scoringContext.findingCards += $cardMeta
         }
@@ -915,88 +956,43 @@ function Build-FindingSectionsHtml {
 
     $sections = [System.Text.StringBuilder]::new()
 
-    $currentHeader = $null
-    $currentSubHeader = $null
-    $currentSubHeaderObjectType = $null  # Track ObjectType from SubHeader
-    $currentFindings = [System.Collections.ArrayList]::new()
-    $currentCategory = $null
-    $sectionStarted = $false
-    $cardIndex = 0  # Tracks index into scoringContext.findingCards
+    # Same grouping as the counters and the scoring metadata, so a card's index into
+    # scoringContext.findingCards is the index of that same group there.
+    $cardIndex = 0
+    $openSectionIndex = $null
 
-    # Process findings in order (they are collected in console output order)
-    foreach ($finding in $Findings) {
+    foreach ($group in (Get-FindingCardGroups -AllFindings $Findings)) {
 
-        if ($finding.Type -eq 'Header') {
-            # Close previous section if exists
-            if ($sectionStarted) {
-                # Close previous subheader card if exists
-                if ($currentSubHeader -and $currentFindings.Count -gt 0) {
-                    $cardHtml = Build-FindingCardHtml -Title $currentSubHeader -Findings $currentFindings -Category $currentCategory -ObjectType $currentSubHeaderObjectType -CardIndex $cardIndex
-                    $cardIndex++
-                    [void]$sections.AppendLine($cardHtml)
-                }
+        $categorySlug = ConvertTo-CategorySlug -Category $group.Category
+
+        if ($group.SectionIndex -ne $openSectionIndex) {
+            if ($null -ne $openSectionIndex) {
                 [void]$sections.AppendLine("    </div>")
                 [void]$sections.AppendLine("</section>")
             }
 
-            # Start new section (but don't output HTML yet - need category from first finding)
-            $currentHeader = $finding.Text -replace '^\++\s*|\s*\++$', ''  # Remove +++++ decorations
-            $currentCategory = $null  # Will be set from first content finding
-            $currentSubHeader = $null
-            $currentSubHeaderObjectType = $null
-            $currentFindings = [System.Collections.ArrayList]::new()
-            $sectionStarted = $false
+            $categoryEncoded = ConvertTo-HtmlEncode $categorySlug
+            [void]$sections.AppendLine("<section id=`"cat-$categorySlug`" class=`"section`" data-category=`"$categoryEncoded`">")
+            [void]$sections.AppendLine("    <div class=`"section-header`">")
+            [void]$sections.AppendLine("        <div class=`"section-title`">$(ConvertTo-HtmlEncode $group.Header)</div>")
+            [void]$sections.AppendLine("    </div>")
+            [void]$sections.AppendLine("    <div class=`"section-content`">")
+
+            $openSectionIndex = $group.SectionIndex
         }
-        elseif ($finding.Type -eq 'SubHeader') {
-            # Close previous subheader card if exists
-            if ($currentSubHeader -and $currentFindings.Count -gt 0) {
-                $cardHtml = Build-FindingCardHtml -Title $currentSubHeader -Findings $currentFindings -Category $currentCategory -ObjectType $currentSubHeaderObjectType -CardIndex $cardIndex
-                $cardIndex++
-                [void]$sections.AppendLine($cardHtml)
-            }
 
-            # Start new subheader group - capture ObjectType if present
-            $currentSubHeader = $finding.Text
-            $currentSubHeaderObjectType = $finding.ObjectType  # May be $null if not set
-            $currentFindings = [System.Collections.ArrayList]::new()
-        }
-        else {
-            # Skip findings with Category="Unknown" (they lack check context)
-            # A missing Category means the same thing and has to be skipped here too, or
-            # the .ToLower() a few lines down runs on nothing. See the note at the other
-            # grouping loop: these findings can come out of a JSON export.
-            if (-not $finding.Category -or $finding.Category -eq 'Unknown') {
-                continue
-            }
+        $cardHtml = Build-FindingCardHtml `
+            -Title $group.Title `
+            -Findings $group.Findings `
+            -Category $categorySlug `
+            -ObjectType $group.ObjectType `
+            -CardIndex $cardIndex
+        $cardIndex++
 
-            # Content finding - derive category from first one
-            if (-not $sectionStarted -and $currentHeader) {
-                # Get category from this finding (e.g., "Accounts", "Domain")
-                # XSS Protection: Sanitize category - only allow alphanumeric and hyphens
-                $currentCategory = ($finding.Category.ToLower() -replace '\s+', '-') -replace '[^a-z0-9\-]', ''
-                $sectionId = "cat-$currentCategory"
-                $currentCategoryEncoded = ConvertTo-HtmlEncode $currentCategory
-
-                [void]$sections.AppendLine("<section id=`"$sectionId`" class=`"section`" data-category=`"$currentCategoryEncoded`">")
-                [void]$sections.AppendLine("    <div class=`"section-header`">")
-                [void]$sections.AppendLine("        <div class=`"section-title`">$(ConvertTo-HtmlEncode $currentHeader)</div>")
-                [void]$sections.AppendLine("    </div>")
-                [void]$sections.AppendLine("    <div class=`"section-content`">")
-                $sectionStarted = $true
-            }
-
-            # Add finding to current group
-            [void]$currentFindings.Add($finding)
-        }
+        [void]$sections.AppendLine($cardHtml)
     }
 
-    # Close last section
-    if ($sectionStarted) {
-        if ($currentSubHeader -and $currentFindings.Count -gt 0) {
-            $cardHtml = Build-FindingCardHtml -Title $currentSubHeader -Findings $currentFindings -Category $currentCategory -ObjectType $currentSubHeaderObjectType -CardIndex $cardIndex
-            $cardIndex++
-            [void]$sections.AppendLine($cardHtml)
-        }
+    if ($null -ne $openSectionIndex) {
         [void]$sections.AppendLine("    </div>")
         [void]$sections.AppendLine("</section>")
     }
