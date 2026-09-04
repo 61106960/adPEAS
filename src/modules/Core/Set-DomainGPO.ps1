@@ -1057,9 +1057,17 @@ function Set-DomainGPO {
                                 "$domainName\Administrator"
                             }
 
-                            # Build single task entry XML
+                            # Build single task entry XML.
+                            #
+                            # StartBoundary below spells out InvariantCulture rather than going
+                            # through Format-adPEASDate: the Task Scheduler reads it, so the
+                            # Gregorian calendar is part of the file format and the contract
+                            # belongs next to the value. A custom format string renders through
+                            # the host culture's calendar - on a Thai regional format the
+                            # trigger was written as year 2569 and would have fired in 543
+                            # years; on a Saudi one it landed in the past.
                             $taskEntryXml = @"
-  <ImmediateTaskV2 clsid="{9756B581-76EC-4169-9AFC-0CA8D43ADB5F}" name="$([System.Security.SecurityElement]::Escape($taskNameVal))" image="0" changed="$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" uid="$taskUID">
+  <ImmediateTaskV2 clsid="{9756B581-76EC-4169-9AFC-0CA8D43ADB5F}" name="$([System.Security.SecurityElement]::Escape($taskNameVal))" image="0" changed="$(Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')" uid="$taskUID">
     <Properties action="C" name="$([System.Security.SecurityElement]::Escape($taskNameVal))" runAs="$propertiesRunAs" logonType="$propertiesLogonType">
       <Task version="1.2">
         <RegistrationInfo>
@@ -1093,7 +1101,7 @@ $principalXml
         </Settings>
         <Triggers>
           <TimeTrigger>
-            <StartBoundary>$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')</StartBoundary>
+            <StartBoundary>$((Get-Date).ToString('yyyy-MM-ddTHH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture))</StartBoundary>
             <Enabled>true</Enabled>
           </TimeTrigger>
         </Triggers>
@@ -1273,7 +1281,7 @@ $taskEntryXml
 
                             # Build single group entry XML
                             $groupEntryXml = @"
-  <Group clsid="{6D4A79E4-529C-4481-ABD0-F5BD7EA93BA7}" name="$([System.Security.SecurityElement]::Escape($localGroupName)) (built-in)" image="2" changed="$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" uid="$groupUID">
+  <Group clsid="{6D4A79E4-529C-4481-ABD0-F5BD7EA93BA7}" name="$([System.Security.SecurityElement]::Escape($localGroupName)) (built-in)" image="2" changed="$(Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')" uid="$groupUID">
     <Properties action="U" newName="" description="" deleteAllUsers="0" deleteAllGroups="0" removeAccounts="0" groupSid="$localGroupVal" groupName="$([System.Security.SecurityElement]::Escape($localGroupName)) (built-in)">
       <Members>
         <Member name="$([System.Security.SecurityElement]::Escape($memberNameVal))" action="ADD" sid="$memberSIDVal"/>
@@ -1753,7 +1761,7 @@ ${nextIndex}Parameters=$scriptParamsVal
                         $itemUID = "{" + [guid]::NewGuid().ToString().ToUpper() + "}"
 
                         # Current timestamp
-                        $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                        $timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
 
                         # Prepare variables for closure (XML-escaped to prevent injection)
                         $domainName = $Script:LDAPContext.Domain
@@ -1904,7 +1912,7 @@ $serviceEntryXml
                         $itemUID = "{" + [guid]::NewGuid().ToString().ToUpper() + "}"
 
                         # Current timestamp
-                        $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                        $timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
 
                         # Determine if source is UNC or local
                         $isUNC = $SourceFile -match '^\\\\' -or $SourceFile -match '^//'
@@ -2074,7 +2082,7 @@ $fileEntryXml
                         $ruleUID = "{" + [guid]::NewGuid().ToString().ToUpper() + "}"
 
                         # Current timestamp
-                        $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                        $timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
 
                         # Prepare variables for closure (XML-escaped to prevent injection)
                         $domainName = $Script:LDAPContext.Domain
@@ -2785,7 +2793,7 @@ function Export-GPOState {
     $fileArr = @($files)
     $export = [ordered]@{
         adPEASBackupType         = "GPO"
-        ExportDate               = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        ExportDate               = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
         ExportedBy               = "$env:USERDOMAIN\$env:USERNAME"
         gpoName                  = $GPOName
         gpoDN                    = $GPODN

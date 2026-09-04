@@ -106,16 +106,22 @@ function Compare-adPEASReport {
                 }
             }
 
-            # Extract metadata
+            # Extract metadata. Both sides of the date go through the invariant culture, for
+            # the two reasons Import-FindingsFromCache already spells out for the same field:
+            # Export-FindingsCache writes the round-trip format, which must not be read
+            # through the reader's local culture, and a custom format string renders through
+            # the local calendar - a host with a Thai or Saudi regional format put the
+            # Buddhist or Hijri year in the report header while the file it came from said
+            # something else.
             $baselineMeta = @{
                 Domain  = if ($baselineCache.Domain) { $baselineCache.Domain } else { 'Unknown' }
-                Date    = if ($baselineCache.ExportDate) { try { ([datetime]::Parse($baselineCache.ExportDate)).ToString('yyyy-MM-dd HH:mm') } catch { $baselineCache.ExportDate } } else { 'Unknown' }
+                Date    = if ($baselineCache.ExportDate) { try { Format-adPEASDate ([datetime]::Parse($baselineCache.ExportDate, [System.Globalization.CultureInfo]::InvariantCulture)) 'yyyy-MM-dd HH:mm' } catch { $baselineCache.ExportDate } } else { 'Unknown' }
                 Version = if ($baselineCache.adPEASVersion) { $baselineCache.adPEASVersion } else { 'Unknown' }
                 Count   = if ($baselineCache.FindingCount) { $baselineCache.FindingCount } else { 0 }
             }
             $currentMeta = @{
                 Domain  = if ($currentCache.Domain) { $currentCache.Domain } else { 'Unknown' }
-                Date    = if ($currentCache.ExportDate) { try { ([datetime]::Parse($currentCache.ExportDate)).ToString('yyyy-MM-dd HH:mm') } catch { $currentCache.ExportDate } } else { 'Unknown' }
+                Date    = if ($currentCache.ExportDate) { try { Format-adPEASDate ([datetime]::Parse($currentCache.ExportDate, [System.Globalization.CultureInfo]::InvariantCulture)) 'yyyy-MM-dd HH:mm' } catch { $currentCache.ExportDate } } else { 'Unknown' }
                 Version = if ($currentCache.adPEASVersion) { $currentCache.adPEASVersion } else { 'Unknown' }
                 Count   = if ($currentCache.FindingCount) { $currentCache.FindingCount } else { 0 }
             }
@@ -646,7 +652,7 @@ function Export-DiffHtmlReport {
     $currentInfo = "$CurrentFile ($($CurrentMeta.Date), $($CurrentMeta.Domain), adPEAS $($CurrentMeta.Version))"
     $comparedCats = if ($SharedCategories.Count -gt 0) { "$($SharedCategories.Count) ($($SharedCategories -join ', '))" } else { "None" }
     $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
-    $generatedDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $generatedDate = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
     $domain = $BaselineMeta.Domain
 
     # Replace placeholders

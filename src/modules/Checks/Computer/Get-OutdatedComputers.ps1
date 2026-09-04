@@ -155,7 +155,7 @@ function Get-OutdatedComputers {
                         $eolCheck = Test-IsOutdatedOS -OSName $fullComputer.operatingSystem -OSVersion $fullComputer.operatingSystemVersion
                         if ($eolCheck.IsOutdated) {
                             # Format EOL date as string for display
-                            $eolDateStr = if ($eolCheck.EOLDate) { $eolCheck.EOLDate.ToString("yyyy-MM-dd") } else { "Unknown" }
+                            $eolDateStr = if ($eolCheck.EOLDate) { (Format-adPEASDate $eolCheck.EOLDate 'yyyy-MM-dd') } else { "Unknown" }
                             $fullComputer | Add-Member -NotePropertyName 'eolDate' -NotePropertyValue $eolDateStr -Force
                             $fullComputer | Add-Member -NotePropertyName 'daysSinceEoL' -NotePropertyValue $eolCheck.DaysSinceEOL -Force
                         }

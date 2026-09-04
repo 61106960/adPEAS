@@ -1350,7 +1350,7 @@ function Save-IssuedCertificatePFX {
     if (-not $OutputPath) {
         # Extract CN from the ISSUED certificate (CA may override the requested subject)
         $cnForFile = if ($IssuedCert.Subject -match 'CN=([^,]+)') { $Matches[1].Trim() } else { 'certificate' }
-        $pfxTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $pfxTimestamp = (Format-adPEASDate (Get-Date) 'yyyyMMdd_HHmmss')
         $OutputPath = "${cnForFile}_${pfxTimestamp}.pfx"
         Write-Log "$FunctionPrefix Derived output path: $OutputPath"
     }
@@ -1373,7 +1373,7 @@ function Save-IssuedCertificatePFX {
     Show-KeyValue "Thumbprint:" $IssuedCert.Thumbprint
     Show-KeyValue "Subject:" $IssuedCert.Subject
     Show-KeyValue "Issuer:" $IssuedCert.Issuer
-    Show-KeyValue "Valid Until:" $IssuedCert.NotAfter.ToString("yyyy-MM-dd")
+    Show-KeyValue "Valid Until:" (Format-adPEASDate $IssuedCert.NotAfter 'yyyy-MM-dd')
     if ($TemplateName) {
         Show-KeyValue "Template:" $TemplateName
     }
@@ -2226,7 +2226,7 @@ function Request-ADCSCertificate {
             }
 
             # Backup template before modification
-            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+            $timestamp = (Format-adPEASDate (Get-Date) 'yyyyMMdd_HHmmss')
             $templateBackupPath = "${TemplateName}_backup_${timestamp}.json"
 
             Show-Line "Backing up template '$TemplateName' before modification" -Class Note

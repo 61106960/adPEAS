@@ -473,7 +473,7 @@ function Invoke-PasswordSpray {
                         Username  = $cleanUsername
                         Password  = $pass
                         Domain    = $targetDomain
-                        Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        Timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
                         Method    = "Kerberos Pre-Auth"
                     }
                     $successfulCreds += $credInfo

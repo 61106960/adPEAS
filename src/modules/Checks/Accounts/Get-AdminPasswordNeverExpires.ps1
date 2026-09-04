@@ -81,7 +81,7 @@ function Get-AdminPasswordNeverExpires {
             # pwdLastSet=0 means "must change at next logon" - exclude these
             $passwordAgeFilter = "(&(pwdLastSet>=1)(pwdLastSet<=$thresholdFileTime))"
 
-            Write-Log "[Get-AdminPasswordNeverExpires] Password age threshold: $PasswordAgeDays days (before $($thresholdDate.ToString('yyyy-MM-dd')))"
+            Write-Log "[Get-AdminPasswordNeverExpires] Password age threshold: $PasswordAgeDays days (before $(Format-adPEASDate $thresholdDate 'yyyy-MM-dd'))"
 
             $candidates = Get-DomainUser -AdminCount -PasswordNeverExpires -LDAPFilter $passwordAgeFilter -ShowOwner @connectionParams
 

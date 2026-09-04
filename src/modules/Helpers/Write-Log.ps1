@@ -68,7 +68,7 @@ function Write-Log {
     # File output (only if Outputfile is active AND VerboseLogging is enabled)
     if ($Script:adPEAS_Outputfile -and $Script:adPEAS_VerboseLogging) {
         try {
-            $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            $timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
             "$timestamp [$Level] $Message" | Add-Content -Path $Script:adPEAS_Outputfile -ErrorAction SilentlyContinue
         }
         catch {

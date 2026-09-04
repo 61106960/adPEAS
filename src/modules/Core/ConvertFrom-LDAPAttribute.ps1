@@ -430,7 +430,7 @@ function ConvertFrom-LDAPAttribute {
                     try {
                         $historyInfo = ConvertFrom-LAPSEncryptedPassword -Blob $historyBlob
                         if ($historyInfo -and $historyInfo.UpdateTimestamp) {
-                            $historyEntries += "[$entryIndex] $($historyInfo.UpdateTimestamp.ToString('yyyy-MM-dd HH:mm:ss'))"
+                            $historyEntries += "[$entryIndex] $(Format-adPEASDate $historyInfo.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')"
                         } else {
                             $historyEntries += "[$entryIndex] [Encrypted - $($historyBlob.Length) bytes]"
                         }
@@ -620,7 +620,7 @@ function ConvertFrom-LDAPAttribute {
                         $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(,$bytes)
                         $subject = $cert.Subject
                         $thumbprint = $cert.Thumbprint
-                        $notAfter = $cert.NotAfter.ToString('yyyy-MM-dd')
+                        $notAfter = (Format-adPEASDate $cert.NotAfter 'yyyy-MM-dd')
                         $certValues += "$subject (Thumbprint: $thumbprint, Expires: $notAfter)"
                         $cert.Dispose()
                     } catch {
@@ -919,7 +919,7 @@ function ConvertFrom-LDAPAttribute {
                     try {
                         $encryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $PropValue[0]
                         if ($encryptedInfo -and $encryptedInfo.UpdateTimestamp) {
-                            $ConvertedProperties[$PropName] = "[Encrypted - Updated: $($encryptedInfo.UpdateTimestamp.ToString('yyyy-MM-dd HH:mm:ss'))]"
+                            $ConvertedProperties[$PropName] = "[Encrypted - Updated: $(Format-adPEASDate $encryptedInfo.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')]"
                         } else {
                             $ConvertedProperties[$PropName] = "[Encrypted - $($PropValue[0].Length) bytes]"
                         }

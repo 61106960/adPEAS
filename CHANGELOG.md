@@ -176,6 +176,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **Dates were read and written through the host's calendar, which broke Kerberos outright
+  on some regional formats.** A custom date format string (`'yyyy-MM-dd'`,
+  `'yyyyMMddHHmmss'`) is rendered with the current culture's calendar, and `ParseExact`
+  with a `$null` provider reads with it. Windows ships cultures whose default calendar is
+  not Gregorian, and there the same instant is a different year:
+
+  | | en-US / de-DE | th-TH | ar-SA | fa-IR |
+  |---|---|---|---|---|
+  | written | 2026-03-09 | 2569-03-09 | 1447-09-20 | 1404-12-18 |
+  | read back | 2026-03-09 | 1483-03-09 | throws | throws |
+
+  The severe case was the Kerberos stack. `New-ASN1GeneralizedTime` produces the
+  KerberosTime that goes on the wire, including the PA-ENC-TS-ENC `patimestamp` and the
+  Authenticator `ctime` - the two fields a KDC checks against its own clock. On such a
+  host adPEAS sent `25690309140500Z`, which reads as 543 years of clock skew:
+  pre-authentication failed, and `-NTHash`, `-AES256Key` and `-Certificate`, which have no
+  fallback, failed outright. The matching read path turned a KDC's Gregorian reply into
+  the year 1483, or threw. Also affected: the DC clock-skew figure, Windows end-of-life
+  dates behind the outdated-computer check, password ages behind the scoring, certificate
+  validity, and every date in the HTML and text reports; and a scheduled task deployed via
+  `Set-DomainGPO` got a `StartBoundary` 543 years out.
+
+  Dates now go through a new `Format-adPEASDate`, and the places a machine reads spell the
+  invariant culture out inline. `.claude/Test-Project.ps1` fails the build on a new
+  culture-dependent date site, which is how the second ASN.1 encoder and four further
+  sites were found after the first sweep had already been made.
 - **Both offline report commands announced a report they had not written.** In
   `Convert-adPEASReport`, the "HTML report saved to: ..." line is printed a second time at
   the very end with `-Format All`, so it does not scroll away behind the text replay. That

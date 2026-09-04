@@ -304,7 +304,7 @@ function Invoke-ShadowCredentialOperation {
             }
 
             # Determine output path
-            $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+            $Timestamp = (Format-adPEASDate (Get-Date) 'yyyyMMdd_HHmmss')
             $PFXPath = "${TargetSAMAccountName}_$Timestamp.pfx"
 
             # Save PFX file using central Export-adPEASFile helper
@@ -512,7 +512,7 @@ function Invoke-ShadowCredentialOperation {
                             Show-KeyValue "DeviceID:" $cred.DeviceID
                             Show-KeyValue "KeyID:" $cred.KeyID
                             if ($cred.CreationTime) {
-                                Show-KeyValue "Created:" "$($cred.CreationTime.ToString('yyyy-MM-dd HH:mm:ss')) UTC"
+                                Show-KeyValue "Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') UTC"
                             }
                             Show-EmptyLine
                         }
@@ -634,7 +634,7 @@ function Invoke-ShadowCredentialOperation {
                         Show-KeyValue "[$index] DeviceID:" $cred.DeviceID
                         Show-KeyValue "    KeyID:" $cred.KeyID
                         if ($cred.CreationTime) {
-                            Show-KeyValue "    Created:" "$($cred.CreationTime.ToString('yyyy-MM-dd HH:mm:ss')) UTC"
+                            Show-KeyValue "    Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') UTC"
                         }
                         Show-EmptyLine
                         $index++

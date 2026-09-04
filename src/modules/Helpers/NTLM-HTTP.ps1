@@ -391,7 +391,7 @@ function Read-NTLMAvPairs {
                     try {
                         # Convert FILETIME to DateTime
                         $result.TimestampUtc = [DateTime]::FromFileTimeUtc($result.Timestamp)
-                        $result.RawPairs['MsvAvTimestamp'] = $result.TimestampUtc.ToString("yyyy-MM-dd HH:mm:ss UTC")
+                        $result.RawPairs['MsvAvTimestamp'] = (Format-adPEASDate $result.TimestampUtc 'yyyy-MM-dd HH:mm:ss UTC')
                     }
                     catch {
                         $result.RawPairs['MsvAvTimestamp'] = "Invalid FILETIME: $($result.Timestamp)"

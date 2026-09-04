@@ -96,7 +96,7 @@ function Export-HTMLReport {
         $domain = if ($Script:LDAPContext) { $Script:LDAPContext.Domain } else { "Unknown" }
         $server = if ($Script:LDAPContext) { $Script:LDAPContext.Server } else { "Unknown" }
         $user = if ($Script:LDAPContext -and $Script:LDAPContext.Username) { $Script:LDAPContext.Username } else { "$env:USERDOMAIN\$env:USERNAME" }
-        $generatedDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $generatedDate = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
         $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
 
         # Use disclaimer from main script (decoded at startup)
@@ -578,7 +578,10 @@ function Build-ScoringContext {
                 if ($obj.pwdLastSet -is [datetime]) {
                     $acctInfo.pwdAgeDays = [math]::Floor(((Get-Date) - $obj.pwdLastSet).TotalDays)
                 } elseif ($obj.pwdLastSet -is [string] -and $obj.pwdLastSet -match '\d{4}') {
-                    $pwdDate = [datetime]::Parse($obj.pwdLastSet)
+                    # InvariantCulture: the string was written by adPEAS, not typed by the
+                    # reader, and the local calendar would read its Gregorian year as a
+                    # Buddhist or Hijri one - a password age off by centuries, or a throw.
+                    $pwdDate = [datetime]::Parse($obj.pwdLastSet, [System.Globalization.CultureInfo]::InvariantCulture)
                     $acctInfo.pwdAgeDays = [math]::Floor(((Get-Date) - $pwdDate).TotalDays)
                 }
             } catch {

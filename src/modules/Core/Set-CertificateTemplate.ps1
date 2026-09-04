@@ -439,7 +439,7 @@ function Set-CertificateTemplate {
 
                 # Build export object with all relevant properties
                 $ExportData = [ordered]@{
-                    ExportDate = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+                    ExportDate = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
                     ExportedBy = "$env:USERDOMAIN\$env:USERNAME"
                     TemplateCount = 1
                     Templates = @(

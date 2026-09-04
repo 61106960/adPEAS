@@ -187,7 +187,7 @@ function Get-BitLockerRecoveryKeyAccess {
                     if ($whenCreatedRaw -match '^(\d{14})') {
                         try {
                             $escrowTime = [datetime]::ParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
-                            $recoveryObject | Add-Member -NotePropertyName 'whenCreated' -NotePropertyValue ($escrowTime.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC') -Force
+                            $recoveryObject | Add-Member -NotePropertyName 'whenCreated' -NotePropertyValue ((Format-adPEASDate $escrowTime 'yyyy-MM-dd HH:mm:ss') + ' UTC') -Force
                         } catch {
                             # Leave raw value if parsing fails
                         }

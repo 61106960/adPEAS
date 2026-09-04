@@ -316,10 +316,10 @@ function Get-adPEASSession {
 
                     if ($timeRemaining.TotalSeconds -gt 0) {
                         $remainingDisplay = "{0:hh\:mm\:ss}" -f $timeRemaining
-                        Show-KeyValue "TGT Valid Until:" "$($endTimeLocal.ToString('yyyy-MM-dd HH:mm:ss')) (in $remainingDisplay)"
+                        Show-KeyValue "TGT Valid Until:" "$(Format-adPEASDate $endTimeLocal 'yyyy-MM-dd HH:mm:ss') (in $remainingDisplay)"
                     }
                     else {
-                        Show-KeyValue "TGT Valid Until:" "$($endTimeLocal.ToString('yyyy-MM-dd HH:mm:ss'))" -Class Finding
+                        Show-KeyValue "TGT Valid Until:" "$(Format-adPEASDate $endTimeLocal 'yyyy-MM-dd HH:mm:ss')" -Class Finding
                         Write-Warning "[!] TGT EXPIRED - Re-authentication required!"
                     }
 
@@ -335,7 +335,7 @@ function Get-adPEASSession {
                 elseif ($LiveTicketStatus.Expired) {
                     # TGT exists but is expired
                     $expiredTime = if ($LiveTicketStatus.EndTime) {
-                        $LiveTicketStatus.EndTime.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss')
+                        (Format-adPEASDate $LiveTicketStatus.EndTime.ToLocalTime() 'yyyy-MM-dd HH:mm:ss')
                     } else { "unknown" }
                     Show-KeyValue "TGT Status:" "EXPIRED at $expiredTime - Re-authenticate with Connect-adPEAS" -Class Finding
                 }

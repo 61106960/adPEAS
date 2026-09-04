@@ -574,7 +574,7 @@ function Get-CertificateTemplate {
 
                     # Determine export path (filename sanitization handled by Export-adPEASFile)
                     if (-not $ExportPath) {
-                        $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+                        $Timestamp = (Format-adPEASDate (Get-Date) 'yyyyMMdd-HHmmss')
                         if ($ResultTemplates.Count -eq 1) {
                             $TemplateName = $ResultTemplates[0].cn
                             $ExportPath = "CertTemplate_${TemplateName}_${Timestamp}.json"
@@ -627,7 +627,7 @@ function Get-CertificateTemplate {
 
                     # Create export metadata
                     $ExportFile = @{
-                        ExportedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        ExportedAt = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
                         ExportedBy = "$env:USERDOMAIN\$env:USERNAME"
                         Domain = $Script:LDAPContext.Domain
                         TemplateCount = $ExportData.Count

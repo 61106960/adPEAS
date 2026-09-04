@@ -367,7 +367,7 @@ function Test-IsOutdatedOS {
 
     if ($Script:WindowsLifecycle.ContainsKey($normalizedOS)) {
         $result.HasLifecycleData = $true
-        $eolDate = [DateTime]::ParseExact($Script:WindowsLifecycle[$normalizedOS], 'yyyy-MM-dd', $null)
+        $eolDate = [DateTime]::ParseExact($Script:WindowsLifecycle[$normalizedOS], 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
         $result.EOLDate = $eolDate
 
         $daysDiff = ($ReferenceDate - $eolDate).Days

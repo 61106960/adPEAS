@@ -252,7 +252,7 @@ function ConvertFrom-KeyCredentialLink {
             }
 
             if ($Result.KeyCreationTime) {
-                $Parts += "Created: $($Result.KeyCreationTime.ToString('yyyy-MM-dd HH:mm'))"
+                $Parts += "Created: $(Format-adPEASDate $Result.KeyCreationTime 'yyyy-MM-dd HH:mm')"
             }
 
             if ($Parts.Count -gt 0) {

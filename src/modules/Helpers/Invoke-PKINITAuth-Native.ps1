@@ -1285,25 +1285,25 @@ FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22
                                 # authtime [5] KerberosTime
                                 $timeElement = Read-ASN1Element -Data $child.Content
                                 $timeString = [System.Text.Encoding]::ASCII.GetString($timeElement.Content)
-                                $authTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", $null, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                                $authTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
                             }
                             6 {
                                 # starttime [6] KerberosTime OPTIONAL
                                 $timeElement = Read-ASN1Element -Data $child.Content
                                 $timeString = [System.Text.Encoding]::ASCII.GetString($timeElement.Content)
-                                $startTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", $null, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                                $startTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
                             }
                             7 {
                                 # endtime [7] KerberosTime
                                 $timeElement = Read-ASN1Element -Data $child.Content
                                 $timeString = [System.Text.Encoding]::ASCII.GetString($timeElement.Content)
-                                $endTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", $null, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                                $endTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
                             }
                             8 {
                                 # renew-till [8] KerberosTime OPTIONAL
                                 $timeElement = Read-ASN1Element -Data $child.Content
                                 $timeString = [System.Text.Encoding]::ASCII.GetString($timeElement.Content)
-                                $renewTill = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", $null, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                                $renewTill = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
                             }
                         }
                     }

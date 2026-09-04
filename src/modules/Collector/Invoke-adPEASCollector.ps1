@@ -98,7 +98,7 @@ function Invoke-adPEASCollector {
         Write-Log "[Invoke-adPEASCollector] Starting collection"
         $Script:CollectorVersion = "1.0.0"
         $Script:JsonVersion = 6
-        $Script:CollectionTimestamp = Get-Date -Format "yyyyMMddHHmmss"
+        $Script:CollectionTimestamp = (Format-adPEASDate (Get-Date) 'yyyyMMddHHmmss')
     }
 
     process {

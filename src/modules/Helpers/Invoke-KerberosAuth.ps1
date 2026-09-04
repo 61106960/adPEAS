@@ -384,7 +384,7 @@ function Invoke-KerberosAuth {
                             # stime [4] KerberosTime - server time at error generation
                             try {
                                 $stimeStr = Read-ASN1String -Content (Read-ASN1Element -Data $child.Content).Content
-                                $serverTime = [DateTime]::ParseExact($stimeStr, "yyyyMMddHHmmssZ", $null, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                                $serverTime = [DateTime]::ParseExact($stimeStr, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
                                 Write-Debug "[Parse-ASREP] Server time (stime): $serverTime"
                             } catch {
                                 Write-Debug "[Parse-ASREP] Failed to read stime: $_"
@@ -435,7 +435,7 @@ function Invoke-KerberosAuth {
                         $localTimeUTC = [DateTime]::UtcNow
                         $skew = $serverTime - $localTimeUTC
                         $skewStr = if ($skew.TotalSeconds -ge 0) { "+$($skew.ToString('hh\:mm\:ss'))" } else { "-$(([Math]::Abs($skew.TotalSeconds) -as [TimeSpan]).ToString('hh\:mm\:ss'))" }
-                        $result.Error += " | DC time: $($serverTime.ToString('yyyy-MM-dd HH:mm:ss')) UTC, Local: $($localTimeUTC.ToString('yyyy-MM-dd HH:mm:ss')) UTC, Offset: $skewStr"
+                        $result.Error += " | DC time: $(Format-adPEASDate $serverTime 'yyyy-MM-dd HH:mm:ss') UTC, Local: $(Format-adPEASDate $localTimeUTC 'yyyy-MM-dd HH:mm:ss') UTC, Offset: $skewStr"
                     }
 
                     # Parse PA-ETYPE-INFO2 from edata if present (for preauth required errors)
@@ -686,25 +686,25 @@ function Invoke-KerberosAuth {
                             # authtime [5] KerberosTime
                             $timeElement = Read-ASN1Element -Data $child.Content
                             $timeString = [System.Text.Encoding]::ASCII.GetString($timeElement.Content)
-                            $result.AuthTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", $null, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                            $result.AuthTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
                         }
                         6 {
                             # starttime [6] KerberosTime OPTIONAL
                             $timeElement = Read-ASN1Element -Data $child.Content
                             $timeString = [System.Text.Encoding]::ASCII.GetString($timeElement.Content)
-                            $result.StartTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", $null, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                            $result.StartTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
                         }
                         7 {
                             # endtime [7] KerberosTime - MANDATORY, this is when TGT expires
                             $timeElement = Read-ASN1Element -Data $child.Content
                             $timeString = [System.Text.Encoding]::ASCII.GetString($timeElement.Content)
-                            $result.EndTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", $null, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                            $result.EndTime = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
                         }
                         8 {
                             # renew-till [8] KerberosTime OPTIONAL - renewable until this time
                             $timeElement = Read-ASN1Element -Data $child.Content
                             $timeString = [System.Text.Encoding]::ASCII.GetString($timeElement.Content)
-                            $result.RenewTill = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", $null, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                            $result.RenewTill = [DateTime]::ParseExact($timeString, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
                         }
                     }
                 }
@@ -1093,10 +1093,10 @@ function Invoke-KerberosAuth {
                 $sessionKey = $encRepPart.SessionKey
                 Write-Log "[Invoke-KerberosAuth] Session key extracted ($($sessionKey.Length) bytes, type $($encRepPart.SessionKeyType))"
                 if ($encRepPart.EndTime) {
-                    Write-Log "[Invoke-KerberosAuth] TGT valid until: $($encRepPart.EndTime.ToString('yyyy-MM-dd HH:mm:ss')) UTC"
+                    Write-Log "[Invoke-KerberosAuth] TGT valid until: $(Format-adPEASDate $encRepPart.EndTime 'yyyy-MM-dd HH:mm:ss') UTC"
                 }
                 if ($encRepPart.RenewTill) {
-                    Write-Log "[Invoke-KerberosAuth] Renewable until: $($encRepPart.RenewTill.ToString('yyyy-MM-dd HH:mm:ss')) UTC"
+                    Write-Log "[Invoke-KerberosAuth] Renewable until: $(Format-adPEASDate $encRepPart.RenewTill 'yyyy-MM-dd HH:mm:ss') UTC"
                 }
             }
 

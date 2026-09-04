@@ -427,7 +427,16 @@ function New-ASN1GeneralizedTime {
     )
 
     # Format: YYYYMMDDHHMMSSZ
-    $timeString = $Value.ToUniversalTime().ToString("yyyyMMddHHmmss") + "Z"
+    #
+    # InvariantCulture is not optional here and the contract stays spelled out rather than
+    # delegated: a KerberosTime is a Gregorian year on the wire (RFC 4120), and a custom
+    # format string renders through the current culture's calendar. On a host with a Thai,
+    # Saudi or Persian regional format this produced "25690309140500Z" / "14470920140500Z"
+    # instead of "20260309140500Z". The KDC skew-checks exactly these fields - the
+    # PA-ENC-TS-ENC patimestamp and the Authenticator ctime - so pre-authentication failed
+    # with an apparent clock skew of several centuries, and NTHash/AES/PKINIT auth, which
+    # has no fallback, failed outright.
+    $timeString = $Value.ToUniversalTime().ToString("yyyyMMddHHmmss", [System.Globalization.CultureInfo]::InvariantCulture) + "Z"
     $bytes = [System.Text.Encoding]::ASCII.GetBytes($timeString)
     $tag = [byte]$Script:ASN1_GENERALIZED_TIME
     $lengthBytes = New-ASN1Length -Length $bytes.Length
@@ -447,7 +456,12 @@ function New-ASN1UTCTime {
     )
 
     # Format: YYMMDDHHMMSSZ
-    $timeString = $Value.ToUniversalTime().ToString("yyMMddHHmmss") + "Z"
+    #
+    # InvariantCulture for the same reason as New-ASN1GeneralizedTime above: a DER time is
+    # a Gregorian year on the wire, and a custom format string renders through the host
+    # culture's calendar. Nothing calls this encoder today, but it sits next to the one
+    # that broke and carries the identical contract.
+    $timeString = $Value.ToUniversalTime().ToString("yyMMddHHmmss", [System.Globalization.CultureInfo]::InvariantCulture) + "Z"
     $bytes = [System.Text.Encoding]::ASCII.GetBytes($timeString)
     $tag = [byte]$Script:ASN1_UTC_TIME
     $lengthBytes = New-ASN1Length -Length $bytes.Length

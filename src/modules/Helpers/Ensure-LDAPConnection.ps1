@@ -78,7 +78,7 @@ function Ensure-LDAPConnection {
                 if ($ticketCheck.TicketCount -eq 0) {
                     $errorDetails = "No Kerberos tickets in cache (purged or never obtained)"
                 } elseif ($ticketCheck.Expired) {
-                    $expiredTime = if ($ticketCheck.EndTime) { $ticketCheck.EndTime.ToString('yyyy-MM-dd HH:mm:ss') } else { "unknown" }
+                    $expiredTime = if ($ticketCheck.EndTime) { (Format-adPEASDate $ticketCheck.EndTime 'yyyy-MM-dd HH:mm:ss') } else { "unknown" }
                     $errorDetails = "Kerberos TGT expired at $expiredTime"
                 } elseif ($ticketCheck.ClientMatch -eq $false) {
                     $errorDetails = "Kerberos TGT client mismatch (TGT=$($ticketCheck.ClientName), Expected=$($Script:LDAPContext.TGTInfo.UserName))"
