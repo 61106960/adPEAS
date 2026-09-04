@@ -52,6 +52,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   100 cases covering every branch, comparing canonically serialised output. New suite
   `LDAPAttributeConversion.Tests.ps1` (46 tests) now pins the conversion directly, and
   the RBCD decoding test calls the real function instead of lifting an AST fragment.
+- **The two attribute-name lists the conversion consults for every value are built once
+  instead of per attribute.** `$FileTimeAttributes` (14 entries) and
+  `$GeneralizedTimeAttributes` sat inside the conversion branch, so they were rebuilt for
+  every attribute of every object - a scan of 10.000 objects with 30 attributes each
+  allocated both arrays 300.000 times for nothing. They are now script-level HashSets
+  built at load time. Also removed: an unreachable branch that would have rendered the
+  five domain policy intervals as "42 days" / "30 minutes". All five are listed among the
+  FileTime attributes, so that branch claimed them first, `[DateTime]::FromFileTime`
+  throws on a negative duration, and the raw interval falls through - which is what
+  `Get-DomainPasswordPolicy` already documents and converts itself. Removed rather than
+  made reachable, because reviving it would change the value of `maxPwdAge`, `minPwdAge`,
+  `lockoutDuration`, `lockOutObservationWindow` and `forceLogoff` for every consumer.
+  No behaviour change in either case, verified against the pre-refactor code.
 - **HTML report section badges: `Secure` now outranks `Hint`, matching the ranking
   already used for attribute rows.** `Export-HTMLReport.ps1`'s `Get-GroupSeverity`
   (picks the colour of a report section's badge) previously ranked `Hint` above

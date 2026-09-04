@@ -22,6 +22,39 @@
               ConvertFrom-LAPSEncryptedPassword.ps1, ConvertFrom-TSProperties.ps1,
               ConvertFrom-TSClientLicense.ps1
 #>
+
+# ============================================================================
+# Attribute name sets consulted for every non-binary single value
+# ============================================================================
+# Constant lookup tables, built once at load time (and therefore not part of
+# Clear-SessionState). Inside the conversion these were rebuilt for every attribute of
+# every object - a scan of 10.000 objects with 30 attributes each allocated both arrays
+# 300.000 times for nothing. HashSet for the same reason Invoke-LDAPSearch keeps its
+# binary-attribute list as one; the names are compared case-insensitively, which is what
+# the previous -contains on an array of lowercase names did.
+
+# Windows FILETIME - 100-nanosecond intervals since 1601-01-01.
+#
+# The five domain policy intervals (maxpwdage, minpwdage, lockoutduration,
+# lockoutobservationwindow, forcelogoff) are in here although they are negative durations
+# rather than timestamps. [DateTime]::FromFileTime throws on those, the conversion below
+# catches it and hands back the raw interval string, and Get-DomainPasswordPolicy converts
+# that itself - see the note there. Keeping them listed is what produces that raw value;
+# removing them would change what every consumer of those five attributes receives.
+$Script:LDAPFileTimeAttributes = [System.Collections.Generic.HashSet[string]]::new(
+    [string[]]@(
+        'lastlogon', 'lastlogontimestamp', 'pwdlastset', 'badpasswordtime',
+        'lockouttime', 'accountexpires', 'lastlogoff', 'maxpwdage', 'minpwdage',
+        'forcelogoff', 'lockoutduration', 'lockoutobservationwindow',
+        'creationtime', 'lastsettime'
+    ),
+    [System.StringComparer]::OrdinalIgnoreCase)
+
+# Generalized Time (ISO 8601: YYYYMMDDHHmmss.0Z).
+$Script:LDAPGeneralizedTimeAttributes = [System.Collections.Generic.HashSet[string]]::new(
+    [string[]]@('whenchanged', 'whencreated', 'msexchwhenmailboxcreated'),
+    [System.StringComparer]::OrdinalIgnoreCase)
+
 # Helper: Convert X.509 certificate bytes to structured object
 function Convert-CertificateToInfo {
     param([byte[]]$CertBytes)
@@ -1059,19 +1092,10 @@ function ConvertFrom-LDAPAttribute {
                 }
             } else {
                 # Non-byte array single values - apply type conversions
+                # The two attribute-name sets live at script scope (top of this file) - they
+                # used to be rebuilt inside this branch, i.e. once per attribute per object.
 
-                # FileTime attributes (Windows FILETIME - 100-nanosecond intervals since 1601-01-01)
-                $FileTimeAttributes = @(
-                    'lastlogon', 'lastlogontimestamp', 'pwdlastset', 'badpasswordtime',
-                    'lockouttime', 'accountexpires', 'lastlogoff', 'maxpwdage', 'minpwdage',
-                    'forcelogoff', 'lockoutduration', 'lockoutobservationwindow',
-                    'creationtime', 'lastsettime'
-                )
-
-                # Generalized Time attributes (ISO 8601 format: YYYYMMDDHHmmss.0Z)
-                $GeneralizedTimeAttributes = @('whenchanged', 'whencreated', 'msexchwhenmailboxcreated')
-
-                if ($FileTimeAttributes -contains $PropNameLower) {
+                if ($Script:LDAPFileTimeAttributes.Contains($PropNameLower)) {
                     # Convert FileTime to DateTime
                     try {
                         $ftValue = [long]$PropValue[0]
@@ -1086,7 +1110,7 @@ function ConvertFrom-LDAPAttribute {
                         # Fallback to raw value if conversion fails
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }
-                } elseif ($GeneralizedTimeAttributes -contains $PropNameLower) {
+                } elseif ($Script:LDAPGeneralizedTimeAttributes.Contains($PropNameLower)) {
                     # Convert Generalized Time (YYYYMMDDHHmmss.0Z) to DateTime
                     try {
                         $gtValue = [string]$PropValue[0]
@@ -1345,29 +1369,16 @@ function ConvertFrom-LDAPAttribute {
                     } catch {
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }
-                } elseif ($PropNameLower -eq 'maxpwdage' -or $PropNameLower -eq 'minpwdage' -or $PropNameLower -eq 'lockoutduration' -or $PropNameLower -eq 'lockoutobservationwindow' -or $PropNameLower -eq 'forcelogoff') {
-                    # Domain policy attributes (negative 100-nanosecond intervals)
-                    try {
-                        $Ticks = [Int64]$PropValue[0]
-
-                        if ($Ticks -eq 0) {
-                            $ConvertedProperties[$PropName] = "Not set"
-                        } elseif ($Ticks -eq -9223372036854775808) {
-                            $ConvertedProperties[$PropName] = "Never"
-                        } else {
-                            $Seconds = [Math]::Abs($Ticks) / 10000000
-
-                            if ($PropNameLower -eq 'maxpwdage' -or $PropNameLower -eq 'minpwdage') {
-                                $Days = [Math]::Floor($Seconds / 86400)
-                                $ConvertedProperties[$PropName] = "$Days days"
-                            } else {
-                                $Minutes = [Math]::Floor($Seconds / 60)
-                                $ConvertedProperties[$PropName] = "$Minutes minutes"
-                            }
-                        }
-                    } catch {
-                        $ConvertedProperties[$PropName] = $PropValue[0]
-                    }
+                # There used to be a branch here rendering the five domain policy intervals
+                # as "42 days" / "30 minutes" / "Not set" / "Never". It was dead code: all
+                # five are listed in $Script:LDAPFileTimeAttributes, so the FileTime branch
+                # above claims them first and never falls through to here. What consumers
+                # actually receive is the raw interval string, and Get-DomainPasswordPolicy
+                # converts it itself - deliberately, see the note at the head of this file.
+                # Removed rather than made reachable: reviving it would change the value of
+                # maxPwdAge, minPwdAge, lockoutDuration, lockOutObservationWindow and
+                # forceLogoff for every consumer, which is a decision about report data, not
+                # a cleanup.
                 } elseif ($PropNameLower -eq 'ms-mcs-admpwdexpirationtime' -or $PropNameLower -eq 'mslaps-passwordexpirationtime') {
                     # LAPS Expiration Times
                     try {
