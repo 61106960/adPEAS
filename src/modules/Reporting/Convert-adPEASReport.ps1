@@ -174,6 +174,7 @@ function Convert-adPEASReport {
             }
 
             # 6. Generate HTML report
+            $htmlWritten = $false
             if ($Format -in @('HTML', 'All')) {
                 Initialize-FindingsCollection
                 Set-FindingsCollection -Findings $findings
@@ -181,6 +182,7 @@ function Convert-adPEASReport {
                 $htmlPath = "$resolvedBase.html"
                 try {
                     Export-HTMLReport -OutputPath $htmlPath
+                    $htmlWritten = $true
                     Show-Line "HTML report saved to: $htmlPath" -Class Hint -NoCollect
                 } catch {
                     Write-Warning "[Convert-adPEASReport] Error generating HTML report: $_"
@@ -222,8 +224,12 @@ function Convert-adPEASReport {
                 Show-Line "Text report saved to: $textPath" -Class Hint -NoCollect
             }
 
-            # Show HTML path again after text replay (the earlier message scrolls away)
-            if ($Format -eq 'All' -and $htmlPath) {
+            # Show HTML path again after text replay (the earlier message scrolls away).
+            # Gated on the export having succeeded, not merely on the path having been
+            # computed: the path is assigned before the attempt, so this repeat used to run
+            # after a failed export as well, printing "HTML report saved to: ..." right
+            # after the warning and naming a file that does not exist.
+            if ($Format -eq 'All' -and $htmlWritten) {
                 Show-Line "HTML report saved to: $htmlPath" -Class Hint -NoCollect
             }
 

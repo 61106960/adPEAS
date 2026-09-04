@@ -176,6 +176,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **Both offline report commands announced a report they had not written.** In
+  `Convert-adPEASReport`, the "HTML report saved to: ..." line is printed a second time at
+  the very end with `-Format All`, so it does not scroll away behind the text replay. That
+  repeat was guarded on the output path having been *computed*, not on the export having
+  *succeeded* - and the path is assigned before the attempt. A failed HTML export therefore
+  produced a warning followed by a success line naming a file that does not exist. It is
+  now gated on the export.
+  `Compare-adPEASReport` had the same outcome by a different route:
+  `Export-DiffHtmlReport` warned and returned when the diff template could not be loaded
+  instead of throwing, so the caller's `try/catch` never fired and the success line right
+  after the call ran anyway. It now throws, the way `Export-HTMLReport` reports the same
+  condition.
 - **A report that could not be built destroyed the report from the previous run.** When
   `Get-HTMLTemplate` returned nothing, `Export-HTMLReport` called `Write-Error` and
   returned. `return` leaves `process{}` but `end{}` still runs, and `WriteAllText` with a

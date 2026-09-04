@@ -583,11 +583,13 @@ function Export-DiffHtmlReport {
         $ScopeOnlyCurrent
     )
 
-    # Load diff template
+    # Load diff template. Throws rather than warning and returning: the only caller wraps
+    # this in try/catch and announces success on the line right after the call, so a quiet
+    # return told the operator a diff report had been saved that was never written.
+    # Export-HTMLReport reports a missing template the same way.
     $html = Get-DiffHTMLTemplate
     if (-not $html) {
-        Write-Warning "[Export-DiffHtmlReport] Failed to load diff HTML template"
-        return
+        throw "[Export-DiffHtmlReport] Failed to load diff HTML template"
     }
 
     # Build diff sections HTML
