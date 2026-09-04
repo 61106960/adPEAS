@@ -693,36 +693,10 @@ function Build-FindingCardMetadata {
         [hashtable]$ScoringContext
     )
 
-    # Determine card severity (highest among findings)
-    # Determine card severity from findings
-    # Priority: Show-Line severity > Object AttributeSeverities
-    $cardSeverity = 'note'
-    $severityPriority = @{ 'finding' = 4; 'hint' = 3; 'secure' = 2; 'note' = 1; 'standard' = 0 }
-    $currentPriority = 1
-
-    foreach ($f in $Findings) {
-        if ($f.Type -eq 'Object' -and $f.AttributeSeverities) {
-            # Check attribute-level severities for objects
-            foreach ($attrSev in $f.AttributeSeverities.Values) {
-                $sevLower = $attrSev.ToLower()
-                $priority = $severityPriority[$sevLower]
-                if ($null -ne $priority -and $priority -gt $currentPriority) {
-                    $currentPriority = $priority
-                    $cardSeverity = $sevLower
-                    if ($cardSeverity -eq 'finding') { break }
-                }
-            }
-        } elseif ($f.Severity) {
-            # Check Show-Line severity (Line/KeyValue findings)
-            $sevLower = $f.Severity.ToLower()
-            $priority = $severityPriority[$sevLower]
-            if ($null -ne $priority -and $priority -gt $currentPriority) {
-                $currentPriority = $priority
-                $cardSeverity = $sevLower
-            }
-        }
-        if ($cardSeverity -eq 'finding') { break }
-    }
+    # The severity the JavaScript scoring reads for this card. Same ranking as the badge
+    # and the summary count, because all three go through Get-GroupSeverity - this used to
+    # be a third copy of that loop, with Hint ranked above Secure.
+    $cardSeverity = (Get-GroupSeverity -Findings $Findings).ToLower()
 
     # Count objects
     $objectCount = @($Findings | Where-Object { $_.Type -eq 'Object' }).Count
@@ -835,11 +809,22 @@ function Get-GroupItemCount {
 function Get-GroupSeverity {
     param([array]$Findings)
 
-    # Matches $Script:SeverityPriority (adPEAS-Types.ps1) and Get-MaxSeverityFromValues
-    # (Get-RenderModel.ps1): Secure outranks Hint everywhere in adPEAS now, not just for
-    # an attribute row - a confirmed-secure section badge should not be downgraded by a
-    # mere Hint elsewhere in the same section.
-    $severityPriority = @{ 'Finding' = 4; 'Secure' = 3; 'Hint' = 2; 'Note' = 1; 'Standard' = 0 }
+    # Derived from $Script:SeverityPriority (adPEAS-Types.ps1) rather than restated, so
+    # this cannot drift from the ranking the rest of adPEAS uses: Secure outranks Hint - a
+    # confirmed-secure section must not be downgraded by a mere Hint elsewhere in it.
+    #
+    # This function is the single answer to "how severe is this group": the card badge and
+    # the scoring metadata call it too. They used to carry their own copy of the loop, with
+    # Hint above Secure, so the same group could be counted as Secure in the summary and
+    # rendered with a Hint badge right below it.
+    #
+    # The last entry keeps priority 0, which is what leaves a group of nothing but
+    # Standard severities at the 'Note' default instead of promoting it to 'Standard'.
+    $severityPriority = @{}
+    for ($i = 0; $i -lt $Script:SeverityPriority.Count; $i++) {
+        $severityPriority[$Script:SeverityPriority[$i]] = $Script:SeverityPriority.Count - 1 - $i
+    }
+
     $highestPriority = 0
     $highestSeverity = 'Note'
 
@@ -1034,37 +1019,10 @@ function Build-FindingCardHtml {
 
     $card = [System.Text.StringBuilder]::new()
 
-    # Determine card severity from findings
-    # Priority: Show-Line severity > Object AttributeSeverities
-    $cardSeverity = 'note'
-    $severityPriority = @{ 'finding' = 4; 'hint' = 3; 'secure' = 2; 'note' = 1; 'standard' = 0 }
-    $currentPriority = 1  # Start with 'note'
-
-    foreach ($f in $Findings) {
-        # For Objects: Check AttributeSeverities for actual severity
-        if ($f.Type -eq 'Object' -and $f.AttributeSeverities) {
-            foreach ($attrSev in $f.AttributeSeverities.Values) {
-                $sevLower = $attrSev.ToLower()
-                $priority = $severityPriority[$sevLower]
-                if ($null -ne $priority -and $priority -gt $currentPriority) {
-                    $currentPriority = $priority
-                    $cardSeverity = $sevLower
-                    if ($cardSeverity -eq 'finding') { break }  # Can't get higher
-                }
-            }
-        }
-        # For Lines/KeyValue: Use the Finding's Severity directly (from Show-Line -Class)
-        elseif ($f.Severity) {
-            $sevLower = $f.Severity.ToLower()
-            $priority = $severityPriority[$sevLower]
-            if ($null -ne $priority -and $priority -gt $currentPriority) {
-                $currentPriority = $priority
-                $cardSeverity = $sevLower
-            }
-        }
-
-        if ($cardSeverity -eq 'finding') { break }  # Can't get higher than finding
-    }
+    # The badge this card shows. Get-GroupSeverity is the one place that ranks a group, so
+    # the badge cannot disagree with the summary count above it; lowercased because it goes
+    # into a CSS class and a data attribute.
+    $cardSeverity = (Get-GroupSeverity -Findings $Findings).ToLower()
 
     # Count items intelligently:
     # - Objects (AD objects): count each as individual item

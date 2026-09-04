@@ -82,17 +82,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `Convert-ADIntervalToString` - the export formatter whose failure mode is silent, since
   anything it cannot read comes out as "Forever", which reads as a domain whose passwords
   never expire.
-- **HTML report section badges: `Secure` now outranks `Hint`, matching the ranking
-  already used for attribute rows.** `Export-HTMLReport.ps1`'s `Get-GroupSeverity`
-  (picks the colour of a report section's badge) previously ranked `Hint` above
-  `Secure` with its own, separately-maintained priority table - a deliberate
-  divergence from the central ranking (`adPEAS-Types.ps1`'s `$Script:SeverityPriority`
-  and `Get-RenderModel.ps1`'s `Get-MaxSeverityFromValues`, both `Finding > Secure >
-  Hint > Note`), found while building the unit test suites and left as two
-  intentionally different answers pending a decision. Decided: unify on the central
-  ranking, so a section that is otherwise confirmed secure is not downgraded by a mere
-  Hint elsewhere in the same section. This visibly changes the badge colour of any
-  report section whose highest severity is a Secure finding alongside a Hint one.
+- **`Secure` now outranks `Hint` everywhere in the HTML report - the summary counts, the
+  card badge and the scoring metadata.** The ranking existed three times in
+  `Export-HTMLReport.ps1`, as three near-identical loops: `Get-GroupSeverity` (feeds the
+  counters at the top), `Build-FindingCardHtml` (the badge a reader sees) and
+  `Build-FindingCardMetadata` (the severity the JavaScript scoring reads). All three
+  ranked `Hint` above `Secure`, a documented divergence from the central ranking
+  (`adPEAS-Types.ps1`'s `$Script:SeverityPriority` and `Get-RenderModel.ps1`'s
+  `Get-MaxSeverityFromValues`, both `Finding > Secure > Hint > Note`), left as an
+  intentional difference pending a decision. Decided: unify on the central ranking, so a
+  section that is otherwise confirmed secure is not downgraded by a mere Hint elsewhere
+  in it. The first attempt changed only `Get-GroupSeverity` and claimed to have changed
+  the badge - it had not, and the result was worse than before: a group holding both a
+  Secure and a Hint was *counted* as Secure while the card below it still rendered a
+  Hint badge and scored as hint. All three now call `Get-GroupSeverity`, which derives
+  its table from `$Script:SeverityPriority` instead of restating it, so there is one
+  answer to "how severe is this group" rather than three. Visible effect: for a group
+  holding both, the badge, the counter and the score all read Secure.
 - **HTML report risk score: the account tier classification now matches the identity
   gate every check already uses.** `Build-ScoringContext` (the report's risk-scoring
   layer) classified an account's highest privileged group membership with its own
