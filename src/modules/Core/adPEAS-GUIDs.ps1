@@ -559,6 +559,115 @@ $Script:AllActiveDirectoryRights = @(
     [System.DirectoryServices.ActiveDirectoryRights]::Synchronize
 )
 
+# Generic access rights (GA/GR/GW/GX) mapped to their directory-specific composite mask
+# for a directory object, MS-ADTS 5.1.3.2. Shared by ConvertTo-ExpandedADRightsValue and
+# (through it) every consumer that tests a raw ActiveDirectoryRights value.
+$Script:GenericADRightsMap = @(
+    @{ Bit = 0x80000000L; Mapped = 0x00020094L }  # GENERIC_READ
+    @{ Bit = 0x40000000L; Mapped = 0x00020028L }  # GENERIC_WRITE
+    @{ Bit = 0x20000000L; Mapped = 0x00020004L }  # GENERIC_EXECUTE
+    @{ Bit = 0x10000000L; Mapped = 0x000F01FFL }  # GENERIC_ALL
+)
+
+<#
+.SYNOPSIS
+    Expands the generic access bits (GA/GR/GW/GX) in a raw ActiveDirectoryRights value
+    into their directory-specific mask, so every consumer tests the same normalized form.
+
+.DESCRIPTION
+    An ACE can carry GENERIC_ALL (0x10000000), GENERIC_READ (0x80000000), GENERIC_WRITE
+    (0x40000000) or GENERIC_EXECUTE (0x20000000) rather than the specific mask; the
+    directory maps them at access-check time using the generic mapping in MS-ADTS
+    5.1.3.2, but a stored ACE keeps the generic bit exactly as written. None of those
+    bits matches any member of the ActiveDirectoryRights enum - the enum's GenericAll is
+    already the mapped 0x000F01FF, not the raw 0x10000000 bit - so a plain
+    "$ACE.ActiveDirectoryRights -band [ActiveDirectoryRights]::X" test fails for a
+    GA-only ACE against every right X, GenericAll included: the ACE is invisible to the
+    check, not merely misclassified. An RBCD descriptor is written as
+    "O:BAD:(A;;GA;;;<sid>)" - what Invoke-RBCDOperation itself writes - so this is not a
+    theoretical case.
+
+    Get-ObjectACL's .Rights/.RightsRaw already go through this mapping (via
+    ConvertTo-ADRightsList below), so a check that reads those two properties does not
+    need to call this itself. It matters only for code that inspects
+    $ACE.ActiveDirectoryRights directly - see Test-ADRightsMask, the predicate built on
+    top of this for exactly that case.
+
+.PARAMETER Rights
+    The raw ActiveDirectoryRights value (or its underlying int/long) from an ACE.
+
+.OUTPUTS
+    [long] - the expanded mask, with any generic bit replaced by its specific composite.
+#>
+function ConvertTo-ExpandedADRightsValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Rights
+    )
+
+    if ($null -eq $Rights) { return 0L }
+
+    # Via [long] and an explicit 32-bit mask. The value arrives either as an enum whose
+    # underlying Int32 is negative once the top bit is set (GENERIC_READ is -2147483648)
+    # or as the plain number 2147483648 - [int] handles the first and overflows on the
+    # second, [long] takes both and the mask normalises the sign.
+    $mask = ([long]$Rights) -band 0xFFFFFFFFL
+
+    foreach ($generic in $Script:GenericADRightsMap) {
+        if (($mask -band $generic.Bit) -ne 0) {
+            $mask = ($mask -bor $generic.Mapped) -band (-bnot $generic.Bit)
+        }
+    }
+
+    return $mask
+}
+
+<#
+.SYNOPSIS
+    Tests whether an ACE's rights grant a specific right, generic access bits included.
+
+.DESCRIPTION
+    Expands $Rights via ConvertTo-ExpandedADRightsValue, then requires every bit of $Has
+    to be present - a subset test, not a bare overlap: ReadProperty's bit overlaps
+    GenericAll's mask and would otherwise match it (the same reason
+    ConvertTo-ADRightsList below does an exact match, not an overlap, per right). For a
+    single-bit right (WriteProperty, WriteDacl, CreateChild, ...) a subset test and an
+    overlap test are the same thing, so this one function is correct for both single-bit
+    and composite (GenericAll, GenericWrite) rights - callers do not need to pick.
+
+    Any check module that reads $ACE.ActiveDirectoryRights directly should use this
+    instead of its own "-band" against the enum. A raw "-band" test is exactly the
+    pattern that made a GenericAll-by-generic-bit ACE invisible to Get-OUPermissions and
+    to Get-PrivilegedGroupMembers' AdminSDHolder check before this function existed.
+
+.PARAMETER Rights
+    The raw ActiveDirectoryRights value (or its underlying int/long) from an ACE.
+
+.PARAMETER Has
+    The right (or several, OR'd together like the enum's own flags) that must all be
+    present for a match, e.g. [System.DirectoryServices.ActiveDirectoryRights]::WriteDacl.
+
+.OUTPUTS
+    [bool]
+#>
+function Test-ADRightsMask {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Rights,
+
+        [Parameter(Mandatory = $true)]
+        $Has
+    )
+
+    $mask = ConvertTo-ExpandedADRightsValue -Rights $Rights
+    $hasMask = ([long]$Has) -band 0xFFFFFFFFL
+    return ($mask -band $hasMask) -eq $hasMask
+}
+
 <#
 .SYNOPSIS
     Turns an ACE's ActiveDirectoryRights bitmask into the list of right names.
@@ -567,16 +676,11 @@ $Script:AllActiveDirectoryRights = @(
     Get-ObjectACL and ConvertTo-FormattedACE both render ACEs and used to carry their own
     copy of this loop. Two defects lived in both copies.
 
-    The first was the generic access rights. An ACE can carry GENERIC_ALL (0x10000000),
-    GENERIC_READ (0x80000000), GENERIC_WRITE (0x40000000) or GENERIC_EXECUTE (0x20000000)
-    rather than the specific mask; the directory maps them at access-check time using the
-    generic mapping in MS-ADTS 5.1.3.2. None of those bits matches any member of the
-    ActiveDirectoryRights enum - the enum's GenericAll is already the mapped 0x000F01FF -
-    so the loop produced no names at all and the ACE was printed with an empty Rights
-    field. That is not a corner case: an RBCD descriptor is written as
-    "O:BAD:(A;;GA;;;<sid>)", which is what Invoke-RBCDOperation itself writes, so the
-    most permissive ACE there is displayed as blank. The mask is mapped here first, which
-    is what the directory grants.
+    The first was the generic access rights - see ConvertTo-ExpandedADRightsValue, which
+    now does this mapping (moved out of this function, unchanged otherwise). That is not
+    a corner case: an RBCD descriptor is written as "O:BAD:(A;;GA;;;<sid>)", which is
+    what Invoke-RBCDOperation itself writes, so the most permissive ACE there used to be
+    displayed as blank.
 
     The second was the substitution of a resolved extended right for the generic
     "ExtendedRight" label. Filtering with Where-Object collapses a one-element result to a
@@ -610,24 +714,7 @@ function ConvertTo-ADRightsList {
     $empty = New-Object string[] 0
     if ($null -eq $Rights) { return ,$empty }
 
-    # Via [long] and an explicit 32-bit mask. The value arrives either as an enum whose
-    # underlying Int32 is negative once the top bit is set (GENERIC_READ is -2147483648)
-    # or as the plain number 2147483648 - [int] handles the first and overflows on the
-    # second, [long] takes both and the mask normalises the sign.
-    $mask = ([long]$Rights) -band 0xFFFFFFFFL
-
-    # Generic mapping for directory objects, MS-ADTS 5.1.3.2
-    $genericMap = @(
-        @{ Bit = 0x80000000L; Mapped = 0x00020094L }  # GENERIC_READ
-        @{ Bit = 0x40000000L; Mapped = 0x00020028L }  # GENERIC_WRITE
-        @{ Bit = 0x20000000L; Mapped = 0x00020004L }  # GENERIC_EXECUTE
-        @{ Bit = 0x10000000L; Mapped = 0x000F01FFL }  # GENERIC_ALL
-    )
-    foreach ($generic in $genericMap) {
-        if (($mask -band $generic.Bit) -ne 0) {
-            $mask = ($mask -bor $generic.Mapped) -band (-bnot $generic.Bit)
-        }
-    }
+    $mask = ConvertTo-ExpandedADRightsValue -Rights $Rights
 
     $names = @()
     foreach ($right in $Script:AllActiveDirectoryRights) {

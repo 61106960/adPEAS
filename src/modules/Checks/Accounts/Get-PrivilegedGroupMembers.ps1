@@ -856,24 +856,21 @@ function Get-PrivilegedGroupMembers {
                         }
 
                         # Check for dangerous permissions
-                        $Rights = $ACE.ActiveDirectoryRights
                         $objectType = $ACE.ObjectType
 
-                        # GenericAll in AD is 0xF01FF (983551)
-                        # We need to check if the EXACT GenericAll flag is set, not just if some rights overlap
-                        # Also, GenericAll only applies to the whole object if ObjectType is empty
-                        $GenericAllValue = [int][System.DirectoryServices.ActiveDirectoryRights]::GenericAll
-                        $RightsValue = [int]$Rights
-
-                        # Check if GenericAll is explicitly set (not just overlapping bits)
-                        # AND ObjectType must be empty (applies to whole object, not specific attribute)
-                        $HasGenericAll = (($RightsValue -band $GenericAllValue) -eq $GenericAllValue) -and
+                        # Test-ADRightsMask (adPEAS-GUIDs.ps1) expands generic access bits
+                        # (GA/GR/GW/GX) before testing and requires an exact match for GenericAll,
+                        # not just an overlap - a raw "-band" against $ACE.ActiveDirectoryRights
+                        # would miss an ACE that grants full control only via the GA generic bit
+                        # (e.g. the RBCD-style "O:BAD:(A;;GA;;;<sid>)" form), GenericAll included.
+                        # Also, GenericAll only applies to the whole object if ObjectType is empty.
+                        $HasGenericAll = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)) -and
                                          (-not $objectType -or $objectType -eq [Guid]::Empty)
 
                         # WriteDacl (0x40000) and WriteOwner (0x80000) - only if ObjectType is empty
-                        $HasWriteDacl = ($Rights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteDacl) -and
+                        $HasWriteDacl = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteDacl)) -and
                                         (-not $objectType -or $objectType -eq [Guid]::Empty)
-                        $HasWriteOwner = ($Rights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteOwner) -and
+                        $HasWriteOwner = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner)) -and
                                          (-not $objectType -or $objectType -eq [Guid]::Empty)
 
                         $HasDangerousPermission = $HasGenericAll -or $HasWriteDacl -or $HasWriteOwner

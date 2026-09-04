@@ -81,6 +81,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **An ACE granting full control via the SDDL generic bit (`GA`, `0x10000000`) - the
+  form `Invoke-RBCDOperation` itself writes, and the shape any real full-control grant
+  in a DACL actually takes - was invisible to `Get-OUPermissions.ps1` (used by
+  `Get-LAPSPermissions`, `Get-PasswordResetRights`, `Get-DangerousOUPermissions`) and to
+  `Get-PrivilegedGroupMembers`'s AdminSDHolder check.** Both tested the raw
+  `$ACE.ActiveDirectoryRights` with `-band [ActiveDirectoryRights]::X`, but the
+  directory maps a generic bit (`GA`/`GR`/`GW`/`GX`) to its object-specific mask only at
+  access-check time (MS-ADTS 5.1.3.2) - a stored ACE keeps the bit exactly as written,
+  and `[ActiveDirectoryRights]::GenericAll` itself already **is** the mapped `0xF01FF`,
+  not the raw `0x10000000` bit. A `-band` test against a GA-only ACE therefore failed
+  every right it was asked about, not just `GenericAll` - the ACE was completely
+  invisible to the check, not merely misclassified. `Get-DangerousACLs`,
+  `Get-GPOPermissions` and `Get-AddComputerRights` were already unaffected: all three go
+  through `Get-ObjectACL`, whose `.Rights`/`.RightsRaw` (and its own `-DangerousOnly`/
+  `-Rights` filters) already apply this mapping via `ConvertTo-ADRightsList`. Fixed with
+  two new central functions in `adPEAS-GUIDs.ps1` - `ConvertTo-ExpandedADRightsValue`
+  (the generic-bit mapping, extracted out of `ConvertTo-ADRightsList` rather than
+  duplicated) and `Test-ADRightsMask -Rights -Has` (the predicate every raw
+  `$ACE.ActiveDirectoryRights` test now goes through) - so every consumer shares one
+  mapping instead of re-implementing it. Verified end to end with real SDDL descriptors:
+  a `(A;;GA;;;<sid>)` ACE now produces the identical set of findings as the equivalent
+  `0xf01ff` hex mask in both affected modules.
 - **`Compare-adPEASReport` (scan-diff / `-Baseline`/`-Current`) silently dropped findings
   when two of them shared the same identity key, keeping only the last one.** The two
   scans were matched through a single hashtable keyed by `Get-FindingIdentity`

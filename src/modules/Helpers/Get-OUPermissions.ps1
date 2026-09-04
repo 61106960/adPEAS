@@ -381,7 +381,10 @@ function Get-OUPermissions {
                 $inheritedObjectType = $ACE.InheritedObjectType
 
                 # Pre-calculate common right checks (performance optimization - used by multiple checks)
-                $HasWriteProperty = $ACE.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteProperty
+                # Test-ADRightsMask (adPEAS-GUIDs.ps1) expands generic access bits (GA/GR/GW/GX)
+                # before testing - a raw "-band" against $ACE.ActiveDirectoryRights would miss a
+                # right granted only via a generic bit, GenericAll included (see its own header).
+                $HasWriteProperty = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteProperty)
                 $IsAllProperties = ($objectType -eq [GUID]::Empty) -or (-not $objectType)
 
                 # InheritedObjectType checks - determines which object class this ACE applies to
@@ -423,13 +426,9 @@ function Get-OUPermissions {
 
                 # Check 1: GenericAll (Full Control)
                 if ($CheckType -contains 'GenericAll') {
-                    # GenericAll in AD is 0xF01FF (983551)
-                    # We need to check if ALL bits of GenericAll are set, not just some overlap
-                    # GenericAll only applies to the whole object if ObjectType is empty
-                    $GenericAllValue = [int][System.DirectoryServices.ActiveDirectoryRights]::GenericAll
-                    $RightsValue = [int]$ACE.ActiveDirectoryRights
-
-                    $HasFullGenericAll = (($RightsValue -band $GenericAllValue) -eq $GenericAllValue) -and $IsAllProperties
+                    # GenericAll only applies to the whole object if ObjectType is empty. The
+                    # generic-bit expansion and the exact-match test both live in Test-ADRightsMask.
+                    $HasFullGenericAll = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)) -and $IsAllProperties
                     if ($HasFullGenericAll) {
                         # Determine scope based on InheritedObjectType
                         $scopeInfo = if ($IsAllObjectTypes) {
@@ -454,10 +453,7 @@ function Get-OUPermissions {
                 # Check 1b: GenericWrite (includes WriteProperty, WriteSelf, WritePropertyExtended)
                 # GenericWrite = 0x00020028 - dangerous because it includes WriteProperty on all attributes
                 if ($CheckType -contains 'GenericWrite') {
-                    $GenericWriteValue = [int][System.DirectoryServices.ActiveDirectoryRights]::GenericWrite
-                    $RightsValue = [int]$ACE.ActiveDirectoryRights
-
-                    $HasGenericWrite = (($RightsValue -band $GenericWriteValue) -eq $GenericWriteValue) -and $IsAllProperties
+                    $HasGenericWrite = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericWrite)) -and $IsAllProperties
                     if ($HasGenericWrite) {
                         $scopeInfo = if ($IsAllObjectTypes) {
                             ""
@@ -480,7 +476,7 @@ function Get-OUPermissions {
 
                 # Check 1c: WriteDacl (can modify ACL = effectively full control)
                 if ($CheckType -contains 'WriteDacl') {
-                    $HasWriteDacl = $ACE.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteDacl
+                    $HasWriteDacl = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteDacl)
 
                     if ($HasWriteDacl) {
                         $scopeInfo = if ($IsAllObjectTypes) {
@@ -504,7 +500,7 @@ function Get-OUPermissions {
 
                 # Check 1d: WriteOwner (can take ownership = effectively full control)
                 if ($CheckType -contains 'WriteOwner') {
-                    $HasWriteOwner = $ACE.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteOwner
+                    $HasWriteOwner = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner)
 
                     if ($HasWriteOwner) {
                         $scopeInfo = if ($IsAllObjectTypes) {
@@ -529,7 +525,7 @@ function Get-OUPermissions {
                 # Check 2: Password Reset Rights
                 # Note: Password reset only applies to User objects, so we check InheritedObjectType
                 if ($CheckType -contains 'PasswordReset') {
-                    $HasExtendedRight = $ACE.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight
+                    $HasExtendedRight = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
 
                     if ($HasExtendedRight -and $AppliesToUsers) {
                         # Check for Reset Password extended right (using central GUID lookup)
@@ -634,7 +630,7 @@ function Get-OUPermissions {
                         }
                     }
                     # Check Self right with Validated-SPN (validated write)
-                    $HasSelf = $ACE.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::Self
+                    $HasSelf = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)
                     if ($HasSelf -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers)) {
                         if ($ACE.ObjectType -eq $Script:ValidatedWriteGUIDs['Validated-SPN']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
@@ -697,7 +693,7 @@ function Get-OUPermissions {
                         }
                     }
                     # Check Self right with Validated-DNS-Host-Name (validated write)
-                    $HasSelf = $ACE.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::Self
+                    $HasSelf = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)
                     if ($HasSelf -and -not $IsAllProperties -and $AppliesToComputers) {
                         if ($ACE.ObjectType -eq $Script:ValidatedWriteGUIDs['Validated-DNS-Host-Name']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
@@ -770,17 +766,16 @@ function Get-OUPermissions {
                 if ($CheckType -contains 'LAPS') {
 
                     # GenericAll is a composite mask (0xf01ff) that already contains the
-                    # ReadProperty and ExtendedRight bits, so a bare -band against it
-                    # overlaps with almost any right. Testing for overlap made every
-                    # harmless Allow ACE without an ObjectType - ReadControl, Delete,
-                    # ListChildren - come back as an "All Properties includes LAPS"
-                    # finding. All bits must be present, the same way check 2 tests it.
-                    $GenericAllMask = [int][System.DirectoryServices.ActiveDirectoryRights]::GenericAll
-                    $RightsMask = [int]$ACE.ActiveDirectoryRights
-
-                    $HasReadProperty = ($RightsMask -band [int][System.DirectoryServices.ActiveDirectoryRights]::ReadProperty) -ne 0
-                    $HasGenericAll = (($RightsMask -band $GenericAllMask) -eq $GenericAllMask)
-                    $HasExtendedRight = ($RightsMask -band [int][System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight) -ne 0
+                    # ReadProperty and ExtendedRight bits, so a bare overlap test against it
+                    # matches almost any right. Testing for overlap made every harmless Allow
+                    # ACE without an ObjectType - ReadControl, Delete, ListChildren - come back
+                    # as an "All Properties includes LAPS" finding. Test-ADRightsMask requires
+                    # every bit of GenericAll to be present, the same way check 2 tests it - and
+                    # also expands a GA-granted-via-generic-bit ACE first, which a raw -band on
+                    # $ACE.ActiveDirectoryRights would miss entirely (see its own header).
+                    $HasReadProperty = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty)
+                    $HasGenericAll = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)
+                    $HasExtendedRight = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
 
                     if (($HasReadProperty -or $HasGenericAll -or $HasExtendedRight) -and $AppliesToComputers) {
                         # LAPS permissions on OUs can be configured in several ways:
@@ -912,7 +907,7 @@ function Get-OUPermissions {
                 # ObjectType specifies WHICH object class can be created (User, Computer, Group, etc.)
                 if ($CheckType -contains 'ObjectCreation') {
 
-                    $HasCreateChild = $ACE.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::CreateChild
+                    $HasCreateChild = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::CreateChild)
                     if ($HasCreateChild) {
                         # Determine what can be created based on ObjectType
                         # Empty ObjectType = "All Objects" (but may be limited by other mechanisms)
