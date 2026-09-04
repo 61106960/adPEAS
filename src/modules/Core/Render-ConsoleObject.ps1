@@ -10,7 +10,7 @@
 
 .NOTES
     Author: Alexander Sturz (@_61106960_)
-    Requires: Write-adPEASOutput.ps1 (Write-adPEASAttribute, Show-EmptyLine)
+    Requires: Write-adPEASOutput.ps1 (Write-adPEASAttribute, Show-EmptyLine, Get-adPEASAttributeAlignment)
 #>
 
 <#
@@ -102,7 +102,8 @@ function Render-ConsoleRow {
 
             # Build attribute name with padding
             $attrPadding = if ($hasAttrPrefix) { $AlignAt - 4 } else { $AlignAt }
-            $paddedAttrName = "$($Row.Name):".PadRight($attrPadding, ' ')
+            $alignment = Get-adPEASAttributeAlignment -Name $Row.Name -Width $attrPadding
+            $paddedAttrName = $alignment.PaddedName
 
             # First value - output with attribute name
             $firstVal = $classifiedValues[0]
@@ -112,17 +113,10 @@ function Render-ConsoleRow {
                 $attrColor = Get-ClassColor -Class $attrClass
                 $valColor = Get-ClassColor -Class $firstVal.Class
 
-                # Special handling for Secure class (has background color)
+                # Special handling for Secure class (has background color), color ONLY the
+                # name and value, NOT the padding spaces (see Get-adPEASAttributeAlignment)
                 if ($attrClass -eq "Secure") {
-                    $nameOnlyWithColon = "$($Row.Name):"
-                    # Math::Max, because PowerShell throws on a negative repeat count
-                    # rather than returning an empty string. An attribute whose display
-                    # name is longer than the alignment column would otherwise end the
-                    # whole object's output with an exception, and only for the Secure
-                    # class, which is the one branch that pads by hand instead of using
-                    # PadRight.
-                    $paddingSpaces = ' ' * ([Math]::Max(0, $attrPadding - $nameOnlyWithColon.Length))
-                    $coloredOutput = $attrColor + $attrPrefix + $nameOnlyWithColon + $ANSI["Reset"] + $paddingSpaces + $valColor + $firstVal.Value + $ANSI["Reset"]
+                    $coloredOutput = $attrColor + $attrPrefix + $alignment.NameWithColon + $ANSI["Reset"] + $alignment.PaddingSpaces + $valColor + $firstVal.Value + $ANSI["Reset"]
                     Write-Host $coloredOutput
                 } else {
                     $attrPart = $attrColor + $attrPrefix + $paddedAttrName + $ANSI["Reset"]
@@ -137,9 +131,7 @@ function Render-ConsoleRow {
                     $attrColor = Get-ClassColor -Class $attrClass
                     $valColor = Get-ClassColor -Class $firstVal.Class
                     if ($attrClass -eq "Secure") {
-                        $nameOnlyWithColon = "$($Row.Name):"
-                        $paddingSpaces = ' ' * ([Math]::Max(0, $attrPadding - $nameOnlyWithColon.Length))
-                        $fileText = $attrColor + $attrPrefix + $nameOnlyWithColon + $ANSI["Reset"] + $paddingSpaces + $valColor + $firstVal.Value + $ANSI["Reset"]
+                        $fileText = $attrColor + $attrPrefix + $alignment.NameWithColon + $ANSI["Reset"] + $alignment.PaddingSpaces + $valColor + $firstVal.Value + $ANSI["Reset"]
                     } else {
                         $fileText = $attrColor + $attrPrefix + $paddedAttrName + $ANSI["Reset"] + $valColor + $firstVal.Value + $ANSI["Reset"]
                     }

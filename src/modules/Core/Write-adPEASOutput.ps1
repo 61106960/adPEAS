@@ -17,6 +17,51 @@
 
 <#
 .SYNOPSIS
+    Computes the padded attribute name for column alignment, split into parts.
+.DESCRIPTION
+    Single source of truth for the attribute-column alignment used by every renderer.
+    Returns the name with its trailing colon, the padding spaces needed to reach the
+    target column, and the two already joined into PaddedName.
+
+    A caller that colors the whole name+padding together (the common case) uses
+    PaddedName, which behaves exactly like ".PadRight()" - including leaving the
+    string unchanged when the name is already at or past the target column. A caller
+    that must NOT color the padding (the Secure class, which has a background color
+    and would otherwise paint a bar of color under the filler spaces) uses
+    NameWithColon and PaddingSpaces separately.
+
+    Never throws on a name longer than the target column: a plain "' ' * negative"
+    throws in PowerShell instead of returning an empty string, which is why this is
+    centralized here instead of re-implemented at each call site.
+.PARAMETER Name
+    The attribute name, without the trailing colon. Empty or absent for a
+    continuation line, which has no name to align.
+.PARAMETER Width
+    Target column width to align the name (with colon) to.
+#>
+function Get-adPEASAttributeAlignment {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyString()]
+        [string]$Name,
+
+        [Parameter(Mandatory=$true)]
+        [int]$Width
+    )
+
+    $nameWithColon = if ($Name) { "${Name}:" } else { "" }
+    $paddingSpaces = ' ' * ([Math]::Max(0, $Width - $nameWithColon.Length))
+
+    [PSCustomObject]@{
+        NameWithColon = $nameWithColon
+        PaddingSpaces = $paddingSpaces
+        PaddedName    = $nameWithColon + $paddingSpaces
+    }
+}
+
+<#
+.SYNOPSIS
     Writes a single formatted line to console and/or file.
 .DESCRIPTION
     Pure output function - takes pre-formatted content and writes it to:
@@ -167,8 +212,8 @@ function Write-adPEASAttribute {
 
     # Calculate padding (reduce by 4 when prefix present)
     $paddingWidth = if ($hasPrefix) { $AlignAt - 4 } else { $AlignAt }
-    $nameWithColon = if ($Name) { "${Name}:" } else { "" }
-    $paddedName = $nameWithColon.PadRight($paddingWidth, ' ')
+    $alignment = Get-adPEASAttributeAlignment -Name $Name -Width $paddingWidth
+    $paddedName = $alignment.PaddedName
 
     # Build plain text
     $plainText = $prefix + $paddedName + $Value
@@ -184,15 +229,9 @@ function Write-adPEASAttribute {
             Write-Host $coloredText
         } elseif ($Class -eq "Secure") {
             # Special handling for Secure class (has background color), color ONLY the prefix+name and value, NOT the padding spaces
-            # Math::Max, because PowerShell throws on a negative repeat count rather than
-            # returning an empty string: a name longer than the alignment column would end
-            # the line with an exception instead of simply not padding.
-            $nameOnlyWithColon = if ($Name) { "${Name}:" } else { "" }
-            $paddingSpaces = ' ' * ([Math]::Max(0, $paddingWidth - $nameOnlyWithColon.Length))
-
             # Build: [colored prefix+name] [reset] [padding] [colored value] [reset]
-            $coloredOutput = $classColor + $prefix + $nameOnlyWithColon + $ANSI["Reset"] +
-                            $paddingSpaces +
+            $coloredOutput = $classColor + $prefix + $alignment.NameWithColon + $ANSI["Reset"] +
+                            $alignment.PaddingSpaces +
                             $classColor + $Value + $ANSI["Reset"]
             Write-Host $coloredOutput
         } else {
@@ -214,10 +253,8 @@ function Write-adPEASAttribute {
             if ($ColorValue -and $Class -notin @("Standard", "Secure")) {
                 $fileText = $classColor + $plainText + $ANSI["Reset"]
             } elseif ($Class -eq "Secure") {
-                $nameOnlyWithColon = if ($Name) { "${Name}:" } else { "" }
-                $paddingSpaces = ' ' * ([Math]::Max(0, $paddingWidth - $nameOnlyWithColon.Length))
-                $fileText = $classColor + $prefix + $nameOnlyWithColon + $ANSI["Reset"] +
-                            $paddingSpaces +
+                $fileText = $classColor + $prefix + $alignment.NameWithColon + $ANSI["Reset"] +
+                            $alignment.PaddingSpaces +
                             $classColor + $Value + $ANSI["Reset"]
             } else {
                 $attrPart = $prefix + $paddedName

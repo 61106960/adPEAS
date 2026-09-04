@@ -61,6 +61,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   distinguishes the well-known BUILTIN Operator groups (Account/Server/Backup
   Operators, real SID `S-1-5-32-nnn`) from a same-looking but nonexistent
   domain-relative SID, which the old string-suffix regex could not tell apart.
+- **Console attribute-column alignment is now computed in one place.** Every renderer
+  aligns the value of an attribute line to a fixed column, but `Secure` (the only
+  severity class with a background colour) could not use `.PadRight()` like every other
+  class: colouring a `PadRight`-ed string tints the padding spaces too, so `Secure`
+  computed its padding by hand instead - copy-pasted across four call sites in
+  `Write-adPEASAttribute` (`Write-adPEASOutput.ps1`) and the multi-value row renderer
+  (`Render-ConsoleObject.ps1`), each console and file output. Found while building the
+  unit test suites: a name longer than the alignment column made the hand-rolled
+  version throw (`' ' * negative`), already fixed with `[Math]::Max(0, ...)`; the
+  duplication itself was left as a documented, unresolved design question. Decided: a
+  new shared helper, `Get-adPEASAttributeAlignment -Name -Width`, returns the name, the
+  padding spaces, and the two already joined as separate parts, so every caller builds
+  on the same computation - the ones that colour name and padding together use the
+  joined form, `Secure` uses the two parts separately. Internal refactoring only, no
+  visible behaviour change.
 
 ### Fixed
 
