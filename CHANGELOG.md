@@ -82,6 +82,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `Convert-ADIntervalToString` - the export formatter whose failure mode is silent, since
   anything it cannot read comes out as "Forever", which reads as a domain whose passwords
   never expire.
+- **A finding card reports its section the way a reader sees it, and an untagged object
+  card names a computer the same way a tagged one does.** Two small inconsistencies in the
+  per-card content, both found while putting the first tests around it. The `section` field
+  the report's "top actions" list displays was chosen by a guard that tested `CheckTitle`
+  and then returned `Category`, so a card whose first finding named no check fell through
+  to the lowercase id slug and the list showed "Accounts" and "accounts" next to each
+  other - the list's own DOM fallback reads the section title, which is capitalised. And
+  `Get-ObjectCardTitle` stripped the trailing `$` from a computer account name on the
+  tagged path but not on the `[UNTAGGED]` one, so the same computer read differently
+  depending on whether its check had declared an object type.
 - **The HTML report is grouped into cards once instead of three times.** A report is built
   from one ordered list of findings by walking it and cutting it into cards at each
   SubHeader. That walk existed three times - in `Get-CardBasedCounts` (the numbers at the

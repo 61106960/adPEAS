@@ -761,9 +761,16 @@ function Build-FindingCardMetadata {
         }
     }
 
-    # Get section name from CheckTitle
-    $section = if ($Findings.Count -gt 0 -and $Findings[0].CheckTitle) {
-        # Use the check's category as section
+    # The section this card reports itself under. The report's "top actions" list displays
+    # this string, and its DOM fallback reads the section title - "Accounts" - so this has
+    # to be the category as a reader sees it, not the slug the caller passes for ids.
+    #
+    # The guard used to test CheckTitle and then return Category: a card whose first
+    # finding named no check fell through to the slug, so the same list showed "Accounts"
+    # and "accounts" next to each other depending on a property that has nothing to do
+    # with it. Every finding that reaches a group carries a Category - Get-FindingCardGroups
+    # drops the ones that do not - so the fallback is only for a direct call.
+    $section = if ($Findings.Count -gt 0 -and $Findings[0].Category) {
         $Findings[0].Category
     } else {
         $Category
@@ -1172,7 +1179,9 @@ function Get-ObjectCardTitle {
     # If no ObjectType set, return UNTAGGED indicator
     # Note: displayName comes before Name because GPOs have Name=GUID but displayName=readable name
     if (-not $Object._adPEASObjectType) {
-        $objName = if ($Object.sAMAccountName) { $Object.sAMAccountName }
+        # Same name resolution as the tagged path below, trailing '$' included: a computer
+        # account read differently depending on whether its check tagged the object.
+        $objName = if ($Object.sAMAccountName) { $Object.sAMAccountName -replace '\$$' }
                    elseif ($Object.displayName) { $Object.displayName }
                    elseif ($Object.Name) { $Object.Name }
                    elseif ($Object.dNSHostName) { $Object.dNSHostName }
