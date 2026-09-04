@@ -176,6 +176,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A report that could not be built destroyed the report from the previous run.** When
+  `Get-HTMLTemplate` returned nothing, `Export-HTMLReport` called `Write-Error` and
+  returned. `return` leaves `process{}` but `end{}` still runs, and `WriteAllText` with a
+  null string truncates the file to zero bytes - so the output path was left holding an
+  empty document where an earlier report may have been. `Write-Error` is non-terminating
+  as well, so neither caller's `try/catch` fired: `adPEAS.ps1` went on to log "HTML report
+  generated" and kept the path in its summary. It now throws, which is what both callers
+  already expect and what `end{}` itself does when the write fails.
 - **`Invoke-PasswordSpray -Auto`'s lockout protection never ran, and the console said the
   domain had no lockout policy while spraying every enabled account.** Auto mode's whole
   purpose is to read the lockout threshold, check each account's `badPwdCount` and leave

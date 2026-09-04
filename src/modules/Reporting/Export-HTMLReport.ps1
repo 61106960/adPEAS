@@ -130,10 +130,14 @@ function Export-HTMLReport {
         # Build the complete HTML
         $html = Get-HTMLTemplate
 
-        # Critical: Verify template was loaded successfully
+        # Critical: verify the template was loaded. This has to throw, not Write-Error and
+        # return: 'return' leaves process{}, end{} still runs, and WriteAllText with a null
+        # string creates a 0-byte file. Write-Error is non-terminating on top of that, so
+        # the callers' try/catch never fires and adPEAS.ps1 goes on to log "HTML report
+        # generated" and keeps the path for the summary. Both callers already wrap the call
+        # in try/catch, and end{} throws on a failed write for the same reason.
         if (-not $html) {
-            Write-Error "[Export-HTMLReport] Failed to load HTML template. Ensure template files exist in 'templates/' directory or build the project first."
-            return
+            throw "[Export-HTMLReport] Failed to load HTML template. Ensure template files exist in 'templates/' directory or build the project first."
         }
 
         # Export finding definitions as JSON for tooltips
