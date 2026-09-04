@@ -104,12 +104,6 @@ function Export-HTMLReport {
     }
 
     process {
-        # Filter out Header/SubHeader for counting (they are structural, not findings)
-        # Also exclude findings with Category="Unknown" (these lack check context and shouldn't be displayed)
-        $contentFindings = $findings | Where-Object {
-            $_.Type -notin @('Header', 'SubHeader') -and $_.Category -ne 'Unknown'
-        }
-
         # Count items using the same logic as cards on the right side:
         # - Objects count as individual items
         # - KeyValue/Line groups (per SubHeader) count as 1 result each
@@ -125,8 +119,10 @@ function Export-HTMLReport {
         # Group findings by category for navigation (using card-based counts)
         $categories = $cardCounts.Categories
 
-        # Build navigation HTML
-        $navHtml = Build-NavigationHtml -Categories $categories -Findings $contentFindings
+        # Build navigation HTML. It needs the category counts and nothing else - it used to
+        # take the findings as well, which cost a pass over all of them for a parameter the
+        # sidebar never read.
+        $navHtml = Build-NavigationHtml -Categories $categories
 
         # Build findings sections HTML (pass all findings to preserve structure)
         $sectionsHtml = Build-FindingSectionsHtml -Findings $findings
@@ -908,8 +904,7 @@ function Get-GroupSeverity {
 #>
 function Build-NavigationHtml {
     param(
-        [array]$Categories,
-        [array]$Findings
+        [array]$Categories
     )
 
     $nav = [System.Text.StringBuilder]::new()
@@ -929,10 +924,18 @@ function Build-NavigationHtml {
     foreach ($cat in $Categories) {
         $catName = $cat.Name
         $catCount = $cat.Count
-        # XSS Protection: Sanitize category ID - only allow alphanumeric and hyphens
-        $catId = ($catName.ToLower() -replace '\s+', '-') -replace '[^a-z0-9\-]', ''
-        # HTML-encode category name and ID to prevent XSS
-        $catNameEncoded = [System.Net.WebUtility]::HtmlEncode($catName)
+
+        # The same slug the sections carry in data-category - clicking this entry filters
+        # on it, so the two have to be derived by the same function and not by two copies
+        # of the same expression. It is also what keeps the onclick argument below to
+        # [a-z0-9-], i.e. unable to end the JavaScript string literal it sits in.
+        $catId = ConvertTo-CategorySlug -Category $catName
+
+        # The report's own encoder, like everywhere else in this file. The sidebar used
+        # [System.Net.WebUtility]::HtmlEncode, which also escapes non-ASCII: a localized
+        # category name came out as "Dom&#228;nen" in the sidebar and with the umlaut
+        # itself in its own section title, in the same UTF-8 document.
+        $catNameEncoded = ConvertTo-HtmlEncode $catName
         $catIdEncoded = ConvertTo-HtmlEncode $catId
 
         [void]$nav.AppendLine("    <a class=`"nav-item category-filter`" data-category=`"$catIdEncoded`" href=`"javascript:void(0)`" onclick=`"filterByCategory('$catIdEncoded')`">")

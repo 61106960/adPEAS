@@ -82,6 +82,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `Convert-ADIntervalToString` - the export formatter whose failure mode is silent, since
   anything it cannot read comes out as "Forever", which reads as a domain whose passwords
   never expire.
+- **The sidebar derives its category filter through the same function as the sections, and
+  encodes names the way the rest of the report does.** Clicking a category in the sidebar
+  calls `filterByCategory('<slug>')`, and the script then shows the sections whose
+  `data-category` matches - two separately written derivations of the same string, so a
+  filter click finding anything at all rested on them staying identical. `Build-NavigationHtml`
+  now calls `ConvertTo-CategorySlug`, the function the sections already use. It also
+  encoded the category name with `[System.Net.WebUtility]::HtmlEncode` while everything
+  else in the file uses the report's own `ConvertTo-HtmlEncode`; WebUtility escapes
+  non-ASCII too, so a localized category name appeared as "Dom&#228;nen" in the sidebar
+  and with the umlaut itself in its own section title, in the same UTF-8 document. And the
+  sidebar took the findings as a second parameter that it never read - dropped, along with
+  the pass over all findings the caller made to build it.
 - **A finding card reports its section the way a reader sees it, and an untagged object
   card names a computer the same way a tagged one does.** Two small inconsistencies in the
   per-card content, both found while putting the first tests around it. The `section` field
