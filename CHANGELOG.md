@@ -32,6 +32,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **LDAP attribute conversion moved out of `Invoke-LDAPSearch` into its own function,
+  `ConvertFrom-LDAPAttribute`.** Every attribute of every object adPEAS reads passes
+  through this conversion, and all 45 checks see only its output, never the raw value -
+  yet it had no test coverage at all, because there was no way to reach it: exercising it
+  meant calling `Invoke-LDAPSearch`, which needs a real
+  `System.DirectoryServices.Protocols.SearchResponse`, and `SearchResultEntry` has no
+  public constructor. It was 1422 lines inline in the result loop, 68 % of the file, 57
+  conversion branches in three groups (13 multi-value, 18 `byte[]`, 26 string) and 153
+  `Add-Member` calls. `Invoke-LDAPSearch.ps1` goes from 2087 to 449 lines; the call site
+  is 12. The three `Convert-*` helpers the conversion uses moved with it - they were
+  declared *inside* `Invoke-LDAPSearch`'s process block and were reachable from the
+  conversion only through PowerShell's dynamic scoping, which works when
+  `Invoke-LDAPSearch` is the caller and nowhere else. No behaviour change: the block was
+  moved with two mechanical rewrites (`Add-Member` calls became assignments into the
+  returned dictionary, the `continue` that ended each multi-value branch became a
+  `return`), and equivalence was verified rather than assumed - the original block was
+  lifted out of the previous commit, wrapped, and run against the extracted function over
+  100 cases covering every branch, comparing canonically serialised output. New suite
+  `LDAPAttributeConversion.Tests.ps1` (46 tests) now pins the conversion directly, and
+  the RBCD decoding test calls the real function instead of lifting an AST fragment.
 - **HTML report section badges: `Secure` now outranks `Hint`, matching the ranking
   already used for attribute rows.** `Export-HTMLReport.ps1`'s `Get-GroupSeverity`
   (picks the colour of a report section's badge) previously ranked `Hint` above

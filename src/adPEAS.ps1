@@ -115,6 +115,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Core\Connect-LDAP.ps1"
     . "$Script:ScriptPath\modules\Core\Connect-adPEAS.ps1"
     . "$Script:ScriptPath\modules\Core\Disconnect-adPEAS.ps1"
+    . "$Script:ScriptPath\modules\Core\ConvertFrom-LDAPAttribute.ps1"
     . "$Script:ScriptPath\modules\Core\Invoke-LDAPSearch.ps1"
     . "$Script:ScriptPath\modules\Core\Get-DomainObject.ps1"
     . "$Script:ScriptPath\modules\Core\Get-ObjectACL.ps1"
