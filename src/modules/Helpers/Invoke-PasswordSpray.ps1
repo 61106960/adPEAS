@@ -19,11 +19,23 @@ function Invoke-PasswordSpray {
     Requires an active LDAP connection via Connect-adPEAS.
 
     Auto mode includes intelligent lockout protection:
-    - Retrieves domain password policy (lockout threshold, observation window, duration)
+    - Reads the lockout policy off the domain object (threshold, observation window,
+      duration)
     - Checks badPwdCount for each user
     - Skips users with badPwdCount >= (threshold - 1) to prevent lockouts
     - Displays skipped users with current bad password count
     - Only tests users with safe remaining attempts
+
+    If the lockout policy cannot be read, auto mode stops rather than spraying blind.
+    See -Force.
+
+.PARAMETER Force
+    Continue in auto mode even when the domain lockout policy could not be read.
+
+    Without it, an unreadable policy aborts the run: the badPwdCount protection needs the
+    threshold, and spraying without it can lock out every account in the domain. A domain
+    that genuinely has no lockout policy is a different case and does not need -Force -
+    there is nothing to lock out, and the run proceeds against all enabled users.
 
 .PARAMETER Password
     Single password to test against all users.
@@ -76,7 +88,7 @@ function Invoke-PasswordSpray {
     Invoke-PasswordSpray -Auto -Password "Winter2024!"
 
     Output:
-    [*] Auto mode: Fetching domain password policy...
+    [*] Auto mode: Reading domain lockout policy...
     [*] Lockout Policy:
         Threshold:          5 bad attempts
         Observation Window: 30 minutes
@@ -159,19 +171,29 @@ function Invoke-PasswordSpray {
         [switch]$StopOnSuccess,
 
         [Parameter(Mandatory=$false)]
+        [switch]$Force,
+
+        [Parameter(Mandatory=$false)]
         [string]$OutputFile
     )
 
     begin {
+        # 'return' inside begin{} ends the block, not the function - process{} and end{}
+        # still run. Every abort below therefore has to say so, and both later blocks have
+        # to honour it. Without this a refused run still walked into end{}, where
+        # ($endTime - $startTime) failed on a $startTime that was never set, so the caller
+        # got the real error followed by an op_Subtraction one.
+        $abortRun = $false
+
         # Validate parameters
         if (-not $Password -and -not $PasswordList) {
             Write-Error "You must specify either -Password or -PasswordList"
-            return
+            $abortRun = $true; return
         }
 
         if ($Password -and $PasswordList) {
             Write-Error "Cannot specify both -Password and -PasswordList. Choose one."
-            return
+            $abortRun = $true; return
         }
 
         # Build connection parameters (for Ensure-LDAPConnection and Get-Domain* calls)
@@ -187,28 +209,72 @@ function Invoke-PasswordSpray {
             # Auto mode - fetch all enabled users from current adPEAS session
             if (-not (Ensure-LDAPConnection @connectionParams)) {
                 Write-Error "Auto mode requires an active LDAP connection. Use Connect-adPEAS first."
-                return
+                $abortRun = $true; return
             }
 
-            Write-Host "[*] Auto mode: Fetching domain password policy..." -ForegroundColor Cyan
+            Write-Host "[*] Auto mode: Reading domain lockout policy..." -ForegroundColor Cyan
 
-            # Get password policy to check lockout settings
-            $passwordPolicy = Get-DomainPasswordPolicy @connectionParams
+            # Read the lockout policy off the domain object directly.
+            #
+            # NOT through Get-DomainPasswordPolicy: that is a check module. It hands its
+            # policy object to Show-Object and returns nothing to a caller, so what this
+            # code used to read from it was always $null - the threshold fell back to 0,
+            # the badPwdCount protection below never ran once, and the console announced
+            # "No lockout policy configured" for domains that very much had one. It also
+            # rendered a whole report section, fine-grained policy scan included, into the
+            # middle of the spray output.
+            $lockoutThreshold    = 0
+            $lockoutDurationText = 'unknown'
+            $lockoutWindowText   = 'unknown'
+            $lockoutPolicyRead   = $false
 
-            if (-not $passwordPolicy) {
-                Write-Warning "Could not retrieve password policy - proceeding without lockout checks"
-                $lockoutThreshold = 0
+            $domainPolicyResults = Get-DomainObject -Identity $Script:LDAPContext.DomainDN @connectionParams
+            $domainPolicy = if ($domainPolicyResults -is [array]) { $domainPolicyResults[0] } else { $domainPolicyResults }
+
+            if ($domainPolicy) {
+                $lockoutPolicyRead = $true
+
+                if ($domainPolicy.lockoutThreshold) {
+                    try { $lockoutThreshold = [int]$domainPolicy.lockoutThreshold } catch { $lockoutThreshold = 0 }
+                }
+
+                # Raw negative 100-nanosecond deltas - ConvertFrom-ADInterval knows the
+                # Int64.MinValue "never" sentinel, which must not turn into a duration.
+                $durationSpan = ConvertFrom-ADInterval -Value $domainPolicy.lockoutDuration
+                $windowSpan   = ConvertFrom-ADInterval -Value $domainPolicy.lockOutObservationWindow
+
+                $lockoutDurationText = if ($durationSpan -and $durationSpan.Ticks -gt 0) {
+                    "$([int]$durationSpan.TotalMinutes) minutes"
+                } else { 'until manually unlocked' }
+
+                $lockoutWindowText = if ($windowSpan -and $windowSpan.Ticks -gt 0) {
+                    "$([int]$windowSpan.TotalMinutes) minutes"
+                } else { 'not set' }
+            }
+
+            if (-not $lockoutPolicyRead) {
+                # Spraying without knowing the threshold can lock out every account in the
+                # domain. Refusing is the safe default; -Force is the deliberate override.
+                if (-not $Force) {
+                    Write-Error "Could not read the domain lockout policy, so the lockout protection cannot run. Re-run with -Force to spray without it - this may lock out accounts."
+                    $abortRun = $true; return
+                }
+                Write-Warning "Could not read the domain lockout policy. Continuing because -Force was given - accounts may be locked out."
+            }
+
+            Write-Host "[*] Lockout Policy:" -ForegroundColor Cyan
+            if ($lockoutPolicyRead) {
+                if ($lockoutThreshold -gt 0) {
+                    Write-Host "    Threshold:          $lockoutThreshold bad attempts" -ForegroundColor Green
+                } else {
+                    Write-Host "    Threshold:          no lockout configured" -ForegroundColor Yellow
+                }
+                Write-Host "    Observation Window: $lockoutWindowText"
+                Write-Host "    Lockout Duration:   $lockoutDurationText"
             } else {
-                $lockoutThreshold = $passwordPolicy.LockoutThreshold
-                $lockoutObservationWindow = $passwordPolicy.LockoutObservationWindow
-                $lockoutDuration = $passwordPolicy.LockoutDuration
-
-                Write-Host "[*] Lockout Policy:" -ForegroundColor Cyan
-                Write-Host "    Threshold:          $lockoutThreshold bad attempts" -ForegroundColor $(if ($lockoutThreshold -eq 0) { "Yellow" } else { "Green" })
-                Write-Host "    Observation Window: $lockoutObservationWindow minutes"
-                Write-Host "    Lockout Duration:   $lockoutDuration minutes"
-                Write-Host ""
+                Write-Host "    Unknown - the policy could not be read" -ForegroundColor Red
             }
+            Write-Host ""
 
             Write-Host "[*] Fetching all enabled users from domain..." -ForegroundColor Cyan
 
@@ -217,7 +283,7 @@ function Invoke-PasswordSpray {
 
             if (-not $enabledUsers) {
                 Write-Error "No enabled users found in domain"
-                return
+                $abortRun = $true; return
             }
 
             Write-Host "[+] Found $($enabledUsers.Count) enabled users" -ForegroundColor Green
@@ -262,15 +328,22 @@ function Invoke-PasswordSpray {
 
                 if ($usernames.Count -eq 0) {
                     Write-Error "No safe users to test - all accounts are close to lockout threshold"
-                    return
+                    $abortRun = $true; return
                 }
 
                 Write-Host "[+] Safe to test: $($usernames.Count) users (skipped: $($skippedUsers.Count))" -ForegroundColor Green
                 Write-Host ""
 
             } else {
-                # No lockout policy - use all enabled users
-                Write-Host "[*] No lockout policy configured - testing all enabled users" -ForegroundColor Yellow
+                # Threshold 0. Two very different reasons end up here, and the operator has
+                # to be able to tell them apart: the domain really has no lockout policy
+                # (spraying cannot lock anything), or the policy could not be read and the
+                # run continues only because -Force was given.
+                if ($lockoutPolicyRead) {
+                    Write-Host "[*] Domain has no lockout policy configured - testing all enabled users" -ForegroundColor Yellow
+                } else {
+                    Write-Host "[!] Lockout policy unknown - testing all enabled users WITHOUT lockout protection" -ForegroundColor Red
+                }
                 Write-Host ""
                 $usernames = $enabledUsers | ForEach-Object { $_.sAMAccountName }
             }
@@ -280,7 +353,7 @@ function Invoke-PasswordSpray {
                 $usernames = Get-Content -Path $UserList | Where-Object { $_ -and $_.Trim() }
             } else {
                 Write-Error "User list file not found: $UserList"
-                return
+                $abortRun = $true; return
             }
         } elseif ($UserList -is [array]) {
             $usernames = $UserList
@@ -299,7 +372,7 @@ function Invoke-PasswordSpray {
                     $passwords = Get-Content -Path $PasswordList | Where-Object { $_ -and $_.Trim() }
                 } else {
                     Write-Error "Password list file not found: $PasswordList"
-                    return
+                    $abortRun = $true; return
                 }
             } elseif ($PasswordList -is [array]) {
                 $passwords = $PasswordList
@@ -308,12 +381,12 @@ function Invoke-PasswordSpray {
 
         if ($usernames.Count -eq 0) {
             Write-Error "No usernames to test"
-            return
+            $abortRun = $true; return
         }
 
         if ($passwords.Count -eq 0) {
             Write-Error "No passwords to test"
-            return
+            $abortRun = $true; return
         }
 
         # Get Domain from session if not specified
@@ -324,7 +397,7 @@ function Invoke-PasswordSpray {
 
         if (-not $targetDomain) {
             Write-Error "No domain specified and no active session. Use -Domain parameter or Connect-adPEAS first."
-            return
+            $abortRun = $true; return
         }
 
         # Warn about lockout risk
@@ -356,6 +429,8 @@ function Invoke-PasswordSpray {
     }
 
     process {
+        if ($abortRun) { return }
+
         # Test each password against all users
         foreach ($pass in $passwords) {
             if ($passwords.Count -gt 1) {
@@ -436,6 +511,9 @@ function Invoke-PasswordSpray {
     }
 
     end {
+        # A refused run has no summary to print - and no $startTime to subtract from.
+        if ($abortRun) { return }
+
         $endTime = Get-Date
         $duration = ($endTime - $startTime).TotalSeconds
 

@@ -131,6 +131,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **`Invoke-PasswordSpray -Auto`'s lockout protection never ran, and the console said the
+  domain had no lockout policy while spraying every enabled account.** Auto mode's whole
+  purpose is to read the lockout threshold, check each account's `badPwdCount` and leave
+  out the accounts that are one failed attempt away from being locked. It read the policy
+  through `Get-DomainPasswordPolicy`, which is a check module: it hands its policy object
+  to `Show-Object` and returns nothing to a caller. The threshold was therefore always
+  `$null` -> 0, the `badPwdCount` filter was skipped entirely, and the run continued into
+  the "no lockout policy configured" branch - a message that reads like a property of the
+  domain rather than a failed read. Verified by driving the check with a policy of
+  threshold 5 and watching `$null` come back. The policy is now read off the domain
+  object directly (which also stops a whole report section, fine-grained policy scan
+  included, from being rendered into the middle of the spray output), the intervals go
+  through `ConvertFrom-ADInterval`, and the two cases are now told apart: a domain that
+  really has no lockout policy is sprayed in full and said so, while a policy that cannot
+  be read **aborts the run** - the new `-Force` switch is the deliberate override.
+- **Every early exit in `Invoke-PasswordSpray`'s `begin` block failed to stop the run.**
+  `return` inside `begin{}` ends the block, not the function: `process{}` and `end{}` run
+  on regardless. All eleven abort paths - no password given, both `-Password` and
+  `-PasswordList`, no LDAP connection, no users found, no safe users left, and now the
+  unreadable lockout policy - therefore fell through to the summary in `end{}`, which
+  computes `($endTime - $startTime)` on a `$startTime` that was never assigned. The
+  caller got its real error followed by an unrelated `op_Subtraction` one. The aborts now
+  set a flag that `process{}` and `end{}` honour.
+
 - **An ACE granting full control via the SDDL generic bit (`GA`, `0x10000000`) - the
   form `Invoke-RBCDOperation` itself writes, and the shape any real full-control grant
   in a DACL actually takes - was invisible to `Get-OUPermissions.ps1` (used by
