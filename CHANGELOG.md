@@ -65,6 +65,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   made reachable, because reviving it would change the value of `maxPwdAge`, `minPwdAge`,
   `lockoutDuration`, `lockOutObservationWindow` and `forceLogoff` for every consumer.
   No behaviour change in either case, verified against the pre-refactor code.
+- **The domain policy interval arithmetic is now one function,
+  `ConvertFrom-ADInterval`.** The five interval attributes are stored as negative
+  100-nanosecond deltas and reach a consumer as the raw interval string - deliberately,
+  because the BloodHound export needs the raw number. Converting them is therefore each
+  consumer's job, and two of them did the same three steps (absolute value, divide by a
+  ticks-per-unit constant, catch the `Int64.MinValue` "never" sentinel) in four places
+  each: 77 lines between `Get-DomainPasswordPolicy` and the collector's
+  `Convert-ADIntervalToString`. Both now call the shared helper, which returns a
+  `TimeSpan` - or `TimeSpan.Zero` when the attribute is 0, or `$null` for the sentinel;
+  three states the callers act on differently, and collapsing two of them would turn "no
+  lockout duration configured" into "locked forever". Formatting stays with the caller,
+  because the report wants whole days and the export wants "42 days". No behaviour
+  change: the password policy suite passes unchanged, its fixtures included. New suite
+  `ADInterval.Tests.ps1` (43 tests) covers the helper and, for the first time,
+  `Convert-ADIntervalToString` - the export formatter whose failure mode is silent, since
+  anything it cannot read comes out as "Forever", which reads as a domain whose passwords
+  never expire.
 - **HTML report section badges: `Secure` now outranks `Hint`, matching the ranking
   already used for attribute rows.** `Export-HTMLReport.ps1`'s `Get-GroupSeverity`
   (picks the colour of a report section's badge) previously ranked `Hint` above

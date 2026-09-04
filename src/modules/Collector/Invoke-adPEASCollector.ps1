@@ -790,24 +790,23 @@ function ConvertTo-BHGuid {
 # 0 or near-MaxValue = "Forever"
 function Convert-ADIntervalToString {
     param([object]$Value)
-    if ($null -eq $Value) { return "Forever" }
-    try {
-        $int64Val = [Int64]$Value
-        if ($int64Val -eq 0) { return "Forever" }
-        if ([Math]::Abs($int64Val) -ge 9223372036854775000) { return "Forever" }
-        $seconds = [Math]::Abs($int64Val) / 10000000
-        $ts = [TimeSpan]::FromSeconds($seconds)
-        if ($ts.TotalDays -ge 1) {
-            $d = [int]$ts.TotalDays
-            return "$d day$(if ($d -ne 1) {'s'})"
-        } elseif ($ts.TotalHours -ge 1) {
-            $h = [int]$ts.TotalHours
-            return "$h hour$(if ($h -ne 1) {'s'})"
-        } else {
-            $m = [int]$ts.TotalMinutes
-            return "$m minute$(if ($m -ne 1) {'s'})"
-        }
-    } catch { return "Forever" }
+
+    # ConvertFrom-ADInterval owns the arithmetic and the Int64.MinValue "never" sentinel;
+    # this only picks the unit BloodHound should see. A null TimeSpan (sentinel, empty or
+    # unreadable) and a zero one both mean "no limit" for every interval exported here.
+    $ts = ConvertFrom-ADInterval -Value $Value
+    if ($null -eq $ts -or $ts.Ticks -eq 0) { return "Forever" }
+
+    if ($ts.TotalDays -ge 1) {
+        $d = [int]$ts.TotalDays
+        return "$d day$(if ($d -ne 1) {'s'})"
+    } elseif ($ts.TotalHours -ge 1) {
+        $h = [int]$ts.TotalHours
+        return "$h hour$(if ($h -ne 1) {'s'})"
+    } else {
+        $m = [int]$ts.TotalMinutes
+        return "$m minute$(if ($m -ne 1) {'s'})"
+    }
 }
 
 # Helper: Convert ADCS certificate name flag integer to string (BH CE expects string, not int)
