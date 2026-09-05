@@ -6757,6 +6757,99 @@ certutil -getreg policy\DisableExtensionList
     # ESC13 - ISSUANCE POLICY GROUP LINK
     # ============================================================================
 
+    'ESC14_WEAK_EXPLICIT_MAPPING' = @{
+        Title = "ESC14 - Weak Explicit Certificate Mapping"
+        Risk = "Finding"
+        BaseScore = 75
+        Description = "The altSecurityIdentities attribute of this principal carries a certificate mapping in one of the three formats Microsoft classifies as weak (KB5014754): issuer and subject name, subject name alone, or an e-mail address. Each of those names something an attacker can put into a certificate of their own, so the mapping no longer proves which certificate it was written for. A certificate the attacker enrols with a matching subject or e-mail authenticates as this principal, and the CA's SID extension - the binding this attribute overrides - never gets a say."
+        Impact = @(
+            "Anyone able to obtain a certificate with a matching subject or e-mail authenticates as this principal"
+            "On a template where the enrollee supplies the subject, that is a single certificate request"
+            "The mapping survives a password change, so it is also a persistence mechanism"
+            "Strong certificate binding enforcement on the domain controllers does not close it: an explicit mapping is honoured by design"
+        )
+        Remediation = @(
+            "Replace the mapping with a strong format: X509IssuerSerialNumber, X509SKI or X509SHA1PublicKey"
+            "Remove the mapping entirely where the account no longer needs certificate authentication"
+            "Restrict who may write altSecurityIdentities on privileged accounts"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List every principal carrying a weak explicit mapping"
+                Command = @'
+Get-ADObject -LDAPFilter '(altSecurityIdentities=*)' -Properties altSecurityIdentities |
+    ForEach-Object {
+        foreach ($m in $_.altSecurityIdentities) {
+            # Strong: <SKI>, <SHA1-PUKEY>, <SR>. Weak: <RFC822>, <S> without <SR>.
+            if ($m -match '<SKI>|<SHA1-PUKEY>|<SR>') { continue }
+            if ($m -match '<RFC822>|<S>') {
+                [PSCustomObject]@{ Account = $_.Name; Mapping = $m }
+            }
+        }
+    }
+'@
+            }
+            @{
+                Description = "Replace a weak mapping with the issuer and serial number of the intended certificate"
+                Command = @'
+$cert = Get-PfxCertificate -FilePath .\intended.cer
+$issuer = ($cert.Issuer -split ',\s*') [array]::Reverse($issuer)
+$strong = "X509:<I>$($issuer -join ',')<SR>$($cert.SerialNumber)"
+Set-ADUser -Identity 'targetuser' -Replace @{ altSecurityIdentities = $strong }
+'@
+            }
+        )
+        References = @(
+            @{ Title = "ADCS ESC14 Abuse Technique (SpecterOps)"; Url = "https://posts.specterops.io/adcs-esc14-abuse-technique-333a004dc2b9" }
+            @{ Title = "KB5014754 - Certificate-based authentication changes"; Url = "https://support.microsoft.com/en-us/topic/kb5014754-certificate-based-authentication-changes-on-windows-domain-controllers-ad2c23b0-15d8-4340-a468-4d4f3b188f16" }
+        )
+        Triggers = @(
+            @{ Attribute = 'weakCertificateMappings'; Severity = 'Finding' }
+            @{ Attribute = 'mappingIsPrivilegedTarget'; Pattern = '^True$'; Severity = 'Finding' }
+            @{ Attribute = 'strongCertificateMappings'; Severity = 'Secure'; SeverityOnly = $true }
+        )
+    }
+
+    'ESC14_WRITABLE_MAPPING' = @{
+        Title = "ESC14 - altSecurityIdentities Writable by a Non-Privileged Principal"
+        Risk = "Finding"
+        BaseScore = 80
+        Description = "A non-privileged principal may write the altSecurityIdentities attribute of this privileged account. That attribute maps a certificate to the account explicitly, so the write is enough to add a mapping for a certificate the attacker already holds and then authenticate as the account. No certificate template misconfiguration is needed and nothing about the account itself changes."
+        Impact = @(
+            "The trustee adds a mapping for a certificate they control and authenticates as this account"
+            "No password is changed and no group membership is touched, so the account looks untouched"
+            "The mapping persists until somebody reads the attribute"
+        )
+        Remediation = @(
+            "Remove WriteProperty on altSecurityIdentities, and the blanket rights that include it, from non-administrative principals"
+            "Audit the attribute on privileged accounts: a mapping that is already there may have been added this way"
+            "Monitor changes to altSecurityIdentities on privileged accounts"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who holds write access to altSecurityIdentities on an account"
+                Command = @'
+$dn = 'CN=Administrator,CN=Users,DC=contoso,DC=com'
+$altSecGuid = [GUID]'00fbf30c-91fe-11d1-aebc-0000f80367c1'
+(Get-Acl "AD:\$dn").Access |
+    Where-Object {
+        $_.AccessControlType -eq 'Allow' -and (
+            $_.ActiveDirectoryRights -match 'GenericAll|GenericWrite|WriteDacl|WriteOwner' -or
+            ($_.ActiveDirectoryRights -match 'WriteProperty' -and
+             ($_.ObjectType -eq $altSecGuid -or $_.ObjectType -eq [GUID]::Empty))
+        )
+    } | Select-Object IdentityReference, ActiveDirectoryRights, ObjectType
+'@
+            }
+        )
+        References = @(
+            @{ Title = "ADCS ESC14 Abuse Technique (SpecterOps)"; Url = "https://posts.specterops.io/adcs-esc14-abuse-technique-333a004dc2b9" }
+        )
+        Triggers = @(
+            @{ Attribute = 'altSecurityIdentitiesWriters'; Severity = 'Finding' }
+        )
+    }
+
     'ESC13_ISSUANCE_POLICY_GROUP_LINK' = @{
         Title = "ESC13 - Issuance Policy Linked to AD Group"
         Risk = "Finding"

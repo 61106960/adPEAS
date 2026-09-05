@@ -10,6 +10,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`Get-WeakCertificateMapping` - new AD CS check for ESC14, explicit certificate
+  mappings.** `altSecurityIdentities` maps a certificate to an account directly, overriding
+  the SID extension the CA writes into it. Active Directory accepts six formats and
+  Microsoft classifies three as weak (KB5014754), because each names something an attacker
+  can put into a certificate of their own:
+
+  | | strong | | weak |
+  |---|---|---|---|
+  | issuer + serial | `X509:<I>…<SR>…` | issuer + subject | `X509:<I>…<S>…` |
+  | key identifier | `X509:<SKI>…` | subject only | `X509:<S>…` |
+  | public key hash | `X509:<SHA1-PUKEY>…` | e-mail address | `X509:<RFC822>…` |
+
+  The check reports two different problems: principals that already carry a weak mapping -
+  anyone able to enrol for a certificate with a matching subject or e-mail authenticates as
+  them, and on a template where the enrollee supplies the subject that is one request - and
+  privileged principals whose `altSecurityIdentities` a non-privileged trustee may write,
+  which is ESC14 as originally described: the mapping being added rather than found.
+
+  Write access is examined for privileged principals only. Mapping a certificate onto an
+  account is an escalation when the account is worth reaching, and a domain-wide ACL sweep
+  over every user would cost a great deal to answer a question that matters for a few.
+  `altSecurityIdentities` is also added to the GUID table, so an ACE on it is named rather
+  than shown as a bare GUID wherever ACLs appear.
 - **`Get-GPOPointAndPrint` - new GPO check for Point and Print printer driver policies.**
   Installing a printer driver runs code as SYSTEM, so Point and Print decides who may
   execute code on every machine in a GPO's scope. The check reports the complete

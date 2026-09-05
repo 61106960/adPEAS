@@ -141,6 +141,10 @@ $Script:PropertyGUIDs = @{
     # Shadow Credentials (CVE-2022-26923, Key Trust attack)
     # schemaIdGuid per MS-ADA2: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-ada2/45916e5b-d66f-444e-b1e5-5b0666ed4d66
     'msDS-KeyCredentialLink'         = [GUID]'5b47d60f-6090-40b2-9f37-2a4de88f3063'
+    # ESC14: an explicit certificate mapping. Write access here maps a certificate the
+    # attacker holds onto the account, which is why the ACE needs to be named rather than
+    # shown as a bare GUID.
+    'altSecurityIdentities'          = [GUID]'00fbf30c-91fe-11d1-aebc-0000f80367c1'
 }
 
 # ============================================================================
@@ -853,6 +857,11 @@ $Script:WritePropertyAliases = @{
     # Write access = add malicious key credential for PKINIT
     'WriteKeyCredentialLink'   = '5b47d60f-6090-40b2-9f37-2a4de88f3063'  # msDS-KeyCredentialLink
     'ShadowCredentials'        = '5b47d60f-6090-40b2-9f37-2a4de88f3063'  # Alias (common pentesting term)
+
+    # === Explicit Certificate Mapping (ESC14) ===
+    # Write access = map a certificate the attacker controls onto the target account
+    'WriteAltSecurityIdentities' = '00fbf30c-91fe-11d1-aebc-0000f80367c1'  # altSecurityIdentities
+    'ExplicitCertificateMapping' = '00fbf30c-91fe-11d1-aebc-0000f80367c1'  # Alias (ESC14)
 
     # === GPO Link Manipulation (GPO Hijacking) ===
     # Write access to gPLink on OU = link malicious GPO

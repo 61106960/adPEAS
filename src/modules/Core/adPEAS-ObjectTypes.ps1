@@ -1063,6 +1063,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'OU_PERM_WRITEPROPERTY_ALL'
     }
 
+    'WeakCertificateMapping' = @{
+        TitleFormat = "Explicit Certificate Mapping: {Name}"
+        Module = "ADCS"
+        Category = "ADCS"
+        SectionTitle = "Explicit Certificate Mappings (ESC14)"
+        Summary = "Finds accounts a certificate can be mapped to without the CA's SID extension."
+        WhyItMatters = "altSecurityIdentities binds a certificate to an account explicitly, bypassing the SID extension the CA writes. Three of the six formats Active Directory accepts name something an attacker can reproduce in a certificate of their own - a subject name or an e-mail address - so anyone who can enrol for such a certificate authenticates as that account."
+        WhatWeCheck = @(
+            "Principals carrying a weak mapping: X509IssuerSubject, X509SubjectOnly, X509RFC822"
+            "Whether the mapped account is privileged"
+            "Who may write altSecurityIdentities on a privileged account"
+        )
+        FilteringNote = "Strong mappings (X509IssuerSerialNumber, X509SKI, X509SHA1PublicKey) are not reported. Write access is examined for privileged principals only, and trustees that are already privileged are filtered out."
+        SecureMessage = "No weak explicit certificate mapping found, and no non-privileged principal can add one to a privileged account."
+        PrimaryFindingId = 'ESC14_WEAK_EXPLICIT_MAPPING'
+    }
+
     'PasswordResetRight' = @{
         TitleFormat = "Password Reset Right: {Name}"
         Module = "Rights"

@@ -237,6 +237,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOPointAndPrint.ps1"
     . "$Script:ScriptPath\modules\Checks\ADCS\Get-ADCSTemplate.ps1"
     . "$Script:ScriptPath\modules\Checks\ADCS\Get-ADCSVulnerabilities.ps1"
+    . "$Script:ScriptPath\modules\Checks\ADCS\Get-WeakCertificateMapping.ps1"
     . "$Script:ScriptPath\modules\Checks\Application\Get-ExchangeInfrastructure.ps1"
     . "$Script:ScriptPath\modules\Checks\Application\Get-SCCMInfrastructure.ps1"
     . "$Script:ScriptPath\modules\Checks\Application\Get-SCOMInfrastructure.ps1"
@@ -971,6 +972,7 @@ try {
         Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['ADCS'])"
         try {
             Invoke-CheckWithContext -Category 'ADCS' -CheckName 'Get-ADCSVulnerabilities' -Title 'ADCS Vulnerabilities' -Check { Get-ADCSVulnerabilities -IncludePrivileged:$IncludePrivileged }
+            Invoke-CheckWithContext -Category 'ADCS' -CheckName 'Get-WeakCertificateMapping' -Title 'Explicit Certificate Mappings (ESC14)' -Check { Get-WeakCertificateMapping }
         } catch {
             Write-Warning "[adPEAS] Error executing ADCS Module: $_"
         }
