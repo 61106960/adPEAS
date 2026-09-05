@@ -622,21 +622,44 @@ Get-ADCSTemplate
 | ----- | -------------------------------------------------------- |
 | ESC1  | Template allows enrollee-supplied SAN + client auth      |
 | ESC2  | Template allows any purpose EKU                          |
-| ESC3  | Enrollment agent template abuse                          |
+| ESC3  | Enrollment agent template abuse (both the agent template and its target) |
 | ESC4  | Template with vulnerable ACLs                            |
 | ESC5  | Vulnerable PKI container permissions                     |
 | ESC8  | Web enrollment detection (HTTP/HTTPS + NTLM/EPA config)  |
-| ESC9  | No security extension + client auth (StrongCertificateBindingEnforcement) |
+| ESC9  | No security extension + client auth                      |
 | ESC13 | Issuance policy linked to AD group                       |
 | ESC15 | Schema v1 + enrollee-supplied subject (CVE-2024-49019)   |
 
-**Not implemented**: ESC6 (EDITF flag requires registry access, not LDAP), ESC7 (ManageCA/ManageCertificates permissions require DCOM/RPC, not LDAP)
+Two more are covered by other checks, because the misconfiguration does not live on a
+template or a CA:
+
+| ESC   | Vulnerability                                            | Check |
+| ----- | -------------------------------------------------------- | ----- |
+| ESC10 | Weak certificate mapping on the domain controllers - `StrongCertificateBindingEnforcement=0`, or the UPN bit in `CertificateMappingMethods` | `Get-GPORegistrySettings`, where Group Policy deploys them |
+| ESC14 | Weak explicit mapping in `altSecurityIdentities`, and write access to that attribute on a privileged account | `Get-WeakCertificateMapping` |
+
+**Deliberately not implemented**: ESC6 (`EDITF_ATTRIBUTESUBJECTALTNAME2`), ESC7
+(`ManageCA` / `ManageCertificates`), ESC11 (`IF_ENFORCEENCRYPTICERTREQUEST`) and ESC16
+(`DisableExtensionList`).
+
+All four live in the registry of the CA host, under
+`HKLM\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration`, and reading them needs
+administrative access to that host - either remote registry as a local administrator, or
+the `ICertAdminD2` RPC interface with `ManageCA`. adPEAS is built to run as an ordinary
+domain user. A check that answers "cannot tell" in the normal case is worse than no check:
+a quiet result reads as a clean domain. Where those rights do exist, Certipy reports all
+four.
+
+ESC12 (private key on a YubiHSM, extractable with shell access to the CA) is outside what
+any directory scan can see.
 
 **ESC5 Details**: Checks dangerous permissions on PKI container objects:
 - `CN=Public Key Services` - Root PKI container
 - `CN=Certificate Templates` - Allows creating/modifying templates
 - `CN=Enrollment Services` - Controls enrollment services
 - `CN=NTAuthCertificates` - Controls trusted CAs for Kerberos
+- `CN=AIA` - Controls the CA certificates published for chain building
+- `CN=CDP` - Controls where revocation lists are looked up
 - `CN=OID` - Controls issuance policies (ESC13-related)
 
 Dangerous rights: GenericAll, WriteDacl, WriteOwner, GenericWrite. If unprivileged users have these permissions, they can manipulate the entire PKI infrastructure.
