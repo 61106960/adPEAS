@@ -1349,8 +1349,14 @@ function Build-ObjectDetailHtml {
 function Get-HTMLTemplate {
     # Try to load from template files (development mode)
     $scriptDir = $PSScriptRoot
-    if (-not $scriptDir) {
-        # Fallback for when running interactively
+    if (-not $scriptDir -and $MyInvocation.MyCommand.Path) {
+        # Fallback for when running interactively.
+        #
+        # The guard on .Path is what makes the third step below reachable: Split-Path
+        # -Parent throws on a null argument rather than returning nothing, so a function
+        # that has neither $PSScriptRoot nor an invocation path - one defined in memory
+        # rather than dot-sourced from a file - used to die here instead of falling through
+        # to the current location.
         $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     }
     if (-not $scriptDir) {

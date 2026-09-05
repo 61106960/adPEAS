@@ -797,8 +797,10 @@ function Build-DiffChangedSectionHtml {
 #>
 function Get-DiffHTMLTemplate {
     # Try to load from template files (development mode)
+    # The guard on .Path keeps the third step reachable - Split-Path -Parent throws on a
+    # null argument. Same fix as in Get-HTMLTemplate; see the note there.
     $scriptDir = $PSScriptRoot
-    if (-not $scriptDir) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+    if (-not $scriptDir -and $MyInvocation.MyCommand.Path) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
     if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
 
     # In dev mode, template is next to Compare-adPEASReport.ps1 in templates/

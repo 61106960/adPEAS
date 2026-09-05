@@ -254,6 +254,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **The template loaders threw instead of falling back to the current directory.** Both
+  `Get-HTMLTemplate` and `Get-DiffHTMLTemplate` look for their template files relative to
+  `$PSScriptRoot`, then to the invocation path, then to the current location. The second
+  step was written as `Split-Path -Parent $MyInvocation.MyCommand.Path`, which throws on a
+  null argument rather than returning nothing - so a function defined in memory instead of
+  dot-sourced from a file died there, and the third step was unreachable. Both now check
+  the path before splitting it.
 - **Three gaps in the AD CS checks, found by auditing them against the published ESC
   preconditions.**
   - **A template whose only authentication EKU is PKINIT was invisible.** The four OIDs the
