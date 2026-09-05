@@ -258,6 +258,16 @@ function Test-DangerousRegistryRecord {
             'GreaterThan' {
                 if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -gt [int64]$entry.MatchValue) }
             }
+            'BitSet' {
+                # For a value that is a flag field rather than a setting, where one bit
+                # among several carries the risk: Schannel's CertificateMappingMethods is
+                # 0x1 subject/issuer, 0x2 issuer, 0x4 UPN, 0x8 subject, and only 0x4 is
+                # ESC10. Equals would miss every combination that has the bit set next to
+                # another one, which is how the value is normally written.
+                if ($null -ne $Record.ValueInt) {
+                    $isMatch = (([int64]$Record.ValueInt -band [int64]$entry.MatchValue) -eq [int64]$entry.MatchValue)
+                }
+            }
             'UrlNotHttps' {
                 $sv = [string]$Record.ValueString
                 if ($sv -and $sv.Trim().ToLower().StartsWith('http://')) { $isMatch = $true }

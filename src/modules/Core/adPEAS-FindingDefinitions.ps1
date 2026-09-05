@@ -8697,6 +8697,60 @@ foreach ($oid in $linkedOIDs) {
     # Triggered on the 'VulnerabilityName' attribute of GPORegistrySetting objects.
     # ========================================================================
 
+    'REGISTRY_ESC10_KDC_BINDING' = @{
+        Title = "ESC10 - Kerberos Ignores the Certificate SID Extension (via GPO)"
+        Risk = "Finding"
+        BaseScore = 80
+        Description = "A Group Policy sets StrongCertificateBindingEnforcement=0 under the KDC key. The SID extension a CA writes into a certificate is what binds it to exactly one account; at 0 the domain controller skips that extension even when the certificate carries it, and every certificate maps by UPN alone. Value 2 is full enforcement. Value 1 validates the extension only when a certificate has one, which KB5014754 treats as a transitional state."
+        Impact = @(
+            "A certificate authenticates as whichever account holds the UPN in its SAN"
+            "An attacker who can write userPrincipalName on an account they control sets it to a target's UPN, enrols, and authenticates as the target"
+            "The certificate template needs no misconfiguration at all - the binding is broken domain-wide"
+        )
+        Attack = @(
+            "1. Change the UPN of a controlled account to that of the target"
+            "2. Enrol for any certificate with an authentication EKU"
+            "3. Restore the original UPN"
+            "4. Authenticate with the certificate as the target"
+        )
+        Remediation = @(
+            "Set StrongCertificateBindingEnforcement=2 (full enforcement) on every domain controller"
+            "Re-issue certificates that predate the SID extension before switching to 2"
+            "Restrict who may write userPrincipalName"
+        )
+        References = @(
+            @{ Title = "KB5014754 - Certificate-based authentication changes"; Url = "https://support.microsoft.com/en-us/topic/kb5014754-certificate-based-authentication-changes-on-windows-domain-controllers-ad2c23b0-15d8-4340-a468-4d4f3b188f16" }
+            @{ Title = "Certipy - ESC10"; Url = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation" }
+        )
+        Tools = @("Certipy")
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Kerberos ignores the certificate SID extension'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_ESC10_SCHANNEL_UPN' = @{
+        Title = "ESC10 - Schannel Maps Certificates by UPN (via GPO)"
+        Risk = "Finding"
+        BaseScore = 75
+        Description = "A Group Policy sets bit 0x4 in CertificateMappingMethods under the Schannel key. That re-enables mapping a certificate to an account purely by the UPN in its subject alternative name, for everything that authenticates through Schannel rather than Kerberos - LDAPS and any other TLS endpoint that accepts client certificates."
+        Impact = @(
+            "A certificate authenticates over LDAPS as whichever account carries the UPN in its SAN"
+            "Reachable without Kerberos, so hardening the KDC alone does not close it"
+            "The other bits (0x1 subject/issuer, 0x2 issuer, 0x8 subject) are not this finding - only 0x4 is"
+        )
+        Remediation = @(
+            "Clear bit 0x4 from CertificateMappingMethods on every domain controller"
+            "Leave certificate mapping to Kerberos with the SID extension enforced"
+        )
+        References = @(
+            @{ Title = "KB5014754 - Certificate-based authentication changes"; Url = "https://support.microsoft.com/en-us/topic/kb5014754-certificate-based-authentication-changes-on-windows-domain-controllers-ad2c23b0-15d8-4340-a468-4d4f3b188f16" }
+        )
+        Tools = @("Certipy")
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Schannel maps certificates by UPN'; Severity = 'Finding' }
+        )
+    }
+
     'REGISTRY_WDIGEST' = @{
         Title = "WDigest Cleartext Credential Caching Enabled via GPO"
         Risk = "Finding"

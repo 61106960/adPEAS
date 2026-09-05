@@ -197,6 +197,39 @@ $Script:DangerousRegistryKeys = @(
         RiskReason        = 'Update traffic over HTTP - MITM injects updates for SYSTEM-level RCE'
     }
 
+    # ESC10, both halves. The SID extension a CA writes into a certificate is what binds it
+    # to one account; these two values decide whether a domain controller still honours that
+    # binding. They live on the DC rather than on a template or a CA, which is why they turn
+    # up here and not in the AD CS checks - and why this check only sees them when they are
+    # deployed by Group Policy. A value set locally on a domain controller is invisible from
+    # the directory, and the finding text says so.
+    @{
+        Id                = 'ESC10_KDC_BINDING'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\Kdc'
+        ValueName         = 'StrongCertificateBindingEnforcement'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_ESC10_KDC_BINDING'
+        VulnerabilityName = 'Kerberos ignores the certificate SID extension (ESC10)'
+        RiskReason        = 'Value 0 makes the KDC skip the SID extension even when it is present, so every certificate maps by UPN alone - a UPN an attacker who can write that attribute chooses. Value 2 is full enforcement; 1 only validates the extension when a certificate carries one'
+    }
+    @{
+        Id                = 'ESC10_SCHANNEL_UPN'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\SecurityProviders\Schannel'
+        ValueName         = 'CertificateMappingMethods'
+        Match             = 'BitSet'
+        MatchValue        = 0x4
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_ESC10_SCHANNEL_UPN'
+        VulnerabilityName = 'Schannel maps certificates by UPN (ESC10)'
+        RiskReason        = 'Bit 0x4 re-enables UPN-based mapping for Schannel, so a certificate authenticates over LDAPS or any TLS client-auth endpoint as whichever account carries the UPN in its SAN'
+    }
+
     # =========================================================================
     # TIER 2 - defenses explicitly disabled / weakened (only flagged when set)
     # =========================================================================

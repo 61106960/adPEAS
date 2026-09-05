@@ -10,6 +10,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **ESC10 is detected where it is deployed by Group Policy.** Both halves of ESC10 live in
+  the registry of the domain controllers rather than on a template or a CA, which is why
+  they belong to `Get-GPORegistrySettings` and not to the AD CS checks:
+
+  | | value | why it is ESC10 |
+  |---|---|---|
+  | `Kdc\StrongCertificateBindingEnforcement` | `0` | the KDC skips the certificate's SID extension even when it is present, so every certificate maps by UPN alone |
+  | `Schannel\CertificateMappingMethods` | bit `0x4` | UPN-based mapping for everything that authenticates through Schannel - LDAPS and any other TLS client-auth endpoint |
+
+  The second needed a new `BitSet` match type: `CertificateMappingMethods` is a flag field
+  (`0x1` subject/issuer, `0x2` issuer, `0x4` UPN, `0x8` subject), and an equality test would
+  have missed every combination that carries the bit next to another one - which is how the
+  value is normally written.
+
+  Value `1` for the KDC is deliberately not reported. It is weaker than full enforcement and
+  KB5014754 calls it transitional, but a certificate that carries a SID extension is still
+  validated, so it is not the ESC10 primitive - and it is the value Windows shipped as the
+  default.
+
+  **This sees a value only where Group Policy deploys it.** A value set locally on a domain
+  controller is invisible from the directory, and the finding says so rather than implying
+  the domain is clean.
 - **`Get-WeakCertificateMapping` - new AD CS check for ESC14, explicit certificate
   mappings.** `altSecurityIdentities` maps a certificate to an account directly, overriding
   the SID extension the CA writes into it. Active Directory accepts six formats and
