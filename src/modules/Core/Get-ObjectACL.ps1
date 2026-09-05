@@ -187,6 +187,17 @@ function Get-ObjectACL {
         [Parameter(Mandatory=$false)]
         [switch]$DenyOnly,
 
+        # A descriptor the caller already holds, so the LDAP read below is skipped.
+        #
+        # This function reads exactly one object, so a caller that needs the ACLs of many -
+        # every GPO, every certificate template - pays one round trip per object for data a
+        # single query could have returned. With this the caller asks once with -Raw and
+        # hands the bytes over here per object, and because everything after the read is
+        # the same code, the result is identical to what this function would have fetched
+        # itself. Takes the raw byte[] as -Raw delivers it.
+        [Parameter(Mandatory=$false)]
+        $SecurityDescriptor,
+
         # Output Options
         [Parameter(Mandatory=$false)]
         [switch]$IncludeObjectInfo,
@@ -254,6 +265,15 @@ function Get-ObjectACL {
             }
 
             Write-Log "[Get-ObjectACL] Target DN: $targetDN"
+
+            # A caller that already holds the descriptor supplies it, and no read happens.
+            if ($SecurityDescriptor) {
+                $targetObject = [PSCustomObject]@{
+                    distinguishedName    = $targetDN
+                    nTSecurityDescriptor = $SecurityDescriptor
+                }
+                Write-Log "[Get-ObjectACL] Using the security descriptor supplied by the caller"
+            }
 
             # Get object with nTSecurityDescriptor if not already loaded
             if (-not $targetObject -or -not $targetObject.nTSecurityDescriptor) {

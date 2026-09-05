@@ -158,9 +158,35 @@ function Get-ProtectedUsersStatus {
                     $tier0AccountGroups[$memberSID] += $groupName
                 }
 
-                # Also add direct group members (Get-DomainGroup returns member DNs)
+                # Also add direct group members (Get-DomainGroup returns member DNs).
+                #
+                # The query above uses LDAP_MATCHING_RULE_IN_CHAIN, which returns every user
+                # whose membership chain includes this group - direct members among them. So
+                # a DN already accounted for needs no lookup of its own, and in a normal
+                # domain that is all of them: this loop used to spend one LDAP round trip
+                # per member of every Tier-0 group to re-read accounts it already had.
+                # What is left is the case the recursive filter misses, such as a member
+                # object that is not a user.
                 if ($groupObj.member) {
+                    $knownDNs = @{}
+                    foreach ($knownAccount in $tier0Accounts.Values) {
+                        if ($knownAccount.distinguishedName) {
+                            $knownDNs[[string]$knownAccount.distinguishedName] = $true
+                        }
+                    }
+
                     foreach ($memberDN in @($groupObj.member)) {
+                        if ($knownDNs.ContainsKey([string]$memberDN)) {
+                            # Already collected by the recursive query; make sure the group
+                            # is recorded against it and move on without asking again.
+                            $knownAccount = $tier0Accounts.Values | Where-Object { $_.distinguishedName -eq $memberDN } | Select-Object -First 1
+                            if ($knownAccount -and $knownAccount.objectSid -and
+                                $groupName -notin $tier0AccountGroups[$knownAccount.objectSid]) {
+                                $tier0AccountGroups[$knownAccount.objectSid] += $groupName
+                            }
+                            continue
+                        }
+
                         $memberObj = @(Get-DomainUser -Identity $memberDN @PSBoundParameters)[0]
                         if ($memberObj -and $memberObj.objectSid) {
                             $memberSID = $memberObj.objectSid

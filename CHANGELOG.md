@@ -55,6 +55,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Security descriptors are read in one query instead of one per object.**
+  `Get-ObjectACL` reads exactly one object per call, so a check that needs the ACLs of many
+  paid one LDAP round trip for each - a domain with 400 group policies paid 400 of them for
+  data a single search returns. `Get-ObjectACL` now accepts a descriptor the caller already
+  holds, so the caller asks once with `-Raw` and hands the bytes over per object. Everything
+  after the read is the same code, so the analysis and its results are unchanged.
+
+  `Get-GPOPermissions` prefetches every GPO descriptor in one query, and
+  `Get-ADCSVulnerabilities` does the same for certificate templates, which it used to read a
+  second time each because `Get-ADCSTemplate` returns the converted form and the ESC4
+  analysis needs the raw bytes. Both keep the per-object read as a fallback, so a failed
+  prefetch costs speed rather than findings.
+
+  `Get-ProtectedUsersStatus` no longer re-reads the direct members of every Tier-0 group:
+  the recursive `LDAP_MATCHING_RULE_IN_CHAIN` query above it already returns them, so only
+  a member that query did not cover is looked up - in a normal domain, none.
 - **An output path is no longer truncated at a dot that was never a file extension.**
   `-Outputfile` and `-OutputPath` are documented as taking a path without an extension,
   and one is dropped as a courtesy if the caller types it anyway, so that

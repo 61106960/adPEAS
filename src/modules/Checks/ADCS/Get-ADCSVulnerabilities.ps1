@@ -1022,6 +1022,29 @@ function Get-ADCSVulnerabilities {
                 Write-Log "[Get-ADCSVulnerabilities] ESC3 chain: $(@($agentTemplateNames).Count) enrollment agent template(s) enrollable by non-privileged principals: $($agentTemplateNames -join ', ')"
             }
 
+            # Every template's security descriptor in one query. The ESC4 analysis below
+            # needs the raw bytes, which Get-ADCSTemplate does not hand on - it returns the
+            # converted form - so each template used to be read again individually, one
+            # LDAP round trip per template. A subtree search over the container returns all
+            # of them at once; the per-template read stays as the fallback for a template
+            # the prefetch did not cover.
+            $templateDescriptors = @{}
+            try {
+                $templateContainerDN = "CN=Certificate Templates,CN=Public Key Services,CN=Services,$configNC"
+                $rawTemplates = @(Invoke-LDAPSearch -Filter '(objectClass=pKICertificateTemplate)' `
+                    -SearchBase $templateContainerDN -Properties 'distinguishedName', 'nTSecurityDescriptor' -Raw)
+
+                foreach ($rawTemplate in $rawTemplates) {
+                    if ($rawTemplate.distinguishedName -and $rawTemplate.nTSecurityDescriptor) {
+                        $templateDescriptors[[string]$rawTemplate.distinguishedName] = $rawTemplate.nTSecurityDescriptor
+                    }
+                }
+                Write-Log "[Get-ADCSVulnerabilities] Prefetched $($templateDescriptors.Count) template security descriptor(s) in one query"
+            }
+            catch {
+                Write-Log "[Get-ADCSVulnerabilities] Template descriptor prefetch failed, falling back to one read per template: $_" -Level Warning
+            }
+
             # Step 3: Analyze Templates for Vulnerabilities (only enabled templates)
             $totalTemplates = @($templates).Count
             $currentIndex = 0
@@ -1125,14 +1148,20 @@ function Get-ADCSVulnerabilities {
                 # ===== ESC4: Dangerous Template Permissions =====
                 # Check if non-privileged users have dangerous permissions on this template
                 try {
-                    # Templates live in the Configuration partition - must use Invoke-LDAPSearch with
-                    # the template's own DN as SearchBase and Base scope (single-object lookup).
-                    # -Raw is required to get nTSecurityDescriptor as byte[] for parsing.
-                    $templateSDObj = @(Invoke-LDAPSearch -Filter "(objectClass=*)" -SearchBase $template.DistinguishedName -Properties 'nTSecurityDescriptor' -Raw -Scope Base)[0]
+                    # The descriptor comes from the single prefetch above. Templates live in
+                    # the Configuration partition, so the fallback below reads this one
+                    # template with its own DN as SearchBase and Base scope, and -Raw either
+                    # way because the parsing needs nTSecurityDescriptor as byte[].
+                    $rawDescriptor = $templateDescriptors[[string]$template.DistinguishedName]
+                    if (-not $rawDescriptor) {
+                        $templateSDObj = @(Invoke-LDAPSearch -Filter "(objectClass=*)" -SearchBase $template.DistinguishedName -Properties 'nTSecurityDescriptor' -Raw -Scope Base)[0]
+                        if ($templateSDObj) { $rawDescriptor = $templateSDObj.nTSecurityDescriptor }
+                    }
+
                     $securityDescriptor = $null
-                    if ($templateSDObj -and $templateSDObj.nTSecurityDescriptor) {
+                    if ($rawDescriptor) {
                         $securityDescriptor = New-Object System.DirectoryServices.ActiveDirectorySecurity
-                        $securityDescriptor.SetSecurityDescriptorBinaryForm($templateSDObj.nTSecurityDescriptor)
+                        $securityDescriptor.SetSecurityDescriptorBinaryForm($rawDescriptor)
                     }
 
                     if ($securityDescriptor) {

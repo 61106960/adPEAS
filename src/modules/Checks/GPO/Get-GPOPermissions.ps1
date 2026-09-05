@@ -94,6 +94,30 @@ function Get-GPOPermissions {
                 return
             }
 
+            # Every GPO's security descriptor in one query, because the loop below needs all
+            # of them and Get-ObjectACL reads exactly one object per call - which cost one
+            # LDAP round trip per GPO, a domain with 400 policies paying 400 of them for
+            # data a single search returns. -Raw keeps nTSecurityDescriptor as the bytes
+            # Get-ObjectACL parses, so the analysis below is unchanged: it is handed the
+            # same descriptor it used to fetch for itself.
+            $descriptorLookup = @{}
+            try {
+                $rawGPOs = @(Get-DomainObject -LDAPFilter '(objectClass=groupPolicyContainer)' `
+                    -Properties 'distinguishedName', 'nTSecurityDescriptor' -Raw @connectionParams)
+
+                foreach ($rawGPO in $rawGPOs) {
+                    if ($rawGPO.distinguishedName -and $rawGPO.nTSecurityDescriptor) {
+                        $descriptorLookup[[string]$rawGPO.distinguishedName] = $rawGPO.nTSecurityDescriptor
+                    }
+                }
+                Write-Log "[Get-GPOPermissions] Prefetched $($descriptorLookup.Count) security descriptor(s) in one query"
+            }
+            catch {
+                # A failed prefetch is not fatal: the loop falls back to reading each
+                # descriptor itself, which is what it did before.
+                Write-Log "[Get-GPOPermissions] Descriptor prefetch failed, falling back to one read per GPO: $_" -Level Warning
+            }
+
             # ===== Step 2: Enumerate Computers for Impact Analysis =====
             # Include ALL computers (workstations, servers, AND domain controllers) for accurate impact analysis
             # GPOs affecting DCs are often more critical than those affecting workstations
@@ -122,8 +146,15 @@ function Get-GPOPermissions {
 
                 try {
                     # Use Get-ObjectACL for ACL analysis (handles credentials automatically)
-                    # Get-ObjectACL returns a wrapper object with .ACEs property containing actual ACE array
-                    $aclResult = Get-ObjectACL -DistinguishedName $gpoDN -DangerousOnly -AllowOnly -ExplicitOnly @connectionParams
+                    # Get-ObjectACL returns a wrapper object with .ACEs property containing actual ACE array.
+                    # The descriptor comes from the single prefetch above where it is present,
+                    # so the same parsing and the same -DangerousOnly/-AllowOnly/-ExplicitOnly
+                    # filtering run either way - only the read is gone.
+                    $aclParams = @{ DistinguishedName = $gpoDN; DangerousOnly = $true; AllowOnly = $true; ExplicitOnly = $true }
+                    if ($descriptorLookup.ContainsKey([string]$gpoDN)) {
+                        $aclParams['SecurityDescriptor'] = $descriptorLookup[[string]$gpoDN]
+                    }
+                    $aclResult = Get-ObjectACL @aclParams @connectionParams
 
                     if (-not $aclResult -or -not $aclResult.ACEs -or @($aclResult.ACEs).Count -eq 0) {
                         Write-Log "[Get-GPOPermissions] No dangerous ACEs found for GPO: $gpoDisplayName"
