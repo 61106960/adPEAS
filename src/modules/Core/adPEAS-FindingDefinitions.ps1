@@ -495,7 +495,7 @@ $Script:FindingDefinitions = @{
         Impact = @(
             "Account can impersonate any user (including Domain Admins) to target services"
             "No authentication from the impersonated user is required"
-            "If target services include LDAP/CIFS on DCs, enables privilege escalation"
+            "If any target SPN points at a Domain Controller, this is a direct path to Domain Admin"
             "Attackers who compromise this account gain significant lateral movement capability"
         )
         Attack = @(
@@ -507,7 +507,7 @@ $Script:FindingDefinitions = @{
         Remediation = @(
             "Review if protocol transition is actually required"
             "Switch to Resource-Based Constrained Delegation (RBCD) where possible"
-            "Ensure target services don't include sensitive services like LDAP on DCs"
+            "Do not delegate to a Domain Controller at all - restricting the service class is no protection"
             "Add privileged accounts to 'Protected Users' group"
             "Monitor S4U2Self and S4U2Proxy requests"
         )
@@ -535,6 +535,95 @@ $Script:FindingDefinitions = @{
         Triggers = @(
             @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_TO_AUTH_FOR_DELEGATION'; Severity = 'Finding' }
             @{ Attribute = 'msDS-AllowedToDelegateTo'; Severity = 'Finding' }
+        )
+    }
+
+    'CONSTRAINED_DELEGATION_TO_DC' = @{
+        Title = "Constrained Delegation to a Domain Controller"
+        Risk = "Finding"
+        BaseScore = 80
+        Description = "This account is allowed to delegate to a service running on a Domain Controller. Whoever controls the account can obtain a service ticket to that Domain Controller as any user the delegation permits, which is a direct path to Domain Admin."
+        Impact = @(
+            "Compromise of this account is equivalent to compromise of the domain"
+            "The service class named in the SPN is not a restriction - see below"
+            "With protocol transition the account needs no cooperation from the impersonated user"
+            "Reachable by anyone who can take over the account, including through its ACL or its service password"
+        )
+        Attack = @(
+            "1. Attacker compromises the account or its password hash"
+            "2. S4U2Self obtains a ticket for a privileged user - forwardable if protocol transition is set"
+            "3. S4U2Proxy exchanges it for a service ticket to the configured SPN on the Domain Controller"
+            "4. The service class in that ticket is rewritten to the one wanted, for example ldap or cifs"
+            "5. The rewritten ticket is used against the Domain Controller, for example for DCSync"
+        )
+        Remediation = @(
+            "Remove the Domain Controller from msDS-AllowedToDelegateTo - restricting the service class does not help"
+            "If the application needs delegation, move the target service off the Domain Controller"
+            "Prefer Resource-Based Constrained Delegation, which lets the target decide who may delegate to it"
+            "Put privileged accounts in 'Protected Users' or mark them 'Account is sensitive and cannot be delegated'"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current delegation targets of the account"
+                Command = "Get-ADObject -Identity 'ACCOUNT_DN' -Properties msDS-AllowedToDelegateTo | Select-Object -ExpandProperty msDS-AllowedToDelegateTo"
+            }
+            @{
+                Description = "Remove all delegation targets from the account"
+                Command = "Set-ADObject -Identity 'ACCOUNT_DN' -Clear msDS-AllowedToDelegateTo"
+            }
+        )
+        References = @(
+            @{ Title = "S4U2Self and S4U2Proxy Abuse"; Url = "https://blog.harmj0y.net/activedirectory/s4u2pwnage/" }
+            @{ Title = "Constrained Delegation - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/constrained-delegation.html" }
+            @{ Title = "Rubeus - alternate service name"; Url = "https://github.com/GhostPack/Rubeus#s4u" }
+        )
+        Tools = @("Rubeus", "Impacket", "PowerView")
+        MITRE = "T1550.003"
+        Triggers = @(
+            @{ Attribute = 'DelegationTargetsOnDC'; Severity = 'Finding' }
+        )
+    }
+
+    'CONSTRAINED_DELEGATION_TRANSITION_NO_TARGET' = @{
+        Title = "Protocol Transition Without a Delegation Target"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "This account carries TRUSTED_TO_AUTH_FOR_DELEGATION but msDS-AllowedToDelegateTo is empty. The delegation the flag exists for is not configured, so the setting has no purpose here - and the flag on its own still changes what tickets the account can obtain."
+        Impact = @(
+            "S4U2Self returns a forwardable ticket for any user against this account's own services"
+            "That ticket can be used locally against services this account hosts"
+            "The flag is one write away from being usable: an attacker who can also set msDS-AllowedToDelegateTo gains full constrained delegation"
+            "Set on its own it is more often a leftover or an attacker's groundwork than an intended configuration"
+        )
+        Attack = @(
+            "1. Attacker compromises the account"
+            "2. S4U2Self obtains a forwardable ticket impersonating a privileged user"
+            "3. The ticket is presented to a service the account itself hosts"
+            "4. If the attacker can write msDS-AllowedToDelegateTo, any target of choice is added"
+        )
+        Remediation = @(
+            "Clear the flag if delegation is not in use"
+            "If delegation is intended, configure the target services explicitly and review them"
+            "Check who can write userAccountControl and msDS-AllowedToDelegateTo on this account"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Clear protocol transition on the account"
+                Command = "Set-ADAccountControl -Identity 'ACCOUNT_NAME' -TrustedToAuthForDelegation `$false"
+            }
+            @{
+                Description = "Find every account carrying the flag without a target list"
+                Command = "Get-ADObject -LDAPFilter '(&(userAccountControl:1.2.840.113556.1.4.803:=16777216)(!(msDS-AllowedToDelegateTo=*)))' -Properties userAccountControl"
+            }
+        )
+        References = @(
+            @{ Title = "S4U2Self Abuse"; Url = "https://blog.harmj0y.net/activedirectory/s4u2pwnage/" }
+            @{ Title = "Kerberos Delegation - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/security/kerberos/kerberos-constrained-delegation-overview" }
+        )
+        Tools = @("Rubeus", "PowerView")
+        MITRE = "T1550.003"
+        Triggers = @(
+            @{ Attribute = 'DelegationAnomaly'; Severity = 'Finding' }
         )
     }
 
@@ -2395,7 +2484,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Impact = @(
             "Can configure Constrained Delegation on any account in the OU"
             "Allows impersonation of users to specified services"
-            "If targeting sensitive services (LDAP, CIFS on DC), enables privilege escalation"
+            "If the target SPN points at a Domain Controller, enables privilege escalation whatever its service class"
             "Constrained Delegation is a powerful impersonation mechanism"
         )
         Attack = @(
@@ -8365,7 +8454,7 @@ foreach ($oid in $linkedOIDs) {
         Description = "This account has constrained delegation configured. It can impersonate users to the specified services when they authenticate to this account."
         Impact = @(
             "Can impersonate authenticating users to configured target services"
-            "If target includes LDAP/CIFS on DCs, privilege escalation possible"
+            "If any target SPN points at a Domain Controller, privilege escalation is possible"
         )
         Remediation = @(
             "Review if constrained delegation is still required"

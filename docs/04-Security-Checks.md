@@ -543,9 +543,9 @@ Get-UnconstrainedDelegation
 **What it checks**:
 - `msDS-AllowedToDelegateTo` attribute
 - Protocol transition capability (S4U2Self)
-- Delegation to sensitive services (LDAP, CIFS, HTTP)
+- Delegation whose target SPN points at a Domain Controller
 
-**Security Impact**: While more restricted than unconstrained, constrained delegation to sensitive services like LDAP can enable privilege escalation to Domain Admin.
+**Security Impact**: While more restricted than unconstrained, constrained delegation to a Domain Controller enables privilege escalation to Domain Admin. The service class in the SPN is not a limit: all SPNs registered to one host account share a single key, so a ticket issued for one service can be rewritten to another.
 
 **Usage**:
 ```powershell

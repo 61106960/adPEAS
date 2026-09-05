@@ -636,13 +636,14 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Category = "Delegation"
         SectionTitle = "Constrained Delegation"
         Summary = "Identifies accounts configured for constrained Kerberos delegation."
-        WhyItMatters = "Constrained delegation with protocol transition allows impersonating any user to specific services. If those services include LDAP or CIFS on DCs, it enables privilege escalation."
+        WhyItMatters = "Constrained delegation with protocol transition allows impersonating any user to the configured services. Restricting the service class is no protection: S4U2Proxy returns a ticket encrypted with the target host's account key, and every SPN registered to that account shares it, so a ticket for time/DC01 can be rewritten to ldap/DC01. Any target on a Domain Controller is therefore a direct path to Domain Admin."
         WhatWeCheck = @(
             "Accounts with msDS-AllowedToDelegateTo configured"
             "Whether protocol transition (S4U2Self) is enabled"
-            "Target services that could enable privilege escalation"
+            "Whether any target SPN points at a Domain Controller, matched on the host and not the service class"
+            "Accounts carrying protocol transition without any target list"
         )
-        SecureMessage = "No accounts with dangerous constrained delegation found. No delegation targets include sensitive services like LDAP or CIFS on Domain Controllers that could enable privilege escalation."
+        SecureMessage = "No accounts with dangerous constrained delegation found. No account delegates to a Domain Controller, and none carries protocol transition without a target list."
         PrimaryFindingId = 'CONSTRAINED_DELEGATION_PROTOCOL_TRANSITION'
     }
 

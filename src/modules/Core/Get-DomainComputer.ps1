@@ -35,6 +35,10 @@ function Get-DomainComputer {
     Computers with Resource-Based Constrained Delegation (msDS-AllowedToActOnBehalfOfOtherIdentity attribute).
     RBCD allows the target resource to control who can delegate to it.
 
+.PARAMETER DomainController
+    Domain Controllers, writable and read-only. Writable DCs carry SERVER_TRUST_ACCOUNT;
+    an RODC is recognised by PARTIAL_SECRETS_ACCOUNT or primaryGroupID 521.
+
 .PARAMETER TrustedToAuth
     Computers with Protocol Transition (TRUSTED_TO_AUTH_FOR_DELEGATION flag).
     This is the more dangerous variant of Constrained Delegation with S4U2Self.
@@ -156,6 +160,9 @@ function Get-DomainComputer {
         [switch]$TrustedToAuth,
 
         [Parameter(Mandatory=$false)]
+        [switch]$DomainController,
+
+        [Parameter(Mandatory=$false)]
         [switch]$LAPS,
 
         [Parameter(Mandatory=$false)]
@@ -243,6 +250,17 @@ function Get-DomainComputer {
                 # Resource-Based Constrained Delegation: Has msDS-AllowedToActOnBehalfOfOtherIdentity attribute
                 # The target resource controls who can delegate to it (stored as Security Descriptor)
                 $Filter = "(&$Filter(msDS-AllowedToActOnBehalfOfOtherIdentity=*))"
+            }
+
+            if ($DomainController) {
+                # A writable domain controller's computer account carries SERVER_TRUST_ACCOUNT
+                # (8192). A read-only one does not: an RODC is a WORKSTATION_TRUST_ACCOUNT with
+                # PARTIAL_SECRETS_ACCOUNT (67108864 = 0x4000000) and primaryGroupID 521. An RODC
+                # holds credentials and is a domain controller, so leaving it out is a blind spot.
+                #
+                # 67108864, not 16777216 - that is TRUSTED_TO_AUTH_FOR_DELEGATION, and matching on
+                # it would call every server with protocol transition a domain controller.
+                $Filter = "(&$Filter(|(userAccountControl:1.2.840.113556.1.4.803:=8192)(userAccountControl:1.2.840.113556.1.4.803:=67108864)(primaryGroupID=521)))"
             }
 
             if ($LAPS) {

@@ -64,11 +64,9 @@ function Get-InfrastructureServers {
         Show-SubHeader "Searching for Domain Controllers..." -ObjectType "DomainController"
 
         try {
-            # SERVER_TRUST_ACCOUNT (8192) alone misses read-only domain controllers: an RODC
-            # computer account carries WORKSTATION_TRUST_ACCOUNT plus PARTIAL_SECRETS_ACCOUNT
-            # (16777216) and primaryGroupID 521. An RODC holds credentials and is a domain
-            # controller, so leaving it out of the inventory is a real blind spot.
-            $domainControllers = @(Get-DomainComputer -LDAPFilter "(|(userAccountControl:1.2.840.113556.1.4.803:=8192)(userAccountControl:1.2.840.113556.1.4.803:=16777216)(primaryGroupID=521))" @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            # What counts as a domain controller is defined once, in Get-DomainComputer, so
+            # this inventory and the delegation checks cannot drift apart on the question.
+            $domainControllers = @(Get-DomainComputer -DomainController @PSBoundParameters | Test-AccountActivity -IsEnabled)
 
             if ($domainControllers.Count -gt 0) {
                 Show-Line "Found $($domainControllers.Count) Domain Controller(s):" -Class "Hint"

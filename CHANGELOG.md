@@ -10,6 +10,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Constrained delegation now says whether the target is a Domain Controller.** The check
+  listed the accounts and left the delegation targets for the reader to judge, while the
+  finding text told that reader to look for exactly what the check could have determined
+  itself. Targets are now matched against the domain's Domain Controllers and an account
+  that reaches one is called out separately, as `CONSTRAINED_DELEGATION_TO_DC`.
+
+  **Matched on the host, never on the service class.** Restricting the service class is
+  not a control: S4U2Proxy returns a ticket encrypted with the target host's account key,
+  and every SPN registered to that account shares that key, so a ticket obtained for
+  `time/DC01` can be rewritten to `ldap/DC01` and will decrypt. Delegation to any SPN on a
+  Domain Controller is therefore worth as much to an attacker as delegation to LDAP, and
+  the guidance that said otherwise was corrected in the same pass (see Fixed).
+
+  If the Domain Controllers cannot be enumerated the check says so rather than reporting
+  no DC target, which would read as a clean result.
+
+- **Accounts carrying protocol transition without any delegation target are reported.**
+  `TRUSTED_TO_AUTH_FOR_DELEGATION` with an empty `msDS-AllowedToDelegateTo` was invisible:
+  the check filters on the presence of that attribute, which these accounts do not have.
+  A second, server-side filtered query picks them up as
+  `CONSTRAINED_DELEGATION_TRANSITION_NO_TARGET`. The flag alone still buys a forwardable
+  S4U2Self ticket for any user against the account's own services, and set on its own it
+  is more often a leftover or an attacker's groundwork than anything intended.
+
+- **`Get-DomainComputer -DomainController`.** What counts as a Domain Controller is now
+  defined once in the data layer instead of being spelled out per check.
+
 - **ESC10 is detected where it is deployed by Group Policy.** Both halves of ESC10 live in
   the registry of the domain controllers rather than on a template or a CA, which is why
   they belong to `Get-GPORegistrySettings` and not to the AD CS checks:
@@ -253,6 +280,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 Found while building the unit test suites, each reproduced before it was changed.
+
+- **Every server with protocol transition was listed as a Domain Controller.** The DC
+  query in `Get-InfrastructureServers` matched `userAccountControl` bit `16777216`, meant
+  as `PARTIAL_SECRETS_ACCOUNT` to catch read-only DCs. `PARTIAL_SECRETS_ACCOUNT` is
+  `67108864`; `16777216` is `TRUSTED_TO_AUTH_FOR_DELEGATION`. Any account configured for
+  constrained delegation with protocol transition therefore appeared in the Domain
+  Controller inventory. The filter moved into `Get-DomainComputer -DomainController` and
+  now uses the right constant.
+
+- **The advice on constrained delegation was wrong about what protects a Domain
+  Controller.** Four finding definitions, the check's help text and the documentation all
+  suggested that the danger lay in delegating to particular services - "ensure target
+  services don't include sensitive services like LDAP on DCs". That reads as though
+  `time/DC01` were safe. It is not: all SPNs registered to one host account share a single
+  key, so a service ticket issued for one of them can be rewritten to another. Every text
+  now says what actually holds - do not delegate to a Domain Controller at all - and the
+  new detection matches accordingly.
 
 - **The template loaders threw instead of falling back to the current directory.** Both
   `Get-HTMLTemplate` and `Get-DiffHTMLTemplate` look for their template files relative to
