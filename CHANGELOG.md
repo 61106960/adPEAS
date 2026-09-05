@@ -37,6 +37,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`Get-DomainComputer -DomainController`.** What counts as a Domain Controller is now
   defined once in the data layer instead of being spelled out per check.
 
+- **A roastable account that holds privileged rights is called out separately.** Every
+  kerberoastable or AS-REP roastable account hands out a hash to crack offline, but on a
+  privileged one cracking it is a domain compromise rather than the compromise of a
+  service - and both used to be reported alike. Both checks now consult `Test-IsPrivileged`
+  per account (nested membership, cached per SID) and mark the account as
+  `ROASTABLE_PRIVILEGED_ACCOUNT`. Operators count: an Account Operator can reset most
+  passwords in the domain, which makes its own worth as much to whoever cracks it.
+
 - **ESC10 is detected where it is deployed by Group Policy.** Both halves of ESC10 live in
   the registry of the domain controllers rather than on a template or a CA, which is why
   they belong to `Get-GPORegistrySettings` and not to the AD CS checks:
@@ -280,6 +288,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 Found while building the unit test suites, each reproduced before it was changed.
+
+- **Policy wording in a description hid the password written next to it.** In
+  `Get-PasswordInDescription` the exclusion list ran before the high-confidence patterns
+  and skipped the whole attribute on a match. Since people write both in one sentence -
+  "Passwort muss geaendert werden. Passwort = Winter2024!", "Password complexity required;
+  password: Herbst2024" - the credential went unreported, silently. Measured against five
+  realistic descriptions carrying an actual assignment, three were lost. The exclusions
+  now only downgrade a bare mention, which is what the comment above them always claimed
+  they did. The one exception is a separate, narrower list for masked and bracketed values
+  (`Password: ********`): those describe the value rather than the sentence, so they still
+  silence the attribute outright.
+
+- **`Get-UnixPasswordAccounts` only looked at user objects.** The five password attributes
+  are not confined to one object class, and the check asked `Get-DomainUser`, whose filter
+  adds `(&(objectCategory=person)(objectClass=user)(!(objectClass=computer)))`. A
+  Unix-integrated host with `unixUserPassword` on its computer account holds the same
+  leaked credential and was invisible. It now asks `Get-DomainObject`.
+
+- **`Get-UnixPasswordAccounts` printed the credential as decimal bytes.** `userPassword`,
+  `unixUserPassword`, `msSFU30Password`, `sambaNTPassword` and `sambaLMPassword` are octet
+  strings, so they arrive as `byte[]` and reached the report unconverted - a password came
+  out as `83 111 109 109 101 114 50 48 50 52 33`. Showing what these attributes hold is the
+  entire purpose of the check. They are now decoded as text, which covers cleartext, a
+  crypt(3) hash and the hex form of an NT or LM hash alike; a value that is not printable
+  text is rendered as hex rather than pushed through a decoder that would substitute the
+  undecodable bytes and leave a hash no longer matching itself. Multi-valued attributes
+  keep every value.
 
 - **Every server with protocol transition was listed as a Domain Controller.** The DC
   query in `Get-InfrastructureServers` matched `userAccountControl` bit `16777216`, meant

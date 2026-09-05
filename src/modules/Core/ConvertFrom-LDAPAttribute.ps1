@@ -383,6 +383,43 @@ function ConvertFrom-LDAPAttribute {
         # These are processed BEFORE single-value check
         # =====================================================================
 
+        # Unix, LDAP and Samba password attributes. All of them are octet strings, so they
+        # arrive as byte[] and without this they reach the report as bytes - PowerShell
+        # renders that as space-separated decimals, "83 111 109 109 101 114", where the
+        # whole purpose of Get-UnixPasswordAccounts is to show what the attribute says.
+        #
+        # The value is text in every case that matters: cleartext or a crypt(3) hash for
+        # the first three, the hex form of an NT or LM hash for the Samba pair. Handled
+        # here, with the other multi-valued attributes, because userPassword may legally
+        # hold more than one value and the single-value path below would not see those.
+        if ($PropName -iin @('userPassword', 'unixUserPassword', 'msSFU30Password',
+                             'sambaNTPassword', 'sambaLMPassword')) {
+            $passwordValues = @(
+                foreach ($entry in $PropValue) {
+                    if ($entry -is [byte[]]) {
+                        $decoded = [System.Text.Encoding]::UTF8.GetString($entry)
+                        # A control character other than tab, CR or LF means this is not
+                        # text. Such a value is shown as hex rather than pushed through a
+                        # decoder, which would substitute the undecodable bytes and leave
+                        # a hash that no longer matches itself.
+                        if ($decoded -match '[\x00-\x08\x0B\x0C\x0E-\x1F]') {
+                            ([System.BitConverter]::ToString($entry) -replace '-', '')
+                        } else {
+                            $decoded
+                        }
+                    } elseif ($null -ne $entry) {
+                        [string]$entry
+                    }
+                }
+            )
+            if ($passwordValues.Count -eq 1) {
+                $ConvertedProperties[$PropName] = $passwordValues[0]
+            } elseif ($passwordValues.Count -gt 1) {
+                $ConvertedProperties[$PropName] = $passwordValues
+            }
+            return $ConvertedProperties
+        }
+
         # sIDHistory - Multi-valued SID attribute (critical for SID History Injection detection)
         if ($PropName -ieq "sIDHistory") {
             $sidStrings = @()

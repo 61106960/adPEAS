@@ -120,6 +120,7 @@ function Get-KerberoastableAccounts {
 
                 $totalUsers = @($kerberoastableUsers).Count
                 $currentIndex = 0
+                $privilegedCount = 0
                 foreach ($user in $kerberoastableUsers) {
                     $currentIndex++
                     if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing Kerberoastable accounts" -Current $currentIndex -Total $totalUsers -ObjectName $user.sAMAccountName }
@@ -152,6 +153,22 @@ function Get-KerberoastableAccounts {
                         }
                     }
 
+                    # A kerberoastable Domain Admin and a kerberoastable print service are
+                    # not the same finding: cracking the first one ends the engagement.
+                    # Test-IsPrivileged resolves nested membership and caches per SID, so
+                    # the well-known identities cost nothing and the rest cost one query
+                    # each, once.
+                    #
+                    # -IncludeOperators on purpose. An Account Operator can reset the
+                    # password of most accounts in the domain, which makes its own password
+                    # worth as much as a Tier-0 one to whoever cracks it.
+                    $privileged = Test-IsPrivileged -Identity $user -IncludeOperators
+                    if ($privileged -and $privileged.IsPrivileged) {
+                        $privilegedCount++
+                        $user | Add-Member -NotePropertyName 'PrivilegedRoastTarget' `
+                            -NotePropertyValue $privileged.Reason -Force
+                    }
+
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Kerberoastable' -Force
                     Show-Object $user
 
@@ -159,6 +176,10 @@ function Get-KerberoastableAccounts {
                     Show-EmptyLine
                 }
                 if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing Kerberoastable accounts" -Completed }
+
+                if ($privilegedCount -gt 0) {
+                    Show-Line "$privilegedCount of them is/are privileged - cracking one of those passwords is a domain compromise" -Class "Finding"
+                }
 
             } else {
                 Show-Line "No kerberoastable accounts found" -Class "Secure"

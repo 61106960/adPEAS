@@ -538,6 +538,56 @@ $Script:FindingDefinitions = @{
         )
     }
 
+    'ROASTABLE_PRIVILEGED_ACCOUNT' = @{
+        Title = "Roastable Account with Privileged Rights"
+        Risk = "Finding"
+        BaseScore = 85
+        Description = "This account can be Kerberoasted or AS-REP roasted and it holds privileged rights in the domain. Every roastable account hands out a hash to crack offline; on this one, cracking it is a domain compromise rather than the compromise of a service."
+        Impact = @(
+            "The hash of a privileged account is obtainable by any authenticated user, and for AS-REP roasting by anyone at all"
+            "Cracking happens offline, so no lockout policy, no failed logon, nothing to alert on"
+            "Success grants the account's rights directly - no further escalation needed"
+            "Service account passwords are set once and rarely rotated, which is what makes the offline attack worth running"
+        )
+        Attack = @(
+            "1. Attacker requests a service ticket for the SPN, or an AS-REP for the account"
+            "2. The reply is encrypted with a key derived from the account's password"
+            "3. The hash is cracked offline against a wordlist, with no interaction with the domain"
+            "4. The recovered password is used directly with the account's privileges"
+        )
+        Remediation = @(
+            "A privileged account should not be roastable at all: remove the SPN, or move the service to a group Managed Service Account whose 240-byte password cannot be cracked"
+            "If the account carries DONT_REQ_PREAUTH, clear it - pre-authentication is what makes AS-REP roasting impossible"
+            "Take the privilege away rather than the exposure where the service does not need it"
+            "Add the account to 'Protected Users', which forbids RC4 and shortens the ticket lifetime"
+            "Where the account must stay as it is, give it a password long enough that offline cracking is not worth the electricity - 25 characters or more"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the SPNs and the group memberships of the account"
+                Command = "Get-ADUser -Identity 'ACCOUNT_NAME' -Properties servicePrincipalName,memberOf,userAccountControl,pwdLastSet"
+            }
+            @{
+                Description = "Remove the SPN that makes the account kerberoastable"
+                Command = "Set-ADUser -Identity 'ACCOUNT_NAME' -ServicePrincipalNames @{Remove='SERVICE/HOST'}"
+            }
+            @{
+                Description = "Require Kerberos pre-authentication again"
+                Command = "Set-ADAccountControl -Identity 'ACCOUNT_NAME' -DoesNotRequirePreAuth `$false"
+            }
+        )
+        References = @(
+            @{ Title = "Kerberoasting - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/kerberoast.html" }
+            @{ Title = "AS-REP Roasting - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/asreproast.html" }
+            @{ Title = "Protected Users Security Group"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group" }
+        )
+        Tools = @("Rubeus", "Impacket", "hashcat", "John the Ripper")
+        MITRE = "T1558.003"
+        Triggers = @(
+            @{ Attribute = 'PrivilegedRoastTarget'; Severity = 'Finding' }
+        )
+    }
+
     'CONSTRAINED_DELEGATION_TO_DC' = @{
         Title = "Constrained Delegation to a Domain Controller"
         Risk = "Finding"

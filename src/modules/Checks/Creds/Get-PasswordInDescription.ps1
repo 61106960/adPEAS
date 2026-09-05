@@ -127,12 +127,29 @@ function Get-PasswordInDescription {
                 ('(minimum|maximum)\s+' + $pwToken),
                 # Imperative: "set/change/update your password" (EN)
                 ('(set|change|update|reset)\s+(your|the|a)\s+' + $pwToken),
-                # Placeholders
-                ($pwToken + '\s*:\s*\*+'),
-                ($pwToken + '\s*:\s*<[^>]+>'),
                 # Prompts
                 ('Enter\s+(your\s+)?' + $pwToken),
                 ($pwToken + '\s+prompt')
+            )
+
+            # A second, much narrower list, and the only one that may overrule a tier 1 hit.
+            #
+            # The two kinds of exclusion above and below are not the same thing. The ones
+            # above describe the *sentence* - it reads like policy or help text - and that
+            # is a reason to distrust a bare mention, never a reason to ignore an
+            # assignment standing next to it. The ones here describe the *value*: the
+            # syntax is an assignment, but what was assigned is a row of asterisks or an
+            # angle-bracket placeholder, so there is no credential to find whatever the
+            # pattern says.
+            $placeholderPatterns = @(
+                ($pwToken + '\s*[=:]\s*\*+\s*$'),
+                ($pwToken + '\s*[=:]\s*<[^>]+>'),
+                'pwd\s*[=:]\s*\*+\s*$',
+                'pwd\s*[=:]\s*<[^>]+>',
+                '\bpass\s*[=:]\s*\*+\s*$',
+                '\bpass\s*[=:]\s*<[^>]+>',
+                'kennwort\s*[=:]\s*\*+\s*$',
+                'kennwort\s*[=:]\s*<[^>]+>'
             )
 
             $findingCount = 0
@@ -182,18 +199,33 @@ function Get-PasswordInDescription {
                     foreach ($attr in $attributesToCheck) {
                         $attrValue = [string]$attr.Value
 
-                        # Check exclusion patterns first
-                        $excluded = $false
-                        foreach ($exPattern in $exclusionPatterns) {
-                            if ($attrValue -match $exPattern) {
-                                $excluded = $true
-                                Write-Log "[Get-PasswordInDescription] Excluded $accountName ($($attr.Name)): matches exclusion '$exPattern'"
+                        # A masked or bracketed value is not a credential however much the
+                        # syntax around it looks like an assignment, so this one clause is
+                        # allowed to silence the attribute outright.
+                        $isPlaceholder = $false
+                        foreach ($phPattern in $placeholderPatterns) {
+                            if ($attrValue -imatch $phPattern) {
+                                $isPlaceholder = $true
+                                Write-Log "[Get-PasswordInDescription] Placeholder value on $accountName ($($attr.Name)): '$phPattern'"
                                 break
                             }
                         }
-                        if ($excluded) { continue }
+                        if ($isPlaceholder) { continue }
 
-                        # Check Tier 1 patterns (Finding)
+                        # Tier 1 is decided before the prose exclusions are consulted.
+                        #
+                        # The exclusions used to run first and skipped the whole attribute
+                        # on a hit, which is the opposite of what this check is for. Policy
+                        # wording and a real credential live in the same description all the
+                        # time - "Passwort muss geaendert werden. Passwort = Winter2024!",
+                        # "Password complexity required; password: Herbst2024" - and every
+                        # one of those was dropped without a word, because the modal verb or
+                        # the word "complexity" matched an exclusion. Three of five
+                        # realistic strings carrying an actual assignment were lost that way.
+                        #
+                        # An exclusion says "this reads like policy text", which is a reason
+                        # to distrust a bare mention, never a reason to ignore an assignment
+                        # with a value next to it. So it only downgrades tier 2 now.
                         $isTier1 = $false
                         foreach ($t1 in $tier1Patterns) {
                             if ($attrValue -imatch $t1.Pattern) {
@@ -209,6 +241,17 @@ function Get-PasswordInDescription {
                             $bestAttrName = $attr.Name
                             break
                         }
+
+                        # No assignment here, so policy wording is what it looks like.
+                        $excluded = $false
+                        foreach ($exPattern in $exclusionPatterns) {
+                            if ($attrValue -match $exPattern) {
+                                $excluded = $true
+                                Write-Log "[Get-PasswordInDescription] Excluded $accountName ($($attr.Name)): matches exclusion '$exPattern'"
+                                break
+                            }
+                        }
+                        if ($excluded) { continue }
 
                         # Check Tier 2 patterns (Hint)
                         $isTier2 = $false

@@ -63,7 +63,12 @@ function Get-UnixPasswordAccounts {
             # unixUserPassword: Unix/Linux integration, userPassword: LDAP standard, msSFU30Password: Services for Unix 3.0, sambaNTPassword: Samba NT hash, sambaLMPassword: Samba LM hash
             $passwordFilter = "(|(unixUserPassword=*)(userPassword=*)(msSFU30Password=*)(sambaNTPassword=*)(sambaLMPassword=*))"
 
-            $usersWithPasswords = Get-DomainUser -LDAPFilter $passwordFilter -ShowOwner @PSBoundParameters
+            # Get-DomainObject, not Get-DomainUser: the user query adds
+            # (&(objectCategory=person)(objectClass=user)(!(objectClass=computer))), and
+            # none of these five attributes is confined to user objects. A Unix-integrated
+            # host with unixUserPassword on its computer account, or a contact carrying
+            # userPassword, is the same leaked credential and was invisible here.
+            $usersWithPasswords = Get-DomainObject -LDAPFilter $passwordFilter -ShowOwner @PSBoundParameters
 
             if (@($usersWithPasswords).Count -gt 0) {
                 Show-Line "Found $(@($usersWithPasswords).Count) account(s) with readable password attributes:" -Class "Finding"

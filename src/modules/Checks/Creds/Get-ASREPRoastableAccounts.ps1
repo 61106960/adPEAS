@@ -83,6 +83,7 @@ function Get-ASREPRoastableAccounts {
 
                 $totalUsers = @($asrepRoastableUsers).Count
                 $currentIndex = 0
+                $privilegedCount = 0
                 foreach ($user in $asrepRoastableUsers) {
                     $currentIndex++
                     if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing AS-REP Roastable accounts" -Current $currentIndex -Total $totalUsers -ObjectName $user.sAMAccountName }
@@ -125,6 +126,16 @@ function Get-ASREPRoastableAccounts {
                         }
                     }
 
+                    # Same reasoning as in Get-KerberoastableAccounts: the hash of a
+                    # privileged account is worth incomparably more than that of a service
+                    # account, and AS-REP roasting needs no credentials at all to obtain it.
+                    $privileged = Test-IsPrivileged -Identity $user -IncludeOperators
+                    if ($privileged -and $privileged.IsPrivileged) {
+                        $privilegedCount++
+                        $user | Add-Member -NotePropertyName 'PrivilegedRoastTarget' `
+                            -NotePropertyValue $privileged.Reason -Force
+                    }
+
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ASREPRoastable' -Force
                     Show-Object $user
 
@@ -132,6 +143,10 @@ function Get-ASREPRoastableAccounts {
                     Show-EmptyLine
                 }
                 if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing AS-REP Roastable accounts" -Completed }
+
+                if ($privilegedCount -gt 0) {
+                    Show-Line "$privilegedCount of them is/are privileged - this hash needs no credentials at all to obtain" -Class "Finding"
+                }
             } else {
                 Show-Line "No AS-REP Roastable accounts found" -Class "Secure"
             }

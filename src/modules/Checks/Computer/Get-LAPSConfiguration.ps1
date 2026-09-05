@@ -285,60 +285,11 @@ function Get-LAPSConfiguration {
             # ===== Step 1: Schema Detection =====
             Show-SubHeader "Checking for LAPS schema attributes..." -ObjectType "LAPSConfiguration"
 
-            $lapsLegacySchemaPresent = $false
-            $windowsLAPSSchemaPresent = $false
-
-            $ldapServer = $Script:LDAPContext.Server
-            $schemaDN = $Script:LDAPContext.SchemaNamingContext
-
-            Write-Log "[Get-LAPSConfiguration] Server: $ldapServer, Schema DN: $schemaDN"
-
-            # Method 1: Schema query using Invoke-LDAPSearch with Schema Partition
-            if ($schemaDN) {
-                try {
-                    # Test Legacy LAPS schema attribute
-                    $legacySchemaFilter = "(&(objectClass=attributeSchema)(|(lDAPDisplayName=ms-Mcs-AdmPwdExpirationTime)(cn=ms-Mcs-AdmPwdExpirationTime)))"
-                    $legacyResult = Invoke-LDAPSearch -Filter $legacySchemaFilter -SearchBase $schemaDN -Properties 'cn' -SizeLimit 1
-                    if ($legacyResult) {
-                        $lapsLegacySchemaPresent = $true
-                        Write-Log "[Get-LAPSConfiguration] LAPS Legacy schema attribute found"
-                    }
-
-                    # Test Windows LAPS Native schema attribute
-                    $nativeSchemaFilter = "(&(objectClass=attributeSchema)(|(lDAPDisplayName=msLAPS-PasswordExpirationTime)(cn=msLAPS-PasswordExpirationTime)))"
-                    $nativeResult = Invoke-LDAPSearch -Filter $nativeSchemaFilter -SearchBase $schemaDN -Properties 'cn' -SizeLimit 1
-                    if ($nativeResult) {
-                        $windowsLAPSSchemaPresent = $true
-                        Write-Log "[Get-LAPSConfiguration] Windows LAPS Native schema attribute found"
-                    }
-                } catch {
-                    Write-Log "[Get-LAPSConfiguration] Schema query error: $($_.Exception.Message)"
-                }
-            }
-
-            # Method 2: Fallback - check if any computer has LAPS attributes (minimal query)
-            if (-not $lapsLegacySchemaPresent -and -not $windowsLAPSSchemaPresent) {
-                Write-Log "[Get-LAPSConfiguration] Schema query returned no results, checking computer objects"
-
-                # Only fetch distinguishedName - we just need to know if any object exists
-                $legacyCheck = Get-DomainComputer -LDAPFilter "(ms-Mcs-AdmPwdExpirationTime=*)" -Properties 'distinguishedName' -ResultLimit 1 @PSBoundParameters
-                if ($legacyCheck) {
-                    $lapsLegacySchemaPresent = $true
-                    Write-Log "[Get-LAPSConfiguration] LAPS Legacy detected via computer attribute"
-                }
-
-                $nativeCheck = Get-DomainComputer -LDAPFilter "(msLAPS-PasswordExpirationTime=*)" -Properties 'distinguishedName' -ResultLimit 1 @PSBoundParameters
-                if ($nativeCheck) {
-                    $windowsLAPSSchemaPresent = $true
-                    Write-Log "[Get-LAPSConfiguration] Windows LAPS Native detected via computer attribute"
-                }
-            }
-
-            # Store schema info for other LAPS modules
-            $Script:LAPSSchemaInfo = @{
-                LegacyPresent = $lapsLegacySchemaPresent
-                NativePresent = $windowsLAPSSchemaPresent
-            }
+            # One definition of "does this domain run LAPS", shared with
+            # Get-LAPSCredentialAccess and Get-LAPSPermissions and cached for the session.
+            $lapsSchema = Get-LAPSSchemaPresence @PSBoundParameters
+            $lapsLegacySchemaPresent = $lapsSchema.LegacyPresent
+            $windowsLAPSSchemaPresent = $lapsSchema.NativePresent
 
             Write-Log "[Get-LAPSConfiguration] Detection result: Legacy=$lapsLegacySchemaPresent, Native=$windowsLAPSSchemaPresent"
 

@@ -183,6 +183,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Parse-RegistryPol.ps1"
     . "$Script:ScriptPath\modules\Helpers\Parse-RegistryXml.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-LAPSGPOConfig.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Get-LAPSSchemaPresence.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-OUPermissions.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-GPOLinkage.ps1"
     . "$Script:ScriptPath\modules\Helpers\Test-adPEASLicense.ps1"
