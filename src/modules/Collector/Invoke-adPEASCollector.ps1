@@ -145,6 +145,15 @@ function Invoke-adPEASCollector {
                 Write-Log "[Invoke-adPEASCollector] Output directory specified, using: $OutputPath"
             }
 
+            # Resolve once, here, so the file is written and reported under the same full
+            # path - the way the report writers do it. Two reasons beyond tidiness:
+            # the completion message used to print only Split-Path -Leaf, which tells a
+            # reader the name of a file but not where to find it; and .NET file APIs resolve
+            # a relative path against the process working directory, which is not
+            # necessarily PowerShell's current location, so a relative -OutputPath could put
+            # the archive somewhere other than where the caller was standing.
+            $OutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
+
             $tempDir = Join-Path $env:TEMP "adPEAS_BH_$Script:CollectionTimestamp"
             if (-not (Test-Path $tempDir)) {
                 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
@@ -472,12 +481,15 @@ function Invoke-adPEASCollector {
 
             Show-Line "Collected $totalObjects objects from $domainName`: $summaryString" -Class Hint -FindingId 'BLOODHOUND_COLLECTION_COMPLETE'
 
+            # The full path, as the scan summary reports the text, HTML and JSON files.
+            # A bare file name leaves the reader looking for it in the wrong directory,
+            # which is exactly where it is not: with -Outputfile the archive is written
+            # beside the reports, not into the current one.
             if ($NoZip) {
                 Show-Line "Output: $outputDir (JSON files)" -Class Note
             }
             else {
-                $outputFileName = Split-Path $OutputPath -Leaf
-                Show-Line "Output: $outputFileName" -Class Note
+                Show-Line "Output: $OutputPath" -Class Note
             }
         }
         catch {

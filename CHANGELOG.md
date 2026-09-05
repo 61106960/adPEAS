@@ -193,6 +193,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **The BloodHound collector named its archive without saying where it put it.** The
+  completion line printed `Split-Path -Leaf` of the output path - the file name alone -
+  while the scan summary reports the text, HTML and JSON files with their full paths. With
+  `-Outputfile` the archive is written beside the reports rather than into the current
+  directory, so the one line that named it was the one that did not say where to look. It
+  now prints the full path like the others.
+
+  The path is also resolved once, up front, so the archive is written and reported under
+  the same name: .NET file APIs resolve a relative path against the process working
+  directory, which is not necessarily PowerShell's current location, so a relative
+  `-OutputPath` could have placed the archive somewhere other than where the caller was
+  standing.
 - **Every GPO was reported as "NOT LINKED", and linking a GPO would have destroyed the
   existing links on the target.** `Invoke-LDAPSearch` rewrote `gPLink` for readability
   before any caller saw it:
