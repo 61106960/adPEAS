@@ -66,8 +66,13 @@ function Get-InactiveAdminAccounts {
 
             Show-SubHeader "Searching for inactive privileged accounts (>$InactiveDays days)..." -ObjectType "InactiveAdmin"
 
-            # Query privileged accounts (adminCount=1), enabled, using optimized filters and filter for inactive accounts using Test-AccountActivity
-            $adminAccounts = Get-DomainUser -AdminCount -Enabled @connectionParams
+            # Membership in a privileged group OR adminCount=1, not adminCount alone.
+            # AdminSDHolder does not protect every group adPEAS counts as privileged -
+            # Group Policy Creator Owners never receives adminCount - and it propagates
+            # hourly, so a recent addition is not marked yet. The per-account group
+            # resolution below then decides what each hit actually is.
+            $privilegedFilter = Get-PrivilegedAccountFilter -IncludeOperators @connectionParams
+            $adminAccounts = Get-DomainUser -Enabled -LDAPFilter $privilegedFilter @connectionParams
 
             $inactiveAccounts = @()
 

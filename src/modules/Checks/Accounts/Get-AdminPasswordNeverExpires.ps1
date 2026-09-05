@@ -83,7 +83,14 @@ function Get-AdminPasswordNeverExpires {
 
             Write-Log "[Get-AdminPasswordNeverExpires] Password age threshold: $PasswordAgeDays days (before $(Format-adPEASDate $thresholdDate 'yyyy-MM-dd'))"
 
-            $candidates = Get-DomainUser -AdminCount -PasswordNeverExpires -LDAPFilter $passwordAgeFilter -ShowOwner @connectionParams
+            # The candidate set is membership in a privileged group OR adminCount=1, not
+            # adminCount alone. AdminSDHolder does not protect every group adPEAS counts as
+            # privileged - Group Policy Creator Owners has no adminCount at all - and it
+            # propagates hourly, so an account added this morning is not marked yet. Both
+            # gaps used to be invisible here, and the verification below only ever removed
+            # accounts, never found the missing ones.
+            $privilegedFilter = Get-PrivilegedAccountFilter -IncludeOperators @connectionParams
+            $candidates = Get-DomainUser -PasswordNeverExpires -LDAPFilter "(&$privilegedFilter$passwordAgeFilter)" -ShowOwner @connectionParams
 
             if (-not $candidates -or @($candidates).Count -eq 0) {
                 Show-Line "No privileged accounts with password never expires and password older than $PasswordAgeDays days found" -Class Secure

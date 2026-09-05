@@ -538,6 +538,35 @@ $Script:FindingDefinitions = @{
         )
     }
 
+    'PRIVILEGED_ACCOUNT_AFFECTED' = @{
+        Title = "The Affected Account Is Privileged"
+        Risk = "Finding"
+        BaseScore = 80
+        Description = "The weakness reported on this account is not confined to it: the account holds privileged rights in the domain, so whatever the finding above allows an attacker to obtain applies with those rights."
+        Impact = @(
+            "The account's credential is worth the domain rather than one service"
+            "Privilege is established from group membership resolved through the chain, not from adminCount - that attribute is set by AdminSDHolder and never cleared, and it never appears on some privileged groups at all"
+        )
+        Attack = @(
+            "1. Attacker exploits the weakness reported on the account"
+            "2. The rights that come with it are the account's own, so no further escalation is needed"
+        )
+        Remediation = @(
+            "Treat this account ahead of the others in the same finding"
+            "Question whether the account needs the privilege, the exposure, or either"
+            "Add it to 'Protected Users' where the account type allows it"
+        )
+        References = @(
+            @{ Title = "AdminSDHolder and adminCount"; Url = "https://learn.microsoft.com/en-us/previous-versions/technet-magazine/ee361593(v=msdn.10)" }
+            @{ Title = "Securing Privileged Access"; Url = "https://learn.microsoft.com/en-us/security/privileged-access-workstations/overview" }
+        )
+        Tools = @("PowerView", "BloodHound")
+        MITRE = "T1078.002"
+        Triggers = @(
+            @{ Attribute = 'PrivilegedAccount'; Severity = 'Finding' }
+        )
+    }
+
     'ROASTABLE_PRIVILEGED_ACCOUNT' = @{
         Title = "Roastable Account with Privileged Rights"
         Risk = "Finding"

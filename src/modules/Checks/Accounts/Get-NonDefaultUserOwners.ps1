@@ -81,12 +81,17 @@ function Get-NonDefaultUserOwners {
                 return
             }
 
-            # Step 1: Bulk-load all enabled users with owner info in a single LDAP query
+            # Step 1: Bulk-load all users with owner info in a single LDAP query
             # -ShowOwner adds nTSecurityDescriptor to the query and extracts Owner/OwnerSID clientside
             # -Properties 'distinguishedName' keeps network traffic minimal (only DN + nTSecurityDescriptor)
-            $usersWithOwner = @(Get-DomainUser -Enabled -ShowOwner -Properties 'distinguishedName' @connectionParams)
+            #
+            # Disabled accounts are included. Ownership carries WriteDacl implicitly, so the
+            # owner of a disabled privileged account can grant itself the rights to enable
+            # it and set its password - the takeover path is the ownership, and the
+            # account's current state is a step in it rather than a reason to ignore it.
+            $usersWithOwner = @(Get-DomainUser -ShowOwner -Properties 'distinguishedName' @connectionParams)
 
-            Write-Log "[Get-NonDefaultUserOwners] Found $($usersWithOwner.Count) enabled users, filtering non-default owners clientside..."
+            Write-Log "[Get-NonDefaultUserOwners] Found $($usersWithOwner.Count) users, filtering non-default owners clientside..."
 
             $nonDefaultOwnerUsers = @()
             $nonDefaultOwnerDNs = @()

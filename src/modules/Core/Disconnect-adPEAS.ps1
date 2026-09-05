@@ -312,6 +312,7 @@ function Clear-SessionState {
     $Script:DangerousGPOAccessRights = $null
 
     $Script:LAPSSchemaInfo = $null
+    $Script:PrivilegedAccountFilterCache = $null
     $Script:BitLockerSchemaInfo = $null
     $Script:lapsGPOResults = $null
     $Script:AllForeignMembers = $null

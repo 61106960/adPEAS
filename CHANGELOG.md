@@ -289,6 +289,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **`adminCount=1` was the definition of "privileged account", and it misses accounts.**
+  Three checks - `Get-AdminReversibleEncryption`, `Get-AdminPasswordNeverExpires` and
+  `Get-InactiveAdminAccounts` - drew their candidates from that attribute. AdminSDHolder
+  sets it and never clears it, which two of the three already compensated for by verifying
+  each candidate with `Test-IsPrivileged`. Nothing compensated for the other direction:
+  AdminSDHolder protects a fixed list of groups, and adPEAS counts groups outside it as
+  privileged - **Group Policy Creator Owners** (RID `-520`) above all, whose members can
+  create and edit Group Policy and never receive `adminCount` at all. Propagation is also
+  periodic, so an account added to Domain Admins within the last SDProp cycle is unmarked.
+
+  The candidate set is now the union of membership in a privileged group, resolved through
+  `LDAP_MATCHING_RULE_IN_CHAIN` so nested members count, and `adminCount=1`, which stays in
+  as the catch-all for a group this build does not list. It is built once, in the new
+  `Get-PrivilegedAccountFilter`, and cached for the session.
+
+- **`Get-AdminReversibleEncryption` only looked at privileged accounts.** Reversible
+  encryption means the cleartext password is recoverable from the domain controller, which
+  is the same leaked credential on a service account as on an administrator - and whether
+  anyone was told depended on the account's privilege rather than on its exposure. Every
+  account carrying the flag is reported now, with the privileged ones marked as
+  `PRIVILEGED_ACCOUNT_AFFECTED`. The domain-wide switch behind the same weakness is
+  reported by `Get-DomainPasswordPolicy` and was never affected.
+
+- **`Get-NonDefaultUserOwners` skipped disabled accounts.** Ownership carries WriteDacl
+  implicitly, so whoever owns a disabled privileged account can grant itself the rights to
+  enable it and set its password. The takeover path is the ownership; the account being
+  disabled is a step in it rather than a reason to leave it out.
+
 - **Policy wording in a description hid the password written next to it.** In
   `Get-PasswordInDescription` the exclusion list ran before the high-confidence patterns
   and skipped the whole attribute on a match. Since people write both in one sentence -
