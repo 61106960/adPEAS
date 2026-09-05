@@ -199,7 +199,20 @@ function Get-GPOUserRightsAssignment {
                     }
 
                     foreach ($right in $rightsMap.Keys) {
-                        $pattern = '(?im)^\s*' + [regex]::Escape($right) + '\s*=\s*(.+)$'
+                        # [ \t] around the '=', not \s: \s matches a newline. A right that is
+                        # present but assigned to nobody - "SeCreateTokenPrivilege =" - let
+                        # \s* swallow the line break, and (.+) then captured the whole next
+                        # line as the principal list. The check reported
+                        # SeCreateTokenPrivilege held by "SeDebugPrivilege = *S-1-5-32-544",
+                        # a dangerous right raised against a value that is a line of the
+                        # file. GptTmpl.inf is full of emptied rights, so this fired on
+                        # every domain controller policy.
+                        #
+                        # [^\r\n]* rather than (.+): the value ends at the line, an emptied
+                        # right captures nothing, and the token loop below then keeps no
+                        # principal, so no finding is raised for it - which is correct, a
+                        # right assigned to nobody is not a dangerous assignment.
+                        $pattern = '(?im)^[ \t]*' + [regex]::Escape($right) + '[ \t]*=[ \t]*([^\r\n]*)'
                         $m = [regex]::Match($section, $pattern)
                         if (-not $m.Success) { continue }
 

@@ -405,7 +405,11 @@ function Check-GPOAddComputerRights {
                     if ($content -match '(?is)\[Privilege Rights\](.*?)(\[|$)') {
                         $privilegeRightsSection = $Matches[1]
 
-                        if ($privilegeRightsSection -match '(?i)SeMachineAccountPrivilege\s*=\s*(.+)') {
+                        # [ \t] around the '=' and a value that stops at the line: \s matches
+                        # a newline, so "SeMachineAccountPrivilege =" with nobody assigned
+                        # used to capture the following line of the file as its account
+                        # list. See the same fix in Get-GPOUserRightsAssignment.
+                        if ($privilegeRightsSection -match '(?im)^[ \t]*SeMachineAccountPrivilege[ \t]*=[ \t]*([^\r\n]*)') {
                             $accountsLine = $Matches[1].Trim()
                             $accounts = $accountsLine -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
 

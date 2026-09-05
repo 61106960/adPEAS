@@ -193,6 +193,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A user right assigned to nobody was reported as held by the next line of the file.**
+  `GptTmpl.inf` writes rights out even when no principal holds them -
+  `SeCreateTokenPrivilege =` with nothing after the `=` - and every default Domain
+  Controllers Policy is full of them. The parser matched the `=` with `\s*`, which also
+  matches a line break, so the capture ran on and took the whole following line as the
+  principal list:
+
+  ```
+  [!] userRight:   SeCreateTokenPrivilege
+      principals:  SeDebugPrivilege = *S-1-5-32-544
+  ```
+
+  Three dangerous rights were raised that way against values that are lines of the file,
+  on every domain controller policy scanned. `Get-AddComputerRights` read
+  `SeMachineAccountPrivilege` with the same construct and had the same defect.
+
+  Both now match only horizontal whitespace around the `=` and stop the value at the line.
+  A right assigned to nobody keeps no principal, so `Get-GPOUserRightsAssignment` raises
+  no finding for it - a right nobody holds is not a dangerous assignment - while
+  `Get-AddComputerRights` still lists the GPO, with an empty account list, because setting
+  the right to nobody is a configuration worth seeing.
 - **The BloodHound collector named its archive without saying where it put it.** The
   completion line printed `Split-Path -Leaf` of the output path - the file name alone -
   while the scan summary reports the text, HTML and JSON files with their full paths. With
