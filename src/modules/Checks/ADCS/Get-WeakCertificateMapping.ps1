@@ -90,11 +90,24 @@ function Get-WeakCertificateMapping {
         # ==================================================================
         Show-SubHeader "Analyzing explicit certificate mappings (ESC14)..." -ObjectType "WeakCertificateMapping"
 
-        $mappedPrincipals = @()
+        # Two phases, the way Get-NonDefaultUserOwners reads owners across the domain.
+        #
+        # Phase 1 asks for the distinguished name and the attribute and nothing else. The
+        # filter is server-side, but in a smart-card deployment it still matches every
+        # enrolled user - thousands of principals whose every attribute would otherwise
+        # cross the wire so that a handful with a weak mapping can be reported. -Properties
+        # is what rule 5 permits here: these objects are never shown, they only decide who
+        # is worth a second look.
+        $candidates = @()
         try {
-            # No -Properties: these objects are shown, so Show-Object decides what appears.
-            $mappedPrincipals = @(Get-DomainUser -LDAPFilter '(altSecurityIdentities=*)' @connectionParams)
-            $mappedPrincipals += @(Get-DomainComputer -LDAPFilter '(altSecurityIdentities=*)' @connectionParams)
+            $lightProperties = @('distinguishedName', 'sAMAccountName', 'objectSid', 'altSecurityIdentities')
+
+            foreach ($user in @(Get-DomainUser -LDAPFilter '(altSecurityIdentities=*)' -Properties $lightProperties @connectionParams)) {
+                if ($user) { $candidates += [PSCustomObject]@{ Object = $user; IsComputer = $false } }
+            }
+            foreach ($computer in @(Get-DomainComputer -LDAPFilter '(altSecurityIdentities=*)' -Properties $lightProperties @connectionParams)) {
+                if ($computer) { $candidates += [PSCustomObject]@{ Object = $computer; IsComputer = $true } }
+            }
         }
         catch {
             Write-Log "[Get-WeakCertificateMapping] Query for altSecurityIdentities failed: $_" -Level Warning
@@ -102,11 +115,11 @@ function Get-WeakCertificateMapping {
             return
         }
 
-        Write-Log "[Get-WeakCertificateMapping] Found $(@($mappedPrincipals).Count) principal(s) with an explicit mapping"
+        Write-Log "[Get-WeakCertificateMapping] Found $(@($candidates).Count) principal(s) with an explicit mapping"
 
         $weakFindings = @()
-        foreach ($principal in $mappedPrincipals) {
-            if (-not $principal) { continue }
+        foreach ($candidate in $candidates) {
+            $principal = $candidate.Object
 
             $weakMappings   = @()
             $strongMappings = @()
@@ -136,15 +149,33 @@ function Get-WeakCertificateMapping {
                 Write-Log "[Get-WeakCertificateMapping] Privilege check failed for '$($principal.sAMAccountName)': $_"
             }
 
-            $principal | Add-Member -NotePropertyName 'weakCertificateMappings' -NotePropertyValue @($weakMappings) -Force
-            if (@($strongMappings).Count -gt 0) {
-                $principal | Add-Member -NotePropertyName 'strongCertificateMappings' -NotePropertyValue @($strongMappings) -Force
+            # Phase 2, and only now: the full object, without -Properties, because this one
+            # is going to be shown and Show-Object decides what a reader sees. One query per
+            # finding rather than per candidate.
+            $displayObject = $null
+            try {
+                $displayObject = if ($candidate.IsComputer) {
+                    @(Get-DomainComputer -Identity $principal.distinguishedName @connectionParams)[0]
+                } else {
+                    @(Get-DomainUser -Identity $principal.distinguishedName @connectionParams)[0]
+                }
+            } catch {
+                Write-Log "[Get-WeakCertificateMapping] Could not re-read '$($principal.distinguishedName)': $_"
             }
-            $principal | Add-Member -NotePropertyName 'mappingIsPrivilegedTarget' -NotePropertyValue $isPrivileged -Force
-            $principal | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'WeakCertificateMapping' -Force
+
+            # The light object still carries name, SID and the mappings, so a failed
+            # re-read costs detail rather than the finding.
+            if (-not $displayObject) { $displayObject = $principal }
+
+            $displayObject | Add-Member -NotePropertyName 'weakCertificateMappings' -NotePropertyValue @($weakMappings) -Force
+            if (@($strongMappings).Count -gt 0) {
+                $displayObject | Add-Member -NotePropertyName 'strongCertificateMappings' -NotePropertyValue @($strongMappings) -Force
+            }
+            $displayObject | Add-Member -NotePropertyName 'mappingIsPrivilegedTarget' -NotePropertyValue $isPrivileged -Force
+            $displayObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'WeakCertificateMapping' -Force
 
             $weakFindings += [PSCustomObject]@{
-                Object       = $principal
+                Object       = $displayObject
                 IsPrivileged = $isPrivileged
             }
         }
@@ -163,8 +194,8 @@ function Get-WeakCertificateMapping {
                 Show-Object $finding.Object -Class Finding
             }
         }
-        elseif (@($mappedPrincipals).Count -gt 0) {
-            Show-Line "All $(@($mappedPrincipals).Count) explicit certificate mapping(s) use a strong format" -Class Secure
+        elseif (@($candidates).Count -gt 0) {
+            Show-Line "All $(@($candidates).Count) explicit certificate mapping(s) use a strong format" -Class Secure
         }
         else {
             Show-Line "No principal uses an explicit certificate mapping" -Class Secure
@@ -175,27 +206,36 @@ function Get-WeakCertificateMapping {
         # ==================================================================
         $writableFindings = @()
         try {
-            $privilegedTargets = @(Get-DomainUser -LDAPFilter '(adminCount=1)' @connectionParams)
+            # One query for every privileged principal and its security descriptor, rather
+            # than Get-ObjectACL per account: that helper reads the object it is given, so
+            # a loop over it costs one LDAP round trip per privileged account, and
+            # adminCount is a sticky flag - it stays set after the account leaves the group,
+            # so the list is longer than the domain's actual administrators. -Raw keeps
+            # nTSecurityDescriptor as the bytes ConvertFrom-SecurityDescriptor takes.
+            $privilegedTargets = @(Get-DomainUser -LDAPFilter '(adminCount=1)' `
+                -Properties 'distinguishedName', 'sAMAccountName', 'nTSecurityDescriptor' -Raw @connectionParams)
             Write-Log "[Get-WeakCertificateMapping] Checking altSecurityIdentities write access on $(@($privilegedTargets).Count) privileged principal(s)"
 
             foreach ($target in $privilegedTargets) {
                 if (-not $target.distinguishedName) { continue }
+                if (-not $target.nTSecurityDescriptor) { continue }
 
-                $acl = $null
+                $descriptor = $null
                 try {
-                    $acl = Get-ObjectACL -Identity $target.distinguishedName @connectionParams
+                    $descriptor = ConvertFrom-SecurityDescriptor -SecurityDescriptorBytes $target.nTSecurityDescriptor
                 } catch {
-                    Write-Log "[Get-WeakCertificateMapping] ACL read failed for '$($target.distinguishedName)': $_"
+                    Write-Log "[Get-WeakCertificateMapping] Could not read the descriptor of '$($target.distinguishedName)': $_"
                     continue
                 }
 
                 $writers = @()
-                foreach ($ace in @($acl)) {
+                foreach ($ace in @($descriptor.ACEs)) {
                     if (-not $ace) { continue }
-                    if ($ace.AccessControlType -ne 'Allow') { continue }
+                    # ConvertFrom-SecurityDescriptor names these Type and SID.
+                    if ($ace.Type -ne 'Allow') { continue }
                     if (-not (Test-AltSecurityIdentitiesWrite -Ace $ace)) { continue }
 
-                    $trusteeSID = [string]$ace.SecurityIdentifier
+                    $trusteeSID = [string]$ace.SID
                     if ([string]::IsNullOrWhiteSpace($trusteeSID)) { continue }
 
                     $trusteePrivileged = $false
@@ -206,15 +246,25 @@ function Get-WeakCertificateMapping {
                     # A trustee that is already privileged holds nothing it did not have.
                     if ($trusteePrivileged) { continue }
 
-                    $trusteeName = ConvertFrom-SID -SID $trusteeSID
-                    $writers += "$trusteeName ($($ace.Rights))"
+                    $trusteeName = if ($ace.Name) { $ace.Name } else { ConvertFrom-SID -SID $trusteeSID }
+                    $writers += "${trusteeName}: $($ace.Rights)"
                 }
 
-                if (@($writers).Count -gt 0) {
-                    $target | Add-Member -NotePropertyName 'altSecurityIdentitiesWriters' -NotePropertyValue @($writers) -Force
-                    $target | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'WeakCertificateMapping' -Force
-                    $writableFindings += $target
+                if (@($writers).Count -eq 0) { continue }
+
+                # Second phase again: the full object, only for an account that is actually
+                # reported.
+                $displayObject = $null
+                try {
+                    $displayObject = @(Get-DomainUser -Identity $target.distinguishedName @connectionParams)[0]
+                } catch {
+                    Write-Log "[Get-WeakCertificateMapping] Could not re-read '$($target.distinguishedName)': $_"
                 }
+                if (-not $displayObject) { $displayObject = $target }
+
+                $displayObject | Add-Member -NotePropertyName 'altSecurityIdentitiesWriters' -NotePropertyValue @($writers) -Force
+                $displayObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'WeakCertificateMapping' -Force
+                $writableFindings += $displayObject
             }
         }
         catch {
