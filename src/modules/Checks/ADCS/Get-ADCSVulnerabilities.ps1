@@ -596,8 +596,15 @@ function Get-ADCSVulnerabilities {
 
                         # Add enrollment service properties from Configuration Partition
                         # (may differ from or supplement what's on the computer object)
+                        # Kept as the list it is rather than joined into one line. A CA
+                        # publishes a dozen templates and more, and a single comma-separated
+                        # run is the hardest form to read the one name you are looking for
+                        # out of. The renderer lays a multi-valued attribute out one value
+                        # per line, the way memberOf and WebEnrollmentEndpoints already are.
+                        # Order is left as the directory returns it, which is the order the
+                        # CA publishes them in.
                         if ($ca.CertificateTemplates -and @($ca.CertificateTemplates).Count -gt 0) {
-                            $caComputer | Add-Member -NotePropertyName 'certificateTemplates' -NotePropertyValue ($ca.CertificateTemplates -join ', ') -Force
+                            $caComputer | Add-Member -NotePropertyName 'certificateTemplates' -NotePropertyValue @($ca.CertificateTemplates) -Force
                         }
                         if ($ca.Modified) {
                             $caComputer | Add-Member -NotePropertyName 'CALastModified' -NotePropertyValue (Format-adPEASDate $ca.Modified 'yyyy-MM-dd HH:mm:ss') -Force
@@ -612,11 +619,18 @@ function Get-ADCSVulnerabilities {
                         # (e.g., CA server is in root domain but we query from sub-domain)
                         # Build a synthetic object from CA enrollment service data (Configuration Partition)
                         Write-Log "[Get-ADCSVulnerabilities] CA computer '$($ca.DNSHostName)' not found in current domain - using Configuration Partition data"
+                        # Assigned as a statement, not inside the literal below: an "if" used
+                        # as an expression unrolls a one-element array to a scalar, so a CA
+                        # publishing a single template would arrive as a string here and the
+                        # attribute would change shape with the number of templates.
+                        $syntheticTemplates = $null
+                        if ($ca.CertificateTemplates) { $syntheticTemplates = @($ca.CertificateTemplates) }
+
                         $syntheticCA = [PSCustomObject]@{
                             dNSHostName          = $ca.DNSHostName
                             caName               = $ca.Name
                             caNote               = "CA server is not in the current domain partition - showing data from Configuration Partition only"
-                            certificateTemplates = if ($ca.CertificateTemplates) { $ca.CertificateTemplates -join ', ' } else { $null }
+                            certificateTemplates = $syntheticTemplates
                             CALastModified       = if ($ca.Modified) { (Format-adPEASDate $ca.Modified 'yyyy-MM-dd HH:mm:ss') } else { $null }
                         }
 

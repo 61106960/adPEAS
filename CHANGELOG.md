@@ -193,6 +193,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **The certificate templates a CA publishes are listed one per line.** They were joined
+  into a single comma-separated run, which on a CA publishing a dozen templates is the
+  hardest form to read one name out of. The renderer already lays a multi-valued attribute
+  out one value per line, the way `memberOf` and `WebEnrollmentEndpoints` appear on the
+  same card; the list is now passed through as the list it is. Order is left as the
+  directory returns it.
 - **A user right assigned to nobody was reported as held by the next line of the file.**
   `GptTmpl.inf` writes rights out even when no principal holds them -
   `SeCreateTokenPrivilege =` with nothing after the `=` - and every default Domain
