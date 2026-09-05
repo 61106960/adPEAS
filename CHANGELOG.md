@@ -193,6 +193,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **Every GPO was reported as "NOT LINKED", and linking a GPO would have destroyed the
+  existing links on the target.** `Invoke-LDAPSearch` rewrote `gPLink` for readability
+  before any caller saw it:
+
+  ```
+  stored      [LDAP://cn={31B2F340-...},cn=policies,cn=system,DC=contoso,DC=com;0]
+  delivered   GPO {31B2F340-016D-11D2-945F-00C04FB984F9} [Enabled]
+  ```
+
+  That drops the GPO's distinguished name and the link option digit, and turns one string
+  into an array. Nothing displays `gPLink` - it is in no attribute list of any report - so
+  the readability reached no one, while three callers that need the attribute itself were
+  parsing a rendering of it:
+
+  - `Get-GPOLinkage` reads `[LDAP://<dn>;<options>]` per entry. While it searched for a
+    bare `{GUID}` the mismatch stayed hidden, because the rendering still contains one -
+    but the options always read as 0, which is why every link was reported Enabled and
+    never enforced. Once that pattern was corrected to require the real form, it matched
+    nothing at all and every GPO came out "NOT LINKED": the Default Domain Policy and
+    Default Domain Controllers Policy included, which are linked in every domain there is.
+  - `Invoke-adPEASCollector` parses the same form, so BloodHound received no GPO link
+    edges.
+  - `Set-DomainGPO -LinkTo` prepends its new entry to the current value and writes the
+    result back with a Replace modification. Handed the rendering, it would have replaced
+    every existing link on the target OU with unparseable text.
+
+  `gPLink` is now passed through unchanged. Rendering belongs where something is displayed,
+  not in the layer that reads the directory.
 - **Dates were read and written through the host's calendar, which broke Kerberos outright
   on some regional formats.** A custom date format string (`'yyyy-MM-dd'`,
   `'yyyyMMddHHmmss'`) is rendered with the current culture's calendar, and `ParseExact`

@@ -15,6 +15,24 @@
     PowerShell's dynamic scoping, which works when Invoke-LDAPSearch is the caller and
     nowhere else.
 
+    gPLink is deliberately NOT converted here, and must not be. It used to be rewritten
+    into a readable list - "GPO {GUID} [Enabled]" per link - which threw away the GPO's
+    distinguished name and the link option digit and turned a single string into an array.
+    Nothing displays gPLink, so that readability reached no one, while three callers that
+    need the attribute itself were reading a rendering of it:
+
+      - Get-GPOLinkage parses "[LDAP://<dn>;<options>]" per entry. With the option digit
+        gone it could not read link status at all, and once its pattern was tightened to
+        require the raw form it matched nothing, so every GPO in the report came out
+        "NOT LINKED".
+      - Invoke-adPEASCollector parses the same form for BloodHound's GPO link edges.
+      - Set-DomainGPO -LinkTo prepends its new entry to the current value and writes the
+        result back with a Replace modification. Handed the rendering, it would have
+        replaced every existing link on the target OU with unparseable text.
+
+    Rendering belongs where something is displayed, not in the layer that reads the
+    directory.
+
 .NOTES
     Author: Alexander Sturz (@_61106960_)
     Requires: adPEAS-OIDs.ps1 (Convert-OIDsToNames, ConvertFrom-OID), ConvertFrom-SID.ps1,
@@ -1691,35 +1709,6 @@ function ConvertFrom-LDAPAttribute {
                             $ConvertedProperties[$PropName] = $ELCFlagList
                         } else {
                             $ConvertedProperties[$PropName] = @("NONE")
-                        }
-                    } catch {
-                        $ConvertedProperties[$PropName] = $PropValue[0]
-                    }
-                } elseif ($PropNameLower -eq 'gplink') {
-                    # GPO links - format for readability
-                    try {
-                        $GPLinkString = $PropValue[0]
-
-                        # Parse GPO links: [LDAP://cn={GUID},cn=policies,cn=system,DC=...;LinkOptions]
-                        $GPLinks = @()
-                        $Pattern = '(?i)\[LDAP://cn=\{([^\}]+)\}[^\]]+;(\d+)\]'
-                        $GPLinkMatches = [regex]::Matches($GPLinkString, $Pattern)
-
-                        foreach ($Match in $GPLinkMatches) {
-                            $GUID = $Match.Groups[1].Value
-                            $LinkOptions = [int]$Match.Groups[2].Value
-
-                            # Link options: 0 = Enabled, 1 = Disabled, 2 = Enforced, 3 = Disabled+Enforced
-                            $Status = if ($LinkOptions -band 1) { "Disabled" } else { "Enabled" }
-                            if ($LinkOptions -band 2) { $Status += " (Enforced)" }
-
-                            $GPLinks += "GPO {$GUID} [$Status]"
-                        }
-
-                        if ($GPLinks.Count -gt 0) {
-                            $ConvertedProperties[$PropName] = $GPLinks
-                        } else {
-                            $ConvertedProperties[$PropName] = $PropValue[0]
                         }
                     } catch {
                         $ConvertedProperties[$PropName] = $PropValue[0]
