@@ -192,10 +192,18 @@ function Get-ADCSTemplate {
             $allEKUs = @($template.ExtendedKeyUsage) + @($template.ApplicationPolicies) | Where-Object { $_ } | Select-Object -Unique
             $ekuString = $allEKUs -join ' '
 
-            # ClientAuthentication - can be used for Kerberos auth
+            # ClientAuthentication - can be used for Kerberos auth.
+            #
+            # These four OIDs are the authentication EKUs the ESC1 precondition names, and
+            # every enrollment-driven ESC in this check keys off this flag: ESC1, ESC2,
+            # ESC3-TARGET and ESC9. PKINIT Client Authentication was missing, so a template
+            # carrying only that OID authenticated in the domain while adPEAS reported
+            # nothing about it - it is the OID used for smart-card and certificate logon in
+            # environments that do not also set the Microsoft-specific one.
             $template | Add-Member -NotePropertyName 'ClientAuthentication' -NotePropertyValue (
-                ($ekuString -match '1\.3\.6\.1\.5\.5\.7\.3\.2') -or      # Client Authentication
+                ($ekuString -match '1\.3\.6\.1\.5\.5\.7\.3\.2') -or       # Client Authentication
                 ($ekuString -match '1\.3\.6\.1\.4\.1\.311\.20\.2\.2') -or # Smart Card Logon
+                ($ekuString -match '1\.3\.6\.1\.5\.2\.3\.4') -or          # PKINIT Client Authentication
                 ($ekuString -match '2\.5\.29\.37\.0') -or                 # Any Purpose
                 ($allEKUs.Count -eq 0)                                    # No EKUs = Any Purpose
             )

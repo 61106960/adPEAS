@@ -193,6 +193,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **Three gaps in the AD CS checks, found by auditing them against the published ESC
+  preconditions.**
+  - **A template whose only authentication EKU is PKINIT was invisible.** The four OIDs the
+    ESC1 precondition names are Client Authentication (`1.3.6.1.5.5.7.3.2`), Smart Card
+    Logon (`1.3.6.1.4.1.311.20.2.2`), PKINIT Client Authentication (`1.3.6.1.5.2.3.4`) and
+    Any Purpose (`2.5.29.37.0`). All but PKINIT were matched, so a template carrying it
+    alone authenticated in the domain while adPEAS reported nothing. Every
+    enrollment-driven check keys off this flag, so ESC1, ESC2, ESC3-TARGET and ESC9 were
+    all blind to it.
+  - **Manager approval never damped a finding.** `PEND_ALL_REQUESTS` holds every request
+    until a certificate manager releases it. It was computed and displayed but never
+    consulted, so ESC1/2/3/9/13/15 were reported at full severity on templates where no
+    certificate can be issued without a person in the loop. It now damps the severity
+    exactly as a required enrollment agent co-signature does - and, like that one, does not
+    damp on a template that is also ESC4-vulnerable, because write access lets an attacker
+    clear the flag before enrolling.
+  - **ESC5 did not look at the AIA and CDP containers.** Both are named in the precondition
+    alongside `CN=NTAuthCertificates`: write access to AIA publishes an attacker's own CA
+    into the chain, write access to CDP decides where revocation is looked up. Neither was
+    in the list, so the check could report the PKI containers as properly restricted
+    without having read either ACL.
 - **The certificate templates a CA publishes are listed one per line.** They were joined
   into a single comma-separated run, which on a CA publishing a dozen templates is the
   hardest form to read one name out of. The renderer already lays a multi-valued attribute

@@ -1009,6 +1009,9 @@ certutil -view -restrict "Disposition=20" -out "RequestID,CommonName,Certificate
             # rather than a direct one. Deliberately parked on this definition because this is
             # where the co-signature mechanic is documented - see Test-CustomTrigger for the rules.
             @{ Attribute = 'Vulnerabilities'; Custom = 'ra_signature_gated'; Severity = 'Hint'; SeverityOnly = $true }
+            # The second barrier of the same kind, parked here for the same reason: manager
+            # approval holds every request until a person releases it. See Test-CustomTrigger.
+            @{ Attribute = 'Vulnerabilities'; Custom = 'manager_approval_gated'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -9932,6 +9935,31 @@ function Test-CustomTrigger {
 
             if ([string]$SourceObject.Vulnerabilities -match 'ESC4') { return $false }
             if ($SourceObject.EnrollmentAgentChainReachable) { return $false }
+
+            return $true
+        }
+
+        'manager_approval_gated' {
+            # Certificate template only: true when the template requires manager approval
+            # (msPKI-Enrollment-Flag PEND_ALL_REQUESTS), which holds every request in the
+            # pending queue until a certificate manager releases it. Used SeverityOnly, for
+            # the same reason as ra_signature_gated above: approval is a barrier, not a fix.
+            # The template still hands out whatever it hands out the moment somebody
+            # approves, and the approver has no way to see the subject the requester
+            # supplied is a lie.
+            #
+            # It was previously not consulted at all, so ESC1/ESC2/ESC3/ESC9/ESC13/ESC15
+            # were reported at full severity on templates where no request can be issued
+            # without a human in the loop.
+            #
+            # Returns $false (no damping, full severity) in two cases:
+            #   - approval is not required
+            #   - the template is ESC4-vulnerable: write access lets an attacker clear
+            #     PEND_ALL_REQUESTS before enrolling, exactly as it lets them clear the
+            #     co-signature requirement
+            if (-not $SourceObject) { return $false }
+            if (-not $SourceObject.ManagerApprovalRequired) { return $false }
+            if ([string]$SourceObject.Vulnerabilities -match 'ESC4') { return $false }
 
             return $true
         }

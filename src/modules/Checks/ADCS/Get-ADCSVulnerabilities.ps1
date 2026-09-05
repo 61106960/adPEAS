@@ -775,6 +775,22 @@ function Get-ADCSVulnerabilities {
                         Description = "Controls trusted CAs for Kerberos authentication"
                     },
                     @{
+                        # Write access here lets an attacker publish their own CA certificate
+                        # into the AIA chain, so a certificate they signed themselves validates.
+                        # Named explicitly in the ESC5 precondition alongside NTAuthCertificates.
+                        DN = "CN=AIA,CN=Public Key Services,CN=Services,$configNC"
+                        Name = "AIA Container"
+                        Description = "Controls the CA certificates published for chain building"
+                    },
+                    @{
+                        # The revocation lists. Write access lets an attacker point the CDP at a
+                        # location they control, or publish a CRL that revokes nothing, so a
+                        # certificate that should have been withdrawn keeps validating.
+                        DN = "CN=CDP,CN=Public Key Services,CN=Services,$configNC"
+                        Name = "CDP Container"
+                        Description = "Controls certificate revocation list distribution points"
+                    },
+                    @{
                         DN = "CN=OID,CN=Public Key Services,CN=Services,$configNC"
                         Name = "OID Container"
                         Description = "Controls issuance policies (ESC13-related)"
