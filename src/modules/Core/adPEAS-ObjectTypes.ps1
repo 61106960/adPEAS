@@ -235,11 +235,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Module = "Application"
         Category = "Infrastructure"
         SectionTitle = "Exchange Servers (Basic)"
-        Summary = "Identifies Microsoft Exchange servers via group membership."
-        WhyItMatters = "Exchange servers have significant AD privileges and are high-value targets. Basic detection via 'Exchange Servers' group membership."
+        Summary = "Identifies Microsoft Exchange servers from the Configuration partition."
+        WhyItMatters = "Exchange servers have significant AD privileges and are high-value targets. The build number decides whether the server still receives security updates, and ProxyLogon and ProxyShell show what an unpatched one is worth."
         WhatWeCheck = @(
-            "Members of the Exchange Servers group"
-            "Server computer accounts"
+            "msExchExchangeServer objects under CN=Services in the Configuration partition, which is Exchange's own record of its servers"
+            "The build carried in serialNumber"
+            "The exchangeAB/, exchangeRFR/ and exchangeMDB/ SPNs as a fallback, with domain controllers excluded - every DC registers them for Autodiscover"
         )
     }
 

@@ -941,9 +941,9 @@ function Set-DomainUser {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetUser.userAccountControl) {
-                            [int]$TargetUser.userAccountControl
-                        } else { 512 }  # Default: NORMAL_ACCOUNT
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
 
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1007,9 +1007,9 @@ function Set-DomainUser {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetUser.userAccountControl) {
-                            [int]$TargetUser.userAccountControl
-                        } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
 
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1073,9 +1073,9 @@ function Set-DomainUser {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetUser.userAccountControl) {
-                            [int]$TargetUser.userAccountControl
-                        } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
 
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1138,9 +1138,9 @@ function Set-DomainUser {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetUser.userAccountControl) {
-                            [int]$TargetUser.userAccountControl
-                        } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
 
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1259,7 +1259,9 @@ function Set-DomainUser {
                 'SetPasswordNotRequired' {
                     Write-Log "[Set-DomainUser] Setting PASSWD_NOTREQD flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $PASSWD_NOTREQD = 0x0020
                         if (($CurrentUAC -band $PASSWD_NOTREQD) -ne 0) {
@@ -1310,7 +1312,9 @@ function Set-DomainUser {
                 'ClearPasswordNotRequired' {
                     Write-Log "[Set-DomainUser] Clearing PASSWD_NOTREQD flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $PASSWD_NOTREQD = 0x0020
                         if (($CurrentUAC -band $PASSWD_NOTREQD) -eq 0) {
@@ -1361,7 +1365,9 @@ function Set-DomainUser {
                 'SetPasswordCantChange' {
                     Write-Log "[Set-DomainUser] Setting PASSWD_CANT_CHANGE flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $PASSWD_CANT_CHANGE = 0x0040
                         if (($CurrentUAC -band $PASSWD_CANT_CHANGE) -ne 0) {
@@ -1412,7 +1418,9 @@ function Set-DomainUser {
                 'ClearPasswordCantChange' {
                     Write-Log "[Set-DomainUser] Clearing PASSWD_CANT_CHANGE flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $PASSWD_CANT_CHANGE = 0x0040
                         if (($CurrentUAC -band $PASSWD_CANT_CHANGE) -eq 0) {
@@ -1463,7 +1471,9 @@ function Set-DomainUser {
                 'SetReversibleEncryption' {
                     Write-Log "[Set-DomainUser] Setting ENCRYPTED_TEXT_PWD_ALLOWED flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $ENCRYPTED_TEXT_PWD_ALLOWED = 0x0080
                         if (($CurrentUAC -band $ENCRYPTED_TEXT_PWD_ALLOWED) -ne 0) {
@@ -1514,7 +1524,9 @@ function Set-DomainUser {
                 'ClearReversibleEncryption' {
                     Write-Log "[Set-DomainUser] Clearing ENCRYPTED_TEXT_PWD_ALLOWED flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $ENCRYPTED_TEXT_PWD_ALLOWED = 0x0080
                         if (($CurrentUAC -band $ENCRYPTED_TEXT_PWD_ALLOWED) -eq 0) {
@@ -1565,7 +1577,9 @@ function Set-DomainUser {
                 'SetPasswordNeverExpires' {
                     Write-Log "[Set-DomainUser] Setting DONT_EXPIRE_PASSWORD flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $DONT_EXPIRE_PASSWORD = 0x10000
                         if (($CurrentUAC -band $DONT_EXPIRE_PASSWORD) -ne 0) {
@@ -1616,7 +1630,9 @@ function Set-DomainUser {
                 'ClearPasswordNeverExpires' {
                     Write-Log "[Set-DomainUser] Clearing DONT_EXPIRE_PASSWORD flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $DONT_EXPIRE_PASSWORD = 0x10000
                         if (($CurrentUAC -band $DONT_EXPIRE_PASSWORD) -eq 0) {
@@ -1667,7 +1683,9 @@ function Set-DomainUser {
                 'SetSmartcardRequired' {
                     Write-Log "[Set-DomainUser] Setting SMARTCARD_REQUIRED flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $SMARTCARD_REQUIRED = 0x40000
                         if (($CurrentUAC -band $SMARTCARD_REQUIRED) -ne 0) {
@@ -1718,7 +1736,9 @@ function Set-DomainUser {
                 'ClearSmartcardRequired' {
                     Write-Log "[Set-DomainUser] Clearing SMARTCARD_REQUIRED flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $SMARTCARD_REQUIRED = 0x40000
                         if (($CurrentUAC -band $SMARTCARD_REQUIRED) -eq 0) {
@@ -1769,7 +1789,9 @@ function Set-DomainUser {
                 'SetNotDelegated' {
                     Write-Log "[Set-DomainUser] Setting NOT_DELEGATED flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $NOT_DELEGATED = 0x100000
                         if (($CurrentUAC -band $NOT_DELEGATED) -ne 0) {
@@ -1820,7 +1842,9 @@ function Set-DomainUser {
                 'ClearNotDelegated' {
                     Write-Log "[Set-DomainUser] Clearing NOT_DELEGATED flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $NOT_DELEGATED = 0x100000
                         if (($CurrentUAC -band $NOT_DELEGATED) -eq 0) {
@@ -1871,7 +1895,9 @@ function Set-DomainUser {
                 'SetPasswordExpired' {
                     Write-Log "[Set-DomainUser] Setting PASSWORD_EXPIRED flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $PASSWORD_EXPIRED = 0x800000
                         if (($CurrentUAC -band $PASSWORD_EXPIRED) -ne 0) {
@@ -1922,7 +1948,9 @@ function Set-DomainUser {
                 'ClearPasswordExpired' {
                     Write-Log "[Set-DomainUser] Clearing PASSWORD_EXPIRED flag: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = if ($TargetUser.userAccountControl) { [int]$TargetUser.userAccountControl } else { 512 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
                         Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
                         $PASSWORD_EXPIRED = 0x800000
                         if (($CurrentUAC -band $PASSWORD_EXPIRED) -eq 0) {

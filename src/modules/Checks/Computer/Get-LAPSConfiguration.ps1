@@ -219,6 +219,51 @@ function Get-LAPSGPOConfigObjects {
     return $objects
 }
 
+<#
+.SYNOPSIS
+    Joins computer names for one OU row, capped.
+
+.DESCRIPTION
+    The unprotected computers are listed per OU as one string. Unbounded, a flat domain
+    with thirty thousand machines in one OU puts all thirty thousand names into a single
+    field, which the console wraps for pages and the HTML report carries in full - and the
+    reader learns nothing from name twelve thousand that name twelve did not already say.
+
+    The count beside it stays exact, so the number to act on is never the truncated one.
+
+.PARAMETER Name
+    The computer names, already stripped of the trailing dollar sign.
+
+.PARAMETER Limit
+    How many to name before summarising the rest.
+
+.OUTPUTS
+    String.
+
+.NOTES
+    Internal helper function
+#>
+function Format-LAPSComputerList {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [string[]]$Name,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(1, 10000)]
+        [int]$Limit = 50
+    )
+
+    $names = @($Name | Where-Object { $_ })
+    if ($names.Count -le $Limit) { return ($names -join ', ') }
+
+    $shown = $names[0..($Limit - 1)] -join ', '
+    return ($shown + ', ... and ' + ($names.Count - $Limit) + ' more')
+}
+
 function Get-LAPSConfiguration {
     <#
     .SYNOPSIS
@@ -394,7 +439,7 @@ function Get-LAPSConfiguration {
                     $lapsFinding = [PSCustomObject]@{
                         ouName = $ouEntry.Key
                         computerCount = $ouEntry.Value.Count
-                        lapsUnprotectedComputers = ($ouEntry.Value -join ", ")
+                        lapsUnprotectedComputers = (Format-LAPSComputerList -Name $ouEntry.Value)
                     }
                     $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
                     Show-Object $lapsFinding
@@ -608,7 +653,7 @@ function Get-LAPSConfiguration {
                     $lapsFinding = [PSCustomObject]@{
                         ouName = $ouEntry.Key
                         computerCount = $ouEntry.Value.Count
-                        lapsUnprotectedComputers = ($ouEntry.Value -join ", ")
+                        lapsUnprotectedComputers = (Format-LAPSComputerList -Name $ouEntry.Value)
                     }
                     $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
                     Show-Object $lapsFinding

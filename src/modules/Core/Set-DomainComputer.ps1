@@ -499,9 +499,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }  # Default: WORKSTATION_TRUST_ACCOUNT
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -564,9 +564,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -630,9 +630,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -696,9 +696,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -998,9 +998,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1064,9 +1064,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1130,9 +1130,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1195,9 +1195,9 @@ function Set-DomainComputer {
                     Write-Log "[Set-DomainComputer] Clearing PASSWD_NOTREQD flag for: $($TargetComputer.sAMAccountName)"
 
                     try {
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1260,9 +1260,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1324,9 +1324,9 @@ function Set-DomainComputer {
                     Write-Log "[Set-DomainComputer] Clearing DONT_EXPIRE_PASSWORD flag for: $($TargetComputer.sAMAccountName)"
 
                     try {
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1389,9 +1389,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1455,9 +1455,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1521,9 +1521,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 
@@ -1587,9 +1587,9 @@ function Set-DomainComputer {
 
                     try {
                         # Get current userAccountControl
-                        $CurrentUAC = if ($TargetComputer.userAccountControl) {
-                            [int]$TargetComputer.userAccountControl
-                        } else { 4096 }
+                        # ConvertTo-UACValue, not [int]: the attribute arrives as decoded flag
+                        # names, and casting that array throws.
+                        $CurrentUAC = ConvertTo-UACValue -Value $TargetComputer.userAccountControl -Default 4096
 
                         Write-Log "[Set-DomainComputer] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
 

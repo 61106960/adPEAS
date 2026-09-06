@@ -329,6 +329,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **`Set-DomainUser` and `Set-DomainComputer` could not read the userAccountControl they
+  were about to change.** Every operation that flips a UAC bit - disable, enable, set or
+  clear PASSWD_NOTREQD, PASSWD_CANT_CHANGE, DONT_REQ_PREAUTH, DONT_EXPIRE_PASSWORD,
+  TRUSTED_FOR_DELEGATION and the rest, 32 places across the two functions - read the
+  current mask with `[int]$Target.userAccountControl`.
+
+  The attribute does not arrive as a number. `ConvertFrom-LDAPAttribute` replaces it with
+  the decoded flag names before any caller sees it, and casting that array throws. The
+  throw was caught by the surrounding handler and surfaced as the operation failing for
+  some unrelated reason, so the functions worked against hand-built objects and failed
+  against a real domain.
+
+  The conversion now lives in one place, `ConvertTo-UACValue`, shared with
+  `Test-AccountActivity`, which had the same defect in its other direction: it parsed the
+  attribute numerically and fell back to a mask of zero, turning a disabled account into an
+  enabled one. An unknown flag name is skipped rather than voiding the mask, so a future
+  Windows flag next to ACCOUNTDISABLE cannot make an account look enabled.
+
+- **The per-OU list of unprotected computers is capped.** `Get-LAPSConfiguration` joined
+  every name in an OU into one field. A flat domain with thirty thousand machines in one OU
+  put all thirty thousand names into a single string, in the console and again in the HTML
+  report, and name twelve thousand says nothing name twelve did not. Fifty are named and
+  the rest are counted; the exact number beside the row was always and stays exact.
+
 - **`Test-AccountActivity` understands the userAccountControl it is actually handed.** It
   parsed the attribute as a number. Every object that came through `Invoke-LDAPSearch`
   carries it as the decoded flag names instead, because `ConvertFrom-LDAPAttribute` replaces
@@ -356,10 +380,11 @@ Found while building the unit test suites, each reproduced before it was changed
   in the coverage figures and says so, rather than dropping real machines because one query
   did not answer.
 
-- **Exchange is found in the Configuration partition, not by a group name.** Detection read
-  the membership of a group looked up by the literal string "Exchange Servers": neither
-  rename-proof nor language-independent, one LDAP query per member, and it contradicted the
-  function's own documentation, which promised SPN-based detection the code never did.
+- **Exchange is found in the Configuration partition, not by a group's membership.**
+  Detection read the members of a group looked up by the literal string "Exchange Servers".
+  That group is not a list of servers - Exchange puts service accounts in it too - it is
+  not rename-proof, it cost one LDAP query per member, and it contradicted the function's
+  own documentation, which promised SPN-based detection the code never did.
   Exchange records each of its servers as an `msExchExchangeServer` object under
   `CN=Services` in the Configuration partition; that list is authoritative and carries the
   build, which is what decides whether the server still receives patches. The SPN route,
