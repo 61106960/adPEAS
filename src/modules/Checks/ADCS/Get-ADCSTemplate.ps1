@@ -1,3 +1,61 @@
+function Test-EKUPresent {
+    <#
+    .SYNOPSIS
+    Tests whether an extended key usage list names a specific OID.
+
+    .DESCRIPTION
+    The EKUs of a template arrive as a list that may carry friendly names beside the
+    numbers - "Client Authentication (1.3.6.1.5.5.7.3.2)" - so the match has to be on the
+    OID inside the text rather than on an equal string.
+
+    What it must not do is match a longer OID that merely starts with the one asked about.
+    1.3.6.1.5.5.7.3.2 is Client Authentication; 1.3.6.1.5.5.7.3.21 and .22 are the
+    registered SSH client and server usages, and a plain substring test reads both of them
+    as Client Authentication. Every enrollment-driven ESC in this check keys off that flag
+    - ESC1, ESC2, ESC3-TARGET and ESC9 - so a template that can only be used for SSH was
+    enough to raise one.
+
+    The guard is a digit-or-dot boundary on both sides, which leaves the parenthesised form
+    matching because '(' and ')' are neither.
+
+    .PARAMETER Eku
+    The extended key usages and application policies of the template, in any shape a join
+    produces.
+
+    .PARAMETER Oid
+    The OID to look for, in dotted form.
+
+    .OUTPUTS
+    Boolean.
+
+    .EXAMPLE
+    Test-EKUPresent -Eku @('Client Authentication (1.3.6.1.5.5.7.3.2)') -Oid '1.3.6.1.5.5.7.3.2'
+    True
+
+    .EXAMPLE
+    Test-EKUPresent -Eku @('1.3.6.1.5.5.7.3.21') -Oid '1.3.6.1.5.5.7.3.2'
+    False
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory=$false, Position=0)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object]$Eku,
+
+        [Parameter(Mandatory=$true, Position=1)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Oid
+    )
+
+    $text = (@($Eku) | Where-Object { $_ }) -join ' '
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+
+    $pattern = '(?<![\d.])' + [regex]::Escape($Oid) + '(?![\d.])'
+    return [bool]($text -match $pattern)
+}
+
 function Get-ADCSTemplate {
     <#
     .SYNOPSIS
@@ -190,7 +248,6 @@ function Get-ADCSTemplate {
 
             # Combine EKUs for analysis (Core may add friendly names, so match on OID)
             $allEKUs = @($template.ExtendedKeyUsage) + @($template.ApplicationPolicies) | Where-Object { $_ } | Select-Object -Unique
-            $ekuString = $allEKUs -join ' '
 
             # ClientAuthentication - can be used for Kerberos auth.
             #
@@ -201,23 +258,23 @@ function Get-ADCSTemplate {
             # nothing about it - it is the OID used for smart-card and certificate logon in
             # environments that do not also set the Microsoft-specific one.
             $template | Add-Member -NotePropertyName 'ClientAuthentication' -NotePropertyValue (
-                ($ekuString -match '1\.3\.6\.1\.5\.5\.7\.3\.2') -or       # Client Authentication
-                ($ekuString -match '1\.3\.6\.1\.4\.1\.311\.20\.2\.2') -or # Smart Card Logon
-                ($ekuString -match '1\.3\.6\.1\.5\.2\.3\.4') -or          # PKINIT Client Authentication
-                ($ekuString -match '2\.5\.29\.37\.0') -or                 # Any Purpose
+                (Test-EKUPresent -Eku $allEKUs -Oid '1.3.6.1.5.5.7.3.2') -or       # Client Authentication
+                (Test-EKUPresent -Eku $allEKUs -Oid '1.3.6.1.4.1.311.20.2.2') -or # Smart Card Logon
+                (Test-EKUPresent -Eku $allEKUs -Oid '1.3.6.1.5.2.3.4') -or          # PKINIT Client Authentication
+                (Test-EKUPresent -Eku $allEKUs -Oid '2.5.29.37.0') -or                 # Any Purpose
                 ($allEKUs.Count -eq 0)                                    # No EKUs = Any Purpose
             )
 
             # AnyPurpose EKU
             $template | Add-Member -NotePropertyName 'AnyPurpose' -NotePropertyValue (
-                ($ekuString -match '2\.5\.29\.37\.0') -or ($allEKUs.Count -eq 0)
+                (Test-EKUPresent -Eku $allEKUs -Oid '2.5.29.37.0') -or ($allEKUs.Count -eq 0)
             )
 
             # EnrollmentAgent (Certificate Request Agent EKU)
             # ESC3 condition 1: the certificate issued FROM this template is an enrollment agent
             # certificate and can be used to co-sign requests on behalf of other principals.
             $template | Add-Member -NotePropertyName 'EnrollmentAgent' -NotePropertyValue (
-                $ekuString -match '1\.3\.6\.1\.4\.1\.311\.20\.2\.1'
+                Test-EKUPresent -Eku $allEKUs -Oid '1.3.6.1.4.1.311.20.2.1'
             )
 
             # EnrollmentAgentSignatureRequired (ESC3 condition 2)
@@ -227,9 +284,8 @@ function Get-ADCSTemplate {
             # subject, so client-auth templates of this kind are a full impersonation primitive.
             # RAApplicationPolicies carries friendly names ("Certificate Request Agent (Enrollment
             # Agent) (1.3.6.1.4.1.311.20.2.1)"), so match on the OID rather than on the name.
-            $raPolicyString = @($template.RAApplicationPolicies) -join ' '
             $template | Add-Member -NotePropertyName 'EnrollmentAgentSignatureRequired' -NotePropertyValue (
-                ($template.RASignatureCount -ge 1) -and ($raPolicyString -match '1\.3\.6\.1\.4\.1\.311\.20\.2\.1')
+                ($template.RASignatureCount -ge 1) -and (Test-EKUPresent -Eku $template.RAApplicationPolicies -Oid '1.3.6.1.4.1.311.20.2.1')
             )
 
             # ManagerApprovalRequired (PEND_ALL_REQUESTS)

@@ -216,6 +216,26 @@ $Script:DangerousRegistryKeys = @(
         VulnerabilityName = 'Kerberos ignores the certificate SID extension (ESC10)'
         RiskReason        = 'Value 0 makes the KDC skip the SID extension even when it is present, so every certificate maps by UPN alone - a UPN an attacker who can write that attribute chooses. Value 2 is full enforcement; 1 only validates the extension when a certificate carries one'
     }
+    # Value 1 is the other half of the same setting, and it has to come after the entry
+    # above: the matcher takes the first entry whose condition holds, and 0 is the worse
+    # case. Compatibility mode validates the SID extension only when the certificate
+    # carries one - and a certificate without that extension is precisely what a template
+    # with CT_FLAG_NO_SECURITY_EXTENSION issues. So this value is the second precondition
+    # for ESC9, which adPEAS reports on the template side and could not confirm here.
+    @{
+        Id                = 'ESC10_KDC_BINDING_COMPAT'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\Kdc'
+        ValueName         = 'StrongCertificateBindingEnforcement'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_ESC10_KDC_BINDING_COMPAT'
+        VulnerabilityName = 'Kerberos accepts a certificate without a SID extension (ESC10 / ESC9 precondition)'
+        RiskReason        = 'Compatibility mode validates the SID extension only when the certificate has one. A template carrying CT_FLAG_NO_SECURITY_EXTENSION issues certificates without it, and those map by UPN alone - which is the ESC9 attack and needs this value to be 1 or 0. Full enforcement is 2, and has been the default since February 2025'
+    }
+
     @{
         Id                = 'ESC10_SCHANNEL_UPN'
         Hive              = 'HKLM'

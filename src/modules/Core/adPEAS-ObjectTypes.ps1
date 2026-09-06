@@ -570,6 +570,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Category = "ADCS"
         SectionTitle = "PKI Container Permissions"
         Summary = "Reviews permissions on critical PKI containers in the Configuration partition."
+        PrimaryFindingId = 'ESC5_PKI_CONTAINER_ACL'
         WhyItMatters = "Write access to PKI containers allows attackers to create or modify certificate templates, manipulate the NTAuth store, or modify enrollment services - enabling escalation vulnerabilities (ESC1-4) even if none currently exist."
         WhatWeCheck = @(
             "GenericAll, WriteDACL, WriteOwner, or GenericWrite permissions on Public Key Services container"

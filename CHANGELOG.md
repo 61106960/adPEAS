@@ -367,6 +367,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **ESC5 findings now carry the ESC5 write-up.** The PKI container permission check worked
+  and set `pkiContainersAffected` on every finding. `ESC5_PKI_CONTAINER_ACL` triggered on
+  `Container` and `Rights`, two attribute names no check emits, so the definition could
+  never fire and the findings attached to the generic `ACL_GENERICALL` and `ACL_WRITEDACL`
+  texts instead. The reader was told somebody holds GenericAll on an object, where a text
+  explaining that they can create an ESC1-vulnerable template from scratch, grant themselves
+  enrollment on any template and poison the NTAuth store was sitting unused.
+
+- **`StrongCertificateBindingEnforcement=1` deployed by Group Policy is reported.** Only 0
+  was flagged, on the reasoning that 1 was the value Windows shipped as the default. It was,
+  from May 2022 until the February 2025 update moved to full enforcement and made 2 the
+  default. Compatibility mode validates the SID extension only when the certificate carries
+  one - and a certificate without that extension is precisely what a template with
+  CT_FLAG_NO_SECURITY_EXTENSION issues, which adPEAS already reports as ESC9. The value is
+  therefore the second half of that attack's precondition, reported as
+  `REGISTRY_ESC10_KDC_BINDING_COMPAT` at a lower severity than the 0 case.
+
+- **ESC9 says what else has to be true.** The finding read "attacker can modify
+  userPrincipalName and request certificate for any user", which also needs
+  StrongCertificateBindingEnforcement to be 0 or 1 on the domain controllers. Where
+  enforcement is 2 - the default since February 2025 - the template is a latent
+  misconfiguration rather than a live path, and the text now says so and points at the
+  registry findings that establish which it is.
+
+- **An EKU OID no longer matches a longer OID that starts with it.** The template analysis
+  tested `$ekuString -match '1\.3\.6\.1\.5\.5\.7\.3\.2'` against the joined EKU list.
+  1.3.6.1.5.5.7.3.21 and .22 are the registered SSH client and server usages, and both were
+  read as Client Authentication - the flag ESC1, ESC2, ESC3-TARGET and ESC9 all key off, so
+  a template good for nothing but SSH was enough to raise one. `Test-EKUPresent` puts a
+  digit-or-dot boundary on both sides, which leaves the parenthesised form
+  "Client Authentication (1.3.6.1.5.5.7.3.2)" matching.
+
+- **The reachability check reads a definition to its end.** The step added in the previous
+  entry cut each definition at the first line that looked like a closing brace. Several
+  definitions embed a whole remediation script in a here-string, and those scripts contain
+  braces at exactly that indentation - so the scan ended mid-string and missed everything
+  after it, including seven Triggers blocks. It now ends a definition where the next one
+  begins. The corrected count is 216 of 231 definitions with a trigger and seven
+  unreachable, not nine.
+
 - **Both halves of the ESC14 check were deciding on a value that was never right.**
   `Get-WeakCertificateMapping` asked `[bool](Test-IsPrivileged -Identity $sid @connectionParams)`
   in two places. `Test-IsPrivileged` returns an object, and `[bool]` of any object is

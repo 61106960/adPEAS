@@ -1284,8 +1284,8 @@ function Get-ADCSVulnerabilities {
                         ESC = "ESC9"
                         Title = "No Security Extension + Client Authentication"
                         Severity = "High"
-                        Description = "Template has NO_SECURITY_EXTENSION flag and supports client authentication. Attacker can modify userPrincipalName and request certificate for any user."
-                        Remediation = "Remove NO_SECURITY_EXTENSION flag OR remove client authentication EKUs."
+                        Description = "Template has NO_SECURITY_EXTENSION flag and supports client authentication, so the certificates it issues carry no SID extension and map by UPN alone. Exploiting that also needs StrongCertificateBindingEnforcement to be 0 or 1 on the domain controllers - the value has defaulted to 2 since February 2025, and a Group Policy lowering it is reported separately in the GPO registry section. Where it is 2, this template is a latent misconfiguration rather than a live path."
+                        Remediation = "Remove NO_SECURITY_EXTENSION flag OR remove client authentication EKUs, and confirm StrongCertificateBindingEnforcement is 2 on every domain controller."
                         Reference = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc9"
                     }
                 }

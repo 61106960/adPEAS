@@ -1471,8 +1471,13 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
         Tools = @("Certipy", "Certify", "PowerView")
         MITRE = "T1649"
         Triggers = @(
-            @{ Attribute = 'Container'; Pattern = 'Public Key Services|Certificate Templates|Enrollment Services|NTAuthCertificates|OID'; Severity = 'Finding' }
-            @{ Attribute = 'Rights'; Pattern = 'GenericAll|WriteDacl|WriteOwner'; Severity = 'Finding' }
+            # pkiContainersAffected, because that is the attribute the check sets. It used
+            # to trigger on 'Container' and 'Rights', which no check emits - so the write-up
+            # below was unreachable and the PKI container findings surfaced under the
+            # generic ACL definitions instead, telling the reader somebody holds GenericAll
+            # on an object where this text explains that they can build an ESC1 template
+            # from scratch and poison the NTAuth store.
+            @{ Attribute = 'pkiContainersAffected'; Severity = 'Finding' }
         )
     }
 
@@ -6031,7 +6036,7 @@ Get-CertificationAuthorityAcl -CertificationAuthority $ca | Format-Table -AutoSi
         Title = "ESC9 - Certificate Template Without Security Extension"
         Risk = "Finding"
         BaseScore = 60
-        Description = "The certificate template does not include the szOID_NTDS_CA_SECURITY_EXT security extension, which contains the requestor's SID. Without this, the certificate can be used by anyone who obtains it."
+        Description = "The certificate template does not include the szOID_NTDS_CA_SECURITY_EXT security extension, which contains the requestor's SID, so the certificates it issues map to an account by UPN alone. Whether that is exploitable depends on a second condition on the domain controllers: StrongCertificateBindingEnforcement must be 0 or 1. It has defaulted to 2 (full enforcement) since February 2025, and a Group Policy lowering it is reported in the GPO registry section of this report as REGISTRY_ESC10_KDC_BINDING or REGISTRY_ESC10_KDC_BINDING_COMPAT. Where enforcement is 2, this template is a latent misconfiguration - it becomes a live path the moment somebody lowers the value or a machine is built from an older image."
         Impact = @(
             "Certificates not cryptographically bound to requestor"
             "Stolen certificates can be used by anyone"
@@ -9181,6 +9186,49 @@ foreach ($oid in $linkedOIDs) {
         Tools = @("Certipy")
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'Kerberos ignores the certificate SID extension'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_ESC10_KDC_BINDING_COMPAT' = @{
+        Title = "ESC10 - Kerberos Accepts a Certificate Without a SID Extension (via GPO)"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "A Group Policy sets StrongCertificateBindingEnforcement=1 under the KDC key. Compatibility mode validates the SID extension only when the certificate carries one, and falls back to mapping by UPN when it does not. That is not a theoretical gap: a template with CT_FLAG_NO_SECURITY_EXTENSION issues certificates without the extension on purpose, which is the ESC9 misconfiguration adPEAS reports on the template side. This value is the second half of that attack's precondition, and full enforcement (2) has been the default since February 2025."
+        Impact = @(
+            "A certificate issued without a SID extension maps by UPN alone"
+            "An ESC9 template hands out exactly such certificates to anyone who may enrol"
+            "An attacker who can write userPrincipalName on a controlled account sets it to a target's UPN, enrols on the ESC9 template and authenticates as the target"
+            "Certificates that predate the May 2022 update also carry no extension and are accepted the same way"
+        )
+        Attack = @(
+            "1. Find a template with CT_FLAG_NO_SECURITY_EXTENSION and client authentication - the ESC9 findings in this report name them"
+            "2. Change the UPN of a controlled account to that of the target"
+            "3. Enrol on that template; the certificate is issued without the SID extension"
+            "4. Restore the original UPN and authenticate with the certificate as the target"
+        )
+        Remediation = @(
+            "Set StrongCertificateBindingEnforcement=2 on every domain controller - compatibility mode was a migration state, not a setting"
+            "Before switching, re-issue or retire certificates that predate the SID extension, which is what the value was lowered for"
+            "Clear CT_FLAG_NO_SECURITY_EXTENSION on any template that carries it, so no new certificate is issued without the extension"
+            "Restrict who may write userPrincipalName"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the value on every domain controller"
+                Command = "Get-ADDomainController -Filter * | ForEach-Object { Invoke-Command -ComputerName `$_.HostName -ScriptBlock { Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Kdc' -Name StrongCertificateBindingEnforcement -ErrorAction SilentlyContinue } }"
+            }
+            @{
+                Description = "Find the templates that make this exploitable"
+                Command = "Get-ADObject -SearchBase `"CN=Certificate Templates,CN=Public Key Services,CN=Services,`$((Get-ADRootDSE).configurationNamingContext)`" -LDAPFilter '(msPKI-Enrollment-Flag:1.2.840.113556.1.4.804:=524288)' -Properties displayName"
+            }
+        )
+        References = @(
+            @{ Title = "KB5014754 - Certificate-based authentication changes"; Url = "https://support.microsoft.com/en-us/topic/kb5014754-certificate-based-authentication-changes-on-windows-domain-controllers-ad2c23b0-15d8-4340-a468-4d4f3b188f16" }
+            @{ Title = "Certipy - ESC9 and ESC10"; Url = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation" }
+        )
+        Tools = @("Certipy")
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Kerberos accepts a certificate without a SID extension'; Severity = 'Finding' }
         )
     }
 
