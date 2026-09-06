@@ -538,6 +538,46 @@ $Script:FindingDefinitions = @{
         )
     }
 
+    'GPO_NOT_CURRENTLY_EFFECTIVE' = @{
+        Title = "This GPO Setting Does Not Currently Apply"
+        Risk = "Note"
+        BaseScore = 10
+        Description = "The setting reported above is written into a Group Policy Object that does not currently deliver it: the half of the policy it lives in is switched off, or the GPO is linked nowhere. The setting is real and it is still in the directory; it simply does not reach a machine as things stand."
+        Impact = @(
+            "Nothing today - which is the point of saying so, because an identical entry in an active GPO is a live exposure"
+            "One click away from applying: re-enabling the disabled half, or linking the GPO, makes it effective with no further change"
+            "A forgotten policy is the usual reason a setting like this survives, and a forgotten policy is the one nobody reviews before re-linking it"
+        )
+        Attack = @(
+            "1. The setting sits dormant and out of mind"
+            "2. Someone links the GPO or re-enables the disabled half, for an unrelated reason"
+            "3. The setting takes effect on every machine in scope, with nobody having reviewed it"
+        )
+        Remediation = @(
+            "Fix or remove the setting rather than relying on the GPO staying switched off"
+            "Delete a GPO that is no longer wanted, instead of unlinking it and leaving it in the directory"
+            "Check who may link GPOs and who may edit this one - see the GPO permission findings"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the status and the links of the GPO"
+                Command = "Get-GPO -Name 'GPO_NAME' | Select-Object DisplayName,GpoStatus; Get-GPOReport -Name 'GPO_NAME' -ReportType Xml"
+            }
+            @{
+                Description = "Delete a GPO that is no longer needed"
+                Command = "Remove-GPO -Name 'GPO_NAME'"
+            }
+        )
+        References = @(
+            @{ Title = "Group Policy Object status"; Url = "https://learn.microsoft.com/en-us/powershell/module/grouppolicy/set-gpostatus" }
+        )
+        Tools = @("Group Policy Management Console")
+        MITRE = "T1484.001"
+        Triggers = @(
+            @{ Attribute = 'GPONotEffective'; Severity = 'Note' }
+        )
+    }
+
     'PRIVILEGED_ACCOUNT_AFFECTED' = @{
         Title = "The Affected Account Is Privileged"
         Risk = "Finding"

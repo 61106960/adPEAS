@@ -82,6 +82,10 @@ function Get-GPORegistrySettings {
 
             $gpoLinkage = Get-GPOLinkage
 
+            # Which policies have a half switched off, indexed the way a SYSVOL path names
+            # them. Get-DomainGPO decodes the flags attribute; nothing used to read it.
+            $gpoStatusMap = Get-GPOStatusMap -GPO $gpos
+
             # Build GPO GUID to name mapping
             $gpoNameMap = @{}
             foreach ($gpo in $gpos) {
@@ -203,6 +207,17 @@ function Get-GPORegistrySettings {
                     }
                     $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
+
+                    # A value in a policy whose relevant half is switched off, or that is
+                    # linked nowhere, reaches no registry. The hive says which half: the
+                    # Registry.pol under Machine writes HKLM, the one under User HKCU.
+                    $ineffective = Get-GPOIneffectiveReason `
+                        -StatusEntry $gpoStatusMap[$finding.GPOGUID] `
+                        -Scope $(if ("$($finding.RegistryKey)" -like 'HKLM*') { 'Machine' } else { 'User' }) `
+                        -LinkedOUCount $linkedOUs.Count
+                    if ($ineffective) {
+                        $finding | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                    }
 
                     # ConsoleClass is what the central table documents per entry. It was
                     # carried all the way here and then never used, so the Finding/Hint

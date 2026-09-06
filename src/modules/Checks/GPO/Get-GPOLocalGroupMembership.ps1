@@ -95,6 +95,10 @@ function Get-GPOLocalGroupMembership {
 
             $gpoLinkage = Get-GPOLinkage
 
+            # Which policies have a half switched off, indexed the way a SYSVOL path names
+            # them. Get-DomainGPO decodes the flags attribute; nothing used to read it.
+            $gpoStatusMap = Get-GPOStatusMap -GPO $gpos
+
             # Build GPO GUID to name mapping for later lookup
             $gpoNameMap = @{}
             foreach ($gpo in $gpos) {
@@ -138,9 +142,18 @@ function Get-GPOLocalGroupMembership {
                                     $linkedOUs = $gpoLinkage[$gpoGUID]
                                 }
 
+                                # Restricted Groups is a computer-side policy, so the
+                                # computer half of the GPO is the one that has to be on.
+                                $ineffective = Get-GPOIneffectiveReason `
+                                    -StatusEntry $gpoStatusMap[$gpoGUID] -Scope 'Machine' `
+                                    -LinkedOUCount $linkedOUs.Count
+
                                 foreach ($finding in $restrictedGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
                                     $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
+                                    if ($ineffective) {
+                                        $finding | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                                    }
                                 }
 
                                 $Script:vulnerableGPOs += @($restrictedGroupsFindings)
@@ -175,9 +188,19 @@ function Get-GPOLocalGroupMembership {
                                     $linkedOUs = $gpoLinkage[$gpoGUID]
                                 }
 
+                                # Group Policy Preferences local groups can be deployed from
+                                # either half, and the file's path is what says which.
+                                $ineffective = Get-GPOIneffectiveReason `
+                                    -StatusEntry $gpoStatusMap[$gpoGUID] `
+                                    -Scope $(if ($file.FullName -match '\\Machine\\') { 'Machine' } else { 'User' }) `
+                                    -LinkedOUCount $linkedOUs.Count
+
                                 foreach ($finding in $gppGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
                                     $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
+                                    if ($ineffective) {
+                                        $finding | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                                    }
                                 }
 
                                 $Script:vulnerableGPOs += @($gppGroupsFindings)

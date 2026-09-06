@@ -73,6 +73,10 @@ function Get-GPOScriptPaths {
 
             $gpoLinkage = Get-GPOLinkage
 
+            # Which policies have a half switched off, indexed the way a SYSVOL path names
+            # them. Get-DomainGPO decodes the flags attribute; nothing used to read it.
+            $gpoStatusMap = Get-GPOStatusMap -GPO $gpos
+
             # Build GPO GUID to name mapping
             $gpoNameMap = @{}
             foreach ($gpo in $gpos) {
@@ -126,9 +130,21 @@ function Get-GPOScriptPaths {
                                     $linkedOUs = $gpoLinkage[$gpoGUID]
                                 }
 
+                                # Whether the GPO's half that carries this script is switched
+                                # on at all, and whether the GPO is linked anywhere. A
+                                # startup script in a policy whose computer configuration is
+                                # disabled used to read exactly like one that runs on every
+                                # boot.
+                                $ineffective = Get-GPOIneffectiveReason `
+                                    -StatusEntry $gpoStatusMap[$gpoGUID] -Scope $context `
+                                    -LinkedOUCount $linkedOUs.Count
+
                                 foreach ($finding in $findings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
                                     $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
+                                    if ($ineffective) {
+                                        $finding | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                                    }
                                 }
 
                                 [void]$Script:_gpoScriptFindings.AddRange(@($findings))

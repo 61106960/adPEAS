@@ -97,6 +97,10 @@ function Get-GPOScheduledTasks {
 
             $gpoLinkage = Get-GPOLinkage
 
+            # Which policies have a half switched off, indexed the way a SYSVOL path names
+            # them. Get-DomainGPO decodes the flags attribute; nothing used to read it.
+            $gpoStatusMap = Get-GPOStatusMap -GPO $gpos
+
             # Track SYSVOL access status
             $Script:sysvolAccessible = $false
 
@@ -152,6 +156,18 @@ function Get-GPOScheduledTasks {
                                         $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
                                     }
                                     $task | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
+
+                                    # A task in a policy whose relevant half is switched off,
+                                    # or that is linked nowhere, does not run. It used to read
+                                    # exactly like one that does. The scope comes off the task
+                                    # itself: the file's path decided it during parsing.
+                                    $ineffective = Get-GPOIneffectiveReason `
+                                        -StatusEntry $gpoStatusMap[$gpoGUID] `
+                                        -Scope $(if ($task.Context -eq 'Machine') { 'Machine' } else { 'User' }) `
+                                        -LinkedOUCount $linkedOUs.Count
+                                    if ($ineffective) {
+                                        $task | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                                    }
                                 }
 
                                 [void]$Script:_gpoScheduledTasks.AddRange(@($taskFindings))
@@ -288,16 +304,22 @@ function Parse-ScheduledTasksXML {
             $risk = ""
 
             # Check for SYSTEM account (well-known SID S-1-5-18 or common string patterns)
-            # These are language-independent system accounts
+            #
+            # The SID tests are the reliable half and come first. The name patterns are the
+            # fallback for a Scheduled Tasks XML that carries a name instead, and every one
+            # of them is anchored: 'LocalSystem' unanchored also matched an ordinary account
+            # called svc-LocalSystemBackup, and '\\SYSTEM$' on its own would take any
+            # domain account named SYSTEM for the machine account. Both would have filed a
+            # user task as running with full machine rights.
             $isSystemAccount = $false
             if ($runAs -match '^S-1-5-18$' -or                           # SYSTEM SID directly
-                $runAs -match '\\SYSTEM$' -or                             # NT AUTHORITY\SYSTEM (any language)
+                $runAs -match '^(NT[ -]AUTHORITY|[^\\]+)\\SYSTEM$' -or    # DOMAIN\SYSTEM, any language
                 $runAs -match '^SYSTEM$' -or                              # Just SYSTEM
-                $runAs -match 'LocalSystem' -or                           # LocalSystem
+                $runAs -match '^LocalSystem$' -or                         # LocalSystem
                 $runAs -match '^S-1-5-19$' -or                            # LOCAL SERVICE
-                $runAs -match '\\LOCAL SERVICE$' -or
+                $runAs -match '^(NT[ -]AUTHORITY|[^\\]+)\\LOCAL SERVICE$' -or
                 $runAs -match '^S-1-5-20$' -or                            # NETWORK SERVICE
-                $runAs -match '\\NETWORK SERVICE$') {
+                $runAs -match '^(NT[ -]AUTHORITY|[^\\]+)\\NETWORK SERVICE$') {
                 $isSystemAccount = $true
             }
 

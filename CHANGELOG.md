@@ -289,6 +289,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **No GPO check asked whether the policy it was reading actually applies.** A GPO carries
+  two switches that decide that, and the five checks reading its settings consulted
+  neither. The `flags` attribute disables half the policy or all of it, and
+  `Get-DomainGPO` decodes it into `GPOStatus` - nothing read the result. The other is
+  linkage: a GPO linked nowhere applies nowhere. A dangerous startup script in a policy
+  whose computer configuration is switched off was reported exactly like one that runs on
+  every boot.
+
+  Findings now carry `GPONotEffective` naming the reason, and the half matters rather than
+  just the switch: a user-side setting is unaffected by a disabled computer configuration.
+  Nothing is suppressed - a disabled half is one click from being enabled, and the setting
+  inside a forgotten policy is a cleanup candidate precisely because nobody looks at it. A
+  linkage lookup that failed is reported as nothing rather than as "applies nowhere".
+
+- **`Get-GPOScheduledTasks` could mistake an ordinary account for SYSTEM.** The SID tests
+  are the reliable half and run first, but the name fallbacks behind them were unanchored:
+  `LocalSystem` also matched an account called `svc-LocalSystemBackup`, and `\SYSTEM$`
+  would take any domain account named SYSTEM for the machine account. Both would have
+  filed a user task as running with full machine rights. All of them are anchored now.
+
 - **The permission scans stopped at the organizational units.** `Get-DangerousOUPermissions`
   and the `-IncludeAllOUs` path of `Get-PasswordResetRights` asked for
   `(objectClass=organizationalUnit)` and nothing else. `CN=Users` and `CN=Computers` are

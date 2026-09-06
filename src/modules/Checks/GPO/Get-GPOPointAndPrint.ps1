@@ -130,6 +130,10 @@ function Get-GPOPointAndPrint {
 
             $gpoLinkage = Get-GPOLinkage
 
+            # Which policies have a half switched off, indexed the way a SYSVOL path names
+            # them. Get-DomainGPO decodes the flags attribute; nothing used to read it.
+            $gpoStatusMap = Get-GPOStatusMap -GPO $gpos
+
             # Both Script-scoped variables below are written inside the Invoke-SMBAccess
             # scriptblock and cleared inline right after it - they are the documented
             # exception to the Clear-SessionState rule (same pattern as Get-GPORegistrySettings).
@@ -218,7 +222,7 @@ function Get-GPOPointAndPrint {
             foreach ($bucketKey in $configs.Keys) {
                 $config = $configs[$bucketKey]
                 $config['GPOName'] = if ($gpoNameMap.ContainsKey($config['GPOGUID'])) { $gpoNameMap[$config['GPOGUID']] } else { $config['GPOGUID'] }
-                $objects += New-PointAndPrintObject -Config $config -GPOLinkage $gpoLinkage
+                $objects += New-PointAndPrintObject -Config $config -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
             }
 
             # Most severe first, then alphabetically - exploitable GPOs must not be buried
@@ -591,7 +595,11 @@ function New-PointAndPrintObject {
 
         [Parameter(Mandatory=$false)]
         [AllowNull()]
-        [hashtable]$GPOLinkage
+        [hashtable]$GPOLinkage,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [hashtable]$GPOStatusMap
     )
 
     $values = $Config['Values']
@@ -735,6 +743,17 @@ function New-PointAndPrintObject {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Not linked - these settings apply nowhere' -Force
     }
     $obj | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
+
+    # Point and Print lives under HKLM, so the computer half of the GPO is the one that has
+    # to be switched on. -1 when the linkage could not be resolved at all: "not linked" is
+    # a claim, and a failed lookup does not support it.
+    $ineffective = Get-GPOIneffectiveReason `
+        -StatusEntry $(if ($GPOStatusMap -and $gpoGuid) { $GPOStatusMap[$gpoGuid] } else { $null }) `
+        -Scope 'Machine' `
+        -LinkedOUCount $(if ($null -eq $GPOLinkage) { -1 } else { $linkedOUs.Count })
+    if ($ineffective) {
+        $obj | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+    }
 
     # Hidden from display (see $Script:ExcludeAttributes) - used for sorting and correlation
     $obj | Add-Member -NotePropertyName 'Severity' -NotePropertyValue $assessment.Severity -Force
