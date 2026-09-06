@@ -118,6 +118,18 @@ function New-LAPSGPOConfigObject {
         }
     }
 
+    # Domain controllers have no local SAM, so the built-in Administrator LAPS manages
+    # everywhere else does not exist there. The DSRM account is the one thing LAPS can hold
+    # on a DC, and only this setting turns it on.
+    if ($isNative -and $Metadata.ContainsKey('BackupDsrmPassword')) {
+        $dsrmText = if ([int]$Metadata['BackupDsrmPassword'] -eq 0) {
+            'Disabled - the DSRM password on domain controllers is not managed'
+        } else {
+            'Enabled - the DSRM password on domain controllers is managed and escrowed'
+        }
+        $obj | Add-Member -NotePropertyName 'DsrmPasswordBackup' -NotePropertyValue $dsrmText -Force
+    }
+
     if ($isNative -and $Metadata.ContainsKey('PasswordExpirationProtectionEnabled')) {
         $expText = if ([int]$Metadata['PasswordExpirationProtectionEnabled'] -eq 0) {
             'Disabled - password max-age is not enforced'
@@ -218,6 +230,15 @@ function Get-LAPSConfiguration {
     - GPO configuration analysis (managed account name, password policy, backup/encryption settings)
     - Deployment coverage (% of computers with LAPS)
     - Computers without LAPS protection grouped by OU
+    - Computers whose LAPS password stopped rotating: the attribute exists, so coverage
+      counts them as protected, but the expiration time lies in the past and the local
+      administrator password is as old as the day rotation stopped
+
+    Domain controllers are not part of the coverage question. A DC has no local SAM, so the
+    built-in Administrator LAPS manages everywhere else does not exist there; Legacy LAPS
+    never touched one, and Windows LAPS reaches one only through the DSRM account, and only
+    when BackupDsrmPassword is on. They are counted and reported separately, including
+    whether a GPO configures that setting.
 
     LAPS Versions Supported:
     - Legacy LAPS: Original Microsoft LAPS (ms-Mcs-* attributes)
@@ -307,6 +328,34 @@ function Get-LAPSConfiguration {
             $lapsGPOHasLegacy = $lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Legacy -and $lapsGPOSettings.Legacy.Count -gt 0
             $lapsGPOHasNative = $lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Native -and $lapsGPOSettings.Native.Count -gt 0
 
+            # ===== Domain Controllers are not part of the coverage question =====
+            #
+            # A domain controller has no local SAM, so the built-in Administrator account
+            # LAPS manages on every other machine does not exist there. Legacy LAPS never
+            # touched a DC at all, and Windows LAPS reaches one only through the DSRM
+            # account, and only when BackupDsrmPassword is turned on. Counting DCs in the
+            # denominator meant every single domain reported its domain controllers as
+            # unprotected and put OU=Domain Controllers in the list of exposed OUs - a
+            # finding no domain could ever clear.
+            #
+            # They are taken out of the coverage numbers and reported on their own terms
+            # below. A failed lookup leaves the set empty, which puts the DCs back into the
+            # coverage numbers - the old behaviour, and better than dropping real machines
+            # because one query did not answer.
+            $domainControllerDNs = @{}
+            $domainControllerCount = 0
+            $domainControllerLookupFailed = $false
+            try {
+                foreach ($dc in @(Get-DomainComputer -DomainController -Properties 'distinguishedName' @PSBoundParameters)) {
+                    if (-not $dc.distinguishedName) { continue }
+                    $domainControllerDNs["$($dc.distinguishedName)".ToLowerInvariant()] = $true
+                }
+                $domainControllerCount = $domainControllerDNs.Count
+            } catch {
+                $domainControllerLookupFailed = $true
+                Write-Log "[Get-LAPSConfiguration] Could not enumerate Domain Controllers: $_" -Level Error
+            }
+
             # ===== No LAPS Schema Found =====
             if (-not $lapsLegacySchemaPresent -and -not $windowsLAPSSchemaPresent) {
                 if ($lapsGPOHasLegacy -or $lapsGPOHasNative) {
@@ -320,7 +369,9 @@ function Get-LAPSConfiguration {
                 }
 
                 # Get active computers grouped by OU (uses $Script:DefaultInactiveDays)
-                $allComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @PSBoundParameters | Test-AccountActivity -IsActive)
+                $allComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @PSBoundParameters |
+                    Test-AccountActivity -IsActive |
+                    Where-Object { -not $domainControllerDNs.ContainsKey("$($_.distinguishedName)".ToLowerInvariant()) })
 
                 # Group by OU - store computer names
                 $computersByOU = @{}
@@ -388,14 +439,16 @@ function Get-LAPSConfiguration {
             # ===== Step 3: Enumerate Computers and Calculate Coverage =====
             Show-SubHeader "Analyzing LAPS deployment coverage..." -ObjectType "LAPSConfiguration"
 
-            # Query 1: All enabled computers (for statistics)
-            $allEnabledComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @PSBoundParameters)
+            # Query 1: All enabled computers (for statistics), domain controllers removed
+            $allEnabledComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @PSBoundParameters |
+                Where-Object { -not $domainControllerDNs.ContainsKey("$($_.distinguishedName)".ToLowerInvariant()) })
 
             # Query 2: Active computers (enabled + recent logon) - uses $Script:DefaultInactiveDays
             $activeComputers = @($allEnabledComputers | Test-AccountActivity -IsActive)
 
             # Query 3: Computers WITH LAPS (LDAP-side filter) - much faster than client-side attribute check
-            $computersWithLAPSRaw = @(Get-DomainComputer -Enabled -LAPS -Properties $ComputerProperties @PSBoundParameters)
+            $computersWithLAPSRaw = @(Get-DomainComputer -Enabled -LAPS -Properties $ComputerProperties @PSBoundParameters |
+                Where-Object { -not $domainControllerDNs.ContainsKey("$($_.distinguishedName)".ToLowerInvariant()) })
             $computersWithLAPS = @($computersWithLAPSRaw | Test-AccountActivity -IsActive)
 
             # Categorize LAPS computers by type
@@ -440,6 +493,28 @@ function Get-LAPSConfiguration {
             $inactiveInfo = if ($inactiveCount -gt 0) { " ($inactiveCount inactive excluded)" } else { "" }
             Show-Line "Found $activeCount active computers$inactiveInfo" -Class "Hint"
 
+            # The domain controllers, on their own terms rather than as unprotected machines
+            if ($domainControllerLookupFailed) {
+                Show-Line "Domain Controllers could not be enumerated - they are counted as ordinary computers below, which will understate LAPS coverage" -Class "Note"
+            } elseif ($domainControllerCount -gt 0) {
+                $dsrmConfigured = $false
+                if ($lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Native) {
+                    foreach ($nativeGpo in $lapsGPOSettings.Native.Values) {
+                        if ($nativeGpo -is [hashtable] -and $nativeGpo.ContainsKey('BackupDsrmPassword') -and
+                            ([int]$nativeGpo['BackupDsrmPassword']) -ne 0) {
+                            $dsrmConfigured = $true
+                            break
+                        }
+                    }
+                }
+
+                if ($dsrmConfigured) {
+                    Show-Line "$domainControllerCount Domain Controller(s) excluded from the coverage figures - a DC has no local Administrator to manage, and a GPO does configure DSRM password backup for them" -Class "Note"
+                } else {
+                    Show-Line "$domainControllerCount Domain Controller(s) excluded from the coverage figures - a DC has no local Administrator to manage, and no GPO configures DSRM password backup (BackupDsrmPassword) for them" -Class "Hint"
+                }
+            }
+
             # Build LAPS breakdown
             if ($withAnyLAPS -gt 0) {
                 $lapsBreakdown = @()
@@ -448,6 +523,60 @@ function Get-LAPSConfiguration {
                 if ($withBothLAPS -gt 0) { $lapsBreakdown += "$withBothLAPS both" }
                 $breakdownText = if ($lapsBreakdown.Count -gt 0) { " (" + ($lapsBreakdown -join ", ") + ")" } else { "" }
                 Show-Line "$withAnyLAPS computers ($lapsCoverage%) with LAPS protection$breakdownText" -Class "Note"
+            }
+
+            # ===== LAPS passwords that never rotated =====
+            #
+            # Coverage counts a machine as protected the moment the expiration attribute
+            # exists. It says nothing about whether the password behind it was ever changed.
+            # An expiration time in the past means the client did not rotate when it was due:
+            # the CSE is broken, the policy was removed, or the machine has been off. The
+            # password is as old as it was on the day it stopped rotating, and if it leaked
+            # once it is still valid - which is exactly what LAPS exists to prevent.
+            #
+            # The grace period covers the ordinary case of a machine that was simply off for
+            # a while; past that, nothing is rotating.
+            $staleGraceDays = 30
+            $staleCutoff = (Get-Date).AddDays(-$staleGraceDays)
+            $staleLAPSComputers = @()
+
+            foreach ($computer in $computersWithLAPS) {
+                # Whichever generation last wrote wins: a machine migrated from Legacy to
+                # Windows LAPS keeps the old attribute, and judging by the older of the two
+                # would report every migrated machine as stale.
+                $expiry = $null
+                $generation = $null
+                foreach ($attr in @('ms-Mcs-AdmPwdExpirationTime', 'msLAPS-PasswordExpirationTime')) {
+                    $value = $computer.$attr
+                    if ($value -isnot [DateTime]) { continue }
+                    if ($null -eq $expiry -or $value -gt $expiry) {
+                        $expiry = $value
+                        $generation = if ($attr -eq 'ms-Mcs-AdmPwdExpirationTime') { 'LAPS Legacy' } else { 'Windows LAPS' }
+                    }
+                }
+
+                if ($null -eq $expiry -or $expiry -ge $staleCutoff) { continue }
+
+                $daysOverdue = [math]::Floor(((Get-Date) - $expiry).TotalDays)
+                $staleObject = [PSCustomObject]@{
+                    Name              = ($computer.sAMAccountName -replace '\$$', '')
+                    distinguishedName = $computer.distinguishedName
+                    lapsGeneration    = $generation
+                    passwordExpiredOn = (Format-adPEASDate $expiry 'yyyy-MM-dd')
+                    daysOverdue       = $daysOverdue
+                    lapsPasswordStale = "The LAPS password was due for rotation $daysOverdue days ago and has not been changed since. The local administrator password on this machine is at least that old."
+                }
+                $staleObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSStalePassword' -Force
+                $staleLAPSComputers += $staleObject
+            }
+
+            if ($staleLAPSComputers.Count -gt 0) {
+                Show-Line "$($staleLAPSComputers.Count) computer(s) have LAPS but their password stopped rotating - counted as protected above, and they are not" -Class "Finding"
+                foreach ($staleObject in ($staleLAPSComputers | Sort-Object daysOverdue -Descending)) {
+                    Show-Object $staleObject
+                }
+            } elseif ($withAnyLAPS -gt 0) {
+                Show-Line "Every computer with LAPS rotated its password on schedule" -Class "Secure"
             }
 
             # Highlight computers without LAPS

@@ -428,6 +428,21 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
     }
 
+    'ADFSServer' = @{
+        TitleFormat = "AD FS: {Name}"
+        Module = "Application"
+        Category = "Infrastructure"
+        SectionTitle = "AD FS"
+        Summary = "Discovers Active Directory Federation Services deployments."
+        WhyItMatters = "AD FS issues the SAML tokens that federated applications and the connected cloud tenant trust. Whoever obtains the token-signing key can mint a token for any user - Golden SAML - and neither an on-premises password reset nor MFA enforced at the identity provider revokes it."
+        WhatWeCheck = @(
+            "The DKM container under CN=ADFS,CN=Microsoft,CN=Program Data, which holds the key protecting the token-signing certificate"
+            "Computers registering the adfssrv/ service principal name"
+        )
+        SecureMessage = "No AD FS deployment was found in this domain. There is no on-premises federation service whose signing key could be used to forge tokens for the cloud tenant."
+        PrimaryFindingId = 'ADFS_DKM_CONTAINER'
+    }
+
     'EntraConnect' = @{
         TitleFormat = "Entra ID Connect: {Name}{Context}"
         Module = "Application"
@@ -1204,8 +1219,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Summary = "Identifies computer objects with unexpected ownership."
         WhyItMatters = "Object owners have implicit full control. Non-default computer owners may indicate privilege escalation paths or allow RBCD attacks."
         WhatWeCheck = @(
-            "Computers where owner is not Domain Admins or SYSTEM"
-            "Whether the owner could be compromised"
+            "Computers where owner is not Domain Admins, Enterprise Admins, BUILTIN\Administrators or SYSTEM"
+            "Whether the owner is also the principal that created the account (mS-DS-CreatorSID) - a join leaves the joiner as owner, a later re-assignment does not happen by itself"
+            "Disabled accounts as well: ownership survives the disable and the owner can re-enable the account"
             "Potential for RBCD-based attacks"
         )
         SecureMessage = "All computer objects have expected default owners. No RBCD attack paths through unexpected object ownership were identified."
@@ -1223,7 +1239,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Presence of LAPS schema attributes (Legacy and Windows LAPS)"
             "Computers with LAPS password attributes populated"
             "Computers missing LAPS protection"
-            "Coverage percentage across the domain"
+            "Coverage percentage across the domain, with domain controllers left out - a DC has no local Administrator for LAPS to manage"
+            "Whether a GPO configures DSRM password backup, which is the only LAPS setting that reaches a domain controller"
             "OUs with low LAPS adoption"
         )
         SecureMessage = "LAPS is properly deployed with high coverage across the domain. Local administrator passwords are unique per computer, preventing lateral movement through password reuse."
@@ -1329,6 +1346,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "The OUs, domains and sites each GPO is linked to"
         )
         SecureMessage = "No GPO configures Point and Print or printer driver policies. The Windows default since the August 2021 update limits printer driver installation to administrators."
+    }
+
+    'LAPSStalePassword' = @{
+        TitleFormat = "LAPS Password Not Rotating: {Name}"
+        Module = "Computer"
+        Category = "Computers"
+        SectionTitle = "LAPS Passwords That Stopped Rotating"
+        Summary = "Computers that have LAPS but whose password expiration time lies in the past."
+        WhyItMatters = "Coverage counts a machine as protected the moment the LAPS attribute exists, which says nothing about whether the password behind it ever changed. An expiration time in the past means the client did not rotate when it was due - and a local administrator password that stopped rotating is as good to an attacker as no LAPS at all."
+        WhatWeCheck = @(
+            "ms-Mcs-AdmPwdExpirationTime and msLAPS-PasswordExpirationTime against the current time"
+            "The later of the two, so a machine migrated between LAPS generations is judged on the generation in use"
+            "A 30 day grace period, so a machine that was merely switched off is not reported"
+        )
+        SecureMessage = "Every computer with LAPS rotated its password on schedule. No machine is carrying a local administrator password that outlived its rotation interval."
+        PrimaryFindingId = 'LAPS_PASSWORD_NOT_ROTATED'
     }
 
     'LAPSGPOConfig' = @{

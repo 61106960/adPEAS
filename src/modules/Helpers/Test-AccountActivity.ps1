@@ -217,22 +217,52 @@ function Test-AccountActivity {
         }
 
         # ===== Parse userAccountControl =====
+        #
+        # Two shapes arrive here and both have to work. A raw integer, the way the attribute
+        # sits in the directory - and the decoded flag names, which is what every object
+        # that came through Invoke-LDAPSearch carries, because ConvertFrom-LDAPAttribute
+        # replaces the number with @('WORKSTATION_TRUST_ACCOUNT', 'ACCOUNTDISABLE', ...).
+        #
+        # Only the integer used to be understood. The decoded form fell through to zero, so
+        # a disabled account passed -IsEnabled and was reported as IsEnabled = $true. It
+        # stayed invisible wherever the LDAP query already filtered on the bit server-side,
+        # and showed up as disabled machines listed as live infrastructure wherever it did
+        # not.
         $uacValue = $ADObject.userAccountControl
         $uac = 0
 
-        if ($uacValue -is [array]) {
-            $uacValue = $uacValue[0]
+        # Flag names as ConvertFrom-LDAPAttribute writes them (MS-ADTS 2.2.16). Only the
+        # bits anything here asks about need to be listed, but the whole map is cheap and
+        # keeps the two sides comparable.
+        $uacNameToBit = @{
+            'SCRIPT' = 1; 'ACCOUNTDISABLE' = 2; 'HOMEDIR_REQUIRED' = 8; 'LOCKOUT' = 16
+            'PASSWD_NOTREQD' = 32; 'PASSWD_CANT_CHANGE' = 64
+            'ENCRYPTED_TEXT_PWD_ALLOWED' = 128; 'TEMP_DUPLICATE_ACCOUNT' = 256
+            'NORMAL_ACCOUNT' = 512; 'INTERDOMAIN_TRUST_ACCOUNT' = 2048
+            'WORKSTATION_TRUST_ACCOUNT' = 4096; 'SERVER_TRUST_ACCOUNT' = 8192
+            'DONT_EXPIRE_PASSWORD' = 65536; 'MNS_LOGON_ACCOUNT' = 131072
+            'SMARTCARD_REQUIRED' = 262144; 'TRUSTED_FOR_DELEGATION' = 524288
+            'NOT_DELEGATED' = 1048576; 'USE_DES_KEY_ONLY' = 2097152
+            'DONT_REQ_PREAUTH' = 4194304; 'PASSWORD_EXPIRED' = 8388608
+            'TRUSTED_TO_AUTH_FOR_DELEGATION' = 16777216
+            'NO_AUTH_DATA_REQUIRED' = 33554432; 'PARTIAL_SECRETS_ACCOUNT' = 67108864
         }
 
-        if ($null -ne $uacValue) {
-            if ($uacValue -is [int] -or $uacValue -is [long]) {
-                $uac = [int]$uacValue
+        foreach ($uacPart in @($uacValue)) {
+            if ($null -eq $uacPart) { continue }
+
+            if ($uacPart -is [int] -or $uacPart -is [long]) {
+                $uac = $uac -bor [int]$uacPart
+                continue
             }
-            elseif ($uacValue -is [string]) {
-                $parsed = 0
-                if ([int]::TryParse($uacValue, [ref]$parsed)) {
-                    $uac = $parsed
-                }
+
+            $uacText = "$uacPart"
+            $parsed = 0
+            if ([int]::TryParse($uacText, [ref]$parsed)) {
+                $uac = $uac -bor $parsed
+            }
+            elseif ($uacNameToBit.ContainsKey($uacText.ToUpperInvariant())) {
+                $uac = $uac -bor $uacNameToBit[$uacText.ToUpperInvariant()]
             }
         }
 

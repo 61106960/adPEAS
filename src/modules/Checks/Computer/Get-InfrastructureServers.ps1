@@ -1,18 +1,24 @@
 function Get-InfrastructureServers {
     <#
     .SYNOPSIS
-    Identifies infrastructure servers via SPN analysis.
+    Inventories the infrastructure servers of the domain.
 
     .DESCRIPTION
-    Enumerates critical infrastructure servers by analyzing Service Principal Names (SPNs) registered on computer accounts.
+    Enumerates the servers worth knowing about before anything else is analysed. Each kind
+    is looked up the way that kind actually records itself, which is not always an SPN.
 
     Detected Server Types:
-    - Domain Controllers (ldap/, gc/, DNS/)
-    - Exchange Servers (exchangeAB/, exchangeRFR/, exchangeMDB/)
+    - Domain Controllers (the userAccountControl role bit, via Get-DomainComputer -DomainController)
+    - Exchange Servers (msExchExchangeServer objects in the Configuration partition,
+      falling back to the exchangeAB/, exchangeRFR/, exchangeMDB/ SPNs)
     - MSSQL Servers (MSSQLSvc/)
     - SCCM/ConfigMgr (SMS*, CCM*)
     - SCOM (MSOMHSvc/, MSOMSdkSvc/)
-    - Entra ID Connect (azureadconnect, ADSync)
+    - AD FS (the DKM container under CN=ADFS,CN=Microsoft,CN=Program Data, plus adfssrv/)
+    - Entra ID Connect (MSOL_/ADSync/AAD_ accounts, azureadconnect SPN)
+
+    Every section runs on its own, so one that cannot be read does not take the others with
+    it and says so rather than reporting an empty result.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -86,23 +92,51 @@ function Get-InfrastructureServers {
         Show-SubHeader "Searching for Exchange Servers..." -ObjectType "ExchangeServer"
 
         try {
-            # Detect Exchange servers via "Exchange Servers" group membership
-            $exchangeServers = @()
-            $exchangeServersGroup = @(Get-DomainGroup -Identity "Exchange Servers" @PSBoundParameters)[0]
-            if ($exchangeServersGroup -and $exchangeServersGroup.member) {
-                foreach ($memberDN in @($exchangeServersGroup.member)) {
-                    $memberObj = @(Get-DomainObject -Identity $memberDN @PSBoundParameters)[0]
-                    if ($memberObj -and $memberObj.objectClass -icontains "computer") {
-                        $exchangeServers += $memberObj
-                    }
+            # Exchange records its own servers in the Configuration partition, one
+            # msExchExchangeServer object each, and that list is authoritative.
+            #
+            # Detection used to read the membership of a group found by the literal name
+            # "Exchange Servers": name-based, so it broke on a renamed or localized group,
+            # and it cost one LDAP query per member. It also contradicted this function's
+            # own documentation, which promised SPN-based detection that the code never did.
+            $exchangeVersionByName = @{}
+            $configNC = $Script:LDAPContext.ConfigurationNamingContext
+            if ($configNC) {
+                foreach ($exchObject in @(Get-DomainObject -LDAPFilter "(objectClass=msExchExchangeServer)" `
+                        -SearchBase "CN=Services,$configNC" @PSBoundParameters)) {
+                    $exchName = "$($exchObject.cn)"
+                    if ([string]::IsNullOrWhiteSpace($exchName)) { continue }
+                    # serialNumber carries the build, e.g. "Version 15.2 (Build 1544.4)" -
+                    # the part that decides whether the server is still getting patches
+                    $exchangeVersionByName[$exchName.ToLowerInvariant()] = "$($exchObject.serialNumber)"
                 }
+            } else {
+                Write-Log "[Get-InfrastructureServers] No Configuration naming context - falling back to SPN detection for Exchange"
             }
-            # Filter for enabled servers only
-            $exchangeServers = @($exchangeServers | Test-AccountActivity -IsEnabled)
+
+            $exchangeServers = @()
+            if ($exchangeVersionByName.Count -gt 0) {
+                $clauses = ''
+                foreach ($exchName in $exchangeVersionByName.Keys) {
+                    $clauses += ('(sAMAccountName=' + (Escape-LDAPFilterValue -Value $exchName) + '$)')
+                }
+                $exchangeFilter = $(if ($exchangeVersionByName.Count -eq 1) { $clauses } else { '(|' + $clauses + ')' })
+                $exchangeServers = @(Get-DomainComputer -LDAPFilter $exchangeFilter @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            } else {
+                # No Exchange object in the Configuration partition, or it could not be read.
+                # The SPN fallback is what the documentation always described; Domain
+                # Controllers are excluded there because they carry Exchange SPNs for
+                # Autodiscover without being Exchange servers.
+                $exchangeServers = @(Get-DomainComputer -KnownSPN Exchange @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            }
 
             if ($exchangeServers.Count -gt 0) {
                 Show-Line "Found $($exchangeServers.Count) Exchange Server(s):" -Class "Hint"
                 foreach ($exch in $exchangeServers) {
+                    $exchKey = "$($exch.sAMAccountName)".TrimEnd('$').ToLowerInvariant()
+                    if ($exchangeVersionByName.ContainsKey($exchKey) -and $exchangeVersionByName[$exchKey]) {
+                        $exch | Add-Member -NotePropertyName 'exchangeVersion' -NotePropertyValue $exchangeVersionByName[$exchKey] -Force
+                    }
                     $exch | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeServerBasic' -Force
                     $exch | Show-Object
                 }
@@ -174,6 +208,74 @@ function Get-InfrastructureServers {
         } catch {
             Write-Log "[Get-InfrastructureServers] SCOM Server enumeration failed: $_" -Level Error
             Show-Line "SCOM Server enumeration failed - result unknown, not empty" -Class "Note"
+        }
+
+        # ===== AD FS (Active Directory Federation Services) =====
+        Show-SubHeader "Searching for AD FS..." -ObjectType "ADFSServer"
+
+        try {
+            $adfsIndicators = @()
+
+            # The DKM container. AD FS stores the key that its token-signing certificate is
+            # encrypted with as an attribute of a contact object under
+            # CN=ADFS,CN=Microsoft,CN=Program Data,<domainDN>. Its existence is the one
+            # domain-side fact that says AD FS is deployed here, independent of any SPN.
+            #
+            # It matters more than the inventory entry suggests: whoever reads that key,
+            # together with the AD FS configuration database, can mint SAML tokens for any
+            # user in the federation - Golden SAML - and that is authentication into the
+            # cloud tenant that no on-premises password reset and no MFA on the IdP undoes.
+            $domainDN = $Script:LDAPContext.DomainDN
+            if ($domainDN) {
+                $dkmBase = "CN=ADFS,CN=Microsoft,CN=Program Data,$domainDN"
+                $dkmObjects = @()
+                try {
+                    $dkmObjects = @(Get-DomainObject -LDAPFilter "(objectClass=contact)" -SearchBase $dkmBase @PSBoundParameters)
+                } catch {
+                    # An absent container is the normal case in a domain without AD FS and
+                    # must not read as an error
+                    Write-Log "[Get-InfrastructureServers] No AD FS DKM container under $dkmBase : $_"
+                }
+
+                if ($dkmObjects.Count -gt 0) {
+                    # This row is a place in the directory, not an account, and it is named
+                    # like the other synthetic rows in the reports - the LAPS OU rows, the
+                    # trust rows - after what it is rather than with a bare 'Name'.
+                    $dkmObject = [PSCustomObject]@{
+                        adfsContainer    = 'AD FS DKM container'
+                        containerDN      = $dkmBase
+                        dkmKeyObjects    = @($dkmObjects).Count
+                        adfsDkmContainer = 'AD FS stores the decryption key for its token-signing certificate here. Whoever can read this key and reach the AD FS configuration database can sign SAML tokens for any federated user, which is authentication into the connected cloud tenant that changing on-premises passwords does not revoke.'
+                    }
+                    $dkmObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ADFSServer' -Force
+                    $adfsIndicators += $dkmObject
+                }
+            }
+
+            # The servers themselves, by their service SPN. Under its own try for the same
+            # reason the sections have one each: the two halves are independent evidence,
+            # and a failing computer query must not discard a DKM container already found.
+            try {
+                foreach ($adfsServer in @(Get-DomainComputer -KnownSPN ADFS @PSBoundParameters | Test-AccountActivity -IsEnabled)) {
+                    $adfsServer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ADFSServer' -Force
+                    $adfsIndicators += $adfsServer
+                }
+            } catch {
+                Write-Log "[Get-InfrastructureServers] AD FS server lookup failed: $_" -Level Error
+                Show-Line "AD FS servers could not be enumerated - the DKM container below, if any, still stands" -Class "Note"
+            }
+
+            if ($adfsIndicators.Count -gt 0) {
+                Show-Line "Found $($adfsIndicators.Count) AD FS indicator(s):" -Class "Hint"
+                foreach ($adfsIndicator in $adfsIndicators) {
+                    $adfsIndicator | Show-Object
+                }
+            } else {
+                Show-Line "No AD FS deployment found" -Class "Note"
+            }
+        } catch {
+            Write-Log "[Get-InfrastructureServers] AD FS enumeration failed: $_" -Level Error
+            Show-Line "AD FS enumeration failed - result unknown, not empty" -Class "Note"
         }
 
         # ===== Entra ID Connect (Azure AD Connect) =====

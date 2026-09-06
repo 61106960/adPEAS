@@ -10,6 +10,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **LAPS passwords that stopped rotating are reported.** Coverage counted a machine as
+  protected the moment the LAPS expiration attribute existed, which says nothing about
+  whether the password behind it ever changed. An expiration time in the past means the
+  client did not rotate when it was due - the CSE is broken, the policy no longer reaches
+  the machine, or the machine has been off - and the local administrator password is as old
+  as the day rotation stopped. If it leaked once it is still valid, which is precisely what
+  LAPS exists to prevent, and the coverage figure said the machine was fine.
+
+  `LAPS_PASSWORD_NOT_ROTATED` reports it, judged on the later of the legacy and the Windows
+  LAPS expiration attribute so a machine migrated between the two generations is not
+  reported for the attribute it stopped using. A 30-day grace period keeps a machine that
+  was merely switched off for a fortnight out of the result.
+
+- **AD FS is found and named.** The inventory looked for Entra ID Connect and not for the
+  federation service next to it. An AD FS server holds the key its token-signing
+  certificate is protected by, and whoever obtains that key can mint a SAML token for any
+  federated user - Golden SAML - which is authentication into the connected cloud tenant
+  that no on-premises password reset and no MFA at the identity provider revokes.
+
+  Detected the way AD FS actually records itself: the DKM container under
+  `CN=ADFS,CN=Microsoft,CN=Program Data`, whose presence says the federation service exists
+  in this domain, plus computers registering `adfssrv/`. Reported as `ADFS_DKM_CONTAINER`.
+
+- **A computer whose owner is not its creator is called out separately.** Owner means
+  implicit WriteDACL, and on a computer that is `msDS-AllowedToActOnBehalfOfOtherIdentity`
+  or `msDS-KeyCredentialLink` and local SYSTEM on the machine. But a workstation joined by a
+  helpdesk technician leaves that technician as owner, which is ordinary and in a real
+  domain accounts for most of the list - so the finding that mattered was buried in the ones
+  that did not.
+
+  `mS-DS-CreatorSID` records who created the account. Ownership that changed afterwards did
+  not happen by itself, and it is now reported as `COMPUTER_OWNERSHIP_REASSIGNED`, with the
+  creator resolved and named. Where no creator is recorded the check says so rather than
+  implying the two match.
+
+- **Disabled computer accounts are included in the owner check.** Ownership survives the
+  disable: the owner can re-enable the account, set its password and take it over. The path
+  is one step longer, not closed. Disabled accounts are marked rather than dropped, so the
+  reader can weigh them.
+
 - **Constrained delegation now says whether the target is a Domain Controller.** The check
   listed the accounts and left the delegation targets for the reader to judge, while the
   finding text told that reader to look for exactly what the check could have determined
@@ -288,6 +328,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 Found while building the unit test suites, each reproduced before it was changed.
+
+- **`Test-AccountActivity` understands the userAccountControl it is actually handed.** It
+  parsed the attribute as a number. Every object that came through `Invoke-LDAPSearch`
+  carries it as the decoded flag names instead, because `ConvertFrom-LDAPAttribute` replaces
+  the number with `@('WORKSTATION_TRUST_ACCOUNT', 'ACCOUNTDISABLE', ...)`. That form fell
+  through to a mask of zero, so **a disabled account passed `-IsEnabled` and reported
+  `IsEnabled = $true`**, and `PASSWD_NOTREQD` and `DONT_EXPIRE_PASSWORD` were never seen
+  either.
+
+  It stayed invisible wherever the LDAP query already filtered on the bit server-side, which
+  is most callers. Where it did not - the infrastructure inventory, which asks for domain
+  controllers and Exchange, MSSQL, SCCM and SCOM servers without an enabled filter and
+  relies on this function for it - disabled machines were listed as live infrastructure.
+  Both shapes are now read, and an unknown flag name is skipped rather than voiding the
+  whole mask.
+
+- **Domain controllers are out of the LAPS coverage figures.** A DC has no local SAM, so the
+  built-in Administrator account LAPS manages everywhere else does not exist there. Legacy
+  LAPS never touched a DC at all, and Windows LAPS reaches one only through the DSRM
+  account, and only when `BackupDsrmPassword` is on. Counting them meant **every domain
+  reported its own domain controllers as unprotected** and put `OU=Domain Controllers` in
+  the list of exposed OUs - a finding no domain could ever clear.
+
+  They are reported on their own terms instead, including whether a GPO configures DSRM
+  password backup for them, which the LAPS GPO parser now reads. A failed lookup leaves them
+  in the coverage figures and says so, rather than dropping real machines because one query
+  did not answer.
+
+- **Exchange is found in the Configuration partition, not by a group name.** Detection read
+  the membership of a group looked up by the literal string "Exchange Servers": neither
+  rename-proof nor language-independent, one LDAP query per member, and it contradicted the
+  function's own documentation, which promised SPN-based detection the code never did.
+  Exchange records each of its servers as an `msExchExchangeServer` object under
+  `CN=Services` in the Configuration partition; that list is authoritative and carries the
+  build, which is what decides whether the server still receives patches. The SPN route,
+  with domain controllers excluded, is the documented fallback.
+
+- **`Get-InfrastructureServers` no longer loses one half of the AD FS evidence to the
+  other.** The DKM container and the `adfssrv/` servers are independent findings, and a
+  failing computer query used to discard a container that had already been found - the same
+  reason each section already has its own error boundary, one level down.
+
+- **The two Computer checks read their findings back in one query instead of one per
+  finding.** `Get-OutdatedComputers` and `Get-NonDefaultComputerOwners` both work in two
+  passes, and the second pass ran one LDAP round-trip per finding: a domain with three
+  hundred end-of-life machines paid three hundred round-trips for data a handful of queries
+  return. `ConvertTo-LDAPDNFilter` builds the batched filters, escaping every DN, so a name
+  like `CN=Doe\, Jane (Contractor),...` cannot silently drop an object out of the report.
 
 - **A trust's SID filtering verdict now reads the direction and the kind of trust, not one
   bit.** `Get-DomainTrusts` decided on `QUARANTINED_DOMAIN` alone: absent meant "SID

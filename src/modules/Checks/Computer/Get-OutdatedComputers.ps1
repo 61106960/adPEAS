@@ -148,9 +148,12 @@ function Get-OutdatedComputers {
                 $inactiveInfo = if ($inactiveFilteredCount -gt 0) { " ($inactiveFilteredCount inactive accounts filtered)" } else { "" }
                 Show-Line "Found $(@($outdatedComputerDNs).Count) computer(s) with outdated operating systems:$inactiveInfo" -Class "Finding"
 
-                foreach ($dn in $outdatedComputerDNs) {
-                    $fullComputer = @(Get-DomainComputer -Identity $dn @connectionParams)[0]
-                    if ($fullComputer) {
+                # Read the full objects in batches. One query per finding meant a domain
+                # with three hundred end-of-life machines paid three hundred round-trips
+                # for data a handful of queries return.
+                $dnFilters = @(ConvertTo-LDAPDNFilter -DistinguishedName $outdatedComputerDNs)
+                foreach ($dnFilter in $dnFilters) {
+                    foreach ($fullComputer in @(Get-DomainComputer -LDAPFilter $dnFilter @connectionParams)) {
                         # Get EOL details using central lifecycle module
                         $eolCheck = Test-IsOutdatedOS -OSName $fullComputer.operatingSystem -OSVersion $fullComputer.operatingSystemVersion
                         if ($eolCheck.IsOutdated) {

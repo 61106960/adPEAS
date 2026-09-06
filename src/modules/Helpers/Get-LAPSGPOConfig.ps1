@@ -157,7 +157,10 @@ $Script:LAPSLegacyMetadataFields = @('AdminAccountName', 'PasswordComplexity', '
 $Script:LAPSNativeMetadataFields = @(
     'AdministratorAccountName', 'PasswordComplexity', 'PasswordLength', 'PassphraseLength',
     'PasswordAgeDays', 'BackupDirectory', 'ADPasswordEncryptionEnabled',
-    'ADPasswordEncryptionPrincipal', 'PasswordExpirationProtectionEnabled'
+    'ADPasswordEncryptionPrincipal', 'PasswordExpirationProtectionEnabled',
+    # The only LAPS setting that reaches a domain controller at all: a DC has no local SAM,
+    # so what Windows LAPS can manage there is the DSRM account, and only when this is on
+    'BackupDsrmPassword'
 )
 
 <#

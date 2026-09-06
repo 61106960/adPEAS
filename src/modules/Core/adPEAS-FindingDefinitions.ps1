@@ -6541,6 +6541,99 @@ foreach ($DC in $DCs) {
     # COMPUTER OWNERSHIP FINDINGS
     # ============================================================================
 
+    'ADFS_DKM_CONTAINER' = @{
+        Title = "AD FS Deployed - Token Signing Key Held in the Directory"
+        Risk = "Hint"
+        BaseScore = 45
+        Description = "This domain holds an AD FS DKM container. AD FS keeps the key that its token-signing certificate is encrypted with as an attribute of a contact object under CN=ADFS,CN=Microsoft,CN=Program Data. Its presence is not itself a misconfiguration - it says the federation service exists here, and that a second, quieter path into the connected cloud tenant runs through this domain."
+        Impact = @(
+            "Read access to the DKM key plus the AD FS configuration database yields the token-signing certificate"
+            "With that certificate, SAML tokens can be issued for any federated user, including a global administrator - Golden SAML"
+            "The token is signed rather than obtained by authenticating, so MFA at the identity provider does not apply and no sign-in the tenant can see takes place"
+            "Resetting on-premises passwords does not revoke it: the signing certificate has to be rolled, twice, for the old key to stop being trusted"
+        )
+        Attack = @(
+            "1. Attacker gains administrative access to an AD FS server or to the AD FS service account"
+            "2. The DKM key is read from the container in AD and the encrypted configuration is read from the AD FS database"
+            "3. The token-signing certificate is decrypted with the DKM key"
+            "4. SAML tokens are forged for arbitrary users and accepted by every relying party, including Microsoft 365"
+        )
+        Remediation = @(
+            "Treat AD FS servers as Tier 0: the same administrative isolation as a domain controller, no shared administration with member servers"
+            "Restrict who can read the DKM container - only the AD FS service account needs it"
+            "Roll the token-signing certificate twice after any suspicion of compromise; once is not enough, because the previous certificate stays trusted"
+            "Where the federation exists only for Microsoft 365, consider moving to Entra ID directly, which removes the on-premises signing key altogether"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who can read the DKM container"
+                Command = "Get-Acl -Path 'AD:\CN=ADFS,CN=Microsoft,CN=Program Data,DOMAIN_DN' | Select-Object -ExpandProperty Access"
+            }
+            @{
+                Description = "Show the AD FS token-signing certificate and its validity"
+                Command = "Get-AdfsCertificate -CertificateType Token-Signing"
+            }
+        )
+        References = @(
+            @{ Title = "Golden SAML - CyberArk"; Url = "https://www.cyberark.com/resources/threat-research-blog/golden-saml-newly-discovered-attack-technique-forges-authentication-to-cloud-apps" }
+            @{ Title = "AD FS DKM and ADFSDump"; Url = "https://posts.specterops.io/a-shift-in-the-ecosystem-adfs-dkm-and-golden-saml-a34dbd0b4a2b" }
+            @{ Title = "Securing AD FS Servers - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-fs/deployment/best-practices-securing-ad-fs" }
+        )
+        Tools = @("ADFSDump", "ADFSpoof", "AADInternals")
+        MITRE = "T1606.002"
+        Triggers = @(
+            @{ Attribute = 'adfsDkmContainer'; Severity = 'Hint' }
+        )
+    }
+
+    'LAPS_PASSWORD_NOT_ROTATED' = @{
+        Title = "LAPS Password Stopped Rotating"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "This computer has a LAPS password expiration time that lies in the past, so the client did not rotate when it was due. LAPS coverage reports it as protected; the local administrator password on the machine is as old as the day rotation stopped."
+        Impact = @(
+            "The local administrator password has not changed since rotation stopped, so a password captured then still works today"
+            "The machine is counted as protected in every coverage figure, so nobody looks at it"
+            "Anything that could read the password once - an over-permissive OU delegation since corrected, a backup, a screenshot in a ticket - still holds a valid credential"
+            "Where several machines stopped rotating at the same time they may share the password that was set before LAPS took over, which restores exactly the lateral movement LAPS was deployed to stop"
+        )
+        Attack = @(
+            "1. Attacker reads the LAPS password of a machine, or finds an old one from any source"
+            "2. The password has not rotated, so it is still valid"
+            "3. Local administrator on the machine yields its cached credentials and its machine account"
+            "4. Machines that stopped rotating together often share one password, and the same credential opens the next host"
+        )
+        Remediation = @(
+            "Find out why the client stopped rotating: the LAPS CSE is not installed or not running, the policy no longer reaches the machine, or the machine has been offline since"
+            "Force a rotation once the client works again - Reset-LapsPassword for Windows LAPS, or clear the expiration attribute for Legacy LAPS"
+            "Where the machine is simply gone, remove the stale computer account instead of leaving a live credential behind"
+            "Turn on PasswordExpirationProtectionEnabled so a client cannot extend its own expiration time past the policy maximum"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the expiration time recorded in the directory"
+                Command = "Get-ADComputer -Identity 'COMPUTER_NAME' -Properties 'ms-Mcs-AdmPwdExpirationTime','msLAPS-PasswordExpirationTime'"
+            }
+            @{
+                Description = "Force an immediate rotation on the machine (Windows LAPS, run on the machine)"
+                Command = "Reset-LapsPassword"
+            }
+            @{
+                Description = "Check whether the LAPS policy still reaches the machine"
+                Command = "Get-LapsDiagnostics"
+            }
+        )
+        References = @(
+            @{ Title = "Windows LAPS Troubleshooting"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-troubleshoot" }
+            @{ Title = "Windows LAPS Management Policy Settings"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings" }
+        )
+        Tools = @("Get-LapsDiagnostics", "LAPS UI", "PowerView")
+        MITRE = "T1078.003"
+        Triggers = @(
+            @{ Attribute = 'lapsPasswordStale'; Severity = 'Finding' }
+        )
+    }
+
     'NON_DEFAULT_COMPUTER_OWNERS' = @{
         Title = "Computer with Non-Default Owner"
         Risk = "Hint"
@@ -6573,6 +6666,51 @@ foreach ($DC in $DCs) {
         MITRE = "T1222.001"
         Triggers = @(
             @{ Attribute = 'Owner'; Context = 'NonDefaultOwner'; Severity = 'Hint' }
+        )
+    }
+
+    'COMPUTER_OWNERSHIP_REASSIGNED' = @{
+        Title = "Computer Ownership Re-assigned After Creation"
+        Risk = "Finding"
+        BaseScore = 65
+        Description = "The owner of this computer object is not the principal that created it. A workstation joined by a helpdesk technician leaves that technician as owner, which is ordinary and accounts for most non-default owners in a real domain. Ownership that changed afterwards did not happen by itself - somebody with the rights to do it took control of this computer object."
+        Impact = @(
+            "The owner holds implicit WriteDACL and can grant itself any right on the object"
+            "Writing msDS-AllowedToActOnBehalfOfOtherIdentity gives local SYSTEM on the machine via resource-based constrained delegation"
+            "Writing msDS-KeyCredentialLink gives a certificate that authenticates as the machine, with no password reset and nothing for the user to notice"
+            "Ownership is not shown by the usual permission views, so this survives a review that only reads the DACL"
+        )
+        Attack = @(
+            "1. Attacker gains control of the principal that owns the computer object"
+            "2. Owner rights are used to write a DACL entry granting GenericAll"
+            "3. msDS-AllowedToActOnBehalfOfOtherIdentity is set to an account the attacker controls"
+            "4. S4U2Self plus S4U2Proxy yields a service ticket as any user, including a Domain Admin, against the machine"
+        )
+        Remediation = @(
+            "Establish who changed the ownership and when, from the directory service audit log on the domain controllers (event 5136 on nTSecurityDescriptor)"
+            "Reset the owner to Domain Admins, which is what a provisioning process should be setting"
+            "Review the object's DACL as well - an owner that wanted access has usually already granted itself some"
+            "Where computer objects are created by delegated staff, pre-create the accounts and set the owner explicitly instead of relying on the join"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current owner and the recorded creator of the computer object"
+                Command = "Get-ADComputer -Identity 'COMPUTER_NAME' -Properties nTSecurityDescriptor,mS-DS-CreatorSID | Select-Object Name,@{n='Owner';e={`$_.nTSecurityDescriptor.Owner}},mS-DS-CreatorSID"
+            }
+            @{
+                Description = "Reset the owner to Domain Admins"
+                Command = "`$acl = Get-Acl -Path 'AD:\COMPUTER_DN'; `$acl.SetOwner((New-Object System.Security.Principal.NTAccount('DOMAIN\Domain Admins'))); Set-Acl -Path 'AD:\COMPUTER_DN' -AclObject `$acl"
+            }
+        )
+        References = @(
+            @{ Title = "BloodHound Owns Edge"; Url = "https://bloodhound.specterops.io/resources/edges/owns" }
+            @{ Title = "Resource-Based Constrained Delegation Abuse"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/resource-based-constrained-delegation.html" }
+            @{ Title = "Shadow Credentials (msDS-KeyCredentialLink)"; Url = "https://posts.specterops.io/shadow-credentials-abusing-key-trust-account-mapping-for-takeover-8ee1a53566ab" }
+        )
+        Tools = @("BloodHound", "PowerView", "Rubeus", "Whisker")
+        MITRE = "T1222.001"
+        Triggers = @(
+            @{ Attribute = 'ownershipChanged'; Severity = 'Finding' }
         )
     }
 
