@@ -1,34 +1,49 @@
 function Get-GPOUserRightsAssignment {
     <#
     .SYNOPSIS
-    Detects dangerous Windows user rights / privileges assigned to non-privileged
-    principals via Group Policy.
+    Reports where a GPO departs from the Windows defaults for a sensitive user right.
 
     .DESCRIPTION
-    Parses the [Privilege Rights] section of GptTmpl.inf in every GPO's SYSVOL folder
-    and flags assignments of sensitive user rights to non-privileged principals.
+    Parses the [Privilege Rights] section of GptTmpl.inf in every GPO and compares the
+    holders it assigns against the set Windows ships, from the table in adPEAS-UserRights.
 
-    User Rights Assignment via GPO is a classic, often-overlooked privilege-escalation and
-    lateral-movement vector: a single GPO can grant rights like "Debug programs"
-    (SeDebugPrivilege), "Back up files and directories" (SeBackupPrivilege) or
-    "Allow log on through Remote Desktop Services" to a low-privileged principal across
-    every computer the GPO applies to.
+    Why a comparison rather than a list: the [Privilege Rights] section is absolute, not
+    additive. The principals a GPO lists for a right become the complete set of holders on
+    every machine the policy reaches. The GPO's list and the default list are therefore two
+    descriptions of the same thing, and the difference between them is what an auditor
+    needs - in both directions.
 
-    Covered rights (two tiers):
-    - Finding (direct SYSTEM / credential / domain compromise): SeDebug, SeTcb,
-      SeImpersonate, SeAssignPrimaryToken, SeCreateToken, SeLoadDriver, SeBackup, SeRestore,
-      SeTakeOwnership, SeEnableDelegation, SeSyncAgent, SeManageVolume, SeSecurity,
-      SeRelabel, SeTrustedCredManAccess.
-    - Hint (lateral movement / lower direct impact): SeRemoteInteractiveLogonRight (RDP),
-      SeServiceLogonRight, SeBatchLogonRight, SeInteractiveLogonRight, SeSystemtime,
-      SeRemoteShutdown, SeShutdown.
+      Added   - holders beyond the Windows default. The escalation risk, and the finding.
+      Removed - default holders the GPO drops. Usually deliberate hardening, occasionally
+                an operational foot-gun; reported as a note, never as a finding.
 
-    Any right granted to a broad principal (Everyone, Authenticated Users, Domain Users,
-    Users) is escalated to Finding regardless of tier.
+    This replaces a filter on the identity of the holder, which asked the wrong question
+    and failed both ways round. Backup Operators holding SeDebugPrivilege is not a Windows
+    default and is a clean path to SYSTEM - and it was suppressed, because the group looked
+    privileged. Meanwhile which principals hold a right by default depends on the right,
+    not on how privileged the holder looks, and no identity list can express that.
 
-    Note: SeMachineAccountPrivilege ("Add workstations to domain") is intentionally NOT
-    reported here - it is covered by Get-AddComputerRights. Protective Se*Deny* rights are
-    ignored.
+    Member servers and domain controllers have different defaults, so the comparison uses
+    the ones for the machines the GPO actually reaches: the Default Domain Controllers
+    Policy and anything linked to the Domain Controllers OU are measured against the domain
+    controller set, everything else against the member set, and a policy reaching both is
+    measured against the union.
+
+    Severity comes from the right's own tier, raised to a finding when a deviating holder
+    is a broad group - Everyone, Authenticated Users, Domain Users - because a right that
+    everybody holds is not a delegation, it is a configuration accident.
+
+    A right with no documented default in the table is not guessed at. The check falls back
+    to the identity filter for that one right and says so on the finding, so the gap is
+    visible rather than silently decided. SeServiceLogonRight is the case that matters:
+    what holds it depends on which products are installed.
+
+    Also reported: whether the GPO currently applies at all. A deviation in a policy whose
+    computer configuration is switched off, or that is linked nowhere, is real and worth
+    cleaning up but is not reaching a machine today - and it used to read exactly like one
+    that is.
+
+    Requires SMB access to \\domain\SYSVOL.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -39,19 +54,25 @@ function Get-GPOUserRightsAssignment {
     .PARAMETER Credential
     PSCredential object for authentication (optional, uses current user if not specified)
 
+    .PARAMETER IncludeDefaults
+    Also report the assignments that match the Windows default. Off by default: they are
+    the majority of what a domain contains and none of them is a deviation.
+
     .PARAMETER IncludePrivileged
-    Also report rights granted to privileged principals (Domain Admins, Administrators,
-    etc.). By default these are hidden as expected.
+    Kept as an alias of -IncludeDefaults, so an existing invocation keeps working. Under
+    the old identity filter it meant "also show privileged holders"; the closest thing in
+    a baseline model is "also show what matches the baseline".
 
     .EXAMPLE
     Get-GPOUserRightsAssignment
 
     .EXAMPLE
-    Get-GPOUserRightsAssignment -Domain "contoso.com" -Credential (Get-Credential)
+    Get-GPOUserRightsAssignment -IncludeDefaults
 
     .NOTES
     Category: Rights
     Author: Alexander Sturz (@_61106960_)
+    Reference: https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/user-rights-assignment
     #>
 
     [CmdletBinding()]
@@ -66,7 +87,8 @@ function Get-GPOUserRightsAssignment {
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory=$false)]
-        [switch]$IncludePrivileged
+        [Alias('IncludePrivileged')]
+        [switch]$IncludeDefaults
     )
 
     begin {
@@ -75,53 +97,18 @@ function Get-GPOUserRightsAssignment {
 
     process {
         try {
-            # Build connection parameters (exclude IncludePrivileged - not a connection parameter)
+            # Connection parameters only - IncludeDefaults is ours.
             $CredParams = @{}
             if ($Domain) { $CredParams['Domain'] = $Domain }
             if ($Server) { $CredParams['Server'] = $Server }
             if ($Credential) { $CredParams['Credential'] = $Credential }
 
-            # Ensure LDAP connection (displays error if needed)
             if (-not (Ensure-LDAPConnection @CredParams)) {
                 return
             }
 
-            Show-SubHeader "Searching for dangerous user rights assigned via GPO..." -ObjectType "GPOUserRights"
+            Show-SubHeader "Comparing GPO user rights against the Windows defaults..." -ObjectType "GPOUserRights"
 
-            # Dangerous user rights -> friendly name + severity tier.
-            # The attack-vector context lives in the GPO_DANGEROUS_USER_RIGHT finding definition
-            # and is surfaced as an HTML tooltip (triggered on the 'userRight' attribute).
-            $dangerousRights = [ordered]@{
-                'SeDebugPrivilege'                = @{ Name = 'Debug programs';                                  Tier = 'Finding' }
-                'SeTcbPrivilege'                  = @{ Name = 'Act as part of the operating system';              Tier = 'Finding' }
-                'SeImpersonatePrivilege'          = @{ Name = 'Impersonate a client after authentication';       Tier = 'Finding' }
-                'SeAssignPrimaryTokenPrivilege'   = @{ Name = 'Replace a process level token';                   Tier = 'Finding' }
-                'SeCreateTokenPrivilege'          = @{ Name = 'Create a token object';                           Tier = 'Finding' }
-                'SeLoadDriverPrivilege'           = @{ Name = 'Load and unload device drivers';                  Tier = 'Finding' }
-                'SeBackupPrivilege'               = @{ Name = 'Back up files and directories';                   Tier = 'Finding' }
-                'SeRestorePrivilege'              = @{ Name = 'Restore files and directories';                   Tier = 'Finding' }
-                'SeTakeOwnershipPrivilege'        = @{ Name = 'Take ownership of files or other objects';        Tier = 'Finding' }
-                'SeEnableDelegationPrivilege'     = @{ Name = 'Enable computer/user accounts to be trusted for delegation'; Tier = 'Finding' }
-                'SeSyncAgentPrivilege'            = @{ Name = 'Synchronize directory service data';              Tier = 'Finding' }
-                'SeManageVolumePrivilege'         = @{ Name = 'Perform volume maintenance tasks';                Tier = 'Finding' }
-                'SeSecurityPrivilege'             = @{ Name = 'Manage auditing and security log';                Tier = 'Finding' }
-                'SeRelabelPrivilege'              = @{ Name = 'Modify an object label';                          Tier = 'Finding' }
-                'SeTrustedCredManAccessPrivilege' = @{ Name = 'Access Credential Manager as a trusted caller';   Tier = 'Finding' }
-                'SeRemoteInteractiveLogonRight'   = @{ Name = 'Allow log on through Remote Desktop Services';    Tier = 'Hint' }
-                'SeServiceLogonRight'             = @{ Name = 'Log on as a service';                             Tier = 'Hint' }
-                'SeBatchLogonRight'               = @{ Name = 'Log on as a batch job';                           Tier = 'Hint' }
-                'SeInteractiveLogonRight'         = @{ Name = 'Allow log on locally';                            Tier = 'Hint' }
-                'SeSystemtimePrivilege'           = @{ Name = 'Change the system time';                          Tier = 'Hint' }
-                'SeRemoteShutdownPrivilege'       = @{ Name = 'Force shutdown from a remote system';             Tier = 'Hint' }
-                'SeShutdownPrivilege'             = @{ Name = 'Shut down the system';                            Tier = 'Hint' }
-            }
-
-            # Broad principals (Everyone, Authenticated Users, Domain Users, etc.) use the central
-            # definitions in adPEAS-SIDs.ps1 ($Script:BroadGroupSIDs / $Script:BroadGroupRIDSuffixes)
-            # via Test-IsBroadGroupSID / Test-IsBroadGroupRID. A sensitive right granted to one of
-            # these is always escalated to Finding.
-
-            # Enumerate GPOs and linkage once
             $gpos = @(Get-DomainGPO @CredParams)
             if ($gpos.Count -eq 0) {
                 Show-Line "No GPOs found" -Class "Note"
@@ -129,13 +116,16 @@ function Get-GPOUserRightsAssignment {
             }
 
             $gpoLinkage = Get-GPOLinkage
+            $gpoStatusMap = Get-GPOStatusMap -GPO $gpos
             $domainFQDN = $Script:LDAPContext.Domain
             $dcServer = $Script:LDAPContext.Server
+            $domainDN = $Script:LDAPContext.DomainDN
 
             # Closure-visible state
-            $includePriv = [bool]$IncludePrivileged
-            $rightsMap = $dangerousRights
+            $showDefaults = [bool]$IncludeDefaults
             $linkage = $gpoLinkage
+            $statusMap = $gpoStatusMap
+            $dcOU = if ($domainDN) { "OU=Domain Controllers,$domainDN" } else { $null }
             $Script:gpoUserRightsFindings = @()
 
             # Records whether the Policies path was actually read. Without it an empty
@@ -152,23 +142,22 @@ function Get-GPOUserRightsAssignment {
 
                 $Script:gpoUserRightsSysvolScanned = $true
 
-                # Iterate the cached SYSVOL listing instead of probing a constructed path per GPO:
-                # most GPOs have no GptTmpl.inf, so per-GPO probing costs one SMB round-trip each
-                # for a file that usually does not exist.
+                # Iterate the cached SYSVOL listing instead of probing a constructed path per
+                # GPO: most GPOs have no GptTmpl.inf, so per-GPO probing costs one SMB round
+                # trip each for a file that usually does not exist.
                 $gptTmplFiles = @(Get-CachedSYSVOLFiles -Filter "GptTmpl.inf")
 
-                # GPO GUID -> GPO object, to resolve the file back to its GPO
                 $gpoByGuid = @{}
                 foreach ($g in $gpos) {
-                    if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
+                    if ($g.Name) { $gpoByGuid[([string]$g.Name).ToUpper()] = $g }
                 }
 
                 $totalGPOs = $gptTmplFiles.Count
                 $currentGPOIndex = 0
                 foreach ($file in $gptTmplFiles) {
-                    # Extract GPO GUID from path: ...\Policies\{GUID}\Machine\...
                     if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
-                    $gpo = $gpoByGuid[$Matches[1].ToUpper()]
+                    $gpoGUIDKey = $Matches[1].ToUpper()
+                    $gpo = $gpoByGuid[$gpoGUIDKey]
                     if (-not $gpo) { continue }
 
                     $currentGPOIndex++
@@ -181,93 +170,161 @@ function Get-GPOUserRightsAssignment {
                     if ($content -notmatch '(?is)\[Privilege Rights\](.*?)(\[|$)') { continue }
                     $section = $Matches[1]
 
-                    # Resolve linkage scope once per GPO
-                    $gpoGUIDKey = $gpo.Name.ToUpper()
+                    # ----- Where this policy applies -----
                     $links = if ($linkage) { $linkage[$gpoGUIDKey] } else { $null }
                     $activeLinks = @()
-                    $isDomainWide = $false
                     if ($links) {
                         $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
-                        $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
                     }
-                    if (@($activeLinks).Count -gt 0) {
-                        $linkedOUs = @($activeLinks | ForEach-Object { $_.DistinguishedName })
-                        $scopeInfo = if ($isDomainWide) { "Domain-wide ($(@($activeLinks).Count) link(s))" } else { "$(@($activeLinks).Count) OU(s)" }
+                    $linkedOUs = @($activeLinks | ForEach-Object { $_.DistinguishedName })
+                    $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
+
+                    if ($linkedOUs.Count -gt 0) {
+                        $scopeInfo = if ($isDomainWide) { "Domain-wide ($($linkedOUs.Count) link(s))" } else { "$($linkedOUs.Count) OU(s)" }
                     } else {
-                        $linkedOUs = @()
                         $scopeInfo = "NOT LINKED"
                     }
 
-                    foreach ($right in $rightsMap.Keys) {
+                    # ----- Which default set to measure against -----
+                    #
+                    # The Default Domain Controllers Policy carries a well-known GUID, and
+                    # any policy linked at or below the Domain Controllers OU reaches a DC
+                    # as well. A domain-wide link reaches both kinds of machine, so both
+                    # baselines count and the union is what is expected.
+                    $reachesDC = ($gpoGUIDKey -eq '{6AC1786C-016F-11D2-945F-00C04FB984F9}') -or $isDomainWide
+                    $reachesMember = $isDomainWide -or ($linkedOUs.Count -eq 0)
+                    foreach ($linkDN in $linkedOUs) {
+                        if ($dcOU -and "$linkDN".EndsWith($dcOU, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $reachesDC = $true
+                        } else {
+                            $reachesMember = $true
+                        }
+                    }
+                    # An unlinked policy is measured against the member set, the stricter of
+                    # the two - it is the assumption that reports more, and reporting more
+                    # about a policy that reaches nothing today costs nothing.
+                    if (-not $reachesDC -and -not $reachesMember) { $reachesMember = $true }
+
+                    $scopes = @()
+                    if ($reachesMember) { $scopes += 'Member' }
+                    if ($reachesDC)     { $scopes += 'DC' }
+
+                    $machineScope = if ($reachesDC -and $reachesMember) {
+                        'Domain Controllers and member computers'
+                    } elseif ($reachesDC) {
+                        'Domain Controllers'
+                    } else {
+                        'Member computers'
+                    }
+
+                    # ----- Compare every right the table knows -----
+                    foreach ($right in $Script:UserRightsBaseline.Keys) {
                         # [ \t] around the '=', not \s: \s matches a newline. A right that is
                         # present but assigned to nobody - "SeCreateTokenPrivilege =" - let
                         # \s* swallow the line break, and (.+) then captured the whole next
-                        # line as the principal list. The check reported
-                        # SeCreateTokenPrivilege held by "SeDebugPrivilege = *S-1-5-32-544",
-                        # a dangerous right raised against a value that is a line of the
-                        # file. GptTmpl.inf is full of emptied rights, so this fired on
-                        # every domain controller policy.
+                        # line as the principal list.
                         #
-                        # [^\r\n]* rather than (.+): the value ends at the line, an emptied
-                        # right captures nothing, and the token loop below then keeps no
-                        # principal, so no finding is raised for it - which is correct, a
-                        # right assigned to nobody is not a dangerous assignment.
+                        # [^\r\n]* rather than (.+): the value ends at the line, and an
+                        # emptied right captures nothing - which is a real statement, because
+                        # an emptied right removes every default holder.
                         $pattern = '(?im)^[ \t]*' + [regex]::Escape($right) + '[ \t]*=[ \t]*([^\r\n]*)'
                         $m = [regex]::Match($section, $pattern)
                         if (-not $m.Success) { continue }
 
-                        $tokens = $m.Groups[1].Value -split ',' | ForEach-Object { $_.Trim() }
-                        $keptNames = @()
-                        $anyBroad = $false
-
-                        foreach ($token in $tokens) {
-                            $raw = $token.TrimStart('*')
+                        # Resolve every token to a SID. GptTmpl.inf almost always writes *SID,
+                        # but a hand-edited file can carry a name, and the comparison below is
+                        # SID based - a name reaching it unresolved would count as a deviation
+                        # against a baseline written in SIDs.
+                        $holderSIDs = @()
+                        $unresolved = @()
+                        foreach ($token in ($m.Groups[1].Value -split ',')) {
+                            $raw = $token.Trim().TrimStart('*')
                             if ([string]::IsNullOrWhiteSpace($raw)) { continue }
 
-                            # Resolve literal account names to a SID for consistent classification
-                            # (GptTmpl.inf almost always uses *SID, but names can appear).
-                            $sid = $raw
-                            if ($raw -notmatch '^S-1-') {
-                                $resolved = $null
-                                try { $resolved = ConvertTo-SID -Identity $raw } catch { }
-                                if ($resolved) { $sid = $resolved }
+                            if ($raw -match '^S-1-') {
+                                $holderSIDs += $raw
+                                continue
                             }
 
-                            if ($sid -match '^S-1-') {
-                                # Skip principals that are expected to hold user rights by default:
-                                #  - privileged SIDs/RIDs (Administrators, Domain Admins, SYSTEM, ...)
-                                #  - built-in operator groups (Account/Server/Print/Backup Operators) - the
-                                #    Default Domain Controllers Policy grants these to them by design
-                                #  - well-known service / builtin-support identities (SERVICE, IIS_IUSRS,
-                                #    Performance Log Users, ...) - default holders, not privesc targets
-                                $isPriv = (Test-IsPrivilegedSID -SID $sid) -or
-                                          [bool](Test-IsPrivilegedRID -SID $sid) -or
-                                          ($Script:OperatorSIDs -contains $sid) -or
-                                          (Test-IsWellKnownServiceSID -SID $sid)
-                                if ($isPriv -and -not $includePriv) { continue }
-                                if ((Test-IsBroadGroupSID -SID $sid) -or [bool](Test-IsBroadGroupRID -SID $sid)) { $anyBroad = $true }
-                                $keptNames += (ConvertFrom-SID -SID $sid)
-                            } else {
-                                # Unresolvable literal - include as-is (cannot classify)
-                                $keptNames += $raw
+                            $resolved = $null
+                            try { $resolved = ConvertTo-SID -Identity $raw } catch { }
+                            if ($resolved) { $holderSIDs += $resolved } else { $unresolved += $raw }
+                        }
+
+                        $comparison = Compare-UserRightAssignment -Right $right -HolderSID $holderSIDs -Scope $scopes
+                        if (-not $comparison) { continue }
+
+                        # A right with no documented default falls back to the identity
+                        # filter rather than calling every holder a deviation.
+                        $added = @($comparison.Added)
+                        if (-not $comparison.HasBaseline) {
+                            $added = @($added | Where-Object {
+                                -not ((Test-IsPrivilegedSID -SID $_) -or
+                                      [bool](Test-IsPrivilegedRID -SID $_) -or
+                                      ($Script:OperatorSIDs -contains $_) -or
+                                      (Test-IsWellKnownServiceSID -SID $_))
+                            })
+                        }
+
+                        $removed = @($comparison.Removed)
+
+                        # An unresolvable name cannot be compared, so it is reported rather
+                        # than dropped - silently discarding a holder is the one outcome a
+                        # rights check must not produce.
+                        $hasDeviation = ($added.Count -gt 0) -or ($removed.Count -gt 0) -or ($unresolved.Count -gt 0)
+                        if (-not $hasDeviation -and -not $showDefaults) { continue }
+
+                        $addedNames = @($added | ForEach-Object { ConvertFrom-SID -SID $_ })
+                        if ($unresolved.Count -gt 0) {
+                            $addedNames += @($unresolved | ForEach-Object { "$_ [unresolved]" })
+                        }
+                        $removedNames = @($removed | ForEach-Object { ConvertFrom-SID -SID $_ })
+
+                        # A broad group holding a sensitive right is not a delegation, it is
+                        # a configuration accident, and it outranks the right's own tier.
+                        $anyBroad = $false
+                        foreach ($sid in $added) {
+                            if ((Test-IsBroadGroupSID -SID $sid) -or [bool](Test-IsBroadGroupRID -SID $sid)) {
+                                $anyBroad = $true
+                                break
                             }
                         }
 
-                        if ($keptNames.Count -eq 0) { continue }
-
-                        $info = $rightsMap[$right]
-                        $severity = if ($anyBroad) { 'Finding' } else { $info.Tier }
+                        $severity = if ($added.Count -eq 0 -and $unresolved.Count -eq 0) {
+                            # Only default holders removed. Hardening more often than not,
+                            # and never something to raise as an exposure.
+                            'Note'
+                        } elseif ($anyBroad) {
+                            'Finding'
+                        } else {
+                            $comparison.Tier
+                        }
 
                         $finding = [PSCustomObject]@{
-                            gpoName       = $gpo.displayName
-                            gpoGuid       = $gpo.Name
-                            userRight     = $right
-                            userRightName = $info.Name
-                            principals    = $keptNames
-                            scope         = $scopeInfo
-                            linkedOUs     = $linkedOUs
-                            _severity     = $severity
+                            gpoName          = $gpo.displayName
+                            gpoGuid          = $gpo.Name
+                            userRight        = $right
+                            userRightName    = $comparison.Name
+                            whyItMatters     = $comparison.Why
+                            appliesTo        = $machineScope
+                            grantedBeyondDefault = $addedNames
+                            removedFromDefault   = $removedNames
+                            scope            = $scopeInfo
+                            linkedOUs        = $linkedOUs
+                            _severity        = $severity
                         }
+
+                        if (-not $comparison.HasBaseline) {
+                            $finding | Add-Member -NotePropertyName 'baselineUnknown' `
+                                -NotePropertyValue 'Windows publishes no fixed default set for this right, so the holders above were filtered by identity instead of compared. Judge them against what this domain actually runs.' -Force
+                        }
+
+                        $ineffective = Get-GPOIneffectiveReason -StatusEntry $statusMap[$gpoGUIDKey] `
+                            -Scope 'Machine' -LinkedOUCount $(if ($null -eq $linkage) { -1 } else { $linkedOUs.Count })
+                        if ($ineffective) {
+                            $finding | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                        }
+
                         $Script:gpoUserRightsFindings += $finding
                     }
                 }
@@ -283,12 +340,25 @@ function Get-GPOUserRightsAssignment {
             $Script:gpoUserRightsSysvolScanned = $null
 
             if ($findings.Count -gt 0) {
-                # Header severity reflects the highest finding severity (red only if a real Finding exists)
+                $deviations = @($findings | Where-Object { $_._severity -ne 'Note' })
                 $hasFinding = @($findings | Where-Object { $_._severity -eq 'Finding' }).Count -gt 0
                 $headerClass = if ($hasFinding) { "Finding" } else { "Hint" }
-                Show-Line "Found $($findings.Count) dangerous user right assignment(s) via GPO:" -Class $headerClass
-                # Findings first, then hints (severity order)
-                $ordered = @($findings | Sort-Object @{Expression={ if ($_._severity -eq 'Finding') { 0 } else { 1 } }}, gpoName, userRight)
+
+                if ($deviations.Count -gt 0) {
+                    Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
+                } else {
+                    Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
+                }
+
+                $removalsOnly = @($findings | Where-Object { $_._severity -eq 'Note' })
+                if ($removalsOnly.Count -gt 0) {
+                    Show-Line "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break" -Class "Note"
+                }
+
+                # Findings first, then hints, then the removals
+                $ordered = @($findings | Sort-Object @{Expression={
+                    switch ($_._severity) { 'Finding' { 0 } 'Hint' { 1 } default { 2 } }
+                }}, gpoName, userRight)
                 foreach ($finding in $ordered) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOUserRights' -Force
                     Show-Object $finding -Class $finding._severity
@@ -302,7 +372,7 @@ function Get-GPOUserRightsAssignment {
                 # below and reported a blind scan as a clean domain.
                 Show-Line "SYSVOL access failed - GPO user rights could not be evaluated - SMB access failed (authentication/network issue)" -Class "Finding"
             } else {
-                Show-Line "No dangerous user rights assigned via GPO to non-privileged principals" -Class "Secure"
+                Show-Line "Every user right assigned via GPO matches the Windows default" -Class "Secure"
             }
 
         } catch {

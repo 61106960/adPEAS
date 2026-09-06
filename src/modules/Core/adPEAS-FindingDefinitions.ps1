@@ -3950,8 +3950,23 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("SharpGPOAbuse", "PowerView")
         MITRE = "T1068"
         Triggers = @(
+            # The tier of the right itself. What decides whether a finding exists at all is
+            # the comparison against the Windows default, in the check - this only colours
+            # the constant once it has been reported.
             @{ Attribute = 'userRight'; Pattern = 'SeDebugPrivilege|SeTcbPrivilege|SeImpersonatePrivilege|SeAssignPrimaryTokenPrivilege|SeCreateTokenPrivilege|SeLoadDriverPrivilege|SeBackupPrivilege|SeRestorePrivilege|SeTakeOwnershipPrivilege|SeEnableDelegationPrivilege|SeSyncAgentPrivilege|SeManageVolumePrivilege|SeSecurityPrivilege|SeRelabelPrivilege|SeTrustedCredManAccessPrivilege'; Severity = 'Finding' }
             @{ Attribute = 'userRight'; Pattern = 'SeRemoteInteractiveLogonRight|SeServiceLogonRight|SeBatchLogonRight|SeInteractiveLogonRight|SeSystemtimePrivilege|SeRemoteShutdownPrivilege|SeShutdownPrivilege'; Severity = 'Hint' }
+
+            # The holders beyond the default are the finding. The list is what the reader
+            # acts on, so it carries the colour rather than only the right's name.
+            @{ Attribute = 'grantedBeyondDefault'; Severity = 'Finding' }
+
+            # Removing a default holder is hardening far more often than not, and is never
+            # an exposure. Green, so the colour does not train the reader to ignore red.
+            @{ Attribute = 'removedFromDefault'; Severity = 'Note' }
+
+            # The one right with no documented default set. Saying so is the honest
+            # alternative to presenting a guess as a deviation.
+            @{ Attribute = 'baselineUnknown'; Severity = 'Hint' }
         )
     }
 

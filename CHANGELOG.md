@@ -289,6 +289,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **`Get-GPOUserRightsAssignment` was rebuilt around what Windows actually ships.** It used
+  to decide by the identity of the holder: a right granted to a privileged SID, an operator
+  group or a well-known service identity was hidden, everything else reported. That asked
+  the wrong question and failed in both directions.
+
+  It hid real findings. `Backup Operators` holding `SeDebugPrivilege` is not a Windows
+  default and is a clean path to SYSTEM on every machine in scope - and it was suppressed,
+  because the group is on the privileged list. It reported expected ones too, because which
+  principals hold a right by default depends on the right and not on how privileged the
+  holder looks.
+
+  The check now compares. The `[Privilege Rights]` section is absolute, not additive: the
+  principals a GPO lists become the complete set of holders on the machines it reaches. So
+  the GPO's list and the documented default list describe the same thing, and the difference
+  runs both ways - what the policy **adds** beyond the default is the escalation risk and
+  the finding, what it **removes** is usually hardening and is reported as a note.
+
+  Member computers and domain controllers have different defaults, so the comparison uses
+  the ones for the machines the policy actually reaches: the Default Domain Controllers
+  Policy is recognised by its GUID, a link at or below `OU=Domain Controllers` counts as
+  well, and a policy reaching both is measured against the union.
+
+  A right whose default set is not established is not guessed at. It falls back to the old
+  identity filter and the finding says so, so the gap is visible rather than silently
+  decided. `SeServiceLogonRight` is that case: what holds it depends on which products are
+  installed.
+
+  The defaults live in the new `adPEAS-UserRights.ps1`. They are the published Windows
+  values, entered from documentation rather than measured against a live domain - a wrong
+  row produces a false positive or a false negative, so they are worth a spot-check against
+  real data. `-IncludePrivileged` survives as an alias of the new `-IncludeDefaults`.
+
 - **No GPO check asked whether the policy it was reading actually applies.** A GPO carries
   two switches that decide that, and the five checks reading its settings consulted
   neither. The `flags` attribute disables half the policy or all of it, and

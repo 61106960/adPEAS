@@ -95,6 +95,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Core\adPEAS-GUIDs.ps1"
     . "$Script:ScriptPath\modules\Core\adPEAS-OIDs.ps1"
     . "$Script:ScriptPath\modules\Core\adPEAS-SIDs.ps1"
+    . "$Script:ScriptPath\modules\Core\adPEAS-UserRights.ps1"
     . "$Script:ScriptPath\modules\Core\adPEAS-RegistryKeys.ps1"
     . "$Script:ScriptPath\modules\Core\adPEAS-ErrorCodes.ps1"
     . "$Script:ScriptPath\modules\Core\adPEAS-InputValidation.ps1"

@@ -1117,16 +1117,18 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         TitleFormat = "GPO User Right: {userRightName}"
         Module = "Rights"
         Category = "Rights"
-        SectionTitle = "Dangerous User Rights via GPO"
-        Summary = "Detects sensitive Windows user rights assigned to non-privileged principals via Group Policy."
-        WhyItMatters = "User Rights Assignment in a GPO grants low-level privileges (e.g. SeDebugPrivilege, SeBackupPrivilege, SeImpersonatePrivilege, or Remote Desktop logon) to principals across every computer the GPO applies to. Granted to a non-privileged or broad principal, these are direct privilege-escalation and lateral-movement paths - often domain-wide and easily overlooked."
+        SectionTitle = "User Rights via GPO That Depart From the Windows Default"
+        Summary = "Compares the user rights a GPO assigns against the set Windows ships, and reports the difference."
+        WhyItMatters = "User Rights Assignment in a GPO grants low-level privileges - SeDebugPrivilege, SeBackupPrivilege, SeImpersonatePrivilege, Remote Desktop logon - across every computer the policy reaches, and the [Privilege Rights] section is absolute: what it lists becomes the complete set of holders. So the question is not who holds a right but whether the assignment departs from what Windows ships. A holder beyond the default is an escalation or lateral-movement path; a default holder removed is usually hardening and occasionally a service about to break."
         WhatWeCheck = @(
-            "GptTmpl.inf [Privilege Rights] in every GPO"
-            "Sensitive privileges granted to non-privileged principals (SeDebug, SeBackup, SeRestore, SeImpersonate, SeLoadDriver, ...)"
-            "Logon rights (RDP / service / batch / interactive) granted via GPO"
-            "Rights granted to broad principals (Everyone, Authenticated Users, Domain Users)"
+            "GptTmpl.inf [Privilege Rights] in every GPO, compared against the documented Windows defaults"
+            "Holders granted a right beyond the default - including operator groups, which an identity filter would hide"
+            "Default holders the GPO removes, reported as a note rather than a finding"
+            "The right baseline for the machines the policy reaches: domain controllers and member computers differ"
+            "Rights granted to broad principals (Everyone, Authenticated Users, Domain Users), which outrank the right's own tier"
+            "Whether the GPO currently applies at all"
         )
-        SecureMessage = "No dangerous user rights are assigned to non-privileged principals via GPO. User Rights Assignment follows least privilege."
+        SecureMessage = "Every user right assigned via GPO matches the Windows default. No policy grants a privilege beyond the set Windows ships."
         PrimaryFindingId = 'GPO_DANGEROUS_USER_RIGHT'
     }
 

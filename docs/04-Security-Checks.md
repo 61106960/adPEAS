@@ -469,31 +469,40 @@ Get-AddComputerRights -IncludePrivileged
 
 ### Get-GPOUserRightsAssignment
 
-**Purpose**: Detects dangerous Windows user rights / privileges assigned to non-privileged principals via Group Policy.
+**Purpose**: Compares the Windows user rights a GPO assigns against the set Windows ships, and reports the difference.
+
+**Why a comparison**: the `[Privilege Rights]` section of `GptTmpl.inf` is absolute, not additive. The principals a GPO lists for a right become the complete set of holders on every computer the policy reaches. The GPO's list and the documented default list therefore describe the same thing, and the difference between them is what matters — in both directions.
 
 **What it checks**:
 - The `[Privilege Rights]` section of `GptTmpl.inf` in every GPO
-- Privilege-escalation/credential privileges (SeDebug, SeBackup, SeRestore, SeTakeOwnership, SeImpersonate, SeAssignPrimaryToken, SeCreateToken, SeTcb, SeLoadDriver, SeEnableDelegation, SeSyncAgent, SeManageVolume, SeSecurity, SeRelabel, SeTrustedCredManAccess) — reported as Finding
-- Logon rights (RDP / service / batch / interactive logon, change system time, shutdown) — reported as Hint
-- Rights granted to broad principals (Everyone, Authenticated Users, Domain Users) — escalated to Finding
+- **Holders beyond the Windows default** — the escalation risk, reported at the right's own tier. Privilege-escalation/credential privileges (SeDebug, SeBackup, SeRestore, SeTakeOwnership, SeImpersonate, SeAssignPrimaryToken, SeCreateToken, SeTcb, SeLoadDriver, SeEnableDelegation, SeSyncAgent, SeManageVolume, SeSecurity, SeRelabel, SeTrustedCredManAccess) are Findings; logon rights (RDP / service / batch / interactive logon, change system time, shutdown) are Hints
+- **Default holders the GPO removes** — reported as a Note. Usually deliberate hardening, occasionally a service about to break
+- Rights granted to broad principals (Everyone, Authenticated Users, Domain Users) — escalated to Finding regardless of tier
+- The correct baseline for the machines the policy reaches: domain controllers and member computers have different defaults, and a policy reaching both is measured against the union
+- Whether the GPO currently applies at all (disabled half, no link)
 - Maps each finding to the affected OUs / domain-wide scope via GPO links
 
-**Security Impact**: A single GPO can grant a low-level privilege (e.g. SeDebugPrivilege → SYSTEM, SeBackupPrivilege → read SAM/NTDS) to a non-privileged or broad principal across every computer it applies to — a direct, often domain-wide privilege-escalation and lateral-movement path. `SeMachineAccountPrivilege` is covered separately by Get-AddComputerRights.
+**Why not a filter on the holder**: an identity filter — hide privileged SIDs, operator groups, service identities — fails in both directions. `Backup Operators` holding `SeDebugPrivilege` is not a Windows default and is a clean path to SYSTEM, and an identity filter hides it because the group looks privileged. Meanwhile which principals hold a right by default depends on the right, not on how privileged the holder looks.
+
+**Baseline gaps are visible, not guessed**: a right whose default set is not established carries no baseline, and the finding says so. `SeServiceLogonRight` is that case — what holds it depends on which products are installed — and the check falls back to an identity filter for that one right.
+
+**Security Impact**: A single GPO can grant a low-level privilege (e.g. SeDebugPrivilege → SYSTEM, SeBackupPrivilege → read SAM/NTDS) across every computer it applies to — a direct, often domain-wide privilege-escalation and lateral-movement path. `SeMachineAccountPrivilege` is covered separately by Get-AddComputerRights; `Se*Deny*` rights take access away and are not evaluated.
 
 **Usage**:
 ```powershell
-# Show dangerous rights granted to non-privileged principals (default)
+# Show the assignments that depart from the Windows default (default)
 Get-GPOUserRightsAssignment
 
-# Include rights granted to privileged accounts (expected) as well
-Get-GPOUserRightsAssignment -IncludePrivileged
+# Show every assignment, including the ones matching the default
+Get-GPOUserRightsAssignment -IncludeDefaults
 ```
 
 **Parameters**:
 
 | Parameter | Description |
 |-----------|-------------|
-| `-IncludePrivileged` | Include rights granted to privileged accounts in output |
+| `-IncludeDefaults` | Also report assignments that match the Windows default |
+| `-IncludePrivileged` | Alias of `-IncludeDefaults`, kept so existing invocations keep working |
 
 ---
 
