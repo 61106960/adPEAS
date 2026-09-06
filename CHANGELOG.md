@@ -289,6 +289,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **A trust's SID filtering verdict now reads the direction and the kind of trust, not one
+  bit.** `Get-DomainTrusts` decided on `QUARANTINED_DOMAIN` alone: absent meant "SID
+  filtering disabled". Three things decide it, and using only one produced a false positive
+  on every correctly configured forest trust and on every trust pointing the other way,
+  while missing the one attribute that really does weaken a forest trust.
+
+  Direction. `trustDirection` 2 is outbound, which per MS-ADTS 6.1.6.7.12 means *this*
+  domain trusts the partner and the partner's principals authenticate here. That is the
+  direction the SID-history risk runs in. A purely inbound trust is the partner's exposure,
+  not ours, and was being reported as ours.
+
+  Which filter applies. An external trust carries `QUARANTINED_DOMAIN` by default and its
+  absence means filtering was switched off - that part was right. A forest trust filters
+  differently: it accepts SIDs from the trusted forest and rejects the rest, and normally
+  carries no `QUARANTINED_DOMAIN` at all. Every healthy forest trust was therefore flagged.
+  What actually weakens one is `TREAT_AS_EXTERNAL` (0x40), which downgrades it to external
+  semantics so SIDs naming any domain of the trusted forest are honoured - and that flag
+  was not looked at.
+
+  Within-forest trusts were already excluded and still are: one forest is one security
+  boundary. The verdict now goes out as `sidFiltering` on every trust, with `trustRisk` and
+  a `Finding` severity only where the risk actually runs towards this domain, and a closing
+  line that counts them.
+
+- **LDAP channel binding is read from `Registry.pol`, not only from `GptTmpl.inf`.**
+  `LDAPServerIntegrity` is a Security Option and lands in `GptTmpl.inf`, so the check found
+  it. `LdapEnforceChannelBinding` has no Security Option UI at all - Group Policy carries it
+  in `Registry.pol` - so a domain that enforces channel binding correctly was told every one
+  of its domain controllers was potentially vulnerable. The false alarm was aimed precisely
+  at the domains that had done the right thing. A GPO whose only LDAP setting lives in
+  `Registry.pol` is now reported as well, instead of being read and dropped.
+
+- **`Get-LDAPConfiguration` asks the data layer which computers are domain controllers.**
+  It spelled out the `userAccountControl` bit filter itself. Now it uses
+  `Get-DomainComputer -DomainController`, so the definition cannot drift from the rest of
+  the checks.
+
+- **A GPO linked to the Domain Controllers OU is recognised as reaching them.** Whether a
+  GPO covers the domain controllers is now decided in one place,
+  `Test-GPOCoversDomainControllers`, and two defects went with it. A link at or above the
+  DC's own OU counts, not only a domain-wide link. And the ancestor test uses an ordinal
+  `EndsWith` on an RDN boundary rather than `-like`: `-like` reads `[` and `]` as a
+  character class, so an OU named `[Tier 0] Domain Controllers` - an ordinary tiering
+  convention - matched nothing, and the GPO hardening LDAP on exactly those controllers was
+  reported as not reaching them.
+
 - **`Get-GPOUserRightsAssignment` was rebuilt around what Windows actually ships.** It used
   to decide by the identity of the holder: a right granted to a privileged SID, an operator
   group or a well-known service identity was hidden, everything else reported. That asked

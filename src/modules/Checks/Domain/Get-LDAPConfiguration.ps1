@@ -1,3 +1,64 @@
+function Test-GPOCoversDomainControllers {
+    <#
+    .SYNOPSIS
+    Decides whether a set of GPO links reaches the domain controllers.
+
+    .DESCRIPTION
+    LDAP signing and channel binding are settings on the DCs themselves, so a GPO that
+    configures them only matters if it actually applies to a DC. A domain-wide link does,
+    and so does a link at or above the OU each DC sits in - which is where the Default
+    Domain Controllers Policy lives, and where an admin hardening LDAP normally puts it.
+
+    .PARAMETER ActiveLink
+    The links of one GPO, already filtered to the enabled ones.
+
+    .PARAMETER DomainController
+    The domain controller objects, used for their distinguishedName.
+
+    .OUTPUTS
+    Boolean.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [object[]]$ActiveLink,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [object[]]$DomainController
+    )
+
+    $links = @($ActiveLink | Where-Object { $_ })
+    if ($links.Count -eq 0) { return $false }
+
+    if ($null -ne ($links | Where-Object { $_.Scope -eq "Domain" })) { return $true }
+
+    foreach ($dc in @($DomainController | Where-Object { $_ })) {
+        if ("$($dc.distinguishedName)" -notmatch '^CN=[^,]+,(.+)$') { continue }
+        $dcParentDN = $Matches[1]
+        foreach ($link in $links) {
+            $linkDN = "$($link.DistinguishedName)"
+            if ($linkDN.Length -eq 0) { continue }
+
+            # The link DN is an ancestor of the DC's parent OU when it is a suffix of it,
+            # and the comma keeps the suffix on an RDN boundary.
+            #
+            # EndsWith rather than -like on purpose: -like reads [ and ] as a character
+            # class, and an OU named "[Tier 0] Domain Controllers" is an ordinary way to
+            # name one. The pattern then matches nothing and the GPO that hardens the
+            # domain controllers is reported as not reaching them.
+            $cmp = [System.StringComparison]::OrdinalIgnoreCase
+            if ($dcParentDN.Equals($linkDN, $cmp) -or $dcParentDN.EndsWith(',' + $linkDN, $cmp)) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
 function Get-LDAPConfiguration {
     <#
     .SYNOPSIS
@@ -76,7 +137,10 @@ function Get-LDAPConfiguration {
             }
 
             # Get Domain Controllers
-            $domainControllers = @(Get-DomainComputer -LDAPFilter "(userAccountControl:1.2.840.113556.1.4.803:=8192)" @PSBoundParameters)
+            # -DomainController rather than the SERVER_TRUST_ACCOUNT bit written out: an
+            # RODC does not carry that bit and answers LDAP just the same, so the count
+            # below was short and the configuration of every read-only DC went unexamined.
+            $domainControllers = @(Get-DomainComputer -DomainController @PSBoundParameters)
 
             $dcCount = $domainControllers.Count
 
@@ -104,6 +168,43 @@ function Get-LDAPConfiguration {
                 $gpoByGuid = @{}
                 foreach ($g in $allGPOs) {
                     if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
+                }
+
+                # ----- Channel binding, which does not live in GptTmpl.inf -----
+                #
+                # LDAPServerIntegrity is a Security Option and lands in GptTmpl.inf, so the
+                # parser below finds it. LdapEnforceChannelBinding has no Security Option
+                # UI at all: it is a plain registry value, and Group Policy carries it in
+                # Registry.pol instead. Reading only GptTmpl.inf meant a domain that
+                # enforces channel binding correctly was told every one of its domain
+                # controllers was potentially vulnerable - a false alarm aimed precisely at
+                # the domains that had done the right thing.
+                $channelBindingByGpo = @{}
+                foreach ($polFile in @(Get-CachedSYSVOLFiles -Filter "Registry.pol")) {
+                    if ($polFile.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+                    # Read the capture out before the next comparison, which overwrites
+                    # $Matches even when it is a -notmatch that comes out false
+                    $polGuid = $Matches[1].ToUpper()
+
+                    # Machine\Registry.pol only. The value lives under HKLM and a user-side
+                    # policy cannot set it.
+                    if ($polFile.FullName -notmatch '\\Machine\\') { continue }
+
+                    try {
+                        foreach ($record in @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive 'HKLM')) {
+                            if ($record.ValueName -ine 'LdapEnforceChannelBinding') { continue }
+                            if ("$($record.Key)" -notmatch 'Services\\NTDS\\Parameters$') { continue }
+                            # REG_DWORD (4) only - the value is a number, and anything else
+                            # written under this name is not the setting we are reading
+                            if ($record.Type -ne 4) { continue }
+                            if ($null -eq $record.ValueInt) { continue }
+
+                            $channelBindingByGpo[$polGuid] = [int]$record.ValueInt
+                            Write-Log "[Get-LDAPConfiguration] Channel binding $($record.ValueInt) from Registry.pol of $polGuid"
+                        }
+                    } catch {
+                        Write-Log "[Get-LDAPConfiguration] Could not read $($polFile.FullName): $($_.Exception.Message)"
+                    }
                 }
 
                 # Parse GPOs for LDAP Security settings
@@ -148,6 +249,15 @@ function Get-LDAPConfiguration {
                             if ($registrySection -match 'MACHINE\\System\\CurrentControlSet\\Control\\Lsa\\RestrictAnonymous\s*=\s*4\s*,\s*(\d+)') {
                                 $restrictAnonymous = [int]$Matches[1]
                             }
+                        }
+
+                        # A hand-written GptTmpl.inf can carry channel binding, but Group
+                        # Policy normally puts it in Registry.pol. Consumed here so the pass
+                        # after the loop does not report the same GPO a second time.
+                        $gpoGuidKey = ([string]$gpo.Name).ToUpper()
+                        if ($null -eq $ldapChannelBindingValue -and $channelBindingByGpo.ContainsKey($gpoGuidKey)) {
+                            $ldapChannelBindingValue = $channelBindingByGpo[$gpoGuidKey]
+                            $channelBindingByGpo.Remove($gpoGuidKey)
                         }
 
                         # Parse System Access section
@@ -200,26 +310,7 @@ function Get-LDAPConfiguration {
                                 $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
                                 $domainWide = $activeLinks | Where-Object { $_.Scope -eq "Domain" }
                                 $isDomainWide = ($null -ne $domainWide)
-
-                                # Check if Domain Controllers OU is covered
-                                if ($isDomainWide) {
-                                    $coversDCs = $true
-                                } else {
-                                    foreach ($dc in $domainControllers) {
-                                        if ($dc.distinguishedName -match '^CN=[^,]+,(.+)$') {
-                                            $dcParentDN = $Matches[1]
-                                            foreach ($link in $activeLinks) {
-                                                # Check if the GPO link DN is an ancestor of the DC's parent OU
-                                                # The link DN should be at the end of (or equal to) the DC's parent DN
-                                                if ($dcParentDN -like "*$($link.DistinguishedName)" -or $dcParentDN -eq $link.DistinguishedName) {
-                                                    $coversDCs = $true
-                                                    break
-                                                }
-                                            }
-                                        }
-                                        if ($coversDCs) { break }
-                                    }
-                                }
+                                $coversDCs = Test-GPOCoversDomainControllers -ActiveLink $activeLinks -DomainController $domainControllers
                             }
 
                             # Enrich the native GPO object with LDAP security attributes
@@ -250,6 +341,47 @@ function Get-LDAPConfiguration {
                 }
                 if ($totalGPOs -gt $Script:ProgressThreshold) {
                     Show-Progress -Activity "Scanning LDAP configuration GPO settings" -Completed
+                }
+
+                # Whatever is left in the map belongs to a GPO that sets channel binding in
+                # Registry.pol and has no GptTmpl.inf at all - a perfectly ordinary way to
+                # deploy it, and one the loop above never reaches because it walks
+                # GptTmpl.inf files. Without this the value would be found and then dropped.
+                foreach ($leftoverGuid in @($channelBindingByGpo.Keys)) {
+                    $gpo = $gpoByGuid[$leftoverGuid]
+                    if (-not $gpo) { continue }
+
+                    $channelBindingLevel = switch ($channelBindingByGpo[$leftoverGuid]) {
+                        0 { "Never" }
+                        1 { "When Supported" }
+                        2 { "Always" }
+                        default { "Unknown" }
+                    }
+
+                    $links = $null
+                    $gpoLinkage = Get-GPOLinkage
+                    if ($gpoLinkage) { $links = $gpoLinkage[$leftoverGuid] }
+                    $activeLinks = @($links | Where-Object { $_ -and $_.LinkStatus -ne "Disabled" })
+                    $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
+
+                    $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue "Not Configured" -Force
+                    $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
+                    $gpo | Add-Member -NotePropertyName "AnonymousBinding" -NotePropertyValue "Not Configured" -Force
+                    # Same rule as the GptTmpl.inf loop: a link at or above the DC's own OU
+                    # reaches it, which is where a policy hardening LDAP normally sits.
+                    $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue (
+                        Test-GPOCoversDomainControllers -ActiveLink $activeLinks -DomainController $domainControllers) -Force
+
+                    if (@($activeLinks).Count -gt 0) {
+                        $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($activeLinks | ForEach-Object { $_.DistinguishedName }) -Force
+                        $gpo | Add-Member -NotePropertyName "Scope" -NotePropertyValue $(
+                            if ($isDomainWide) { "Domain-wide ($(@($activeLinks).Count) link(s))" }
+                            else { "$(@($activeLinks).Count) OU(s)" }) -Force
+                    } else {
+                        $gpo | Add-Member -NotePropertyName "Scope" -NotePropertyValue "NOT LINKED" -Force
+                    }
+
+                    $Script:gpoFindings += $gpo
                 }
             }
 

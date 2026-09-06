@@ -4695,14 +4695,20 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Mimikatz", "Rubeus")
         MITRE = "T1134.005"
         Triggers = @(
-            # Order matters: specific (Custom) before general!
-            # Within-forest trusts: SID Filtering disabled is by design (no tooltip, just Standard severity)
-            @{ Attribute = 'isQuarantined'; Pattern = '^False$'; Custom = 'is_within_forest_trust'; Severity = 'Standard'; SeverityOnly = $true }
-            # External/Forest trusts: SID Filtering disabled = security risk. The guard is
-            # what keeps the tooltip off a within-forest trust - the SeverityOnly trigger
-            # above sets no FindingId, so without it this one still supplied the card.
-            @{ Attribute = 'isQuarantined'; Pattern = '^False$'; Custom = 'is_not_within_forest_trust'; Severity = 'Finding' }
-            # Enabled = Secure (no tooltip needed, just severity coloring)
+            # The verdict is on trustRisk, which Get-TrustSIDFilteringVerdict sets only
+            # where the combination is actually dangerous.
+            #
+            # It used to hang off isQuarantined being False, guarded only against a
+            # within-forest trust, and that got two cases wrong in opposite directions. A
+            # forest trust does not use QUARANTINED_DOMAIN at all - it filters SIDs from
+            # outside the trusted forest by default - so every correctly configured forest
+            # trust in existence was reported, which is the fastest way to teach a reader
+            # to skip the colour. And an inbound-only trust was reported although the
+            # exposure belongs to the partner: inbound means they trust us.
+            @{ Attribute = 'trustRisk'; Severity = 'Finding' }
+
+            # The plain state of the bit, without a verdict attached to it. sidFiltering
+            # carries the sentence that explains which of the three regimes applies.
             @{ Attribute = 'isQuarantined'; Pattern = '^True$'; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
