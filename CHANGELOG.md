@@ -289,6 +289,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **Primary group membership was invisible everywhere.** An account whose `primaryGroupID`
+  is `512` is a Domain Admin - the RID is in its token - but Active Directory does not
+  write that relation into the group's `member` attribute, and the account carries no
+  `memberOf` pointing back. `LDAP_MATCHING_RULE_IN_CHAIN` therefore cannot see it either.
+  Setting the primary group is a known way to hold privilege out of sight of exactly the
+  enumeration adPEAS performs, and `primaryGroupID` appeared in `src/` only to identify
+  domain controllers - never as a membership relation.
+
+  `Get-PrivilegedGroupMembers` now folds these accounts into the group they point at, with
+  one query for all privileged groups rather than one per group, and labels them
+  `(primary group)` rather than `(direct)`: the account is not in the member attribute, so
+  it cannot be removed from the group and the fix is a different one.
+  `Get-PrivilegedAccountFilter` gained the matching clauses, which costs no query at all -
+  the RIDs are known and the attribute is indexed - so the three account checks that use
+  it see these accounts too. `513` for a user and `515` for a computer are the defaults and
+  are not privileged RIDs, so nothing ordinary matches.
+
 - **`adminCount=1` was the definition of "privileged account", and it misses accounts.**
   Three checks - `Get-AdminReversibleEncryption`, `Get-AdminPasswordNeverExpires` and
   `Get-InactiveAdminAccounts` - drew their candidates from that attribute. AdminSDHolder

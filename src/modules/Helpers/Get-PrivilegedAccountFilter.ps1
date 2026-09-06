@@ -86,11 +86,28 @@ function Get-PrivilegedAccountFilter {
         # this build does not list, and the caller's verification removes what it over-reports.
         $clauses = @('(adminCount=1)')
 
+        $ridSuffixes = @($Script:PrivilegedRIDSuffixes)
+        if ($IncludeOperators) { $ridSuffixes += @($Script:OperatorRIDSuffixes) }
+
+        # Primary group membership, which memberOf does not express, and which needs no
+        # domain SID and no query - so it is built first and survives both of the failures
+        # the group resolution below can run into.
+        #
+        # An account whose primaryGroupID is 512 is a Domain Admin: the RID is in its token.
+        # But the group does not list it in "member", the account has no "memberOf" pointing
+        # back, and LDAP_MATCHING_RULE_IN_CHAIN therefore cannot see it either. Setting the
+        # primary group is a known way to hold privilege out of sight of exactly the
+        # enumeration everything else here does. The attribute is indexed, and 513 for a
+        # user or 515 for a computer is the default that never appears in this list.
+        foreach ($rid in $ridSuffixes) {
+            # -500 and -502 are accounts rather than groups, so no primary group points at
+            # them and no membership clause is built for them below either.
+            if ($rid -in @('-500', '-502')) { continue }
+            $clauses += ('(primaryGroupID=' + $rid.TrimStart('-') + ')')
+        }
+
         $domainSID = $Script:LDAPContext['DomainSID']
         if ($domainSID) {
-            $ridSuffixes = @($Script:PrivilegedRIDSuffixes)
-            if ($IncludeOperators) { $ridSuffixes += @($Script:OperatorRIDSuffixes) }
-
             foreach ($rid in $ridSuffixes) {
                 # Only group RIDs produce a membership clause. -500 is the built-in
                 # Administrator account and -502 is krbtgt: nobody is a member of either,

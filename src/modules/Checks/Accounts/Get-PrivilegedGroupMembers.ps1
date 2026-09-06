@@ -376,6 +376,44 @@ function Get-PrivilegedGroupMembers {
             if ($PSBoundParameters.ContainsKey('Server')) { $CredParams['Server'] = $Server }
             if ($PSBoundParameters.ContainsKey('Credential')) { $CredParams['Credential'] = $Credential }
 
+            # ===== Primary group members, which "member" does not list =====
+            #
+            # An account whose primaryGroupID is 512 is a Domain Admin - the RID is in its
+            # token - but Active Directory does not write that relation into the group's
+            # member attribute, and the account carries no memberOf pointing back. The
+            # recursion below walks member, so it cannot see these accounts at all, and
+            # setting the primary group is a known way to hold privilege out of sight of
+            # exactly that kind of enumeration.
+            #
+            # One query for every privileged group rather than one per group: the RIDs are
+            # known and primaryGroupID is indexed. 513 for a user and 515 for a computer are
+            # the defaults, and neither is a privileged RID, so nothing ordinary matches.
+            $PrimaryGroupMembers = @{}
+            # DN -> group name, for the display further down. "(direct)" would be true but
+            # misleading: you do not remove such an account from the group, because it is
+            # not in the member attribute - you change its primaryGroupID.
+            $PrimaryGroupOf = @{}
+            try {
+                $primaryClauses = ($Script:PrivilegedGroupRIDs.Keys | ForEach-Object { "(primaryGroupID=$_)" }) -join ''
+                $primaryFilter = "(|$primaryClauses)"
+
+                foreach ($account in @(Get-DomainObject -LDAPFilter $primaryFilter -Properties 'distinguishedName', 'sAMAccountName', 'name', 'objectSid', 'objectClass', 'primaryGroupID' @CredParams)) {
+                    $accountRID = "$($account.primaryGroupID)"
+                    if (-not $PrimaryGroupMembers.ContainsKey($accountRID)) {
+                        $PrimaryGroupMembers[$accountRID] = @()
+                    }
+                    $PrimaryGroupMembers[$accountRID] += $account
+                }
+
+                $primaryTotal = ($PrimaryGroupMembers.Values | ForEach-Object { @($_).Count } | Measure-Object -Sum).Sum
+                if (-not $primaryTotal) { $primaryTotal = 0 }
+                Write-Log "[Get-PrivilegedGroupMembers] $primaryTotal account(s) hold a privileged group as their primary group"
+            } catch {
+                # Not fatal: the member-based enumeration below is the main path, and losing
+                # this one costs coverage rather than the whole check.
+                Write-Log "[Get-PrivilegedGroupMembers] Primary group query failed: $($_.Exception.Message)" -Level Warning
+            }
+
             foreach ($RID in $Script:PrivilegedGroupRIDs.Keys) {
                 try {
                     $GroupSID = "$DomainSID-$RID"
@@ -394,6 +432,59 @@ function Get-PrivilegedGroupMembers {
                         # Each top-level group gets its own Visited hashtable to avoid cross-contamination
                         # Pass the already-fetched group object to avoid duplicate LDAP query
                         $Result = Get-GroupMembersRecursive -GroupDN $Group.distinguishedName -GroupName $GroupName -CredentialParams $CredParams -Visited @{} -GroupObject $Group
+
+                        # Fold in the accounts holding this group as their primary group.
+                        # They are direct members in every sense that matters - the RID is in
+                        # their token - and the path says "Primary group" rather than "Direct
+                        # Member", because the latter would send a reader looking for them in
+                        # an attribute that does not list them.
+                        #
+                        # Only this loop needs it: a primaryGroupID is a RID relative to the
+                        # domain, so it can never point at a BUILTIN group, which is what the
+                        # two loops below enumerate.
+                        foreach ($primaryMember in @($PrimaryGroupMembers["$RID"])) {
+                            if (-not $primaryMember) { continue }
+
+                            $primaryDN = if ($primaryMember.distinguishedName -is [array]) {
+                                $primaryMember.distinguishedName[0]
+                            } else {
+                                $primaryMember.distinguishedName
+                            }
+
+                            # An account can hold the group as its primary group and be listed
+                            # in member as well. Counting it twice would inflate the group and
+                            # print the account twice.
+                            if (@($Result.DirectMembers | ForEach-Object { $_.DistinguishedName }) -contains $primaryDN) {
+                                Write-Log "[Get-PrivilegedGroupMembers] $primaryDN is a listed and a primary-group member of $GroupName"
+                                continue
+                            }
+
+                            $primaryClassArray = @($primaryMember.objectClass)
+                            $primaryClass = 'user'
+                            if ($primaryClassArray -icontains 'msDS-GroupManagedServiceAccount') {
+                                $primaryClass = 'msDS-GroupManagedServiceAccount'
+                            } elseif ($primaryClassArray -icontains 'msDS-ManagedServiceAccount') {
+                                $primaryClass = 'msDS-ManagedServiceAccount'
+                            } elseif ($primaryClassArray -icontains 'computer') {
+                                $primaryClass = 'computer'
+                            }
+
+                            $Result.DirectMembers += [PSCustomObject]@{
+                                Name              = $primaryMember.name
+                                SAMAccountName    = $primaryMember.sAMAccountName
+                                ObjectClass       = $primaryClass
+                                DistinguishedName = $primaryDN
+                                SID               = $primaryMember.objectSid
+                                NestingLevel      = 0
+                                IsForeign         = $false
+                                IsCrossDomain     = ($domainDN -and $primaryDN -and -not $primaryDN.EndsWith(",$domainDN"))
+                                GCObject          = $null
+                                MembershipPath    = 'Primary group'
+                            }
+
+                            $PrimaryGroupOf[$primaryDN] = $GroupName
+                            Write-Log "[Get-PrivilegedGroupMembers] $GroupName - primary group member: $primaryDN"
+                        }
 
                         $DirectMemberCount = @($Result.DirectMembers).Count
                         $NestedGroupCount = @($Result.NestedGroups).Count
@@ -767,7 +858,11 @@ function Get-PrivilegedGroupMembers {
                     $grpData = $AllGroupData | Where-Object { $_.GroupName -eq $grp } | Select-Object -First 1
                     $grpSID = if ($grpData) { $grpData.GroupSID } else { $null }
 
-                    $displayText = if ($grp -in $MemberData.DirectGroups) {
+                    $displayText = if ($PrimaryGroupOf[$dn] -eq $grp) {
+                        # Not "(direct)": this account is not in the group's member
+                        # attribute at all, and the fix is a different one.
+                        "$grp (primary group)"
+                    } elseif ($grp -in $MemberData.DirectGroups) {
                         "$grp (direct)"
                     } else {
                         $nestedPath = $MemberData.NestedPaths[$grp] -join ", "
