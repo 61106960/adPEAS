@@ -289,6 +289,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **The permission scans stopped at the organizational units.** `Get-DangerousOUPermissions`
+  and the `-IncludeAllOUs` path of `Get-PasswordResetRights` asked for
+  `(objectClass=organizationalUnit)` and nothing else. `CN=Users` and `CN=Computers` are
+  containers, not organizational units, and in a great many domains that is where most
+  accounts sit - everything nobody deliberately moved. A delegation granting GenericAll or
+  password resets over `CN=Users` was invisible while the same delegation one OU further
+  along was reported.
+
+  The new `Get-PrincipalContainer` adds the containers directly under the domain root -
+  one query, scoped to a single level, for the container class and for `builtinDomain`,
+  which is what `CN=Builtin` is. The scope is deliberate: a subtree search would drag in
+  the whole `CN=System` hierarchy and multiply the ACL reads that follow by the same
+  factor. The default path of `Get-PasswordResetRights` was never affected, because it
+  derives its scope from where the privileged accounts actually live.
+
+- **`Get-AddComputerRights` looked at the wrong container, and only at explicit grants.**
+  The container was assumed to be `CN=Computers`; after `redircmp` it is not, and the
+  actual one is recorded in `wellKnownObjects` on the domain object, which is now read.
+  `-ExplicitOnly` was dropped as well: a `CreateChild` grant inherited from the domain root
+  lets its holder create computer accounts exactly as an explicit one does, and every such
+  grant was discarded without a word.
+
+- **`Get-LAPSPermissions` could not tell the two LAPS generations apart in its output.**
+  The check works out per OU who reads the legacy attribute and who reads the Windows LAPS
+  one, then reported every principal with the same flat label, `LAPS Password Read`. In a
+  domain part way through the migration that is the difference between reading the password
+  of the machines already moved and of the ones still on the legacy attribute. The label
+  now names the generation, and a read on every property is reported as covering both.
+
 - **Primary group membership was invisible everywhere.** An account whose `primaryGroupID`
   is `512` is a Domain Admin - the RID is in its token - but Active Directory does not
   write that relation into the group's `member` attribute, and the account carries no

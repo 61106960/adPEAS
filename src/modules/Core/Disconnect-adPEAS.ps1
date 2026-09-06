@@ -313,6 +313,8 @@ function Clear-SessionState {
 
     $Script:LAPSSchemaInfo = $null
     $Script:PrivilegedAccountFilterCache = $null
+    $Script:PrincipalContainerCache = $null
+    $Script:PrincipalContainerCache = $null
     $Script:BitLockerSchemaInfo = $null
     $Script:lapsGPOResults = $null
     $Script:AllForeignMembers = $null

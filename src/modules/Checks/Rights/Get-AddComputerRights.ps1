@@ -99,13 +99,37 @@ function Get-AddComputerRights {
                 $quotaValue = 10
             }
 
-            # ===== Step 2: Check ACL on CN=Computers Container =====
+            # ===== Step 2: Check ACL on the default computer container =====
+            #
+            # Read from wellKnownObjects rather than assumed. redircmp points the default
+            # location at an organizational unit, and after that CN=Computers is no longer
+            # where a machine account created with the quota lands - so the container this
+            # check reports on would not be the one that matters.
             $computersContainerDN = "CN=Computers,$domainDN"
+            try {
+                $domainObject = @(Get-DomainObject -Identity $domainDN -Properties 'wellKnownObjects' @connectionParams)[0]
+                foreach ($entry in @($domainObject.wellKnownObjects)) {
+                    # DN-With-Binary: B:32:<GUID>:<DN>. AA312825768811D1ADED00C04FD8D5CD is
+                    # the computer container.
+                    if ("$entry" -match '^B:32:AA312825768811D1ADED00C04FD8D5CD:(.+)$') {
+                        $computersContainerDN = $Matches[1]
+                        break
+                    }
+                }
+            } catch {
+                Write-Log "[Get-AddComputerRights] Could not read wellKnownObjects: $($_.Exception.Message)"
+            }
+            Write-Log "[Get-AddComputerRights] Default computer container: $computersContainerDN"
+
             $createComputerAccounts = @()
 
             # Use Get-ObjectACL for ACL analysis (handles credentials automatically)
+            #
+            # Inherited ACEs are read as well. A CreateChild grant inherited from the domain
+            # root lets its holder create computer accounts exactly as an explicit one does,
+            # and -ExplicitOnly dropped every such grant without a word.
             $computerClassGUID = 'bf967a86-0de6-11d0-a285-00aa003049e2'
-            $aclResult = Get-ObjectACL -DistinguishedName $computersContainerDN -Rights 'GenericAll','CreateChild' -AllowOnly -ExplicitOnly @connectionParams
+            $aclResult = Get-ObjectACL -DistinguishedName $computersContainerDN -Rights 'GenericAll','CreateChild' -AllowOnly @connectionParams
 
             if ($aclResult -and $aclResult.ACEs) {
                 $seenSIDs = @{}

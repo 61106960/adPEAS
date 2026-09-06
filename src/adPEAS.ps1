@@ -185,6 +185,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Get-LAPSGPOConfig.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-LAPSSchemaPresence.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-PrivilegedAccountFilter.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Get-PrincipalContainer.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-OUPermissions.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-GPOLinkage.ps1"
     . "$Script:ScriptPath\modules\Helpers\Test-adPEASLicense.ps1"

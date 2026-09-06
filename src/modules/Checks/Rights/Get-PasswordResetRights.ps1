@@ -105,8 +105,14 @@ function Get-PasswordResetRights {
             Show-SubHeader "Analyzing password reset rights on OUs with privileged users..." -ObjectType "PasswordResetRight"
 
             if ($IncludeAllOUs) {
-                # Analyze all OUs
-                $allOUs = Get-DomainObject -LDAPFilter "(objectClass=organizationalUnit)" @connectionParams
+                # Every organizational unit, and the containers directly under the domain
+                # root. The default path below reaches containers already, because it takes
+                # the parent of each privileged account and CN=Users is such a parent. This
+                # one asked for the organizational unit class alone, so -IncludeAllOUs -
+                # the switch whose whole purpose is to widen the scan - was the narrower of
+                # the two wherever no privileged account happened to live in a container.
+                $allOUs = @(Get-DomainObject -LDAPFilter "(objectClass=organizationalUnit)" @connectionParams) +
+                          @(Get-PrincipalContainer @connectionParams)
 
                 if ($allOUs) {
                     foreach ($ou in $allOUs) {

@@ -121,6 +121,13 @@ function Get-LAPSPermissions {
                             $sid = $finding.SID
                             $severity = $finding.Severity
 
+                            # Which generation this right reads is decided here, where the
+                            # Right string is still at hand, and carried on the reader. The
+                            # output used to say "LAPS Password Read" for either, and in a
+                            # domain part way through the migration that is the difference
+                            # between reading the password of the machines already moved
+                            # and of the ones still on the legacy attribute.
+
                             # Match Legacy LAPS (ms-Mcs-AdmPwd)
                             if ($finding.Right -match 'ms-Mcs-AdmPwd') {
                                 if ($sid -notin @($legacyReaders | ForEach-Object { $_.SID })) {
@@ -128,6 +135,7 @@ function Get-LAPSPermissions {
                                         Principal = $principal
                                         SID = $sid
                                         Severity = $severity
+                                        Generation = 'Legacy'
                                     }
                                 }
                             }
@@ -139,6 +147,13 @@ function Get-LAPSPermissions {
                                         Principal = $principal
                                         SID = $sid
                                         Severity = $severity
+                                        # A read on every property covers whichever
+                                        # attribute the machine actually carries.
+                                        Generation = if ($finding.Right -match 'All Properties') {
+                                            'Legacy and Windows LAPS'
+                                        } else {
+                                            'Windows LAPS'
+                                        }
                                     }
                                 }
                             }
@@ -192,6 +207,19 @@ function Get-LAPSPermissions {
             }
             if ($totalOUs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS permissions" -Completed }
 
+            # Names the right and which LAPS generation it reads. Without the suffix a
+            # delegation on the legacy attribute and one on the Windows LAPS attribute
+            # printed identically, and the reader had no way to tell whether the principal
+            # can read the password of the machines already migrated, of the ones still on
+            # the old attribute, or of both.
+            function Get-LAPSRightLabel {
+                param($ReaderInfo)
+
+                $generations = @($ReaderInfo.Generations)
+                if ($generations.Count -eq 0) { return 'LAPS Password Read' }
+                return ('LAPS Password Read (' + (($generations | Sort-Object) -join ', ') + ')')
+            }
+
             # ===== Output findings =====
             if (@($filteredFindings).Count -gt 0) {
                 # Group findings by principal and deduplicate OUs - a principal may have multiple LAPS property rights on the same OU
@@ -216,6 +244,7 @@ function Get-LAPSPermissions {
                                 Principal = $reader.Principal
                                 SID = $sid
                                 OUs = @()
+                                Generations = @()
                                 IsExchangeService = $isExchange
                                 IsPrivilegedAccount = $isPriv
                             }
@@ -224,6 +253,12 @@ function Get-LAPSPermissions {
                         $ouEntry = "$($finding.OU) ($($finding.ComputerCount) computers)"
                         if ($targetHash[$sid].OUs -notcontains $ouEntry) {
                             $targetHash[$sid].OUs += $ouEntry
+                        }
+
+                        # A principal can hold a right on both generations, and on several
+                        # OUs, so the labels accumulate per principal rather than replace.
+                        if ($reader.Generation -and $targetHash[$sid].Generations -notcontains $reader.Generation) {
+                            $targetHash[$sid].Generations += $reader.Generation
                         }
                     }
                 }
@@ -262,7 +297,7 @@ function Get-LAPSPermissions {
                         $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
 
                         if ($adObject) {
-                            $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue "LAPS Password Read" -Force
+                            $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue (Get-LAPSRightLabel -ReaderInfo $readerInfo) -Force
                             $adObject | Add-Member -NotePropertyName 'affectedOUs' -NotePropertyValue $readerInfo.OUs -Force
                             $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
                             Show-Object $adObject
@@ -271,7 +306,7 @@ function Get-LAPSPermissions {
                             $fallbackObject = [PSCustomObject]@{
                                 sAMAccountName = $resolvedName
                                 objectSid = $sid
-                                dangerousRights = "LAPS Password Read"
+                                dangerousRights = (Get-LAPSRightLabel -ReaderInfo $readerInfo)
                                 affectedOUs = $readerInfo.OUs
                             }
                             $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
@@ -290,7 +325,7 @@ function Get-LAPSPermissions {
                         $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
 
                         if ($adObject) {
-                            $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue "LAPS Password Read" -Force
+                            $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue (Get-LAPSRightLabel -ReaderInfo $readerInfo) -Force
                             $adObject | Add-Member -NotePropertyName 'affectedOUs' -NotePropertyValue $readerInfo.OUs -Force
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                             $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
@@ -300,7 +335,7 @@ function Get-LAPSPermissions {
                             $fallbackObject = [PSCustomObject]@{
                                 sAMAccountName = $resolvedName
                                 objectSid = $sid
-                                dangerousRights = "LAPS Password Read"
+                                dangerousRights = (Get-LAPSRightLabel -ReaderInfo $readerInfo)
                                 affectedOUs = $readerInfo.OUs
                                 dangerousRightsSeverity = 'Hint'
                             }
@@ -321,7 +356,7 @@ function Get-LAPSPermissions {
                         $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
 
                         if ($adObject) {
-                            $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue "LAPS Password Read" -Force
+                            $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue (Get-LAPSRightLabel -ReaderInfo $readerInfo) -Force
                             $adObject | Add-Member -NotePropertyName 'affectedOUs' -NotePropertyValue $readerInfo.OUs -Force
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                             $adObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
@@ -332,7 +367,7 @@ function Get-LAPSPermissions {
                             $fallbackObject = [PSCustomObject]@{
                                 sAMAccountName = $resolvedName
                                 objectSid = $sid
-                                dangerousRights = "LAPS Password Read"
+                                dangerousRights = (Get-LAPSRightLabel -ReaderInfo $readerInfo)
                                 affectedOUs = $readerInfo.OUs
                                 dangerousRightsSeverity = 'Hint'
                             }

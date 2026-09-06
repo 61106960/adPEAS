@@ -109,20 +109,26 @@ function Get-DangerousOUPermissions {
                 return
             }
 
-            Show-SubHeader "Analyzing OU permissions..." -ObjectType "DangerousOUPermission"
+            Show-SubHeader "Analyzing OU and container permissions..." -ObjectType "DangerousOUPermission"
 
-            # Get all OUs in the domain using Get-DomainObject
-            $OUs = Get-DomainObject -LDAPFilter "(objectClass=organizationalUnit)" @connectionParams
+            # The organizational units, and the containers directly under the domain root.
+            #
+            # CN=Users and CN=Computers are containers rather than organizational units, and
+            # in a great many domains they hold most of the accounts - everything nobody
+            # deliberately moved. A delegation granting GenericAll over CN=Users used to be
+            # invisible here while the same delegation one OU further along was reported.
+            $OUs = @(Get-DomainObject -LDAPFilter "(objectClass=organizationalUnit)" @connectionParams) +
+                   @(Get-PrincipalContainer @connectionParams)
 
-            if (-not $OUs -or @($OUs).Count -eq 0) {
-                Write-Log "[Get-DangerousOUPermissions] No Organizational Units found"
+            if (@($OUs).Count -eq 0) {
+                Write-Log "[Get-DangerousOUPermissions] No organizational units or containers found"
                 # Say what actually happened. "No dangerous OU permissions detected" here
-                # claimed a result for a scan that never examined a single OU.
-                Show-Line "No organizational units returned - OU permissions were not evaluated" -Class Note
+                # claimed a result for a scan that never examined a single object.
+                Show-Line "No organizational units or containers returned - permissions were not evaluated" -Class Note
                 return
             }
 
-            Write-Log "[Get-DangerousOUPermissions] Found $(@($OUs).Count) OU(s) to analyze"
+            Write-Log "[Get-DangerousOUPermissions] Found $(@($OUs).Count) OU(s) and container(s) to analyze"
 
             $allFindings = @()
             $ouCount = 0
