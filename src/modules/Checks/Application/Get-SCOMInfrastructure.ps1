@@ -9,7 +9,9 @@ function Get-SCOMInfrastructure {
 
     Detection Methods:
     1. Computers with SCOM-related SPNs (MSOMSdkSvc/*, MSOMHSvc/*)
-    2. User accounts with SCOM-related SPNs
+    2. User accounts with SCOM-related SPNs, and whether they hold privileged rights in the
+       domain - SCOM already makes them local administrator on every monitored server, so a
+       privileged one turns a management server compromise into a domain compromise
     3. SCOM-related security groups (*SCOM*, *OpsMgr*, *Operations Manager*)
 
     .PARAMETER Domain
@@ -106,16 +108,21 @@ function Get-SCOMInfrastructure {
             # to its ToString() form. dNSHostName came back $null, the dedup comparison ran
             # $null -notin $null (which is False) and no management server was ever reported.
             $scomServers = @()
+            # Keyed on the distinguished name, which every object has. Deduplicating on
+            # dNSHostName dropped the second of two servers that had none - two objects
+            # both carrying $null compare as the same machine.
+            $seenServerDNs = @{}
 
             foreach ($spnPattern in $scomSPNPatterns) {
                 $servers = Get-DomainComputer -LDAPFilter "(servicePrincipalName=$spnPattern)" @PSBoundParameters
 
                 if ($servers) {
                     foreach ($srv in $servers) {
-                        # Avoid duplicates
-                        if ($srv.dNSHostName -notin $scomServers.dNSHostName) {
-                            $scomServers += $srv
-                        }
+                        $srvDN = "$($srv.distinguishedName)"
+                        if ([string]::IsNullOrWhiteSpace($srvDN)) { continue }
+                        if ($seenServerDNs.ContainsKey($srvDN)) { continue }
+                        $seenServerDNs[$srvDN] = $true
+                        $scomServers += $srv
                     }
                 }
             }
@@ -149,7 +156,36 @@ function Get-SCOMInfrastructure {
             }
 
             if (@($serviceAccounts).Count -gt 0) {
-                Show-Line "Found $(@($serviceAccounts).Count) SCOM service account(s)" -Class Hint
+                # A SCOM action or SDK account is local administrator on every monitored
+                # server by design, and a SCOM operator can run a task on any agent. That is
+                # already a lot; the account being privileged in Active Directory on top of
+                # it means compromising the management server is compromising the domain,
+                # and it is the one thing about these accounts worth reporting rather than
+                # listing.
+                $privilegedServiceAccounts = 0
+
+                foreach ($account in $serviceAccounts) {
+                    $accountSID = "$($account.objectSid)"
+                    if ([string]::IsNullOrWhiteSpace($accountSID)) { continue }
+                    try {
+                        $privilegeCheck = Test-IsPrivileged -Identity $accountSID -IncludeOperators
+                        if ($privilegeCheck.IsPrivileged -ne $true) { continue }
+
+                        $privilegedServiceAccounts++
+                        $via = if ($privilegeCheck.MatchedGroup) { $privilegeCheck.MatchedGroup } else { $privilegeCheck.Reason }
+                        $account | Add-Member -NotePropertyName 'privilegedServiceAccount' -NotePropertyValue (
+                            "This SCOM service account holds privileged rights in the domain ($via). " +
+                            'SCOM already makes it local administrator on every monitored server and lets a SCOM operator run a task on any agent; whoever takes the management server takes these rights with it.') -Force
+                    } catch {
+                        Write-Log "[Get-SCOMInfrastructure] Could not evaluate privileges of $($account.sAMAccountName): $_"
+                    }
+                }
+
+                if ($privilegedServiceAccounts -gt 0) {
+                    Show-Line "Found $(@($serviceAccounts).Count) SCOM service account(s), $privilegedServiceAccounts of them privileged in the domain" -Class Finding
+                } else {
+                    Show-Line "Found $(@($serviceAccounts).Count) SCOM service account(s), none of them privileged in the domain" -Class Hint
+                }
 
                 foreach ($account in $serviceAccounts) {
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServiceAccount' -Force
@@ -185,7 +221,9 @@ function Get-SCOMInfrastructure {
                     if ($group.member) {
                         $memberCount = @($group.member).Count
                     }
-                    $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue "$memberCount member(s)" -Force
+                    # A number, not "3 member(s)": the report sorts and compares this
+                    # column, and a string sorts 10 before 2.
+                    $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue $memberCount -Force
                     # Remove member attribute to prevent Extended-attribute rendering from triggering
                     # per-DN SID resolution (Convert-DNsToMemberInfo -> ConvertTo-SID per member)
                     $group.PSObject.Properties.Remove('member')

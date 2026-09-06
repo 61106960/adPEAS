@@ -6313,6 +6313,95 @@ foreach ($DC in $DCs) {
         )
     }
 
+    'SCCM_SYSTEM_MANAGEMENT_ACL' = @{
+        Title = "Write Access to the SCCM System Management Container"
+        Risk = "Finding"
+        BaseScore = 75
+        Description = "This principal can write to CN=System Management,CN=System, the container Configuration Manager publishes its sites and management points in, and it is neither a site server nor one of the administrators the container expects. A client that uses Active Directory site discovery trusts what it finds there."
+        Impact = @(
+            "A management point published here is accepted by every client configured for Active Directory site discovery"
+            "The client takes its policy, and the software that policy deploys, from that management point"
+            "Policies carry the network access account credentials, which the client requests from the management point it trusts"
+            "The blast radius is every managed client in the site, which in most domains is every workstation"
+        )
+        Attack = @(
+            "1. Attacker gains control of a principal with write access to the container"
+            "2. An mSSMSManagementPoint object naming a host the attacker controls is published"
+            "3. Clients using AD site discovery resolve to it and request policy"
+            "4. The rogue management point serves policy and collects what the clients send it, including credentials the real one would have issued"
+        )
+        Remediation = @(
+            "Reduce the ACL to what Configuration Manager documents: Full Control for the site server computer accounts, and nothing else beyond the domain administrators"
+            "Establish who granted the entry and when, from the directory service audit log (event 5136 on nTSecurityDescriptor)"
+            "Where extension of the schema and this container were done years ago by a departed admin, treat the whole ACL as unreviewed rather than the one entry"
+            "Clients can be moved off AD site discovery, but that changes the exposure rather than the permission - fix the ACL either way"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who can write to the container"
+                Command = "(Get-Acl -Path 'AD:\CN=System Management,CN=System,DOMAIN_DN').Access | Where-Object { `$_.AccessControlType -eq 'Allow' -and `$_.ActiveDirectoryRights -match 'GenericAll|GenericWrite|WriteDacl|WriteOwner|CreateChild' }"
+            }
+            @{
+                Description = "Show what is currently published in it"
+                Command = "Get-ADObject -SearchBase 'CN=System Management,CN=System,DOMAIN_DN' -LDAPFilter '(objectClass=mSSMSManagementPoint)' -Properties mSSMSMPName,mSSMSSiteCode"
+            }
+        )
+        References = @(
+            @{ Title = "Misconfiguration Manager - ELEVATE and TAKEOVER techniques"; Url = "https://github.com/subat0mik/Misconfiguration-Manager" }
+            @{ Title = "Extend the AD schema for Configuration Manager"; Url = "https://learn.microsoft.com/en-us/mem/configmgr/core/plan-design/network/extend-the-active-directory-schema" }
+            @{ Title = "Create the System Management container"; Url = "https://learn.microsoft.com/en-us/mem/configmgr/core/plan-design/network/extend-the-active-directory-schema#create-the-system-management-container" }
+        )
+        Tools = @("SharpSCCM", "Misconfiguration-Manager", "PowerView", "ADACLScanner")
+        MITRE = "T1484.001"
+        Triggers = @(
+            @{ Attribute = 'sccmContainerWrite'; Severity = 'Finding' }
+        )
+    }
+
+    'SCOM_PRIVILEGED_SERVICE_ACCOUNT' = @{
+        Title = "Privileged SCOM Service Account"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "This System Center Operations Manager service account holds privileged rights in the domain. SCOM already makes its action and SDK accounts local administrator on every monitored server, and lets an operator run a task on any agent; a privileged account on top of that turns a management server compromise into a domain compromise."
+        Impact = @(
+            "The account is local administrator on every monitored server by design, so its credential is present in memory across the estate"
+            "A SCOM operator can run a script or task on any agent, which is remote code execution wherever SCOM monitors"
+            "With domain privileges attached, the same access reaches the domain rather than stopping at the monitored servers"
+            "Management servers are rarely administered as Tier 0, so the account is usually easier to reach than what it can do"
+        )
+        Attack = @(
+            "1. Attacker gains administrative access to a SCOM management server, or to any server the action account logs on to"
+            "2. The service account credential is recovered from memory or from the SCOM configuration"
+            "3. Its domain privileges are used directly - no further escalation is needed"
+            "4. Alternatively a SCOM task is authored and run against every agent at once"
+        )
+        Remediation = @(
+            "Take the domain privilege away: a SCOM action account needs rights on the monitored servers, not in Active Directory"
+            "Use separate accounts for the action account, the SDK account and the data warehouse rather than one account for all of them"
+            "Where the account must stay privileged, administer the management servers as Tier 0 - the account is only as protected as the weakest host it logs on to"
+            "Consider a group Managed Service Account, whose password cannot be cracked and rotates on its own"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the group memberships of the account"
+                Command = "Get-ADUser -Identity 'ACCOUNT_NAME' -Properties memberOf | Select-Object -ExpandProperty memberOf"
+            }
+            @{
+                Description = "Show which SCOM accounts are configured (run on a management server)"
+                Command = "Get-SCOMRunAsAccount | Select-Object Name, UserName, AccountType"
+            }
+        )
+        References = @(
+            @{ Title = "SCOM Run As accounts and security"; Url = "https://learn.microsoft.com/en-us/system-center/scom/plan-security-accounts" }
+            @{ Title = "SharpSCOM"; Url = "https://github.com/breakfix/SharpSCOM" }
+        )
+        Tools = @("SharpSCOM", "BloodHound", "PowerView")
+        MITRE = "T1078.002"
+        Triggers = @(
+            @{ Attribute = 'privilegedServiceAccount'; Severity = 'Finding' }
+        )
+    }
+
     'SCCM_SITE_HIERARCHY' = @{
         Title = "SCCM Multi-Site Hierarchy Detected"
         Risk = "Hint"

@@ -1285,7 +1285,8 @@ function Test-IsExpectedInScope {
             'ADCSEnroll',
             'KerberosDelegation',
             'LAPSRead',
-            'PKIContainer'
+            'PKIContainer',
+            'SCCMContainer'
         )]
         [string]$Scope,
 

@@ -10,6 +10,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Who can write to the SCCM System Management container is now reported.** Configuration
+  Manager publishes its sites and its management points in
+  `CN=System Management,CN=System`, and a client configured for Active Directory site
+  discovery trusts what it finds there. Whoever can write to the container can publish a
+  management point of their own, and every client that picks it up takes its policy - and
+  the software that policy deploys - from a server the attacker controls.
+
+  The container is one of the few things around SCCM that is created by hand before setup
+  runs, by an administrator following a docs page that says to grant the site server Full
+  Control; what else was granted along the way is what this reads. The check found the
+  container and printed its path, and stopped there.
+
+  Reported as `SCCM_SYSTEM_MANAGEMENT_ACL`. The site servers the check discovered are
+  excluded - Full Control is what they are supposed to have - and so are SYSTEM, BUILTIN\
+  Administrators, Domain Admins and Enterprise Admins. A privileged principal that is not
+  one of those, an Account Operator say, is reported rather than cleared: publishing a
+  management point every client trusts is not something it could already do. An unreadable
+  security descriptor says so instead of passing as a clean one.
+
+- **A SCOM service account with privileged rights in the domain is called out.** SCOM makes
+  its action and SDK accounts local administrator on every monitored server by design, and
+  lets an operator run a task on any agent. Domain privileges on top of that turn a
+  management server compromise into a domain compromise, and management servers are rarely
+  administered as Tier 0. The check listed the accounts and judged none of them; it now
+  consults `Test-IsPrivileged` per account, by SID, and reports the privileged ones as
+  `SCOM_PRIVILEGED_SERVICE_ACCOUNT` with the membership that makes them privileged.
+
+- **The validation now checks that a finding definition can actually appear in a report.** A
+  definition carries the whole write-up a reader gets - impact, attack path, remediation,
+  references - and reaches a report through a `Triggers` block, a `-FindingId` on a line, or
+  an ObjectType's `PrimaryFindingId`. Nine of them have none of the three: analysis that was
+  written and never wired up, and nothing in the validation would have said so. Reported as
+  a warning next to the existing unused-ObjectType warning.
+
+  The ObjectType scan in the same step also recognises the `ObjectType = '...'` form now, so
+  a check that drives several sections from one table is not reported as leaving its types
+  unused.
+
 - **LAPS passwords that stopped rotating are reported.** Coverage counted a machine as
   protected the moment the LAPS expiration attribute existed, which says nothing about
   whether the password behind it ever changed. An expiration time in the past means the
@@ -328,6 +366,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 Found while building the unit test suites, each reproduced before it was changed.
+
+- **The Exchange service groups are judged, not just listed.** Exchange Trusted Subsystem
+  and Exchange Windows Permissions are supposed to hold Exchange servers and nothing else -
+  Exchange Windows Permissions carries WriteDACL on the domain object in the shared
+  permissions model, so an ordinary user in it can write itself a DCSync ACE, and Exchange
+  Trusted Subsystem is a member of it. The check resolved every member with its own LDAP
+  query and printed them all at Hint level, which answers "who is in this group" and never
+  "who is in it that does not belong there".
+
+  The judgement already existed: the member renderer runs `Get-ExchangeGroupMemberClass`,
+  which clears Exchange servers, computer accounts, nested Exchange groups and privileged
+  principals and flags the rest as `EXCHANGE_GROUP_LOW_PRIV_MEMBER`. It only runs on an
+  object marked `_isExchangeGroup`, which three Rights checks set when an Exchange group
+  turns up as the holder of a dangerous permission - and which the module whose subject
+  these groups are did not. It now shows the group rather than its members one by one, so
+  the classification runs and the query per member disappears with it.
+
+- **An empty Exchange Windows Permissions group is reported.** Two of the three groups said
+  "exists but has no members (unusual)"; this one had no such branch, so an empty group
+  produced a section header and nothing after it - indistinguishable from not having been
+  checked. All three now go through the same code.
+
+- **`netbootserver` is no longer printed as a host name.** The attribute holds the
+  distinguished name of the server object. It went into fields called `Name` and
+  `PXEServer`, where it read as a name that resolves nowhere. The RDN is shown as the name
+  and the DN stays beside it.
+
+- **Two SCOM management servers without a DNS host name are both reported.** The
+  deduplication compared `dNSHostName`, and two objects that both have none compare as the
+  same machine, so the second was dropped. It keys on the distinguished name now, which
+  every object has.
+
+- **`MemberCount` is a number.** Both the SCCM and the SCOM group rows carried it as the
+  string "3 member(s)", which the report cannot sort or compare - and which sorts 10 before
+  2 when it tries.
 
 - **`Set-DomainUser` and `Set-DomainComputer` could not read the userAccountControl they
   were about to change.** Every operation that flips a UAC bit - disable, enable, set or

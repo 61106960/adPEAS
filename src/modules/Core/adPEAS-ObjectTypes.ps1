@@ -337,6 +337,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
     }
 
+    'SCCMContainerPermission' = @{
+        TitleFormat = "System Management Container Write Access: {Name}"
+        Module = "Application"
+        Category = "Infrastructure"
+        SectionTitle = "System Management Container Permissions"
+        Summary = "Identifies principals that can write to the container Configuration Manager publishes its management points in."
+        WhyItMatters = "A client configured for Active Directory site discovery takes its management point from CN=System Management. Whoever can write there can publish one of their own, and every client that picks it up takes its policy - and its software - from a server the attacker controls. The container is created by hand before setup runs, which is where the extra permissions usually come from."
+        WhatWeCheck = @(
+            "Allow ACEs granting GenericAll, GenericWrite, WriteDacl, WriteOwner, WriteProperty or CreateChild"
+            "The discovered site servers are excluded - they are supposed to have Full Control here"
+            "SYSTEM, BUILTIN\Administrators, Domain Admins and Enterprise Admins are excluded as expected administrators"
+        )
+        SecureMessage = "Only the site servers and the expected administrators can write to the System Management container. No principal can publish a management point that clients would trust."
+        PrimaryFindingId = 'SCCM_SYSTEM_MANAGEMENT_ACL'
+    }
+
     'SCCMSite' = @{
         TitleFormat = "SCCM Site: {Name}"
         Module = "Application"
@@ -464,11 +480,11 @@ $Script:ObjectTypeDefinitions = [ordered]@{
     # ============================================================================
 
     'ExchangeTrustedSubsystem' = @{
-        TitleFormat = "Exchange Trusted Subsystem Member: {Name}"
+        TitleFormat = "Exchange Group: Exchange Trusted Subsystem"
         Module = "Application"
         Category = "Exchange"
-        SectionTitle = "Exchange Trusted Subsystem Members"
-        Summary = "Identifies members of the Exchange Trusted Subsystem group."
+        SectionTitle = "Exchange Trusted Subsystem"
+        Summary = "Shows the Exchange Trusted Subsystem group and judges each member against what belongs in it."
         WhyItMatters = "Exchange Trusted Subsystem has WriteDACL permissions on the domain object by default, enabling domain privilege escalation (PrivExchange, Exchange-related vulnerabilities). This is one of the most dangerous Exchange groups."
         WhatWeCheck = @(
             "Members of Exchange Trusted Subsystem"
@@ -479,11 +495,11 @@ $Script:ObjectTypeDefinitions = [ordered]@{
     }
 
     'ExchangeWindowsPermissions' = @{
-        TitleFormat = "Exchange Windows Permissions Member: {Name}"
+        TitleFormat = "Exchange Group: Exchange Windows Permissions"
         Module = "Application"
         Category = "Exchange"
-        SectionTitle = "Exchange Windows Permissions Members"
-        Summary = "Identifies members of the Exchange Windows Permissions group."
+        SectionTitle = "Exchange Windows Permissions"
+        Summary = "Shows the Exchange Windows Permissions group and judges each member against what belongs in it."
         WhyItMatters = "Exchange Windows Permissions group has powerful AD permissions including WriteDACL on the domain. Members can potentially grant themselves DCSync rights or modify security descriptors."
         WhatWeCheck = @(
             "Members of Exchange Windows Permissions"
@@ -494,11 +510,11 @@ $Script:ObjectTypeDefinitions = [ordered]@{
     }
 
     'ExchangeOrganizationManagement' = @{
-        TitleFormat = "Organization Management Member: {Name}"
+        TitleFormat = "Exchange Group: Organization Management"
         Module = "Application"
         Category = "Exchange"
-        SectionTitle = "Exchange Organization Management Members"
-        Summary = "Identifies members of the Organization Management group."
+        SectionTitle = "Exchange Organization Management"
+        Summary = "Shows the Organization Management group and judges each member against what belongs in it."
         WhyItMatters = "Organization Management is the highest Exchange administrative role. Members have full control over Exchange configuration and can manage all Exchange objects. Often a path to domain admin via Exchange permission abuse."
         WhatWeCheck = @(
             "Members of Organization Management"

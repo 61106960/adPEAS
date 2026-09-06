@@ -573,133 +573,73 @@ function Get-ExchangeInfrastructure {
                 Show-Line "Exchange Organization: $organizationName - No active Exchange Servers found" -Class Note
             }
 
-            # ===== Step 3: Check Exchange Trusted Subsystem =====
-            Show-SubHeader "Checking Exchange Trusted Subsystem group..." -ObjectType "ExchangeTrustedSubsystem"
+            # ===== Steps 3-5: The Exchange service groups =====
+            #
+            # Exchange Trusted Subsystem and Exchange Windows Permissions are supposed to
+            # hold Exchange servers and nothing else. Exchange Windows Permissions carries
+            # WriteDACL on the domain object in the shared-permissions model, so an ordinary
+            # user in it can write a DCSync ACE for itself; Exchange Trusted Subsystem is a
+            # member of it. Organization Management can grant Exchange roles, and through
+            # them mailbox access to every mailbox in the organization.
+            #
+            # So the question is never "who is in this group" but "who is in it that does
+            # not belong there", and the answer already exists: the member renderer runs
+            # Get-ExchangeGroupMemberClass, which clears Exchange servers, computer accounts,
+            # nested Exchange groups and privileged principals and flags the rest as
+            # EXCHANGE_GROUP_LOW_PRIV_MEMBER.
+            #
+            # It only runs when the object carries _isExchangeGroup, and it is the group
+            # object that has to be shown for it - the check used to resolve every member
+            # with its own LDAP query and show them one by one, which cost a round-trip per
+            # member and lost the judgement on the way.
+            $exchangeServiceGroups = @(
+                @{ Name       = 'Exchange Trusted Subsystem'
+                   ObjectType = 'ExchangeTrustedSubsystem'
+                   Title      = 'Checking Exchange Trusted Subsystem group...' }
 
-            try {
-                # Use Get-DomainGroup to find Exchange Trusted Subsystem
-                $trustedSubsystem = @(Get-DomainGroup -Identity "Exchange Trusted Subsystem" @PSBoundParameters)[0]
+                @{ Name       = 'Exchange Windows Permissions'
+                   ObjectType = 'ExchangeWindowsPermissions'
+                   Title      = 'Checking Exchange Windows Permissions group...' }
 
-                if ($trustedSubsystem) {
+                @{ Name       = 'Organization Management'
+                   ObjectType = 'ExchangeOrganizationManagement'
+                   Title      = 'Checking Organization Management group...' }
+            )
+
+            foreach ($serviceGroup in $exchangeServiceGroups) {
+                Show-SubHeader $serviceGroup.Title -ObjectType $serviceGroup.ObjectType
+
+                try {
+                    $groupObject = @(Get-DomainGroup -Identity $serviceGroup.Name @PSBoundParameters)[0]
+
+                    if (-not $groupObject) {
+                        # Exchange creates these groups at install time, so in an
+                        # organization that exists their absence is worth a line rather
+                        # than a silent log entry.
+                        Show-Line "$($serviceGroup.Name) group not found" -Class Note
+                        continue
+                    }
+
                     # Where-Object is not cosmetic: a group with no member attribute yields
                     # $null, and @($null) is a one-element array holding $null. Without the
-                    # filter an empty group was announced as "1 member(s)", the loop ran once
-                    # with a $null DN, and the "no members (unusual)" branch below could
-                    # never be reached.
-                    $members = @($trustedSubsystem.member | Where-Object { $_ })
+                    # filter an empty group is announced as "1 member(s)".
+                    $groupMembers = @($groupObject.member | Where-Object { $_ })
 
-                    if (@($members).Count -gt 0) {
-                        Show-Line "Found $(@($members).Count) member(s) in Exchange Trusted Subsystem:" -Class Hint
-
-                        foreach ($memberDN in $members) {
-                            # Use Get-DomainObject to retrieve full member object
-                            try {
-                                $memberObj = @(Get-DomainObject -Identity $memberDN @PSBoundParameters)[0]
-
-                                if ($memberObj) {
-                                    # Add type marker for reliable detection in HTML report
-                                    $memberObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeTrustedSubsystem' -Force
-                                    $memberObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Exchange Trusted Subsystem' -Force
-                                    Show-Object $memberObj
-                                }
-                            }
-                            catch {
-                                Write-Log "[Get-ExchangeInfrastructure] Error resolving member ${memberDN}: ${_}"
-                                # Fallback: Extract CN from DN
-                                if ($memberDN -match 'CN=([^,]+)') {
-                                    Show-Line "$($matches[1])" -Class Note
-                                }
-                            }
-                        }
-                    } else {
-                        Show-Line "Exchange Trusted Subsystem group exists but has no members (unusual)" -Class Note
+                    if (@($groupMembers).Count -eq 0) {
+                        Show-Line "$($serviceGroup.Name) group exists but has no members (unusual)" -Class Note
+                        continue
                     }
-                } else {
-                    Write-Log "[Get-ExchangeInfrastructure] Exchange Trusted Subsystem group not Found"
+
+                    Show-Line "Found $(@($groupMembers).Count) member(s) in $($serviceGroup.Name):" -Class Hint
+
+                    $groupObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
+                    $groupObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue $serviceGroup.ObjectType -Force
+                    Show-Object $groupObject
                 }
-            }
-            catch {
-                Write-Log "[Get-ExchangeInfrastructure] Error checking Exchange Trusted Subsystem: $_" -Level Error
-            }
-
-            # ===== Step 4: Check Exchange Windows Permissions =====
-            Show-SubHeader "Checking Exchange Windows Permissions group..." -ObjectType "ExchangeWindowsPermissions"
-
-            try {
-                # Use Get-DomainGroup
-                $windowsPermissions = @(Get-DomainGroup -Identity "Exchange Windows Permissions" @PSBoundParameters)[0]
-
-                if ($windowsPermissions) {
-                    $members = @($windowsPermissions.member | Where-Object { $_ })
-
-                    if (@($members).Count -gt 0) {
-                        Show-Line "Found $(@($members).Count) member(s) in Exchange Windows Permissions:" -Class Hint
-
-                        foreach ($memberDN in $members) {
-                            try {
-                                $memberObj = @(Get-DomainObject -Identity $memberDN @PSBoundParameters)[0]
-
-                                if ($memberObj) {
-                                    # Add type marker for reliable detection in HTML report
-                                    $memberObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeWindowsPermissions' -Force
-                                    $memberObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Exchange Windows Permissions' -Force
-                                    Show-Object $memberObj
-                                }
-                            }
-                            catch {
-                                Write-Log "[Get-ExchangeInfrastructure] Error resolving member ${memberDN}: ${_}"
-                                if ($memberDN -match 'CN=([^,]+)') {
-                                    Show-Line "$($matches[1])" -Class Note
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    Write-Log "[Get-ExchangeInfrastructure] Exchange Windows Permissions group not found"
+                catch {
+                    Write-Log "[Get-ExchangeInfrastructure] Error checking $($serviceGroup.Name): $_" -Level Error
+                    Show-Line "$($serviceGroup.Name) could not be read - result unknown, not empty" -Class Note
                 }
-            }
-            catch {
-                Write-Log "[Get-ExchangeInfrastructure] Error checking Exchange Windows Permissions: $_" -Level Error
-            }
-
-            # ===== Step 5: Check Organization Management =====
-            Show-SubHeader "Checking Organization Management group..." -ObjectType "ExchangeOrganizationManagement"
-
-            try {
-                # Use Get-DomainGroup
-                $orgManagement = @(Get-DomainGroup -Identity "Organization Management" @PSBoundParameters)[0]
-
-                if ($orgManagement) {
-                    $members = @($orgManagement.member | Where-Object { $_ })
-
-                    if (@($members).Count -gt 0) {
-                        Show-Line "Found $(@($members).Count) member(s) in Organization Management:" -Class Hint
-
-                        foreach ($memberDN in $members) {
-                            try {
-                                $memberObj = @(Get-DomainObject -Identity $memberDN @PSBoundParameters)[0]
-
-                                if ($memberObj) {
-                                    # Add type marker for reliable detection in HTML report
-                                    $memberObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeOrganizationManagement' -Force
-                                    $memberObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Organization Management' -Force
-                                    Show-Object $memberObj
-                                }
-                            }
-                            catch {
-                                Write-Log "[Get-ExchangeInfrastructure] Error resolving member ${memberDN}: ${_}"
-                                if ($memberDN -match 'CN=([^,]+)') {
-                                    Show-Line "$($matches[1])" -Class Note
-                                }
-                            }
-                        }
-                    } else {
-                        Show-Line "Organization Management group exists but has no members (unusual)" -Class Note
-                    }
-                }
-            }
-            catch {
-                Write-Log "[Get-ExchangeInfrastructure] Error checking Organization Management: $_" -Level Error
             }
 
             # ===== Summary & Recommendations =====

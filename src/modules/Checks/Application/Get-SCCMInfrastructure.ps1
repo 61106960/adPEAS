@@ -8,7 +8,9 @@ function Get-SCCMInfrastructure {
     Identifies site servers, management points, site hierarchy, service accounts, PXE/WDS servers, and the System Management container.
 
     Detection Methods:
-    1. System Management container (CN=System Management,CN=System,<Domain DN>)
+    1. System Management container (CN=System Management,CN=System,<Domain DN>), including
+       who can write to it - a management point published there is trusted by every client
+       that uses Active Directory site discovery
     2. mSSMSSite objects (SCCM site codes and hierarchy)
     3. mSSMSManagementPoint objects (MP hostnames, site type determination)
     4. Computers with SCCM-related SPNs (SMS*, SMSSQLBKUP*)
@@ -288,6 +290,110 @@ function Get-SCCMInfrastructure {
                 Show-Line "No SCCM servers found via SPN detection" -Class Note
             }
 
+            # ===== Step 5b: Who can write to the System Management container =====
+            #
+            # The container is where Configuration Manager publishes its sites and its
+            # management points, and a client configured for AD site discovery believes
+            # what it finds there. Whoever can write to it can publish a management point
+            # of their own, and every client that picks it up takes its policy - and its
+            # software - from a server the attacker controls.
+            #
+            # Unlike almost everything else SCCM touches, this container is created by hand
+            # before setup runs, by an administrator following a docs page that says to grant
+            # the site server Full Control. What else gets granted along the way is exactly
+            # what this reads.
+            #
+            # The site server computer accounts are supposed to have Full Control here, so
+            # they are added to the expected set rather than reported. They are the ones the
+            # steps above discovered, which is why this runs after them.
+            Show-SubHeader "Checking permissions on the System Management container..." -ObjectType "SCCMContainerPermission"
+
+            try {
+                $sccmServerSIDs = @{}
+                foreach ($knownServer in @($sccmServers)) {
+                    if ($knownServer.objectSid) { $sccmServerSIDs["$($knownServer.objectSid)"] = $true }
+                }
+
+                # -Raw for the byte[] form of nTSecurityDescriptor: the converted object
+                # does not carry the ACEs this needs.
+                $containerRaw = @(Get-DomainObject -Identity $systemManagementPath -Properties 'nTSecurityDescriptor' -Raw @PSBoundParameters)[0]
+
+                if (-not $containerRaw -or -not $containerRaw.nTSecurityDescriptor) {
+                    # Reading the security descriptor needs READ_CONTROL, which a plain
+                    # domain user has on this container - but say so rather than let an
+                    # unreadable ACL look like a clean one.
+                    Show-Line "The security descriptor of the System Management container could not be read - result unknown, not clean" -Class Note
+                } else {
+                    $sccmDescriptor = New-Object System.DirectoryServices.ActiveDirectorySecurity
+                    $sccmDescriptor.SetSecurityDescriptorBinaryForm($containerRaw.nTSecurityDescriptor)
+                    $sccmACEs = $sccmDescriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+
+                    $containerFindings = @{}
+                    foreach ($ace in $sccmACEs) {
+                        if ($ace.AccessControlType -ne 'Allow') { continue }
+
+                        $aceRights = "$($ace.ActiveDirectoryRights)"
+                        # Write access is the whole question: CreateChild publishes a
+                        # management point, the others get there in one more step.
+                        if ($aceRights -notmatch 'GenericAll|GenericWrite|WriteDacl|WriteOwner|WriteProperty|CreateChild') { continue }
+
+                        $aceSID = $ace.IdentityReference.Value
+                        if ($sccmServerSIDs.ContainsKey($aceSID)) { continue }
+
+                        $scopeResult = Test-IsExpectedInScope -Identity $aceSID -Scope 'SCCMContainer' -ReturnDetails
+                        # 'Attention' is kept rather than filtered: it means a principal
+                        # that is privileged but not one of the four this container expects,
+                        # and an Account Operator that can publish a management point is a
+                        # shorter path than the one it already has.
+                        if ($scopeResult.Severity -eq 'Expected') { continue }
+
+                        if (-not $containerFindings.ContainsKey($aceSID)) {
+                            $containerFindings[$aceSID] = [PSCustomObject]@{
+                                SID      = $aceSID
+                                Rights   = New-Object System.Collections.Generic.List[string]
+                                Severity = $scopeResult.Severity
+                            }
+                        }
+                        if (-not $containerFindings[$aceSID].Rights.Contains($aceRights)) {
+                            [void]$containerFindings[$aceSID].Rights.Add($aceRights)
+                        }
+                    }
+
+                    if ($containerFindings.Count -gt 0) {
+                        Show-Line "$($containerFindings.Count) principal(s) can write to the System Management container and are not a site server" -Class Finding
+
+                        foreach ($containerFinding in $containerFindings.Values) {
+                            $sidHex = ConvertTo-LDAPSIDHex -SID $containerFinding.SID
+                            $aceObject = $null
+                            if ($sidHex) {
+                                $aceObject = @(Get-DomainObject -LDAPFilter "(objectSid=$sidHex)" @PSBoundParameters)[0]
+                            }
+
+                            if (-not $aceObject) {
+                                $aceObject = [PSCustomObject]@{
+                                    sAMAccountName = (ConvertFrom-SID -SID $containerFinding.SID)
+                                    objectSid      = $containerFinding.SID
+                                    objectClass    = 'foreignSecurityPrincipal'
+                                }
+                            }
+
+                            $aceObject | Add-Member -NotePropertyName 'containerDN' -NotePropertyValue $systemManagementPath -Force
+                            $aceObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue (($containerFinding.Rights) -join ', ') -Force
+                            $aceObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $containerFinding.Severity -Force
+                            $aceObject | Add-Member -NotePropertyName 'sccmContainerWrite' -NotePropertyValue 'This principal can write to the container Configuration Manager publishes its management points in. A management point published here is trusted by every client that uses Active Directory site discovery.' -Force
+                            $aceObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMContainerPermission' -Force
+                            Show-Object $aceObject
+                        }
+                    } else {
+                        Show-Line "Only the site servers and the expected administrators can write to the System Management container" -Class Secure
+                    }
+                }
+            }
+            catch {
+                Write-Log "[Get-SCCMInfrastructure] Error reading the System Management container ACL: $_" -Level Warning
+                Show-Line "The System Management container permissions could not be analysed - result unknown, not clean" -Class Note
+            }
+
             # ===== Step 6: PXE/WDS Discovery =====
             Show-SubHeader "Searching for PXE/WDS boot servers..." -ObjectType "SCCMPXEServer"
 
@@ -303,9 +409,15 @@ function Get-SCCMInfrastructure {
 
                     foreach ($pxe in $pxePoints) {
                         $parentDN = $pxe.distinguishedName -replace '^[^,]+,', ''
+                        # netbootserver holds the DN of the server object, not a host name.
+                        # Printing the DN in a field called PXEServer read as a name nobody
+                        # could resolve; the RDN is the name, and the DN stays beside it.
+                        $pxeServerDN = "$($pxe.netbootserver)"
+                        $pxeServerName = if ($pxeServerDN -match '^CN=([^,]+),') { $Matches[1] } else { $pxeServerDN }
                         $pxeObj = [PSCustomObject]@{
-                            Name = $pxe.netbootserver
-                            PXEServer = $pxe.netbootserver
+                            Name = $pxeServerName
+                            PXEServer = $pxeServerName
+                            PXEServerDN = $pxeServerDN
                             ParentObject = $parentDN
                         }
                         $pxeObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMPXEServer' -Force
@@ -392,7 +504,9 @@ function Get-SCCMInfrastructure {
                     if ($group.member) {
                         $memberCount = @($group.member).Count
                     }
-                    $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue "$memberCount member(s)" -Force
+                    # A number, not "3 member(s)": the report sorts and compares this
+                    # column, and a string sorts 10 before 2.
+                    $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue $memberCount -Force
                     # Remove member attribute to prevent Extended-attribute rendering from triggering
                     # per-DN SID resolution (Convert-DNsToMemberInfo -> ConvertTo-SID per member)
                     $group.PSObject.Properties.Remove('member')

@@ -774,6 +774,26 @@ $Script:SecurityScopes = @{
         )
         AttentionBroadGroups = @()
     }
+
+    # CN=System Management,CN=System,<domainDN>. Configuration Manager publishes its site
+    # and management point objects here, and clients using AD site discovery believe what
+    # they find. The container is created by hand before SCCM is installed, and the site
+    # server's computer account needs Full Control on it - which is why the caller adds the
+    # site servers it discovered to the expected set rather than this table doing it: their
+    # SIDs are ordinary computer accounts and differ per domain.
+    'SCCMContainer' = @{
+        Description = "Identities expected to manage the SCCM System Management container"
+        ExpectedSIDs = @(
+            'S-1-5-18',       # SYSTEM
+            'S-1-5-32-544'    # BUILTIN\Administrators
+        )
+        ExpectedRIDSuffixes = @(
+            '-500',   # Built-in Administrator
+            '-512',   # Domain Admins
+            '-519'    # Enterprise Admins
+        )
+        AttentionBroadGroups = @()
+    }
 }
 
 <#
