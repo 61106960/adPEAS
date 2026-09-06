@@ -142,9 +142,16 @@ function Get-WeakCertificateMapping {
 
             if (@($weakMappings).Count -eq 0) { continue }
 
+            # .IsPrivileged, not [bool] of the result: Test-IsPrivileged returns an object,
+            # and [bool] of any object is $true - so every weak mapping was reported as
+            # sitting on a privileged principal. And no connection splat: the function takes
+            # Identity, IncludeOperators and NoCache and nothing else, so passing Domain or
+            # Server threw, which the catch below turned into "not privileged" for every
+            # principal. The answer was wrong in one direction or the other depending only
+            # on whether the caller had named a domain.
             $isPrivileged = $false
             try {
-                $isPrivileged = [bool](Test-IsPrivileged -Identity $principal.objectSid @connectionParams)
+                $isPrivileged = ((Test-IsPrivileged -Identity $principal.objectSid).IsPrivileged -eq $true)
             } catch {
                 Write-Log "[Get-WeakCertificateMapping] Privilege check failed for '$($principal.sAMAccountName)': $_"
             }
@@ -238,10 +245,18 @@ function Get-WeakCertificateMapping {
                     $trusteeSID = [string]$ace.SID
                     if ([string]::IsNullOrWhiteSpace($trusteeSID)) { continue }
 
+                    # Same two defects as above, and here they decided the whole section:
+                    # [bool] of the returned object is always $true, so every trustee looked
+                    # privileged and the continue below dropped all of them - this half of
+                    # ESC14 reported nothing at all. With a connection splat it threw
+                    # instead, the empty catch left $false, and SYSTEM and Domain Admins
+                    # were reported as non-privileged writers.
                     $trusteePrivileged = $false
                     try {
-                        $trusteePrivileged = [bool](Test-IsPrivileged -Identity $trusteeSID @connectionParams)
-                    } catch { }
+                        $trusteePrivileged = ((Test-IsPrivileged -Identity $trusteeSID).IsPrivileged -eq $true)
+                    } catch {
+                        Write-Log "[Get-WeakCertificateMapping] Privilege check failed for trustee '$trusteeSID': $_"
+                    }
 
                     # A trustee that is already privileged holds nothing it did not have.
                     if ($trusteePrivileged) { continue }

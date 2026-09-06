@@ -367,6 +367,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Found while building the unit test suites, each reproduced before it was changed.
 
+- **Both halves of the ESC14 check were deciding on a value that was never right.**
+  `Get-WeakCertificateMapping` asked `[bool](Test-IsPrivileged -Identity $sid @connectionParams)`
+  in two places. `Test-IsPrivileged` returns an object, and `[bool]` of any object is
+  `$true`; the function also takes no connection parameters, so splatting Domain or Server
+  into it threw and the surrounding catch turned that into "not privileged".
+
+  Which way it was wrong depended only on how adPEAS had been invoked. Run against the
+  current domain, every weak mapping was reported as sitting on a privileged principal, and
+  in the second half every trustee looked privileged and was skipped - so the
+  writable-altSecurityIdentities detection, the original ESC14, reported nothing at all.
+  Run with -Domain or -Credential, no mapping was called privileged and no trustee was
+  skipped, so SYSTEM and Domain Admins were listed as non-privileged writers.
+
+  Neither showed up in the 306 AD CS tests, because none of them ran the check - only its
+  classification helpers. It now has an end-to-end suite covering both halves.
 - **The Exchange service groups are judged, not just listed.** Exchange Trusted Subsystem
   and Exchange Windows Permissions are supposed to hold Exchange servers and nothing else -
   Exchange Windows Permissions carries WriteDACL on the domain object in the shared
