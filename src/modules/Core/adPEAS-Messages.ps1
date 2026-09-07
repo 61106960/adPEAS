@@ -312,14 +312,33 @@ function Set-FindingsCollection {
     Serializes all collected findings to a JSON file for persistence between runs.
     AD objects are serialized as property hashtables, RenderModel is excluded
     (it will be re-computed by Export-HTMLReport via Get-RenderModel).
+    Written atomically: a temporary file next to the target is replaced onto it, so a
+    process that dies mid-write leaves the previous export intact rather than a truncated
+    file. That matters because this is now called repeatedly during a run, not once at
+    the end - a plain truncate-and-write would multiply the window in which a crash
+    destroys the export by the number of checkpoints.
 .PARAMETER Path
     Path for the JSON cache file.
+.PARAMETER Partial
+    Marks the export as a mid-run checkpoint: the cache records Complete = $false, so a
+    file left behind by an interrupted scan can be told apart from a finished one. The
+    final export of a completed run omits this and overwrites the flag with $true.
+.PARAMETER CompletedModules
+    The modules whose checks had finished when this export was written. Says which part
+    of an interrupted scan the file actually covers.
 #>
 function Export-FindingsCache {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [string]$Path
+        [string]$Path,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$Partial,
+
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyCollection()]
+        [string[]]$CompletedModules = @()
     )
 
     $findings = Get-FindingsCollection
@@ -366,6 +385,10 @@ function Export-FindingsCache {
         Domain        = if ($Script:LDAPContext) { $Script:LDAPContext.Domain } else { 'Unknown' }
         Server        = if ($Script:LDAPContext) { $Script:LDAPContext.Server } else { 'Unknown' }
         adPEASVersion = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { 'Unknown' }
+        # Absent in files written before checkpointing existed. A reader must treat a
+        # missing Complete as $true: back then the export only ever ran at the end.
+        Complete         = (-not $Partial)
+        CompletedModules = @($CompletedModules)
         FindingCount  = $serializable.Count
         Findings      = @($serializable)
     }
@@ -373,8 +396,35 @@ function Export-FindingsCache {
     $json = $cache | ConvertTo-Json -Depth 5 -Compress
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
-    [System.IO.File]::WriteAllText($resolvedPath, $json, $utf8NoBom)
-    Write-Log "[FindingsCache] Exported $($serializable.Count) findings to '$Path'"
+
+    # Write beside the target, then swap it in. File.Replace is the atomic form and needs
+    # an existing destination; Move covers the first write. Both can fail on a share or a
+    # file system that does not support the operation, and losing the export over that
+    # would be worse than losing atomicity - hence the direct write as a last resort.
+    #
+    # [NullString]::Value, not $null, for the backup-file argument. PowerShell turns a
+    # $null bound to a [string] parameter into the empty string, and File.Replace rejects
+    # that as a malformed path - so every call took the fallback below and printed its
+    # warning after every module, which is how this was found. Passing no backup file is
+    # what the API's null means, and [NullString]::Value is the only way to say it from
+    # PowerShell. Fails the same way under Windows PowerShell 5.1 and pwsh 7.
+    $tempPath = "$resolvedPath.tmp"
+    [System.IO.File]::WriteAllText($tempPath, $json, $utf8NoBom)
+    try {
+        if ([System.IO.File]::Exists($resolvedPath)) {
+            [System.IO.File]::Replace($tempPath, $resolvedPath, [NullString]::Value)
+        } else {
+            [System.IO.File]::Move($tempPath, $resolvedPath)
+        }
+    } catch {
+        Write-Log "[FindingsCache] Atomic replace failed, writing directly: $($_.Exception.Message)" -Level Warning
+        [System.IO.File]::WriteAllText($resolvedPath, $json, $utf8NoBom)
+        if ([System.IO.File]::Exists($tempPath)) {
+            try { [System.IO.File]::Delete($tempPath) } catch { }
+        }
+    }
+
+    Write-Log "[FindingsCache] Exported $($serializable.Count) findings to '$Path' (complete: $(-not $Partial))"
 }
 
 <#
@@ -530,21 +580,54 @@ function Merge-FindingsCollection {
         }
     }
 
-    # Sort by canonical module order to ensure consistent report layout
-    $categoryOrder = @('Domain','Creds','Rights','Delegation','ADCS','Accounts','GPO','Computer','Application','Bloodhound')
+    # Build merged list: kept previous + current, then restore canonical module order
+    $merged = [System.Collections.ArrayList]::new($kept.Count + $CurrentFindings.Count)
+    [void]$merged.AddRange(@($kept))
+    [void]$merged.AddRange(@($CurrentFindings))
+    $sorted = @(Sort-FindingsByCategory -Findings $merged)
+
+    Write-Log "[FindingsCache] Merge: kept $($kept.Count) previous, added $($CurrentFindings.Count) new, total $($sorted.Count)"
+    return $sorted
+}
+
+<#
+.SYNOPSIS
+    Puts a findings list back into canonical module order.
+.DESCRIPTION
+    Report structure is carried by the ORDER of this list, not by a grouping key:
+    Export-HTMLReport walks it in sequence and treats Header and SubHeader entries as
+    delimiters, so everything between two of them becomes one card group. A category
+    whose findings are split across the list therefore does not merely render in an odd
+    position - its content is attached to whichever header happens to precede it.
+
+    Sort-Object is stable, so entries within one category keep the order they were
+    emitted in, which is what keeps each subheader with the findings below it.
+
+    Only reached when a run merges in an earlier export (-OutputAppend). A plain run
+    emits its modules in canonical order already, and sorting it is a no-op that costs
+    real time on a large collection - so callers guard the call rather than paying it
+    unconditionally.
+.PARAMETER Findings
+    The findings to order. An unknown or missing category sorts last.
+#>
+function Sort-FindingsByCategory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        $Findings
+    )
+
+    # A finding Category is a module name, so report section order is module order. The
+    # list lives in adPEAS-Types.ps1 because -Module, the execution order and this all
+    # have to name the same ten things in the same sequence.
+    $categoryOrder = @($Script:adPEASModules)
     $categoryIndex = @{}
     for ($i = 0; $i -lt $categoryOrder.Count; $i++) {
         $categoryIndex[$categoryOrder[$i]] = $i
     }
 
-    # Build merged list: kept previous + current, then sort by category order
-    $merged = [System.Collections.ArrayList]::new($kept.Count + $CurrentFindings.Count)
-    [void]$merged.AddRange(@($kept))
-    [void]$merged.AddRange(@($CurrentFindings))
-    $sorted = @($merged | Sort-Object { if ($categoryIndex.ContainsKey($_.Category)) { $categoryIndex[$_.Category] } else { 999 } })
-
-    Write-Log "[FindingsCache] Merge: kept $($kept.Count) previous, added $($CurrentFindings.Count) new, total $($sorted.Count)"
-    return $sorted
+    return @(@($Findings) | Sort-Object { if ($categoryIndex.ContainsKey($_.Category)) { $categoryIndex[$_.Category] } else { 999 } })
 }
 
 # ============================================================================

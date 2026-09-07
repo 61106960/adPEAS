@@ -846,6 +846,14 @@ try {
     # so the displayed module list and progress counter reflect what will actually run.
     if ($OPSEC) {
         $Module = @($Module | Where-Object { $_ -ne 'Bloodhound' })
+
+        # -Module Bloodhound -OPSEC asks for the one module OPSEC removes. Without this
+        # the run announces an empty module list and produces a report with nothing in
+        # it, which reads like the domain came back clean.
+        if ($Module.Count -eq 0) {
+            Write-Warning "[adPEAS] -OPSEC excludes BloodHound collection, which was the only module selected. Nothing to do."
+            return
+        }
     }
 
     Write-Log "[adPEAS] Executing Modules: $($Module -join ', ')"
@@ -869,7 +877,92 @@ try {
         'Bloodhound' = "BloodHound Data"
     }
 
+    # Seed the collection from the previous run (-OutputAppend)
+    #
+    # Has to happen before the first check, not after the last one: the per-module
+    # checkpoints below write to exactly the file this reads, so a merge at the end would
+    # find this run's own output there and silently drop everything the previous run
+    # collected. Seeding first also means an interrupted append run keeps the history it
+    # started from rather than throwing it away with the rest.
+    #
+    # Module names map 1:1 to category names, so the modules being re-run are the
+    # categories whose previous findings are dropped.
+    $appendCachePath = if ($basePath) { "$basePath.json" } else { $null }
+    if ($OutputAppend -and $appendCachePath -and (Test-Path $appendCachePath)) {
+        try {
+            $previousFindings = @(Import-FindingsCache -Path $appendCachePath)
+            $keptFindings = @(Merge-FindingsCollection `
+                -PreviousFindings $previousFindings `
+                -CurrentFindings @() `
+                -ReplacedCategories @($Module))
+
+            Set-FindingsCollection -Findings $keptFindings
+            Show-Line "Appending to existing report: kept $($keptFindings.Count) of $($previousFindings.Count) previous findings, re-running $($Module -join ', ')" -Class Note
+        }
+        catch {
+            Write-Warning "[adPEAS] Could not load previous findings from '$appendCachePath': $_"
+            Write-Warning "[adPEAS] Continuing without append - creating fresh report"
+        }
+    } elseif ($OutputAppend) {
+        Write-Log "[adPEAS] No previous cache found at '$appendCachePath' - first append run"
+    }
+
     # 3. Execute checks
+
+    # Which modules have finished, and where the checkpoint after each of them goes.
+    #
+    # An ArrayList rather than a plain array because Save-FindingsCheckpoint below is a
+    # nested function: it can read this variable from the enclosing scope, but assigning
+    # to it there would create a new local instead and the additions would be invisible
+    # here. Adding to the list mutates the one object both scopes hold. A $Script:
+    # variable would work too, at the price of an entry in Clear-SessionState for state
+    # that does not outlive this call.
+    $completedModules = [System.Collections.ArrayList]::new()
+    $checkpointPath = if ($Format -in @('All', 'JSON') -and $basePath) { "$basePath.json" } else { $null }
+
+    # Write everything collected so far, after every module.
+    #
+    # Without this a scan that dies - an unhandled error, a closed window, a killed
+    # process - takes the whole JSON with it, and the HTML with that, since both are
+    # generated from this one collection at the very end. The text report never had the
+    # problem: Write-adPEASOutput appends it line by line as it is produced. This closes
+    # the gap for the other two, because Convert-adPEASReport rebuilds an HTML report
+    # from a JSON export without needing a connection.
+    #
+    # Per module, not per check: ten writes instead of forty-odd, and what a crash costs
+    # is at most the module that was running. A failing checkpoint must never take the
+    # scan down with it - the scan is the valuable part, the checkpoint is the insurance.
+    function Save-FindingsCheckpoint {
+        param([string]$ModuleName)
+
+        # A dead session does not stop the module blocks - Invoke-CheckWithContext returns
+        # from every remaining check instead, so every later block still reaches this line
+        # having run nothing. Recording those as completed would put modules into
+        # CompletedModules that were skipped, which is the one thing the field exists to
+        # say. The last checkpoint before the session died is the honest one; leave it.
+        if ($Script:LDAPContext -and $Script:LDAPContext['SessionInvalid']) {
+            Write-Log "[adPEAS] Skipping checkpoint after module '$ModuleName' - session invalid"
+            return
+        }
+
+        [void]$completedModules.Add($ModuleName)
+        if (-not $checkpointPath) { return }
+
+        try {
+            # Only -OutputAppend can leave the collection out of canonical module order,
+            # by seeding it with categories this run does not re-emit. Everything else
+            # arrives in order already, and sorting it would cost real time on a large
+            # collection to change nothing.
+            if ($OutputAppend) {
+                Set-FindingsCollection -Findings @(Sort-FindingsByCategory -Findings (Get-FindingsCollection))
+            }
+            Export-FindingsCache -Path $checkpointPath -Partial -CompletedModules @($completedModules)
+        }
+        catch {
+            Write-Log "[adPEAS] Checkpoint after module '$ModuleName' failed: $_" -Level Warning
+        }
+    }
+
     # Helper function to run a check with context for HTML reporting
     function Invoke-CheckWithContext {
         param(
@@ -952,6 +1045,7 @@ try {
             Write-Warning "[adPEAS] Error executing Domain Module: $_"
         }
         Exit-StatisticsModule 'Domain'
+        Save-FindingsCheckpoint -ModuleName 'Domain'
     }
 
     # Creds Module - immediately actionable findings first
@@ -971,6 +1065,7 @@ try {
             Write-Warning "[adPEAS] Error executing Creds Module: $_"
         }
         Exit-StatisticsModule 'Creds'
+        Save-FindingsCheckpoint -ModuleName 'Creds'
     }
 
     # Rights Module - privilege escalation paths
@@ -989,6 +1084,7 @@ try {
             Write-Warning "[adPEAS] Error executing Rights Module: $_"
         }
         Exit-StatisticsModule 'Rights'
+        Save-FindingsCheckpoint -ModuleName 'Rights'
     }
 
     # Delegation Module - delegation abuse vectors
@@ -1004,6 +1100,7 @@ try {
             Write-Warning "[adPEAS] Error executing Delegation Module: $_"
         }
         Exit-StatisticsModule 'Delegation'
+        Save-FindingsCheckpoint -ModuleName 'Delegation'
     }
 
     # ADCS Module - certificate abuse (often critical)
@@ -1018,6 +1115,7 @@ try {
             Write-Warning "[adPEAS] Error executing ADCS Module: $_"
         }
         Exit-StatisticsModule 'ADCS'
+        Save-FindingsCheckpoint -ModuleName 'ADCS'
     }
 
     # Accounts Module - privileged account hygiene
@@ -1039,6 +1137,7 @@ try {
             Write-Warning "[adPEAS] Error executing Accounts Module: $_"
         }
         Exit-StatisticsModule 'Accounts'
+        Save-FindingsCheckpoint -ModuleName 'Accounts'
     }
 
     # GPO Module - GPO abuse vectors
@@ -1057,6 +1156,7 @@ try {
             Write-Warning "[adPEAS] Error executing GPO Module: $_"
         }
         Exit-StatisticsModule 'GPO'
+        Save-FindingsCheckpoint -ModuleName 'GPO'
     }
 
     # Computer Module - computer security and LAPS configuration
@@ -1073,6 +1173,7 @@ try {
             Write-Warning "[adPEAS] Error executing Computer Module: $_"
         }
         Exit-StatisticsModule 'Computer'
+        Save-FindingsCheckpoint -ModuleName 'Computer'
     }
 
     # Application Module - infrastructure overview (Exchange, SCCM, SCOM)
@@ -1088,6 +1189,7 @@ try {
             Write-Warning "[adPEAS] Error executing Application Module: $_"
         }
         Exit-StatisticsModule 'Application'
+        Save-FindingsCheckpoint -ModuleName 'Application'
     }
 
     # Bloodhound Module (excluded from $Module above when -OPSEC is set)
@@ -1113,40 +1215,17 @@ try {
             Write-Warning "[adPEAS] Error executing Bloodhound Module: $_"
         }
         Exit-StatisticsModule 'Bloodhound'
+        Save-FindingsCheckpoint -ModuleName 'Bloodhound'
     }
 
     # Check if session became invalid during check execution (e.g., expired Kerberos TGT)
     $sessionAborted = $Script:LDAPContext -and $Script:LDAPContext['SessionInvalid']
 
-    # 4. Merge with previous findings if -OutputAppend
-    # The JSON cache path is always basePath.json, regardless of output format
-    if ($OutputAppend -and -not $sessionAborted) {
-        $cachePath = "$basePath.json"
-
-        if (Test-Path $cachePath) {
-            try {
-                $previousFindings = Import-FindingsCache -Path $cachePath
-                $currentFindings = Get-FindingsCollection
-
-                # Module names = Category names (1:1 mapping)
-                $replacedCategories = @($Module)
-
-                $mergedFindings = Merge-FindingsCollection `
-                    -PreviousFindings $previousFindings `
-                    -CurrentFindings $currentFindings `
-                    -ReplacedCategories $replacedCategories
-
-                Set-FindingsCollection -Findings $mergedFindings
-                Show-Line "Appended to existing report: merged $($previousFindings.Count) previous + $($currentFindings.Count) new findings" -Class Note
-            }
-            catch {
-                Write-Warning "[adPEAS] Could not load previous findings from '$cachePath': $_"
-                Write-Warning "[adPEAS] Continuing without append - creating fresh report"
-            }
-        } else {
-            Write-Log "[adPEAS] No previous cache found at '$cachePath' - first append run"
-        }
-    }
+    # 4. -OutputAppend used to merge the previous run in here, after the checks. It cannot
+    # stay: the checkpoints write $basePath.json during the run, so by this point the file
+    # the merge reads has been overwritten with this run's own data. The merge moved to
+    # before the first check, where it also survives an interrupted run instead of being
+    # lost with it.
 
     # 5. Generate HTML Report if requested
     if ($Script:HTMLOutputPath -and -not $sessionAborted) {
@@ -1164,7 +1243,11 @@ try {
     if ($Format -in @('All', 'JSON') -and $basePath -and -not $sessionAborted) {
         $jsonPath = "$basePath.json"
         try {
-            Export-FindingsCache -Path $jsonPath
+            # Overwrites the last checkpoint. Without -Partial the cache records
+            # Complete = $true, which is what separates this file from the one an
+            # interrupted run leaves behind. It also picks up everything emitted after
+            # the last module - the statistics summary and the scan summary.
+            Export-FindingsCache -Path $jsonPath -CompletedModules @($completedModules)
             $Script:JSONOutputPath = $jsonPath
             Write-Log "[adPEAS] Findings JSON saved to: $jsonPath"
         }
@@ -1215,6 +1298,14 @@ try {
     if ($sessionAborted) {
         Show-Line "Scan was aborted due to invalid LDAP session. No reports were generated." -Class Finding
         Show-Line "Re-authenticate with Connect-adPEAS and try again." -Class Hint
+
+        # The checkpoints are the reason there is something to point at here at all. The
+        # file is marked incomplete and names the modules it covers, so it is worth
+        # naming rather than leaving for the user to find.
+        if ($checkpointPath -and (Test-Path $checkpointPath)) {
+            Show-Line "Partial JSON export from the modules that completed: $checkpointPath" -Class Hint
+            Show-Line "Rebuild a report from it with: Convert-adPEASReport -InputJson '$checkpointPath' -OutputPath '$basePath'" -Class Hint
+        }
     } else {
         # 7. Report file notifications (after summary)
         if ($Script:adPEAS_Outputfile) {

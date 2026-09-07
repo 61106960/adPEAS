@@ -132,6 +132,21 @@ function Compare-adPEASReport {
                 Write-Warning "[Compare-adPEASReport] Comparison results may not be meaningful across different domains"
             }
 
+            # Interrupted-scan warning. A scan writes its export after every module, so a
+            # file from a run that died covers only part of the domain. Comparing it is the
+            # worst place for that to go unnoticed: every finding from a module that never
+            # ran shows up as resolved, which is the one result a reader acts on.
+            #
+            # Complete is absent in files written before checkpointing existed - back then
+            # the export only ever ran at the end, so a missing flag means complete.
+            foreach ($entry in @(@{Name='Baseline'; Cache=$baselineCache}, @{Name='Current'; Cache=$currentCache})) {
+                if ($null -ne $entry.Cache.Complete -and -not $entry.Cache.Complete) {
+                    $covered = if ($entry.Cache.CompletedModules) { @($entry.Cache.CompletedModules) -join ', ' } else { 'unknown' }
+                    Write-Warning "[Compare-adPEASReport] $($entry.Name) is from an interrupted scan covering only: $covered"
+                    Write-Warning "[Compare-adPEASReport] Findings from modules it never ran will appear as resolved"
+                }
+            }
+
             # 2. Import findings from already-parsed caches (avoids re-reading files)
             $baselineFindings = Import-FindingsFromCache -Cache $baselineCache
             $currentFindings = Import-FindingsFromCache -Cache $currentCache

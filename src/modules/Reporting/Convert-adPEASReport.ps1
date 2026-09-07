@@ -112,6 +112,20 @@ function Convert-adPEASReport {
                 Show-Line "Regenerating with adPEAS $currentVersion (updated definitions/scoring)" -Class Hint -NoCollect
             }
 
+            # A scan writes this file after every module, so one left behind by an
+            # interrupted run is a valid export of part of a domain. The report built from
+            # it is complete for the modules it names and silent about the rest - which
+            # reads exactly like a clean result for those. Say so here, because this is
+            # where someone recovers such a file, and nothing later distinguishes it.
+            #
+            # Complete is absent in files written before checkpointing existed; back then
+            # the export only ever ran at the end, so a missing flag means complete.
+            if ($null -ne $cache.Complete -and -not $cache.Complete) {
+                $covered = if ($cache.CompletedModules) { @($cache.CompletedModules) -join ', ' } else { 'unknown' }
+                Write-Warning "[Convert-adPEASReport] This export is from an interrupted scan - it covers only: $covered"
+                Show-Line "Source scan was interrupted - covers only these modules: $covered" -Class Finding -NoCollect
+            }
+
             # 2. Import findings from already-parsed cache (avoids re-reading the file)
             $findings = Import-FindingsFromCache -Cache $cache
             if (@($findings).Count -eq 0) {
