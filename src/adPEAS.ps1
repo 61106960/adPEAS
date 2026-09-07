@@ -140,6 +140,7 @@ if ($Script:ScriptPath) {
     # Helper Modules
     . "$Script:ScriptPath\modules\Helpers\Format-adPEASDate.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-adPEASOutputBasePath.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Resolve-adPEASModules.ps1"
     . "$Script:ScriptPath\modules\Helpers\Write-Log.ps1"
     . "$Script:ScriptPath\modules\Helpers\New-SafePassword.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertTo-FormattedACE.ps1"
@@ -329,6 +330,12 @@ function Invoke-adPEAS {
     Array of Modules to execute. Available: Domain, Creds, Rights, Delegation, ADCS, Accounts, GPO, Computer, Application, BloodHound.
     Default: All Modules.
 
+.PARAMETER ExcludeModule
+    Array of Modules to skip. Everything else runs, which is the short way to say "all but these"
+    without listing the other nine.
+    Can be combined with -Module, in which case it subtracts from that selection.
+    With -OutputAppend, a skipped module keeps the findings the previous run collected for it.
+
 .PARAMETER OPSEC
     Skips OPSEC-critical and heavy-load checks (Kerberoast, ASREPRoast, BloodHound collection, PasswordInDescription, NonDefaultOwners, OutdatedComputers).
     These checks enumerate thousands of objects and generate significant LDAP traffic.
@@ -397,6 +404,11 @@ function Invoke-adPEAS {
     Invoke-adPEAS -Module Domain,Accounts,GPO
 
 .EXAMPLE
+    Import-Module .\adPEAS.ps1
+    # Run everything except the two slowest Modules
+    Invoke-adPEAS -ExcludeModule Bloodhound,Computer
+
+.EXAMPLE
     # OPSEC mode (stealth - no Kerberoast, ASREPRoast, BloodHound collection)
     Invoke-adPEAS -Domain "contoso.com" -UseWindowsAuth -OPSEC
 
@@ -445,6 +457,12 @@ function Invoke-adPEAS {
         [Parameter(Mandatory=$false)]
         [ValidateSet("Domain","Creds","Rights","Delegation","ADCS","Accounts","GPO","Computer","Application","Bloodhound")]
         [string[]]$Module,
+
+        # The literal list is duplicated from $Script:adPEASModules because a ValidateSet
+        # argument has to be a literal. ModuleParameters.Tests.ps1 asserts they agree.
+        [Parameter(Mandatory=$false)]
+        [ValidateSet("Domain","Creds","Rights","Delegation","ADCS","Accounts","GPO","Computer","Application","Bloodhound")]
+        [string[]]$ExcludeModule,
 
         [Parameter(Mandatory=$false)]
         [switch]$OPSEC,
@@ -526,6 +544,25 @@ function Invoke-adPEAS {
     if ($OutputAppend -and $Format -notin @('All', 'JSON')) {
         Write-Warning "[adPEAS] -OutputAppend requires JSON findings cache. Use -Format All or -Format JSON. Ignoring -OutputAppend."
         $OutputAppend = [switch]::new($false)
+    }
+
+    # Determine which modules run, before anything is authenticated or written
+    #
+    # Resolved against the canonical list, so $Module ends up normalized in casing and in
+    # the order the module blocks further down actually execute - which is what
+    # "Executing Modules:" then reports, and what -OutputAppend hands to
+    # Merge-FindingsCollection as the categories to replace. A module skipped here is
+    # therefore also one whose findings from the previous run survive the append, which is
+    # what makes -ExcludeModule and -OutputAppend compose.
+    #
+    # Up here rather than at step 2 for the empty case: excluding everything is a typo,
+    # and finding out about it at step 2 would mean after a full authentication and after
+    # the report files were created and truncated.
+    $Module = @(Resolve-adPEASModules -Module $Module -ExcludeModule $ExcludeModule)
+
+    if ($Module.Count -eq 0) {
+        Write-Warning "[adPEAS] -ExcludeModule leaves no module to run. Nothing to do."
+        return
     }
 
     # Initialize findings collection if HTML or JSON format requested
@@ -803,11 +840,8 @@ try {
         return
     }
 
-    # 2. Determine Modules
-    if (-not $Module) {
-        $Module = @('Domain','Creds','Rights','Delegation','ADCS','Accounts','GPO','Computer','Application','Bloodhound')
-    }
-
+    # 2. Apply OPSEC to the module list resolved above
+    #
     # OPSEC mode excludes BloodHound collection entirely - drop it from the list
     # so the displayed module list and progress counter reflect what will actually run.
     if ($OPSEC) {

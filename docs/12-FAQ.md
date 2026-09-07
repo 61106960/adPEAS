@@ -191,6 +191,23 @@ Invoke-adPEAS -Module ADCS
 Invoke-adPEAS -Module Domain,Accounts,Creds
 ```
 
+To run everything *except* a few modules, use `-ExcludeModule` instead of listing the other nine:
+
+```powershell
+# Everything but the BloodHound collection
+Invoke-adPEAS -ExcludeModule Bloodhound
+
+# Everything but the two slowest modules
+Invoke-adPEAS -ExcludeModule Bloodhound,Computer
+```
+
+Both can be combined, in which case `-ExcludeModule` subtracts from the `-Module` selection:
+
+```powershell
+# Runs Domain and Rights
+Invoke-adPEAS -Module Domain,Rights,GPO -ExcludeModule GPO
+```
+
 Or run individual check functions:
 
 ```powershell

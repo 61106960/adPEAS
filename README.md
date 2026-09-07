@@ -198,6 +198,12 @@ Run specific modules:
 Invoke-adPEAS -Domain "contoso.com" -UseWindowsAuth -Module Domain,Creds,ADCS
 ```
 
+Or run everything except a few, without listing the rest:
+
+```powershell
+Invoke-adPEAS -Domain "contoso.com" -UseWindowsAuth -ExcludeModule Bloodhound,Computer
+```
+
 ---
 
 ## Documentation

@@ -16,6 +16,24 @@
 #>
 
 # =============================================================================
+# MODULES - Central Definition
+# =============================================================================
+# The check modules adPEAS runs, in the order it runs them.
+#
+# This one array is three things at once, which is why it lives here rather than in any
+# of them:
+#   - the default set for -Module, and the pool -ExcludeModule subtracts from
+#   - the order the module blocks in Invoke-adPEAS execute in
+#   - the order report sections appear in, because a module name IS a finding Category
+#     (Sort-FindingsByCategory reads it)
+#
+# The one copy that cannot be replaced by a reference is the ValidateSet on -Module and
+# -ExcludeModule: an attribute argument has to be a literal. ModuleParameters.Tests.ps1
+# asserts the two agree, which is the drift this would otherwise invite.
+
+$Script:adPEASModules = @('Domain','Creds','Rights','Delegation','ADCS','Accounts','GPO','Computer','Application','Bloodhound')
+
+# =============================================================================
 # SEVERITY CLASSES - Central Definition
 # =============================================================================
 # These are the canonical severity class names used throughout adPEAS.
