@@ -1339,6 +1339,16 @@ function Build-ObjectDetailHtml {
 # NOTE: Get-FindingIdForAttribute() is defined in adPEAS-FindingDefinitions.ps1
 # It uses the centralized $Script:FindingTriggerIndex for attribute -> FindingId mapping.
 
+#region BUILD:EMBED Get-HTMLTemplate
+#
+# Build-Release.ps1 replaces everything down to #endregion with a function that
+# returns the asset inline. What follows is the development version: it loads the
+# same files from templates/, so a dot-sourced run serves identical content.
+#
+# Marked by region rather than matched against the wording of the doc comment
+# below, which is what the build used to do - rewording it broke the match, and
+# where the build only warned, the artifact shipped this development version,
+# which finds no templates/ directory beside itself and returns nothing.
 <#
 .SYNOPSIS
     Returns the HTML template with CSS and JavaScript.
@@ -1388,3 +1398,4 @@ function Get-HTMLTemplate {
     Write-Warning "[Get-HTMLTemplate] Either run from source directory or build the project first."
     return $null
 }
+#endregion BUILD:EMBED

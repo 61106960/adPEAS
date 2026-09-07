@@ -3,43 +3,58 @@
     Build script for adPEAS v2 release versions.
 
 .DESCRIPTION
-    Combines all modules into a single standalone .ps1 file.
-    Creates four versions:
-    - adPEAS.ps1 (readable, with comments)
-    - adPEAS_min.ps1 (minimized, compact)
-    - adPEAS_ultra.ps1 (ultra-compressed, no comments)
-    - adPEAS_obf.ps1 (obfuscated: GZip + XOR + Base64)
+    Combines all modules into a single standalone .ps1 file and produces four variants:
+    - adPEAS.ps1       (readable, with comments)
+    - adPEAS_min.ps1   (minimized)
+    - adPEAS_ultra.ps1 (ultra-compressed, no comments, no logging)
+    - adPEAS_obf.ps1   (obfuscated: GZip + XOR + Base64)
+
+    This script is only the orchestration. The mechanics live in Build-Engine.ps1, which is
+    project independent and copied between projects unchanged; everything specific to
+    adPEAS - file names, module categories, which functions carry embedded assets - lives
+    in Build-Config.psd1.
+
+    To port this build to another project: copy Build-Engine.ps1 and this file as they are,
+    and rewrite Build-Config.psd1.
 
 .PARAMETER License
     Path to a license.json file to embed into the build.
-    If specified, the license will be Base64-encoded and embedded into the output scripts.
+    If specified, the license is Base64-encoded and embedded into the output scripts.
 
 .PARAMETER Stable
-    Creates a stable release build with a clean version number (e.g. "2.0.0").
-    Without this switch, builds include a timestamp suffix (e.g. "2.0.0+20260215-1840").
+    Creates a stable release build with a clean version number (e.g. "2.4.1").
+    Without this switch, builds include a timestamp suffix (e.g. "2.4.1+20260215-1840").
 
 .PARAMETER CodeSigningCert
     Path to a PKCS#12 (.pfx) code signing certificate file.
-    If specified, all build outputs will be signed with Authenticode after the build completes.
+    If specified, all build outputs are signed with Authenticode after the build completes.
     The certificate must have the Code Signing enhanced key usage (EKU).
+
+    Signing does not require the certificate to chain to a root this build host trusts.
+    A self-signed or internal-CA certificate produces a perfectly valid signature; the
+    build reports those as "signed; not verifiable on this host" rather than as failures,
+    because whether a chain verifies here says nothing about the signature itself.
 
 .PARAMETER CertPassword
     Password for the code signing certificate (if the PFX is password-protected).
-    Accepts String or SecureString.
+    Accepts a SecureString or a plain string.
 
 .PARAMETER TimestampServer
-    URL of a RFC 3161 timestamp server for Authenticode timestamping.
-    Default: http://timestamp.digicert.com
-    Timestamping ensures the signature remains valid after the certificate expires.
+    URL of an RFC 3161 timestamp server for Authenticode timestamping.
+    Timestamping keeps the signature valid after the certificate expires. A build that
+    cannot reach the server still signs, and says so.
+
+.PARAMETER ConfigPath
+    Path to the build configuration. Defaults to Build-Config.psd1 next to this script.
 
 .EXAMPLE
     .\Build-Release.ps1
 
 .EXAMPLE
-    .\Build-Release.ps1 -Stable -License .\license.json
+    .\Build-Release.ps1 -Stable
 
 .EXAMPLE
-    .\Build-Release.ps1 -CodeSigningCert .\codesigning.pfx
+    .\Build-Release.ps1 -License .\license.json
 
 .EXAMPLE
     .\Build-Release.ps1 -CodeSigningCert .\codesigning.pfx -CertPassword "P@ss" -TimestampServer "http://timestamp.sectigo.com"
@@ -63,415 +78,203 @@ param(
     $CertPassword,
 
     [Parameter(Mandatory=$false)]
-    [string]$TimestampServer = "http://timestamp.digicert.com"
+    [string]$TimestampServer,
+
+    [Parameter(Mandatory=$false)]
+    [string]$ConfigPath
 )
 
 $ErrorActionPreference = "Stop"
 
-# Helper: Read a source file as UTF-8, independent of PowerShell version
-#
-# Get-Content without -Encoding is version-dependent: Windows PowerShell 5.1 falls back
-# to the system ANSI code page for files that have no BOM, which corrupts every non-ASCII
-# character in the source modules (e.g. an em dash becomes three characters, one of which
-# PowerShell treats as a string delimiter). PowerShell 7+ assumes UTF-8 instead.
-# ReadAllText honors a BOM when present and decodes as UTF-8 otherwise, in both versions.
-function Read-BuildFile {
-    param(
-        [Parameter(Mandatory=$true)] [string]$Path
-    )
-    return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-}
-
-# Helper: Write file with retry logic (handles Dropbox/AV/editor file locks)
-# Writes to a temp file first, then moves to target to minimize lock window
-function Write-BuildFile {
-    param(
-        [Parameter(Mandatory=$true)] [string]$Path,
-        [Parameter(Mandatory=$true)] [string]$Content,
-        [int]$MaxRetries = 5,
-        [int]$RetryDelayMs = 500
-    )
-    $tempPath = "$Path.tmp.$PID"
-    try {
-        # Write to temp file (no lock contention)
-        #
-        # IMPORTANT: Write UTF-8 WITH BOM explicitly. Out-File -Encoding UTF8 is
-        # version-dependent - Windows PowerShell 5.1 emits a BOM, PowerShell 7+ does not.
-        # A build produced under PowerShell 7 would therefore be unreadable for the
-        # Windows PowerShell 5.1 target: without a BOM it decodes the file as ANSI and
-        # every non-ASCII character breaks, which can abort parsing entirely.
-        if (-not $Content.EndsWith("`n")) {
-            $Content += "`r`n"
-        }
-        [System.IO.File]::WriteAllText($tempPath, $Content, (New-Object System.Text.UTF8Encoding($true)))
-
-        # Move temp to target with retry (target may be locked by Dropbox/AV)
-        for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
-            try {
-                # Remove target first if it exists (Move-Item can't overwrite)
-                if (Test-Path $Path) {
-                    Remove-Item -Path $Path -Force -ErrorAction Stop
-                }
-                Move-Item -Path $tempPath -Destination $Path -Force -ErrorAction Stop
-                return
-            }
-            catch [System.IO.IOException] {
-                if ($attempt -lt $MaxRetries) {
-                    Write-Host "[Build]   File locked, retrying in $($RetryDelayMs)ms... (attempt $attempt/$MaxRetries)" -ForegroundColor Yellow
-                    Start-Sleep -Milliseconds $RetryDelayMs
-                    $RetryDelayMs = [Math]::Min($RetryDelayMs * 2, 5000)
-                }
-                else {
-                    throw
-                }
-            }
-        }
-    }
-    finally {
-        # Cleanup temp file if still exists
-        if (Test-Path $tempPath) {
-            Remove-Item -Path $tempPath -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-
-# Paths
+# ========================================
+# ENGINE AND CONFIGURATION
+# ========================================
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$SourcePath = Join-Path $ScriptRoot "src"
-# Build output goes directly to project root for easy access
-$ReleasePath = $ScriptRoot
 
-Write-Host "[Build] adPEAS v2 Build Script started" -ForegroundColor Cyan
+$EnginePath = Join-Path $ScriptRoot 'Build-Engine.ps1'
+if (-not (Test-Path $EnginePath)) {
+    Write-Error "[Build] Build-Engine.ps1 not found next to this script"
+    return
+}
+. $EnginePath
+
+if (-not $ConfigPath) { $ConfigPath = Join-Path $ScriptRoot 'Build-Config.psd1' }
+if (-not (Test-Path $ConfigPath)) {
+    Write-Error "[Build] Build configuration not found: $ConfigPath"
+    return
+}
+$Config = Import-PowerShellDataFile -Path $ConfigPath
+
+$SourcePath  = Join-Path $ScriptRoot $Config.SourceRoot
+$ReleasePath = if ($Config.OutputDirectory -eq '.') { $ScriptRoot } else { Join-Path $ScriptRoot $Config.OutputDirectory }
+if (-not $TimestampServer) { $TimestampServer = $Config.DefaultTimestampServer }
+
+Write-Host "[Build] $($Config.ProjectName) Build Script started" -ForegroundColor Cyan
 Write-Host "[Build] Source: $SourcePath" -ForegroundColor Gray
-Write-Host "[Build] Output: $ReleasePath (project root)" -ForegroundColor Gray
+Write-Host "[Build] Output: $ReleasePath" -ForegroundColor Gray
 
 # ========================================
 # READ MODULE LIST AND VERSION FROM SOURCE
 # ========================================
-$MainScriptPath = Join-Path $SourcePath "adPEAS.ps1"
+$MainScriptPath = Join-Path $SourcePath $Config.EntryScript
 $MainScriptContent = Read-BuildFile -Path $MainScriptPath
 
-# Extract base version from src/adPEAS.ps1
-if ($MainScriptContent -match '\$Script:adPEASVersion = "([^"]*)"') {
-    $BaseVersion = $Matches[1]
-} else {
-    Write-Error "[Build] Could not find `$Script:adPEASVersion in src/adPEAS.ps1"
-    return
-}
+$BaseVersion = Get-BuildSourceVersion -Content $MainScriptContent -VariableName $Config.VersionVariable
+if (-not $BaseVersion) { return }
 
-# Build timestamp and version
 $BuildTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-
 if ($Stable) {
     $BuildVersion = $BaseVersion
     Write-Host "[Build] Build Version: $BuildVersion (stable release)" -ForegroundColor Cyan
 } else {
-    $BuildVersionSuffix = Get-Date -Format "yyyyMMdd-HHmm"
-    $BuildVersion = "${BaseVersion}+${BuildVersionSuffix}"
+    $BuildVersion = "${BaseVersion}+$(Get-Date -Format 'yyyyMMdd-HHmm')"
     Write-Host "[Build] Build Version: $BuildVersion (dev build)" -ForegroundColor Cyan
 }
 Write-Host "[Build] Build Time: $BuildTimestamp" -ForegroundColor Gray
 
-# Parse module list from dot-source lines in src/adPEAS.ps1
-# Format: . "$Script:ScriptPath\modules\Category\File.ps1"
-# Category comments: # Core Modules, # Helper Modules, etc.
-$CoreModules = @()
-$HelperModules = @()
-$CheckModules = @()
-$ReportingModules = @()
-$CollectorModules = @()
+$ModuleList = Get-BuildModuleList -Content $MainScriptContent `
+    -Categories $Config.ModuleSection.Categories `
+    -PathVariable $Config.ModuleSection.PathVariable
+if (-not $ModuleList) { return }
 
-$currentCategory = $null
-foreach ($line in $MainScriptContent -split '\r?\n') {
-    # Detect category comment
-    if ($line -match '^\s+#\s+(Core|Helper|Check|Reporting|Collector)\s+Modules') {
-        $currentCategory = $Matches[1]
-        continue
-    }
-    # Parse dot-source line
-    if ($line -match '^\s+\.\s+"\$Script:ScriptPath\\(.+)"') {
-        $modulePath = $Matches[1]
-        switch ($currentCategory) {
-            'Core'      { $CoreModules += $modulePath }
-            'Helper'    { $HelperModules += $modulePath }
-            'Check'     { $CheckModules += $modulePath }
-            'Reporting' { $ReportingModules += $modulePath }
-            'Collector' { $CollectorModules += $modulePath }
-            default     { Write-Warning "[Build] Module without category: $modulePath" }
-        }
-    }
+$TotalModules = 0
+$CategorySummary = @()
+foreach ($Category in $Config.ModuleSection.Categories) {
+    $TotalModules += $ModuleList[$Category].Count
+    $CategorySummary += "$($Category): $($ModuleList[$Category].Count)"
+}
+Write-Host "[Build] Parsed $TotalModules modules from $($Config.EntryScript):" -ForegroundColor Gray
+Write-Host "[Build]   $($CategorySummary -join ', ')" -ForegroundColor Gray
+
+# A module on disk that nobody listed is absent from every artifact, silently; one listed
+# but missing aborts the build later with a bare I/O error. Both are cheaper to hear about
+# here, by name.
+$ModuleProblems = Test-BuildModuleList -ModuleList $ModuleList -SourceRoot $SourcePath -ModuleDirectory $Config.ModuleDirectory
+if ($ModuleProblems.Count -gt 0) {
+    foreach ($Problem in $ModuleProblems) { Write-Host "[Build]   $Problem" -ForegroundColor Red }
+    Write-Error "[Build] The module list and the source tree disagree - see above"
+    return
 }
 
-$totalModules = $CoreModules.Count + $HelperModules.Count + $CheckModules.Count + $ReportingModules.Count + $CollectorModules.Count
-Write-Host "[Build] Parsed $totalModules modules from src/adPEAS.ps1:" -ForegroundColor Gray
-Write-Host "[Build]   Core: $($CoreModules.Count), Helper: $($HelperModules.Count), Check: $($CheckModules.Count), Reporting: $($ReportingModules.Count), Collector: $($CollectorModules.Count)" -ForegroundColor Gray
+# ========================================
+# EMBEDDED ASSETS
+# ========================================
+# Assembled up front so a missing or unusable asset stops the build before anything is
+# written. Each entry replaces a #region BUILD:EMBED block in its module.
+$EmbedContent = @{}
+foreach ($Embed in $Config.Embeds) {
+    $SourceFile = Join-Path $SourcePath $Embed.Source
+    if (-not (Test-Path $SourceFile)) {
+        Write-Error "[Build] Embedded asset not found: $SourceFile (needed by $($Embed.Function))"
+        return
+    }
+    $Assembled = Read-BuildFile -Path $SourceFile
 
-if ($totalModules -eq 0) {
-    Write-Error "[Build] No modules found in src/adPEAS.ps1! Check module loading section format."
-    return
+    foreach ($Placeholder in @($Embed.Placeholders)) {
+        if (-not $Placeholder) { continue }
+        $PlaceholderFile = Join-Path $SourcePath $Placeholder.Source
+        if (-not (Test-Path $PlaceholderFile)) {
+            Write-Error "[Build] Embedded asset not found: $PlaceholderFile (placeholder $($Placeholder.Token))"
+            return
+        }
+        $Assembled = $Assembled.Replace($Placeholder.Token, (Read-BuildFile -Path $PlaceholderFile))
+    }
+
+    if (-not (Test-BuildEmbeddableContent -Content $Assembled -Name "The asset for $($Embed.Function)")) { return }
+
+    $EmbedContent[$Embed.Region] = $Assembled
+    Write-Host "[Build] Asset for $($Embed.Function): $($Assembled.Length) bytes" -ForegroundColor Gray
 }
 
 # ====================
 # 1. READABLE VERSION
 # ====================
-Write-Host "`n[Build] Creating readable version: adPEAS.ps1" -ForegroundColor Yellow
+Write-Host "`n[Build] Creating readable version: $($Config.Variants.Readable.FileName)" -ForegroundColor Yellow
 
 $ReadableOutput = @()
+$ReadableOutput += $Config.Header.Replace('{VERSION}', $BuildVersion).Replace('{TIMESTAMP}', $BuildTimestamp)
 
-# Header
-$ReadableOutput += @"
-<#
-.SYNOPSIS
-    adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
-
-.DESCRIPTION
-    Build: $BuildTimestamp
-    Version: $BuildVersion
-
-    AUTHORIZED SECURITY TESTING ONLY!
-
-.NOTES
-    Author: Alexander Sturz (@_61106960_)
-
-.LINK
-    https://github.com/61106960/adPEAS
-#>
-
-"@
-
-Write-Host "[Build]   - Loading Core modules..." -ForegroundColor Gray
-
-$ReadableOutput += "`n# =============================================="
-$ReadableOutput += "# CORE MODULES"
-$ReadableOutput += "# ==============================================`n"
-
-foreach ($Module in $CoreModules) {
-    $ModulePath = Join-Path $SourcePath $Module
-    $ModuleName = Split-Path $Module -Leaf
-
-    Write-Host "[Build]     - $ModuleName" -ForegroundColor DarkGray
-
-    $ReadableOutput += "# ----- $ModuleName -----`n"
-    $Content = Read-BuildFile -Path $ModulePath
-    # Remove Export-ModuleMember lines (not needed in standalone)
-    $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
-    $ReadableOutput += $Content
-    $ReadableOutput += "`n"
+# Which module each embed belongs to, so the loop below can find them by file name
+$EmbedsByModule = @{}
+foreach ($Embed in $Config.Embeds) {
+    $ModuleKey = ($Embed.Module -replace '/', '\')
+    if (-not $EmbedsByModule.ContainsKey($ModuleKey)) { $EmbedsByModule[$ModuleKey] = @() }
+    $EmbedsByModule[$ModuleKey] += $Embed
 }
 
-Write-Host "[Build]   - Loading Helper modules..." -ForegroundColor Gray
+foreach ($Category in $Config.ModuleSection.Categories) {
+    Write-Host "[Build]   - Loading $Category modules..." -ForegroundColor Gray
 
-$ReadableOutput += "`n# =============================================="
-$ReadableOutput += "# HELPER MODULES"
-$ReadableOutput += "# ==============================================`n"
+    $ReadableOutput += "`n# =============================================="
+    $ReadableOutput += "# $($Category.ToUpper()) MODULES"
+    $ReadableOutput += "# ==============================================`n"
 
-foreach ($Module in $HelperModules) {
-    $ModulePath = Join-Path $SourcePath $Module
-    $ModuleName = Split-Path $Module -Leaf
+    foreach ($Module in $ModuleList[$Category]) {
+        $ModulePath = Join-Path $SourcePath $Module
+        $ModuleName = Split-Path $Module -Leaf
+        Write-Host "[Build]     - $ModuleName" -ForegroundColor DarkGray
 
-    Write-Host "[Build]     - $ModuleName" -ForegroundColor DarkGray
+        $ReadableOutput += "# ----- $ModuleName -----`n"
+        $Content = Read-BuildFile -Path $ModulePath
+        # Not needed in a standalone script
+        $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
 
-    $ReadableOutput += "# ----- $ModuleName -----`n"
-    $Content = Read-BuildFile -Path $ModulePath
-    $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
-    $ReadableOutput += $Content
-    $ReadableOutput += "`n"
-}
-
-Write-Host "[Build]   - Loading Check modules..." -ForegroundColor Gray
-
-$ReadableOutput += "`n# =============================================="
-$ReadableOutput += "# CHECK MODULES"
-$ReadableOutput += "# ==============================================`n"
-
-foreach ($Module in $CheckModules) {
-    $ModulePath = Join-Path $SourcePath $Module
-    $ModuleName = Split-Path $Module -Leaf
-
-    Write-Host "[Build]     - $ModuleName" -ForegroundColor DarkGray
-
-    $ReadableOutput += "# ----- $ModuleName -----`n"
-    $Content = Read-BuildFile -Path $ModulePath
-    $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
-    $ReadableOutput += $Content
-    $ReadableOutput += "`n"
-}
-
-Write-Host "[Build]   - Loading Reporting modules..." -ForegroundColor Gray
-
-$ReadableOutput += "`n# =============================================="
-$ReadableOutput += "# REPORTING MODULES"
-$ReadableOutput += "# ==============================================`n"
-
-# Load HTML report templates from separate files and embed them
-$TemplatesDir = Join-Path $SourcePath "modules\Reporting\templates"
-$HtmlTemplatePath = Join-Path $TemplatesDir "report-template.html"
-$CssPath = Join-Path $TemplatesDir "report-styles.css"
-$JsPath = Join-Path $TemplatesDir "report-scripts.js"
-
-$TemplatesExist = (Test-Path $HtmlTemplatePath) -and (Test-Path $CssPath) -and (Test-Path $JsPath)
-
-$DiffTemplatePath = Join-Path $TemplatesDir "diff-template.html"
-$DiffTemplateExists = Test-Path $DiffTemplatePath
-
-if ($TemplatesExist) {
-    Write-Host "[Build]     - Loading HTML report templates from separate files..." -ForegroundColor DarkGray
-    $HtmlTemplate = Read-BuildFile -Path $HtmlTemplatePath
-    $CssContent = Read-BuildFile -Path $CssPath
-    $JsContent = Read-BuildFile -Path $JsPath
-
-    # Combine templates: Replace {{CSS_CONTENT}} and {{JS_CONTENT}} placeholders
-    $CombinedTemplate = $HtmlTemplate.Replace('{{CSS_CONTENT}}', $CssContent)
-    $CombinedTemplate = $CombinedTemplate.Replace('{{JS_CONTENT}}', $JsContent)
-
-    Write-Host "[Build]       CSS: $($CssContent.Length) bytes" -ForegroundColor DarkGray
-    Write-Host "[Build]       JS: $($JsContent.Length) bytes" -ForegroundColor DarkGray
-    Write-Host "[Build]       Combined: $($CombinedTemplate.Length) bytes" -ForegroundColor DarkGray
-}
-
-if ($DiffTemplateExists) {
-    $DiffTemplateContent = Read-BuildFile -Path $DiffTemplatePath
-    Write-Host "[Build]       Diff template: $($DiffTemplateContent.Length) bytes" -ForegroundColor DarkGray
-}
-
-foreach ($Module in $ReportingModules) {
-    $ModulePath = Join-Path $SourcePath $Module
-    $ModuleName = Split-Path $Module -Leaf
-
-    Write-Host "[Build]     - $ModuleName" -ForegroundColor DarkGray
-
-    $ReadableOutput += "# ----- $ModuleName -----`n"
-    $Content = Read-BuildFile -Path $ModulePath
-    $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
-
-    # For Compare-adPEASReport.ps1: Replace Get-DiffHTMLTemplate function with embedded template
-    if ($ModuleName -eq "Compare-adPEASReport.ps1" -and $DiffTemplateExists) {
-        Write-Host "[Build]       Embedding diff template into Get-DiffHTMLTemplate function..." -ForegroundColor DarkGray
-
-        $NewGetDiffTemplate = @"
-<#
-.SYNOPSIS
-    Returns the diff HTML template.
-.DESCRIPTION
-    This function contains the embedded diff report template.
-    Template is maintained in templates/diff-template.html and embedded at build time.
-#>
-function Get-DiffHTMLTemplate {
-    return @'
-$DiffTemplateContent
-'@
-}
-"@
-
-        # Match the dev version of Get-DiffHTMLTemplate
-        $DiffPattern = '(?s)<#[\r\n]+\.SYNOPSIS[\r\n]+\s+Loads the diff HTML template from template files or embedded content\..*?function Get-DiffHTMLTemplate \{.*?return \$null[\r\n]+\}'
-        if ($Content -match $DiffPattern) {
-            $Content = [regex]::Replace($Content, $DiffPattern, $NewGetDiffTemplate)
-            Write-Host "[Build]       Diff template embedded successfully" -ForegroundColor Green
-        } else {
-            Write-Warning "[Build] Could not find Get-DiffHTMLTemplate function in Compare-adPEASReport.ps1 - diff template not embedded"
+        $ModuleKey = ($Module -replace '/', '\')
+        foreach ($Embed in @($EmbedsByModule[$ModuleKey])) {
+            if (-not $Embed) { continue }
+            Write-Host "[Build]       Embedding asset into $($Embed.Function)..." -ForegroundColor DarkGray
+            $Replacement = New-BuildEmbeddedFunction -FunctionName $Embed.Function `
+                -Content $EmbedContent[$Embed.Region] -Description $Embed.Description
+            $Content = Set-BuildEmbedRegion -Content $Content -RegionName $Embed.Region -Replacement $Replacement
+            if ($null -eq $Content) { return }
         }
+
+        $ReadableOutput += $Content
+        $ReadableOutput += "`n"
     }
-
-    # For Export-HTMLReport.ps1: Replace Get-HTMLTemplate function with embedded templates
-    if ($ModuleName -eq "Export-HTMLReport.ps1" -and $TemplatesExist) {
-        Write-Host "[Build]       Embedding HTML templates into Get-HTMLTemplate function..." -ForegroundColor DarkGray
-
-        # Build the new Get-HTMLTemplate function with embedded content
-        $NewGetHTMLTemplate = @"
-<#
-.SYNOPSIS
-    Returns the HTML template with CSS and JavaScript.
-.DESCRIPTION
-    This function contains the embedded HTML report template.
-    Templates are maintained in separate files (templates/) and embedded at build time.
-#>
-function Get-HTMLTemplate {
-    return @'
-$CombinedTemplate
-'@
-}
-"@
-
-        # Match the dev version: Synopsis+Description block followed by function with file-loading logic
-        $Pattern = '(?s)<#[\r\n]+\.SYNOPSIS[\r\n]+\s+Returns the HTML template with CSS and JavaScript\.[\r\n]+\.DESCRIPTION[\r\n]+\s+During development:.*?function Get-HTMLTemplate \{.*?return \$null[\r\n]+\}'
-        if ($Content -match $Pattern) {
-            $Content = [regex]::Replace($Content, $Pattern, $NewGetHTMLTemplate)
-            Write-Host "[Build]       Template embedded successfully" -ForegroundColor Green
-        } else {
-            Write-Error "[Build] Could not find Get-HTMLTemplate function in Export-HTMLReport.ps1!"
-            return
-        }
-    }
-
-    $ReadableOutput += $Content
-    $ReadableOutput += "`n"
-}
-
-Write-Host "[Build]   - Loading Collector modules..." -ForegroundColor Gray
-
-$ReadableOutput += "`n# =============================================="
-$ReadableOutput += "# COLLECTOR MODULES"
-$ReadableOutput += "# ==============================================`n"
-
-foreach ($Module in $CollectorModules) {
-    $ModulePath = Join-Path $SourcePath $Module
-    $ModuleName = Split-Path $Module -Leaf
-
-    Write-Host "[Build]     - $ModuleName" -ForegroundColor DarkGray
-
-    $ReadableOutput += "# ----- $ModuleName -----`n"
-    $Content = Read-BuildFile -Path $ModulePath
-    $Content = $Content -replace "(?m)^.*Export-ModuleMember.*$", ""
-    $ReadableOutput += $Content
-    $ReadableOutput += "`n"
 }
 
 Write-Host "[Build]   - Loading main logic..." -ForegroundColor Gray
 
-# Main script content (already loaded above for module parsing)
 $MainContent = $MainScriptContent
 
-# Extract only relevant part (parameters and main logic, without . imports)
-# Remove entire module loading section (from "Load Modules" to "Main Function")
-$MainContent = $MainContent -replace "(?s)# ===== Load Modules =====.*?# ===== Main Function =====", "# ===== Main Function ====="
-
-# Validate that the module loading section was actually removed
-if ($MainContent -match '# ===== Load Modules =====') {
-    Write-Error "[Build] FAILED: Module loading section was not removed! Check section markers in src/adPEAS.ps1."
+# Drop the development module loading block - the modules are inlined above
+$SectionPattern = '(?s)' + [regex]::Escape($Config.ModuleSection.Start) + '.*?' + [regex]::Escape($Config.ModuleSection.End)
+$MainContent = $MainContent -replace $SectionPattern, $Config.ModuleSection.End
+if ($MainContent -match [regex]::Escape($Config.ModuleSection.Start)) {
+    Write-Error "[Build] FAILED: Module loading section was not removed! Check the section markers in $($Config.EntryScript)."
     return
 }
 
-# Replace version string with build version (matches any semver pattern like "2.0.0", "3.1.2", etc.)
-$MainContent = $MainContent -replace '(\$Script:adPEASVersion = ")[^"]*(")', "`${1}$BuildVersion`${2}"
+# Stamp the build version
+$VersionPattern = '(\$Script:' + [regex]::Escape($Config.VersionVariable) + ' = ")[^"]*(")'
+$MainContent = $MainContent -replace $VersionPattern, "`${1}$BuildVersion`${2}"
 
-# Embed license if -License parameter was provided
+# Embed license if requested
 if ($License) {
-    $LicenseFilePath = $License
-    if (-not (Test-Path $LicenseFilePath)) {
-        Write-Error "[Build] License file not found: $LicenseFilePath"
+    if (-not (Test-Path $License)) {
+        Write-Error "[Build] License file not found: $License"
         return
     }
-    # Resolve to an absolute path via PowerShell's provider (uses $PWD).
-    # [System.IO.File]::ReadAllText resolves relative paths against
-    # [Environment]::CurrentDirectory, which can silently diverge from
-    # PowerShell's $PWD - Test-Path would find the file while ReadAllText
-    # looks for it in the wrong directory (e.g. the user profile).
-    $LicenseFilePath = (Resolve-Path $LicenseFilePath).Path
+    # Resolve through PowerShell's provider: [System.IO.File] resolves relative paths
+    # against [Environment]::CurrentDirectory, which can diverge from $PWD.
+    $LicenseFilePath = (Resolve-Path $License).Path
     Write-Host "[Build]   - Embedding license from: $LicenseFilePath" -ForegroundColor Gray
     try {
         $LicenseJsonRaw = Read-BuildFile -Path $LicenseFilePath
         $LicenseObj = $LicenseJsonRaw | ConvertFrom-Json
-        if ($LicenseObj.Licensee -and $LicenseObj.ValidUntil -and $LicenseObj.Signature) {
-            $LicenseBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($LicenseJsonRaw))
-            $MainContent = $MainContent -replace '\$Script:EmbeddedLicense = \$null', "`$Script:EmbeddedLicense = `"$LicenseBase64`""
-            Write-Host "[Build]     Licensee: $($LicenseObj.Licensee)" -ForegroundColor Green
-            Write-Host "[Build]     Valid until: $($LicenseObj.ValidUntil)" -ForegroundColor Green
-        }
-        else {
-            Write-Error "[Build] Invalid license.json format (missing Licensee, ValidUntil, or Signature)"
+
+        $MissingFields = @($Config.License.RequiredFields | Where-Object { -not $LicenseObj.$_ })
+        if ($MissingFields.Count -gt 0) {
+            Write-Error "[Build] Invalid license file - missing: $($MissingFields -join ', ')"
             return
         }
+
+        $LicenseBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($LicenseJsonRaw))
+        $LicensePattern = '\$Script:' + [regex]::Escape($Config.License.Variable) + ' = \$null'
+        $MainContent = $MainContent -replace $LicensePattern, "`$Script:$($Config.License.Variable) = `"$LicenseBase64`""
+        Write-Host "[Build]     Licensee: $($LicenseObj.Licensee)" -ForegroundColor Green
+        Write-Host "[Build]     Valid until: $($LicenseObj.ValidUntil)" -ForegroundColor Green
     }
     catch {
         Write-Error "[Build] Failed to embed license: $_"
@@ -487,9 +290,12 @@ $ReadableOutput += "# MAIN LOGIC"
 $ReadableOutput += "# ==============================================`n"
 $ReadableOutput += $MainContent
 
-# Write readable version
-$ReadableOutputPath = Join-Path $ReleasePath "adPEAS.ps1"
-Write-BuildFile -Path $ReadableOutputPath -Content ($ReadableOutput -join "`n")
+# Kept in a variable as well: the other variants are derived from this same text rather
+# than read back from the file, which is what lets the build compare them afterwards.
+$AssembledContent = $ReadableOutput -join "`n"
+
+$ReadableOutputPath = Join-Path $ReleasePath $Config.Variants.Readable.FileName
+Write-BuildFile -Path $ReadableOutputPath -Content $AssembledContent
 Write-Host "[Build] Readable version created: $ReadableOutputPath" -ForegroundColor Green
 
 $ReadableSize = (Get-Item $ReadableOutputPath).Length / 1KB
@@ -498,311 +304,179 @@ Write-Host "[Build] Size: $([Math]::Round($ReadableSize, 2)) KB" -ForegroundColo
 # ====================
 # 2. MINIMIZED VERSION
 # ====================
-Write-Host "`n[Build] Creating minimized version: adPEAS_min.ps1" -ForegroundColor Yellow
+Write-Host "`n[Build] Creating minimized version: $($Config.Variants.Minimized.FileName)" -ForegroundColor Yellow
 
-$MinContent = Read-BuildFile -Path $ReadableOutputPath
+$MinContent = $AssembledContent
 
-# Minimization (lighter than ultra, but no Synopsis preservation due to regex complexity)
-Write-Host "[Build]   - Removing comments..." -ForegroundColor Gray
-# Remove ALL block comments
-$MinContent = $MinContent -replace "(?s)<#.*?#>", ""
-# Remove line comments (except #Requires)
-$MinContent = $MinContent -replace "(?m)^[ \t]*#(?!Requires).*$", ""
+Write-Host "[Build]   - Removing comments (by token, so strings are untouched)..." -ForegroundColor Gray
+$MinContent = Remove-BuildComments -Content $MinContent -Stage 'minimized' -KeepRequires:$Config.Variants.Minimized.KeepRequires
+if ($null -eq $MinContent) { return }
 
-Write-Host "[Build]   - Removing empty lines..." -ForegroundColor Gray
-# Remove multiple empty lines
-$MinContent = $MinContent -replace "(?m)^\s*$\r?\n", ""
+Write-Host "[Build]   - Removing empty lines and trailing whitespace..." -ForegroundColor Gray
+$MinContent = Invoke-BuildLineTransform -Content $MinContent -Stage 'minimized'
+if ($null -eq $MinContent) { return }
 
-Write-Host "[Build]   - Removing excess whitespace..." -ForegroundColor Gray
-# Remove trailing whitespace
-$MinContent = $MinContent -replace "(?m)[ \t]+$", ""
-
-# Write minimized version
-$MinOutputPath = Join-Path $ReleasePath "adPEAS_min.ps1"
+$MinOutputPath = Join-Path $ReleasePath $Config.Variants.Minimized.FileName
 Write-BuildFile -Path $MinOutputPath -Content $MinContent
 Write-Host "[Build] Minimized version created: $MinOutputPath" -ForegroundColor Green
 
 $MinSize = (Get-Item $MinOutputPath).Length / 1KB
 Write-Host "[Build] Size: $([Math]::Round($MinSize, 2)) KB" -ForegroundColor Gray
-
-$Savings = [Math]::Round((($ReadableSize - $MinSize) / $ReadableSize) * 100, 1)
-Write-Host "[Build] Savings: $Savings %" -ForegroundColor Green
+Write-Host "[Build] Savings: $([Math]::Round((($ReadableSize - $MinSize) / $ReadableSize) * 100, 1)) %" -ForegroundColor Green
 
 # ====================
 # 3. ULTRA-COMPRESSED VERSION
 # ====================
-Write-Host "`n[Build] Creating ultra-compressed version: adPEAS_ultra.ps1" -ForegroundColor Yellow
+Write-Host "`n[Build] Creating ultra-compressed version: $($Config.Variants.Ultra.FileName)" -ForegroundColor Yellow
 
-$UltraContent = Read-BuildFile -Path $ReadableOutputPath
+$UltraContent = $AssembledContent
 
-# Ultra minimization
+if ($Config.Variants.Ultra.StripCommands) {
+    Write-Host "[Build]   - Removing $($Config.Variants.Ultra.StripCommands -join '/') statements..." -ForegroundColor Gray
+    $UltraContent = Remove-BuildCommandCalls -Content $UltraContent -Stage 'ultra (logging)' -CommandName $Config.Variants.Ultra.StripCommands
+    if ($null -eq $UltraContent) { return }
+}
+
 Write-Host "[Build]   - Removing ALL comments (incl. Synopsis)..." -ForegroundColor Gray
-# Remove ALL block comments (incl. Synopsis)
-$UltraContent = $UltraContent -replace "(?s)<#.*?#>", ""
-# Remove ALL line comments (incl. #Requires if present)
-$UltraContent = $UltraContent -replace "(?m)^[ \t]*#.*$", ""
-
-Write-Host "[Build]   - Removing empty lines..." -ForegroundColor Gray
-# Remove ALL empty lines
-$UltraContent = $UltraContent -replace "(?m)^\s*$\r?\n", ""
-
-Write-Host "[Build]   - Removing excess whitespace..." -ForegroundColor Gray
-# Remove trailing whitespace
-$UltraContent = $UltraContent -replace "(?m)[ \t]+$", ""
-# Remove leading whitespace (except in Here-Strings - careful!)
-# Only safe reduction: multiple spaces at line start to minimum
-$UltraContent = $UltraContent -replace "(?m)^    ", "`t"  # 4 Spaces -> 1 Tab
-$UltraContent = $UltraContent -replace "(?m)^\t\t+", "`t"  # Multiple Tabs -> 1 Tab
+$UltraContent = Remove-BuildComments -Content $UltraContent -Stage 'ultra (comments)' -KeepRequires:$Config.Variants.Ultra.KeepRequires
+if ($null -eq $UltraContent) { return }
 
 Write-Host "[Build]   - Removing empty function blocks..." -ForegroundColor Gray
-# Remove empty begin/end blocks (careful)
 $UltraContent = $UltraContent -replace "(?m)^\s*begin\s*\{\s*\}\s*$", ""
 $UltraContent = $UltraContent -replace "(?m)^\s*end\s*\{\s*\}\s*$", ""
 
-Write-Host "[Build]   - Removing Write-Log statements (verbose logging)..." -ForegroundColor Gray
-# Remove Write-Log (for OPSEC - no debug/verbose output)
-$UltraContent = $UltraContent -replace "(?m)^\s*Write-Log\s+.*$", ""
-# Also remove any remaining Write-Verbose (legacy)
-$UltraContent = $UltraContent -replace "(?m)^\s*Write-Verbose.*$", ""
+Write-Host "[Build]   - Removing empty lines, trailing and leading whitespace..." -ForegroundColor Gray
+# -Reindent collapses leading indentation on code lines only. It is worth about 6 % of the
+# ultra artifact and roughly 1 % once the obfuscated variant gzips it - not enough to
+# justify rewriting the inside of every string, which is what it used to do.
+$UltraContent = Invoke-BuildLineTransform -Content $UltraContent -Stage 'ultra (lines)' -Reindent:$Config.Variants.Ultra.Reindent
+if ($null -eq $UltraContent) { return }
 
-# Final cleanup: double empty lines created by deletions
-$UltraContent = $UltraContent -replace "(?m)^\s*$\r?\n", ""
-
-# Write ultra-compressed version
-$UltraOutputPath = Join-Path $ReleasePath "adPEAS_ultra.ps1"
+$UltraOutputPath = Join-Path $ReleasePath $Config.Variants.Ultra.FileName
 Write-BuildFile -Path $UltraOutputPath -Content $UltraContent
 Write-Host "[Build] Ultra-compressed version created: $UltraOutputPath" -ForegroundColor Green
 
 $UltraSize = (Get-Item $UltraOutputPath).Length / 1KB
 Write-Host "[Build] Size: $([Math]::Round($UltraSize, 2)) KB" -ForegroundColor Gray
-
-$UltraSavings = [Math]::Round((($ReadableSize - $UltraSize) / $ReadableSize) * 100, 1)
-Write-Host "[Build] Savings vs. Readable: $UltraSavings %" -ForegroundColor Green
-
-$UltraVsMinSavings = [Math]::Round((($MinSize - $UltraSize) / $MinSize) * 100, 1)
-Write-Host "[Build] Savings vs. Min: $UltraVsMinSavings %" -ForegroundColor Green
+Write-Host "[Build] Savings vs. Readable: $([Math]::Round((($ReadableSize - $UltraSize) / $ReadableSize) * 100, 1)) %" -ForegroundColor Green
+Write-Host "[Build] Savings vs. Min: $([Math]::Round((($MinSize - $UltraSize) / $MinSize) * 100, 1)) %" -ForegroundColor Green
 
 # ====================
 # 4. OBFUSCATED VERSION (GZip + XOR + Base64)
 # ====================
-Write-Host "`n[Build] Creating obfuscated version: adPEAS_obf.ps1" -ForegroundColor Yellow
+Write-Host "`n[Build] Creating obfuscated version: $($Config.Variants.Obfuscated.FileName)" -ForegroundColor Yellow
 
-# Use ultra version as base (smallest payload)
-$ObfSourceContent = Read-BuildFile -Path $UltraOutputPath
-
-Write-Host "[Build]   - Compressing with GZip..." -ForegroundColor Gray
-
-# Convert to bytes and compress with GZip
-$SourceBytes = [System.Text.Encoding]::UTF8.GetBytes($ObfSourceContent)
-$MemoryStream = New-Object System.IO.MemoryStream
-$GZipStream = New-Object System.IO.Compression.GZipStream($MemoryStream, [System.IO.Compression.CompressionMode]::Compress)
-$GZipStream.Write($SourceBytes, 0, $SourceBytes.Length)
-$GZipStream.Close()
-$CompressedBytes = $MemoryStream.ToArray()
-$MemoryStream.Close()
-
-$CompressionRatio = [Math]::Round(($CompressedBytes.Length / $SourceBytes.Length) * 100, 1)
-Write-Host "[Build]   - Compression ratio: $CompressionRatio% of original" -ForegroundColor Gray
-
-Write-Host "[Build]   - Applying XOR encryption..." -ForegroundColor Gray
-
-# Generate random XOR key (16 bytes for good entropy)
-$XorKey = New-Object byte[] 16
-$RNG = [System.Security.Cryptography.RNGCryptoServiceProvider]::new()
-$RNG.GetBytes($XorKey)
-$RNG.Dispose()
-
-# XOR encrypt the compressed data
-$EncryptedBytes = New-Object byte[] $CompressedBytes.Length
-for ($i = 0; $i -lt $CompressedBytes.Length; $i++) {
-    $EncryptedBytes[$i] = $CompressedBytes[$i] -bxor $XorKey[$i % $XorKey.Length]
+$ObfBase = switch ($Config.Variants.Obfuscated.BasedOn) {
+    'Readable'  { $MinContent }
+    'Minimized' { $MinContent }
+    default     { $UltraContent }
 }
 
-Write-Host "[Build]   - Encoding to Base64..." -ForegroundColor Gray
+Write-Host "[Build]   - Compressing, encoding and generating the loader stub..." -ForegroundColor Gray
+$Obfuscated = New-BuildObfuscatedScript -Content $ObfBase `
+    -ProjectName $Config.ProjectName -Version $BuildVersion -Timestamp $BuildTimestamp
+Write-Host "[Build]   - Compression ratio: $([Math]::Round(($Obfuscated.CompressedLength / $Obfuscated.SourceLength) * 100, 1))% of original" -ForegroundColor Gray
 
-# Convert to Base64
-$PayloadBase64 = [Convert]::ToBase64String($EncryptedBytes)
-$KeyBase64 = [Convert]::ToBase64String($XorKey)
-
-Write-Host "[Build]   - Generating loader stub..." -ForegroundColor Gray
-
-# Create the obfuscated script with decoder/loader
-# Auto-loads on dot-sourcing, same UX as other adPEAS variants
-$ObfuscatedScript = @"
-<#
-.SYNOPSIS
-    adPEAS v2 - Obfuscated Version
-    Version: $BuildVersion
-    Build: $BuildTimestamp
-
-.DESCRIPTION
-    This is an obfuscated version of adPEAS for authorized penetration testing.
-    The payload is GZip compressed, XOR encrypted, and Base64 encoded.
-
-    AUTHORIZED SECURITY TESTING ONLY!
-
-.NOTES
-    Deobfuscation: Base64 decode -> XOR decrypt -> GZip decompress -> Execute
-#>
-
-# Encoded payload and key
-`$_k = '$KeyBase64'
-`$_d = '$PayloadBase64'
-
-# Decode
-`$_kb = [Convert]::FromBase64String(`$_k)
-`$_db = [Convert]::FromBase64String(`$_d)
-
-# XOR decrypt
-`$_xb = New-Object byte[] `$_db.Length
-for (`$_i = 0; `$_i -lt `$_db.Length; `$_i++) {
-    `$_xb[`$_i] = `$_db[`$_i] -bxor `$_kb[`$_i % `$_kb.Length]
-}
-
-# GZip decompress
-`$_ms = New-Object System.IO.MemoryStream(,`$_xb)
-`$_gz = New-Object System.IO.Compression.GZipStream(`$_ms, [System.IO.Compression.CompressionMode]::Decompress)
-`$_sr = New-Object System.IO.StreamReader(`$_gz)
-`$_sc = `$_sr.ReadToEnd()
-`$_sr.Close()
-`$_gz.Close()
-`$_ms.Close()
-
-# Get list of functions BEFORE loading adPEAS
-`$_beforeFunctions = @(Get-Command -CommandType Function -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-
-# Execute in current scope (loads all adPEAS functions)
-. ([ScriptBlock]::Create(`$_sc)) | Out-Null
-
-# Get list of functions AFTER loading adPEAS
-`$_afterFunctions = @(Get-Command -CommandType Function -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-
-# Find NEW functions (added by adPEAS) and export them to global scope
-`$_newFunctions = `$_afterFunctions | Where-Object { `$_ -notin `$_beforeFunctions }
-
-foreach (`$_funcName in `$_newFunctions) {
-    `$_func = Get-Command -Name `$_funcName -CommandType Function -ErrorAction SilentlyContinue
-    if (`$_func) {
-        Set-Item -Path "function:global:`$_funcName" -Value `$_func.ScriptBlock
-    }
-}
-
-# Cleanup temporary variables
-Remove-Variable -Name '_k','_d','_kb','_db','_xb','_i','_ms','_gz','_sr','_sc','_beforeFunctions','_afterFunctions','_newFunctions','_funcName','_func' -ErrorAction SilentlyContinue
-"@
-
-# Write obfuscated version
-$ObfOutputPath = Join-Path $ReleasePath "adPEAS_obf.ps1"
-Write-BuildFile -Path $ObfOutputPath -Content $ObfuscatedScript
+$ObfOutputPath = Join-Path $ReleasePath $Config.Variants.Obfuscated.FileName
+Write-BuildFile -Path $ObfOutputPath -Content $Obfuscated.Script
 Write-Host "[Build] Obfuscated version created: $ObfOutputPath" -ForegroundColor Green
 
 $ObfSize = (Get-Item $ObfOutputPath).Length / 1KB
 Write-Host "[Build] Size: $([Math]::Round($ObfSize, 2)) KB" -ForegroundColor Gray
-
 $ObfVsUltraSavings = [Math]::Round((($UltraSize - $ObfSize) / $UltraSize) * 100, 1)
 if ($ObfVsUltraSavings -gt 0) {
     Write-Host "[Build] Savings vs. Ultra: $ObfVsUltraSavings %" -ForegroundColor Green
 } else {
-    Write-Host "[Build] Size increase vs. Ultra: $([Math]::Abs($ObfVsUltraSavings)) % (due to Base64 encoding overhead)" -ForegroundColor Yellow
+    Write-Host "[Build] Size increase vs. Ultra: $([Math]::Abs($ObfVsUltraSavings)) % (Base64 overhead)" -ForegroundColor Yellow
+}
+
+# ====================
+# VARIANT VERIFICATION
+# ====================
+#
+# The embedded assets are the largest piece of string content in a build and the one the
+# text transformations used to damage: the minimized variant lost every blank line inside
+# them and the ultra variant 16 KB of indentation on top, so the artifacts shipped three
+# different HTML reports. Nothing noticed, because each one on its own parsed, loaded and
+# produced a report.
+#
+# Compared against the asset that went in, not just against each other, so a
+# transformation that damaged all of them equally would still be caught.
+Write-Host "`n[Build] Verifying that all variants carry the same embedded assets..." -ForegroundColor Yellow
+
+$VariantPaths = @(
+    @{ Name = $Config.Variants.Readable.FileName;  Path = $ReadableOutputPath }
+    @{ Name = $Config.Variants.Minimized.FileName; Path = $MinOutputPath }
+    @{ Name = $Config.Variants.Ultra.FileName;     Path = $UltraOutputPath }
+)
+
+$Mismatches = @()
+foreach ($Embed in $Config.Embeds) {
+    foreach ($Variant in $VariantPaths) {
+        $Embedded = Get-BuildEmbeddedContent -Path $Variant.Path -FunctionName $Embed.Function
+        if ($null -eq $Embedded) {
+            $Mismatches += "$($Variant.Name): $($Embed.Function) not found or not in embedded form"
+        }
+        elseif ($Embedded -cne $EmbedContent[$Embed.Region]) {
+            $Mismatches += "$($Variant.Name): $($Embed.Function) differs from the source asset ($($Embedded.Length) vs $($EmbedContent[$Embed.Region].Length) chars)"
+        }
+    }
+}
+
+if ($Mismatches.Count -gt 0) {
+    foreach ($Mismatch in $Mismatches) { Write-Host "[Build]   $Mismatch" -ForegroundColor Red }
+    Write-Error "[Build] Embedded assets were altered by the build. The variants would behave differently."
+    return
+}
+Write-Host "[Build]   $($Config.Embeds.Count) asset(s) identical across all $($VariantPaths.Count) text variants" -ForegroundColor Green
+
+# ====================
+# 5. CODE SIGNING (optional)
+# ====================
+if ($CodeSigningCert) {
+    Write-Host "`n[Build] Code Signing" -ForegroundColor Yellow
+
+    $FilesToSign = @($ReadableOutputPath, $MinOutputPath, $UltraOutputPath, $ObfOutputPath)
+    $SignResult = Invoke-BuildCodeSigning -Path $FilesToSign `
+        -CertificatePath $CodeSigningCert -CertPassword $CertPassword -TimestampServer $TimestampServer
+    if (-not $SignResult) { return }
+
+    Write-Host "`n[Build] Code Signing: $($SignResult.Signed)/$($SignResult.Total) files signed" -ForegroundColor $(if ($SignResult.Signed -eq $SignResult.Total) { "Green" } else { "Red" })
+
+    if ($SignResult.Untrusted -gt 0) {
+        Write-Host "[Build]   $($SignResult.Untrusted) file(s) carry a signature this host cannot build a trust chain for." -ForegroundColor Yellow
+        Write-Host "[Build]   Expected for a self-signed or internal-CA certificate - the signature is intact," -ForegroundColor Yellow
+        Write-Host "[Build]   and verifies wherever the issuing root is trusted." -ForegroundColor Yellow
+    }
+    if ($SignResult.UnTimestamped -gt 0) {
+        Write-Host "[Build]   $($SignResult.UnTimestamped) file(s) were signed WITHOUT a timestamp - could not reach $TimestampServer." -ForegroundColor Yellow
+        Write-Host "[Build]   Those signatures stop verifying when the certificate expires on $($SignResult.NotAfter.ToString('yyyy-MM-dd'))." -ForegroundColor Yellow
+    }
+
+    # A build that was asked to sign and did not must not report success. Without this the
+    # script ended with exit code 0 after printing "0/4", and nothing downstream - a
+    # release script, CI, or a person skimming the tail of the log - had any way to know.
+    if ($SignResult.Signed -ne $SignResult.Total) {
+        Write-Error "[Build] Code signing failed for $($SignResult.Total - $SignResult.Signed) of $($SignResult.Total) file(s). The build artifacts exist but are not signed."
+        return
+    }
 }
 
 # ====================
 # SUMMARY
 # ====================
+#
+# Last, behind code signing. It used to print ahead of it, so a run that failed to sign
+# announced BUILD COMPLETED SUCCESSFULLY first and reported the failure afterwards.
 Write-Host "`n============================================" -ForegroundColor Cyan
 Write-Host "BUILD COMPLETED SUCCESSFULLY" -ForegroundColor Green
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "Version: $BuildVersion" -ForegroundColor White
 Write-Host "Timestamp: $BuildTimestamp" -ForegroundColor White
 Write-Host "`nFiles:" -ForegroundColor White
-Write-Host "  - adPEAS.ps1       : $([Math]::Round($ReadableSize, 2)) KB (readable, with comments)" -ForegroundColor Gray
-Write-Host "  - adPEAS_min.ps1   : $([Math]::Round($MinSize, 2)) KB (minimized, no comments)" -ForegroundColor Gray
-Write-Host "  - adPEAS_ultra.ps1 : $([Math]::Round($UltraSize, 2)) KB (ultra-compressed, NO comments)" -ForegroundColor Gray
-Write-Host "  - adPEAS_obf.ps1   : $([Math]::Round($ObfSize, 2)) KB (obfuscated: GZip+XOR+Base64)" -ForegroundColor Gray
-Write-Host "`nOutput directory: $ReleasePath (project root)" -ForegroundColor White
+Write-Host "  - $($Config.Variants.Readable.FileName.PadRight(18)): $([Math]::Round($ReadableSize, 2)) KB ($($Config.Variants.Readable.Description))" -ForegroundColor Gray
+Write-Host "  - $($Config.Variants.Minimized.FileName.PadRight(18)): $([Math]::Round($MinSize, 2)) KB ($($Config.Variants.Minimized.Description))" -ForegroundColor Gray
+Write-Host "  - $($Config.Variants.Ultra.FileName.PadRight(18)): $([Math]::Round($UltraSize, 2)) KB ($($Config.Variants.Ultra.Description))" -ForegroundColor Gray
+Write-Host "  - $($Config.Variants.Obfuscated.FileName.PadRight(18)): $([Math]::Round($ObfSize, 2)) KB ($($Config.Variants.Obfuscated.Description))" -ForegroundColor Gray
+Write-Host "`nOutput directory: $ReleasePath" -ForegroundColor White
 Write-Host "============================================`n" -ForegroundColor Cyan
-
-# ====================
-# 5. CODE SIGNING (optional)
-# ====================
-if ($CodeSigningCert) {
-    Write-Host "[Build] Code Signing" -ForegroundColor Yellow
-
-    # Validate certificate file exists
-    if (-not (Test-Path $CodeSigningCert)) {
-        Write-Error "[Build] Certificate file not found: $CodeSigningCert"
-        return
-    }
-
-    # Load the certificate
-    Write-Host "[Build]   - Loading certificate: $CodeSigningCert" -ForegroundColor Gray
-    try {
-        $CertParams = @{ FilePath = (Resolve-Path $CodeSigningCert).Path }
-
-        if ($CertPassword) {
-            if ($CertPassword -is [System.Security.SecureString]) {
-                $CertParams['Password'] = $CertPassword
-            } else {
-                $CertParams['Password'] = ConvertTo-SecureString -String ([string]$CertPassword) -AsPlainText -Force
-            }
-        }
-
-        $SigningCert = Get-PfxCertificate @CertParams
-
-        # Verify it's a code signing certificate
-        $CodeSigningEKU = $SigningCert.EnhancedKeyUsageList | Where-Object { $_.ObjectId -eq "1.3.6.1.5.5.7.3.3" }
-        if (-not $CodeSigningEKU) {
-            Write-Error "[Build] Certificate does not have Code Signing EKU (1.3.6.1.5.5.7.3.3)"
-            return
-        }
-
-        Write-Host "[Build]     Subject: $($SigningCert.Subject)" -ForegroundColor Gray
-        Write-Host "[Build]     Issuer: $($SigningCert.Issuer)" -ForegroundColor Gray
-        Write-Host "[Build]     Valid until: $($SigningCert.NotAfter.ToString('yyyy-MM-dd'))" -ForegroundColor Gray
-        Write-Host "[Build]     Timestamp server: $TimestampServer" -ForegroundColor Gray
-    }
-    catch {
-        Write-Error "[Build] Failed to load certificate: $_"
-        return
-    }
-
-    # Sign all build outputs
-    $FilesToSign = @(
-        $ReadableOutputPath,
-        $MinOutputPath,
-        $UltraOutputPath,
-        $ObfOutputPath
-    )
-
-    $SignedCount = 0
-    foreach ($FileToSign in $FilesToSign) {
-        $FileName = Split-Path $FileToSign -Leaf
-        Write-Host "[Build]   - Signing $FileName..." -ForegroundColor Gray -NoNewline
-
-        try {
-            $SignParams = @{
-                FilePath    = $FileToSign
-                Certificate = $SigningCert
-                HashAlgorithm = "SHA256"
-            }
-
-            if ($TimestampServer) {
-                $SignParams['TimestampServer'] = $TimestampServer
-            }
-
-            $SignResult = Set-AuthenticodeSignature @SignParams
-
-            if ($SignResult.Status -eq "Valid") {
-                Write-Host " OK" -ForegroundColor Green
-                $SignedCount++
-            } else {
-                Write-Host " FAILED ($($SignResult.StatusMessage))" -ForegroundColor Red
-            }
-        }
-        catch {
-            Write-Host " ERROR ($_)" -ForegroundColor Red
-        }
-    }
-
-    Write-Host "`n[Build] Code Signing: $SignedCount/$($FilesToSign.Count) files signed successfully" -ForegroundColor $(if ($SignedCount -eq $FilesToSign.Count) { "Green" } else { "Yellow" })
-}
