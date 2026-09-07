@@ -316,11 +316,16 @@ function Set-DomainUser {
         [string]$Identity,
 
         # Password operations
+        # AllowEmptyString: a PASSWD_NOTREQD account (see -PasswordNotRequired below) legitimately
+        # allows an empty password - without this, PowerShell's own parameter binding rejects ""
+        # before the function body ever runs, making that scenario impossible to reach.
         [Parameter(ParameterSetName='SetPassword', Mandatory=$true)]
         [Parameter(ParameterSetName='ChangePassword', Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$NewPassword,
 
         [Parameter(ParameterSetName='ChangePassword', Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$OldPassword,
 
         # Owner modification

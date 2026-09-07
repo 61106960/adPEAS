@@ -978,6 +978,26 @@ $Script:ReadPropertyAliases = @{
 }
 
 # ============================================================================
+# Self (Validated Write) Aliases (for SET operations via Set-DomainObject)
+# ============================================================================
+<#
+.SYNOPSIS
+    User-friendly aliases for validated-write ("Self") GUIDs.
+.DESCRIPTION
+    Maps common operation names to the schemaIDGUID they scope a Self-type ACE to.
+
+    NOTE: These use the Self ACE type (RIGHT_DS_SELF), NOT WriteProperty or
+    ExtendedRight! Self grants only the validated write - e.g. SelfMembership lets
+    the principal add itself to the group, not add arbitrary members (that is
+    WriteProperty on 'member', see AddMember/WriteMembers in WritePropertyAliases).
+#>
+$Script:SelfAliases = @{
+    # bf9679c0-0de6-11d0-a285-00aa003049e2 = schemaIDGUID of 'member' attribute,
+    # reused by AD as the Self-Membership validated-write right's rightsGUID.
+    'SelfMembership' = 'bf9679c0-0de6-11d0-a285-00aa003049e2'
+}
+
+# ============================================================================
 # Well-Known Relative Identifiers (RIDs)
 # ============================================================================
 <#

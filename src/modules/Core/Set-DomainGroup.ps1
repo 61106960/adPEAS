@@ -210,7 +210,12 @@ function Set-DomainGroup {
         try {
             # Find the target group
             Write-Log "[Set-DomainGroup] Searching for group: $Identity"
-            $TargetGroup = @(Get-DomainGroup -Identity $Identity @ConnectionParams)[0]
+            # -Raw: ConvertFrom-LDAPAttribute turns groupType into a display string like
+            # "Global Security Group" outside Raw mode. ConvertToSecurity/ConvertToDistribution
+            # below need the actual bitmask, and [int]$TargetGroup.groupType on that string
+            # throws. member/description/sAMAccountName/distinguishedName have no special
+            # conversion either way, so Raw does not change anything else this reads.
+            $TargetGroup = @(Get-DomainGroup -Identity $Identity -Raw @ConnectionParams)[0]
 
             if (-not $TargetGroup) {
                 throw "Group '$Identity' not Found"

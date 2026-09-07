@@ -266,6 +266,22 @@ function New-DomainGPO {
                         $gptIniContent = "[General]`r`nVersion=0`r`ndisplayName=$gpoDisplayName"
                         Set-Content -Path $gptIniPath -Value $gptIniContent -Force -ErrorAction Stop
 
+                        # Set owner to match AD object owner. This needs SeRestorePrivilege (or
+                        # membership in the target principal) to succeed at the filesystem level,
+                        # which the account running this rarely has - kept in its own Get-Acl/Set-Acl
+                        # round-trip so a rejected owner can't poison the ACE mirroring below (a
+                        # single shared ACL object would fail its Set-Acl entirely, silently
+                        # discarding every ACE too, not just the owner change).
+                        try {
+                            $ownerAcl = Get-Acl -Path $gpoBasePath
+                            $ownerIdentity = New-Object System.Security.Principal.SecurityIdentifier($ownerSID)
+                            $ownerAcl.SetOwner($ownerIdentity)
+                            Set-Acl -Path $gpoBasePath -AclObject $ownerAcl -ErrorAction Stop
+                            Write-Log "[New-DomainGPO] Set SYSVOL owner to: $ownerSID"
+                        } catch {
+                            Write-Log "[New-DomainGPO] Warning: Could not set SYSVOL owner: $_"
+                        }
+
                         # STEP 2: Apply NTFS ACLs that mirror AD ACLs
                         # This is critical - GPMC compares AD and SYSVOL ACLs
                         try {
@@ -274,15 +290,6 @@ function New-DomainGPO {
                             # Disable inheritance and clear existing rules (like AD object)
                             $acl.SetAccessRuleProtection($true, $false)
                             $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
-
-                            # Set owner to match AD object owner
-                            try {
-                                $ownerIdentity = New-Object System.Security.Principal.SecurityIdentifier($ownerSID)
-                                $acl.SetOwner($ownerIdentity)
-                                Write-Log "[New-DomainGPO] Set SYSVOL owner to: $ownerSID"
-                            } catch {
-                                Write-Log "[New-DomainGPO] Warning: Could not set SYSVOL owner: $_"
-                            }
 
                             # Apply ACEs mirrored from AD
                             foreach ($aceData in $SYSVOLACEData) {

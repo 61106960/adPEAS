@@ -272,6 +272,7 @@ function Set-DomainComputer {
 
         [Parameter(ParameterSetName='GrantRights', Mandatory=$true)]
         [Parameter(ParameterSetName='ClearRBCD', Mandatory=$false)]
+        [Parameter(ParameterSetName='ClearConstrainedDelegation', Mandatory=$false)]
         [string]$Principal,
 
         # Shadow Credentials

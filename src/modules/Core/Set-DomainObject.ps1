@@ -366,6 +366,14 @@ function Set-DomainObject {
 
                 if (-not $SearchResult) {
                     Write-Error "[Set-DomainObject] Object not found: $Identity"
+                    if ($PassThru) {
+                        return [PSCustomObject]@{
+                            Operation = $PSCmdlet.ParameterSetName
+                            Object    = $Identity
+                            Success   = $false
+                            Message   = "Object not found: $Identity"
+                        }
+                    }
                     return $false
                 }
 
@@ -382,12 +390,28 @@ function Set-DomainObject {
                     Write-Log "[Set-DomainObject] Resolved principal '$Principal' to SID: $ResolvedSIDString"
                 } else {
                     Write-Error "[Set-DomainObject] Failed to resolve principal '$Principal' - ensure the identity exists in AD"
+                    if ($PassThru) {
+                        return [PSCustomObject]@{
+                            Operation = $PSCmdlet.ParameterSetName
+                            Object    = $ObjectDN
+                            Success   = $false
+                            Message   = "Failed to resolve principal '$Principal' - ensure the identity exists in AD"
+                        }
+                    }
                     return $false
                 }
 
                 # Get Security Descriptor from raw result
                 if (-not $ResultArray[0].nTSecurityDescriptor) {
                     Write-Error "[Set-DomainObject] Failed to retrieve Security Descriptor for: $ObjectDN"
+                    if ($PassThru) {
+                        return [PSCustomObject]@{
+                            Operation = $PSCmdlet.ParameterSetName
+                            Object    = $ObjectDN
+                            Success   = $false
+                            Message   = "Failed to retrieve Security Descriptor for: $ObjectDN"
+                        }
+                    }
                     return $false
                 }
 
@@ -566,6 +590,14 @@ function Set-DomainObject {
 
             if (-not $SearchResult) {
                 Write-Error "[Set-DomainObject] Object not found: $Identity"
+                if ($PassThru) {
+                    return [PSCustomObject]@{
+                        Operation = "SetAttributes"
+                        Object    = $Identity
+                        Success   = $false
+                        Message   = "Object not found: $Identity"
+                    }
+                }
                 return $false
             }
 
@@ -852,12 +884,44 @@ function Add-ACEToACL {
                 $ACECount++
                 Write-Log "[Add-ACEToACL] Added $AccessType ACE for ReadProperty '$ExtendedRight'"
             } else {
-                $removed = $ACL.RemoveAccessRule($ACE)
-                if ($removed) {
+                # RemoveAccessRule() returns $true whenever the ACE is absent afterwards -
+                # including when it was never there to begin with - so a count-based check is
+                # the only reliable way to tell "removed" from "nothing to remove".
+                $countBefore = $ACL.Access.Count
+                $ACL.RemoveAccessRule($ACE) | Out-Null
+                if ($ACL.Access.Count -lt $countBefore) {
                     $ACECount++
                     Write-Log "[Add-ACEToACL] Removed ACE for ReadProperty '$ExtendedRight'"
                 } else {
                     Write-Log "[Add-ACEToACL] ACE for ReadProperty '$ExtendedRight' was not found - nothing removed"
+                }
+            }
+        }
+        # Check if this is a Self (validated write) alias (e.g., SelfMembership)
+        elseif (($SelfGUID = $Script:SelfAliases[$ExtendedRight])) {
+            Write-Log "[Add-ACEToACL] '$ExtendedRight' is a Self alias (attribute GUID: $SelfGUID)"
+
+            $ObjectType = New-Object Guid($SelfGUID)
+            $ACE = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+                $PrincipalSID,
+                [System.DirectoryServices.ActiveDirectoryRights]::Self,
+                $AccessControlType,
+                $ObjectType,
+                [System.DirectoryServices.ActiveDirectorySecurityInheritance]::None
+            )
+
+            if ($Operation -eq 'Add') {
+                $ACL.AddAccessRule($ACE)
+                $ACECount++
+                Write-Log "[Add-ACEToACL] Added $AccessType ACE for Self '$ExtendedRight'"
+            } else {
+                $countBefore = $ACL.Access.Count
+                $ACL.RemoveAccessRule($ACE) | Out-Null
+                if ($ACL.Access.Count -lt $countBefore) {
+                    $ACECount++
+                    Write-Log "[Add-ACEToACL] Removed ACE for Self '$ExtendedRight'"
+                } else {
+                    Write-Log "[Add-ACEToACL] ACE for Self '$ExtendedRight' was not found - nothing removed"
                 }
             }
         }
@@ -879,8 +943,9 @@ function Add-ACEToACL {
                 $ACECount++
                 Write-Log "[Add-ACEToACL] Added $AccessType ACE for WriteProperty '$ExtendedRight'"
             } else {
-                $removed = $ACL.RemoveAccessRule($ACE)
-                if ($removed) {
+                $countBefore = $ACL.Access.Count
+                $ACL.RemoveAccessRule($ACE) | Out-Null
+                if ($ACL.Access.Count -lt $countBefore) {
                     $ACECount++
                     Write-Log "[Add-ACEToACL] Removed ACE for WriteProperty '$ExtendedRight'"
                 } else {
@@ -914,8 +979,9 @@ function Add-ACEToACL {
                     $ACECount++
                     Write-Log "[Add-ACEToACL] Added $AccessType ACE for ExtendedRight GUID: $GUID"
                 } else {
-                    $removed = $ACL.RemoveAccessRule($ACE)
-                    if ($removed) {
+                    $countBefore = $ACL.Access.Count
+                    $ACL.RemoveAccessRule($ACE) | Out-Null
+                    if ($ACL.Access.Count -lt $countBefore) {
                         $ACECount++
                         Write-Log "[Add-ACEToACL] Removed ACE for ExtendedRight GUID: $GUID"
                     } else {
@@ -938,8 +1004,9 @@ function Add-ACEToACL {
             $ACECount++
             Write-Log "[Add-ACEToACL] Added $AccessType ACE for Rights: $Rights"
         } else {
-            $removed = $ACL.RemoveAccessRule($ACE)
-            if ($removed) {
+            $countBefore = $ACL.Access.Count
+            $ACL.RemoveAccessRule($ACE) | Out-Null
+            if ($ACL.Access.Count -lt $countBefore) {
                 $ACECount++
                 Write-Log "[Add-ACEToACL] Removed ACE for Rights: $Rights"
             } else {

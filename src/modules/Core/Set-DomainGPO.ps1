@@ -384,9 +384,24 @@ function Set-DomainGPO {
         [string]$Owner,
 
         # ACL modification
+        #
+        # The default below is never actually used by -GrantRights itself: it is Mandatory
+        # in its own parameter set, so PowerShell always requires the caller to supply a
+        # real value there. It exists only so that when a DIFFERENT parameter set is active,
+        # this variable's unbound value ("" with no default) still satisfies its own
+        # ValidateSet. Every Add* operation below builds its SMB scriptblock with
+        # .GetNewClosure(), which snapshots every variable in this function's scope -
+        # including unbound ones from parameter sets that are not active - and on Windows
+        # PowerShell 5.1 (the deployment target) that snapshot re-validates each variable's
+        # attributes against its current value. An unbound ValidateSet parameter with no
+        # default holds "", which is not a member of its own ValidateSet, so GetNewClosure()
+        # itself throws "Cannot add attribute... variable would no longer be valid" -
+        # breaking every Add* operation, not just GrantRights. Confirmed empirically on real
+        # Windows PowerShell 5.1 (pwsh 7 does not reproduce it). RuleDirection below has the
+        # same fix for the same reason.
         [Parameter(ParameterSetName='GrantRights', Mandatory=$true)]
         [ValidateSet('GenericAll','GenericWrite','WriteDacl','WriteOwner')]
-        [string]$GrantRights,
+        [string]$GrantRights = 'GenericAll',
 
         [Parameter(ParameterSetName='GrantRights', Mandatory=$true)]
         [string]$Principal,
@@ -518,9 +533,11 @@ function Set-DomainGPO {
         [Parameter(ParameterSetName='RemoveFirewallRule', Mandatory=$true)]
         [string]$RuleName,
 
+        # Default exists only to keep GetNewClosure() from throwing when a different
+        # parameter set is active - see the -GrantRights parameter's comment above.
         [Parameter(ParameterSetName='AddFirewallRule', Mandatory=$true)]
         [ValidateSet('Inbound', 'Outbound')]
-        [string]$RuleDirection,
+        [string]$RuleDirection = 'Outbound',
 
         [Parameter(ParameterSetName='AddFirewallRule', Mandatory=$false)]
         [ValidateSet('Allow', 'Block')]
@@ -1239,10 +1256,13 @@ $taskEntryXml
                         if ($MemberToAdd -match '^S-1-') {
                             $memberSID = $MemberToAdd
                         } else {
-                            # Try to resolve via AD
+                            # Try to resolve via AD. Get-DomainObject (no -Raw) already converts
+                            # objectSid from its LDAP byte[] form to the S-1-... string via
+                            # ConvertFrom-LDAPAttribute - it must not be re-wrapped through the
+                            # SecurityIdentifier(byte[], int) constructor, which throws on a string.
                             $memberObj = @(Get-DomainObject -Identity $MemberToAdd @ConnectionParams)[0]
                             if ($memberObj -and $memberObj.objectSid) {
-                                $memberSID = (New-Object System.Security.Principal.SecurityIdentifier($memberObj.objectSid, 0)).Value
+                                $memberSID = $memberObj.objectSid
                             }
                         }
 
@@ -2442,20 +2462,29 @@ function Sync-GPOSYSVOLPermissions {
 
             Write-Log "[Sync-GPOSYSVOLPermissions] Updating ACLs on: $gpoBasePath"
 
+            # Set owner to match AD object. This needs SeRestorePrivilege (or membership in
+            # the target principal) to succeed at the filesystem level, which the account
+            # running this rarely has - kept in its own Get-Acl/Set-Acl round trip so a
+            # rejected owner can't poison the ACE mirroring below. SetOwner() only mutates
+            # the in-memory ActiveDirectorySecurity object and never throws; the real failure
+            # only surfaces later, at Set-Acl - if that Set-Acl shared the same $acl object
+            # used for the ACE-mirroring Set-Acl below, its failure would discard every
+            # mirrored ACE too, not just the owner change.
+            try {
+                $ownerAcl = Get-Acl -Path $gpoBasePath
+                $ownerIdentity = New-Object System.Security.Principal.SecurityIdentifier($ownerSID)
+                $ownerAcl.SetOwner($ownerIdentity)
+                Set-Acl -Path $gpoBasePath -AclObject $ownerAcl -ErrorAction Stop
+                Write-Log "[Sync-GPOSYSVOLPermissions] Set owner to: $ownerSID"
+            } catch {
+                Write-Log "[Sync-GPOSYSVOLPermissions] Warning: Could not set owner: $_"
+            }
+
             $acl = Get-Acl -Path $gpoBasePath
 
             # Disable inheritance and clear existing rules
             $acl.SetAccessRuleProtection($true, $false)
             $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
-
-            # Set owner to match AD object
-            try {
-                $ownerIdentity = New-Object System.Security.Principal.SecurityIdentifier($ownerSID)
-                $acl.SetOwner($ownerIdentity)
-                Write-Log "[Sync-GPOSYSVOLPermissions] Set owner to: $ownerSID"
-            } catch {
-                Write-Log "[Sync-GPOSYSVOLPermissions] Warning: Could not set owner: $_"
-            }
 
             # Apply mirrored ACEs
             foreach ($aceData in $SYSVOLACEData) {
@@ -2630,7 +2659,13 @@ function Update-GPOVersion {
         $gpoGuid = $GPOGUID
         $newVersionVal = $newVersion
 
-        $smbResult = Invoke-SMBAccess -Description "Update GPO version in GPT.INI" -ErrorHandling Continue -ScriptBlock {
+        # Invoke-SMBAccess's -ErrorHandling only accepts Silent/Warn/Stop - 'Continue' is not
+        # a member of its ValidateSet and threw a parameter-binding exception on every call,
+        # caught by this function's own outer catch below and discarding the AD versionNumber
+        # write that had already succeeded a few lines above. 'Warn' is the closest match to
+        # the soft-fail behavior this function was written for: $sysvolSuccess is computed
+        # from the result afterward rather than this function throwing on a SYSVOL failure.
+        $smbResult = Invoke-SMBAccess -Description "Update GPO version in GPT.INI" -ErrorHandling Warn -ScriptBlock {
             param($basePath)
 
             $gptIniPath = Join-Path $basePath "$domainName\Policies\$gpoGuid\GPT.INI"
@@ -2944,8 +2979,14 @@ function Remove-GPOPayloadItem {
     $domainName = $Script:LDAPContext.Domain
     $guid = $GPOGUID
     $rel = $map.Rel
-    $rootName = $map.Root
-    $itemName = $map.Item
+    # $map.Root and $map.Item (both unused below) were previously copied into local variables
+    # named $rootName and $itemName - PowerShell variable names are case-insensitive, so
+    # $itemName = $map.Item silently clobbered the $ItemName *parameter* (the actual item to
+    # remove) with the XML tag name (e.g. 'ImmediateTaskV2') before it could be copied to
+    # $targetName below, which the removal XPath actually matches against. Every removal of a
+    # name-matched payload type (ScheduledTask/Service/DeployedFile/FirewallRule) therefore
+    # always searched for the wrong name and always reported "No matching item found",
+    # regardless of whether the item existed. Confirmed empirically before fixing.
     $targetName = $ItemName
     $memberSidVal = $MemberSID
     $typeVal = $Type
