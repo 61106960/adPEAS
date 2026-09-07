@@ -96,9 +96,16 @@ function Get-PrincipalContainer {
 
         Write-Log "[Get-PrincipalContainer] $($containers.Count) container(s) directly under $domainDN"
 
-        # ,@() so a single container is not unrolled into a bare object by the caller's
-        # assignment, and an empty result stays an empty array rather than $null.
+        # Emit the containers as individual pipeline items, the way Get-DomainObject does.
+        # The callers concatenate this onto their OU list as
+        #   @(Get-DomainObject ...) + @(Get-PrincipalContainer ...)
+        # and @() collects pipeline items without flattening them: a ',$containers' return
+        # arrives there as ONE element holding the whole array, so the foreach that follows
+        # hands a nested array to the [string]$DistinguishedName parameter of
+        # Get-OUPermissions and the check dies with "Cannot process argument
+        # transformation". The cached branch above always returned unrolled, so only the
+        # first caller in a session was hit.
         $Script:PrincipalContainerCache = $containers
-        return ,$containers
+        return $containers
     }
 }

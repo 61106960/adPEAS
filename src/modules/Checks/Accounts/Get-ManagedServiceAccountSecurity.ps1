@@ -199,6 +199,12 @@ function Get-ManagedServiceAccountSecurity {
 
                 $passwordsRetrieved = 0
 
+                # A read the caller is not entitled to returns no attribute; it does not
+                # throw. So a throw is a broken query rather than a negative result, and
+                # counting them is what keeps the summary below from reporting a scan that
+                # never ran as a domain where nobody can read a gMSA password.
+                $readFailures = 0
+
                 $totalGMSAs = @($gmsaAccounts).Count
                 $currentIndex = 0
                 foreach ($gmsa in $gmsaAccounts) {
@@ -268,13 +274,23 @@ function Get-ManagedServiceAccountSecurity {
                             Write-Log "[Get-ManagedServiceAccountSecurity] No msDS-ManagedPassword returned for $gmsaName (access denied or not available)"
                         }
                     } catch {
+                        $readFailures++
                         Write-Log "[Get-ManagedServiceAccountSecurity] Error reading password for $gmsaName : $_"
                     }
                 }
                 if ($totalGMSAs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing gMSA security" -Completed }
 
                 if ($passwordsRetrieved -eq 0) {
-                    Show-Line "Current user cannot retrieve any gMSA passwords" -Class Note
+                    # The check read msDS-ManagedPassword for every gMSA and got nothing
+                    # back: a tested result, and the same kind of answer as the two lines
+                    # above it, so it is rendered the same way.
+                    if ($readFailures -eq $totalGMSAs) {
+                        Show-Line "gMSA password access could not be tested - every read failed" -Class Note
+                    } elseif ($readFailures -gt 0) {
+                        Show-Line "Current user cannot retrieve any gMSA passwords ($readFailures of $totalGMSAs could not be tested)" -Class Secure
+                    } else {
+                        Show-Line "Current user cannot retrieve any gMSA passwords" -Class Secure
+                    }
                 } else {
                     Show-Line "Retrieved $passwordsRetrieved of $($gmsaAccounts.Count) gMSA password(s)" -Class Finding
                 }
@@ -297,6 +313,13 @@ function Get-ManagedServiceAccountSecurity {
 
             # ===== Check 3: Standalone MSA Detection =====
             Write-Log "[Get-ManagedServiceAccountSecurity] Checking for standalone MSAs"
+
+            # Standalone MSAs are a different account type answering a different question,
+            # and every other stage of this check announces itself. Without a header of its
+            # own the MSA result ran on directly under the gMSA objects, reading as one
+            # more line about the gMSA above it. The MSA ObjectType carries the section
+            # title and the help text already - only the header was missing.
+            Show-SubHeader "Checking for standalone Managed Service Accounts..." -ObjectType "MSA"
 
             # Get all MSAs (not gMSAs) - these are legacy standalone MSAs
             $standaloneMSAs = @(Get-DomainUser -GMSA @PSBoundParameters |

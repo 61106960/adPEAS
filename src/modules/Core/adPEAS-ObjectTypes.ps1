@@ -1101,7 +1101,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         TitleFormat = "Explicit Certificate Mapping: {Name}"
         Module = "ADCS"
         Category = "ADCS"
-        SectionTitle = "Explicit Certificate Mappings (ESC14)"
+        SectionTitle = "Explicit Certificate Mappings"
         Summary = "Finds accounts a certificate can be mapped to without the CA's SID extension."
         WhyItMatters = "altSecurityIdentities binds a certificate to an account explicitly, bypassing the SID extension the CA writes. Three of the six formats Active Directory accepts name something an attacker can reproduce in a certificate of their own - a subject name or an e-mail address - so anyone who can enrol for such a certificate authenticates as that account."
         WhatWeCheck = @(
@@ -1109,7 +1109,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Whether the mapped account is privileged"
             "Who may write altSecurityIdentities on a privileged account"
         )
-        FilteringNote = "Strong mappings (X509IssuerSerialNumber, X509SKI, X509SHA1PublicKey) are not reported. Write access is examined for privileged principals only, and trustees that are already privileged are filtered out."
+        FilteringNote = "Strong mappings (X509IssuerSerialNumber, X509SKI, X509SHA1PublicKey) are not reported. Write access is examined for privileged principals only, and trustees that are already privileged are filtered out. The Exchange service groups are reported separately, in their own attribute: their rights on user objects are written by the Exchange setup and land on every privileged account at once, which makes them an escalation path through Exchange rather than a delegation on this account."
         SecureMessage = "No weak explicit certificate mapping found, and no non-privileged principal can add one to a privileged account."
         PrimaryFindingId = 'ESC14_WEAK_EXPLICIT_MAPPING'
     }
@@ -1162,7 +1162,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Whether the GPO currently applies at all"
         )
         SecureMessage = "Every user right assigned via GPO matches the Windows default. No policy grants a privilege beyond the set Windows ships."
-        PrimaryFindingId = 'GPO_DANGEROUS_USER_RIGHT'
+        # GPO_DANGEROUS_USER_RIGHT no longer exists - the check now has one FindingId per
+        # right (GPO_USERRIGHT_*) rather than one generic tooltip for all 22. SeDebugPrivilege
+        # is the anchor here as the most universally recognized of the set; the client-side
+        # fallback (findingIds carried by the section's own findings) picks up the specific
+        # right actually reported when this override does not apply.
+        PrimaryFindingId = 'GPO_USERRIGHT_SEDEBUG'
     }
 
     'MachineAccountQuota' = @{
@@ -1217,15 +1222,16 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         TitleFormat = "Outdated Computer: {Name}"
         Module = "Computer"
         Category = "Computers"
-        SectionTitle = "Outdated Operating Systems"
-        Summary = "Finds computers running end-of-life operating systems."
+        SectionTitle = "Outdated Microsoft Operating Systems"
+        Summary = "Finds computers running an end-of-life Microsoft operating system."
         WhyItMatters = "EOL systems no longer receive security updates. They have known, unpatched vulnerabilities that attackers can exploit for initial access or lateral movement."
         WhatWeCheck = @(
             "Windows XP, Vista, 7, 8/8.1, Server 2003/2008/2012"
             "Last logon timestamp to filter active vs stale"
             "Operating system version details"
         )
-        SecureMessage = "No active computers running end-of-life operating systems found. All systems are running supported operating systems that receive security updates."
+        FilteringNote = "The subject is the Microsoft lifecycle. A member whose operatingSystem is not a Microsoft product - a Linux host, an appliance, a network printer - has no support date to run out and is not part of the figures."
+        SecureMessage = "No active computers running an end-of-life Microsoft operating system found. All systems are running supported operating systems that receive security updates."
         PrimaryFindingId = 'OUTDATED_OS'
     }
 

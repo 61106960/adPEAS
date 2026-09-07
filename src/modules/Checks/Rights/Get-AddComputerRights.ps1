@@ -350,6 +350,10 @@ function Check-GPOAddComputerRights {
 
         if (-not $gpos -or @($gpos).Count -eq 0) { return @() }
 
+        # Indexed once for the whole check: every finding below reports the state of its
+        # policy as GPOStatus, the way the other GPO checks do.
+        $gpoStatusMap = Get-GPOStatusMap -GPO $gpos
+
         $dcServer = $Script:LDAPContext.Server
         $domainDN = $Script:LDAPContext.DomainDN
         $dcOUDN = "OU=Domain Controllers,$domainDN"
@@ -478,17 +482,16 @@ function Check-GPOAddComputerRights {
                             $gpo | Add-Member -NotePropertyName 'Accounts'              -NotePropertyValue $accountNames -Force
                             $gpo | Add-Member -NotePropertyName 'IsEffectiveSetting'    -NotePropertyValue $false -Force
 
-                            if (@($activeLinks).Count -gt 0) {
-                                $linkedOUsDisplay = @($activeLinks | ForEach-Object { $_.DistinguishedName })
-                                $gpo | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
-                                $scopeInfo = if ($isDomainWide) {
-                                    "Domain-wide ($(@($activeLinks).Count) link(s))"
-                                } else {
-                                    "$(@($activeLinks).Count) OU(s)"
-                                }
-                                $gpo | Add-Member -NotePropertyName 'Scope' -NotePropertyValue $scopeInfo -Force
-                            } else {
-                                $gpo | Add-Member -NotePropertyName 'Scope' -NotePropertyValue "NOT LINKED" -Force
+                            # Where the policy applies. The full link records, disabled ones
+                            # included - the LinkedOUs transformer marks those and renders an
+                            # empty list as "Not linked".
+                            $gpo | Add-Member -NotePropertyName 'LinkedOUs' `
+                                -NotePropertyValue $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { @($links | Where-Object { $_ }) }) -Force
+
+                            $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUIDKey] `
+                                -Scope 'Machine' -Link $(if ($null -eq $links) { $null } else { @($links | Where-Object { $_ }) })
+                            if ($gpoStatus) {
+                                $gpo | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                             }
 
                             # Internal precedence fields (not displayed, used for effective determination)

@@ -735,24 +735,23 @@ function New-PointAndPrintObject {
         $linkedOUs = @($GPOLinkage[$gpoGuid])
     }
 
-    if ($linkedOUs.Count -gt 0) {
-        $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
-    } elseif ($null -eq $GPOLinkage) {
-        $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Unknown - GPO linkage could not be resolved' -Force
+    # A resolved-to-none linkage goes in as the empty array, which the LinkedOUs transformer
+    # renders as "Not linked". Only the unresolved case needs a string of its own, because
+    # "not linked" would be a claim the failed lookup does not support.
+    if ($linkedOUs.Count -eq 0 -and $null -eq $GPOLinkage) {
+        $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Unknown - linkage could not be resolved' -Force
     } else {
-        $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Not linked - these settings apply nowhere' -Force
+        $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
     }
-    $obj | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
 
     # Point and Print lives under HKLM, so the computer half of the GPO is the one that has
-    # to be switched on. -1 when the linkage could not be resolved at all: "not linked" is
-    # a claim, and a failed lookup does not support it.
-    $ineffective = Get-GPOIneffectiveReason `
+    # to be switched on. $null for the links when the linkage could not be resolved at all.
+    $gpoStatus = Get-GPOEffectiveStatus `
         -StatusEntry $(if ($GPOStatusMap -and $gpoGuid) { $GPOStatusMap[$gpoGuid] } else { $null }) `
         -Scope 'Machine' `
-        -LinkedOUCount $(if ($null -eq $GPOLinkage) { -1 } else { $linkedOUs.Count })
-    if ($ineffective) {
-        $obj | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+        -Link $(if ($null -eq $GPOLinkage) { $null } else { $linkedOUs })
+    if ($gpoStatus) {
+        $obj | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
     }
 
     # Hidden from display (see $Script:ExcludeAttributes) - used for sorting and correlation

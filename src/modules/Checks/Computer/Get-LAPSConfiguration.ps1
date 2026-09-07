@@ -149,14 +149,13 @@ function New-LAPSGPOConfigObject {
         $linkedOUs = @($GPOLinkage[$gpoGuid])
     }
 
-    if ($linkedOUs.Count -gt 0) {
-        $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
-    } elseif ($null -eq $GPOLinkage) {
-        $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Unknown - GPO linkage could not be resolved' -Force
+    # A resolved-to-none linkage goes in as the empty array, which the LinkedOUs transformer
+    # renders as "Not linked". Only the unresolved case needs a string of its own.
+    if ($linkedOUs.Count -eq 0 -and $null -eq $GPOLinkage) {
+        $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Unknown - linkage could not be resolved' -Force
     } else {
-        $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Not linked - these settings apply nowhere' -Force
+        $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
     }
-    $obj | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
 
     if ($gpoGuid) {
         $obj | Add-Member -NotePropertyName 'GPOGUID' -NotePropertyValue $gpoGuid -Force
@@ -282,8 +281,13 @@ function Get-LAPSConfiguration {
     Domain controllers are not part of the coverage question. A DC has no local SAM, so the
     built-in Administrator LAPS manages everywhere else does not exist there; Legacy LAPS
     never touched one, and Windows LAPS reaches one only through the DSRM account, and only
-    when BackupDsrmPassword is on. They are counted and reported separately, including
-    whether a GPO configures that setting.
+    when BackupDsrmPassword is on. Their count travels in the population line, alongside the
+    inactive machines - what a reader needs is how many were left out, not a sentence about
+    why, which is the same on every run of every domain.
+
+    Whether BackupDsrmPassword is configured is a Windows LAPS policy setting rather than a
+    coverage figure, and it is reported where the other policy settings are: on the GPO
+    object in the section above, as DsrmPasswordBackup.
 
     LAPS Versions Supported:
     - Legacy LAPS: Original Microsoft LAPS (ms-Mcs-* attributes)
@@ -534,30 +538,26 @@ function Get-LAPSConfiguration {
             $lapsCoverage = if ($activeCount -gt 0) { [math]::Round(($withAnyLAPS / $activeCount) * 100, 1) } else { 0 }
             $withoutLAPSPercent = if ($activeCount -gt 0) { [math]::Round(($withoutLAPS / $activeCount) * 100, 1) } else { 0 }
 
-            # Output statistics - compact summary lines
-            $inactiveInfo = if ($inactiveCount -gt 0) { " ($inactiveCount inactive excluded)" } else { "" }
-            Show-Line "Found $activeCount active computers$inactiveInfo" -Class "Hint"
+            # Output statistics - one line for what was measured and what was left out of
+            # it. The domain controllers used to take a line of their own carrying a
+            # sentence about why a DC is excluded; the count is the part a reader needs,
+            # and the reason is the same on every run of every domain.
+            $excluded = @()
+            if ($inactiveCount -gt 0) { $excluded += "$inactiveCount inactive excluded" }
+            if (-not $domainControllerLookupFailed -and $domainControllerCount -gt 0) {
+                $dcNoun = if ($domainControllerCount -eq 1) { 'domain controller' } else { 'domain controllers' }
+                $excluded += "$domainControllerCount $dcNoun excluded"
+            }
+            $excludedInfo = if ($excluded.Count -gt 0) { " (" + ($excluded -join ', ') + ")" } else { "" }
+            Show-Line "Found $activeCount active computers$excludedInfo" -Class "Hint"
 
-            # The domain controllers, on their own terms rather than as unprotected machines
+            # A failed domain controller lookup still needs saying: the DCs are then counted
+            # as ordinary computers below, which understates the coverage figure rather than
+            # leaving it out of it. The DSRM backup state used to be reported here as well
+            # and is not any more - it is a Windows LAPS policy setting rather than a
+            # coverage figure, and it belongs to the GPO section above if anywhere.
             if ($domainControllerLookupFailed) {
                 Show-Line "Domain Controllers could not be enumerated - they are counted as ordinary computers below, which will understate LAPS coverage" -Class "Note"
-            } elseif ($domainControllerCount -gt 0) {
-                $dsrmConfigured = $false
-                if ($lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Native) {
-                    foreach ($nativeGpo in $lapsGPOSettings.Native.Values) {
-                        if ($nativeGpo -is [hashtable] -and $nativeGpo.ContainsKey('BackupDsrmPassword') -and
-                            ([int]$nativeGpo['BackupDsrmPassword']) -ne 0) {
-                            $dsrmConfigured = $true
-                            break
-                        }
-                    }
-                }
-
-                if ($dsrmConfigured) {
-                    Show-Line "$domainControllerCount Domain Controller(s) excluded from the coverage figures - a DC has no local Administrator to manage, and a GPO does configure DSRM password backup for them" -Class "Note"
-                } else {
-                    Show-Line "$domainControllerCount Domain Controller(s) excluded from the coverage figures - a DC has no local Administrator to manage, and no GPO configures DSRM password backup (BackupDsrmPassword) for them" -Class "Hint"
-                }
             }
 
             # Build LAPS breakdown
@@ -658,6 +658,14 @@ function Get-LAPSConfiguration {
                     $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
                     Show-Object $lapsFinding
                 }
+            } elseif ($activeCount -eq 0) {
+                # 0 of 0 is not 100 per cent. Coverage divides by the active computers, and
+                # with none of them left - every machine inactive in a lab or a domain being
+                # decommissioned, or a domain whose only computers are its domain controllers
+                # - $withoutLAPS is 0 for the same reason the numerator is, and the check
+                # fell into the branch below and certified a clean domain from a scan that
+                # measured no machine at all.
+                Show-Line "No active computer to measure - LAPS coverage was not evaluated" -Class "Note"
             } else {
                 Show-Line "All computers (100%) have LAPS protection" -Class "Secure"
             }

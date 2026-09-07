@@ -160,6 +160,16 @@ function Get-GPOUserRightsAssignment {
                     $gpo = $gpoByGuid[$gpoGUIDKey]
                     if (-not $gpo) { continue }
 
+                    # [Privilege Rights] is a Computer Configuration section, and its file
+                    # is {GUID}\MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf. A GPO can
+                    # carry a second GptTmpl.inf under USER\, and this loop took any file
+                    # sitting below the GUID folder: user-scope content was then read as a
+                    # privilege assignment on every machine the policy reaches, and where
+                    # both files named the same right the GPO was reported twice for it -
+                    # two rows a reader has no way to tell apart. Get-GPORegistrySettings
+                    # makes the same distinction for Registry.pol.
+                    if ($file.FullName -notmatch '(?i)\\Policies\\\{[^}]+\}\\MACHINE\\') { continue }
+
                     $currentGPOIndex++
                     if ($totalGPOs -gt $Script:ProgressThreshold) {
                         Show-Progress -Activity "Scanning GPO user rights assignments" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.displayName
@@ -171,19 +181,26 @@ function Get-GPOUserRightsAssignment {
                     $section = $Matches[1]
 
                     # ----- Where this policy applies -----
-                    $links = if ($linkage) { $linkage[$gpoGUIDKey] } else { $null }
+                    #
+                    # The full link records go to the display, disabled ones included: the
+                    # LinkedOUs transformer marks those with "(link disabled)", and dropping
+                    # them here meant a policy whose only link is switched off looked exactly
+                    # like one that was never linked at all. The active subset still decides
+                    # which baseline applies, because a disabled link reaches no machine.
+                    # $null only when the linkage was never resolved. A GUID that is simply
+                    # absent from a resolved map means no links, which is @() - and
+                    # @($linkage[$missingKey]) would be an array holding one $null.
+                    $links = $null
+                    if ($linkage) {
+                        $links = @()
+                        if ($linkage.ContainsKey($gpoGUIDKey)) { $links = @($linkage[$gpoGUIDKey]) }
+                    }
                     $activeLinks = @()
                     if ($links) {
                         $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
                     }
                     $linkedOUs = @($activeLinks | ForEach-Object { $_.DistinguishedName })
                     $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
-
-                    if ($linkedOUs.Count -gt 0) {
-                        $scopeInfo = if ($isDomainWide) { "Domain-wide ($($linkedOUs.Count) link(s))" } else { "$($linkedOUs.Count) OU(s)" }
-                    } else {
-                        $scopeInfo = "NOT LINKED"
-                    }
 
                     # ----- Which default set to measure against -----
                     #
@@ -309,8 +326,7 @@ function Get-GPOUserRightsAssignment {
                             appliesTo        = $machineScope
                             grantedBeyondDefault = $addedNames
                             removedFromDefault   = $removedNames
-                            scope            = $scopeInfo
-                            linkedOUs        = $linkedOUs
+                            LinkedOUs        = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
                             _severity        = $severity
                         }
 
@@ -319,10 +335,10 @@ function Get-GPOUserRightsAssignment {
                                 -NotePropertyValue 'Windows publishes no fixed default set for this right, so the holders above were filtered by identity instead of compared. Judge them against what this domain actually runs.' -Force
                         }
 
-                        $ineffective = Get-GPOIneffectiveReason -StatusEntry $statusMap[$gpoGUIDKey] `
-                            -Scope 'Machine' -LinkedOUCount $(if ($null -eq $linkage) { -1 } else { $linkedOUs.Count })
-                        if ($ineffective) {
-                            $finding | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                        $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $statusMap[$gpoGUIDKey] `
+                            -Scope 'Machine' -Link $(if ($null -eq $linkage) { $null } else { $links })
+                        if ($gpoStatus) {
+                            $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                         }
 
                         $Script:gpoUserRightsFindings += $finding

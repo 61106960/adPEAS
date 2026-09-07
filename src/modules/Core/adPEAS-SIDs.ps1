@@ -731,6 +731,37 @@ $Script:SecurityScopes = @{
         )
     }
 
+    # ===== ADCS Template Write Scope =====
+    # Who SHOULD be able to MODIFY a certificate template object (ESC4)?
+    #
+    # Separate from ADCSEnroll on purpose, and the distinction is the whole point of this
+    # entry. Enrolling and rewriting are different questions with different answers:
+    # Authenticated Users holding Enroll is the normal state of a template, which is why
+    # ADCSEnroll parks that SID in AttentionBroadGroups. Authenticated Users holding
+    # GenericAll or WriteDacl is ESC4 in its worst form - any domain user can add Client
+    # Authentication, set ENROLLEE_SUPPLIES_SUBJECT, drop the manager approval and enrol
+    # as a domain admin. Answering the write question from the enrolment scope dropped
+    # exactly that finding.
+    #
+    # A domain controller (-516) is expected to enrol and is not expected to rewrite a
+    # template, and Cert Publishers (-517) publishes certificates to userCertificate
+    # rather than editing templates - neither belongs here.
+    'ADCSTemplateWrite' = @{
+        Description = "Identities expected to modify certificate templates"
+        ExpectedSIDs = @(
+            'S-1-5-18',       # SYSTEM
+            'S-1-5-32-544'    # BUILTIN\Administrators
+        )
+        ExpectedRIDSuffixes = @(
+            '-500',   # Built-in Administrator
+            '-512',   # Domain Admins
+            '-519'    # Enterprise Admins
+        )
+        # Empty on purpose: no broad group is expected to hold write rights on a template,
+        # so there is nothing here to downgrade from a finding to a note.
+        AttentionBroadGroups = @()
+    }
+
     # ===== Kerberos Delegation Scope =====
     # Who SHOULD have unconstrained/constrained delegation configured?
     'KerberosDelegation' = @{

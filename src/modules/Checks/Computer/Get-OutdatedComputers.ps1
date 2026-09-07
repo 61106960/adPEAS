@@ -1,10 +1,16 @@
 function Get-OutdatedComputers {
     <#
     .SYNOPSIS
-    Detects computers running outdated/unsupported Windows operating systems.
+    Detects computers running an outdated Microsoft operating system.
 
     .DESCRIPTION
-    Identifies active computer accounts running unsupported Windows versions that pose security risks due to lack of security updates.
+    Identifies active computer accounts running an unsupported Microsoft operating system,
+    which poses a security risk because it no longer receives security updates.
+
+    The subject is the Microsoft lifecycle. A member whose operatingSystem is not a
+    Microsoft product - a Linux host, an appliance, a network printer - has no support date
+    to run out and is not part of the figures. Every domain has some; reporting how many
+    were "not evaluated" stated a number nobody could act on.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -71,7 +77,7 @@ function Get-OutdatedComputers {
                 return
             }
 
-            Show-SubHeader "Searching for computers with outdated operating systems..." -ObjectType "OutdatedComputer"
+            Show-SubHeader "Searching for computers with outdated Microsoft operating systems..." -ObjectType "OutdatedComputer"
 
             # OPSEC mode: Skip heavy-load enumeration
             if ($OPSEC) {
@@ -83,7 +89,6 @@ function Get-OutdatedComputers {
             $computers = @(Get-DomainComputer -Enabled -Properties $FilterProperties @connectionParams)
 
             $inactiveFilteredCount = 0
-            $unknownOSCount = 0
             $outdatedComputerDNs = @()
 
             if (@($computers).Count -gt 0) {
@@ -110,18 +115,14 @@ function Get-OutdatedComputers {
                         continue
                     }
 
-                    # Check if OS is outdated using central lifecycle module
+                    # Check if OS is outdated using central lifecycle module.
+                    #
+                    # An operating system the lifecycle table does not know is simply not
+                    # this check's subject. The question is whether a Microsoft operating
+                    # system has run out of support, and a Linux member, an appliance or a
+                    # network printer has no answer to it - every domain has some, and
+                    # counting them told the reader a number they could do nothing with.
                     $eolCheck = Test-IsOutdatedOS -OSName $computer.operatingSystem -OSVersion $computer.operatingSystemVersion
-
-                    # An operating system the lifecycle table does not know cannot be judged.
-                    # Count it so the summary below can say how much of the estate the
-                    # statement actually covers - a Linux member, an appliance and a brand
-                    # new Windows build all land here and would otherwise be silently absent.
-                    # Counting only: this must never gate $eolCheck.IsOutdated, or a machine
-                    # whose EOL date is known would drop out of the result.
-                    if (-not $eolCheck.HasLifecycleData) {
-                        $unknownOSCount++
-                    }
 
                     if ($eolCheck.IsOutdated) {
                         # Check if computer is active
@@ -146,7 +147,7 @@ function Get-OutdatedComputers {
             # Step 2: Only fetch full objects for outdated computers (for Show-Object)
             if (@($outdatedComputerDNs).Count -gt 0) {
                 $inactiveInfo = if ($inactiveFilteredCount -gt 0) { " ($inactiveFilteredCount inactive accounts filtered)" } else { "" }
-                Show-Line "Found $(@($outdatedComputerDNs).Count) computer(s) with outdated operating systems:$inactiveInfo" -Class "Finding"
+                Show-Line "Found $(@($outdatedComputerDNs).Count) computer(s) with an outdated Microsoft operating system:$inactiveInfo" -Class "Finding"
 
                 # Read the full objects in batches. One query per finding meant a domain
                 # with three hundred end-of-life machines paid three hundred round-trips
@@ -167,15 +168,9 @@ function Get-OutdatedComputers {
                     }
                 }
             } elseif ($inactiveFilteredCount -gt 0) {
-                Show-Line "No active computers with outdated OS ($inactiveFilteredCount inactive accounts filtered)" -Class "Secure"
+                Show-Line "No active computers with an outdated Microsoft operating system ($inactiveFilteredCount inactive accounts filtered)" -Class "Secure"
             } else {
-                Show-Line "No computers with outdated operating systems found" -Class "Secure"
-            }
-
-            # Say how many machines the lifecycle table could not judge, so the reader knows
-            # the scope of the statement above rather than assuming it covered everything.
-            if ($unknownOSCount -gt 0) {
-                Show-Line "$unknownOSCount computer(s) run an operating system the lifecycle table does not know - not evaluated" -Class "Note"
+                Show-Line "No computers with an outdated Microsoft operating system found" -Class "Secure"
             }
 
         } catch {

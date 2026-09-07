@@ -144,15 +144,15 @@ function Get-GPOLocalGroupMembership {
 
                                 # Restricted Groups is a computer-side policy, so the
                                 # computer half of the GPO is the one that has to be on.
-                                $ineffective = Get-GPOIneffectiveReason `
+                                # Where it applies is LinkedOUs' subject, not this one's.
+                                $gpoStatus = Get-GPOEffectiveStatus `
                                     -StatusEntry $gpoStatusMap[$gpoGUID] -Scope 'Machine' `
-                                    -LinkedOUCount $linkedOUs.Count
+                                    -Link $linkedOUs
 
                                 foreach ($finding in $restrictedGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
-                                    $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
-                                    if ($ineffective) {
-                                        $finding | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                                    if ($gpoStatus) {
+                                        $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
                                 }
 
@@ -190,16 +190,15 @@ function Get-GPOLocalGroupMembership {
 
                                 # Group Policy Preferences local groups can be deployed from
                                 # either half, and the file's path is what says which.
-                                $ineffective = Get-GPOIneffectiveReason `
+                                $gpoStatus = Get-GPOEffectiveStatus `
                                     -StatusEntry $gpoStatusMap[$gpoGUID] `
                                     -Scope $(if ($file.FullName -match '\\Machine\\') { 'Machine' } else { 'User' }) `
-                                    -LinkedOUCount $linkedOUs.Count
+                                    -Link $linkedOUs
 
                                 foreach ($finding in $gppGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
-                                    $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
-                                    if ($ineffective) {
-                                        $finding | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                                    if ($gpoStatus) {
+                                        $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
                                 }
 
@@ -510,20 +509,37 @@ function Parse-GPPGroups {
                     $memberName = $member.name
                     $memberSID = $member.sid
 
-                    if ($memberName) {
-                        $members += $memberName
-                    }
-
+                    # A risky principal is displayed under its canonical English name, not
+                    # under the name this XML happens to carry. Groups.xml is written by
+                    # whichever console authored it, so Everyone arrives as "Alla" on a
+                    # Swedish domain - and the report then named the same principal twice
+                    # under two different names, "Alla" in MembersAdded and "Everyone" in
+                    # RiskyMembers. Classification is SID based either way; this decides
+                    # only which of the two names is shown, and canonicalizing is what lets
+                    # the risky entries be recognized inside the member list itself.
+                    #
+                    # The two Restricted Groups parsers above already name their members
+                    # this way; only the preferences parser did not.
                     if ($memberSID) {
-                        $memberSIDs += $memberSID
-
                         # Check for risky SIDs (language-independent)
                         if ($Script:RiskySIDs.ContainsKey($memberSID)) {
-                            $riskyMembers += $Script:RiskySIDs[$memberSID]
+                            $memberName = $Script:RiskySIDs[$memberSID]
+                            $riskyMembers += $memberName
                         } elseif ($memberSID -match '-513$') {
                             # Domain Users (ends with -513)
-                            $riskyMembers += "Domain Users"
+                            $memberName = "Domain Users"
+                            $riskyMembers += $memberName
+                        } elseif (-not $memberName) {
+                            # A Member element carrying only a SID would otherwise leave
+                            # the group looking emptier than it is.
+                            $memberName = ConvertFrom-SID -SID $memberSID
                         }
+
+                        $memberSIDs += $memberSID
+                    }
+
+                    if ($memberName) {
+                        $members += $memberName
                     }
                 }
             }

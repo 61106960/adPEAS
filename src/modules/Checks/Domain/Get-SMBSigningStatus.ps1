@@ -62,6 +62,10 @@ function Get-SMBSigningStatus {
                 return
             }
 
+            # Indexed once for the whole check: every finding below reports the state of its
+            # policy as GPOStatus, the way the other GPO checks do.
+            $gpoStatusMap = Get-GPOStatusMap -GPO $allGPOs
+
             # Use Invoke-SMBAccess for SYSVOL access (handles SimpleBind credentials)
             $Script:smbGpoFindings = @()
             $Script:sysvolAccessible = $false
@@ -178,20 +182,15 @@ function Get-SMBSigningStatus {
                                 $gpo | Add-Member -NotePropertyName "ClientSigning" -NotePropertyValue $clientStatus -Force
                                 $gpo | Add-Member -NotePropertyName "IsDomainWide" -NotePropertyValue $isDomainWide -Force
 
-                                # Add LinkedOUs for display (shows where GPO applies)
-                                if (@($activeLinks).Count -gt 0) {
-                                    $linkedOUsDisplay = @($activeLinks | ForEach-Object { $_.DistinguishedName })
-                                    $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
+                                # Where the policy applies. The full link records, disabled
+                                # ones included - the LinkedOUs transformer marks those and
+                                # renders an empty list as "Not linked".
+                                $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
 
-                                    # Determine Scope for display
-                                    $scopeInfo = if ($isDomainWide) {
-                                        "Domain-wide ($(@($activeLinks).Count) link(s))"
-                                    } else {
-                                        "$(@($activeLinks).Count) OU(s)"
-                                    }
-                                    $gpo | Add-Member -NotePropertyName "Scope" -NotePropertyValue $scopeInfo -Force
-                                } else {
-                                    $gpo | Add-Member -NotePropertyName "Scope" -NotePropertyValue "NOT LINKED" -Force
+                                $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUIDUpper] `
+                                    -Scope 'Machine' -Link @($links | Where-Object { $_ })
+                                if ($gpoStatus) {
+                                    $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                                 }
 
                                 $Script:smbGpoFindings += $gpo

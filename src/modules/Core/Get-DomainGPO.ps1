@@ -304,10 +304,14 @@ function Get-DomainGPO {
                 # Parse flags
                 if ($null -ne $GPO.flags) {
                     $FlagsValue = [int]$GPO.flags
+                    # These four strings are the vocabulary every GPO check now reports the
+                    # state of a policy in, through the GPOStatus attribute. "Configuration"
+                    # rather than "portion" because that is what the Group Policy Management
+                    # Console calls the two halves.
                     $Status = switch ($FlagsValue) {
                         0 { "Enabled" }
-                        1 { "User portion disabled" }
-                        2 { "Computer portion disabled" }
+                        1 { "User configuration disabled" }
+                        2 { "Computer configuration disabled" }
                         3 { "All settings disabled" }
                         default { "Unknown ($FlagsValue)" }
                     }

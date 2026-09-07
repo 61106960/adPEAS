@@ -310,7 +310,15 @@ function Get-InfrastructureServers {
                     # Pattern: "...running on computer SERVERNAME configured to synchronize to tenant TENANT.onmicrosoft.com..."
                     if ($indicator.description -match 'running on computer\s+(\S+)\s+configured to synchronize to tenant\s+(\S+)') {
                         $entraServerName = $Matches[1]
-                        $entraTenant = $Matches[2]
+
+                        # TrimEnd('.'): the tenant name ends the sentence in the
+                        # description - "...to tenant contoso.onmicrosoft.com. This account
+                        # must..." - and \S+ swallows the full stop along with it, because a
+                        # period is not whitespace. The server name is anchored by the
+                        # "configured" that follows it and needs no such trim. A tenant name
+                        # never legitimately ends in a dot, and the value is one a tester
+                        # copies straight into another tool.
+                        $entraTenant = ([string]$Matches[2]).TrimEnd('.')
 
                         # Add parsed information as NoteProperties
                         $indicator | Add-Member -NotePropertyName 'entraConnectServer' -NotePropertyValue $entraServerName -Force

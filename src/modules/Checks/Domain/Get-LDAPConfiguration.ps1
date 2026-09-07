@@ -136,6 +136,10 @@ function Get-LDAPConfiguration {
                 return
             }
 
+            # Indexed once for the whole check: every finding below reports the state of its
+            # policy as GPOStatus, the way the other GPO checks do.
+            $gpoStatusMap = Get-GPOStatusMap -GPO $allGPOs
+
             # Get Domain Controllers
             # -DomainController rather than the SERVER_TRUST_ACCOUNT bit written out: an
             # RODC does not carry that bit and answers LDAP just the same, so the count
@@ -319,20 +323,17 @@ function Get-LDAPConfiguration {
                             $gpo | Add-Member -NotePropertyName "AnonymousBinding" -NotePropertyValue $anonymousBindingStatus -Force
                             $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue $coversDCs -Force
 
-                            # Add LinkedOUs for display (shows where GPO applies)
-                            if (@($activeLinks).Count -gt 0) {
-                                $linkedOUsDisplay = @($activeLinks | ForEach-Object { $_.DistinguishedName })
-                                $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
+                            # Where the policy applies. The full link records, disabled ones
+                            # included - the LinkedOUs transformer marks those and renders an
+                            # empty list as "Not linked". The Scope attribute this replaces
+                            # said the same thing in a second vocabulary and a count that was
+                            # the length of the list beside it.
+                            $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
 
-                                # Determine Scope for display
-                                $scopeInfo = if ($isDomainWide) {
-                                    "Domain-wide ($(@($activeLinks).Count) link(s))"
-                                } else {
-                                    "$(@($activeLinks).Count) OU(s)"
-                                }
-                                $gpo | Add-Member -NotePropertyName "Scope" -NotePropertyValue $scopeInfo -Force
-                            } else {
-                                $gpo | Add-Member -NotePropertyName "Scope" -NotePropertyValue "NOT LINKED" -Force
+                            $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoNameUpper] `
+                                -Scope 'Machine' -Link @($links | Where-Object { $_ })
+                            if ($gpoStatus) {
+                                $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                             }
 
                             $Script:gpoFindings += $gpo
@@ -372,13 +373,12 @@ function Get-LDAPConfiguration {
                     $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue (
                         Test-GPOCoversDomainControllers -ActiveLink $activeLinks -DomainController $domainControllers) -Force
 
-                    if (@($activeLinks).Count -gt 0) {
-                        $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($activeLinks | ForEach-Object { $_.DistinguishedName }) -Force
-                        $gpo | Add-Member -NotePropertyName "Scope" -NotePropertyValue $(
-                            if ($isDomainWide) { "Domain-wide ($(@($activeLinks).Count) link(s))" }
-                            else { "$(@($activeLinks).Count) OU(s)" }) -Force
-                    } else {
-                        $gpo | Add-Member -NotePropertyName "Scope" -NotePropertyValue "NOT LINKED" -Force
+                    $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
+
+                    $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$leftoverGuid] `
+                        -Scope 'Machine' -Link @($links | Where-Object { $_ })
+                    if ($gpoStatus) {
+                        $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                     }
 
                     $Script:gpoFindings += $gpo

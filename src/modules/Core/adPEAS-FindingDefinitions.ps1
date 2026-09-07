@@ -574,7 +574,10 @@ $Script:FindingDefinitions = @{
         Tools = @("Group Policy Management Console")
         MITRE = "T1484.001"
         Triggers = @(
-            @{ Attribute = 'GPONotEffective'; Severity = 'Note' }
+            # GPOStatus carries this now, in the vocabulary Get-DomainGPO decodes the flags
+            # attribute into. It used to be a sentence of its own that repeated what the
+            # LinkedOUs row above it had already said.
+            @{ Attribute = 'GPOStatus'; Severity = 'Note' }
         )
     }
 
@@ -1992,6 +1995,123 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Triggers = @(
             @{ Attribute = 'dangerousRights'; Pattern = 'WriteOwner'; Severity = 'Finding' }
             @{ Attribute = 'DangerousPermissions'; Pattern = 'WriteOwner'; Severity = 'Finding' }
+        )
+    }
+
+    # =========================================================================
+    # GPO-specific ACL rights (Get-GPOPermissions' DangerousPermissions attribute)
+    # =========================================================================
+    # $Script:DangerousGPOAccessRights in Get-GPOPermissions.ps1 flags eleven right types.
+    # Four of them (GenericAll, GenericWrite, WriteDacl, WriteOwner) already had a
+    # DangerousPermissions trigger above, sharing the generic ACL definitions every other
+    # ACL-reading check uses. The transformer that renders this attribute
+    # (Convert-DangerousPermToRenderValues) called Get-AttributeSeverity, which returns only
+    # a colour, never Get-TriggerMatch, which returns colour and FindingId together - so
+    # even those four never reached a tooltip until the transformer was fixed alongside
+    # these three. The remaining seven rights had no DangerousPermissions trigger at all;
+    # these three definitions cover them, grouped by what they actually let a trustee do to
+    # a GPO specifically rather than to an AD object in general.
+
+    'DANGEROUS_ACL_GPO_WRITEPROPERTY' = @{
+        Title = "WriteProperty Permission on a GPO Object"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "A user or group has WriteProperty permission on a Group Policy Object. Unlike a user or computer object, a GPO's dangerous attributes are few and specific: gPCFileSysPath names the SYSVOL folder that holds the policy's actual content, and the trustee can point it anywhere they control."
+        Impact = @(
+            "gPCFileSysPath can be redirected to an attacker-controlled UNC path - every machine that applies the GPO then reads GPT.ini and the policy content from that path instead of the real one"
+            "gPCMachineExtensionNames / gPCUserExtensionNames decide which client-side extensions process the policy at all - broadening them can activate a CSE (e.g. Scripts, Group Policy Preferences) the GPO did not previously use"
+            "versionNumber can be set to force every client to consider the policy changed and reapply it immediately, rather than waiting for the next refresh cycle"
+        )
+        Attack = @(
+            "1. Write a malicious Registry.pol, Scripts, or Group Policy Preferences payload to a SYSVOL location the trustee controls"
+            "2. Set gPCFileSysPath on the GPO object to point there"
+            "3. Bump versionNumber so clients treat the policy as changed and reapply it on their next cycle"
+            "4. The payload runs on every machine the GPO is linked to, at the account's own privilege"
+        )
+        Remediation = @(
+            "Remove unnecessary WriteProperty permissions on GPO objects"
+            "Delegate GPO editing through the Group Policy Management Console's built-in delegation model rather than raw ACL grants"
+            "Monitor changes to gPCFileSysPath, gPCMachineExtensionNames and gPCUserExtensionNames (Event ID 5136)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "View current ACL of the GPO object"
+                Command = "(Get-Acl 'AD:\\CN=<GUID>,CN=Policies,CN=System,DC=domain,DC=com').Access | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+            @{ Title = "Group Policy Object attributes - Microsoft"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/" }
+        )
+        Tools = @("SharpGPOAbuse", "PowerView", "ADACLScanner")
+        MITRE = "T1484.001"
+        Triggers = @(
+            # Get-GPOPermissions renders this attribute as "Identity (Right)" per line
+            # (e.g. "CONTOSO\helpdesk (WriteProperty)"), so the pattern matches the
+            # parenthesized right rather than the whole line.
+            @{ Attribute = 'DangerousPermissions'; Pattern = '\(WriteProperty\)'; Severity = 'Finding' }
+        )
+    }
+
+    'DANGEROUS_ACL_GPO_DELETE' = @{
+        Title = "Delete-Class Permission on a GPO Object"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "A user or group holds Delete, DeleteTree, DeleteChild or CreateChild on a Group Policy Object. None of these read or rewrite the policy's content - what they grant is control over whether the GPO continues to exist, which is a denial-of-service and persistence-disruption capability rather than a code-execution one."
+        Impact = @(
+            "Delete / DeleteTree removes the GPO outright - every setting it enforced (including security hardening) stops applying the moment replication catches up"
+            "A deleted GPO is also how a defender's remediation gets undone: recreating it does not restore its original GUID, so links, WMI filters and delegated permissions tied to the old GUID have to be redone by hand"
+            "CreateChild / DeleteChild matter on the Group Policy Objects container itself rather than on an individual policy - held there, they control who may create or remove GPOs domain-wide"
+        )
+        Attack = @(
+            "1. Identify a GPO enforcing a control the attacker wants gone (a logon script, a restriction, a piece of hardening)"
+            "2. Delete it directly, or delete and recreate it under the same display name to reset its permissions and content to nothing"
+            "3. The enforced setting stops applying on every machine the policy reached, and the resulting gap can go unnoticed if nothing monitors GPO deletions specifically"
+        )
+        Remediation = @(
+            "Remove unnecessary Delete/DeleteTree/DeleteChild/CreateChild permissions on GPO objects and on the Group Policy Objects container"
+            "Monitor GPO deletion (Event ID 5141) and GPO creation, not only content changes"
+            "Back up GPOs (Get-GPOReport / Backup-GPO) so a deleted policy can be restored with its original settings intact"
+        )
+        References = @(
+            @{ Title = "Group Policy Security - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/group-policy/group-policy-overview" }
+        )
+        Tools = @("PowerView", "ADACLScanner")
+        MITRE = "T1485"
+        Triggers = @(
+            @{ Attribute = 'DangerousPermissions'; Pattern = '\((CreateChild|DeleteChild|DeleteTree|Delete)\)'; Severity = 'Finding' }
+        )
+    }
+
+    'DANGEROUS_ACL_GPO_EXTENDED' = @{
+        Title = "Self or Extended Right Permission on a GPO Object"
+        Risk = "Finding"
+        BaseScore = 35
+        Description = "A user or group holds a Self (validated write) or an unnamed Extended Right on a Group Policy Object. Both are common and expected on account objects (self-membership, password reset); a groupPolicyContainer defines neither by default, so a grant here is unusual enough to record even though what it actually permits could not be determined from the right type alone."
+        Impact = @(
+            "The specific permission this grants depends on which validated write or extended right is behind it - information the ACE's right type alone does not carry"
+            "Its mere presence on an object class that does not normally carry one is itself worth a second look"
+        )
+        Attack = @(
+            "Read the ACE's ObjectType GUID directly to identify which validated write or extended right is actually granted, then assess it on its own terms"
+        )
+        Remediation = @(
+            "Identify the specific right behind the ACE (its ObjectType GUID) and evaluate whether it belongs on this GPO"
+            "Remove it if it was inherited from a container-level delegation that was never meant to reach GPOs"
+        )
+        References = @(
+            @{ Title = "Control Access Rights - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/c-controlaccessright" }
+        )
+        Tools = @("PowerView", "ADACLScanner")
+        MITRE = "T1222.001"
+        Triggers = @(
+            # Severity here is nominal, not functional: DANGEROUS_RIGHTS_CONTEXT's blanket
+            # SeverityOnly trigger on this attribute always resolves severity in Pass 1,
+            # before this definition's own trigger is ever reached, so every
+            # DangerousPermissions row - this one included - renders Finding. See that
+            # definition's comment for why (Get-GPOPermissions never sets
+            # dangerousRightsSeverity, so the Hint downgrade path can never fire for it).
+            @{ Attribute = 'DangerousPermissions'; Pattern = '\((Self|ExtendedRight)\)'; Severity = 'Finding' }
         )
     }
 
@@ -3649,7 +3769,9 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("BloodHound", "PowerView", "SharpGPOAbuse")
         MITRE = "T1484.001"
         Triggers = @(
-            @{ Attribute = 'Scope'; Pattern = 'Domain-wide'; Custom = 'is_gpo_finding_object'; Severity = 'Finding' }
+            # The domain-root link is what makes a dangerous GPO reach every machine. It
+            # used to be matched on the Scope attribute's "Domain-wide" as well; that
+            # attribute is gone, and the link itself says it.
             @{ Attribute = 'LinkedOUs'; Pattern = '^DC=[^,]+,DC='; Custom = 'is_gpo_finding_object'; Severity = 'Finding' }
         )
     }
@@ -3913,64 +4035,720 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         )
     }
 
-    'GPO_DANGEROUS_USER_RIGHT' = @{
-        Title = "Dangerous User Right Assigned via GPO"
+    # =========================================================================
+    # GPO USER RIGHTS - one definition per right (Get-GPOUserRightsAssignment)
+    # =========================================================================
+    # GPO_DANGEROUS_USER_RIGHT used to be the tooltip for every one of the 22 rights this
+    # check compares, from SeDebugPrivilege to SeShutdownPrivilege alike - a reader hovering
+    # a Tier-2 logon right got the same "leads directly to SYSTEM" prose written for
+    # SeDebugPrivilege. Split into one definition per right, so the Title, Description,
+    # Impact, Attack and Remediation match what that specific right actually does.
+    #
+    # Each carries two triggers: an exact match on 'userRight' colours and tooltips the
+    # right's own name, and a Custom-gated match on 'grantedBeyondDefault' does the same for
+    # the holder names underneath it - the row a reader actually acts on. The gate is a
+    # single shared evaluator (Test-CustomTrigger's 'user_right_is_*' case) dispatched from
+    # the CustomType string itself, because Get-TriggerMatch always resolves FindingId to the
+    # owning definition's own key - a trigger cannot redirect to a different one.
+
+    'GPO_USERRIGHT_SEDEBUG' = @{
+        Title = "'Debug Programs' (SeDebugPrivilege) Granted Beyond the Windows Default via GPO"
         Risk = "Finding"
-        BaseScore = 60
-        Description = "A sensitive Windows user right is assigned to a non-privileged principal through Group Policy (GptTmpl.inf [Privilege Rights]). The right is applied to every computer the GPO targets, so a single misconfiguration can grant privilege-escalation or lateral-movement capability fleet-wide."
+        BaseScore = 85
+        Description = "A Group Policy grants SeDebugPrivilege to a principal beyond the Windows default of Administrators only. The holder can open a handle to any process on the machine - LSASS included - and no object ACL can stop it, because the privilege itself overrides the access check."
         Impact = @(
-            "Privileges like SeDebug/SeImpersonate/SeTcb lead directly to SYSTEM on affected hosts"
-            "SeBackup/SeRestore/SeTakeOwnership give file/registry access (SAM, SYSTEM, NTDS) -> credential theft"
-            "SeLoadDriver enables loading a vulnerable driver (BYOVD) -> kernel/SYSTEM"
-            "Logon rights (RDP/service/batch) enable lateral movement to every targeted host"
-            "Rights granted to broad principals (Everyone, Authenticated Users, Domain Users) affect all users"
+            "Direct read access to LSASS memory: NT hashes, Kerberos tickets and cached cleartext credentials of every signed-in user"
+            "Every process on the machine is exposed, not only the holder's own - service accounts and other users' sessions included"
+            "The privilege bypasses the process ACL check itself, so hardening the target process does not help"
         )
         Attack = @(
-            "1. Identify a GPO granting a sensitive right to a non-privileged/broad principal"
-            "2. Compromise (or already control) that principal on a targeted computer"
-            "3. Abuse the right (e.g. SeBackup to read SAM, SeImpersonate via a Potato, SeLoadDriver for BYOVD)"
-            "4. Escalate to SYSTEM / harvest credentials / move laterally across all targeted hosts"
+            "1. Authenticate as the holder on a machine the policy reaches"
+            "2. Open a handle to lsass.exe - SeDebugPrivilege removes the ACL check that would otherwise deny it"
+            "3. Dump the process (comsvcs.dll MiniDump, Task Manager, or a dedicated tool)"
+            "4. Recover credentials from the dump offline"
         )
         Remediation = @(
-            "Remove non-privileged and broad principals from sensitive User Rights Assignment policies"
-            "Grant sensitive rights only to dedicated admin groups, scoped to the systems that need them"
-            "Follow tiered administration - do not grant Tier-0 rights via broadly-linked GPOs"
-            "Audit changes to user rights (Event ID 4704/4717) and review GPO links/scope"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "List User Rights Assignment configured in a GPO"
-                Command = "Get-GPOReport -Name 'PolicyName' -ReportType Xml | Select-String 'UserRightsAssignment' -Context 0,20"
-            }
-            @{
-                Description = "Inspect the [Privilege Rights] section of a GPO's security template"
-                Command = "Get-Content '\\domain\SYSVOL\domain\Policies\{GUID}\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf'"
-            }
+            "Remove the principal; only built-in Administrators should hold this right"
+            "If a monitoring or EDR agent genuinely needs it, scope the GPO to the specific hosts that agent runs on"
         )
         References = @(
-            @{ Title = "User Rights Assignment (Microsoft)"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/user-rights-assignment" }
-            @{ Title = "Abusing Token Privileges"; Url = "https://github.com/hatRiot/token-priv" }
-            @{ Title = "Privilege Escalation - MITRE ATT&CK"; Url = "https://attack.mitre.org/tactics/TA0004/" }
+            @{ Title = "LSASS Memory - MITRE ATT&CK T1003.001"; Url = "https://attack.mitre.org/techniques/T1003/001/" }
         )
-        Tools = @("SharpGPOAbuse", "PowerView")
+        Tools = @("Mimikatz", "ProcDump", "Task Manager")
+        MITRE = "T1003.001"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeDebugPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeDebugPrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SETCB' = @{
+        Title = "'Act as Part of the Operating System' (SeTcbPrivilege) Granted via GPO"
+        Risk = "Finding"
+        BaseScore = 90
+        Description = "A Group Policy grants SeTcbPrivilege, which Windows assigns to no principal by default. The holder can create a token asserting any identity - it is the trust boundary of the operating system itself, not a permission within it."
+        Impact = @(
+            "Forge a token for any account, including Domain Admins, without knowing its password or hash"
+            "Impersonate SYSTEM or any other local or domain identity at will"
+            "Defeats every access-control decision downstream, since those decisions trust the token"
+        )
+        Attack = @(
+            "1. Authenticate as the holder"
+            "2. Construct a token for the target identity (e.g. via Incognito or Mimikatz)"
+            "3. Impersonate that token in the current process, or spawn a new process under it"
+        )
+        Remediation = @(
+            "Remove the principal immediately - Windows ships this to nobody, so any holder is a deliberate and dangerous grant"
+            "Review why the GPO exists; there is rarely a legitimate reason to assign this right at all"
+        )
+        References = @(
+            @{ Title = "Access Token Manipulation - MITRE ATT&CK T1134"; Url = "https://attack.mitre.org/techniques/T1134/" }
+        )
+        Tools = @("Incognito", "Mimikatz")
+        MITRE = "T1134"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeTcbPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTcbPrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SECREATETOKEN' = @{
+        Title = "'Create a Token Object' (SeCreateTokenPrivilege) Granted via GPO"
+        Risk = "Finding"
+        BaseScore = 88
+        Description = "A Group Policy grants SeCreateTokenPrivilege, which Windows assigns to no principal by default. The holder builds an access token from scratch, choosing the account SID and the group memberships it carries."
+        Impact = @(
+            "A token can be built claiming membership of Domain Admins or any other group, with no authentication against that account"
+            "The forged token is indistinguishable from a real one to anything that trusts the kernel's token store"
+        )
+        Attack = @(
+            "1. Authenticate as the holder"
+            "2. Build a token supplying the desired account SID and group SIDs (NtCreateToken)"
+            "3. Assign the token to a new or existing process"
+        )
+        Remediation = @(
+            "Remove the principal - Windows ships this to nobody, and there is essentially never a legitimate operational reason to hold it outside the kernel itself"
+        )
+        References = @(
+            @{ Title = "Access Token Manipulation - MITRE ATT&CK T1134"; Url = "https://attack.mitre.org/techniques/T1134/" }
+        )
+        Tools = @("-")
+        MITRE = "T1134"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeCreateTokenPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeCreateTokenPrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SEIMPERSONATE' = @{
+        Title = "'Impersonate a Client After Authentication' (SeImpersonatePrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Finding"
+        BaseScore = 82
+        Description = "A Group Policy grants SeImpersonatePrivilege to a principal beyond the Windows default (Administrators and the three service identities). The holder can impersonate any client that connects to it - the precondition of the entire Potato family of local privilege escalations."
+        Impact = @(
+            "A service account with this right and a named pipe or RPC endpoint can trick a SYSTEM-level client into connecting, then impersonate it"
+            "The Potato family (JuicyPotato, PrintSpoofer, RoguePotato, GodPotato) automates this into SYSTEM in seconds"
+            "Service accounts routinely carry this right for their normal operation, which is exactly what makes an extra holder dangerous - it hides among the expected ones"
+        )
+        Attack = @(
+            "1. Compromise (or already control) an account with this right on a targeted machine"
+            "2. Coerce a SYSTEM-level client to connect (e.g. via a rogue OXID resolver or a spoofed named pipe)"
+            "3. Impersonate the resulting token and spawn a process as SYSTEM"
+        )
+        Remediation = @(
+            "Remove the principal unless it is a genuine service account that needs to impersonate its own clients (IIS, MSSQL, etc.)"
+            "Where the account is a service account, confirm it cannot also be used interactively"
+        )
+        References = @(
+            @{ Title = "Token Impersonation/Theft - MITRE ATT&CK T1134.001"; Url = "https://attack.mitre.org/techniques/T1134/001/" }
+        )
+        Tools = @("JuicyPotato", "PrintSpoofer", "RoguePotato", "GodPotato")
+        MITRE = "T1134.001"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeImpersonatePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeImpersonatePrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SEASSIGNPRIMARYTOKEN' = @{
+        Title = "'Replace a Process Level Token' (SeAssignPrimaryTokenPrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Finding"
+        BaseScore = 78
+        Description = "A Group Policy grants SeAssignPrimaryTokenPrivilege to a principal beyond the Windows default (LOCAL SERVICE and NETWORK SERVICE). The holder starts a process under an identity it holds an impersonation token for - the second half of a token-theft privilege-escalation chain, after SeImpersonatePrivilege supplies the token."
+        Impact = @(
+            "Combined with an impersonation token (from SeImpersonatePrivilege, or one already captured), starts an arbitrary process as that identity"
+            "Turns a captured token into a running, interactive process rather than only an in-process impersonation"
+        )
+        Attack = @(
+            "1. Obtain an impersonation token for a privileged identity (commonly via SeImpersonatePrivilege)"
+            "2. Call CreateProcessAsUser / CreateProcessWithTokenW using that token"
+            "3. The new process runs with the target identity's full primary-token privileges"
+        )
+        Remediation = @(
+            "Remove the principal unless it is a genuine service identity that legitimately launches processes under another account"
+        )
+        References = @(
+            @{ Title = "Create Process with Token - MITRE ATT&CK T1134.002"; Url = "https://attack.mitre.org/techniques/T1134/002/" }
+        )
+        Tools = @("SharpToken", "Incognito")
+        MITRE = "T1134.002"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeAssignPrimaryTokenPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeAssignPrimaryTokenPrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SELOADDRIVER' = @{
+        Title = "'Load and Unload Device Drivers' (SeLoadDriverPrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Finding"
+        BaseScore = 80
+        Description = "A Group Policy grants SeLoadDriverPrivilege to a principal beyond the Windows default (Administrators, and Print Operators on a domain controller for printer drivers). The holder loads code directly into the kernel."
+        Impact = @(
+            "A legitimately signed but vulnerable driver (Bring Your Own Vulnerable Driver) gives the holder a kernel read/write primitive"
+            "Kernel code execution defeats every user-mode protection on the machine, EDR included"
+            "On a domain controller this is full compromise of the directory, not just the host"
+        )
+        Attack = @(
+            "1. Load a signed driver known to be vulnerable (catalogued by loldrivers.io) using the held privilege"
+            "2. Exploit the driver's vulnerable IOCTL to read/write kernel memory"
+            "3. Disable protections (EDR callbacks, LSA Protection) or escalate to SYSTEM directly"
+        )
+        Remediation = @(
+            "Remove the principal from this right; only Administrators (and Print Operators on a DC, for print driver installation) should hold it"
+            "Enable Microsoft's vulnerable driver blocklist (HVCI/WDAC) as a second layer regardless of who holds this right"
+        )
+        References = @(
+            @{ Title = "Exploitation for Privilege Escalation - MITRE ATT&CK T1068"; Url = "https://attack.mitre.org/techniques/T1068/" }
+            @{ Title = "loldrivers.io - vulnerable driver catalogue"; Url = "https://www.loldrivers.io/" }
+        )
+        Tools = @("KDU (Kernel Driver Utility)", "EoPLoadDriver")
         MITRE = "T1068"
         Triggers = @(
-            # The tier of the right itself. What decides whether a finding exists at all is
-            # the comparison against the Windows default, in the check - this only colours
-            # the constant once it has been reported.
-            @{ Attribute = 'userRight'; Pattern = 'SeDebugPrivilege|SeTcbPrivilege|SeImpersonatePrivilege|SeAssignPrimaryTokenPrivilege|SeCreateTokenPrivilege|SeLoadDriverPrivilege|SeBackupPrivilege|SeRestorePrivilege|SeTakeOwnershipPrivilege|SeEnableDelegationPrivilege|SeSyncAgentPrivilege|SeManageVolumePrivilege|SeSecurityPrivilege|SeRelabelPrivilege|SeTrustedCredManAccessPrivilege'; Severity = 'Finding' }
-            @{ Attribute = 'userRight'; Pattern = 'SeRemoteInteractiveLogonRight|SeServiceLogonRight|SeBatchLogonRight|SeInteractiveLogonRight|SeSystemtimePrivilege|SeRemoteShutdownPrivilege|SeShutdownPrivilege'; Severity = 'Hint' }
+            @{ Attribute = 'userRight'; Pattern = '^SeLoadDriverPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeLoadDriverPrivilege'; Severity = 'Finding' }
+        )
+    }
 
-            # The holders beyond the default are the finding. The list is what the reader
-            # acts on, so it carries the colour rather than only the right's name.
-            @{ Attribute = 'grantedBeyondDefault'; Severity = 'Finding' }
+    'GPO_USERRIGHT_SEBACKUP' = @{
+        Title = "'Back Up Files and Directories' (SeBackupPrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Finding"
+        BaseScore = 78
+        Description = "A Group Policy grants SeBackupPrivilege to a principal beyond the Windows default (Administrators and Backup Operators; also Server Operators on a domain controller). The holder reads any file on the machine regardless of its ACL - on a domain controller, that includes the NTDS database and every password hash it holds."
+        Impact = @(
+            "Reads the SAM and SYSTEM registry hives offline, yielding every local account's NT hash"
+            "On a domain controller, reads ntds.dit directly - every domain account's password hash, extractable without touching LSASS or triggering DCSync detections"
+            "Bypasses NTFS ACLs entirely; file permissions are not a defense against this right"
+        )
+        Attack = @(
+            "1. Authenticate as the holder on a targeted machine"
+            "2. Use the backup-aware read path (robocopy /B, diskshadow plus a shadow copy, or a dedicated tool) to read protected files verbatim"
+            "3. Pull SAM/SYSTEM (or ntds.dit on a DC) and extract hashes offline with secretsdump.py or similar"
+        )
+        Remediation = @(
+            "Remove the principal from this right unless it operates an actual, monitored backup solution"
+            "Treat any account holding it as Tier-0 on a domain controller and Tier-1 elsewhere"
+        )
+        References = @(
+            @{ Title = "OS Credential Dumping: NTDS - MITRE ATT&CK T1003.003"; Url = "https://attack.mitre.org/techniques/T1003/003/" }
+        )
+        Tools = @("robocopy /B", "diskshadow", "secretsdump.py", "PowerSploit SeBackupPrivilege module")
+        MITRE = "T1003.003"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeBackupPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeBackupPrivilege'; Severity = 'Finding' }
+        )
+    }
 
-            # Removing a default holder is hardening far more often than not, and is never
-            # an exposure. Green, so the colour does not train the reader to ignore red.
+    'GPO_USERRIGHT_SERESTORE' = @{
+        Title = "'Restore Files and Directories' (SeRestorePrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Finding"
+        BaseScore = 78
+        Description = "A Group Policy grants SeRestorePrivilege to a principal beyond the Windows default (Administrators and Backup Operators; also Server Operators on a domain controller). The holder writes any file regardless of its ACL and can set arbitrary ownership - the write half of SeBackupPrivilege."
+        Impact = @(
+            "Overwrites a service binary or DLL a privileged process loads, turning the next service start or reboot into code execution as that service's identity"
+            "Rewrites the SAM/SYSTEM hives, or replaces a logon-screen accessibility binary (utilman.exe, sethc.exe) for a SYSTEM shell with no credentials"
+            "Sets ownership on any object, which then allows re-ACLing it freely"
+        )
+        Attack = @(
+            "1. Authenticate as the holder on a targeted machine"
+            "2. Overwrite a binary a privileged process or service loads (a service executable, a DLL on its search path, or a logon-screen accessibility binary)"
+            "3. Trigger the service restart, reboot, or logon-screen invocation to execute the planted binary as the target's identity"
+        )
+        Remediation = @(
+            "Remove the principal from this right unless it operates an actual, monitored backup/restore solution"
+            "Treat any account holding it as Tier-0 on a domain controller and Tier-1 elsewhere"
+        )
+        References = @(
+            @{ Title = "Hijack Execution Flow: Services File Permissions Weakness - MITRE ATT&CK T1574.010"; Url = "https://attack.mitre.org/techniques/T1574/010/" }
+        )
+        Tools = @("SeRestoreAbuse", "PowerSploit SeRestorePrivilege module")
+        MITRE = "T1574.010"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeRestorePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRestorePrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SETAKEOWNERSHIP' = @{
+        Title = "'Take Ownership of Files or Other Objects' (SeTakeOwnershipPrivilege) Granted via GPO"
+        Risk = "Finding"
+        BaseScore = 72
+        Description = "A Group Policy grants SeTakeOwnershipPrivilege to a principal beyond the Windows default (Administrators only). Ownership of an object carries an implicit WriteDacl, so the holder can take ownership of anything and then grant itself whatever access it wants."
+        Impact = @(
+            "Any file, registry key or AD object on the machine can be taken over, regardless of its current ACL"
+            "Ownership implies the right to re-ACL the object afterwards - the original access restriction becomes irrelevant"
+            "Escalation path: take ownership of a privileged service's binary or config, re-ACL it, replace it"
+        )
+        Attack = @(
+            "1. Authenticate as the holder"
+            "2. Take ownership of a target object (takeown.exe, or the Windows API directly)"
+            "3. Grant the holder full control via icacls now that it owns the object"
+            "4. Modify the object (a service binary, a sensitive config file) for privilege escalation"
+        )
+        Remediation = @(
+            "Remove the principal; only built-in Administrators should hold this right"
+        )
+        References = @(
+            @{ Title = "File and Directory Permissions Modification - MITRE ATT&CK T1222"; Url = "https://attack.mitre.org/techniques/T1222/" }
+        )
+        Tools = @("takeown.exe", "icacls")
+        MITRE = "T1222"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeTakeOwnershipPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTakeOwnershipPrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SEENABLEDELEGATION' = @{
+        Title = "'Enable Computer and User Accounts to Be Trusted for Delegation' (SeEnableDelegationPrivilege) Granted via GPO"
+        Risk = "Finding"
+        BaseScore = 75
+        Description = "A Group Policy grants SeEnableDelegationPrivilege, which Windows assigns to Administrators on a domain controller and to nobody on a member computer - so a member-computer grant is not meaningful and a domain-controller grant is the interesting case. The holder configures Kerberos delegation on an account, which is standing impersonation of any user that authenticates to the delegated service."
+        Impact = @(
+            "Configures unconstrained or constrained delegation on any account, without needing that account's own credentials"
+            "Unconstrained delegation on a service captures the TGT of every user that authenticates to it - a coerced domain controller authentication yields a DC's own TGT"
+            "Bypasses the protection 'Account is sensitive and cannot be delegated' is meant to provide, since the attacker controls the delegation configuration"
+        )
+        Attack = @(
+            "1. Authenticate as the holder on the domain controller"
+            "2. Set msDS-AllowedToDelegateTo (constrained) or the TRUSTED_FOR_DELEGATION flag (unconstrained) on a controlled or targeted account"
+            "3. Coerce a high-value identity to authenticate to that account's service"
+            "4. Capture and reuse the resulting ticket"
+        )
+        Remediation = @(
+            "Remove the principal from this right; only built-in Administrators should hold it on a domain controller"
+            "Enable 'Account is sensitive and cannot be delegated' on Tier-0 accounts as a second layer"
+        )
+        References = @(
+            @{ Title = "Steal or Forge Kerberos Tickets - MITRE ATT&CK T1558"; Url = "https://attack.mitre.org/techniques/T1558/" }
+        )
+        Tools = @("PowerView", "Rubeus")
+        MITRE = "T1558"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeEnableDelegationPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeEnableDelegationPrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SESYNCAGENT' = @{
+        Title = "'Synchronize Directory Service Data' (SeSyncAgentPrivilege) Granted via GPO"
+        Risk = "Finding"
+        BaseScore = 82
+        Description = "A Group Policy grants SeSyncAgentPrivilege, which Windows assigns to nobody by default. The holder reads every object and attribute in the directory the way a directory-synchronization agent does - password hashes included."
+        Impact = @(
+            "Reads the same replicated data a DCSync operation pulls, including NT hashes and Kerberos keys, for every account in the domain"
+            "No interactive logon on a domain controller is required - the privilege operates at the directory-replication layer"
+        )
+        Attack = @(
+            "1. Authenticate as the holder"
+            "2. Request a directory synchronization of a target object's attributes, including its password-derived values"
+            "3. Extract the returned hash material offline"
+        )
+        Remediation = @(
+            "Remove the principal; this right has no legitimate holder outside a real directory-synchronization product (Entra Connect, third-party identity sync)"
+            "Where a sync product genuinely needs it, confirm the account cannot be used interactively and is monitored as Tier-0"
+        )
+        References = @(
+            @{ Title = "OS Credential Dumping: DCSync - MITRE ATT&CK T1003.006"; Url = "https://attack.mitre.org/techniques/T1003/006/" }
+        )
+        Tools = @("Mimikatz", "secretsdump.py")
+        MITRE = "T1003.006"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeSyncAgentPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSyncAgentPrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SEMANAGEVOLUME' = @{
+        Title = "'Perform Volume Maintenance Tasks' (SeManageVolumePrivilege) Granted via GPO"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "A Group Policy grants SeManageVolumePrivilege to a principal beyond the Windows default (Administrators only). The holder gets raw access to the volume, bypassing the file system and every ACL on it."
+        Impact = @(
+            "Reads and writes the raw disk, including files a running process has locked open (the SAM/SYSTEM hives, ntds.dit)"
+            "File system permissions provide no protection once the volume itself is addressable directly"
+        )
+        Attack = @(
+            "1. Authenticate as the holder"
+            "2. Open a raw handle to the volume using the held privilege"
+            "3. Read the target file's raw sectors directly, sidestepping the lock and the ACL the file system would enforce"
+        )
+        Remediation = @(
+            "Remove the principal; only built-in Administrators should hold this right"
+        )
+        References = @(
+            @{ Title = "Direct Volume Access - MITRE ATT&CK T1006"; Url = "https://attack.mitre.org/techniques/T1006/" }
+        )
+        Tools = @("RawCopy")
+        MITRE = "T1006"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeManageVolumePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeManageVolumePrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SESECURITY' = @{
+        Title = "'Manage Auditing and Security Log' (SeSecurityPrivilege) Granted via GPO"
+        Risk = "Finding"
+        BaseScore = 65
+        Description = "A Group Policy grants SeSecurityPrivilege to a principal beyond the Windows default (Administrators only). The holder reads and clears the Security event log and changes the machine's audit policy - the record an intrusion is reconstructed from."
+        Impact = @(
+            "Clearing the Security log after an intrusion is how it stops being reconstructable - the compromise leaves no trace on the host"
+            "The holder can also weaken the audit policy beforehand so sensitive actions were never logged in the first place"
+            "Reads SACLs and the audit configuration itself, useful reconnaissance for what is and is not being watched"
+        )
+        Attack = @(
+            "1. Authenticate as the holder on a targeted machine, after completing the actions to be hidden"
+            "2. Clear the Security event log (wevtutil cl Security), or disable relevant audit categories beforehand"
+            "3. The intrusion timeline on this host is now unreconstructable from local logs"
+        )
+        Remediation = @(
+            "Remove the principal; only built-in Administrators should hold this right"
+            "Forward Security logs to a SIEM the holder cannot reach, so a local clear does not erase the copy of record"
+        )
+        References = @(
+            @{ Title = "Clear Windows Event Logs - MITRE ATT&CK T1070.001"; Url = "https://attack.mitre.org/techniques/T1070/001/" }
+        )
+        Tools = @("wevtutil", "auditpol")
+        MITRE = "T1070.001"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeSecurityPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSecurityPrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SERELABEL' = @{
+        Title = "'Modify an Object Label' (SeRelabelPrivilege) Granted via GPO"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "A Group Policy grants SeRelabelPrivilege, which Windows assigns to nobody by default. The holder changes the mandatory integrity level of an object, defeating the isolation a low-integrity sandbox (a browser renderer, a restricted token) is meant to provide."
+        Impact = @(
+            "Raises the integrity level of an object a sandboxed or low-integrity process should not be able to touch"
+            "Undermines Mandatory Integrity Control as a defense layer on the machine"
+        )
+        Attack = @(
+            "1. Authenticate as the holder"
+            "2. Modify the integrity-level SACL of a target object using the held privilege"
+            "3. A process that was confined by integrity level can now read or write the relabelled object"
+        )
+        Remediation = @(
+            "Remove the principal; Windows ships this to nobody, and there is essentially never a legitimate reason to hold it"
+        )
+        References = @(
+            @{ Title = "Abuse Elevation Control Mechanism - MITRE ATT&CK T1548"; Url = "https://attack.mitre.org/techniques/T1548/" }
+        )
+        Tools = @("icacls (integrity level flags)", "Process Hacker")
+        MITRE = "T1548"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeRelabelPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRelabelPrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_USERRIGHT_SETRUSTEDCREDMANACCESS' = @{
+        Title = "'Access Credential Manager as a Trusted Caller' (SeTrustedCredManAccessPrivilege) Granted via GPO"
+        Risk = "Finding"
+        BaseScore = 68
+        Description = "A Group Policy grants SeTrustedCredManAccessPrivilege, which Windows assigns to nobody by default. The holder reads the saved credentials of every user of the machine in cleartext, the same access Credential Manager backup/restore uses."
+        Impact = @(
+            "Recovers cleartext passwords, certificates and other secrets a user chose to have Windows remember (mapped drives, RDP, some browsers/apps)"
+            "Reads every user's vault on the machine, not only the holder's own"
+        )
+        Attack = @(
+            "1. Authenticate as the holder"
+            "2. Invoke the Credential Manager backup API with the trusted-caller privilege"
+            "3. Read the decrypted vault contents"
+        )
+        Remediation = @(
+            "Remove the principal; Windows ships this to nobody, and only genuine backup/restore tooling has a legitimate reason to hold it"
+        )
+        References = @(
+            @{ Title = "Credentials from Password Stores - MITRE ATT&CK T1555"; Url = "https://attack.mitre.org/techniques/T1555/" }
+        )
+        Tools = @("Mimikatz (vault::cred)", "VaultCmd")
+        MITRE = "T1555"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeTrustedCredManAccessPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTrustedCredManAccessPrivilege'; Severity = 'Finding' }
+        )
+    }
+
+    # =========================================================================
+    # Tier 2 rights - a foothold or a way across, rather than straight to SYSTEM
+    # =========================================================================
+
+    'GPO_USERRIGHT_SEREMOTEINTERACTIVELOGON' = @{
+        Title = "'Allow Log on Through Remote Desktop Services' (SeRemoteInteractiveLogonRight) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 40
+        Description = "A Group Policy grants SeRemoteInteractiveLogonRight to a principal beyond the Windows default (Administrators, and Remote Desktop Users on a member computer). The holder gets an interactive RDP session on every machine the policy reaches, with whatever access that account already has."
+        Impact = @(
+            "An interactive session on every targeted machine - a foothold for further action, not merely a login"
+            "Combines with whatever local or domain rights the holder already has once inside the session"
+            "Broadens the RDP attack surface (credential capture, RDP-based relay) to a wider population of accounts"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials (phishing, password spray, reuse)"
+            "2. RDP to any machine the GPO reaches"
+            "3. Operate from an interactive session as that account"
+        )
+        Remediation = @(
+            "Restrict RDP logon to a dedicated admin/support group, not a broad or unexpected principal"
+            "Combine with Restricted Admin / NLA hardening and RDP session monitoring"
+        )
+        References = @(
+            @{ Title = "Remote Services: Remote Desktop Protocol - MITRE ATT&CK T1021.001"; Url = "https://attack.mitre.org/techniques/T1021/001/" }
+        )
+        Tools = @("mstsc", "xfreerdp")
+        MITRE = "T1021.001"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeRemoteInteractiveLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRemoteInteractiveLogonRight'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SEINTERACTIVELOGON' = @{
+        Title = "'Allow Log on Locally' (SeInteractiveLogonRight) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 45
+        Description = "A Group Policy grants SeInteractiveLogonRight to a principal beyond the Windows default. On a domain controller in particular, an unexpected holder is the difference between an ordinary domain member and an administrator of the domain - a console or local session on a DC reaches everything the DC has."
+        Impact = @(
+            "A console/local session on every targeted machine"
+            "On a domain controller, local logon capability is functionally domain-admin-adjacent access to the machine's own security context"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials"
+            "2. Log on locally (console, or a hypervisor console for a VM) on any machine the GPO reaches"
+            "3. Operate with local access on that machine, domain controller or otherwise"
+        )
+        Remediation = @(
+            "On domain controllers, restrict local logon strictly to domain administrators"
+            "On member computers, restrict it to the intended local users/support staff"
+        )
+        References = @(
+            @{ Title = "Valid Accounts: Local Accounts - MITRE ATT&CK T1078.003"; Url = "https://attack.mitre.org/techniques/T1078/003/" }
+        )
+        Tools = @("-")
+        MITRE = "T1078.003"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeInteractiveLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeInteractiveLogonRight'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SEBATCHLOGON' = @{
+        Title = "'Log on as a Batch Job' (SeBatchLogonRight) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 40
+        Description = "A Group Policy grants SeBatchLogonRight to a principal beyond the Windows default. The holder can run a Scheduled Task as itself - code execution that requires no interactive session and can be configured to persist."
+        Impact = @(
+            "Scheduled Task execution as the holder, unattended and persistent"
+            "A common persistence and lateral-movement mechanism once an account is compromised"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials"
+            "2. Register a Scheduled Task to run as that account (schtasks.exe /Create /RU)"
+            "3. The task executes on schedule, or immediately, as the holder"
+        )
+        Remediation = @(
+            "Restrict batch-logon to the specific service/automation accounts that genuinely need it"
+        )
+        References = @(
+            @{ Title = "Scheduled Task/Job: Scheduled Task - MITRE ATT&CK T1053.005"; Url = "https://attack.mitre.org/techniques/T1053/005/" }
+        )
+        Tools = @("schtasks.exe")
+        MITRE = "T1053.005"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeBatchLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeBatchLogonRight'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SESERVICELOGON' = @{
+        Title = "'Log on as a Service' (SeServiceLogonRight) Granted via GPO"
+        Risk = "Hint"
+        BaseScore = 45
+        Description = "A Group Policy grants SeServiceLogonRight to a principal. Windows ships no fixed default for this right - every product installed on a machine adds its own service accounts - so this is reported through the identity filter rather than a deviation from a documented baseline; treat it as worth a look, not automatically as new. The holder can start a Windows service as itself, which begins running with no one needing to log on."
+        Impact = @(
+            "Service execution as the holder, starting automatically at boot with no interactive session"
+            "A classic persistence mechanism, and a way to run code under a service account's specific privileges, which are sometimes broader than an ordinary user's"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials, or create a new service configured to run as that account"
+            "2. Register the service (sc.exe create, or PsExec -r) to run as the holder"
+            "3. Start the service; it executes as that account without any logon"
+        )
+        Remediation = @(
+            "Confirm every holder is an actual, currently-installed service account - remove any that is not"
+            "Scope service accounts to the minimum machines and privileges they need"
+        )
+        References = @(
+            @{ Title = "Create or Modify System Process: Windows Service - MITRE ATT&CK T1543.003"; Url = "https://attack.mitre.org/techniques/T1543/003/" }
+        )
+        Tools = @("sc.exe", "PsExec")
+        MITRE = "T1543.003"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeServiceLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeServiceLogonRight'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SESYSTEMTIME' = @{
+        Title = "'Change the System Time' (SeSystemtimePrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 35
+        Description = "A Group Policy grants SeSystemtimePrivilege to a principal beyond the Windows default. Kerberos rejects a ticket outside its clock-skew tolerance (5 minutes by default), which makes the system clock an authentication dependency rather than a cosmetic setting."
+        Impact = @(
+            "Pushing a machine's clock outside the Kerberos skew tolerance breaks authentication for every account using that machine - a denial of service"
+            "Can also be used to extend or shorten the apparent validity window of a captured ticket, or to confuse time-based log correlation during an investigation"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials on a targeted machine"
+            "2. Change the system time significantly (w32tm.exe, net time)"
+            "3. Kerberos authentication on that machine fails until the clock is corrected, or captured tickets are timed to outlast their intended window"
+        )
+        Remediation = @(
+            "Restrict this right to Administrators and the accounts that genuinely manage time synchronization"
+        )
+        References = @(
+            @{ Title = "Indicator Removal - MITRE ATT&CK T1070"; Url = "https://attack.mitre.org/techniques/T1070/" }
+        )
+        Tools = @("w32tm.exe", "net time")
+        MITRE = "T1070"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeSystemtimePrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSystemtimePrivilege'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SEREMOTESHUTDOWN' = @{
+        Title = "'Force Shutdown from a Remote System' (SeRemoteShutdownPrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 35
+        Description = "A Group Policy grants SeRemoteShutdownPrivilege to a principal beyond the Windows default. The holder shuts down or restarts every targeted machine remotely, without ever touching it."
+        Impact = @(
+            "Denial of service against every machine the policy reaches, triggered from anywhere on the network"
+            "Can be timed to disrupt operations, or to force a reboot that clears volatile forensic evidence after an intrusion"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials"
+            "2. Issue a remote shutdown/restart (shutdown.exe /r /m against the target)"
+            "3. The target machine goes down; repeated triggers turn this into a denial of service"
+        )
+        Remediation = @(
+            "Restrict this right to Administrators and dedicated operations accounts"
+        )
+        References = @(
+            @{ Title = "System Shutdown/Reboot - MITRE ATT&CK T1529"; Url = "https://attack.mitre.org/techniques/T1529/" }
+        )
+        Tools = @("shutdown.exe")
+        MITRE = "T1529"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeRemoteShutdownPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRemoteShutdownPrivilege'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SESHUTDOWN' = @{
+        Title = "'Shut Down the System' (SeShutdownPrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 35
+        Description = "A Group Policy grants SeShutdownPrivilege to a principal beyond the Windows default. On a domain controller, forcing it down does more than deny service - clients fall back to another DC, which is useful to an attacker positioned to intercept that authentication traffic."
+        Impact = @(
+            "Denial of service against every targeted machine, from a local session"
+            "On a domain controller, forcing a shutdown pushes clients toward a different DC, which an attacker positioned on the network can exploit"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials and a session on a targeted machine"
+            "2. Shut down the machine (shutdown.exe, or the Start menu)"
+            "3. On a domain controller, authentication traffic that would have gone to it now goes elsewhere"
+        )
+        Remediation = @(
+            "Restrict this right to Administrators and dedicated operations accounts, especially on domain controllers"
+        )
+        References = @(
+            @{ Title = "System Shutdown/Reboot - MITRE ATT&CK T1529"; Url = "https://attack.mitre.org/techniques/T1529/" }
+        )
+        Tools = @("shutdown.exe")
+        MITRE = "T1529"
+        Triggers = @(
+            @{ Attribute = 'userRight'; Pattern = '^SeShutdownPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeShutdownPrivilege'; Severity = 'Hint' }
+        )
+    }
+
+    # =========================================================================
+    # The two attributes every GPO user-rights finding can carry regardless of which
+    # right it is about - not a specific right, so not part of the per-right split above.
+    # =========================================================================
+
+    'GPO_USERRIGHT_DEFAULT_REMOVED' = @{
+        Title = "GPO Removes a Default Holder of a User Right"
+        Risk = "Note"
+        BaseScore = 0
+        Description = "A Group Policy's [Privilege Rights] section is absolute: the principals it lists become the complete set of holders on every machine the policy reaches, so leaving one out removes a default holder rather than merely not mentioning it. Removing a default holder is hardening far more often than not."
+        Impact = @(
+            "Usually intended: a documented default holder (e.g. Backup Operators, Server Operators) is deliberately excluded on a hardened build"
+            "Occasionally an operational foot-gun: if the removed holder actually needed the right for something running today, that functionality breaks the moment the policy applies"
+        )
+        Attack = @(
+            "Not an attack path - reported so the reader can tell a deliberate removal from an accidental one, and confirm nothing that still needs the right lost it"
+        )
+        Remediation = @(
+            "Confirm the removal was deliberate hardening rather than an accident"
+            "If something on the affected machines relied on the removed holder having this right, restore it explicitly rather than leaving the policy to guess"
+        )
+        References = @(
+            @{ Title = "User Rights Assignment - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/user-rights-assignment" }
+        )
+        Tools = @("-")
+        MITRE = "-"
+        Triggers = @(
             @{ Attribute = 'removedFromDefault'; Severity = 'Note' }
+        )
+    }
 
-            # The one right with no documented default set. Saying so is the honest
-            # alternative to presenting a guess as a deviation.
+    'GPO_USERRIGHT_BASELINE_UNKNOWN' = @{
+        Title = "User Right Has No Documented Windows Default"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "Windows publishes no fixed default holder set for this right - who holds it varies with what is installed on the machine (SQL, Exchange, IIS and similar products each add their own accounts). The comparison this check is built around cannot run for it, so every holder is reported unfiltered rather than only the ones beyond a default that does not exist."
+        Impact = @(
+            "The list below has not been checked against a Windows baseline - judge each holder against what this domain actually runs, not against an assumed default"
+            "A privileged or broad principal in the list is still worth the same scrutiny it would get anywhere else"
+        )
+        Attack = @(
+            "Not an attack path on its own - it is a disclaimer on the holder list next to it, whose own severity carries the actual finding"
+        )
+        Remediation = @(
+            "Review the holder list by hand against the services actually installed on the targeted machines"
+        )
+        References = @(
+            @{ Title = "User Rights Assignment - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/user-rights-assignment" }
+        )
+        Tools = @("-")
+        MITRE = "-"
+        Triggers = @(
             @{ Attribute = 'baselineUnknown'; Severity = 'Hint' }
         )
     }
@@ -6567,8 +7345,16 @@ foreach ($DC in $DCs) {
         Tools = @("AADInternals", "ROADtools", "Mimikatz")
         MITRE = "T1003.006"
         Triggers = @(
-            @{ Attribute = 'entraConnectServer'; Severity = 'Finding' }
-            @{ Attribute = 'entraM365Tenant'; Severity = 'Finding' }
+            # Hint, not Finding. Both values are facts parsed out of the account
+            # description - the host Entra Connect runs on, and the tenant it syncs to -
+            # and neither states a misconfiguration. The section line above them is a Hint
+            # for that reason, and an MSOL account exists in every hybrid domain, so red
+            # here appeared in every such report and taught the reader to skip the block
+            # that also carries the real findings. The card keeps Risk = Finding and its
+            # BaseScore: what changed is the colour of the row, not the weight of the
+            # finding.
+            @{ Attribute = 'entraConnectServer'; Severity = 'Hint' }
+            @{ Attribute = 'entraM365Tenant'; Severity = 'Hint' }
         )
     }
 
@@ -7308,6 +8094,15 @@ $altSecGuid = [GUID]'00fbf30c-91fe-11d1-aebc-0000f80367c1'
         )
         Triggers = @(
             @{ Attribute = 'altSecurityIdentitiesWriters'; Severity = 'Finding' }
+
+            # The Exchange service groups are listed separately by the check and carry
+            # their own colour. The permission is real - Exchange Trusted Subsystem and
+            # Organization Management hold blanket rights on user objects and that is a
+            # known escalation path - but it is the by-design ACL the Exchange setup
+            # writes, it lands on every privileged account in the domain at once, and it
+            # is not the delegation ESC14 is looking for. Red on all of them trains the
+            # reader to skip the section that also carries the real one.
+            @{ Attribute = 'exchangeServiceWriters'; Severity = 'Hint' }
         )
     }
 
@@ -9098,7 +9893,20 @@ foreach ($oid in $linkedOIDs) {
         Tools = @("BloodHound", "PowerView", "Impacket dacledit.py", "Defender for Identity")
         MITRE = "T1078.002"
         Triggers = @(
-            # Expected/Attention permissions (Exchange groups, privileged users) = Hint
+            # Expected/Attention permissions (Exchange groups, privileged users) = Hint.
+            #
+            # Both SeverityOnly triggers below run in Pass 1, ahead of every individual
+            # DANGEROUS_ACL_* definition's own trigger (Pass 2) - so severity for this whole
+            # attribute family is decided here, by identity context, never by which right
+            # matched. A per-right definition's own Severity is display-only; what actually
+            # reaches New-RenderValue is whichever of these two fires.
+            #
+            # The downgrade to Hint depends on the check having set
+            # SourceObject.dangerousRightsSeverity to Expected/Attention/Hint. A check that
+            # does not set it gets the unconditional Finding below for every row - which is
+            # what happened to Get-GPOPermissions, whose -IncludePrivileged output rendered
+            # privileged trustees in the same red as genuine findings until it started
+            # setting the property.
             @{ Attribute = 'dangerousRights'; Custom = 'dangerous_rights_expected'; Severity = 'Hint'; SeverityOnly = $true }
             @{ Attribute = 'DangerousPermissions'; Custom = 'dangerous_rights_expected'; Severity = 'Hint'; SeverityOnly = $true }
             @{ Attribute = 'DangerousSettings'; Custom = 'dangerous_rights_expected'; Severity = 'Hint'; SeverityOnly = $true }
@@ -9111,18 +9919,62 @@ foreach ($oid in $linkedOIDs) {
         )
     }
 
-    # Scope attribute (GPO scope) - only color when GPO has actual findings
+    # The state of the policy itself, as GPOStatus - only colour when the GPO has findings.
+    #
+    # This replaces the Scope attribute, which said where a GPO applied in a vocabulary of
+    # its own ("Domain-wide (2 link(s))", "1 OU(s)", "NOT LINKED") beside a LinkedOUs list
+    # that said the same thing again, with a count that was the length of that list. Where a
+    # policy applies is LinkedOUs' subject now, in every GPO check; what is left here is
+    # whether the policy is switched on at all.
     'GPO_SCOPE_SEVERITY' = @{
-        Title = "GPO Scope Classification"
+        Title = "GPO Effective State"
         Risk = "Finding"
         BaseScore = 0
-        Description = "GPO scope classification based on link target."
+        Description = "Whether the GPO itself is switched on: a disabled half of the policy, or a set of links that exists and is disabled to the last one."
         Triggers = @(
-            @{ Attribute = 'Scope'; Pattern = 'Domain-wide'; Custom = 'is_gpo_finding_object'; Severity = 'Finding'; SeverityOnly = $true }
-            @{ Attribute = 'Scope'; Pattern = 'NOT LINKED'; Severity = 'Hint'; SeverityOnly = $true }
+            # Note, not Hint. A policy half that is switched off is the reason a dangerous
+            # setting does not currently reach anything - the one line in a finding block
+            # that lowers the risk rather than raising it, and yellow read as another thing
+            # to worry about. Not Secure either: one click re-enables it, and the setting is
+            # still sitting there.
+            @{ Attribute = 'GPOStatus'; Severity = 'Note'; SeverityOnly = $true }
         )
     }
 
+    # A member of a GPO-deployed local group whose SID is a broad principal. Carried by
+    # Convert-MembersAddedToRenderValues rather than by a Triggers block: which member is
+    # broad is decided in the check by SID, and the name it is displayed under is not
+    # something a pattern can match on - it is whatever the policy wrote.
+    'GPO_LOCAL_GROUP_RISKY_MEMBER' = @{
+        Title = "Broad Principal Added to a Local Group by Group Policy"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "A Group Policy adds a principal that covers most or all of the domain - Everyone, Authenticated Users, Anonymous Logon or Domain Users - to a privileged local group on every computer the policy reaches. Membership in a local group is granted by the policy itself, so it is re-applied on every refresh and survives being removed by hand on the machine."
+        Impact = @(
+            "Every domain user holds the group's privileges on every computer in scope"
+            "In the local Administrators group that is local administrator everywhere the policy is linked, which makes credential theft from LSASS and lateral movement across those machines routine"
+            "In Backup Operators it is read access to every file including the registry hives, which yields the local SAM and cached credentials"
+            "In Remote Desktop Users or Remote Management Users it is an interactive or WinRM logon for the whole domain, turning any single compromised account into a foothold on those machines"
+            "Removing the account from the group on a machine changes nothing - the next policy refresh puts it back"
+        )
+        Attack = @(
+            "1. Read the assignment from SYSVOL as any domain user - GptTmpl.inf or Groups.xml are world-readable"
+            "2. Determine which computers the GPO is linked to"
+            "3. Authenticate to one of them with any domain account, which is already a member through the broad principal"
+            "4. Use the granted privileges - dump credentials as local administrator, read the SAM as a backup operator, or log on interactively"
+        )
+        Remediation = @(
+            "Replace the broad principal with a dedicated group holding only the accounts that need the privilege"
+            "Scope the policy to the computers that need it instead of linking it broadly"
+            "Where local administrator rights on a workstation are needed, prefer LAPS over a standing group membership"
+            "Check the policy's Restricted Groups mode: a Members list replaces the group, a Memberof entry only adds to it"
+        )
+        References = @(
+            @{ Title = "Restricted Groups"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2003/cc756802(v=ws.10)" }
+            @{ Title = "Group Policy Preferences - Local Users and Groups"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/dn581922(v=ws.11)" }
+        )
+        Tools = @("BloodHound", "PowerView")
+    }
     # LinkedOUs (GPO linked to domain root) - only color when GPO has actual findings
     'GPO_LINKED_OUS_SEVERITY' = @{
         Title = "GPO Linked to Domain Root"
@@ -9722,30 +10574,144 @@ foreach ($oid in $linkedOIDs) {
         )
     }
 
-    'REGISTRY_SMB_SIGNING' = @{
-        Title = "SMB Server Signing Not Required (Set via GPO)"
-        Risk = "Hint"
-        BaseScore = 30
-        Description = "A Group Policy explicitly sets RequireSecuritySignature=0 on the SMB server, so SMB signing is not enforced. This enables SMB/NTLM relay attacks against the affected hosts."
+    # REGISTRY_SMB_SIGNING removed: Get-SMBSigningStatus covers SMB signing already, in more
+    # detail (server and client, the full Required/Optional/Disabled/Not configured matrix),
+    # and the coarse Equals-0 rule this table carried duplicated it under a second check.
+
+    'REGISTRY_RDP_NLA' = @{
+        Title = "RDP Network Level Authentication Disabled via GPO"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "A Group Policy sets UserAuthentication=0 for Remote Desktop Services, disabling Network Level Authentication. A client reaches the full logon screen - and the RDP protocol stack behind it - before any credential is checked."
         Impact = @(
-            "SMB signing not enforced"
-            "Enables SMB/NTLM relay to the host"
+            "Unauthenticated exposure to RDP protocol vulnerabilities (the BlueKeep class)"
+            "No pre-authentication throttling of credential guessing"
+            "Removes the one hardening RDP Restricted Admin mode assumes is already in place"
         )
         Attack = @(
-            "1. Coerce authentication from a victim"
-            "2. Relay it to an unsigned SMB target"
-            "3. Execute as the relayed identity"
+            "1. Connect to the RDP port without any credential"
+            "2. Reach the pre-auth protocol surface or the logon screen directly"
+            "3. Exploit an unpatched RDP stack vulnerability, or guess credentials unthrottled"
         )
         Remediation = @(
-            "Set RequireSecuritySignature=1 to enforce SMB signing"
+            "Set UserAuthentication=1 (Require NLA) via GPO"
+            "Combine with SecurityLayer=2 (TLS) rather than relying on NLA alone"
         )
         References = @(
-            @{ Title = "Microsoft network server: Digitally sign communications"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/microsoft-network-server-digitally-sign-communications-always" }
+            @{ Title = "Network Level Authentication for Remote Desktop Services connections"; Url = "https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access" }
         )
-        Tools = @("ntlmrelayx")
+        Tools = @("-")
+        MITRE = "T1021.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP Network Level Authentication'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_RDP_SECURITYLAYER' = @{
+        Title = "RDP Security Layer Downgraded via GPO"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Group Policy sets SecurityLayer=0 for Remote Desktop Services, forcing the original RDP Security Layer instead of TLS. That layer uses a self-signed, unverifiable server certificate and weak native encryption."
+        Impact = @(
+            "No certificate validation - a MITM server is indistinguishable from the real one"
+            "Weak native RDP encryption protects the session, not TLS"
+            "Credentials and session content are interceptable in transit"
+        )
+        Attack = @(
+            "1. Position between client and server (ARP/DNS spoofing, rogue AP)"
+            "2. Present a forged RDP server - the client has no certificate to check against"
+            "3. Capture the session, including any hash or credential exchanged"
+        )
+        Remediation = @(
+            "Set SecurityLayer=2 (TLS) via GPO; 1 (Negotiate) still allows fallback to the insecure layer"
+        )
+        References = @(
+            @{ Title = "Require use of specific security layer for remote (RDP) connections"; Url = "https://admx.newyard.nl/gpo/require-use-of-specific-security-layer-for-remote-rdp-connections/" }
+        )
+        Tools = @("-")
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP Security Layer'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_RDP_ENCRYPTION' = @{
+        Title = "RDP Encryption Level Set to Low via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets MinEncryptionLevel=1 (Low) for Remote Desktop Services. Client-to-server traffic is encrypted with weak 40/56-bit RC4, and server-to-client traffic is not encrypted at all. Only the native RDP encryption path is affected - TLS (SecurityLayer=2) supersedes it."
+        Impact = @(
+            "Server-to-client RDP traffic sent unencrypted"
+            "Client-to-server traffic uses breakable legacy RC4"
+        )
+        Attack = @(
+            "1. Capture RDP traffic on the path"
+            "2. Read the unencrypted server-to-client half directly, or break the weak client-to-server encryption"
+        )
+        Remediation = @(
+            "Set MinEncryptionLevel=3 (High) or enforce TLS via SecurityLayer=2, which makes this setting moot"
+        )
+        References = @(
+            @{ Title = "Set client connection encryption level"; Url = "https://admx.newyard.nl/gpo/require-use-of-specific-security-layer-for-remote-rdp-connections/" }
+        )
+        Tools = @("-")
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP encryption level'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_FIREWALL_DISABLED' = @{
+        Title = "Windows Firewall Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets EnableFirewall=0 for one or more Windows Firewall profiles (Domain, Private, Public). Every host the policy reaches loses its host-based network filtering for that profile, widening lateral-movement reachability."
+        Impact = @(
+            "No host firewall filtering on the affected profile"
+            "Every service listening on the host becomes network-reachable, not only the ones meant to be"
+        )
+        Attack = @(
+            "1. Reach a host that would otherwise have been firewalled off"
+            "2. Enumerate and connect to services the firewall would have blocked"
+        )
+        Remediation = @(
+            "Set EnableFirewall=1 for every profile the policy configures"
+            "Investigate why the policy turns the firewall off - a documented exception should scope narrower than a whole profile"
+        )
+        References = @(
+            @{ Title = "Windows Firewall Group Policy settings"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/embedded/jj963363(v=winembedded.81)" }
+        )
+        Tools = @("-")
+        MITRE = "T1562.004"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Windows Firewall disabled'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_INSECURE_GUEST_AUTH' = @{
+        Title = "Insecure Guest Logon (SMB) Allowed via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets AllowInsecureGuestAuth=1. The SMB client falls back to an unauthenticated guest session whenever a server refuses its credentials, instead of failing the connection - with signing and encryption unenforced on that session."
+        Impact = @(
+            "A rogue or coerced SMB server captures whatever the client sends over the guest session"
+            "No signing or encryption enforced on a guest fallback session"
+        )
+        Attack = @(
+            "1. Stand up a rogue SMB server, or coerce a client toward one (NTLM relay tooling, Responder-style)"
+            "2. Refuse the client's real credentials so it falls back to guest"
+            "3. Read or tamper with whatever the client sends over that session"
+        )
+        Remediation = @(
+            "Set AllowInsecureGuestAuth=0 (the Windows default since 1709)"
+        )
+        References = @(
+            @{ Title = "Policy CSP - LanmanWorkstation"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-lanmanworkstation" }
+        )
+        Tools = @("-")
         MITRE = "T1557.001"
         Triggers = @(
-            @{ Attribute = 'VulnerabilityName'; Pattern = 'SMB server signing'; Severity = 'Hint' }
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'Insecure guest logon'; Severity = 'Hint' }
         )
     }
 
@@ -10172,7 +11138,12 @@ foreach ($oid in $linkedOIDs) {
         Tools = @("adPEAS")
         MITRE = "T1078.003"
         Triggers = @(
-            @{ Attribute = 'LinkedOUs'; Pattern = '^Not linked'; Severity = 'Hint' }
+            # Note, not Hint, and the same colour the row carries in every other GPO check:
+            # a policy that reaches nothing is the one line in a finding block that lowers
+            # the risk. "Unknown" is the yellow one - that is missing information, not a
+            # mitigating fact.
+            @{ Attribute = 'LinkedOUs'; Pattern = '^Not linked'; Severity = 'Note' }
+            @{ Attribute = 'LinkedOUs'; Pattern = '^Unknown - linkage'; Severity = 'Hint' }
         )
     }
 
@@ -10623,6 +11594,20 @@ function Test-CustomTrigger {
                 return $false
             }
             return $true
+        }
+
+        { $_ -like 'user_right_is_*' } {
+            # Shared by all 22 GPO_USERRIGHT_* definitions' grantedBeyondDefault trigger, one
+            # CustomType per right rather than one case per right: Get-TriggerMatch always
+            # resolves FindingId to the trigger's OWNING definition, never to a value a Custom
+            # evaluator returns, so the only way to route the holder-name row to the right's
+            # own definition (SeDebugPrivilege's tooltip rather than SeShutdownPrivilege's) is
+            # for each definition to carry a trigger that only fires for its own right. The
+            # right itself travels inside the CustomType string instead of 22 near-identical
+            # case blocks.
+            if (-not $SourceObject) { return $false }
+            $wantRight = $CustomType.Substring('user_right_is_'.Length)
+            return ([string]$SourceObject.userRight -eq $wantRight)
         }
 
         'is_privileged_sid' {

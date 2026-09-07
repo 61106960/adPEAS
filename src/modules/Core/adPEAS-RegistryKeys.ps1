@@ -39,6 +39,12 @@
       - RDP Restricted Admin (PtH):       https://www.levelblue.com/blogs/spiderlabs-blog/restricted-admin-mode-circumventing-mfa-on-rdp-logons/
       - Point and Print / PrintNightmare:  see Get-GPOPointAndPrint (dedicated check)
       - WSUS over HTTP (MITM -> SYSTEM):  https://trustedsec.com/blog/wsus-is-sus-ntlm-relay-attacks-in-plain-sight
+      - RDP SecurityLayer / UserAuthentication / MinEncryptionLevel policy keys:
+                                           https://admx.newyard.nl/gpo/require-use-of-specific-security-layer-for-remote-rdp-connections/
+      - Windows Firewall EnableFirewall policy keys per profile:
+                                           https://learn.microsoft.com/en-us/previous-versions/windows/embedded/jj963363(v=winembedded.81)
+      - AllowInsecureGuestAuth policy key: https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-lanmanworkstation
+      - SMB server/client signing:         see Get-SMBSigningStatus (dedicated check, not duplicated here)
 #>
 
 # =============================================================================
@@ -397,17 +403,115 @@ $Script:DangerousRegistryKeys = @(
         VulnerabilityName = 'Anonymous (null session) enumeration enabled'
         RiskReason        = 'Anonymous users gain Everyone rights - broadens null session access'
     }
+    # SMB server signing is deliberately not in this table: Get-SMBSigningStatus covers it
+    # already, in more detail - server AND client, with the full Required/Optional/Disabled/
+    # Not configured matrix rather than one Equals-0 rule. A second, coarser entry here would
+    # have reported the same GPO twice under two different checks.
+
+    # =========================================================================
+    # TIER 1/2 - RDP hardening, Windows Firewall, SMB client guest auth
+    # =========================================================================
+    # RDP Restricted Admin above answers "can a hash authenticate this session"; these three
+    # answer the question in front of it: is the session negotiated safely at all. Values
+    # live under the Terminal Services *policy* key, not the live
+    # \CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp\ path a logged-on session
+    # reads at connect time - GPO Administrative Templates for RDS write to the Policies
+    # branch, same as every other entry in this table.
+
     @{
-        Id                = 'SMB_SIGN_OFF'
+        Id                = 'RDP_NLA_OFF'
         Hive              = 'HKLM'
-        Key               = 'System\CurrentControlSet\Services\LanManServer\Parameters'
-        ValueName         = 'RequireSecuritySignature'
+        Key               = 'Software\Policies\Microsoft\Windows NT\Terminal Services'
+        ValueName         = 'UserAuthentication'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_RDP_NLA'
+        VulnerabilityName = 'RDP Network Level Authentication disabled'
+        RiskReason        = 'A session reaches the logon screen before any credential is checked - unauthenticated exposure to RDP protocol vulnerabilities (the BlueKeep class) and to unthrottled credential guessing'
+    }
+    @{
+        Id                = 'RDP_SECLAYER_LOW'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows NT\Terminal Services'
+        ValueName         = 'SecurityLayer'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_RDP_SECURITYLAYER'
+        VulnerabilityName = 'RDP Security Layer downgraded (no TLS enforcement)'
+        RiskReason        = 'Value 0 forces the original RDP Security Layer instead of TLS - a self-signed, unverifiable server certificate and weak native encryption, both open to MITM credential capture. 1 (Negotiate) and 2 (TLS) are not flagged'
+    }
+    @{
+        Id                = 'RDP_MINENCRYPTION_LOW'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows NT\Terminal Services'
+        ValueName         = 'MinEncryptionLevel'
+        Match             = 'LessOrEqual'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_RDP_ENCRYPTION'
+        VulnerabilityName = 'RDP encryption level set to Low'
+        RiskReason        = 'Level 1 encrypts client-to-server traffic only, with weak 40/56-bit RC4 - server-to-client stays in the clear. Only the native RDP encryption path is affected; TLS (SecurityLayer 2) supersedes it'
+    }
+
+    # Windows Firewall, one profile per link scope. Three entries, one VulnerabilityName -
+    # the same convention the two Defender entries above use, because it is the same finding
+    # regardless of which profile the GPO turned off, and RiskReason says which one.
+    @{
+        Id                = 'FIREWALL_DOMAIN_OFF'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\WindowsFirewall\DomainProfile'
+        ValueName         = 'EnableFirewall'
         Match             = 'Equals'
         MatchValue        = 0
         Severity          = 'Medium'
         ConsoleClass      = 'Hint'
-        FindingId         = 'REGISTRY_SMB_SIGNING'
-        VulnerabilityName = 'SMB server signing not required'
-        RiskReason        = 'SMB signing not enforced - enables SMB/NTLM relay attacks'
+        FindingId         = 'REGISTRY_FIREWALL_DISABLED'
+        VulnerabilityName = 'Windows Firewall disabled via GPO'
+        RiskReason        = 'Domain profile firewall disabled centrally - every host lateral-movement-reachable while on the domain network'
+    }
+    @{
+        Id                = 'FIREWALL_STANDARD_OFF'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\WindowsFirewall\StandardProfile'
+        ValueName         = 'EnableFirewall'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_FIREWALL_DISABLED'
+        VulnerabilityName = 'Windows Firewall disabled via GPO'
+        RiskReason        = 'Private profile firewall disabled centrally - every host lateral-movement-reachable while on a private network'
+    }
+    @{
+        Id                = 'FIREWALL_PUBLIC_OFF'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\WindowsFirewall\PublicProfile'
+        ValueName         = 'EnableFirewall'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_FIREWALL_DISABLED'
+        VulnerabilityName = 'Windows Firewall disabled via GPO'
+        RiskReason        = 'Public profile firewall disabled centrally - every host directly reachable on an untrusted network (VPN split-tunnel, hotel/coffee-shop Wi-Fi)'
+    }
+
+    @{
+        Id                = 'GUEST_AUTH_INSECURE'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\LanmanWorkstation'
+        ValueName         = 'AllowInsecureGuestAuth'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_INSECURE_GUEST_AUTH'
+        VulnerabilityName = 'Insecure guest logon (SMB) allowed via GPO'
+        RiskReason        = 'The SMB client accepts an unauthenticated guest session when the server refuses its credentials - a rogue or coerced server captures whatever the client sends, with no signing and no encryption enforced'
     }
 )

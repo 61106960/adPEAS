@@ -151,22 +151,22 @@ function Get-GPOScheduledTasks {
                                 }
 
                                 foreach ($task in $taskFindings) {
-                                    # Only add LinkedOUs if not empty (prevents rendering issues with empty arrays)
-                                    if ($linkedOUs.Count -gt 0) {
-                                        $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
-                                    }
-                                    $task | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
+                                    # Set unconditionally, including when the list is empty:
+                                    # the transformer turns that into an explicit "Not
+                                    # linked" row, and a policy that runs nowhere is a
+                                    # statement rather than an absence.
+                                    $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
 
-                                    # A task in a policy whose relevant half is switched off,
-                                    # or that is linked nowhere, does not run. It used to read
-                                    # exactly like one that does. The scope comes off the task
-                                    # itself: the file's path decided it during parsing.
-                                    $ineffective = Get-GPOIneffectiveReason `
+                                    # A task in a policy whose relevant half is switched off
+                                    # does not run, and it used to read exactly like one that
+                                    # does. The scope comes off the task itself: the file's
+                                    # path decided it during parsing.
+                                    $gpoStatus = Get-GPOEffectiveStatus `
                                         -StatusEntry $gpoStatusMap[$gpoGUID] `
                                         -Scope $(if ($task.Context -eq 'Machine') { 'Machine' } else { 'User' }) `
-                                        -LinkedOUCount $linkedOUs.Count
-                                    if ($ineffective) {
-                                        $task | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                                        -Link $linkedOUs
+                                    if ($gpoStatus) {
+                                        $task | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
                                 }
 

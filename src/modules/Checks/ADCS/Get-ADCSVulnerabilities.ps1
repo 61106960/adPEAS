@@ -1222,8 +1222,15 @@ function Get-ADCSVulnerabilities {
                             $severity = 'Finding'
 
                             if (-not $IncludePrivileged) {
-                                # Use scope-based check for ADCS template permissions (ESC4)
-                                $scopeResult = Test-IsExpectedInScope -Identity $aceSID -Scope 'ADCSEnroll' -ReturnDetails
+                                # ADCSTemplateWrite, not ADCSEnroll. The two scopes answer
+                                # different questions: ADCSEnroll parks Authenticated Users
+                                # in AttentionBroadGroups because enrolling is what that
+                                # group is there for, and the skip below then dropped every
+                                # template where Authenticated Users held GenericAll or
+                                # WriteDacl - ESC4 in its worst form, where any domain user
+                                # can rewrite the template into an ESC1 and enrol as a
+                                # domain admin. Writing a template is nobody's normal state.
+                                $scopeResult = Test-IsExpectedInScope -Identity $aceSID -Scope 'ADCSTemplateWrite' -ReturnDetails
 
                                 # Skip Expected (direct match like Domain Admins group)
                                 if ($scopeResult.Severity -eq 'Expected') {
@@ -1240,7 +1247,7 @@ function Get-ADCSVulnerabilities {
                                 $severity = $scopeResult.Severity
                             } else {
                                 # -IncludePrivileged: Show ALL accounts, but mark privileged ones for yellow display
-                                $scopeResult = Test-IsExpectedInScope -Identity $aceSID -Scope 'ADCSEnroll' -ReturnDetails
+                                $scopeResult = Test-IsExpectedInScope -Identity $aceSID -Scope 'ADCSTemplateWrite' -ReturnDetails
                                 # Expected or Attention -> will be shown in yellow (Hint)
                                 # Finding -> will be shown in red
                                 $severity = $scopeResult.Severity

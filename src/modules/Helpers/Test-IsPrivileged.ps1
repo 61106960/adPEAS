@@ -1242,6 +1242,8 @@ function Test-IsExpectedACLIdentity {
     - UserObjectACL: Identities with write access to user objects
     - GPO: Identities that can create/edit GPOs
     - ADCSEnroll: Identities with certificate enrollment rights
+    - ADCSTemplateWrite: Identities that may modify a certificate template (ESC4) - a
+      tighter set than ADCSEnroll, where a broad group is expected
     - KerberosDelegation: Identities with delegation configured
     - LAPSRead: Identities that can read LAPS passwords
 
@@ -1283,6 +1285,7 @@ function Test-IsExpectedInScope {
             'UserObjectACL',
             'GPO',
             'ADCSEnroll',
+            'ADCSTemplateWrite',
             'KerberosDelegation',
             'LAPSRead',
             'PKIContainer',

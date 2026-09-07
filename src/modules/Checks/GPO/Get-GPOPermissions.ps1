@@ -89,6 +89,10 @@ function Get-GPOPermissions {
 
             $allGPOs = @(Get-DomainGPO @connectionParams)
 
+            # Indexed once for the whole check: every finding below reports the state of its
+            # policy as GPOStatus, the way the other GPO checks do.
+            $gpoStatusMap = Get-GPOStatusMap -GPO $allGPOs
+
             if (-not $allGPOs -or @($allGPOs).Count -eq 0) {
                 Show-Line "No GPOs found in domain" -Class Note
                 return
@@ -287,33 +291,54 @@ function Get-GPOPermissions {
                             }
                         }
 
-                        # Build scope info and linked OUs list
-                        $scopeInfo = if ($isDomainWide) {
-                            "Domain-wide"
-                        } elseif ($linkCount -gt 0) {
-                            "Linked to $linkCount OU(s)"
-                        } else {
-                            "NOT LINKED"
-                        }
-
-                        # Build LinkedOUs list (show where GPO is linked) - use full DN
-                        $linkedOUsDisplay = $null
-                        if (@($activeLinks).Count -gt 0) {
-                            $linkedOUsDisplay = ($activeLinks | ForEach-Object {
-                                $_.DistinguishedName
-                            }) -join "`n"
-                        }
+                        # Where the policy applies. The full link records, disabled ones
+                        # included - the LinkedOUs transformer marks those and renders an
+                        # empty list as "Not linked". Handed over as an array rather than a
+                        # newline-joined string, so each link is its own row and can carry
+                        # its own colour.
+                        $linkedOUsDisplay = @($links | Where-Object { $_ })
 
                         # Format vulnerable identities for display
                         $identityDisplay = ($vulnerableIdentities | ForEach-Object {
                             "$($_.Identity) ($($_.DangerousRight))"
                         }) -join "`n"
 
+                        # What colour the DangerousPermissions block renders in.
+                        #
+                        # DANGEROUS_RIGHTS_CONTEXT decides severity for this attribute family
+                        # from the source object's dangerousRightsSeverity: Expected,
+                        # Attention or Hint downgrade the block to yellow, anything else -
+                        # including the property being absent - leaves it red. This check
+                        # never set it, so a -IncludePrivileged run, whose whole purpose is to
+                        # show privileged trustees as expected rather than as findings,
+                        # rendered them in the same red as a genuine one.
+                        #
+                        # One value for the whole block, because that is the granularity this
+                        # check has: one object per GPO, every vulnerable trustee joined into
+                        # one attribute. Yellow only when every reported trustee is an
+                        # expected one - a single genuine finding in the list makes the block
+                        # a finding, and colouring it yellow because a privileged trustee sits
+                        # next to it would understate it. Without -IncludePrivileged the
+                        # expected ones never reach this list at all, so the aggregate is
+                        # always Finding there and nothing changes.
+                        $unexpectedIdentities = @($vulnerableIdentities |
+                            Where-Object { $_.Severity -notin @('Expected', 'Attention') })
+                        $blockSeverity = if ($unexpectedIdentities.Count -eq 0) { 'Hint' } else { 'Finding' }
+
                         $enrichedGPO = $gpo.PSObject.Copy()
                         $enrichedGPO | Add-Member -NotePropertyName "DangerousPermissions" -NotePropertyValue $identityDisplay -Force
-                        $enrichedGPO | Add-Member -NotePropertyName "Scope" -NotePropertyValue $scopeInfo -Force
-                        if ($linkedOUsDisplay) {
-                            $enrichedGPO | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
+                        $enrichedGPO | Add-Member -NotePropertyName "dangerousRightsSeverity" -NotePropertyValue $blockSeverity -Force
+                        $enrichedGPO | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
+
+                        # The object is a copy of the GPO and already carries GPOStatus from
+                        # Get-DomainGPO; the transformer hides it when it says "Enabled".
+                        # This only adds what that attribute cannot know: links that exist
+                        # and are switched off to the last one. Scope 'Any' - a permission on
+                        # the GPO object belongs to neither half of the policy.
+                        $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUID] `
+                            -Scope 'Any' -Link $linkedOUsDisplay
+                        if ($gpoStatus) {
+                            $enrichedGPO | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                         }
                         $enrichedGPO | Add-Member -NotePropertyName "affectedComputerCount" -NotePropertyValue $affectedComputerCount -Force
                         $enrichedGPO | Add-Member -NotePropertyName "IsDomainWide" -NotePropertyValue $isDomainWide -Force

@@ -131,19 +131,18 @@ function Get-GPOScriptPaths {
                                 }
 
                                 # Whether the GPO's half that carries this script is switched
-                                # on at all, and whether the GPO is linked anywhere. A
-                                # startup script in a policy whose computer configuration is
-                                # disabled used to read exactly like one that runs on every
-                                # boot.
-                                $ineffective = Get-GPOIneffectiveReason `
+                                # on at all. A startup script in a policy whose computer
+                                # configuration is disabled used to read exactly like one
+                                # that runs on every boot. Where it applies is LinkedOUs'
+                                # subject and is not repeated here.
+                                $gpoStatus = Get-GPOEffectiveStatus `
                                     -StatusEntry $gpoStatusMap[$gpoGUID] -Scope $context `
-                                    -LinkedOUCount $linkedOUs.Count
+                                    -Link $linkedOUs
 
                                 foreach ($finding in $findings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
-                                    $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
-                                    if ($ineffective) {
-                                        $finding | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                                    if ($gpoStatus) {
+                                        $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
                                 }
 

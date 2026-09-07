@@ -38,6 +38,16 @@ function Get-WeakCertificateMapping {
     domain-wide ACL sweep over every user costs a great deal to answer a question that
     matters for a handful of them.
 
+    Its writers are reported in two lists rather than one. The Exchange service groups -
+    Exchange Trusted Subsystem, Exchange Servers, Organization Management and the rest of
+    the Microsoft Exchange Security Groups OU - hold blanket rights on user objects because
+    the Exchange setup writes that ACL, and it lands on every privileged account in the
+    domain at once. Those rights are real, and Exchange holding GenericAll on an
+    administrator is a documented escalation path, so they are kept and shown; they are not
+    the delegation this check is looking for, so they are shown apart and in a different
+    colour. Reporting them red alongside the genuine ones taught the reader to skip the
+    section that carries both.
+
     .PARAMETER Domain
     Domain to analyze. Defaults to the domain of the current session.
 
@@ -88,7 +98,7 @@ function Get-WeakCertificateMapping {
         # ==================================================================
         # 1. Principals that already carry an explicit mapping
         # ==================================================================
-        Show-SubHeader "Analyzing explicit certificate mappings (ESC14)..." -ObjectType "WeakCertificateMapping"
+        Show-SubHeader "Analyzing explicit certificate mappings..." -ObjectType "WeakCertificateMapping"
 
         # Two phases, the way Get-NonDefaultUserOwners reads owners across the domain.
         #
@@ -211,7 +221,14 @@ function Get-WeakCertificateMapping {
         # ==================================================================
         # 2. Who may write altSecurityIdentities on a privileged principal
         # ==================================================================
+        # Its own header. The two halves answer different questions - what is mapped today,
+        # and who could map something tomorrow - and under one header the secure verdict of
+        # the first read as a verdict on ESC14 as a whole, with the findings of the second
+        # contradicting it on the next line.
+        Show-SubHeader "Checking write access to altSecurityIdentities on privileged accounts..." -ObjectType "WeakCertificateMapping"
+
         $writableFindings = @()
+        $exchangeOnlyFindings = @()
         try {
             # One query for every privileged principal and its security descriptor, rather
             # than Get-ObjectACL per account: that helper reads the object it is given, so
@@ -236,6 +253,12 @@ function Get-WeakCertificateMapping {
                 }
 
                 $writers = @()
+                $exchangeWriters = @()
+                # The same trustee reaches an object through several ACEs - one written
+                # here, one inherited from the OU, one from the domain root - and each
+                # arrives separately. Listing "Exchange Trusted Subsystem: GenericAll"
+                # three times says nothing the first line did not.
+                $seenWriters = @{}
                 foreach ($ace in @($descriptor.ACEs)) {
                     if (-not $ace) { continue }
                     # ConvertFrom-SecurityDescriptor names these Type and SID.
@@ -262,10 +285,27 @@ function Get-WeakCertificateMapping {
                     if ($trusteePrivileged) { continue }
 
                     $trusteeName = if ($ace.Name) { $ace.Name } else { ConvertFrom-SID -SID $trusteeSID }
-                    $writers += "${trusteeName}: $($ace.Rights)"
+                    $entry = "${trusteeName}: $($ace.Rights)"
+                    if ($seenWriters.ContainsKey($entry)) { continue }
+                    $seenWriters[$entry] = $true
+
+                    # Exchange service groups are kept apart rather than filtered out. The
+                    # rights are real, and Exchange Trusted Subsystem holding GenericAll on
+                    # a user object is a documented escalation path - but the Exchange setup
+                    # writes that ACL on every privileged account in the domain at once, so
+                    # reporting each one as an ESC14 delegation buries the account that
+                    # carries a real one. The reader gets both lists, in different colours.
+                    $trusteeIsExchange = $false
+                    try {
+                        $trusteeIsExchange = [bool](Test-IsExchangeServiceGroup -Identity $trusteeSID).IsExchangeService
+                    } catch {
+                        Write-Log "[Get-WeakCertificateMapping] Exchange check failed for trustee '$trusteeSID': $_"
+                    }
+
+                    if ($trusteeIsExchange) { $exchangeWriters += $entry } else { $writers += $entry }
                 }
 
-                if (@($writers).Count -eq 0) { continue }
+                if (@($writers).Count -eq 0 -and @($exchangeWriters).Count -eq 0) { continue }
 
                 # Second phase again: the full object, only for an account that is actually
                 # reported.
@@ -277,9 +317,22 @@ function Get-WeakCertificateMapping {
                 }
                 if (-not $displayObject) { $displayObject = $target }
 
-                $displayObject | Add-Member -NotePropertyName 'altSecurityIdentitiesWriters' -NotePropertyValue @($writers) -Force
+                # Two attributes rather than one list, because the render pipeline colours
+                # by attribute name: the delegated writers stay red, the Exchange ones go
+                # yellow, and an account that carries both shows both rows.
+                if (@($writers).Count -gt 0) {
+                    $displayObject | Add-Member -NotePropertyName 'altSecurityIdentitiesWriters' -NotePropertyValue @($writers) -Force
+                }
+                if (@($exchangeWriters).Count -gt 0) {
+                    $displayObject | Add-Member -NotePropertyName 'exchangeServiceWriters' -NotePropertyValue @($exchangeWriters) -Force
+                }
                 $displayObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'WeakCertificateMapping' -Force
-                $writableFindings += $displayObject
+
+                if (@($writers).Count -gt 0) {
+                    $writableFindings += $displayObject
+                } else {
+                    $exchangeOnlyFindings += $displayObject
+                }
             }
         }
         catch {
@@ -292,7 +345,15 @@ function Get-WeakCertificateMapping {
                 Show-Object $finding -Class Finding
             }
         }
-        else {
+
+        if (@($exchangeOnlyFindings).Count -gt 0) {
+            Show-Line "$(@($exchangeOnlyFindings).Count) further privileged principal(s) are writable by Exchange service groups only - the by-design Exchange ACL, and an escalation path through Exchange rather than a delegation" -Class Hint
+            foreach ($finding in $exchangeOnlyFindings) {
+                Show-Object $finding -Class Hint
+            }
+        }
+
+        if (@($writableFindings).Count -eq 0 -and @($exchangeOnlyFindings).Count -eq 0) {
             Show-Line "No non-privileged principal can write altSecurityIdentities on a privileged account" -Class Secure
         }
     }

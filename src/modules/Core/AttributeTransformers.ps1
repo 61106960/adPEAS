@@ -707,6 +707,62 @@ function Convert-TemplateACLToRenderValues {
     }
 }
 
+# --- MembersAdded Transformer (GPO local group assignments) ---
+#
+# The check reported the same principals twice: once in MembersAdded, and once more in a
+# RiskyMembers row directly below it that only ever repeated a subset of the first. That
+# row is gone; the risk it carried is shown where the members already are, by colouring
+# the risky ones.
+#
+# Which members are risky is decided in the check and decided by SID - Everyone,
+# Authenticated Users, Anonymous Logon, and the -513 RID for Domain Users - and arrives
+# here as RiskyMembers on the source object. Matching those by display name is sound
+# because the check writes both lists from the same string: a risky principal is named by
+# its canonical English name in MembersAdded too, whatever the GPO called it.
+#
+# The colour is the severity the check already computed for this assignment rather than a
+# fixed one. That value is escalated precisely because a risky member is present, so
+# Everyone in Remote Desktop Users shows as a hint and Everyone in Administrators as a
+# finding - one judgement, made once, in the check.
+function Convert-MembersAddedToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+
+    $members = @($Value | Where-Object { $_ })
+    if ($members.Count -eq 0) { return $null }
+
+    $sourceObject = $Context.SourceObject
+
+    $riskyLookup = @{}
+    foreach ($risky in @($sourceObject.RiskyMembers)) {
+        if ($risky) { $riskyLookup[[string]$risky] = $true }
+    }
+
+    # Falls back to Finding rather than to Standard: an object that reached this
+    # transformer with a risky member and no severity is a defect upstream, and losing the
+    # colour would hide the finding instead of the defect.
+    $riskySeverity = [string]$sourceObject.Severity
+    if ($riskySeverity -notin @('Finding', 'Hint', 'Note')) { $riskySeverity = 'Finding' }
+
+    $renderValues = @()
+    foreach ($member in $members) {
+        $display = [string]$member
+        if ($riskyLookup.ContainsKey($display)) {
+            $renderValues += New-RenderValue -Display $display -Severity $riskySeverity `
+                -FindingId 'GPO_LOCAL_GROUP_RISKY_MEMBER' -RawValue $member
+        } else {
+            $renderValues += New-RenderValue -Display $display -Severity 'Standard' -RawValue $member
+        }
+    }
+
+    $maxSev = Get-MaxSeverityFromValues -Values $renderValues
+    return @{
+        RowType             = 'MultiValue'
+        OverallSeverity     = $maxSev
+        ForceAttributeClass = ($maxSev -ne 'Standard')
+        Values              = $renderValues
+    }
+}
 # --- DangerousACEs Transformer ---
 function Convert-DangerousACEsToRenderValues {
     [CmdletBinding()]
@@ -744,34 +800,44 @@ function Convert-DangerousPermToRenderValues {
 
     $sourceObject = $Context.SourceObject
 
+    # Get-AttributeSeverity (used here until this fix) calls Get-SeverityFromTrigger, which
+    # calls Get-TriggerMatch and then keeps only .Severity - the FindingId the same call
+    # already computed was thrown away. New-RenderValue below was therefore never given a
+    # -FindingId, and every row this transformer ever produced rendered with the right
+    # colour and no tooltip behind it, silently, for as long as the transformer existed.
+    # Get-TriggerMatch is the combined lookup; every other transformer in this file already
+    # uses it for exactly this reason.
+
     # Format 1: Array of objects with Trustee/Rights properties
     if ($Value -is [array] -and $Value.Count -gt 0 -and $Value[0].PSObject.Properties['Trustee']) {
-        $permClass = Get-AttributeSeverity -Name 'DangerousPermissions' -Value $Value -SourceObject $sourceObject
+        $summaryMatch = Get-TriggerMatch -Name 'DangerousPermissions' -Value $Value -IsComputer $Context.IsComputer -SourceObject $sourceObject
         $renderValues = @()
         # First line: summary count
         $renderValues += New-RenderValue -Display "$($Value.Count) non-privileged ACE(s)" `
-            -Severity $permClass -RawValue $Value
+            -Severity $summaryMatch.Severity -FindingId $summaryMatch.FindingId -RawValue $Value
         # Per-ACE details
         foreach ($perm in $Value) {
+            $permMatch = Get-TriggerMatch -Name 'DangerousPermissions' -Value $perm.Rights -IsComputer $Context.IsComputer -SourceObject $sourceObject
             $renderValues += New-RenderValue -Display "$($perm.Trustee): $($perm.Rights)" `
-                -Severity $permClass -RawValue $perm
+                -Severity $permMatch.Severity -FindingId $permMatch.FindingId -RawValue $perm
         }
+        $maxSev = Get-MaxSeverityFromValues -Values $renderValues
         return @{
             RowType             = 'MultiValue'
-            OverallSeverity     = $permClass
+            OverallSeverity     = $maxSev
             ForceAttributeClass = $true
             Values              = $renderValues
         }
     }
 
-    # Format 2: String or multiline string
+    # Format 2: String or multiline string - what Get-GPOPermissions actually produces:
+    # one "Identity (Right)" line per vulnerable ACE, newline-joined into a single property.
     if ($Value -is [string]) {
         $permValues = if ($Value -match "`n") { $Value -split "`n" } else { @($Value) }
-        $permClass = Get-AttributeSeverity -Name 'DangerousPermissions' -Value $permValues -SourceObject $sourceObject
         $renderValues = @()
         foreach ($pv in $permValues) {
-            $pvSeverity = Get-AttributeSeverity -Name 'DangerousPermissions' -Value $pv -SourceObject $sourceObject
-            $renderValues += New-RenderValue -Display ([string]$pv) -Severity $pvSeverity -RawValue $pv
+            $pvMatch = Get-TriggerMatch -Name 'DangerousPermissions' -Value $pv -IsComputer $Context.IsComputer -SourceObject $sourceObject
+            $renderValues += New-RenderValue -Display ([string]$pv) -Severity $pvMatch.Severity -FindingId $pvMatch.FindingId -RawValue $pv
         }
         $maxSev = Get-MaxSeverityFromValues -Values $renderValues
         return @{
@@ -998,11 +1064,48 @@ function Convert-KeyCredentialLinkToRenderValues {
     }
 }
 
+# --- GPOStatus Transformer ---
+# Whether the GPO itself is switched on, and nothing about where it applies - that is
+# LinkedOUs' subject, and the two used to overlap so completely that an unlinked policy
+# said so twice in one block.
+#
+# Returns $null for a policy with nothing wrong with it, which suppresses the row: every
+# GPO object carries GPOStatus from Get-DomainGPO, and "GPOStatus: Enabled" on each of them
+# is a line that says nothing. Get-RenderModel skips a transformer that returns $null.
+function Convert-GPOStatusToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+
+    $status = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($status)) { return $null }
+    if ($status -eq 'Enabled') { return $null }
+
+    # Note, like the unlinked row: a disabled half of a policy is the reason a dangerous
+    # setting does not currently reach anything. It is not Secure - one click re-enables it,
+    # and the setting is still sitting there.
+    return @{
+        RowType             = 'SingleValue'
+        OverallSeverity     = 'Note'
+        ForceAttributeClass = $true
+        Values              = @(
+            New-RenderValue -Display $status -Severity 'Note' -RawValue $Value
+        )
+    }
+}
+
 # --- LinkedOUs Transformer ---
-# Renders GPO link information. Importantly, when the GPO is not linked to any
-# OU at all, an explicit 'Not linked' row is emitted so an unlinked (and
-# therefore non-applying) GPO is visible to the user instead of silently
-# vanishing because the array is empty.
+# Where a GPO applies, and the only attribute that answers that question. When the policy
+# is linked nowhere an explicit row is emitted rather than letting the empty array make the
+# row vanish - an unlinked GPO is a statement, not an absence.
+#
+# The vocabulary is fixed here for every GPO check. It used to be spread over the checks
+# themselves, which produced 'NOT LINKED', 'Not linked - these settings apply nowhere' and
+# 'Not linked - GPO is not applied anywhere' for one and the same fact, in two different
+# colours, and a fourth wording of it in the effectiveness sentence underneath.
+#
+# Note rather than Hint: a policy that reaches nothing is the one line in a finding block
+# that lowers the risk. Not Secure either - the settings sit in the directory and apply the
+# moment somebody links the GPO.
 function Convert-LinkedOUsToRenderValues {
     [CmdletBinding()]
     param([string]$Name, $Value, $Context)
@@ -1016,8 +1119,8 @@ function Convert-LinkedOUsToRenderValues {
             OverallSeverity     = 'Standard'
             ForceAttributeClass = $false
             Values              = @(
-                New-RenderValue -Display 'Not linked - GPO is not applied anywhere' `
-                    -Severity 'Standard' -RawValue $null
+                New-RenderValue -Display 'Not linked' `
+                    -Severity 'Note' -RawValue $null
             )
         }
     }
@@ -1031,7 +1134,10 @@ function Convert-LinkedOUsToRenderValues {
             $display = $item.DistinguishedName
             if ([string]::IsNullOrWhiteSpace($display)) { continue }
             if ($item.PSObject.Properties['LinkStatus'] -and $item.LinkStatus -and $item.LinkStatus -ne 'Enabled') {
-                $display = "$display ($($item.LinkStatus))"
+                # "(link disabled)" rather than the bare status word: "(Disabled)" next to a
+                # DN reads as though the OU were disabled, which is not a thing.
+                $suffix = if ($item.LinkStatus -eq 'Disabled') { 'link disabled' } else { "link $($item.LinkStatus)".ToLower() }
+                $display = "$display ($suffix)"
             }
         } else {
             $display = [string]$item
@@ -1050,8 +1156,8 @@ function Convert-LinkedOUsToRenderValues {
             OverallSeverity     = 'Standard'
             ForceAttributeClass = $false
             Values              = @(
-                New-RenderValue -Display 'Not linked - GPO is not applied anywhere' `
-                    -Severity 'Standard' -RawValue $null
+                New-RenderValue -Display 'Not linked' `
+                    -Severity 'Note' -RawValue $null
             )
         }
     }
@@ -1116,6 +1222,7 @@ $Script:AttributeTransformers['dangerousRights']             = ${function:Conver
 $Script:AttributeTransformers['affectedOUs']                 = ${function:Convert-AffectedOUsToRenderValues}
 $Script:AttributeTransformers['inheritedFrom']               = ${function:Convert-InheritedFromToRenderValues}
 $Script:AttributeTransformers['DangerousACEs']               = ${function:Convert-DangerousACEsToRenderValues}
+$Script:AttributeTransformers['MembersAdded']               = ${function:Convert-MembersAddedToRenderValues}
 $Script:AttributeTransformers['TemplateACL']                 = ${function:Convert-TemplateACLToRenderValues}
 $Script:AttributeTransformers['DangerousPermissions']        = ${function:Convert-DangerousPermToRenderValues}
 $Script:AttributeTransformers['EnrollmentPrincipals']        = ${function:Convert-EnrollPrincipalsToRenderValues}
@@ -1127,5 +1234,6 @@ $Script:AttributeTransformers['WebEnrollmentEndpoints']      = ${function:Conver
 $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Convert-KeyCredentialLinkToRenderValues}
 $Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
 $Script:AttributeTransformers['LinkedOUs']                   = ${function:Convert-LinkedOUsToRenderValues}
+$Script:AttributeTransformers['GPOStatus']                   = ${function:Convert-GPOStatusToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
 $Script:AttributeTransformers['ASREPRoastingHash']           = ${function:Convert-RoastingHashToRenderValues}

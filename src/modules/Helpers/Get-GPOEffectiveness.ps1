@@ -59,8 +59,8 @@ function Get-GPOStatusMap {
 
         $map[$guid] = @{
             Status           = if ($status) { $status } else { 'Unknown' }
-            ComputerDisabled = ($status -eq 'Computer portion disabled' -or $status -eq 'All settings disabled')
-            UserDisabled     = ($status -eq 'User portion disabled' -or $status -eq 'All settings disabled')
+            ComputerDisabled = ($status -eq 'Computer configuration disabled' -or $status -eq 'All settings disabled')
+            UserDisabled     = ($status -eq 'User configuration disabled' -or $status -eq 'All settings disabled')
         }
     }
 
@@ -69,7 +69,19 @@ function Get-GPOStatusMap {
 
 <#
 .SYNOPSIS
-    Returns why a finding does not currently apply, or nothing when it does.
+    Returns the state of a GPO when something stops it taking effect, and nothing when
+    nothing does.
+
+.DESCRIPTION
+    The value every GPO check reports as its GPOStatus attribute, in the vocabulary
+    Get-DomainGPO decodes the flags attribute into.
+
+    It deliberately says nothing about linkage to no OU at all. Where a GPO applies is the
+    LinkedOUs attribute's subject, and it states an unlinked policy in one word; saying it
+    a second time here is how the same fact came to stand twice in one block, in two
+    wordings. What belongs here is what LinkedOUs cannot show: a half of the policy that is
+    switched off, and a set of links that exists but is disabled to the last one - the case
+    where a reader sees OUs listed and would otherwise conclude the settings reach them.
 
 .PARAMETER StatusEntry
     The entry Get-GPOStatusMap holds for this GPO, or $null when the policy was not found.
@@ -78,13 +90,14 @@ function Get-GPOStatusMap {
     Which half of the policy the setting lives in: Machine, User, or Any for a setting
     that is not tied to one - the GPO's own permissions, for instance.
 
-.PARAMETER LinkedOUCount
-    How many places the GPO is linked to. Zero means it applies nowhere.
+.PARAMETER Link
+    The GPO's links, as Get-GPOLinkage returns them. $null means the caller did not resolve
+    the linkage, which is not the same as having resolved it to none.
 
 .OUTPUTS
-    String - a sentence naming the reason, or $null when the setting does apply.
+    String - the state, or $null when nothing stops the GPO taking effect.
 #>
-function Get-GPOIneffectiveReason {
+function Get-GPOEffectiveStatus {
     [CmdletBinding()]
     [OutputType([string])]
     param(
@@ -97,31 +110,41 @@ function Get-GPOIneffectiveReason {
         [string]$Scope = 'Any',
 
         [Parameter(Mandatory=$false)]
-        [int]$LinkedOUCount = -1
+        [AllowNull()]
+        $Link
     )
 
     $reasons = @()
 
     if ($StatusEntry) {
         if ($StatusEntry.ComputerDisabled -and $StatusEntry.UserDisabled) {
-            $reasons += 'all settings in this GPO are disabled'
+            $reasons += 'all settings disabled'
         }
         elseif ($Scope -eq 'Machine' -and $StatusEntry.ComputerDisabled) {
-            $reasons += 'the computer configuration of this GPO is disabled'
+            $reasons += 'computer configuration disabled'
         }
         elseif ($Scope -eq 'User' -and $StatusEntry.UserDisabled) {
-            $reasons += 'the user configuration of this GPO is disabled'
+            $reasons += 'user configuration disabled'
         }
     }
 
-    # -1 means the caller did not resolve the linkage, which is not the same as having
-    # resolved it to none. Saying "applies nowhere" on a failed lookup would be a claim.
-    if ($LinkedOUCount -eq 0) {
-        $reasons += 'the GPO is not linked to any OU, site or domain'
+    # Links that exist but are all switched off. LinkedOUs shows each one with its state,
+    # and on a policy with five links that means five suffixes to read before the reader
+    # knows none of them counts. A GPO with no links at all is not mentioned here at all -
+    # LinkedOUs says that in one word, and saying it twice is what this rewrite removed.
+    #
+    # A link record with no LinkStatus counts as enabled: that is the conservative
+    # direction, and a cross-domain or hand-built entry has none.
+    $links = @($Link)
+    if ($null -ne $Link -and $links.Count -gt 0) {
+        $activeLinks = @($links | Where-Object { $_.LinkStatus -ne 'Disabled' })
+        if ($activeLinks.Count -eq 0) {
+            $reasons += 'every link is disabled'
+        }
     }
 
     if ($reasons.Count -eq 0) { return $null }
 
-    return ('Does not currently apply: ' + ($reasons -join ', ') +
-            '. Re-enabling or re-linking the GPO makes it effective again.')
+    $text = $reasons -join ', '
+    return ($text.Substring(0, 1).ToUpper() + $text.Substring(1))
 }

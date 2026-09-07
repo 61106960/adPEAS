@@ -202,21 +202,20 @@ function Get-GPORegistrySettings {
                     if ($gpoLinkage.ContainsKey($finding.GPOGUID)) {
                         $linkedOUs = $gpoLinkage[$finding.GPOGUID]
                     }
-                    if ($linkedOUs.Count -gt 0) {
-                        $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
-                    }
-                    $finding | Add-Member -NotePropertyName 'LinkedOUCount' -NotePropertyValue $linkedOUs.Count -Force
+                    # Set unconditionally, including when the list is empty: the transformer
+                    # turns that into an explicit "Not linked" row.
+                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 
-                    # A value in a policy whose relevant half is switched off, or that is
-                    # linked nowhere, reaches no registry. The hive says which half: the
-                    # Registry.pol under Machine writes HKLM, the one under User HKCU.
-                    $ineffective = Get-GPOIneffectiveReason `
+                    # A value in a policy whose relevant half is switched off reaches no
+                    # registry. The hive says which half: the Registry.pol under Machine
+                    # writes HKLM, the one under User HKCU.
+                    $gpoStatus = Get-GPOEffectiveStatus `
                         -StatusEntry $gpoStatusMap[$finding.GPOGUID] `
                         -Scope $(if ("$($finding.RegistryKey)" -like 'HKLM*') { 'Machine' } else { 'User' }) `
-                        -LinkedOUCount $linkedOUs.Count
-                    if ($ineffective) {
-                        $finding | Add-Member -NotePropertyName 'GPONotEffective' -NotePropertyValue $ineffective -Force
+                        -Link $linkedOUs
+                    if ($gpoStatus) {
+                        $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                     }
 
                     # ConsoleClass is what the central table documents per entry. It was

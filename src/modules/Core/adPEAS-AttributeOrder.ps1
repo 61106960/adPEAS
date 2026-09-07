@@ -147,33 +147,35 @@ $Script:PrimaryAttributes = @{
         # Security findings
         'DangerousPermissions', 'DangerousSettings',
         # Linkage
-        'Scope', 'LinkedOUs', 'AffectedComputers'
+        'LinkedOUs', 'GPOStatus', 'AffectedComputers'
     )
 
     # SMB Signing GPO (only SMB-relevant attributes, no LDAP)
     SMBSigning = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'ServerSigning', 'ClientSigning',
-        'Scope', 'LinkedOUs', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
     )
 
     # LDAP Configuration GPO (only LDAP-relevant attributes, no SMB)
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'LDAPSigning', 'ChannelBinding', 'AnonymousBinding',
-        'Scope', 'LinkedOUs', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
     )
 
     # GPO-deployed dangerous registry settings (Get-GPORegistrySettings)
     GPORegistrySetting = @(
         'GPOName', 'Source', 'RegistryKey', 'ConfiguredValue',
         'VulnerabilityName', 'RiskReason',
-        'LinkedOUs', 'LinkedOUCount'
+        'LinkedOUs', 'GPOStatus'
     )
 
     # Point and Print printer driver policy per GPO (Get-GPOPointAndPrint).
     # Exploitability comes first: it is the verdict the whole check exists to produce, and
     # the individual values below it are the evidence it was derived from.
+    # Scope here is not the linkage Scope the other GPO types used to carry: it names the
+    # hive the settings were read from, "Computer Configuration" or "User Configuration".
     PointAndPrintPolicy = @(
         'GPOName', 'Scope', 'Source',
         'Exploitability',
@@ -182,7 +184,7 @@ $Script:PrimaryAttributes = @{
         'ApprovedDriverSource', 'ApprovedServerList',
         'SpoolerClientConnections', 'QueueSpecificFiles',
         'WebDriverDownload', 'HTTPPrinting', 'InstallDriversSecurityOption',
-        'LinkedOUs', 'LinkedOUCount'
+        'LinkedOUs', 'GPOStatus'
     )
 
     # LAPS policy settings deployed via GPO (Get-LAPSConfiguration, Step 3)
@@ -191,7 +193,7 @@ $Script:PrimaryAttributes = @{
         'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
         'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
         'ExpirationProtection',
-        'LinkedOUs', 'LinkedOUCount'
+        'LinkedOUs', 'GPOStatus'
     )
 
     # Domain Password Policy (all attributes are security-relevant)
@@ -315,8 +317,21 @@ $Script:PrimaryAttributes = @{
     )
 
     # GPO User Rights Assignment findings ([Privilege Rights] in GptTmpl.inf)
+    #
+    # GPOUserRights is a strict type: what is not named here is not rendered, in the
+    # console or in the report. The holder lists are the finding - the check compares the
+    # GPO's holders against the Windows default and the difference is the whole result -
+    # so leaving them out reduced every row to "this GPO touches this right", with no way
+    # to tell which identity gained it, and two rows differing only in their holders
+    # printed as exact duplicates.
+    #
+    # whyItMatters stays off the list on purpose. It is on the finding object and reads
+    # well, but no other check prints its own prose next to the data, and the ObjectType
+    # entry already carries the explanation for the whole section.
     GPOUserRights = @(
-        'gpoName', 'userRight', 'userRightName', 'principals', 'scope', 'linkedOUs'
+        'gpoName', 'userRight', 'userRightName',
+        'grantedBeyondDefault', 'removedFromDefault', 'baselineUnknown',
+        'appliesTo', 'LinkedOUs', 'GPOStatus'
     )
 
     # Add Computer Rights findings (ACL-based)
@@ -333,26 +348,26 @@ $Script:PrimaryAttributes = @{
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
         'GPOName', 'TaskName', 'Command', 'RunAs', 'Context',
-        'Action', 'Trigger', 'LinkedOUs'
+        'Action', 'Trigger', 'LinkedOUs', 'GPOStatus'
     )
 
     # GPO Script Paths (custom PSCustomObject from Get-GPOScriptPaths)
     GPOScriptPath = @(
         'GPOName', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
-        'ScriptLanguage', 'ExecutionContext', 'LinkedOUs'
+        'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'GPOStatus'
     )
 
     # GPO Local Group Membership (custom PSCustomObject from Get-GPOLocalGroupMembership)
     GPOLocalGroup = @(
         'GPOName', 'Type', 'TargetGroup', 'MembersAdded',
-        'RiskyMembers', 'LinkedOUs'
+        'LinkedOUs', 'GPOStatus'
     )
 
     # GPO granting SeMachineAccountPrivilege (enriched native GPO object, same pattern as LDAPConfigGPO/SMBSigning)
     AddComputerGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'Accounts',
-        'Scope', 'LinkedOUs', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
     )
 
     # BitLocker Recovery Key (readable msFVE-RecoveryInformation child object)
@@ -423,6 +438,36 @@ $Script:PrimaryAttributes = @{
         'ExchangeVersion', 'ExchangeBuildNumber',
         'WebEndpoints',
         'DangerousPermissions'
+    )
+
+    # The three Exchange service groups (Get-ExchangeInfrastructure).
+    #
+    # They need an entry of their own for two reasons that are really one.
+    # Get-ObjectTypeForOrdering honours _adPEASObjectType only when a key of that name
+    # exists here; without one these groups fell through the whole detection cascade to
+    # 'User', and the User list has no 'member', because a user has none. So the check
+    # announced "Found 2 member(s) in Exchange Trusted Subsystem" and then showed the
+    # group with not one member on it - and the judgement the member renderer performs
+    # for exactly these groups (Get-ExchangeGroupMemberClass, which clears Exchange
+    # servers, computer accounts and nested Exchange groups and flags everything else as
+    # EXCHANGE_GROUP_LOW_PRIV_MEMBER) never reached a reader. The whole point of the
+    # check is who is in the group that does not belong there.
+    #
+    # 'member' sits directly after the identity block rather than at the end: it is the
+    # answer, and behind a long description it reads as an afterthought.
+    ExchangeTrustedSubsystem = @(
+        'sAMAccountName', 'distinguishedName', 'objectSid',
+        'member', 'memberOf', 'description'
+    )
+
+    ExchangeWindowsPermissions = @(
+        'sAMAccountName', 'distinguishedName', 'objectSid',
+        'member', 'memberOf', 'description'
+    )
+
+    ExchangeOrganizationManagement = @(
+        'sAMAccountName', 'distinguishedName', 'objectSid',
+        'member', 'memberOf', 'description'
     )
 
     # LAPS Finding (OU without LAPS protection)
@@ -523,10 +568,18 @@ $Script:ExcludeAttributes = @(
     'EnrollmentAgentChainReachable',
     # Internal classification attribute for Exchange groups - not for display
     'dangerousRightsSeverity',
+    # RiskyMembers named the same principals a second time, one row below the
+    # MembersAdded list they were already part of. The risk is shown where the members
+    # are instead - Convert-MembersAddedToRenderValues colours the risky ones and reads
+    # this property to know which, so it stays on the object and off the report.
+    'RiskyMembers',
     # Operator Group internal counts - kept in object but not displayed
     'MemberCount', 'ProtectedCount',
-    # Internal adPEAS type markers and transport properties - not for display
-    '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk',
+    # Internal adPEAS type markers and transport properties - not for display.
+    # _isExchangeGroup tells the member renderer to judge members against what belongs in
+    # an Exchange service group rather than against privilege; it is read from the source
+    # object by Get-RenderModel and has no business being a row.
+    '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
     # GPO check internal analysis flags - used for severity calculation, not for display.
     # ConsoleClass decides the colour a row is rendered in and must not appear as a row.
     'GPOGUID', 'Risk', 'Severity', 'ConsoleClass',
