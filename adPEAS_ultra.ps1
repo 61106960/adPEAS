@@ -43183,15 +43183,21 @@ function Import-KerberosTicket {
 	        if (-not $SessionKey -or $SessionKey.Length -eq 0) {
 	            throw "SessionKey is required when importing raw ticket bytes. Please provide the session key from the TGT/TGS response."
 	        }
+	        if (-not $Realm) {
+	            throw "Realm is required when importing raw ticket bytes (e.g. -Realm `"CONTOSO.COM`"). Please provide the ticket's realm, or use -Ccache/-Kirbi input instead, which carry it."
+	        }
+	        if (-not $ClientName) {
+	            throw "ClientName is required when importing raw ticket bytes (e.g. -ClientName `"administrator`"). Please provide the ticket's client principal name, or use -Ccache/-Kirbi input instead, which carry it."
+	        }
 	        $krbCredParams = @{
 	            Ticket = $TicketBytes
 	            SessionKey = $SessionKey
 	            SessionKeyType = $SessionKeyType
 	            Realm = $Realm
 	            ClientName = $ClientName
-	            ServerName = $ServerName
-	            ServerInstance = $ServerInstance
 	        }
+	        if ($ServerName) { $krbCredParams['ServerName'] = $ServerName }
+	        if ($ServerInstance) { $krbCredParams['ServerInstance'] = $ServerInstance }
 	        if ($AuthTime) { $krbCredParams['AuthTime'] = $AuthTime }
 	        if ($StartTime) { $krbCredParams['StartTime'] = $StartTime }
 	        if ($EndTime) { $krbCredParams['EndTime'] = $EndTime }
@@ -53205,13 +53211,14 @@ function Invoke-DCSync {
 	    $currentAccount = 0
 	    foreach ($accountName in $accountsToSync) {
 	        $currentAccount++
+	        $identityLabel = if ($accountName) { $accountName } elseif ($targetGuid) { $targetGuid } else { $Identity }
 	        if ($accountsToSync.Count -gt 1) {
 	        }
 	        $rpcResult = [adPEAS.DCSyncInterop]::GetReplicationData(
 	            $Server,
 	            $Domain,
 	            $accountName,
-	            $null,
+	            $targetGuid,
 	            $AuthUser,
 	            $AuthDomain,
 	            $AuthPassword,
@@ -53220,7 +53227,7 @@ function Invoke-DCSync {
 	            "ldap"
 	        )
 	        if (-not $rpcResult.Success) {
-	            Show-Line "DCSync failed for $accountName : $($rpcResult.Error)" -Class Finding
+	            Show-Line "DCSync failed for $identityLabel : $($rpcResult.Error)" -Class Finding
 	            if ($accountsToSync.Count -eq 1) {
 	                return [PSCustomObject]@{
 	                    PSTypeName       = 'adPEAS.DCSync.Result'
@@ -53228,7 +53235,7 @@ function Invoke-DCSync {
 	                    Error            = $rpcResult.Error
 	                    Domain           = $Domain
 	                    DomainController = $Server
-	                    SAMAccountName   = $accountName
+	                    SAMAccountName   = $identityLabel
 	                }
 	            }
 	            else {
@@ -54585,6 +54592,7 @@ function ConvertTo-X509FromBase64 {
 	[CmdletBinding()]
 	param(
 	    [Parameter(Mandatory)]
+	    [AllowEmptyString()]
 	    [string]$Base64
 	)
 	$FunctionPrefix = "[ConvertTo-X509FromBase64]"
@@ -54761,22 +54769,22 @@ function Submit-CertsrvRequest {
 	    else {
 	        $request.UseDefaultCredentials = $true
 	    }
-	    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($formBody)
-	    $request.ContentLength = $bodyBytes.Length
-	    $requestStream = $null
-	    try {
-	        $requestStream = $request.GetRequestStream()
-	        $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
-	    }
-	    finally {
-	        if ($requestStream) {
-	            try { $requestStream.Close() } catch { }
-	            try { $requestStream.Dispose() } catch { }
-	        }
-	    }
 	    $response = $null
 	    $responseContent = $null
 	    try {
+	        $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($formBody)
+	        $request.ContentLength = $bodyBytes.Length
+	        $requestStream = $null
+	        try {
+	            $requestStream = $request.GetRequestStream()
+	            $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+	        }
+	        finally {
+	            if ($requestStream) {
+	                try { $requestStream.Close() } catch { }
+	                try { $requestStream.Dispose() } catch { }
+	            }
+	        }
 	        $response = $request.GetResponse()
 	        $responseStream = $response.GetResponseStream()
 	        $reader = New-Object System.IO.StreamReader($responseStream)
@@ -76350,7 +76358,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.4.1+20260907-2215"
+$Script:adPEASVersion = "2.4.1+20260908-0957"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

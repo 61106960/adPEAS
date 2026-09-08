@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-09-07 22:15:54
-    Version: 2.4.1+20260907-2215
+    Build: 2026-09-08 09:57:24
+    Version: 2.4.1+20260908-0957
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -67222,8 +67222,10 @@ function Import-KerberosTicket {
 
 .EXAMPLE
     $authResult = Invoke-KerberosAuth -UserName "admin" -Domain "contoso.com" -NTHash "..."
-    Import-KerberosTicket -TicketBytes $authResult.TicketBytes -SessionKey $authResult.SessionKeyBytes
-    Gets a TGT and imports it into the session.
+    Import-KerberosTicket -TicketBytes $authResult.TicketBytes -SessionKey $authResult.SessionKeyBytes -SessionKeyType $authResult.EncryptionType -Realm $authResult.Domain -ClientName $authResult.UserName
+    Gets a TGT and imports it into the session. -Realm/-ClientName are required for raw
+    ticket bytes like these (Build-KRBCred needs them to wrap the ticket) - they are not
+    needed with -Kirbi/-Ccache input, which already carry that information.
 
 .OUTPUTS
     PSCustomObject with import result.
@@ -68097,6 +68099,20 @@ function Import-KerberosTicket {
             if (-not $SessionKey -or $SessionKey.Length -eq 0) {
                 throw "SessionKey is required when importing raw ticket bytes. Please provide the session key from the TGT/TGS response."
             }
+            # Realm/ClientName are Mandatory on Build-KRBCred - every real internal caller
+            # supplies both, but this function's own .EXAMPLE for the raw-ticket case
+            # (-TicketBytes + -SessionKey only, following Invoke-KerberosAuth's TicketBytes
+            # output) does not, and used to fail several calls later with a bare
+            # ParameterBindingValidationException ("Cannot bind argument to parameter
+            # 'Realm' because it is an empty string") from inside Build-KRBCred - correct,
+            # but useless for telling a caller what to actually pass. Checked here instead,
+            # next to the identical SessionKey check above.
+            if (-not $Realm) {
+                throw "Realm is required when importing raw ticket bytes (e.g. -Realm `"CONTOSO.COM`"). Please provide the ticket's realm, or use -Ccache/-Kirbi input instead, which carry it."
+            }
+            if (-not $ClientName) {
+                throw "ClientName is required when importing raw ticket bytes (e.g. -ClientName `"administrator`"). Please provide the ticket's client principal name, or use -Ccache/-Kirbi input instead, which carry it."
+            }
 
             # Build parameters for KRB-CRED
             $krbCredParams = @{
@@ -68105,9 +68121,17 @@ function Import-KerberosTicket {
                 SessionKeyType = $SessionKeyType
                 Realm = $Realm
                 ClientName = $ClientName
-                ServerName = $ServerName
-                ServerInstance = $ServerInstance
             }
+            # ServerName/ServerInstance are genuinely optional on Build-KRBCred -
+            # ServerName defaults to "krbtgt" there. Splatting them unconditionally (as
+            # this used to) passed an EXPLICIT empty string whenever -ServerName wasn't
+            # given, which silently overrides that default rather than leaving it unset -
+            # New-ASN1GeneralString rejects the empty string outright (Mandatory, no
+            # AllowEmptyString), so the overwhelmingly common case - importing a TGT
+            # without bothering to spell out -ServerName krbtgt - crashed. Same fix
+            # pattern as the time parameters already below.
+            if ($ServerName) { $krbCredParams['ServerName'] = $ServerName }
+            if ($ServerInstance) { $krbCredParams['ServerInstance'] = $ServerInstance }
             # Add optional time parameters if provided (critical for Windows LSA to accept ticket)
             if ($AuthTime) { $krbCredParams['AuthTime'] = $AuthTime }
             if ($StartTime) { $krbCredParams['StartTime'] = $StartTime }
@@ -84963,17 +84987,30 @@ function Invoke-DCSync {
         foreach ($accountName in $accountsToSync) {
             $currentAccount++
 
+            # $targetGuid is only ever set when -Identity was a GUID (single-account
+            # mode) - every other path (LDAP-enumerated multi-account, or a plain
+            # name/DN/resolved-SID identity) leaves it $null. $accountName is $null in
+            # that case too (a bare GUID never resolves to a sAMAccountName here), so
+            # without this, "for: " and "failed for : " logged nothing identifying,
+            # and the GUID itself was never passed to GetReplicationData at all - see
+            # the fix below.
+            $identityLabel = if ($accountName) { $accountName } elseif ($targetGuid) { $targetGuid } else { $Identity }
+
             if ($accountsToSync.Count -gt 1) {
-                Write-Log "[Invoke-DCSync] Replicating account $currentAccount/$($accountsToSync.Count): $accountName"
+                Write-Log "[Invoke-DCSync] Replicating account $currentAccount/$($accountsToSync.Count): $identityLabel"
             }
 
             # Call C# interop
-            Write-Log "[Invoke-DCSync] Initiating DRSUAPI replication for: $accountName"
+            Write-Log "[Invoke-DCSync] Initiating DRSUAPI replication for: $identityLabel"
             $rpcResult = [adPEAS.DCSyncInterop]::GetReplicationData(
                 $Server,
                 $Domain,
                 $accountName,
-                $null,  # GUID only used in single-account mode
+                $targetGuid,  # $null except in single-account GUID-identity mode. This was
+                              # hardcoded to $null unconditionally before this fix, silently
+                              # discarding -Identity <GUID> - GetReplicationData then got both
+                              # user and guid as $null and always failed with "No user or GUID
+                              # specified", regardless of what GUID was actually supplied.
                 $AuthUser,
                 $AuthDomain,
                 $AuthPassword,
@@ -84983,9 +85020,9 @@ function Invoke-DCSync {
             )
 
             if (-not $rpcResult.Success) {
-                Write-Log "[Invoke-DCSync] Replication failed for $accountName : $($rpcResult.Error)"
+                Write-Log "[Invoke-DCSync] Replication failed for $identityLabel : $($rpcResult.Error)"
                 # Log error but continue with next account in multi-account mode
-                Show-Line "DCSync failed for $accountName : $($rpcResult.Error)" -Class Finding
+                Show-Line "DCSync failed for $identityLabel : $($rpcResult.Error)" -Class Finding
 
                 if ($accountsToSync.Count -eq 1) {
                     # Single account mode - return error object
@@ -84995,7 +85032,7 @@ function Invoke-DCSync {
                         Error            = $rpcResult.Error
                         Domain           = $Domain
                         DomainController = $Server
-                        SAMAccountName   = $accountName
+                        SAMAccountName   = $identityLabel
                     }
                 }
                 else {
@@ -87105,7 +87142,11 @@ if (-not ([System.Management.Automation.PSTypeName]'adPEAS.CertificateRequest').
 function ConvertTo-X509FromBase64 {
     [CmdletBinding()]
     param(
+        # AllowEmptyString: the empty-input case below ("Empty Base64 input" warning,
+        # return $null) is otherwise dead code - PowerShell's own parameter binding
+        # rejects "" for a Mandatory string before the function body ever runs.
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string]$Base64
     )
 
@@ -87378,26 +87419,33 @@ function Submit-CertsrvRequest {
             $request.UseDefaultCredentials = $true
         }
 
-        # Write request body
-        $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($formBody)
-        $request.ContentLength = $bodyBytes.Length
-
-        $requestStream = $null
-        try {
-            $requestStream = $request.GetRequestStream()
-            $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
-        }
-        finally {
-            if ($requestStream) {
-                try { $requestStream.Close() } catch { }
-                try { $requestStream.Dispose() } catch { }
-            }
-        }
-
         # Execute request
         $response = $null
         $responseContent = $null
         try {
+            # Write request body. A connection failure (CA unreachable, refused, DNS
+            # failure) surfaces as a WebException right here for a POST - .NET does not
+            # actually connect until the request stream is opened - not only later at
+            # GetResponse(). This used to be its own try/finally with no catch, so that
+            # failure propagated all the way out of Submit-CertsrvRequest uncaught,
+            # crashing the caller instead of returning the normal Status='Error' result
+            # every other failure path here produces. Moved inside this try so the same
+            # catch [System.Net.WebException] below handles both.
+            $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($formBody)
+            $request.ContentLength = $bodyBytes.Length
+
+            $requestStream = $null
+            try {
+                $requestStream = $request.GetRequestStream()
+                $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+            }
+            finally {
+                if ($requestStream) {
+                    try { $requestStream.Close() } catch { }
+                    try { $requestStream.Dispose() } catch { }
+                }
+            }
+
             $response = $request.GetResponse()
             $responseStream = $response.GetResponseStream()
             $reader = New-Object System.IO.StreamReader($responseStream)
@@ -119318,7 +119366,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.4.1+20260907-2215"
+$Script:adPEASVersion = "2.4.1+20260908-0957"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
