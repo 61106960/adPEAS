@@ -775,7 +775,11 @@ if (-not ([System.Management.Automation.PSTypeName]'adPEAS.CertificateRequest').
 function ConvertTo-X509FromBase64 {
     [CmdletBinding()]
     param(
+        # AllowEmptyString: the empty-input case below ("Empty Base64 input" warning,
+        # return $null) is otherwise dead code - PowerShell's own parameter binding
+        # rejects "" for a Mandatory string before the function body ever runs.
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string]$Base64
     )
 
@@ -1048,26 +1052,33 @@ function Submit-CertsrvRequest {
             $request.UseDefaultCredentials = $true
         }
 
-        # Write request body
-        $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($formBody)
-        $request.ContentLength = $bodyBytes.Length
-
-        $requestStream = $null
-        try {
-            $requestStream = $request.GetRequestStream()
-            $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
-        }
-        finally {
-            if ($requestStream) {
-                try { $requestStream.Close() } catch { }
-                try { $requestStream.Dispose() } catch { }
-            }
-        }
-
         # Execute request
         $response = $null
         $responseContent = $null
         try {
+            # Write request body. A connection failure (CA unreachable, refused, DNS
+            # failure) surfaces as a WebException right here for a POST - .NET does not
+            # actually connect until the request stream is opened - not only later at
+            # GetResponse(). This used to be its own try/finally with no catch, so that
+            # failure propagated all the way out of Submit-CertsrvRequest uncaught,
+            # crashing the caller instead of returning the normal Status='Error' result
+            # every other failure path here produces. Moved inside this try so the same
+            # catch [System.Net.WebException] below handles both.
+            $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($formBody)
+            $request.ContentLength = $bodyBytes.Length
+
+            $requestStream = $null
+            try {
+                $requestStream = $request.GetRequestStream()
+                $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+            }
+            finally {
+                if ($requestStream) {
+                    try { $requestStream.Close() } catch { }
+                    try { $requestStream.Dispose() } catch { }
+                }
+            }
+
             $response = $request.GetResponse()
             $responseStream = $response.GetResponseStream()
             $reader = New-Object System.IO.StreamReader($responseStream)
