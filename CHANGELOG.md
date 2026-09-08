@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
-## [Unreleased]
+## [2.5.0] - 2026-09-08
 
 ### Added
 
@@ -188,6 +188,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Preferences (`Registry.xml`) and `GptTmpl.inf`, and every entry lists the OUs,
   domains and sites its GPO is linked to.
 
+- **The JSON export survives a scan that does not finish.** A scan wrote its findings once,
+  at the very end. An unhandled error, a closed window or a killed process took the whole
+  JSON with it - and the HTML report with it, since both are generated from the same
+  in-memory collection. Only the text report was written as it went. The export now runs
+  after every module, and writes atomically: beside the target, then swapped into place
+  with `File.Replace`. That matters precisely because it now runs ten times instead of
+  once - truncating the target and then writing would have multiplied the window in which
+  a crash leaves a half-written file, making the failure worse rather than better.
+
+  A partial file says so. The cache header carries `Complete` and `CompletedModules`, and
+  both `Convert-adPEASReport` and `Compare-adPEASReport` warn when they read one. The
+  comparison is where it matters most: every finding from a module that never ran shows up
+  as resolved, which is the one result a reader acts on. A file without the flag counts as
+  complete, since back then the export only ever ran at the end.
+
+  `-OutputAppend` now seeds the collection before the first check rather than after it. It
+  reads the previous run's export from exactly the path the checkpoints write, so at its
+  old position it would have found this run's own data there and silently dropped
+  everything the previous run collected. Seeding first also means an interrupted append
+  run keeps the history it started from.
+
+- **`-ExcludeModule` runs everything but the named modules.** Skipping one module meant
+  naming the other nine. `-ExcludeModule` takes the complement, and combines with
+  `-Module` as "these, minus those" - deliberately not mutually exclusive, since that
+  reading is unambiguous and lets a saved `-Module` list be trimmed for a single run.
+
 ### Changed
 
 - **Security descriptors are read in one query instead of one per object.**
@@ -362,6 +388,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   on the same computation - the ones that colour name and padding together use the
   joined form, `Secure` uses the two parts separately. Internal refactoring only, no
   visible behaviour change.
+
+- **Point and Print is no longer reported by `Get-GPORegistrySettings`.** Its two
+  entries flagged `NoWarningNoElevationOnInstall=1` and
+  `RestrictDriverInstallationToAdministrators=0` independently, each as High. Since the
+  August 2021 update the first is inert on its own, which made a very common pre-2021
+  legacy GPO a false positive, while the genuinely exploitable combination of both was
+  under-rated and split across two findings. Both values are now evaluated together by
+  `Get-GPOPointAndPrint`. A prompt suppression that is currently blocked by the default
+  is reported as a latent risk instead of a vulnerability, and approved-server
+  restrictions are reported as the driver source but never allowed to downgrade an
+  exploitable configuration - a suppressed elevation prompt overrides them.
+- **Group Policy Preferences `Registry.xml` parsing moved to a shared helper**
+  (`Parse-RegistryXml`), alongside the existing `Parse-PRegRecords`, so both GPO
+  registry checks read the same two delivery mechanisms through the same parsers.
 
 ### Fixed
 
@@ -1574,6 +1614,145 @@ Found while building the unit test suites, each reproduced before it was changed
   "All Properties includes LAPS" finding.
 - **A machine account quota of 0 depended on an accident.** `Get-AddComputerRights` used a
   truthiness test that only worked because LDAP returns attribute values as strings.
+
+- **The minified and ultra-compressed builds shipped code the build itself had mangled.**
+  The minimization was regexes over the whole assembled file, which cannot tell code from
+  the string literals the file is full of - and the file carries 251 KB of embedded report
+  CSS, JavaScript and HTML. Proven with two probes put into that CSS, a `#sidebar {` line
+  and a `<# ... #>` comment: both survived into `adPEAS.ps1` and both were deleted from
+  `adPEAS_min.ps1` and `adPEAS_ultra.ps1`. The readable build, the one anybody would test,
+  stayed correct while the shipped variants did not. Rewriting leading four-space
+  indentation to a tab did the same inside every here-string: the ASCII logo shipped
+  misaligned in the ultra and obfuscated variants, and the embedded report template
+  differed between artifacts by 16 KB.
+
+  Comments are removed by token now and logging calls by AST node, neither of which can
+  see into a string, and the line-based steps skip lines inside a multi-line string
+  literal - 8 % of the file. The build then proves it, comparing the embedded assets in
+  all three text variants against the files they came from. The artifacts came out
+  *smaller* than before, because a token knows a trailing comment is one and `^#` did not.
+
+  Embedded assets are located by an explicit `#region BUILD:EMBED` marker rather than by a
+  regex matched against the wording of a doc comment. Rewording that comment broke the
+  match, and for the report-diff template the build only warned - so every artifact
+  shipped the development version, which looks for a `templates/` directory beside itself
+  and returns nothing.
+
+  Code signing had never worked either. On Windows PowerShell 5.1, the runtime this
+  project targets, `Get-PfxCertificate` has no `-Password` parameter, so a
+  password-protected PFX killed the build before a single file was touched. Under
+  PowerShell 7 it did sign, then reported "0/4 files signed successfully" and exited 0,
+  because it tested whether the signature verifies on the build machine rather than
+  whether one had been written - a self-signed or internal-CA certificate returns
+  `UnknownError` while writing a perfectly good signature. The result is read back off the
+  file now, a signature the host cannot chain is reported as such, and a build asked to
+  sign that did not now fails.
+
+- **S4U delegation attacks reported a real success as a failure.** `Invoke-S4UCore` handed
+  `Build-KRBCred` the session key as its Base64 display string where raw bytes are
+  required. Every successful S4U2Proxy exchange, in every mode, ended in a
+  type-conversion exception: the Kerberos exchange had already succeeded, and the tool
+  reported the whole attack as failed with an error that said nothing about what actually
+  happened.
+
+  RBCD Auto Mode had four more behind it, layered so that fixing the outer one exposes the
+  next. The machine account was created without `-PassThru`, so the result was always null
+  and every run threw before a computer was ever created; the result object was then read
+  for a property it does not carry; the RBCD security descriptor was built by hand against
+  a raw attribute parameter that has not existed since `-AddRBCD` replaced it in the
+  v2.0.0 rewrite; and the cleanup path called a function that exists nowhere in this
+  codebase, so every orphaned computer account from a failed configuration was silently
+  left behind. Neither object's failure reason was ever read, so a real failure came back
+  blank. Separately, resolving a Domain Controller without an active session passed a
+  parameter `Resolve-adPEASName` does not have, which threw before the TGT was ever
+  requested. All eight trace to the same rewrite, and were never caught because nothing
+  had run this module since.
+
+- **The `Set-Domain*` write helpers silently no-oped on writes that should have worked.**
+  Five defects sat in `Set-DomainGPO` alone. Every `Add*` operation - scheduled task,
+  local group member, logon and startup script, service, deployed file, firewall rule -
+  builds its SMB scriptblock with `.GetNewClosure()`, which on real Windows PowerShell 5.1
+  (and not under PowerShell 7, where this was tested) re-validates every captured variable
+  against its attributes. An unbound `ValidateSet` parameter from an inactive parameter
+  set holds `""`, which is not a member of its own set, so the closure itself threw and
+  **every `Add*` operation was non-functional on the actual deployment target**. A local
+  group member given by name was resolved through a `SecurityIdentifier` overload that
+  does not exist, so that call threw too. A local variable silently clobbered the
+  `-ItemName` parameter - PowerShell variable names being case-insensitive - so every
+  name-matched removal searched for the wrong name. The GPO version bump passed a value
+  outside `Invoke-SMBAccess`'s own `ValidateSet`, throwing after the AD write had already
+  succeeded and discarding it. And SYSVOL permission mirroring shared one ACL object and
+  one `Set-Acl` call between the owner change and the ACE mirroring, so a rejected owner -
+  the near-universal case, since the account running this rarely holds
+  `SeRestorePrivilege` for an arbitrary owner SID - discarded every mirrored ACE with it.
+  `New-DomainGPO` had the same owner-poisons-ACEs bug and is fixed the same way.
+
+  `Set-DomainObject`, the shared foundation the others delegate to, accepted
+  `-ExtendedRight SelfMembership` as a `ValidateSet` value with no alias behind it: every
+  such call failed at runtime with "Unknown ExtendedRight alias", a promise the
+  `ValidateSet` made and the code never kept. It is implemented now, and deliberately
+  distinct from the existing `AddMember`/`WriteMembers` aliases - Self-Membership lets a
+  principal add only itself, not anyone. Four early-return paths also ignored `-PassThru`
+  entirely, unlike every other failure path in that function, so a caller scripting
+  against the result got a bare boolean with no message on exactly those failures.
+
+  `Set-DomainComputer -ClearConstrainedDelegation` did not declare `-Principal`, although
+  its own documented example removes a single SPN with it - every such call died in
+  parameter-set resolution before the function ran. `Set-DomainUser`'s password parameters
+  had no `[AllowEmptyString()]`, so `-PasswordNotRequired`, the switch whose entire
+  purpose is the empty AD password, was unreachable. `Set-DomainGroup`'s security and
+  distribution conversions read `groupType` without `-Raw` and then cast the resulting
+  display string to an integer, so every conversion threw and reported a bogus failure
+  before the bit math ever ran.
+
+- **AD CS enrollment over RPC and HTTP lost errors and rejected valid input.** A
+  connection failure while submitting a certificate request over HTTP - CA unreachable,
+  refused, DNS failure - surfaced from the request-body write, which sat outside the
+  `WebException` handler around the response. .NET does not connect for a POST until the
+  request stream is opened, so the one place a connection error can appear was the one
+  place not guarded: the caller crashed instead of receiving the `Status='Error'` result
+  every other failure path here produces. Separately, an empty Base64 certificate string
+  was rejected at the parameter-binding layer before the function's own "Empty Base64
+  input" handling could ever run.
+
+- **`Invoke-DCSync -Identity <GUID>` never reached the RPC call.** The GUID branch computed
+  the target GUID and then passed a hardcoded `$null` for that parameter. The account name
+  is null on this path too - a bare GUID never resolves to a sAMAccountName here - so the
+  replication call received neither and always failed with "No user or GUID specified".
+  Replicating a single account by objectGUID could never have worked. The log line and the
+  error result also carried nothing identifying, for the same reason; both now fall back
+  through account name, GUID and the raw `-Identity` value.
+
+- **`Import-KerberosTicket` could not import a raw ticket.** Following the function's own
+  example - raw ticket bytes plus a session key, mirroring what `Invoke-KerberosAuth`
+  returns - hit a bare parameter-binding exception several calls deep inside the KRB-CRED
+  builder instead of a message saying what to actually pass; the required realm and client
+  name were never validated up front. Worse, the server name was splatted
+  unconditionally, and splatting an unset parameter passes an explicit empty string, which
+  overrides the `krbtgt` default rather than leaving it unset - and an empty ASN.1 general
+  string is rejected outright. Importing a TGT without spelling out `-ServerName krbtgt`,
+  the overwhelmingly common case, crashed. Both are fixed and the documented example
+  corrected.
+
+- **`-ForceKerberos` was silently ignored for a cross-domain NetBIOS credential.** When a
+  username or credential carries a NetBIOS domain prefix that resolves to a different
+  realm, `Connect-adPEAS` cannot discover a KDC for the NetBIOS name and falls through to
+  NTLM or SimpleBind - and it did so regardless of `-ForceKerberos`, unlike every other
+  Kerberos-failure path in that function. That broke the switch's documented contract
+  ("fails completely, no SimpleBind/NTLM fallback") for exactly the credential shape most
+  likely in a cross-domain assessment. `-ForceKerberos` combined with `-ForcePassTheCert`,
+  which always uses Schannel and never Kerberos by design, also produced no warning at
+  all, unlike the equivalent combinations with `-UseWindowsAuth`; it now warns the same
+  way.
+
+- **`-IgnoreSSLErrors` demanded an explicit argument despite its name.** It was declared as
+  a `[bool]` with a `$true` default in `Connect-adPEAS`, `Connect-LDAP` and
+  `Invoke-HTTPRequest`, and a `[bool]` parameter requires an argument no matter what it
+  defaults to - so `Connect-adPEAS -IgnoreSSLErrors -UseLDAPS` failed with a missing
+  argument error. All three are `[switch]` now, which behaves correctly across every call
+  shape: the bare flag, no flag at all, `-IgnoreSSLErrors:$false` and
+  `-IgnoreSSLErrors:$true`.
+
 - Smaller corrections: the SMB failure message in `Get-CredentialExposure` was printed
   twice; pattern hits in custom-path mode were tagged with the wrong object type; two
   tier-2 credential patterns were unreachable behind a more generic one; a scheduled task
@@ -1581,22 +1760,6 @@ Found while building the unit test suites, each reproduced before it was changed
   `Get-PrivilegedGroupMembers` used a stray `?` as its separator; broad SIDs were compared
   with a substring regex instead of equality; and `Get-DangerousOUPermissions` claimed
   "no dangerous OU permissions detected" when the domain had returned no OUs at all.
-
-### Changed
-
-- **Point and Print is no longer reported by `Get-GPORegistrySettings`.** Its two
-  entries flagged `NoWarningNoElevationOnInstall=1` and
-  `RestrictDriverInstallationToAdministrators=0` independently, each as High. Since the
-  August 2021 update the first is inert on its own, which made a very common pre-2021
-  legacy GPO a false positive, while the genuinely exploitable combination of both was
-  under-rated and split across two findings. Both values are now evaluated together by
-  `Get-GPOPointAndPrint`. A prompt suppression that is currently blocked by the default
-  is reported as a latent risk instead of a vulnerability, and approved-server
-  restrictions are reported as the driver source but never allowed to downgrade an
-  exploitable configuration - a suppressed elevation prompt overrides them.
-- **Group Policy Preferences `Registry.xml` parsing moved to a shared helper**
-  (`Parse-RegistryXml`), alongside the existing `Parse-PRegRecords`, so both GPO
-  registry checks read the same two delivery mechanisms through the same parsers.
 
 ## [2.4.1] - 2026-08-28
 
