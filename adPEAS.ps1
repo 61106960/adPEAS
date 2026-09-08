@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-09-08 09:57:24
-    Version: 2.4.1+20260908-0957
+    Build: 2026-09-08 10:53:36
+    Version: 2.4.1+20260908-1053
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -25869,8 +25869,12 @@ function Connect-LDAP {
         [Parameter(Mandatory=$false)]
         [switch]$UseLDAPS,
 
+        # [switch], not [bool]: see the identical fix and rationale in Connect-adPEAS - a
+        # [bool] parameter still requires an explicit argument for the bare flag even with
+        # a $true default. -IgnoreSSLErrors:$false keeps working; the bare flag now also
+        # does.
         [Parameter(Mandatory=$false)]
-        [bool]$IgnoreSSLErrors = $true,
+        [switch]$IgnoreSSLErrors = $true,
 
         [Parameter(Mandatory=$false)]
         [ValidateRange(5, 600)]
@@ -27217,8 +27221,14 @@ function Connect-adPEAS {
         [Parameter(Mandatory=$false)]
         [switch]$UseLDAPS,
 
+        # [switch], not [bool]: a [bool] with a $true default still demands an explicit
+        # argument for the bare flag ("-IgnoreSSLErrors" alone fails to bind - PowerShell
+        # requires a value for a non-switch parameter regardless of its default), which
+        # defeats the point of a flag named after what it does when present. A [switch]
+        # default of $true keeps -IgnoreSSLErrors:$false working exactly as before while
+        # also accepting the bare flag.
         [Parameter(Mandatory=$false)]
-        [bool]$IgnoreSSLErrors = $true,
+        [switch]$IgnoreSSLErrors = $true,
 
         [Parameter(Mandatory=$false)]
         [string]$DnsServer,
@@ -27830,6 +27840,17 @@ function Connect-adPEAS {
                     # ===== Primary: Kerberos Authentication =====
                     # Cross-domain with NetBIOS prefix (e.g., CONTOSO\b.pitt): skip Kerberos
                     # Cannot discover KDC for NetBIOS name, go directly to NTLM/SimpleBind
+                    #
+                    # -ForceKerberos must be honored here too - without this check, this branch
+                    # silently fell through to NTLM/SimpleBind regardless of -ForceKerberos, unlike
+                    # every other Kerberos-failure path in this function (see the $ForceKerberos
+                    # check a few lines below, and the equivalent hard-fail in the Hash/Key auth
+                    # branch's own NetBIOS handling), breaking -ForceKerberos's documented contract
+                    # ("fails completely, no fallback").
+                    elseif ($ForceKerberos -and $UserRealm -and $UserRealm -notmatch '\.') {
+                        Show-ConnectionError -ErrorType "KerberosError" -Details "Cross-domain with NetBIOS prefix '$UserRealm' requires FQDN (e.g., contoso.com\\$SamAccountName) - cannot discover KDC for a NetBIOS realm, and -ForceKerberos disallows the NTLM/SimpleBind fallback that would otherwise be used" -NoThrow
+                        return $null
+                    }
                     elseif (-not $ForceSimpleBind -and $UserRealm -and $UserRealm -notmatch '\.') {
                         Write-Log "[Connect-adPEAS] Cross-domain with NetBIOS prefix '$UserRealm' - skipping Kerberos (cannot discover KDC)"
                         Show-Line "Cross-domain authentication (NetBIOS): using NTLM/SimpleBind" -Class Hint
@@ -28106,6 +28127,10 @@ function Connect-adPEAS {
                         # ===== Pass-the-Cert (Schannel) =====
                         # Direct LDAPS bind with client certificate - no Kerberos involved
                         # Works when: Port 88 blocked, no Smart Card Logon EKU, no admin rights for PTT
+                        if ($ForceKerberos) {
+                            Write-Warning "[!] -ForceKerberos has no effect with -ForcePassTheCert"
+                            Write-Warning "[!] Pass-the-Cert always uses Schannel (TLS client cert), never Kerberos"
+                        }
                         Write-Log "[Connect-adPEAS] Using Pass-the-Cert (Schannel) - bypassing Kerberos"
 
                         # Force LDAPS (Schannel requires TLS)
@@ -74718,8 +74743,12 @@ function Invoke-HTTPRequest {
         [Parameter(Mandatory = $false)]
         [string]$UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 
+        # [switch], not [bool]: see the identical fix in Connect-adPEAS/Connect-LDAP - a
+        # [bool] parameter still requires an explicit argument for the bare flag even with
+        # a $true default. -IgnoreSSLErrors:$false keeps working; the bare flag now also
+        # does.
         [Parameter(Mandatory = $false)]
-        [bool]$IgnoreSSLErrors = $true,
+        [switch]$IgnoreSSLErrors = $true,
 
         # ===== Specialized Detection Modes =====
 
@@ -119366,7 +119395,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.4.1+20260908-0957"
+$Script:adPEASVersion = "2.4.1+20260908-1053"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -18859,7 +18859,7 @@ function Connect-LDAP {
 	    [Parameter(Mandatory=$false)]
 	    [switch]$UseLDAPS,
 	    [Parameter(Mandatory=$false)]
-	    [bool]$IgnoreSSLErrors = $true,
+	    [switch]$IgnoreSSLErrors = $true,
 	    [Parameter(Mandatory=$false)]
 	    [ValidateRange(5, 600)]
 	    [int]$TimeoutSeconds = 30,
@@ -19506,7 +19506,7 @@ function Connect-adPEAS {
 	    [Parameter(Mandatory=$false)]
 	    [switch]$UseLDAPS,
 	    [Parameter(Mandatory=$false)]
-	    [bool]$IgnoreSSLErrors = $true,
+	    [switch]$IgnoreSSLErrors = $true,
 	    [Parameter(Mandatory=$false)]
 	    [string]$DnsServer,
 	    [Parameter(Mandatory=$false)]
@@ -19913,6 +19913,10 @@ function Connect-adPEAS {
 	                    $Script:AuthInfo.NTLMImpersonation = $false
 	                    $Script:LDAPContext['Credential'] = $CredObject
 	                }
+	                elseif ($ForceKerberos -and $UserRealm -and $UserRealm -notmatch '\.') {
+	                    Show-ConnectionError -ErrorType "KerberosError" -Details "Cross-domain with NetBIOS prefix '$UserRealm' requires FQDN (e.g., contoso.com\\$SamAccountName) - cannot discover KDC for a NetBIOS realm, and -ForceKerberos disallows the NTLM/SimpleBind fallback that would otherwise be used" -NoThrow
+	                    return $null
+	                }
 	                elseif (-not $ForceSimpleBind -and $UserRealm -and $UserRealm -notmatch '\.') {
 	                    Show-Line "Cross-domain authentication (NetBIOS): using NTLM/SimpleBind" -Class Hint
 	                }
@@ -20102,6 +20106,10 @@ function Connect-adPEAS {
 	                    throw "Certificate load failed"
 	                }
 	                if ($ForcePassTheCert) {
+	                    if ($ForceKerberos) {
+	                        Write-Warning "[!] -ForceKerberos has no effect with -ForcePassTheCert"
+	                        Write-Warning "[!] Pass-the-Cert always uses Schannel (TLS client cert), never Kerberos"
+	                    }
 	                    if (-not $UseLDAPS) {
 	                        $UseLDAPS = $true
 	                    }
@@ -46766,7 +46774,7 @@ function Invoke-HTTPRequest {
 	    [Parameter(Mandatory = $false)]
 	    [string]$UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 	    [Parameter(Mandatory = $false)]
-	    [bool]$IgnoreSSLErrors = $true,
+	    [switch]$IgnoreSSLErrors = $true,
 	    [Parameter(Mandatory = $true, ParameterSetName = 'Exchange')]
 	    [switch]$ScanExchange,
 	    [Parameter(Mandatory = $true, ParameterSetName = 'ADCS')]
@@ -76358,7 +76366,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.4.1+20260908-0957"
+$Script:adPEASVersion = "2.4.1+20260908-1053"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
