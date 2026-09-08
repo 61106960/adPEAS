@@ -933,6 +933,17 @@ function Connect-adPEAS {
                     # ===== Primary: Kerberos Authentication =====
                     # Cross-domain with NetBIOS prefix (e.g., CONTOSO\b.pitt): skip Kerberos
                     # Cannot discover KDC for NetBIOS name, go directly to NTLM/SimpleBind
+                    #
+                    # -ForceKerberos must be honored here too - without this check, this branch
+                    # silently fell through to NTLM/SimpleBind regardless of -ForceKerberos, unlike
+                    # every other Kerberos-failure path in this function (see the $ForceKerberos
+                    # check a few lines below, and the equivalent hard-fail in the Hash/Key auth
+                    # branch's own NetBIOS handling), breaking -ForceKerberos's documented contract
+                    # ("fails completely, no fallback").
+                    elseif ($ForceKerberos -and $UserRealm -and $UserRealm -notmatch '\.') {
+                        Show-ConnectionError -ErrorType "KerberosError" -Details "Cross-domain with NetBIOS prefix '$UserRealm' requires FQDN (e.g., contoso.com\\$SamAccountName) - cannot discover KDC for a NetBIOS realm, and -ForceKerberos disallows the NTLM/SimpleBind fallback that would otherwise be used" -NoThrow
+                        return $null
+                    }
                     elseif (-not $ForceSimpleBind -and $UserRealm -and $UserRealm -notmatch '\.') {
                         Write-Log "[Connect-adPEAS] Cross-domain with NetBIOS prefix '$UserRealm' - skipping Kerberos (cannot discover KDC)"
                         Show-Line "Cross-domain authentication (NetBIOS): using NTLM/SimpleBind" -Class Hint
@@ -1209,6 +1220,10 @@ function Connect-adPEAS {
                         # ===== Pass-the-Cert (Schannel) =====
                         # Direct LDAPS bind with client certificate - no Kerberos involved
                         # Works when: Port 88 blocked, no Smart Card Logon EKU, no admin rights for PTT
+                        if ($ForceKerberos) {
+                            Write-Warning "[!] -ForceKerberos has no effect with -ForcePassTheCert"
+                            Write-Warning "[!] Pass-the-Cert always uses Schannel (TLS client cert), never Kerberos"
+                        }
                         Write-Log "[Connect-adPEAS] Using Pass-the-Cert (Schannel) - bypassing Kerberos"
 
                         # Force LDAPS (Schannel requires TLS)
