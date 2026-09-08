@@ -150,8 +150,12 @@ function Invoke-HTTPRequest {
         [Parameter(Mandatory = $false)]
         [string]$UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 
+        # [switch], not [bool]: see the identical fix in Connect-adPEAS/Connect-LDAP - a
+        # [bool] parameter still requires an explicit argument for the bare flag even with
+        # a $true default. -IgnoreSSLErrors:$false keeps working; the bare flag now also
+        # does.
         [Parameter(Mandatory = $false)]
-        [bool]$IgnoreSSLErrors = $true,
+        [switch]$IgnoreSSLErrors = $true,
 
         # ===== Specialized Detection Modes =====
 

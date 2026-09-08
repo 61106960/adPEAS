@@ -86,8 +86,12 @@ function Connect-LDAP {
         [Parameter(Mandatory=$false)]
         [switch]$UseLDAPS,
 
+        # [switch], not [bool]: see the identical fix and rationale in Connect-adPEAS - a
+        # [bool] parameter still requires an explicit argument for the bare flag even with
+        # a $true default. -IgnoreSSLErrors:$false keeps working; the bare flag now also
+        # does.
         [Parameter(Mandatory=$false)]
-        [bool]$IgnoreSSLErrors = $true,
+        [switch]$IgnoreSSLErrors = $true,
 
         [Parameter(Mandatory=$false)]
         [ValidateRange(5, 600)]

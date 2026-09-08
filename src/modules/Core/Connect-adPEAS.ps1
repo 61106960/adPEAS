@@ -320,8 +320,14 @@ function Connect-adPEAS {
         [Parameter(Mandatory=$false)]
         [switch]$UseLDAPS,
 
+        # [switch], not [bool]: a [bool] with a $true default still demands an explicit
+        # argument for the bare flag ("-IgnoreSSLErrors" alone fails to bind - PowerShell
+        # requires a value for a non-switch parameter regardless of its default), which
+        # defeats the point of a flag named after what it does when present. A [switch]
+        # default of $true keeps -IgnoreSSLErrors:$false working exactly as before while
+        # also accepting the bare flag.
         [Parameter(Mandatory=$false)]
-        [bool]$IgnoreSSLErrors = $true,
+        [switch]$IgnoreSSLErrors = $true,
 
         [Parameter(Mandatory=$false)]
         [string]$DnsServer,
