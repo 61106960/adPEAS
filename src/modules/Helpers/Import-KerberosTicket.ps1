@@ -56,8 +56,10 @@ function Import-KerberosTicket {
 
 .EXAMPLE
     $authResult = Invoke-KerberosAuth -UserName "admin" -Domain "contoso.com" -NTHash "..."
-    Import-KerberosTicket -TicketBytes $authResult.TicketBytes -SessionKey $authResult.SessionKeyBytes
-    Gets a TGT and imports it into the session.
+    Import-KerberosTicket -TicketBytes $authResult.TicketBytes -SessionKey $authResult.SessionKeyBytes -SessionKeyType $authResult.EncryptionType -Realm $authResult.Domain -ClientName $authResult.UserName
+    Gets a TGT and imports it into the session. -Realm/-ClientName are required for raw
+    ticket bytes like these (Build-KRBCred needs them to wrap the ticket) - they are not
+    needed with -Kirbi/-Ccache input, which already carry that information.
 
 .OUTPUTS
     PSCustomObject with import result.
@@ -931,6 +933,20 @@ function Import-KerberosTicket {
             if (-not $SessionKey -or $SessionKey.Length -eq 0) {
                 throw "SessionKey is required when importing raw ticket bytes. Please provide the session key from the TGT/TGS response."
             }
+            # Realm/ClientName are Mandatory on Build-KRBCred - every real internal caller
+            # supplies both, but this function's own .EXAMPLE for the raw-ticket case
+            # (-TicketBytes + -SessionKey only, following Invoke-KerberosAuth's TicketBytes
+            # output) does not, and used to fail several calls later with a bare
+            # ParameterBindingValidationException ("Cannot bind argument to parameter
+            # 'Realm' because it is an empty string") from inside Build-KRBCred - correct,
+            # but useless for telling a caller what to actually pass. Checked here instead,
+            # next to the identical SessionKey check above.
+            if (-not $Realm) {
+                throw "Realm is required when importing raw ticket bytes (e.g. -Realm `"CONTOSO.COM`"). Please provide the ticket's realm, or use -Ccache/-Kirbi input instead, which carry it."
+            }
+            if (-not $ClientName) {
+                throw "ClientName is required when importing raw ticket bytes (e.g. -ClientName `"administrator`"). Please provide the ticket's client principal name, or use -Ccache/-Kirbi input instead, which carry it."
+            }
 
             # Build parameters for KRB-CRED
             $krbCredParams = @{
@@ -939,9 +955,17 @@ function Import-KerberosTicket {
                 SessionKeyType = $SessionKeyType
                 Realm = $Realm
                 ClientName = $ClientName
-                ServerName = $ServerName
-                ServerInstance = $ServerInstance
             }
+            # ServerName/ServerInstance are genuinely optional on Build-KRBCred -
+            # ServerName defaults to "krbtgt" there. Splatting them unconditionally (as
+            # this used to) passed an EXPLICIT empty string whenever -ServerName wasn't
+            # given, which silently overrides that default rather than leaving it unset -
+            # New-ASN1GeneralString rejects the empty string outright (Mandatory, no
+            # AllowEmptyString), so the overwhelmingly common case - importing a TGT
+            # without bothering to spell out -ServerName krbtgt - crashed. Same fix
+            # pattern as the time parameters already below.
+            if ($ServerName) { $krbCredParams['ServerName'] = $ServerName }
+            if ($ServerInstance) { $krbCredParams['ServerInstance'] = $ServerInstance }
             # Add optional time parameters if provided (critical for Windows LSA to accept ticket)
             if ($AuthTime) { $krbCredParams['AuthTime'] = $AuthTime }
             if ($StartTime) { $krbCredParams['StartTime'] = $StartTime }
