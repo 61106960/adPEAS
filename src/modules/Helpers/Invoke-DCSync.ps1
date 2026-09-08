@@ -2091,17 +2091,30 @@ function Invoke-DCSync {
         foreach ($accountName in $accountsToSync) {
             $currentAccount++
 
+            # $targetGuid is only ever set when -Identity was a GUID (single-account
+            # mode) - every other path (LDAP-enumerated multi-account, or a plain
+            # name/DN/resolved-SID identity) leaves it $null. $accountName is $null in
+            # that case too (a bare GUID never resolves to a sAMAccountName here), so
+            # without this, "for: " and "failed for : " logged nothing identifying,
+            # and the GUID itself was never passed to GetReplicationData at all - see
+            # the fix below.
+            $identityLabel = if ($accountName) { $accountName } elseif ($targetGuid) { $targetGuid } else { $Identity }
+
             if ($accountsToSync.Count -gt 1) {
-                Write-Log "[Invoke-DCSync] Replicating account $currentAccount/$($accountsToSync.Count): $accountName"
+                Write-Log "[Invoke-DCSync] Replicating account $currentAccount/$($accountsToSync.Count): $identityLabel"
             }
 
             # Call C# interop
-            Write-Log "[Invoke-DCSync] Initiating DRSUAPI replication for: $accountName"
+            Write-Log "[Invoke-DCSync] Initiating DRSUAPI replication for: $identityLabel"
             $rpcResult = [adPEAS.DCSyncInterop]::GetReplicationData(
                 $Server,
                 $Domain,
                 $accountName,
-                $null,  # GUID only used in single-account mode
+                $targetGuid,  # $null except in single-account GUID-identity mode. This was
+                              # hardcoded to $null unconditionally before this fix, silently
+                              # discarding -Identity <GUID> - GetReplicationData then got both
+                              # user and guid as $null and always failed with "No user or GUID
+                              # specified", regardless of what GUID was actually supplied.
                 $AuthUser,
                 $AuthDomain,
                 $AuthPassword,
@@ -2111,9 +2124,9 @@ function Invoke-DCSync {
             )
 
             if (-not $rpcResult.Success) {
-                Write-Log "[Invoke-DCSync] Replication failed for $accountName : $($rpcResult.Error)"
+                Write-Log "[Invoke-DCSync] Replication failed for $identityLabel : $($rpcResult.Error)"
                 # Log error but continue with next account in multi-account mode
-                Show-Line "DCSync failed for $accountName : $($rpcResult.Error)" -Class Finding
+                Show-Line "DCSync failed for $identityLabel : $($rpcResult.Error)" -Class Finding
 
                 if ($accountsToSync.Count -eq 1) {
                     # Single account mode - return error object
@@ -2123,7 +2136,7 @@ function Invoke-DCSync {
                         Error            = $rpcResult.Error
                         Domain           = $Domain
                         DomainController = $Server
-                        SAMAccountName   = $accountName
+                        SAMAccountName   = $identityLabel
                     }
                 }
                 else {
