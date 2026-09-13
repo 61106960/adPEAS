@@ -34,7 +34,7 @@
 
 .EXAMPLE
     ConvertFrom-KeyCredentialLink -KeyCredentialBytes $bytes
-    Returns: "DeviceID: a1b2c3d4-... | Created: 2024-01-15 10:30:00 | Source: AD"
+    Returns: "a1b2c3d4-1111-2222-3333-444455556666 | created 2024-01-15 10:30 | used 2026-09-01"
 
 .EXAMPLE
     ConvertFrom-KeyCredentialLink -DNWithBinary "B:880:0002000001..." -Raw
@@ -242,24 +242,64 @@ function ConvertFrom-KeyCredentialLink {
                 return $Result
             }
 
-            # Build compact display string: Full DeviceID + CreationTime
-            # Source (AD) and Usage (NGC) are omitted as they're almost always the same for Shadow Credentials
+            # Build compact display string, one line per key credential:
+            #
+            #   <DeviceID> | created <ts> | used <date|never> [| <usage>] [| <source>]
+            #
+            # The DeviceID is unlabelled and never truncated - a GUID at the start of the
+            # line needs no caption, and the full value is what -RemoveDeviceID takes.
+            # When the blob carries no DeviceId entry the KeyID stands in, so the line
+            # still names something instead of falling through to the byte count.
+            #
+            # "used" is KeyApproximateLastLogonTimeStamp (entry 0x08), which the parser
+            # has always read and the display has always dropped. It is the field that
+            # separates a key in daily use from one that was written and never touched -
+            # the state a freshly planted Shadow Credential is in. Date only, no clock
+            # time: the DC updates this coarsely, so minutes would be false precision.
+            #
+            # "never" covers both the missing entry and last-logon == creation. A client
+            # writes both timestamps at registration, and so does every tool that plants
+            # a key (Invoke-ShadowCredentialOperation included), so equality means the
+            # key has not been used since it was created.
+            #
+            # Usage and Source appear only when they deviate from NGC/AD. Nearly every
+            # entry is NGC/AD, and printing that on every line would cost the width the
+            # timestamp now uses.
             $Parts = @()
 
             if ($Result.DeviceID) {
-                # Show FULL DeviceID (needed for -RemoveDeviceID parameter)
-                $Parts += "DeviceID: $($Result.DeviceID)"
+                $Parts += [string]$Result.DeviceID
+            }
+            elseif ($Result.KeyID) {
+                $Parts += "KeyID $($Result.KeyID)"
             }
 
             if ($Result.KeyCreationTime) {
-                $Parts += "Created: $(Format-adPEASDate $Result.KeyCreationTime 'yyyy-MM-dd HH:mm')"
+                $Parts += "created $(Format-adPEASDate $Result.KeyCreationTime 'yyyy-MM-dd HH:mm')"
             }
 
-            if ($Parts.Count -gt 0) {
-                return $Parts -join " | "
+            # Nothing identifying and no creation time - the blob is too sparse to
+            # describe, and an isolated "used never" would say nothing about which key.
+            if ($Parts.Count -eq 0) {
+                return "KeyCredential ($($KeyCredentialBytes.Length) bytes)"
             }
 
-            return "KeyCredential ($($KeyCredentialBytes.Length) bytes)"
+            if ($Result.KeyLastLogonTime -and $Result.KeyLastLogonTime -ne $Result.KeyCreationTime) {
+                $Parts += "used $(Format-adPEASDate $Result.KeyLastLogonTime 'yyyy-MM-dd')"
+            }
+            else {
+                $Parts += "used never"
+            }
+
+            if ($Result.KeyUsageText -and $Result.KeyUsageText -ne 'NGC') {
+                $Parts += [string]$Result.KeyUsageText
+            }
+
+            if ($Result.KeySourceText -and $Result.KeySourceText -ne 'AD') {
+                $Parts += [string]$Result.KeySourceText
+            }
+
+            return $Parts -join " | "
 
         } catch {
             if ($Raw) {

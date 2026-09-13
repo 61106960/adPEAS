@@ -18827,15 +18827,30 @@ function ConvertFrom-KeyCredentialLink {
 	        }
 	        $Parts = @()
 	        if ($Result.DeviceID) {
-	            $Parts += "DeviceID: $($Result.DeviceID)"
+	            $Parts += [string]$Result.DeviceID
+	        }
+	        elseif ($Result.KeyID) {
+	            $Parts += "KeyID $($Result.KeyID)"
 	        }
 	        if ($Result.KeyCreationTime) {
-	            $Parts += "Created: $(Format-adPEASDate $Result.KeyCreationTime 'yyyy-MM-dd HH:mm')"
+	            $Parts += "created $(Format-adPEASDate $Result.KeyCreationTime 'yyyy-MM-dd HH:mm')"
 	        }
-	        if ($Parts.Count -gt 0) {
-	            return $Parts -join " | "
+	        if ($Parts.Count -eq 0) {
+	            return "KeyCredential ($($KeyCredentialBytes.Length) bytes)"
 	        }
-	        return "KeyCredential ($($KeyCredentialBytes.Length) bytes)"
+	        if ($Result.KeyLastLogonTime -and $Result.KeyLastLogonTime -ne $Result.KeyCreationTime) {
+	            $Parts += "used $(Format-adPEASDate $Result.KeyLastLogonTime 'yyyy-MM-dd')"
+	        }
+	        else {
+	            $Parts += "used never"
+	        }
+	        if ($Result.KeyUsageText -and $Result.KeyUsageText -ne 'NGC') {
+	            $Parts += [string]$Result.KeyUsageText
+	        }
+	        if ($Result.KeySourceText -and $Result.KeySourceText -ne 'AD') {
+	            $Parts += [string]$Result.KeySourceText
+	        }
+	        return $Parts -join " | "
 	    } catch {
 	        if ($Raw) {
 	            return [PSCustomObject]@{
@@ -76366,7 +76381,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.5.0"
+$Script:adPEASVersion = "2.5.0+20260913-1230"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
