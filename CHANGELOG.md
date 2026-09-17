@@ -6,6 +6,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.5.1] - 2026-09-17
+
+### Added
+
+- **Whether Exchange can reach the domain is now answered directly.** In the shared
+  permissions model Exchange setup places a WriteDACL entry for an Exchange group on the
+  domain object, and a member of that group can rewrite the domain's own access control
+  list to grant itself the replication rights DCSync needs. The generic ACL check sees
+  that entry and drops it: every group under `OU=Microsoft Exchange Security Groups` is
+  classified as an expected trustee on the grounds that Exchange permissions are by
+  design, and expected trustees are skipped without `-IncludePrivileged`. For this one
+  entry that reasoning does not hold, because Microsoft documents narrowing it with the
+  inherit-only flag and removing it outright with AD split permissions.
+
+  The check separates the entries that apply to the domain object from the inherit-only
+  ones that only reach child objects of a named class, so the line the verdict rests on is
+  visible next to the ones that look similar and are harmless. It also reports which
+  permissions model the forest was prepared with.
+
+- **SMTP receive connectors are judged by what they grant an unauthenticated sender.**
+  Every verdict comes from the connector's own security descriptor - which `ms-Exch-SMTP-*`
+  extended rights it grants ANONYMOUS LOGON or Everyone - and separates an open relay from
+  a connector that merely lets an anonymous session submit mail. A connector that also
+  permits an internal sender address is called out on its own, because mail arriving from
+  a colleague's address that nobody sent passes every trust indicator a mail client has.
+
+  The right GUIDs are read from the forest's own Extended-Rights container rather than
+  carried in a table, so a schema that names them differently cannot make an open relay
+  report as clean. A connector whose descriptor could not be read says so instead of
+  counting as clean.
+
+- **A hybrid deployment with Exchange Online is reported.** On-premises Exchange and the
+  cloud tenant share one service principal, so administrative access to an on-premises
+  server reaches the tenant through it - which changes what every other Exchange finding
+  in the report is worth. Detected from the coexistence relationship the Hybrid
+  Configuration Wizard creates.
+
+- **Exchange management role assignments are read, not just the role groups.** A role can
+  be assigned straight to a single user, and such an assignment appears in no group
+  membership at all - so checking Organization Management was never enough. The new check
+  reports who holds Mailbox Import Export, ApplicationImpersonation, Role Management,
+  Unscoped Role Management, Mailbox Search and Active Directory Permissions, and tells an
+  assignment Exchange ships from one somebody made. ApplicationImpersonation alone is one
+  account with read and send access to every mailbox in the organization.
+
+- **MRSProxy joined the endpoint probe.** Extended Protection is configured per virtual
+  directory, so a server that enforces it on the EWS root can still leave the replication
+  service inside that directory open to an NTLM relay. It appears in the endpoint list
+  with its own authentication methods and its own Extended Protection verdict.
+
+### Changed
+
+- **`msDS-KeyCredentialLink` says when a key was last used.** The parser always read the
+  approximate last-logon timestamp and the display always discarded it, so what reached a
+  report was the device ID and the creation time. A key planted by an attacker and a key
+  a user authenticates with every morning look identical that way; the last use is what
+  separates them. The line now reads
+  `<DeviceID> | created <ts> | used <date|never>`, and the device ID keeps its full length
+  because that is the value handed back to `-RemoveDeviceID`.
+
+### Fixed
+
+- **An ordinary access control entry no longer reports as a delegation right.** The
+  extended-rights table mapped `4828cc14-1437-45bc-9b07-ad6f015e5f28` to
+  `Allowed-To-Act-On-Behalf-Of-Other-Identity`. That GUID is the schema identifier of the
+  `inetOrgPerson` class, and resource-based constrained delegation is not an extended
+  right at all but a write to `msDS-AllowedToActOnBehalfOfOtherIdentity`. Because GUID
+  resolution consults extended rights before schema classes, every entry inherited to
+  `inetOrgPerson` objects - they sit in the default domain DACL, and in the entry
+  Microsoft's Exchange guidance narrows - was labelled with a delegation right that was
+  never granted.
+
+- **Object classes an extended schema adds are named instead of printed as a GUID.** A
+  static table can only hold the classes the base schema ships, so an Exchange-extended
+  forest produced raw GUIDs in access control entries - and two entries that differed only
+  in their target class rendered as the same repeated line. Unknown class GUIDs are now
+  resolved from the forest's own schema, once per session; a schema that cannot be read
+  yields the GUID rather than a guess.
+
+---
+
 ## [2.5.0] - 2026-09-08
 
 ### Added
