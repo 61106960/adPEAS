@@ -210,6 +210,11 @@ function Clear-SessionState {
     $Script:AuthInfo = $null
     $Script:NTLMTokenHandle = [IntPtr]::Zero
 
+    # Schema class name cache (Resolve-SchemaClassName). Read from the forest's own schema
+    # partition, so it belongs to the session and not to the module: a reconnect to a
+    # different forest must not answer out of the previous one's schema.
+    $Script:SchemaClassNameCache = $null
+
     # Anonymous access detection (Connect-LDAP)
     $Script:AnonymousAccessEnabled = $null
     $Script:AnonymousAccessDetails = $null

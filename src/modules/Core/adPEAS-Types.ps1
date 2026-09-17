@@ -34,6 +34,51 @@
 $Script:adPEASModules = @('Domain','Creds','Rights','Delegation','ADCS','Accounts','GPO','Computer','Application','Bloodhound')
 
 # =============================================================================
+# EXCHANGE WEB ENDPOINTS - Central Definition
+# =============================================================================
+# The Exchange web endpoints adPEAS probes, in the order it reports them.
+#
+# It lives here rather than beside the probe because it is a contract between two
+# modules: Invoke-HTTPRequest walks it three times (transport derivation, the log
+# summary, the Extended Protection loop) and Get-ExchangeInfrastructure walks it once
+# to render the WebEndpoints rows. It used to be written out at each of those four
+# sites, so adding an endpoint meant four edits - and forgetting one dropped it from
+# that pass silently, with no test able to notice, because each loop looked complete
+# on its own.
+#
+# The order is by attack surface. It is neither alphabetical nor the probe sequence:
+#
+#   OWA, ECP        the web UIs, and the surface ProxyLogon and ProxyShell reached
+#   EWS, MRSProxy   the relay and impersonation surface. MRSProxy sits inside the EWS
+#                   virtual directory but carries its own Extended Protection setting,
+#                   so the two belong next to each other - an "EPA: Enabled" on EWS
+#                   says nothing about MRSProxy, and that gap is a published
+#                   pre-authentication relay path
+#   Autodiscover    hands out client configuration, and offers NTLM while doing it
+#   MAPI, RPC       the Outlook transport protocols
+#   ActiveSync      mobile access, commonly Basic and commonly published externally
+#   PowerShell      remote management, normally Kerberos-only
+#
+# Fixed rather than sorted by severity per server, so that several Exchange cards in
+# one report list their endpoints in the same order and stay comparable.
+#
+# Deliberately NOT the order the endpoints are probed in. That sequence starts with OWA
+# because its response carries the X-OWA-Version header the build number is read from;
+# reordering the probes would change which method reports the version.
+
+$Script:ExchangeEndpointOrder = @(
+    'OWA'
+    'ECP'
+    'EWS'
+    'MRSProxy'
+    'Autodiscover'
+    'MAPI'
+    'RPC'
+    'ActiveSync'
+    'PowerShell'
+)
+
+# =============================================================================
 # SEVERITY CLASSES - Central Definition
 # =============================================================================
 # These are the canonical severity class names used throughout adPEAS.

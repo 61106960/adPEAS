@@ -7,7 +7,7 @@
     a registry value that, WHEN ACTIVELY SET to a specific value, enables or facilitates
     an attack (credential theft, lateral movement, privilege escalation, defense evasion).
 
-    Design principle (matches CLAUDE.md focus): only POSITIVELY SET values are flagged.
+    Design principle: only POSITIVELY SET values are flagged.
     Absence of a hardening value is NOT a finding here, because GPO/SYSVOL parsing cannot
     reliably distinguish "not configured in this GPO" from "secure" - flagging absence
     would produce false negatives presented as secure.

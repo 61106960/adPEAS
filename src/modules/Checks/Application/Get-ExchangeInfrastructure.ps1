@@ -4,9 +4,17 @@ function Get-ExchangeInfrastructure {
     Detects Microsoft Exchange Server infrastructure and security issues via LDAP.
 
     .DESCRIPTION
-    Performs passive detection of Exchange Server infrastructure using LDAP queries only.
-    Identifies Exchange organization, servers, versions, privileged groups (especially
-    Exchange Trusted Subsystem with WriteDacl on Domain!), shared mailboxes, and service accounts.
+    Detects Exchange Server infrastructure from LDAP, with an optional HTTP probe of each
+    server's web endpoints. Reports:
+
+    - Exchange organization, accepted domains and send connectors (Configuration partition)
+    - Exchange servers, roles, version and lifecycle state
+    - Web endpoints with their authentication methods and per-endpoint Extended Protection,
+      including MRSProxy (CVE-2026-62911)
+    - Hybrid deployment with Exchange Online (CVE-2025-53786)
+    - SMTP receive connectors that grant relay or sender rights to unauthenticated senders
+    - Whether Exchange holds WriteDACL on the domain object (the PrivExchange escalation path)
+    - The three Exchange service groups, judged by what does not belong in them
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -69,6 +77,28 @@ function Get-ExchangeInfrastructure {
             if (-not $BuildNumber) { return "Standard" }
 
             return Get-ExchangeSeverity -BuildNumber $BuildNumber
+        }
+
+        # Collapses repeated lines into one carrying a count, preserving first-seen order.
+        # Two rows of identical text read as a fault in the renderer; the same row with
+        # "(x2)" says what is actually there, which for an ACE list is two grants of the
+        # same rights to the same trustee.
+        function Merge-DuplicateLine {
+            param([string[]]$Line)
+
+            if (-not $Line) { return @() }
+
+            $seen = [ordered]@{}
+            foreach ($entry in $Line) {
+                if ($seen.Contains($entry)) { $seen[$entry] = $seen[$entry] + 1 }
+                else { $seen[$entry] = 1 }
+            }
+
+            $merged = @()
+            foreach ($entry in $seen.Keys) {
+                $merged += $(if ($seen[$entry] -gt 1) { "$entry (x$($seen[$entry]))" } else { $entry })
+            }
+            return $merged
         }
 
         try {
@@ -490,7 +520,7 @@ function Get-ExchangeInfrastructure {
                             $activeEndpoints = @()
                             $endpointAuthMethods = @{}
 
-                            foreach ($ep in @('OWA', 'ECP', 'EWS', 'Autodiscover', 'MAPI', 'RPC', 'PowerShell', 'ActiveSync')) {
+                            foreach ($ep in $Script:ExchangeEndpointOrder) {
                                 if ($webEnrollmentResult.Endpoints.$ep.Available) {
                                     $activeEndpoints += $ep
                                     if ($webEnrollmentResult.Endpoints.$ep.AuthMethods) {
@@ -536,6 +566,16 @@ function Get-ExchangeInfrastructure {
                                 $serverObject | Add-Member -NotePropertyName 'WebEndpoints' -NotePropertyValue $endpointsWithAuth -Force
                             }
 
+                            # MRSProxy deliberately gets no attribute of its own. It is one
+                            # endpoint among the eight above and is reported the same way
+                            # they are - as a WebEndpoints line carrying its own auth
+                            # methods and its own EPA verdict, which is the point: Extended
+                            # Protection is configured per endpoint, so MRSProxy appearing
+                            # there with [EPA: Disabled] is the finding, whatever the EWS
+                            # root it lives in reports. A separate summary row repeated
+                            # that line in other words and singled out one endpoint for
+                            # treatment none of the others get.
+
                             # Add legacy EPA properties (for quick reference)
                             if ($null -ne $webEnrollmentResult.EPAEnabled) {
                                 $serverObject | Add-Member -NotePropertyName 'EPAEnabled' -NotePropertyValue $webEnrollmentResult.EPAEnabled -Force
@@ -573,7 +613,486 @@ function Get-ExchangeInfrastructure {
                 Show-Line "Exchange Organization: $organizationName - No active Exchange Servers found" -Class Note
             }
 
-            # ===== Steps 3-5: The Exchange service groups =====
+            # ===== Step 3: Hybrid deployment with Exchange Online =====
+            #
+            # A hybrid organization shares one service principal between the on-premises
+            # servers and the Exchange Online tenant. That shared trust is what
+            # CVE-2025-53786 abuses: administrative access to an on-premises Exchange
+            # server reaches the cloud tenant through it, and does so without leaving the
+            # kind of trace the tenant's own audit trail would show. Whether the dedicated
+            # hybrid application has been deployed since cannot be read from AD, so what is
+            # reported here is the exposure, not the patch state.
+            #
+            # The coexistence relationship object is the only signal, because it is the
+            # only one the Hybrid Configuration Wizard creates. In particular the account
+            # named "Exchange Online-ApplicationAccount" is NOT evidence of hybrid, however
+            # much the name suggests it: Exchange setup creates that account on every
+            # /PrepareAD and every cumulative update, in every organization. Treating it as
+            # a signal reported a purely on-premises organization as hybrid, on an object
+            # that is present in all of them.
+            Show-SubHeader "Checking for an Exchange hybrid deployment..." -ObjectType "ExchangeHybridConfiguration"
+
+            $hybridRelationships = @()
+            $hybridQueryFailed = $false
+            try {
+                $hybridRelationships = @(Get-DomainObject -LDAPFilter "(objectClass=msExchCoexistenceRelationship)" -SearchBase $exchangeBase @PSBoundParameters)
+            }
+            catch {
+                $hybridQueryFailed = $true
+                Write-Log "[Get-ExchangeInfrastructure] Error querying hybrid configuration: $_" -Level Error
+            }
+
+            if (@($hybridRelationships).Count -gt 0) {
+                $hybridObj = [PSCustomObject]@{
+                    Name         = 'Exchange Hybrid Deployment'
+                    HybridStatus = 'Hybrid with Exchange Online - administrative access to an on-premises Exchange server reaches the cloud tenant'
+                }
+
+                $hybridEvidence = @()
+                foreach ($rel in $hybridRelationships) {
+                    $relName = if ($rel.cn) { [string]$rel.cn } else { 'Hybrid Configuration' }
+                    $hybridEvidence += "msExchCoexistenceRelationship: $relName"
+                }
+                $hybridObj | Add-Member -NotePropertyName 'HybridEvidence' -NotePropertyValue $hybridEvidence -Force
+
+                # Coexistence details, where the relationship object carries them. Only
+                # attributes that are actually present are added - an empty row would
+                # suggest the feature is switched off rather than unset.
+                $coexistenceMap = [ordered]@{
+                    'msExchCoexistenceDomains'             = 'CoexistenceDomains'
+                    'msExchCoexistenceTransportServers'    = 'CoexistenceTransportServers'
+                    'msExchCoexistenceExternalIPAddresses' = 'CoexistenceExternalIPAddresses'
+                    'msExchCoexistenceOnPremisesSmartHost' = 'CoexistenceSmartHost'
+                }
+                foreach ($rel in $hybridRelationships) {
+                    foreach ($ldapName in $coexistenceMap.Keys) {
+                        $value = $rel.$ldapName
+                        if (-not $value) { continue }
+                        $displayValue = if ($value -is [array]) { @($value | ForEach-Object { [string]$_ }) } else { [string]$value }
+                        $hybridObj | Add-Member -NotePropertyName $coexistenceMap[$ldapName] -NotePropertyValue $displayValue -Force
+                    }
+                }
+
+                $hybridObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeHybridConfiguration' -Force
+                Show-Line "Exchange hybrid deployment detected" -Class Hint
+                Show-Object $hybridObj -Class Hint
+            }
+            elseif ($hybridQueryFailed) {
+                # Same reasoning as everywhere else in this check: a query that failed
+                # produces the same empty result as a query that found nothing, and only
+                # one of the two justifies the sentence below.
+                Show-Line "Hybrid configuration could not be read - result unknown, not absent" -Class Hint
+            }
+            else {
+                Show-Line "No hybrid configuration found - this organization appears to be purely on-premises" -Class Note
+            }
+
+            # ===== Step 4: SMTP receive connector permissions =====
+            #
+            # The connector object's own DACL decides what an unauthenticated SMTP session
+            # is allowed to do, and it is readable from here. The ms-Exch-SMTP-* extended
+            # rights granted to ANONYMOUS LOGON say whether the connector relays to
+            # arbitrary recipients and whether an anonymous sender may claim an internal
+            # address.
+            #
+            # The msExchSMTPReceive* bitmask attributes describe the same configuration in
+            # a numeric encoding Microsoft does not publish, so every verdict below is
+            # taken from the DACL alone. Guessing a bit value would produce a confidently
+            # worded label that happens to be wrong.
+            Show-SubHeader "Checking SMTP receive connector permissions..." -ObjectType "ExchangeReceiveConnector"
+
+            if (@($allRecvConnectors).Count -eq 0) {
+                Show-Line "No SMTP receive connectors found in the Configuration partition" -Class Note
+            }
+            else {
+                # Exchange registers its extended rights in the forest's own Extended-Rights
+                # container, so the GUIDs are read from there rather than hardcoded. A
+                # hardcoded GUID that is wrong fails silently - the right never matches and
+                # the connector reports as clean.
+                $smtpRightsByGuid = @{}
+                $smtpRightMeaning = @{
+                    'ms-exch-smtp-accept-any-recipient'               = 'relay to any recipient domain'
+                    'ms-exch-smtp-accept-any-sender'                  = 'use any sender address'
+                    'ms-exch-smtp-accept-authoritative-domain-sender' = 'use an internal sender address'
+                    'ms-exch-bypass-anti-spam'                        = 'bypass anti-spam filtering'
+                    'ms-exch-smtp-submit'                             = 'submit messages'
+                    'ms-exch-accept-headers-routing'                  = 'keep routing headers'
+                }
+
+                try {
+                    $rightNameFilters = @($smtpRightMeaning.Keys | ForEach-Object { "(displayName=$_)" })
+                    $rightsFilter = '(&(objectClass=controlAccessRight)(|' + ($rightNameFilters -join '') + '))'
+                    $smtpRights = @(Get-DomainObject -LDAPFilter $rightsFilter -SearchBase "CN=Extended-Rights,$configDN" -Properties 'displayName','rightsGuid' @PSBoundParameters)
+                    foreach ($right in $smtpRights) {
+                        if ($right.rightsGuid -and $right.displayName) {
+                            $smtpRightsByGuid[([string]$right.rightsGuid).ToLower()] = ([string]$right.displayName).ToLower()
+                        }
+                    }
+                    Write-Log "[Get-ExchangeInfrastructure] Resolved $($smtpRightsByGuid.Count) SMTP extended right(s) from the Configuration partition"
+                }
+                catch {
+                    Write-Log "[Get-ExchangeInfrastructure] Error resolving SMTP extended rights: $_" -Level Error
+                }
+
+                # Security descriptors for all connectors in one query. Get-ObjectACL reads
+                # a single object per call, so handing it the bytes keeps this at one round
+                # trip instead of one per connector.
+                $connectorDescriptors = @{}
+                try {
+                    $rawConnectors = @(Get-DomainObject -LDAPFilter "(objectClass=msExchSmtpReceiveConnector)" -SearchBase $exchangeBase -Properties 'distinguishedName','nTSecurityDescriptor' -Raw @PSBoundParameters)
+                    foreach ($rawConnector in $rawConnectors) {
+                        if ($rawConnector.distinguishedName -and $rawConnector.nTSecurityDescriptor) {
+                            $connectorDescriptors[[string]$rawConnector.distinguishedName] = $rawConnector.nTSecurityDescriptor
+                        }
+                    }
+                }
+                catch {
+                    Write-Log "[Get-ExchangeInfrastructure] Error reading receive connector descriptors: $_" -Level Error
+                }
+
+                # The unauthenticated subset of the central broad-principal list
+                # ($Script:BroadGroupSIDs in adPEAS-SIDs.ps1). A grant to either of these
+                # applies to a session that never presented a credential.
+                $anonymousSIDs = @('S-1-5-7', 'S-1-1-0')   # Anonymous Logon, Everyone
+
+                $connectorResults = @()
+
+                foreach ($connector in $allRecvConnectors) {
+                    $connectorDN = [string]$connector.distinguishedName
+                    $anonymousGrants = @()
+                    $broadGrants = @()
+                    $descriptorRead = $false
+
+                    $descriptorBytes = $connectorDescriptors[$connectorDN]
+                    if ($descriptorBytes) {
+                        try {
+                            $connectorACL = Get-ObjectACL -DistinguishedName $connectorDN -SecurityDescriptor $descriptorBytes -AllowOnly @PSBoundParameters
+                            if ($connectorACL) {
+                                $descriptorRead = $true
+                                foreach ($ace in @($connectorACL.ACEs)) {
+                                    if (-not $ace.ObjectType) { continue }
+                                    $rightName = $smtpRightsByGuid[([string]$ace.ObjectType).ToLower()]
+                                    if (-not $rightName) { continue }
+
+                                    $meaning = $smtpRightMeaning[$rightName]
+                                    $grant = "$($ace.Trustee): $meaning"
+
+                                    if ($anonymousSIDs -contains $ace.TrusteeSID) {
+                                        $anonymousGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                    }
+                                    elseif ($Script:BroadGroupSIDs -contains $ace.TrusteeSID) {
+                                        $broadGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                    }
+                                }
+                            }
+                        }
+                        catch {
+                            Write-Log "[Get-ExchangeInfrastructure] Error parsing connector ACL for ${connectorDN}: $_" -Level Error
+                        }
+                    }
+
+                    # One verdict per connector, drawn from a closed set. Worst condition
+                    # first, and each string starts with its own word so the finding
+                    # triggers stay mutually exclusive - the finding table is an unordered
+                    # hashtable, so two triggers that can both match one value would pick a
+                    # winner at random.
+                    $anonymousRights = @($anonymousGrants | ForEach-Object { $_.Right })
+                    $broadRights = @($broadGrants | ForEach-Object { $_.Right })
+
+                    $verdict = $null
+                    $consoleClass = 'Standard'
+
+                    if (-not $descriptorRead) {
+                        $verdict = 'Unknown - the connector security descriptor could not be read'
+                        $consoleClass = 'Hint'
+                    }
+                    elseif ($anonymousRights -contains 'ms-exch-smtp-accept-any-recipient') {
+                        $verdict = 'Open relay - unauthenticated senders can relay to any recipient domain'
+                        $consoleClass = 'Finding'
+                    }
+                    elseif (($anonymousRights -contains 'ms-exch-smtp-accept-authoritative-domain-sender') -or
+                            ($anonymousRights -contains 'ms-exch-smtp-accept-any-sender')) {
+                        $verdict = 'Sender spoofing - unauthenticated senders can claim an internal sender address'
+                        $consoleClass = 'Finding'
+                    }
+                    elseif ($broadRights -contains 'ms-exch-smtp-accept-any-recipient') {
+                        $verdict = 'Broad relay - every authenticated domain principal can relay to any recipient domain'
+                        $consoleClass = 'Hint'
+                    }
+                    elseif (@($anonymousGrants).Count -gt 0) {
+                        $verdict = 'Anonymous submission only - expected on an internet-facing connector'
+                        $consoleClass = 'Standard'
+                    }
+                    else {
+                        $verdict = 'Authenticated senders only'
+                        $consoleClass = 'Secure'
+                    }
+
+                    $connectorName = if ($connector.name) { [string]$connector.name } else { 'Unknown' }
+                    $connectorObj = [PSCustomObject]@{
+                        Name        = $connectorName
+                        RelayStatus = $verdict
+                    }
+
+                    if ($connectorDN -match 'CN=([^,]+),CN=Servers,') {
+                        $connectorObj | Add-Member -NotePropertyName 'ExchangeServer' -NotePropertyValue $Matches[1] -Force
+                    }
+
+                    $connectorBindings = $connector.msExchSMTPReceiveBindings
+                    if ($connectorBindings) {
+                        $bindingList = if ($connectorBindings -is [array]) { @($connectorBindings | ForEach-Object { [string]$_ }) } else { @([string]$connectorBindings) }
+                        $connectorObj | Add-Member -NotePropertyName 'Bindings' -NotePropertyValue $bindingList -Force
+                    }
+
+                    # Remote IP ranges say where the grants above apply from. The attribute
+                    # is only shown when every value reads as an address range - some
+                    # Exchange builds store it in an encoded form, and printing that raw
+                    # would look like a finding about a connector nobody can verify.
+                    $remoteRanges = $connector.msExchSMTPReceiveRemoteIPRanges
+                    if ($remoteRanges) {
+                        $rangeList = if ($remoteRanges -is [array]) { @($remoteRanges | ForEach-Object { [string]$_ }) } else { @([string]$remoteRanges) }
+                        $printableRanges = @($rangeList | Where-Object { $_ -match '^[0-9a-fA-F:.\-/]+$' })
+                        if (@($printableRanges).Count -eq @($rangeList).Count -and @($rangeList).Count -gt 0) {
+                            $connectorObj | Add-Member -NotePropertyName 'RemoteIPRanges' -NotePropertyValue $rangeList -Force
+                        }
+                    }
+
+                    $allGrants = @($anonymousGrants + $broadGrants | ForEach-Object { $_.Display })
+                    if (@($allGrants).Count -gt 0) {
+                        $connectorObj | Add-Member -NotePropertyName 'AnonymousPermissions' -NotePropertyValue $allGrants -Force
+                    }
+
+                    $connectorObj | Add-Member -NotePropertyName 'distinguishedName' -NotePropertyValue $connectorDN -Force
+                    $connectorObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeReceiveConnector' -Force
+                    $connectorObj | Add-Member -NotePropertyName 'ConsoleClass' -NotePropertyValue $consoleClass -Force
+
+                    $connectorResults += $connectorObj
+                }
+
+                $riskyConnectors = @($connectorResults | Where-Object { $_.ConsoleClass -eq 'Finding' })
+                $unreadConnectors = @($connectorResults | Where-Object { $_.RelayStatus -like 'Unknown*' })
+
+                if (@($riskyConnectors).Count -gt 0) {
+                    Show-Line "Found $(@($riskyConnectors).Count) of $(@($connectorResults).Count) receive connector(s) granting SMTP rights to unauthenticated senders" -Class Finding
+                }
+                elseif (@($unreadConnectors).Count -gt 0) {
+                    # A connector whose descriptor did not come back was not assessed. The
+                    # secure line below would claim a result for it, which is the one thing
+                    # an unread object must never produce.
+                    Show-Line "$(@($unreadConnectors).Count) of $(@($connectorResults).Count) receive connector(s) could not be assessed - their permissions are unknown, not clean" -Class Hint
+                }
+                else {
+                    Show-Line "No receive connector grants relay or sender-spoofing rights to unauthenticated senders" -Class Secure
+                }
+
+                foreach ($connectorObj in $connectorResults) {
+                    Show-Object $connectorObj -Class $connectorObj.ConsoleClass
+                }
+            }
+
+            # ===== Step 5: Exchange permissions model on the domain object =====
+            #
+            # In the shared permissions model Exchange setup places an ACE on the domain
+            # object granting Exchange Windows Permissions WriteDACL. A member of that
+            # group can therefore rewrite the domain DACL and give itself the replication
+            # rights DCSync needs - the payoff half of PrivExchange, and the reason the
+            # group's membership matters at all.
+            #
+            # Microsoft's own guidance narrows that ACE by adding the inherit-only flag, so
+            # it no longer applies to the domain object itself, and AD split permissions
+            # removes the model entirely. Both are visible here, which is why this is
+            # reported instead of being filtered away: the generic ACL check classifies
+            # every Exchange group as an expected trustee and drops it unless
+            # -IncludePrivileged is set, on the grounds that Exchange permissions are
+            # by design. For this one ACE that is not true - it is documented as removable.
+            Show-SubHeader "Checking the Exchange permissions model on the domain object..." -ObjectType "ExchangePermissionsModel"
+
+            $domainDN = $Script:LDAPContext.DomainDN
+
+            # Only these two hold the domain-object ACEs in the shared model. Resolved to
+            # SIDs because the trustee comparison has to be SID-based - the group names are
+            # English in every installation, but the ACE stores a SID either way.
+            $modelGroups = @()
+            foreach ($modelGroupName in @('Exchange Windows Permissions', 'Exchange Trusted Subsystem')) {
+                try {
+                    $modelGroup = @(Get-DomainGroup -Identity $modelGroupName @PSBoundParameters)[0]
+                    if ($modelGroup -and $modelGroup.objectSid) {
+                        $modelGroups += [PSCustomObject]@{
+                            Name = $modelGroupName
+                            SID  = [string]$modelGroup.objectSid
+                        }
+                    }
+                }
+                catch {
+                    Write-Log "[Get-ExchangeInfrastructure] Error resolving ${modelGroupName}: $_" -Level Error
+                }
+            }
+
+            # Split permissions creates this OU and moves the Exchange groups out of reach
+            # of Exchange itself. Its presence corroborates the ACE reading below.
+            $protectedGroupsOU = $null
+            try {
+                $protectedGroupsOU = @(Get-DomainObject -Identity "OU=Microsoft Exchange Protected Groups,$domainDN" @PSBoundParameters)[0]
+            }
+            catch {
+                Write-Log "[Get-ExchangeInfrastructure] Microsoft Exchange Protected Groups OU not present: $_"
+            }
+
+            if (@($modelGroups).Count -eq 0) {
+                # Not the same as "no ACE". Exchange prepares each domain separately, and a
+                # domain that was never prepared has no groups here to compare against.
+                Show-Line "Neither Exchange Windows Permissions nor Exchange Trusted Subsystem exists in this domain - the permissions model cannot be determined from here" -Class Note
+            }
+            else {
+                $domainACEs = @()
+                $domainACLReadable = $false
+                try {
+                    $domainACL = Get-ObjectACL -DistinguishedName $domainDN -AllowOnly @PSBoundParameters
+                    if ($domainACL) {
+                        $domainACLReadable = $true
+                        $domainACEs = @($domainACL.ACEs)
+                    }
+                }
+                catch {
+                    Write-Log "[Get-ExchangeInfrastructure] Error reading domain object ACL: $_" -Level Error
+                }
+
+                if (-not $domainACLReadable) {
+                    Show-Line "The domain object ACL could not be read - the permissions model is unknown, not clean" -Class Hint
+                }
+                else {
+                    # WriteDacl is the one that matters, but WriteOwner and GenericAll reach
+                    # the same place: ownership can rewrite the DACL afterwards.
+                    $escalationRights = @('WriteDacl', 'WriteOwner', 'GenericAll')
+                    $effectiveACEs = @()
+                    $inheritOnlyACEs = @()
+                    $inheritOnlyGrants = [ordered]@{}
+                    $effectiveHolders = @()
+
+                    foreach ($ace in $domainACEs) {
+                        $matchedGroup = @($modelGroups | Where-Object { $_.SID -eq $ace.TrusteeSID })[0]
+                        if (-not $matchedGroup) { continue }
+
+                        $grantedRights = @($ace.RightsRaw | Where-Object { $escalationRights -contains $_ })
+                        if (@($grantedRights).Count -eq 0) { continue }
+
+                        # An inherit-only ACE does not apply to the object carrying it. That
+                        # is exactly the shape Microsoft's mitigation produces, and telling
+                        # the two apart is the whole point of this check.
+                        $isInheritOnly = ([string]$ace.PropagationFlags) -match 'InheritOnly'
+
+                        $grantText = "$($matchedGroup.Name): $($grantedRights -join ', ')"
+
+                        if ($isInheritOnly) {
+                            # Name the class the ACE descends to, through the resolver rather
+                            # than the static table alone: an Exchange-extended schema puts
+                            # its own classes here (publicFolder, msExchActiveSyncDevices),
+                            # and no table adPEAS ships can hold those.
+                            $targetClass = if ($ace.InheritedObjectType) {
+                                $resolved = Resolve-SchemaClassName -GUID $ace.InheritedObjectType @PSBoundParameters
+                                if ($resolved) { $resolved } else { [string]$ace.InheritedObjectType }
+                            } else {
+                                'all classes'
+                            }
+
+                            # Grouped by trustee and rights, so the classes collect on one
+                            # line instead of repeating the trustee once per class. The
+                            # four rows a stock Exchange organization produces become two,
+                            # and the pattern - which group, which rights, which scope -
+                            # becomes visible instead of having to be reassembled by eye.
+                            if (-not $inheritOnlyGrants.Contains($grantText)) {
+                                $inheritOnlyGrants[$grantText] = @()
+                            }
+                            if ($inheritOnlyGrants[$grantText] -notcontains $targetClass) {
+                                $inheritOnlyGrants[$grantText] += $targetClass
+                            }
+                        }
+                        else {
+                            # No scope clause on either list. InheritOnlyDomainACEs and
+                            # EffectiveDomainACEs already say which is which, and repeating
+                            # it on every row turned the evidence into prose.
+                            $effectiveACEs += $grantText
+                            if ($effectiveHolders -notcontains $matchedGroup.Name) {
+                                $effectiveHolders += $matchedGroup.Name
+                            }
+                        }
+                    }
+
+                    # Classes sorted so the same directory renders the same way twice.
+                    foreach ($grantText in $inheritOnlyGrants.Keys) {
+                        $classList = @($inheritOnlyGrants[$grantText] | Sort-Object)
+                        $inheritOnlyACEs += "$grantText -> $($classList -join ', ')"
+                    }
+
+                    # Two ACEs that survive as the same sentence really are the same grant
+                    # twice. Printing the line once with a count says that, where two
+                    # identical lines just look like a defect in this check.
+                    # Only the effective list needs this. The inherit-only rows are keyed by
+                    # trustee and rights while they are collected, so a repeat lands in the
+                    # class list of an existing row rather than creating a second one.
+                    $effectiveACEs = @(Merge-DuplicateLine -Line $effectiveACEs)
+
+                    $modelObj = [PSCustomObject]@{
+                        Name = $Script:LDAPContext.DomainDN
+                    }
+
+                    if (@($effectiveACEs).Count -gt 0) {
+                        # The verdict names the group that actually holds the ACE. "An
+                        # Exchange group" left the reader to work out which of the two rows
+                        # below drove the finding, and the answer is the point: it decides
+                        # whose membership has to be reviewed.
+                        # Names who and what, and stops there. Why rewriting the domain DACL
+                        # matters is the write-up's job, not the row's.
+                        $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue "Shared permissions - $($effectiveHolders -join ' and ') can rewrite the domain DACL (PrivExchange)" -Force
+                        $modelConsoleClass = 'Finding'
+                    }
+                    elseif (@($inheritOnlyACEs).Count -gt 0) {
+                        $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Mitigated shared permissions - the Exchange ACE is inherit-only and does not apply to the domain object' -Force
+                        $modelConsoleClass = 'Secure'
+                    }
+                    elseif ($protectedGroupsOU) {
+                        $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Split permissions - no Exchange group holds escalation rights on the domain object' -Force
+                        $modelConsoleClass = 'Secure'
+                    }
+                    else {
+                        $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Clean - no Exchange group holds escalation rights on the domain object' -Force
+                        $modelConsoleClass = 'Secure'
+                    }
+
+                    # Two attributes, not one list. Mixing them meant the ACE that drives
+                    # the finding sat in the middle of four that do not, in the same
+                    # colour, with nothing saying which was which.
+                    if (@($effectiveACEs).Count -gt 0) {
+                        $modelObj | Add-Member -NotePropertyName 'EffectiveDomainACEs' -NotePropertyValue $effectiveACEs -Force
+                    }
+                    if (@($inheritOnlyACEs).Count -gt 0) {
+                        $modelObj | Add-Member -NotePropertyName 'InheritOnlyDomainACEs' -NotePropertyValue $inheritOnlyACEs -Force
+                    }
+
+                    # Naming the OU said what was observed but not what it means. Exchange
+                    # setup creates that OU only when it is run with
+                    # /ActiveDirectorySplitPermissions:true, and the same run is what strips
+                    # the Exchange Windows Permissions ACEs off the domain object - so its
+                    # presence or absence answers which permissions model this organization
+                    # was prepared with, which is the question a reader actually has.
+                    $splitPermissionsText = if ($protectedGroupsOU) {
+                        'Enabled - Exchange Windows Permissions holds no ACEs on the domain object'
+                    } else {
+                        'Not enabled - shared permissions model'
+                    }
+                    $modelObj | Add-Member -NotePropertyName 'ADSplitPermissions' -NotePropertyValue $splitPermissionsText -Force
+                    $modelObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangePermissionsModel' -Force
+
+                    # "Found <thing>:" with the severity as colour, the way every other
+                    # check announces its object ("Analyzing password policy..." ->
+                    # "Found password policy:"). The scope stays in the sub-header rather
+                    # than being repeated here.
+                    Show-Line "Found Exchange permissions model:" -Class $modelConsoleClass
+                    Show-Object $modelObj -Class $modelConsoleClass
+                }
+            }
+
+            # ===== Steps 6-8: The Exchange service groups =====
             #
             # Exchange Trusted Subsystem and Exchange Windows Permissions are supposed to
             # hold Exchange servers and nothing else. Exchange Windows Permissions carries

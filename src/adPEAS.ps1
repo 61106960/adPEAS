@@ -151,6 +151,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-SID.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertTo-SID.ps1"
     . "$Script:ScriptPath\modules\Helpers\Test-IsPrivileged.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Resolve-SchemaClassName.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-ObjectOwner.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-ADInterval.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-GPPPassword.ps1"
@@ -247,6 +248,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\ADCS\Get-ADCSVulnerabilities.ps1"
     . "$Script:ScriptPath\modules\Checks\ADCS\Get-WeakCertificateMapping.ps1"
     . "$Script:ScriptPath\modules\Checks\Application\Get-ExchangeInfrastructure.ps1"
+    . "$Script:ScriptPath\modules\Checks\Application\Get-ExchangeRBACAssignments.ps1"
     . "$Script:ScriptPath\modules\Checks\Application\Get-SCCMInfrastructure.ps1"
     . "$Script:ScriptPath\modules\Checks\Application\Get-SCOMInfrastructure.ps1"
     . "$Script:ScriptPath\modules\Checks\Creds\Get-KerberoastableAccounts.ps1"
@@ -1183,6 +1185,7 @@ try {
         Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['Application'])"
         try {
             Invoke-CheckWithContext -Category 'Application' -CheckName 'Get-ExchangeInfrastructure' -Title 'Exchange Infrastructure' -Check { Get-ExchangeInfrastructure }
+            Invoke-CheckWithContext -Category 'Application' -CheckName 'Get-ExchangeRBACAssignments' -Title 'Exchange Role Assignments' -Check { Get-ExchangeRBACAssignments }
             Invoke-CheckWithContext -Category 'Application' -CheckName 'Get-SCCMInfrastructure' -Title 'SCCM Infrastructure' -Check { Get-SCCMInfrastructure }
             Invoke-CheckWithContext -Category 'Application' -CheckName 'Get-SCOMInfrastructure' -Title 'SCOM Infrastructure' -Check { Get-SCOMInfrastructure }
         } catch {

@@ -479,7 +479,7 @@ function Invoke-StandardHTTPRequest {
     4. Fallback: X-OWA-Version via HTTP (non-SSL)
 
     Additionally detects:
-    - Available endpoints (OWA, ECP, EWS, Autodiscover, MAPI, RPC, PowerShell, ActiveSync)
+    - Available endpoints (OWA, ECP, EWS, Autodiscover, MAPI, RPC, PowerShell, ActiveSync, MRSProxy)
     - Authentication methods (NTLM, Negotiate, Basic, Forms)
     - HTTP vs HTTPS availability
     - Extended Protection for Authentication (EPA) status per endpoint (with -TestEPA)
@@ -530,15 +530,23 @@ function Invoke-ExchangeScanInternal {
         # Available = reachable via any transport; AvailableHttp / AvailableHttps record the
         # specific transport(s) so endpoint lines can be rendered per endpoint instead of from
         # the global HttpAvailable / HttpsAvailable flags.
+        # Declared in $Script:ExchangeEndpointOrder's order so the structure reads the way
+        # the report does. Only that list decides the output order; this one is cosmetic.
         Endpoints        = [PSCustomObject]@{
             OWA          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             ECP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             EWS          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            # MRSProxy is a WCF service inside the EWS virtual directory, and it carries its
+            # own Extended Protection setting: Negotiate can be offered there without channel
+            # binding even on a server whose OWA and EWS roots enforce EPA, which is a
+            # published pre-authentication relay path. It has to be probed separately - the
+            # EWS entry says nothing about it.
+            MRSProxy     = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             Autodiscover = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             MAPI         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             RPC          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            PowerShell   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             ActiveSync   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            PowerShell   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
         }
         # Protocol availability
         HttpAvailable    = $false
@@ -735,6 +743,29 @@ function Invoke-ExchangeScanInternal {
         Write-Log "[ScanExchange] EWS endpoint responded but is not Exchange (likely load balancer redirect)"
     }
 
+    # ===== Test MRSProxy endpoint (CVE-2026-62911) =====
+    # The Mailbox Replication Service proxy is a WCF service published inside the EWS
+    # virtual directory. It is probed on its own because Extended Protection is configured
+    # per endpoint: a server that enforces EPA on /ews/exchange.asmx can still offer
+    # Negotiate without channel binding here, which is the relay path CVE-2026-62911 uses.
+    #
+    # A negative result is not proof the service is gone. MRSProxy is only published on the
+    # EWS virtual directory when MRSProxyEnabled is set (cross-forest moves, hybrid), and
+    # the HTTP.sys namespace the advisory names is not reachable through this path at all.
+    # It is reported when found, never reported as absent.
+    $mrsUrl = "https://$targetHost/ews/mrsproxy.svc"
+    Write-Log "[ScanExchange] Testing MRSProxy endpoint: $mrsUrl"
+
+    $mrsResult = Test-ExchangeEndpoint -Url $mrsUrl -EndpointName "MRSProxy" -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
+    if ($mrsResult.IsExchangeEndpoint) {
+        $result.Endpoints.MRSProxy.Available = $true
+        $result.Endpoints.MRSProxy.AuthMethods = $mrsResult.AuthMethods -join ', '
+        Write-Log "[ScanExchange] MRSProxy available (HTTP $($mrsResult.StatusCode)), Auth: $($mrsResult.AuthMethods -join ', ')"
+    }
+    elseif ($mrsResult.Reachable) {
+        Write-Log "[ScanExchange] MRSProxy endpoint responded but is not Exchange (HTTP $($mrsResult.StatusCode) - service not published)"
+    }
+
     # ===== Test ECP endpoint (always test for auth methods, even if detected via exporttool) =====
     $ecpUrl = "https://$targetHost/ecp/"
     Write-Log "[ScanExchange] Testing ECP endpoint: $ecpUrl"
@@ -844,7 +875,7 @@ function Invoke-ExchangeScanInternal {
     if (-not $result.Success) {
         $anyEndpoint = $result.Endpoints.OWA.Available -or $result.Endpoints.ECP.Available -or $result.Endpoints.EWS.Available -or
                        $result.Endpoints.Autodiscover.Available -or $result.Endpoints.MAPI.Available -or $result.Endpoints.RPC.Available -or
-                       $result.Endpoints.PowerShell.Available -or $result.Endpoints.ActiveSync.Available
+                       $result.Endpoints.PowerShell.Available -or $result.Endpoints.ActiveSync.Available -or $result.Endpoints.MRSProxy.Available
 
         if ($anyEndpoint) {
             $result.Success = $true
@@ -862,7 +893,7 @@ function Invoke-ExchangeScanInternal {
     # https://), so a detected endpoint without an HTTP transport defaults to HTTPS. This makes
     # HttpsAvailable reflect ANY endpoint (EWS/MAPI/RPC/... previously did not update it).
     # Additive: never clears a flag.
-    foreach ($epName in @('OWA', 'ECP', 'EWS', 'Autodiscover', 'MAPI', 'RPC', 'PowerShell', 'ActiveSync')) {
+    foreach ($epName in $Script:ExchangeEndpointOrder) {
         $ep = $result.Endpoints.$epName
         if ($ep.Available -and -not $ep.AvailableHttp) { $ep.AvailableHttps = $true }
         if ($ep.AvailableHttp)  { $result.HttpAvailable  = $true }
@@ -871,7 +902,7 @@ function Invoke-ExchangeScanInternal {
 
     # Log summary of available endpoints with their auth methods
     $availableEndpoints = @()
-    foreach ($ep in @('OWA', 'ECP', 'EWS', 'Autodiscover', 'MAPI', 'RPC', 'PowerShell', 'ActiveSync')) {
+    foreach ($ep in $Script:ExchangeEndpointOrder) {
         if ($result.Endpoints.$ep.Available) {
             $authStr = if ($result.Endpoints.$ep.AuthMethods) { " ($($result.Endpoints.$ep.AuthMethods))" } else { "" }
             $availableEndpoints += "$ep$authStr"
@@ -908,10 +939,11 @@ function Invoke-ExchangeScanInternal {
             'RPC'          = "https://$targetHost/rpc/"
             'PowerShell'   = "https://$targetHost/powershell/"
             'ActiveSync'   = "https://$targetHost/Microsoft-Server-ActiveSync/"
+            'MRSProxy'     = "https://$targetHost/ews/mrsproxy.svc"
         }
 
         # Test EPA for each available endpoint with NTLM over HTTPS
-        foreach ($ep in @('OWA', 'ECP', 'EWS', 'Autodiscover', 'MAPI', 'RPC', 'PowerShell', 'ActiveSync')) {
+        foreach ($ep in $Script:ExchangeEndpointOrder) {
             if ($result.Endpoints.$ep.Available -and $result.Endpoints.$ep.AuthMethods -match 'NTLM') {
                 $epaTestUrl = $endpointUrls[$ep]
 

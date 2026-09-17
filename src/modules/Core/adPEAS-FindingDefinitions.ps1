@@ -5863,6 +5863,613 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         MITRE = "T1068"
     }
 
+    # ========================================================================
+    # EXCHANGE PERMISSIONS MODEL (Get-ExchangeInfrastructure)
+    # Triggered on the 'PermissionsModel' attribute of ExchangePermissionsModel objects.
+    # ========================================================================
+
+    'EXCHANGE_SHARED_PERMISSIONS_MODEL' = @{
+        Title = "Exchange Holds WriteDACL on the Domain Object (Shared Permissions Model)"
+        Risk = "Finding"
+        BaseScore = 75
+        Description = "Exchange setup granted an Exchange group WriteDACL on the domain object itself, and the ACE is not inherit-only. Any member of that group can rewrite the domain DACL and add the replication rights DCSync needs. This is the escalation half of PrivExchange and it is what makes membership of Exchange Windows Permissions worth having."
+        Impact = @(
+            "A member of the group can grant itself DS-Replication-Get-Changes and -All"
+            "That is DCSync: every password hash in the domain, including krbtgt"
+            "Exchange Trusted Subsystem is nested in Exchange Windows Permissions, so every Exchange server computer account reaches this too"
+            "An NTLM relay from an Exchange server is therefore a relay to domain compromise"
+        )
+        Attack = @(
+            "1. Obtain any principal in Exchange Windows Permissions, or relay an Exchange server's machine authentication"
+            "2. Write an ACE on the domain object granting the controlled principal the replication rights"
+            "3. Run DCSync against a domain controller"
+            "4. Forge a golden ticket from the krbtgt hash, or authenticate as any user"
+        )
+        Remediation = @(
+            "Apply the inherit-only flag to the WriteDACL ACE so it no longer applies to the domain object (Microsoft documents this for the shared permissions model)"
+            "Or move the organization to Active Directory split permissions, which removes the model entirely"
+            "Keep Exchange Windows Permissions and Exchange Trusted Subsystem free of anything that is not an Exchange server"
+            "Enable LDAP signing and channel binding so an Exchange server's authentication cannot be relayed to a domain controller"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the Exchange ACEs currently on the domain object"
+                Command = "(Get-Acl 'AD:\DC=domain,DC=com').Access | Where-Object { `$_.IdentityReference -match 'Exchange' -and `$_.ActiveDirectoryRights -match 'WriteDacl|WriteOwner|GenericAll' } | Format-Table IdentityReference,ActiveDirectoryRights,PropagationFlags,InheritanceFlags -AutoSize"
+            }
+            @{
+                Description = "Switch the organization to Active Directory split permissions"
+                Command = "# Run from the Exchange installation media: .\Setup.exe /PrepareAD /ActiveDirectorySplitPermissions:true /IAcceptExchangeServerLicenseTerms"
+            }
+        )
+        References = @(
+            @{ Title = "Abusing Exchange: One API call away from Domain Admin"; Url = "https://dirkjanm.io/abusing-exchange-one-api-call-away-from-domain-admin/" }
+            @{ Title = "Reducing permissions required to run Exchange Server when you use the Shared Permissions Model"; Url = "https://support.microsoft.com/en-us/topic/reducing-permissions-required-to-run-exchange-server-when-you-use-the-shared-permissions-model-e1972d47-d714-fd76-1fd5-7cdcb85408ed" }
+            @{ Title = "Exchange-AD-Privesc - Domain Object"; Url = "https://github.com/gdedrouas/Exchange-AD-Privesc/blob/master/DomainObject/DomainObject.md" }
+            @{ Title = "Configure Exchange for split permissions"; Url = "https://learn.microsoft.com/en-us/exchange/permissions/split-permissions/configure-exchange-for-split-permissions" }
+        )
+        Tools = @("PrivExchange", "ntlmrelayx", "BloodHound", "PowerView")
+        MITRE = "T1068"
+        Triggers = @(
+            @{ Attribute = 'PermissionsModel'; Pattern = '^Shared permissions'; Severity = 'Finding' }
+            # The evidence row too. It carries the ACE the verdict rests on, and leaving it
+            # uncoloured put the one line that matters in the same grey as the four
+            # inherit-only ones beside it.
+            @{ Attribute = 'EffectiveDomainACEs'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_PERMISSIONS_MODEL_CLEAN' = @{
+        Title = "Exchange Holds No Effective Escalation Rights on the Domain Object"
+        Risk = "Secure"
+        BaseScore = 0
+        Description = "No Exchange group holds WriteDACL, WriteOwner or GenericAll on the domain object in a form that applies to that object. Either the ACE was narrowed with the inherit-only flag as Microsoft documents, the organization runs Active Directory split permissions, or the ACE was never present. The PrivExchange escalation path from Exchange group membership to DCSync does not exist here."
+        Impact = @(
+            "Membership of Exchange Windows Permissions does not by itself lead to DCSync"
+            "Relaying an Exchange server's authentication does not reach the domain DACL through this path"
+        )
+        Remediation = @(
+            "No action required for this check"
+            "Keep LDAP signing and channel binding enforced - they close the relay path itself, not only its payoff"
+        )
+        References = @(
+            @{ Title = "Exchange split permissions"; Url = "https://learn.microsoft.com/en-us/exchange/permissions/split-permissions/split-permissions" }
+        )
+        MITRE = "T1068"
+        Triggers = @(
+            @{ Attribute = 'PermissionsModel'; Pattern = '^Mitigated shared permissions|^Split permissions|^Clean'; Severity = 'Secure' }
+        )
+    }
+
+    'EXCHANGE_AD_SPLIT_PERMISSIONS' = @{
+        Title = "Exchange Runs With Active Directory Split Permissions"
+        Risk = "Secure"
+        BaseScore = 0
+        Description = "The forest was prepared with /ActiveDirectorySplitPermissions, which is the hardened of the two Exchange permissions models. Exchange administrators and Exchange servers cannot create Active Directory security principals at all, and setup removed every Exchange Windows Permissions entry from the domain object - so membership of that group is no longer a route to the domain DACL. The Microsoft Exchange Protected Groups OU, which only this setup mode creates, is what records the choice."
+        Impact = @(
+            "Exchange Windows Permissions holds no access control entries on the domain object"
+            "Exchange Trusted Subsystem is not a member of Exchange Windows Permissions"
+            "Creating users and groups, and changing distribution group membership, requires Active Directory tools and Active Directory permissions"
+        )
+        Remediation = @(
+            "No action required - this is the hardened model"
+            "Check the Exchange Trusted Subsystem entries separately: Microsoft's setup removes the Exchange Windows Permissions entries from the domain object, and names no others"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which Exchange groups still hold entries on the domain object"
+                Command = "(Get-Acl 'AD:\DC=domain,DC=com').Access | Where-Object { `$_.IdentityReference -match 'Exchange' } | Format-Table IdentityReference,ActiveDirectoryRights,PropagationFlags,InheritedObjectType -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Split permissions in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/permissions/split-permissions/split-permissions" }
+            @{ Title = "Configure Exchange Server for split permissions"; Url = "https://learn.microsoft.com/en-us/exchange/permissions/split-permissions/configure-exchange-for-split-permissions" }
+        )
+        MITRE = "T1068"
+        Triggers = @(
+            # Only the enabled state is coloured. "Not enabled" is Exchange's default, and
+            # marking every stock installation would be noise - where it matters, the
+            # PermissionsModel row above already carries the finding.
+            @{ Attribute = 'ADSplitPermissions'; Pattern = '^Enabled'; Severity = 'Secure' }
+        )
+    }
+
+    # ========================================================================
+    # EXCHANGE SMTP RECEIVE CONNECTORS (Get-ExchangeInfrastructure)
+    # Triggered on the 'RelayStatus' attribute of ExchangeReceiveConnector objects.
+    # ========================================================================
+
+    'EXCHANGE_SMTP_OPEN_RELAY' = @{
+        Title = "SMTP Receive Connector Relays for Unauthenticated Senders"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "The connector's security descriptor grants ms-Exch-SMTP-Accept-Any-Recipient to an unauthenticated principal (Anonymous Logon or Everyone). A session that presents no credential can therefore hand the server mail addressed to any domain, and the server will deliver it. This is usually an application relay connector whose remote IP range was widened past the application it was built for."
+        Impact = @(
+            "The server sends mail on behalf of anyone who can reach the listening port"
+            "The organization's own IP reputation and mail domains carry the traffic"
+            "Blocklisting of the sending address affects all legitimate mail from the organization"
+            "Combined with an internal sender address it becomes internal phishing that passes every trust indicator"
+        )
+        Attack = @(
+            "1. Reach the connector's listening port from an address inside its remote IP range"
+            "2. Open an SMTP session without authenticating"
+            "3. Issue MAIL FROM with an internal address and RCPT TO with an external one"
+            "4. The message leaves the organization as legitimate outbound mail"
+        )
+        Remediation = @(
+            "Narrow the connector's remote IP ranges to the hosts that actually need to relay"
+            "Remove ms-Exch-SMTP-Accept-Any-Recipient from Anonymous Logon where relay is not required"
+            "Prefer an authenticated relay connector over an anonymous one"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which principals hold relay rights on each receive connector"
+                Command = "Get-ReceiveConnector | ForEach-Object { Get-ADPermission `$_.Identity | Where-Object { `$_.ExtendedRights -like '*Accept-Any-Recipient*' } | Select-Object Identity,User,ExtendedRights }"
+            }
+            @{
+                Description = "Remove the anonymous relay permission from a connector"
+                Command = "Get-ReceiveConnector 'CONNECTOR_NAME' | Remove-ADPermission -User 'NT AUTHORITY\ANONYMOUS LOGON' -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient'"
+            }
+            @{
+                Description = "Show the remote IP ranges a connector accepts"
+                Command = "Get-ReceiveConnector | Select-Object Name,Bindings,RemoteIPRanges,PermissionGroups,AuthMechanism"
+            }
+        )
+        References = @(
+            @{ Title = "Allow anonymous relay on Exchange servers"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/allow-anonymous-relay" }
+            @{ Title = "Receive connectors in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors" }
+        )
+        Tools = @("swaks", "telnet", "nmap smtp-open-relay")
+        MITRE = "T1566"
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Open relay'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_SMTP_ANONYMOUS_SPOOFING' = @{
+        Title = "SMTP Receive Connector Lets Unauthenticated Senders Use Internal Addresses"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "The connector grants ms-Exch-SMTP-Accept-Any-Sender or ms-Exch-SMTP-Accept-Authoritative-Domain-Sender to an unauthenticated principal. A session that presents no credential can put any address, including an internal one, in the sender field, and the message is then delivered as internal mail."
+        Impact = @(
+            "Mail arrives in employee mailboxes from an internal address that nobody sent"
+            "SPF, DKIM and DMARC do not apply - the message never leaves the organization's own perimeter"
+            "Outlook shows the sender as a known internal contact, photo and display name included"
+            "It is the highest-fidelity phishing primitive an internal network offers"
+        )
+        Attack = @(
+            "1. Reach the connector from an address inside its remote IP range"
+            "2. Open an SMTP session without authenticating"
+            "3. Set MAIL FROM to an executive's internal address and RCPT TO to a target employee"
+            "4. The message is delivered as internal mail from that executive"
+        )
+        Remediation = @(
+            "Remove the accept-sender extended rights from Anonymous Logon on this connector"
+            "Where an application must send as an internal address, give it an authenticated connector instead"
+            "Restrict the connector's remote IP ranges to the sending hosts"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which connectors let anonymous sessions choose the sender"
+                Command = "Get-ReceiveConnector | ForEach-Object { Get-ADPermission `$_.Identity | Where-Object { `$_.User -like '*ANONYMOUS LOGON*' -and `$_.ExtendedRights -like '*Accept-A*-Sender*' } | Select-Object Identity,User,ExtendedRights }"
+            }
+            @{
+                Description = "Remove the anonymous sender-spoofing permission from a connector"
+                Command = "Get-ReceiveConnector 'CONNECTOR_NAME' | Remove-ADPermission -User 'NT AUTHORITY\ANONYMOUS LOGON' -ExtendedRights 'Ms-Exch-SMTP-Accept-Authoritative-Domain-Sender'"
+            }
+        )
+        References = @(
+            @{ Title = "Scenarios for custom Receive connectors"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/custom-receive-connectors" }
+            @{ Title = "Allow anonymous relay on Exchange servers"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/allow-anonymous-relay" }
+        )
+        Tools = @("swaks", "telnet")
+        MITRE = "T1534"
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Sender spoofing'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_SMTP_BROAD_RELAY' = @{
+        Title = "SMTP Receive Connector Relays for Every Authenticated Principal"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "The connector grants a relay or sender right to a broad principal such as Authenticated Users or Domain Users. Authentication is required, but every account in the domain satisfies it, so a single compromised low-privilege account can send mail through this connector."
+        Impact = @(
+            "Any domain account, including a service account with a weak password, can relay through this connector"
+            "Outbound mail carries the organization's reputation"
+        )
+        Remediation = @(
+            "Grant the relay rights to a dedicated group holding the accounts that actually relay"
+            "Review the connector's remote IP ranges alongside the permission"
+        )
+        References = @(
+            @{ Title = "Receive connectors in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors" }
+        )
+        MITRE = "T1566"
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Broad relay'; Severity = 'Hint' }
+        )
+    }
+
+    'EXCHANGE_SMTP_CONNECTOR_AUTHENTICATED' = @{
+        Title = "SMTP Receive Connector Requires Authentication"
+        Risk = "Secure"
+        BaseScore = 0
+        Description = "The connector grants no SMTP extended right to an unauthenticated or broad principal. A sender has to authenticate before the connector will accept a message from it."
+        Impact = @(
+            "No anonymous relay and no anonymous sender spoofing through this connector"
+        )
+        Remediation = @(
+            "No action required for this connector"
+        )
+        References = @(
+            @{ Title = "Receive connectors in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors" }
+        )
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Authenticated senders only'; Severity = 'Secure' }
+        )
+    }
+
+    'EXCHANGE_SMTP_CONNECTOR_UNREADABLE' = @{
+        Title = "SMTP Receive Connector Permissions Could Not Be Read"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "The connector object's security descriptor was not returned, so what it grants an unauthenticated sender is unknown. This is not the same as a clean connector - it is a connector that was not assessed."
+        Impact = @(
+            "The connector's relay and sender-spoofing exposure is unknown"
+        )
+        Remediation = @(
+            "Re-run with an account that can read nTSecurityDescriptor on the Configuration partition"
+            "Or review the connector directly with Get-ADPermission"
+        )
+        References = @(
+            @{ Title = "Receive connectors in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors" }
+        )
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Unknown'; Severity = 'Hint' }
+        )
+    }
+
+    # ========================================================================
+    # EXCHANGE HYBRID DEPLOYMENT (Get-ExchangeInfrastructure)
+    # Triggered on the 'HybridStatus' attribute of ExchangeHybridConfiguration objects.
+    # ========================================================================
+
+    'EXCHANGE_HYBRID_DEPLOYMENT' = @{
+        Title = "Exchange Hybrid Deployment - On-Premises Compromise Reaches the Cloud Tenant"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "The organization is in a hybrid relationship with Exchange Online. In the classic model the on-premises servers and the cloud tenant share one service principal, and CVE-2025-53786 uses that shared trust to escalate from administrative access on an on-premises Exchange server into Exchange Online. Whether the dedicated hybrid application has been deployed cannot be read from Active Directory, so this reports the exposure rather than the patch state - it needs confirming against the servers themselves."
+        Impact = @(
+            "Administrative access to an on-premises Exchange server can be turned into privileges in the cloud tenant"
+            "The escalation leaves little in the tenant's own audit trail, because it arrives through a trusted principal"
+            "Every other Exchange finding in this report gains the tenant as additional blast radius"
+        )
+        Attack = @(
+            "1. Gain administrative access to an on-premises Exchange server through any of the paths in this report"
+            "2. Use the shared service principal's credentials to obtain tokens against Exchange Online"
+            "3. Act in the tenant as a trusted first-party application"
+        )
+        Remediation = @(
+            "Install the Exchange hotfix (April 2025 or newer) and deploy the dedicated Exchange hybrid application"
+            "Reset the shared service principal's credentials after switching, as Microsoft's guidance instructs"
+            "Verify with Microsoft's Exchange Server Health Checker that the dedicated app is in use"
+            "Treat every on-premises Exchange server as a tier-0 asset for as long as the hybrid trust exists"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Check whether the dedicated hybrid application is configured"
+                Command = "# Run on an Exchange server: .\HealthChecker.ps1 -Server SERVERNAME  (reports the hybrid application state)"
+            }
+            @{
+                Description = "Show the hybrid configuration recorded on-premises"
+                Command = "Get-HybridConfiguration | Format-List"
+            }
+        )
+        References = @(
+            @{ Title = "CVE-2025-53786 - Exchange Server Hybrid Deployment Elevation of Privilege"; Url = "https://msrc.microsoft.com/update-guide/en-US/vulnerability/CVE-2025-53786" }
+            @{ Title = "Deploy dedicated Exchange hybrid app"; Url = "https://learn.microsoft.com/en-us/exchange/hybrid-deployment/deploy-dedicated-exchange-hybrid-app" }
+            @{ Title = "MDVM guidance for CVE-2025-53786"; Url = "https://techcommunity.microsoft.com/blog/vulnerability-management/mdvm-guidance-for-cve-2025-53786-exchange-hybrid-privilege-escalation/4442337" }
+        )
+        MITRE = "T1078.004"
+        Triggers = @(
+            @{ Attribute = 'HybridStatus'; Pattern = '^Hybrid with Exchange Online'; Severity = 'Hint' }
+        )
+    }
+
+    # ========================================================================
+    # EXCHANGE RBAC ROLE ASSIGNMENTS (Get-ExchangeRBACAssignments)
+    # Triggered on the 'RiskVerdict' attribute of ExchangeRoleAssignment objects.
+    # Every pattern is anchored and starts with a distinct word: the definition table is
+    # an unordered hashtable, so two triggers that can both match one value would pick a
+    # winner at random.
+    # ========================================================================
+
+    'EXCHANGE_RBAC_MAILBOX_IMPORT_EXPORT' = @{
+        Title = "Mailbox Import Export Role Assigned"
+        Risk = "Finding"
+        BaseScore = 65
+        Description = "The Mailbox Import Export role lets its holder export the contents of any mailbox in the organization to a PST file, and import one back. Exchange ships this role assigned to nobody, not even Organization Management, so every assignment of it was made deliberately by someone."
+        Impact = @(
+            "The complete contents of any mailbox can be written to a file and taken away"
+            "No mailbox owner is notified and no mailbox permission is changed"
+            "The import direction historically served as a web shell delivery path, by exporting a crafted message into a web-served directory"
+        )
+        Attack = @(
+            "1. Obtain the account holding the role"
+            "2. New-MailboxExportRequest against the target mailbox, writing to a UNC path the attacker controls"
+            "3. Collect the PST and read it offline"
+        )
+        Remediation = @(
+            "Remove the assignment where the export capability is not an ongoing operational need"
+            "Where it is needed, assign it temporarily and remove it again afterwards"
+            "Restrict the export destination to a monitored share"
+            "Audit New-MailboxExportRequest in the Exchange admin audit log"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of the Mailbox Import Export role"
+                Command = "Get-ManagementRoleAssignment -Role 'Mailbox Import Export' | Select-Object Name,RoleAssigneeName,RoleAssigneeType,AssignmentMethod"
+            }
+            @{
+                Description = "Remove a Mailbox Import Export role assignment"
+                Command = "Remove-ManagementRoleAssignment -Identity 'ASSIGNMENT_NAME' -Confirm:`$false"
+            }
+            @{
+                Description = "Review recent mailbox export requests"
+                Command = "Get-MailboxExportRequest | Select-Object Name,Mailbox,FilePath,Status,RequestQueue"
+            }
+        )
+        References = @(
+            @{ Title = "Microsoft Exchange - Mailbox Post Compromise"; Url = "https://pentestlab.blog/2019/09/11/microsoft-exchange-mailbox-post-compromise/" }
+            @{ Title = "Understanding management role assignments"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-role-assignments-exchange-2013-help" }
+        )
+        Tools = @("Exchange Management Shell")
+        MITRE = "T1114.002"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Mailbox export'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_APPLICATION_IMPERSONATION' = @{
+        Title = "ApplicationImpersonation Role Assigned"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "The ApplicationImpersonation role lets its holder act as any mailbox in the organization over Exchange Web Services. Exchange ships this role assigned to nobody. It is normally granted to an integration service account, and it is the single most useful Exchange role an attacker can inherit: one account, every mailbox, over a protocol that needs no special client."
+        Impact = @(
+            "Read, send and delete mail as any user in the organization"
+            "Search every mailbox for credentials, contracts or security documentation"
+            "Send mail as an executive from that executive's real mailbox - it appears in their Sent Items"
+            "No mailbox permission is changed and the mailbox owner sees nothing"
+        )
+        Attack = @(
+            "1. Compromise the account or service that holds the role, often a low-privilege integration account with a static password"
+            "2. Connect to EWS with an impersonation header naming the target mailbox"
+            "3. Enumerate and search mailboxes at will (MailSniper automates this)"
+        )
+        Remediation = @(
+            "Remove the assignment where no application needs it"
+            "Where an application does, scope the assignment with a management scope to the mailboxes it actually serves"
+            "Treat every account holding this role as a tier-0 credential: long random password, no interactive logon, monitored"
+            "Prefer modern per-application access over an organization-wide impersonation role"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of ApplicationImpersonation"
+                Command = "Get-ManagementRoleAssignment -Role ApplicationImpersonation | Select-Object Name,RoleAssigneeName,RoleAssigneeType,CustomRecipientWriteScope"
+            }
+            @{
+                Description = "Remove an ApplicationImpersonation assignment"
+                Command = "Remove-ManagementRoleAssignment -Identity 'ASSIGNMENT_NAME' -Confirm:`$false"
+            }
+            @{
+                Description = "Scope an assignment to a defined set of mailboxes instead of the whole organization"
+                Command = "New-ManagementScope -Name 'AppMailboxes' -RecipientRestrictionFilter { Department -eq 'Service' }; Set-ManagementRoleAssignment -Identity 'ASSIGNMENT_NAME' -CustomRecipientWriteScope 'AppMailboxes'"
+            }
+        )
+        References = @(
+            @{ Title = "MailSniper - weaponizing Exchange features"; Url = "https://starlog.is/articles/ai-dev-tools/dafthack-mailsniper" }
+            @{ Title = "Microsoft Exchange - Mailbox Post Compromise"; Url = "https://pentestlab.blog/2019/09/11/microsoft-exchange-mailbox-post-compromise/" }
+        )
+        Tools = @("MailSniper", "Exchange Web Services")
+        MITRE = "T1114.002"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Mailbox impersonation'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_ROLE_MANAGEMENT' = @{
+        Title = "Role Management Role Assigned Outside Organization Management"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "The Role Management role lets its holder create and assign Exchange management roles, including to itself. Exchange ships it assigned to Organization Management; an assignment anywhere else means that principal can grant itself ApplicationImpersonation, Mailbox Import Export, or any other role in the organization."
+        Impact = @(
+            "Self-escalation to every other Exchange capability in one command"
+            "Access to all mailbox content by way of the roles it can grant"
+            "A quiet persistence mechanism - a new role assignment looks like administration, not intrusion"
+        )
+        Attack = @(
+            "1. Obtain the principal holding Role Management"
+            "2. New-ManagementRoleAssignment granting itself ApplicationImpersonation"
+            "3. Read every mailbox over EWS"
+        )
+        Remediation = @(
+            "Remove the assignment; Role Management belongs with Organization Management"
+            "Audit New-ManagementRoleAssignment in the Exchange admin audit log"
+            "Review every existing assignment after removing this one - the holder may already have granted itself others"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of Role Management"
+                Command = "Get-ManagementRoleAssignment -Role 'Role Management' | Select-Object Name,RoleAssigneeName,RoleAssigneeType"
+            }
+            @{
+                Description = "List role assignments created recently"
+                Command = "Search-AdminAuditLog -Cmdlets New-ManagementRoleAssignment -StartDate (Get-Date).AddDays(-90) | Select-Object RunDate,Caller,ObjectModified"
+            }
+        )
+        References = @(
+            @{ Title = "Understanding management role assignments"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-role-assignments-exchange-2013-help" }
+            @{ Title = "Exchange RBAC in action"; Url = "https://practical365.com/exchange-server-role-based-access-control-in-action/" }
+        )
+        Tools = @("Exchange Management Shell")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Role management'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_UNSCOPED_ROLE_MANAGEMENT' = @{
+        Title = "Unscoped Role Management Role Assigned"
+        Risk = "Finding"
+        BaseScore = 75
+        Description = "The Unscoped Top Level Role Management role lets its holder create unscoped management roles, which may contain arbitrary scripts and cmdlets rather than only Exchange ones. Exchange ships this role assigned to nobody, and it converts Exchange administration into code execution."
+        Impact = @(
+            "Arbitrary script execution in the Exchange management context"
+            "Code runs on the Exchange server, which is a domain member with far-reaching AD permissions"
+            "The role publishes itself - anyone assigned the unscoped role can run its contents"
+        )
+        Attack = @(
+            "1. Obtain the principal holding the role"
+            "2. New-ManagementRole -UnScopedTopLevel wrapping an attacker-supplied script"
+            "3. Assign the new role and invoke it"
+        )
+        Remediation = @(
+            "Remove the assignment - very few organizations have a legitimate use for it"
+            "Review every existing unscoped role for content that is not expected"
+            "Audit New-ManagementRole in the Exchange admin audit log"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of the unscoped role management capability"
+                Command = "Get-ManagementRoleAssignment -Role 'Unscoped Role Management' | Select-Object Name,RoleAssigneeName,RoleAssigneeType"
+            }
+            @{
+                Description = "List all unscoped top-level roles in the organization"
+                Command = "Get-ManagementRole | Where-Object { `$_.RoleType -eq 'UnScoped' } | Select-Object Name,RoleType,Description"
+            }
+        )
+        References = @(
+            @{ Title = "Understanding management roles"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-roles-exchange-2013-help" }
+        )
+        Tools = @("Exchange Management Shell")
+        MITRE = "T1059.001"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Unscoped role management'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_MAILBOX_SEARCH' = @{
+        Title = "Mailbox Search Role Assigned Outside Discovery Management"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "The Mailbox Search role lets its holder run discovery searches across every mailbox in the organization and copy the results into a discovery mailbox. Exchange ships it assigned to Discovery Management, a group that is normally empty; an assignment anywhere else is organization-wide read access to mail content under an administrative label."
+        Impact = @(
+            "Keyword search across every mailbox, including those of executives and administrators"
+            "Results are copied into a discovery mailbox the holder can then open"
+            "Passwords, contracts and security documentation are found by searching for them"
+            "The activity looks like eDiscovery, which is exactly what it is"
+        )
+        Attack = @(
+            "1. Obtain the principal holding the role"
+            "2. New-MailboxSearch with a keyword list across all mailboxes"
+            "3. Open the target discovery mailbox and read the copied items"
+        )
+        Remediation = @(
+            "Remove the assignment; discovery belongs to a named, monitored group"
+            "Keep Discovery Management empty and populate it only for the duration of a case"
+            "Audit New-MailboxSearch and access to discovery mailboxes"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of the Mailbox Search role"
+                Command = "Get-ManagementRoleAssignment -Role 'Mailbox Search' | Select-Object Name,RoleAssigneeName,RoleAssigneeType"
+            }
+            @{
+                Description = "List existing discovery searches"
+                Command = "Get-MailboxSearch | Select-Object Name,CreatedBy,SearchQuery,TargetMailbox,Status"
+            }
+        )
+        References = @(
+            @{ Title = "Understanding management role assignments"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-role-assignments-exchange-2013-help" }
+        )
+        Tools = @("Exchange Management Shell")
+        MITRE = "T1114.002"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Mailbox search'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_AD_PERMISSIONS' = @{
+        Title = "Active Directory Permissions Role Assigned Outside Organization Management"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "The Active Directory Permissions role exposes Add-ADPermission and Remove-ADPermission, which write Active Directory ACLs through the Exchange Trusted Subsystem's own privileges. Exchange ships it assigned to Organization Management. An assignment elsewhere hands a principal the ability to change directory permissions using Exchange's rights rather than its own."
+        Impact = @(
+            "Directory ACLs can be modified with the Exchange Trusted Subsystem's permissions"
+            "Where the shared permissions model is in place, that reaches the domain object"
+            "Send-As and Receive-As can be granted on any mailbox, which is mailbox access without a mailbox permission"
+        )
+        Attack = @(
+            "1. Obtain the principal holding the role"
+            "2. Add-ADPermission granting the attacker Send-As on a target mailbox, or an escalation ACE on a directory object"
+            "3. Use the granted right directly"
+        )
+        Remediation = @(
+            "Remove the assignment; this role belongs with Organization Management"
+            "Verify the Exchange permissions model on the domain object (see the Exchange Permissions Model check)"
+            "Audit Add-ADPermission in the Exchange admin audit log"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of the Active Directory Permissions role"
+                Command = "Get-ManagementRoleAssignment -Role 'Active Directory Permissions' | Select-Object Name,RoleAssigneeName,RoleAssigneeType"
+            }
+            @{
+                Description = "Review recent Add-ADPermission calls"
+                Command = "Search-AdminAuditLog -Cmdlets Add-ADPermission -StartDate (Get-Date).AddDays(-90) | Select-Object RunDate,Caller,ObjectModified,CmdletParameters"
+            }
+        )
+        References = @(
+            @{ Title = "Exchange-AD-Privesc"; Url = "https://github.com/gdedrouas/Exchange-AD-Privesc" }
+            @{ Title = "Understanding management role assignments"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-role-assignments-exchange-2013-help" }
+        )
+        Tools = @("Exchange Management Shell", "PowerView")
+        MITRE = "T1222.001"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Directory permissions'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_DEFAULT_ASSIGNMENT' = @{
+        Title = "High-Value Exchange Role on Its Shipped Role Group"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "This high-value role sits on the role group Exchange assigns it to out of the box, so the assignment itself is expected. What is not automatically fine is who is in that group: the role group's membership is the real holder list, and compromising any member yields the role."
+        Impact = @(
+            "Every member of the role group holds this capability"
+            "Role groups such as Organization Management are frequently larger than anyone intends"
+            "Discovery Management is meant to be empty between cases and often is not"
+        )
+        Remediation = @(
+            "Review the role group's membership rather than the assignment"
+            "Keep Discovery Management empty outside of active cases"
+            "Require privileged access management for membership in Organization Management"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the membership of the Exchange role groups"
+                Command = "Get-RoleGroup | ForEach-Object { Write-Host `$_.Name; Get-RoleGroupMember `$_.Name | Select-Object Name,RecipientType }"
+            }
+        )
+        References = @(
+            @{ Title = "Understanding management role groups"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-role-groups-exchange-2013-help" }
+        )
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Default assignment'; Severity = 'Hint' }
+        )
+    }
+
     # ============================================================================
     # COMPUTER ACCOUNT FINDINGS
     # ============================================================================
@@ -9571,18 +10178,38 @@ foreach ($oid in $linkedOIDs) {
         Title = "Exchange Web Endpoints Security"
         Risk = "Finding"
         BaseScore = 40
-        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay."
+        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected."
         Impact = @(
             "HTTP + NTLM endpoints are vulnerable to NTLM relay"
             "HTTPS + NTLM without EPA is also vulnerable"
             "Relay attacks can compromise Exchange mailboxes"
+            "A relayed machine account can reach service endpoints that write files, which has yielded web shells running as SYSTEM"
+        )
+        Attack = @(
+            "1. Coerce or capture an authentication from a domain account or machine account"
+            "2. Relay it to an Exchange endpoint that offers NTLM without binding it to the TLS channel"
+            "3. Act as the relayed identity against that endpoint - mailbox access through EWS, or the service methods of an endpoint such as MRSProxy"
+            "4. An Exchange server compromised this way reaches every mailbox, and through Exchange's directory permissions often the domain"
         )
         Remediation = @(
-            "Enable EPA on all Exchange endpoints"
+            "Enable EPA on all Exchange endpoints, and verify it per virtual directory rather than per server"
             "Disable HTTP access and require HTTPS"
+            "Keep the servers on a current cumulative and security update - several relay paths were closed by update rather than by configuration"
+            "Turn MRSProxy off on servers that perform no cross-forest or hybrid mailbox moves"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Check the Extended Protection state of every virtual directory"
+                Command = "# Run Microsoft's script on the Exchange server: .\ExchangeExtendedProtectionManagement.ps1 -ShowExtendedProtection"
+            }
+            @{
+                Description = "Show whether MRSProxy is published on each EWS virtual directory"
+                Command = "Get-WebServicesVirtualDirectory -ADPropertiesOnly | Select-Object Identity,MRSProxyEnabled"
+            }
         )
         References = @(
             @{ Title = "Exchange Security Best Practices"; Url = "https://docs.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices" }
+            @{ Title = "Configure Extended Protection in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection" }
         )
         MITRE = "T1187"
         Triggers = @(

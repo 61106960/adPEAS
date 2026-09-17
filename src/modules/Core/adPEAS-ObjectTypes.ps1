@@ -272,6 +272,68 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
     }
 
+    'ExchangeHybridConfiguration' = @{
+        TitleFormat = "Exchange Hybrid: {Name}"
+        Module = "Application"
+        Category = "Exchange"
+        SectionTitle = "Exchange Hybrid Deployment"
+        Summary = "Detects whether the Exchange organization is in a hybrid relationship with Exchange Online."
+        WhyItMatters = "A hybrid organization shares one service principal between the on-premises servers and the cloud tenant, and that shared trust is an escalation path: administrative access to an on-premises Exchange server reaches Exchange Online through it, without the trace a cloud-side administrative action would leave. It also changes what an on-premises Exchange finding is worth - the blast radius of every other Exchange issue in this report now includes the tenant. Whether the dedicated hybrid application has been deployed cannot be read from Active Directory, so what is reported is the exposure, not the patch state."
+        WhatWeCheck = @(
+            "msExchCoexistenceRelationship objects in the Configuration partition, which the Hybrid Configuration Wizard creates"
+            "Coexistence domains, transport servers and external addresses where present"
+        )
+        # Not checked, deliberately: the account named Exchange Online-ApplicationAccount.
+        # Exchange setup creates it on every /PrepareAD in every organization, so it says
+        # nothing about hybrid despite the name.
+        SecureMessage = "No hybrid configuration was found - the organization appears to be purely on-premises."
+    }
+
+    'ExchangeReceiveConnector' = @{
+        TitleFormat = "Receive Connector: {Name}"
+        Module = "Application"
+        Category = "Exchange"
+        SectionTitle = "Exchange SMTP Receive Connectors"
+        Summary = "Judges each SMTP receive connector by the rights its security descriptor grants to unauthenticated senders."
+        WhyItMatters = "A receive connector's own DACL decides what an SMTP session that presented no credential may do. Granting ms-Exch-SMTP-Accept-Any-Recipient to ANONYMOUS LOGON makes the server relay to any domain; granting the accept-sender rights lets an anonymous sender put an internal address in the From header, which is a phishing campaign that passes SPF, DKIM and every mail-client trust indicator at once. Both are ordinary application-relay configurations that were scoped too widely, and both are invisible from the connector's name."
+        WhatWeCheck = @(
+            "ms-Exch-SMTP-* extended rights granted to Anonymous Logon and Everyone"
+            "The same rights granted to broad principals such as Authenticated Users"
+            "Connector bindings and the remote IP ranges the grants apply from"
+        )
+        SecureMessage = "No receive connector grants relay or sender-spoofing rights to unauthenticated senders."
+    }
+
+    'ExchangePermissionsModel' = @{
+        TitleFormat = "Exchange Permissions Model: {Name}"
+        Module = "Application"
+        Category = "Exchange"
+        SectionTitle = "Exchange Permissions Model"
+        Summary = "Reports whether an Exchange group holds WriteDACL on the domain object - the escalation half of PrivExchange."
+        WhyItMatters = "WriteDACL on the domain object means being able to rewrite the domain's own access control list - and an entry granting DS-Replication-Get-Changes and -All is DCSync, every password hash in the domain. In the shared permissions model Exchange setup grants that right to an Exchange group, which is what makes the group's membership worth anything to an attacker. The ACE is not immovable: Microsoft documents narrowing it with the inherit-only flag so it no longer applies to the domain object, and preparing the forest with /ActiveDirectorySplitPermissions removes the Exchange Windows Permissions entries from it entirely. The generic ACL check classifies every Exchange group as an expected trustee and hides it unless -IncludePrivileged is set, on the grounds that Exchange permissions are by design - for this one entry that is not true, which is why the distinction is made here instead. Read the two ACE rows together: the effective one is what the verdict rests on, and the inherit-only ones are listed so a reader can see that the same group's other grants stop at child objects rather than reaching the domain."
+        WhatWeCheck = @(
+            "WriteDACL, WriteOwner and GenericAll entries on the domain object held by Exchange groups"
+            "Which of them apply to the domain object itself, and which are inherit-only and only reach child objects of a named class"
+            "Whether the forest was prepared with AD split permissions, which the Microsoft Exchange Protected Groups OU records"
+        )
+        SecureMessage = "No Exchange group holds effective escalation rights on the domain object."
+    }
+
+    'ExchangeRoleAssignment' = @{
+        TitleFormat = "Exchange Role Assignment: {Name}"
+        Module = "Application"
+        Category = "Exchange"
+        SectionTitle = "Exchange Management Role Assignments"
+        Summary = "Reports who holds the Exchange roles that reach mailbox content or allow self-escalation inside Exchange."
+        WhyItMatters = "Exchange RBAC assignments live in the Configuration partition and any domain user can read them. Checking the Organization Management group is not enough, because a role can be assigned directly to one user and that assignment appears in no group membership at all. ApplicationImpersonation lets its holder act as every mailbox in the organization over EWS; Mailbox Import Export exports any mailbox to a file; Role Management lets its holder assign itself the other two. Exchange ships some of these assigned to a role group and others assigned to nobody, so an assignment that is not the shipped one was made deliberately."
+        WhatWeCheck = @(
+            "msExchRoleAssignment objects linking a role to a principal"
+            "Mailbox Import Export, ApplicationImpersonation, Role Management, Unscoped Role Management, Mailbox Search, Active Directory Permissions"
+            "Whether the assignee is the role group Exchange ships the role on, a custom group, a single user, or a role assignment policy"
+        )
+        SecureMessage = "None of the high-value Exchange roles is assigned outside the role groups Exchange ships them on."
+    }
+
     'MSSQLServer' = @{
         TitleFormat = "MSSQL Server: {Name}"
         Module = "Application"

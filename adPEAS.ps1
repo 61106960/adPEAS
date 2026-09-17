@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-09-13 12:30:31
-    Version: 2.5.0+20260913-1230
+    Build: 2026-09-17 17:59:10
+    Version: 2.5.0+20260917-1759
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -56,6 +56,51 @@
 # asserts the two agree, which is the drift this would otherwise invite.
 
 $Script:adPEASModules = @('Domain','Creds','Rights','Delegation','ADCS','Accounts','GPO','Computer','Application','Bloodhound')
+
+# =============================================================================
+# EXCHANGE WEB ENDPOINTS - Central Definition
+# =============================================================================
+# The Exchange web endpoints adPEAS probes, in the order it reports them.
+#
+# It lives here rather than beside the probe because it is a contract between two
+# modules: Invoke-HTTPRequest walks it three times (transport derivation, the log
+# summary, the Extended Protection loop) and Get-ExchangeInfrastructure walks it once
+# to render the WebEndpoints rows. It used to be written out at each of those four
+# sites, so adding an endpoint meant four edits - and forgetting one dropped it from
+# that pass silently, with no test able to notice, because each loop looked complete
+# on its own.
+#
+# The order is by attack surface. It is neither alphabetical nor the probe sequence:
+#
+#   OWA, ECP        the web UIs, and the surface ProxyLogon and ProxyShell reached
+#   EWS, MRSProxy   the relay and impersonation surface. MRSProxy sits inside the EWS
+#                   virtual directory but carries its own Extended Protection setting,
+#                   so the two belong next to each other - an "EPA: Enabled" on EWS
+#                   says nothing about MRSProxy, and that gap is a published
+#                   pre-authentication relay path
+#   Autodiscover    hands out client configuration, and offers NTLM while doing it
+#   MAPI, RPC       the Outlook transport protocols
+#   ActiveSync      mobile access, commonly Basic and commonly published externally
+#   PowerShell      remote management, normally Kerberos-only
+#
+# Fixed rather than sorted by severity per server, so that several Exchange cards in
+# one report list their endpoints in the same order and stay comparable.
+#
+# Deliberately NOT the order the endpoints are probed in. That sequence starts with OWA
+# because its response carries the X-OWA-Version header the build number is read from;
+# reordering the probes would change which method reports the version.
+
+$Script:ExchangeEndpointOrder = @(
+    'OWA'
+    'ECP'
+    'EWS'
+    'MRSProxy'
+    'Autodiscover'
+    'MAPI'
+    'RPC'
+    'ActiveSync'
+    'PowerShell'
+)
 
 # =============================================================================
 # SEVERITY CLASSES - Central Definition
@@ -373,7 +418,17 @@ $Script:ExtendedRightsGUIDs = @{
     'f30e3bbf-9ff0-11d1-b603-0000f80367c1' = 'GP-Options'
 
     # === Computer Related ===
-    '4828cc14-1437-45bc-9b07-ad6f015e5f28' = 'Allowed-To-Act-On-Behalf-Of-Other-Identity'
+    # No entry for RBCD here, deliberately. There is no such extended right:
+    # msDS-AllowedToActOnBehalfOfOtherIdentity is an attribute, and write access to it is
+    # what the attack needs - see 'WriteRBCD' in $Script:WritePropertyAliases, which carries
+    # the attribute's own GUID 3f78c3e5-f79a-46bd-a0b8-9d18116ddc79.
+    #
+    # This table used to map 4828cc14-1437-45bc-9b07-ad6f015e5f28 to that name. That GUID
+    # is the schemaIDGUID of the inetOrgPerson CLASS, and it appears as the
+    # InheritedObjectType of ordinary ACEs - in the default domain DACL, and in the ACE
+    # Microsoft's Exchange shared-permissions mitigation narrows. Because
+    # Resolve-ObjectTypeGUID checks extended rights before schema classes, every one of
+    # those ACEs resolved to an RBCD right that was never there.
     '9923a32a-3607-11d2-b9be-0000f87a36b2' = 'DS-Install-Replica'
     '69ae6200-7f46-11d2-b9ad-00c04f79f805' = 'DS-Check-Stale-Phantoms'
     '2f16c4a5-b98e-432c-952a-cb388ba33f2e' = 'DS-Execute-Intentions-Script'
@@ -512,6 +567,10 @@ $Script:ValidatedWriteGUIDs = @{
 $Script:SchemaClassGUIDs = @{
     # Core object classes
     'user'                           = [GUID]'bf967aba-0de6-11d0-a285-00aa003049e2'
+    # inetOrgPerson is not exotic: it sits beside 'user' in the default domain DACL and in
+    # the ACE Microsoft's Exchange shared-permissions mitigation narrows, so an ACE list
+    # that cannot name it prints two entries that look identical and are not.
+    'inetOrgPerson'                  = [GUID]'4828cc14-1437-45bc-9b07-ad6f015e5f28'
     'computer'                       = [GUID]'bf967a86-0de6-11d0-a285-00aa003049e2'
     'group'                          = [GUID]'bf967a9c-0de6-11d0-a285-00aa003049e2'
     'organizationalUnit'             = [GUID]'bf967aa5-0de6-11d0-a285-00aa003049e2'
@@ -1091,8 +1150,11 @@ $Script:ExtendedRightsAliases = @{
     'SIDHistory'        = '280f369c-67c7-438e-ae98-1d46f3c6f541'  # Alias
 
     # === RBCD (Resource-Based Constrained Delegation) ===
-    'RBCD' = '4828cc14-1437-45bc-9b07-ad6f015e5f28'  # Allowed-To-Act-On-Behalf-Of-Other-Identity
-    'AllowedToActOnBehalfOfOtherIdentity' = '4828cc14-1437-45bc-9b07-ad6f015e5f28'  # Full name alias
+    # Not an extended right and therefore not listed here. RBCD is granted by writing the
+    # msDS-AllowedToActOnBehalfOfOtherIdentity attribute, which is 'WriteRBCD' in
+    # $Script:WritePropertyAliases. The entries that used to sit here named the
+    # inetOrgPerson class GUID and were unreachable anyway - 'RBCD' is not in the
+    # -ExtendedRight ValidateSet of Set-DomainObject.
 
     # === Password Storage (Dangerous!) ===
     'ReversibleEncryption' = '05c74c5e-4deb-43b4-bd9f-86664c2a7fd5'  # Enable-Per-User-Reversibly-Encrypted-Password
@@ -3222,7 +3284,7 @@ function Compare-UserRightAssignment {
     a registry value that, WHEN ACTIVELY SET to a specific value, enables or facilitates
     an attack (credential theft, lateral movement, privilege escalation, defense evasion).
 
-    Design principle (matches CLAUDE.md focus): only POSITIVELY SET values are flagged.
+    Design principle: only POSITIVELY SET values are flagged.
     Absence of a hardening value is NOT a finding here, because GPO/SYSVOL parsing cannot
     reliably distinguish "not configured in this GPO" from "secure" - flagging absence
     would produce false negatives presented as secure.
@@ -6059,6 +6121,37 @@ $Script:PrimaryAttributes = @{
         'ExchangeVersion', 'ExchangeBuildNumber',
         'WebEndpoints',
         'DangerousPermissions'
+    )
+
+    # Exchange hybrid relationship with Exchange Online (Get-ExchangeInfrastructure)
+    ExchangeHybridConfiguration = @(
+        'HybridStatus', 'HybridEvidence',
+        'CoexistenceDomains', 'CoexistenceTransportServers',
+        'CoexistenceExternalIPAddresses', 'CoexistenceSmartHost'
+    )
+
+    # SMTP receive connector verdict (Get-ExchangeInfrastructure).
+    # RelayStatus first: it is the answer, and the bindings and grants below are the
+    # evidence for it.
+    ExchangeReceiveConnector = @(
+        'Name', 'RelayStatus', 'ExchangeServer',
+        'AnonymousPermissions', 'Bindings', 'RemoteIPRanges',
+        'distinguishedName'
+    )
+
+    # Shared vs. split permissions on the domain object (Get-ExchangeInfrastructure).
+    # The effective ACEs and the inherit-only ones are separate rows on purpose: one is
+    # the finding, the other is the mitigated shape Microsoft's guidance produces, and in
+    # a single list the reader could not tell which line drove the verdict.
+    ExchangePermissionsModel = @(
+        'PermissionsModel', 'EffectiveDomainACEs', 'InheritOnlyDomainACEs', 'ADSplitPermissions'
+    )
+
+    # Exchange RBAC role assignments (Get-ExchangeRBACAssignments).
+    # Role and assignee first - the pair is the finding; the verdict explains it.
+    ExchangeRoleAssignment = @(
+        'RoleName', 'Assignee', 'AssigneeType', 'RiskVerdict',
+        'AssignmentScope', 'AssigneeDN', 'distinguishedName'
     )
 
     # The three Exchange service groups (Get-ExchangeInfrastructure).
@@ -12958,6 +13051,613 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         MITRE = "T1068"
     }
 
+    # ========================================================================
+    # EXCHANGE PERMISSIONS MODEL (Get-ExchangeInfrastructure)
+    # Triggered on the 'PermissionsModel' attribute of ExchangePermissionsModel objects.
+    # ========================================================================
+
+    'EXCHANGE_SHARED_PERMISSIONS_MODEL' = @{
+        Title = "Exchange Holds WriteDACL on the Domain Object (Shared Permissions Model)"
+        Risk = "Finding"
+        BaseScore = 75
+        Description = "Exchange setup granted an Exchange group WriteDACL on the domain object itself, and the ACE is not inherit-only. Any member of that group can rewrite the domain DACL and add the replication rights DCSync needs. This is the escalation half of PrivExchange and it is what makes membership of Exchange Windows Permissions worth having."
+        Impact = @(
+            "A member of the group can grant itself DS-Replication-Get-Changes and -All"
+            "That is DCSync: every password hash in the domain, including krbtgt"
+            "Exchange Trusted Subsystem is nested in Exchange Windows Permissions, so every Exchange server computer account reaches this too"
+            "An NTLM relay from an Exchange server is therefore a relay to domain compromise"
+        )
+        Attack = @(
+            "1. Obtain any principal in Exchange Windows Permissions, or relay an Exchange server's machine authentication"
+            "2. Write an ACE on the domain object granting the controlled principal the replication rights"
+            "3. Run DCSync against a domain controller"
+            "4. Forge a golden ticket from the krbtgt hash, or authenticate as any user"
+        )
+        Remediation = @(
+            "Apply the inherit-only flag to the WriteDACL ACE so it no longer applies to the domain object (Microsoft documents this for the shared permissions model)"
+            "Or move the organization to Active Directory split permissions, which removes the model entirely"
+            "Keep Exchange Windows Permissions and Exchange Trusted Subsystem free of anything that is not an Exchange server"
+            "Enable LDAP signing and channel binding so an Exchange server's authentication cannot be relayed to a domain controller"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the Exchange ACEs currently on the domain object"
+                Command = "(Get-Acl 'AD:\DC=domain,DC=com').Access | Where-Object { `$_.IdentityReference -match 'Exchange' -and `$_.ActiveDirectoryRights -match 'WriteDacl|WriteOwner|GenericAll' } | Format-Table IdentityReference,ActiveDirectoryRights,PropagationFlags,InheritanceFlags -AutoSize"
+            }
+            @{
+                Description = "Switch the organization to Active Directory split permissions"
+                Command = "# Run from the Exchange installation media: .\Setup.exe /PrepareAD /ActiveDirectorySplitPermissions:true /IAcceptExchangeServerLicenseTerms"
+            }
+        )
+        References = @(
+            @{ Title = "Abusing Exchange: One API call away from Domain Admin"; Url = "https://dirkjanm.io/abusing-exchange-one-api-call-away-from-domain-admin/" }
+            @{ Title = "Reducing permissions required to run Exchange Server when you use the Shared Permissions Model"; Url = "https://support.microsoft.com/en-us/topic/reducing-permissions-required-to-run-exchange-server-when-you-use-the-shared-permissions-model-e1972d47-d714-fd76-1fd5-7cdcb85408ed" }
+            @{ Title = "Exchange-AD-Privesc - Domain Object"; Url = "https://github.com/gdedrouas/Exchange-AD-Privesc/blob/master/DomainObject/DomainObject.md" }
+            @{ Title = "Configure Exchange for split permissions"; Url = "https://learn.microsoft.com/en-us/exchange/permissions/split-permissions/configure-exchange-for-split-permissions" }
+        )
+        Tools = @("PrivExchange", "ntlmrelayx", "BloodHound", "PowerView")
+        MITRE = "T1068"
+        Triggers = @(
+            @{ Attribute = 'PermissionsModel'; Pattern = '^Shared permissions'; Severity = 'Finding' }
+            # The evidence row too. It carries the ACE the verdict rests on, and leaving it
+            # uncoloured put the one line that matters in the same grey as the four
+            # inherit-only ones beside it.
+            @{ Attribute = 'EffectiveDomainACEs'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_PERMISSIONS_MODEL_CLEAN' = @{
+        Title = "Exchange Holds No Effective Escalation Rights on the Domain Object"
+        Risk = "Secure"
+        BaseScore = 0
+        Description = "No Exchange group holds WriteDACL, WriteOwner or GenericAll on the domain object in a form that applies to that object. Either the ACE was narrowed with the inherit-only flag as Microsoft documents, the organization runs Active Directory split permissions, or the ACE was never present. The PrivExchange escalation path from Exchange group membership to DCSync does not exist here."
+        Impact = @(
+            "Membership of Exchange Windows Permissions does not by itself lead to DCSync"
+            "Relaying an Exchange server's authentication does not reach the domain DACL through this path"
+        )
+        Remediation = @(
+            "No action required for this check"
+            "Keep LDAP signing and channel binding enforced - they close the relay path itself, not only its payoff"
+        )
+        References = @(
+            @{ Title = "Exchange split permissions"; Url = "https://learn.microsoft.com/en-us/exchange/permissions/split-permissions/split-permissions" }
+        )
+        MITRE = "T1068"
+        Triggers = @(
+            @{ Attribute = 'PermissionsModel'; Pattern = '^Mitigated shared permissions|^Split permissions|^Clean'; Severity = 'Secure' }
+        )
+    }
+
+    'EXCHANGE_AD_SPLIT_PERMISSIONS' = @{
+        Title = "Exchange Runs With Active Directory Split Permissions"
+        Risk = "Secure"
+        BaseScore = 0
+        Description = "The forest was prepared with /ActiveDirectorySplitPermissions, which is the hardened of the two Exchange permissions models. Exchange administrators and Exchange servers cannot create Active Directory security principals at all, and setup removed every Exchange Windows Permissions entry from the domain object - so membership of that group is no longer a route to the domain DACL. The Microsoft Exchange Protected Groups OU, which only this setup mode creates, is what records the choice."
+        Impact = @(
+            "Exchange Windows Permissions holds no access control entries on the domain object"
+            "Exchange Trusted Subsystem is not a member of Exchange Windows Permissions"
+            "Creating users and groups, and changing distribution group membership, requires Active Directory tools and Active Directory permissions"
+        )
+        Remediation = @(
+            "No action required - this is the hardened model"
+            "Check the Exchange Trusted Subsystem entries separately: Microsoft's setup removes the Exchange Windows Permissions entries from the domain object, and names no others"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which Exchange groups still hold entries on the domain object"
+                Command = "(Get-Acl 'AD:\DC=domain,DC=com').Access | Where-Object { `$_.IdentityReference -match 'Exchange' } | Format-Table IdentityReference,ActiveDirectoryRights,PropagationFlags,InheritedObjectType -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Split permissions in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/permissions/split-permissions/split-permissions" }
+            @{ Title = "Configure Exchange Server for split permissions"; Url = "https://learn.microsoft.com/en-us/exchange/permissions/split-permissions/configure-exchange-for-split-permissions" }
+        )
+        MITRE = "T1068"
+        Triggers = @(
+            # Only the enabled state is coloured. "Not enabled" is Exchange's default, and
+            # marking every stock installation would be noise - where it matters, the
+            # PermissionsModel row above already carries the finding.
+            @{ Attribute = 'ADSplitPermissions'; Pattern = '^Enabled'; Severity = 'Secure' }
+        )
+    }
+
+    # ========================================================================
+    # EXCHANGE SMTP RECEIVE CONNECTORS (Get-ExchangeInfrastructure)
+    # Triggered on the 'RelayStatus' attribute of ExchangeReceiveConnector objects.
+    # ========================================================================
+
+    'EXCHANGE_SMTP_OPEN_RELAY' = @{
+        Title = "SMTP Receive Connector Relays for Unauthenticated Senders"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "The connector's security descriptor grants ms-Exch-SMTP-Accept-Any-Recipient to an unauthenticated principal (Anonymous Logon or Everyone). A session that presents no credential can therefore hand the server mail addressed to any domain, and the server will deliver it. This is usually an application relay connector whose remote IP range was widened past the application it was built for."
+        Impact = @(
+            "The server sends mail on behalf of anyone who can reach the listening port"
+            "The organization's own IP reputation and mail domains carry the traffic"
+            "Blocklisting of the sending address affects all legitimate mail from the organization"
+            "Combined with an internal sender address it becomes internal phishing that passes every trust indicator"
+        )
+        Attack = @(
+            "1. Reach the connector's listening port from an address inside its remote IP range"
+            "2. Open an SMTP session without authenticating"
+            "3. Issue MAIL FROM with an internal address and RCPT TO with an external one"
+            "4. The message leaves the organization as legitimate outbound mail"
+        )
+        Remediation = @(
+            "Narrow the connector's remote IP ranges to the hosts that actually need to relay"
+            "Remove ms-Exch-SMTP-Accept-Any-Recipient from Anonymous Logon where relay is not required"
+            "Prefer an authenticated relay connector over an anonymous one"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which principals hold relay rights on each receive connector"
+                Command = "Get-ReceiveConnector | ForEach-Object { Get-ADPermission `$_.Identity | Where-Object { `$_.ExtendedRights -like '*Accept-Any-Recipient*' } | Select-Object Identity,User,ExtendedRights }"
+            }
+            @{
+                Description = "Remove the anonymous relay permission from a connector"
+                Command = "Get-ReceiveConnector 'CONNECTOR_NAME' | Remove-ADPermission -User 'NT AUTHORITY\ANONYMOUS LOGON' -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient'"
+            }
+            @{
+                Description = "Show the remote IP ranges a connector accepts"
+                Command = "Get-ReceiveConnector | Select-Object Name,Bindings,RemoteIPRanges,PermissionGroups,AuthMechanism"
+            }
+        )
+        References = @(
+            @{ Title = "Allow anonymous relay on Exchange servers"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/allow-anonymous-relay" }
+            @{ Title = "Receive connectors in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors" }
+        )
+        Tools = @("swaks", "telnet", "nmap smtp-open-relay")
+        MITRE = "T1566"
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Open relay'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_SMTP_ANONYMOUS_SPOOFING' = @{
+        Title = "SMTP Receive Connector Lets Unauthenticated Senders Use Internal Addresses"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "The connector grants ms-Exch-SMTP-Accept-Any-Sender or ms-Exch-SMTP-Accept-Authoritative-Domain-Sender to an unauthenticated principal. A session that presents no credential can put any address, including an internal one, in the sender field, and the message is then delivered as internal mail."
+        Impact = @(
+            "Mail arrives in employee mailboxes from an internal address that nobody sent"
+            "SPF, DKIM and DMARC do not apply - the message never leaves the organization's own perimeter"
+            "Outlook shows the sender as a known internal contact, photo and display name included"
+            "It is the highest-fidelity phishing primitive an internal network offers"
+        )
+        Attack = @(
+            "1. Reach the connector from an address inside its remote IP range"
+            "2. Open an SMTP session without authenticating"
+            "3. Set MAIL FROM to an executive's internal address and RCPT TO to a target employee"
+            "4. The message is delivered as internal mail from that executive"
+        )
+        Remediation = @(
+            "Remove the accept-sender extended rights from Anonymous Logon on this connector"
+            "Where an application must send as an internal address, give it an authenticated connector instead"
+            "Restrict the connector's remote IP ranges to the sending hosts"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which connectors let anonymous sessions choose the sender"
+                Command = "Get-ReceiveConnector | ForEach-Object { Get-ADPermission `$_.Identity | Where-Object { `$_.User -like '*ANONYMOUS LOGON*' -and `$_.ExtendedRights -like '*Accept-A*-Sender*' } | Select-Object Identity,User,ExtendedRights }"
+            }
+            @{
+                Description = "Remove the anonymous sender-spoofing permission from a connector"
+                Command = "Get-ReceiveConnector 'CONNECTOR_NAME' | Remove-ADPermission -User 'NT AUTHORITY\ANONYMOUS LOGON' -ExtendedRights 'Ms-Exch-SMTP-Accept-Authoritative-Domain-Sender'"
+            }
+        )
+        References = @(
+            @{ Title = "Scenarios for custom Receive connectors"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/custom-receive-connectors" }
+            @{ Title = "Allow anonymous relay on Exchange servers"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/allow-anonymous-relay" }
+        )
+        Tools = @("swaks", "telnet")
+        MITRE = "T1534"
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Sender spoofing'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_SMTP_BROAD_RELAY' = @{
+        Title = "SMTP Receive Connector Relays for Every Authenticated Principal"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "The connector grants a relay or sender right to a broad principal such as Authenticated Users or Domain Users. Authentication is required, but every account in the domain satisfies it, so a single compromised low-privilege account can send mail through this connector."
+        Impact = @(
+            "Any domain account, including a service account with a weak password, can relay through this connector"
+            "Outbound mail carries the organization's reputation"
+        )
+        Remediation = @(
+            "Grant the relay rights to a dedicated group holding the accounts that actually relay"
+            "Review the connector's remote IP ranges alongside the permission"
+        )
+        References = @(
+            @{ Title = "Receive connectors in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors" }
+        )
+        MITRE = "T1566"
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Broad relay'; Severity = 'Hint' }
+        )
+    }
+
+    'EXCHANGE_SMTP_CONNECTOR_AUTHENTICATED' = @{
+        Title = "SMTP Receive Connector Requires Authentication"
+        Risk = "Secure"
+        BaseScore = 0
+        Description = "The connector grants no SMTP extended right to an unauthenticated or broad principal. A sender has to authenticate before the connector will accept a message from it."
+        Impact = @(
+            "No anonymous relay and no anonymous sender spoofing through this connector"
+        )
+        Remediation = @(
+            "No action required for this connector"
+        )
+        References = @(
+            @{ Title = "Receive connectors in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors" }
+        )
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Authenticated senders only'; Severity = 'Secure' }
+        )
+    }
+
+    'EXCHANGE_SMTP_CONNECTOR_UNREADABLE' = @{
+        Title = "SMTP Receive Connector Permissions Could Not Be Read"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "The connector object's security descriptor was not returned, so what it grants an unauthenticated sender is unknown. This is not the same as a clean connector - it is a connector that was not assessed."
+        Impact = @(
+            "The connector's relay and sender-spoofing exposure is unknown"
+        )
+        Remediation = @(
+            "Re-run with an account that can read nTSecurityDescriptor on the Configuration partition"
+            "Or review the connector directly with Get-ADPermission"
+        )
+        References = @(
+            @{ Title = "Receive connectors in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors" }
+        )
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Unknown'; Severity = 'Hint' }
+        )
+    }
+
+    # ========================================================================
+    # EXCHANGE HYBRID DEPLOYMENT (Get-ExchangeInfrastructure)
+    # Triggered on the 'HybridStatus' attribute of ExchangeHybridConfiguration objects.
+    # ========================================================================
+
+    'EXCHANGE_HYBRID_DEPLOYMENT' = @{
+        Title = "Exchange Hybrid Deployment - On-Premises Compromise Reaches the Cloud Tenant"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "The organization is in a hybrid relationship with Exchange Online. In the classic model the on-premises servers and the cloud tenant share one service principal, and CVE-2025-53786 uses that shared trust to escalate from administrative access on an on-premises Exchange server into Exchange Online. Whether the dedicated hybrid application has been deployed cannot be read from Active Directory, so this reports the exposure rather than the patch state - it needs confirming against the servers themselves."
+        Impact = @(
+            "Administrative access to an on-premises Exchange server can be turned into privileges in the cloud tenant"
+            "The escalation leaves little in the tenant's own audit trail, because it arrives through a trusted principal"
+            "Every other Exchange finding in this report gains the tenant as additional blast radius"
+        )
+        Attack = @(
+            "1. Gain administrative access to an on-premises Exchange server through any of the paths in this report"
+            "2. Use the shared service principal's credentials to obtain tokens against Exchange Online"
+            "3. Act in the tenant as a trusted first-party application"
+        )
+        Remediation = @(
+            "Install the Exchange hotfix (April 2025 or newer) and deploy the dedicated Exchange hybrid application"
+            "Reset the shared service principal's credentials after switching, as Microsoft's guidance instructs"
+            "Verify with Microsoft's Exchange Server Health Checker that the dedicated app is in use"
+            "Treat every on-premises Exchange server as a tier-0 asset for as long as the hybrid trust exists"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Check whether the dedicated hybrid application is configured"
+                Command = "# Run on an Exchange server: .\HealthChecker.ps1 -Server SERVERNAME  (reports the hybrid application state)"
+            }
+            @{
+                Description = "Show the hybrid configuration recorded on-premises"
+                Command = "Get-HybridConfiguration | Format-List"
+            }
+        )
+        References = @(
+            @{ Title = "CVE-2025-53786 - Exchange Server Hybrid Deployment Elevation of Privilege"; Url = "https://msrc.microsoft.com/update-guide/en-US/vulnerability/CVE-2025-53786" }
+            @{ Title = "Deploy dedicated Exchange hybrid app"; Url = "https://learn.microsoft.com/en-us/exchange/hybrid-deployment/deploy-dedicated-exchange-hybrid-app" }
+            @{ Title = "MDVM guidance for CVE-2025-53786"; Url = "https://techcommunity.microsoft.com/blog/vulnerability-management/mdvm-guidance-for-cve-2025-53786-exchange-hybrid-privilege-escalation/4442337" }
+        )
+        MITRE = "T1078.004"
+        Triggers = @(
+            @{ Attribute = 'HybridStatus'; Pattern = '^Hybrid with Exchange Online'; Severity = 'Hint' }
+        )
+    }
+
+    # ========================================================================
+    # EXCHANGE RBAC ROLE ASSIGNMENTS (Get-ExchangeRBACAssignments)
+    # Triggered on the 'RiskVerdict' attribute of ExchangeRoleAssignment objects.
+    # Every pattern is anchored and starts with a distinct word: the definition table is
+    # an unordered hashtable, so two triggers that can both match one value would pick a
+    # winner at random.
+    # ========================================================================
+
+    'EXCHANGE_RBAC_MAILBOX_IMPORT_EXPORT' = @{
+        Title = "Mailbox Import Export Role Assigned"
+        Risk = "Finding"
+        BaseScore = 65
+        Description = "The Mailbox Import Export role lets its holder export the contents of any mailbox in the organization to a PST file, and import one back. Exchange ships this role assigned to nobody, not even Organization Management, so every assignment of it was made deliberately by someone."
+        Impact = @(
+            "The complete contents of any mailbox can be written to a file and taken away"
+            "No mailbox owner is notified and no mailbox permission is changed"
+            "The import direction historically served as a web shell delivery path, by exporting a crafted message into a web-served directory"
+        )
+        Attack = @(
+            "1. Obtain the account holding the role"
+            "2. New-MailboxExportRequest against the target mailbox, writing to a UNC path the attacker controls"
+            "3. Collect the PST and read it offline"
+        )
+        Remediation = @(
+            "Remove the assignment where the export capability is not an ongoing operational need"
+            "Where it is needed, assign it temporarily and remove it again afterwards"
+            "Restrict the export destination to a monitored share"
+            "Audit New-MailboxExportRequest in the Exchange admin audit log"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of the Mailbox Import Export role"
+                Command = "Get-ManagementRoleAssignment -Role 'Mailbox Import Export' | Select-Object Name,RoleAssigneeName,RoleAssigneeType,AssignmentMethod"
+            }
+            @{
+                Description = "Remove a Mailbox Import Export role assignment"
+                Command = "Remove-ManagementRoleAssignment -Identity 'ASSIGNMENT_NAME' -Confirm:`$false"
+            }
+            @{
+                Description = "Review recent mailbox export requests"
+                Command = "Get-MailboxExportRequest | Select-Object Name,Mailbox,FilePath,Status,RequestQueue"
+            }
+        )
+        References = @(
+            @{ Title = "Microsoft Exchange - Mailbox Post Compromise"; Url = "https://pentestlab.blog/2019/09/11/microsoft-exchange-mailbox-post-compromise/" }
+            @{ Title = "Understanding management role assignments"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-role-assignments-exchange-2013-help" }
+        )
+        Tools = @("Exchange Management Shell")
+        MITRE = "T1114.002"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Mailbox export'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_APPLICATION_IMPERSONATION' = @{
+        Title = "ApplicationImpersonation Role Assigned"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "The ApplicationImpersonation role lets its holder act as any mailbox in the organization over Exchange Web Services. Exchange ships this role assigned to nobody. It is normally granted to an integration service account, and it is the single most useful Exchange role an attacker can inherit: one account, every mailbox, over a protocol that needs no special client."
+        Impact = @(
+            "Read, send and delete mail as any user in the organization"
+            "Search every mailbox for credentials, contracts or security documentation"
+            "Send mail as an executive from that executive's real mailbox - it appears in their Sent Items"
+            "No mailbox permission is changed and the mailbox owner sees nothing"
+        )
+        Attack = @(
+            "1. Compromise the account or service that holds the role, often a low-privilege integration account with a static password"
+            "2. Connect to EWS with an impersonation header naming the target mailbox"
+            "3. Enumerate and search mailboxes at will (MailSniper automates this)"
+        )
+        Remediation = @(
+            "Remove the assignment where no application needs it"
+            "Where an application does, scope the assignment with a management scope to the mailboxes it actually serves"
+            "Treat every account holding this role as a tier-0 credential: long random password, no interactive logon, monitored"
+            "Prefer modern per-application access over an organization-wide impersonation role"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of ApplicationImpersonation"
+                Command = "Get-ManagementRoleAssignment -Role ApplicationImpersonation | Select-Object Name,RoleAssigneeName,RoleAssigneeType,CustomRecipientWriteScope"
+            }
+            @{
+                Description = "Remove an ApplicationImpersonation assignment"
+                Command = "Remove-ManagementRoleAssignment -Identity 'ASSIGNMENT_NAME' -Confirm:`$false"
+            }
+            @{
+                Description = "Scope an assignment to a defined set of mailboxes instead of the whole organization"
+                Command = "New-ManagementScope -Name 'AppMailboxes' -RecipientRestrictionFilter { Department -eq 'Service' }; Set-ManagementRoleAssignment -Identity 'ASSIGNMENT_NAME' -CustomRecipientWriteScope 'AppMailboxes'"
+            }
+        )
+        References = @(
+            @{ Title = "MailSniper - weaponizing Exchange features"; Url = "https://starlog.is/articles/ai-dev-tools/dafthack-mailsniper" }
+            @{ Title = "Microsoft Exchange - Mailbox Post Compromise"; Url = "https://pentestlab.blog/2019/09/11/microsoft-exchange-mailbox-post-compromise/" }
+        )
+        Tools = @("MailSniper", "Exchange Web Services")
+        MITRE = "T1114.002"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Mailbox impersonation'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_ROLE_MANAGEMENT' = @{
+        Title = "Role Management Role Assigned Outside Organization Management"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "The Role Management role lets its holder create and assign Exchange management roles, including to itself. Exchange ships it assigned to Organization Management; an assignment anywhere else means that principal can grant itself ApplicationImpersonation, Mailbox Import Export, or any other role in the organization."
+        Impact = @(
+            "Self-escalation to every other Exchange capability in one command"
+            "Access to all mailbox content by way of the roles it can grant"
+            "A quiet persistence mechanism - a new role assignment looks like administration, not intrusion"
+        )
+        Attack = @(
+            "1. Obtain the principal holding Role Management"
+            "2. New-ManagementRoleAssignment granting itself ApplicationImpersonation"
+            "3. Read every mailbox over EWS"
+        )
+        Remediation = @(
+            "Remove the assignment; Role Management belongs with Organization Management"
+            "Audit New-ManagementRoleAssignment in the Exchange admin audit log"
+            "Review every existing assignment after removing this one - the holder may already have granted itself others"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of Role Management"
+                Command = "Get-ManagementRoleAssignment -Role 'Role Management' | Select-Object Name,RoleAssigneeName,RoleAssigneeType"
+            }
+            @{
+                Description = "List role assignments created recently"
+                Command = "Search-AdminAuditLog -Cmdlets New-ManagementRoleAssignment -StartDate (Get-Date).AddDays(-90) | Select-Object RunDate,Caller,ObjectModified"
+            }
+        )
+        References = @(
+            @{ Title = "Understanding management role assignments"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-role-assignments-exchange-2013-help" }
+            @{ Title = "Exchange RBAC in action"; Url = "https://practical365.com/exchange-server-role-based-access-control-in-action/" }
+        )
+        Tools = @("Exchange Management Shell")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Role management'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_UNSCOPED_ROLE_MANAGEMENT' = @{
+        Title = "Unscoped Role Management Role Assigned"
+        Risk = "Finding"
+        BaseScore = 75
+        Description = "The Unscoped Top Level Role Management role lets its holder create unscoped management roles, which may contain arbitrary scripts and cmdlets rather than only Exchange ones. Exchange ships this role assigned to nobody, and it converts Exchange administration into code execution."
+        Impact = @(
+            "Arbitrary script execution in the Exchange management context"
+            "Code runs on the Exchange server, which is a domain member with far-reaching AD permissions"
+            "The role publishes itself - anyone assigned the unscoped role can run its contents"
+        )
+        Attack = @(
+            "1. Obtain the principal holding the role"
+            "2. New-ManagementRole -UnScopedTopLevel wrapping an attacker-supplied script"
+            "3. Assign the new role and invoke it"
+        )
+        Remediation = @(
+            "Remove the assignment - very few organizations have a legitimate use for it"
+            "Review every existing unscoped role for content that is not expected"
+            "Audit New-ManagementRole in the Exchange admin audit log"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of the unscoped role management capability"
+                Command = "Get-ManagementRoleAssignment -Role 'Unscoped Role Management' | Select-Object Name,RoleAssigneeName,RoleAssigneeType"
+            }
+            @{
+                Description = "List all unscoped top-level roles in the organization"
+                Command = "Get-ManagementRole | Where-Object { `$_.RoleType -eq 'UnScoped' } | Select-Object Name,RoleType,Description"
+            }
+        )
+        References = @(
+            @{ Title = "Understanding management roles"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-roles-exchange-2013-help" }
+        )
+        Tools = @("Exchange Management Shell")
+        MITRE = "T1059.001"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Unscoped role management'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_MAILBOX_SEARCH' = @{
+        Title = "Mailbox Search Role Assigned Outside Discovery Management"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "The Mailbox Search role lets its holder run discovery searches across every mailbox in the organization and copy the results into a discovery mailbox. Exchange ships it assigned to Discovery Management, a group that is normally empty; an assignment anywhere else is organization-wide read access to mail content under an administrative label."
+        Impact = @(
+            "Keyword search across every mailbox, including those of executives and administrators"
+            "Results are copied into a discovery mailbox the holder can then open"
+            "Passwords, contracts and security documentation are found by searching for them"
+            "The activity looks like eDiscovery, which is exactly what it is"
+        )
+        Attack = @(
+            "1. Obtain the principal holding the role"
+            "2. New-MailboxSearch with a keyword list across all mailboxes"
+            "3. Open the target discovery mailbox and read the copied items"
+        )
+        Remediation = @(
+            "Remove the assignment; discovery belongs to a named, monitored group"
+            "Keep Discovery Management empty and populate it only for the duration of a case"
+            "Audit New-MailboxSearch and access to discovery mailboxes"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of the Mailbox Search role"
+                Command = "Get-ManagementRoleAssignment -Role 'Mailbox Search' | Select-Object Name,RoleAssigneeName,RoleAssigneeType"
+            }
+            @{
+                Description = "List existing discovery searches"
+                Command = "Get-MailboxSearch | Select-Object Name,CreatedBy,SearchQuery,TargetMailbox,Status"
+            }
+        )
+        References = @(
+            @{ Title = "Understanding management role assignments"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-role-assignments-exchange-2013-help" }
+        )
+        Tools = @("Exchange Management Shell")
+        MITRE = "T1114.002"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Mailbox search'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_AD_PERMISSIONS' = @{
+        Title = "Active Directory Permissions Role Assigned Outside Organization Management"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "The Active Directory Permissions role exposes Add-ADPermission and Remove-ADPermission, which write Active Directory ACLs through the Exchange Trusted Subsystem's own privileges. Exchange ships it assigned to Organization Management. An assignment elsewhere hands a principal the ability to change directory permissions using Exchange's rights rather than its own."
+        Impact = @(
+            "Directory ACLs can be modified with the Exchange Trusted Subsystem's permissions"
+            "Where the shared permissions model is in place, that reaches the domain object"
+            "Send-As and Receive-As can be granted on any mailbox, which is mailbox access without a mailbox permission"
+        )
+        Attack = @(
+            "1. Obtain the principal holding the role"
+            "2. Add-ADPermission granting the attacker Send-As on a target mailbox, or an escalation ACE on a directory object"
+            "3. Use the granted right directly"
+        )
+        Remediation = @(
+            "Remove the assignment; this role belongs with Organization Management"
+            "Verify the Exchange permissions model on the domain object (see the Exchange Permissions Model check)"
+            "Audit Add-ADPermission in the Exchange admin audit log"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every holder of the Active Directory Permissions role"
+                Command = "Get-ManagementRoleAssignment -Role 'Active Directory Permissions' | Select-Object Name,RoleAssigneeName,RoleAssigneeType"
+            }
+            @{
+                Description = "Review recent Add-ADPermission calls"
+                Command = "Search-AdminAuditLog -Cmdlets Add-ADPermission -StartDate (Get-Date).AddDays(-90) | Select-Object RunDate,Caller,ObjectModified,CmdletParameters"
+            }
+        )
+        References = @(
+            @{ Title = "Exchange-AD-Privesc"; Url = "https://github.com/gdedrouas/Exchange-AD-Privesc" }
+            @{ Title = "Understanding management role assignments"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-role-assignments-exchange-2013-help" }
+        )
+        Tools = @("Exchange Management Shell", "PowerView")
+        MITRE = "T1222.001"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Directory permissions'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_RBAC_DEFAULT_ASSIGNMENT' = @{
+        Title = "High-Value Exchange Role on Its Shipped Role Group"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "This high-value role sits on the role group Exchange assigns it to out of the box, so the assignment itself is expected. What is not automatically fine is who is in that group: the role group's membership is the real holder list, and compromising any member yields the role."
+        Impact = @(
+            "Every member of the role group holds this capability"
+            "Role groups such as Organization Management are frequently larger than anyone intends"
+            "Discovery Management is meant to be empty between cases and often is not"
+        )
+        Remediation = @(
+            "Review the role group's membership rather than the assignment"
+            "Keep Discovery Management empty outside of active cases"
+            "Require privileged access management for membership in Organization Management"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the membership of the Exchange role groups"
+                Command = "Get-RoleGroup | ForEach-Object { Write-Host `$_.Name; Get-RoleGroupMember `$_.Name | Select-Object Name,RecipientType }"
+            }
+        )
+        References = @(
+            @{ Title = "Understanding management role groups"; Url = "https://learn.microsoft.com/en-us/exchange/understanding-management-role-groups-exchange-2013-help" }
+        )
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'RiskVerdict'; Pattern = '^Default assignment'; Severity = 'Hint' }
+        )
+    }
+
     # ============================================================================
     # COMPUTER ACCOUNT FINDINGS
     # ============================================================================
@@ -16666,18 +17366,38 @@ foreach ($oid in $linkedOIDs) {
         Title = "Exchange Web Endpoints Security"
         Risk = "Finding"
         BaseScore = 40
-        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay."
+        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected."
         Impact = @(
             "HTTP + NTLM endpoints are vulnerable to NTLM relay"
             "HTTPS + NTLM without EPA is also vulnerable"
             "Relay attacks can compromise Exchange mailboxes"
+            "A relayed machine account can reach service endpoints that write files, which has yielded web shells running as SYSTEM"
+        )
+        Attack = @(
+            "1. Coerce or capture an authentication from a domain account or machine account"
+            "2. Relay it to an Exchange endpoint that offers NTLM without binding it to the TLS channel"
+            "3. Act as the relayed identity against that endpoint - mailbox access through EWS, or the service methods of an endpoint such as MRSProxy"
+            "4. An Exchange server compromised this way reaches every mailbox, and through Exchange's directory permissions often the domain"
         )
         Remediation = @(
-            "Enable EPA on all Exchange endpoints"
+            "Enable EPA on all Exchange endpoints, and verify it per virtual directory rather than per server"
             "Disable HTTP access and require HTTPS"
+            "Keep the servers on a current cumulative and security update - several relay paths were closed by update rather than by configuration"
+            "Turn MRSProxy off on servers that perform no cross-forest or hybrid mailbox moves"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Check the Extended Protection state of every virtual directory"
+                Command = "# Run Microsoft's script on the Exchange server: .\ExchangeExtendedProtectionManagement.ps1 -ShowExtendedProtection"
+            }
+            @{
+                Description = "Show whether MRSProxy is published on each EWS virtual directory"
+                Command = "Get-WebServicesVirtualDirectory -ADPropertiesOnly | Select-Object Identity,MRSProxyEnabled"
+            }
         )
         References = @(
             @{ Title = "Exchange Security Best Practices"; Url = "https://docs.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices" }
+            @{ Title = "Configure Extended Protection in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection" }
         )
         MITRE = "T1187"
         Triggers = @(
@@ -21321,6 +22041,68 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Virtual directories with external hostnames"
             "SMTP receive connectors and listening ports"
         )
+    }
+
+    'ExchangeHybridConfiguration' = @{
+        TitleFormat = "Exchange Hybrid: {Name}"
+        Module = "Application"
+        Category = "Exchange"
+        SectionTitle = "Exchange Hybrid Deployment"
+        Summary = "Detects whether the Exchange organization is in a hybrid relationship with Exchange Online."
+        WhyItMatters = "A hybrid organization shares one service principal between the on-premises servers and the cloud tenant, and that shared trust is an escalation path: administrative access to an on-premises Exchange server reaches Exchange Online through it, without the trace a cloud-side administrative action would leave. It also changes what an on-premises Exchange finding is worth - the blast radius of every other Exchange issue in this report now includes the tenant. Whether the dedicated hybrid application has been deployed cannot be read from Active Directory, so what is reported is the exposure, not the patch state."
+        WhatWeCheck = @(
+            "msExchCoexistenceRelationship objects in the Configuration partition, which the Hybrid Configuration Wizard creates"
+            "Coexistence domains, transport servers and external addresses where present"
+        )
+        # Not checked, deliberately: the account named Exchange Online-ApplicationAccount.
+        # Exchange setup creates it on every /PrepareAD in every organization, so it says
+        # nothing about hybrid despite the name.
+        SecureMessage = "No hybrid configuration was found - the organization appears to be purely on-premises."
+    }
+
+    'ExchangeReceiveConnector' = @{
+        TitleFormat = "Receive Connector: {Name}"
+        Module = "Application"
+        Category = "Exchange"
+        SectionTitle = "Exchange SMTP Receive Connectors"
+        Summary = "Judges each SMTP receive connector by the rights its security descriptor grants to unauthenticated senders."
+        WhyItMatters = "A receive connector's own DACL decides what an SMTP session that presented no credential may do. Granting ms-Exch-SMTP-Accept-Any-Recipient to ANONYMOUS LOGON makes the server relay to any domain; granting the accept-sender rights lets an anonymous sender put an internal address in the From header, which is a phishing campaign that passes SPF, DKIM and every mail-client trust indicator at once. Both are ordinary application-relay configurations that were scoped too widely, and both are invisible from the connector's name."
+        WhatWeCheck = @(
+            "ms-Exch-SMTP-* extended rights granted to Anonymous Logon and Everyone"
+            "The same rights granted to broad principals such as Authenticated Users"
+            "Connector bindings and the remote IP ranges the grants apply from"
+        )
+        SecureMessage = "No receive connector grants relay or sender-spoofing rights to unauthenticated senders."
+    }
+
+    'ExchangePermissionsModel' = @{
+        TitleFormat = "Exchange Permissions Model: {Name}"
+        Module = "Application"
+        Category = "Exchange"
+        SectionTitle = "Exchange Permissions Model"
+        Summary = "Reports whether an Exchange group holds WriteDACL on the domain object - the escalation half of PrivExchange."
+        WhyItMatters = "WriteDACL on the domain object means being able to rewrite the domain's own access control list - and an entry granting DS-Replication-Get-Changes and -All is DCSync, every password hash in the domain. In the shared permissions model Exchange setup grants that right to an Exchange group, which is what makes the group's membership worth anything to an attacker. The ACE is not immovable: Microsoft documents narrowing it with the inherit-only flag so it no longer applies to the domain object, and preparing the forest with /ActiveDirectorySplitPermissions removes the Exchange Windows Permissions entries from it entirely. The generic ACL check classifies every Exchange group as an expected trustee and hides it unless -IncludePrivileged is set, on the grounds that Exchange permissions are by design - for this one entry that is not true, which is why the distinction is made here instead. Read the two ACE rows together: the effective one is what the verdict rests on, and the inherit-only ones are listed so a reader can see that the same group's other grants stop at child objects rather than reaching the domain."
+        WhatWeCheck = @(
+            "WriteDACL, WriteOwner and GenericAll entries on the domain object held by Exchange groups"
+            "Which of them apply to the domain object itself, and which are inherit-only and only reach child objects of a named class"
+            "Whether the forest was prepared with AD split permissions, which the Microsoft Exchange Protected Groups OU records"
+        )
+        SecureMessage = "No Exchange group holds effective escalation rights on the domain object."
+    }
+
+    'ExchangeRoleAssignment' = @{
+        TitleFormat = "Exchange Role Assignment: {Name}"
+        Module = "Application"
+        Category = "Exchange"
+        SectionTitle = "Exchange Management Role Assignments"
+        Summary = "Reports who holds the Exchange roles that reach mailbox content or allow self-escalation inside Exchange."
+        WhyItMatters = "Exchange RBAC assignments live in the Configuration partition and any domain user can read them. Checking the Organization Management group is not enough, because a role can be assigned directly to one user and that assignment appears in no group membership at all. ApplicationImpersonation lets its holder act as every mailbox in the organization over EWS; Mailbox Import Export exports any mailbox to a file; Role Management lets its holder assign itself the other two. Exchange ships some of these assigned to a role group and others assigned to nobody, so an assignment that is not the shipped one was made deliberately."
+        WhatWeCheck = @(
+            "msExchRoleAssignment objects linking a role to a principal"
+            "Mailbox Import Export, ApplicationImpersonation, Role Management, Unscoped Role Management, Mailbox Search, Active Directory Permissions"
+            "Whether the assignee is the role group Exchange ships the role on, a custom group, a single user, or a role assignment policy"
+        )
+        SecureMessage = "None of the high-value Exchange roles is assigned outside the role groups Exchange ships them on."
     }
 
     'MSSQLServer' = @{
@@ -29357,6 +30139,11 @@ function Clear-SessionState {
     $Script:LastLDAPErrorDetails = $null
     $Script:AuthInfo = $null
     $Script:NTLMTokenHandle = [IntPtr]::Zero
+
+    # Schema class name cache (Resolve-SchemaClassName). Read from the forest's own schema
+    # partition, so it belongs to the session and not to the module: a reconnect to a
+    # different forest must not answer out of the previous one's schema.
+    $Script:SchemaClassNameCache = $null
 
     # Anonymous access detection (Connect-LDAP)
     $Script:AnonymousAccessEnabled = $null
@@ -47467,9 +48254,9 @@ function ConvertFrom-SecurityDescriptor {
         # scanning host is not joined to, which is the normal case for this tool, that is
         # every domain principal in the descriptor: the DACL came back with the built-in
         # identities only, or empty, and no error anywhere. Asking for SecurityIdentifier
-        # needs no name resolution at all, so nothing can be dropped, and it is also what
-        # CLAUDE.md requires - identity decisions are made on the SID, and the display
-        # name comes from ConvertFrom-SID rather than from the host's own account
+        # needs no name resolution at all, so nothing can be dropped, and it matches the
+        # rule the rest of adPEAS follows: identity decisions are made on the SID, and the
+        # display name comes from ConvertFrom-SID rather than from the host's own account
         # database, which would hand back a localized name on a non-English host.
         $AccessRules = $SD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 
@@ -50227,6 +51014,148 @@ function Test-IsExpectedInScope {
     }
 }
 
+
+
+
+# ----- Resolve-SchemaClassName.ps1 -----
+
+function Resolve-SchemaClassName {
+    <#
+    .SYNOPSIS
+    Resolves a schema class GUID to its LDAP display name, falling back to the directory's
+    own schema when the static table does not know it.
+
+    .DESCRIPTION
+    An ACE's InheritedObjectType names the object class the ACE descends to. adPEAS carries
+    a static table of the common ones ($Script:SchemaClassGUIDs), but that table can only
+    ever hold the classes the base schema ships. Any forest that has been extended - by
+    Exchange, by Configuration Manager, by a third-party product - has hundreds more, and a
+    GUID the table does not know is printed raw, which tells a reader nothing and makes two
+    different ACEs look like duplicates.
+
+    So the static table is tried first, and on a miss the schema partition is asked. Every
+    classSchema object is read once per session and cached, because resolving a handful of
+    GUIDs one query at a time costs more than reading the list, and because the same GUIDs
+    recur across every ACL adPEAS parses.
+
+    A directory that cannot be read returns $null rather than a guess. The caller decides
+    what to print for an unresolved GUID - printing the GUID is honest, inventing a name is
+    not.
+
+    .PARAMETER GUID
+    The schema class GUID, as a string or a [GUID].
+
+    .PARAMETER Domain
+    Target domain (optional, uses current domain if not specified)
+
+    .PARAMETER Server
+    Domain Controller to query (optional, uses auto-discovery if not specified)
+
+    .PARAMETER Credential
+    PSCredential object for authentication (optional, uses current user if not specified)
+
+    .EXAMPLE
+    Resolve-SchemaClassName -GUID 'bf967aba-0de6-11d0-a285-00aa003049e2'
+    # Returns: user     (from the static table, no query)
+
+    .EXAMPLE
+    Resolve-SchemaClassName -GUID 'f0f8ffac-1191-11d0-a060-00aa006c33ed'
+    # Returns: publicFolder     (from the schema partition, Exchange-extended forest)
+
+    .OUTPUTS
+    String - the class's lDAPDisplayName, or $null when it cannot be resolved.
+
+    .NOTES
+    Author: Alexander Sturz (@_61106960_)
+    #>
+
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true, Position=0)]
+        [AllowNull()]
+        $GUID,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+
+    process {
+        if (-not $GUID) { return $null }
+
+        $guidString = if ($GUID -is [GUID]) { $GUID.ToString() } else { ([string]$GUID).Trim('{}').ToLower() }
+        if (-not $guidString) { return $null }
+
+        # Static table first. It answers for the base-schema classes without a round trip,
+        # and it is also what the offline tests exercise.
+        $staticName = Get-SchemaClassName -GUID $guidString
+        if ($staticName -and $staticName -ne 'All Objects') { return $staticName }
+
+        # Build credential parameters for the inner query. An inner scope has no access to
+        # the caller's $PSBoundParameters (CF-006).
+        $CredParams = @{}
+        if ($PSBoundParameters.ContainsKey('Domain')) { $CredParams['Domain'] = $Domain }
+        if ($PSBoundParameters.ContainsKey('Server')) { $CredParams['Server'] = $Server }
+        if ($PSBoundParameters.ContainsKey('Credential')) { $CredParams['Credential'] = $Credential }
+
+        # Cache is built once per session. $null is a distinct state from an empty map: it
+        # means "not attempted yet", so a forest whose schema really is unreadable is not
+        # re-queried on every ACE.
+        if ($null -eq $Script:SchemaClassNameCache) {
+            $Script:SchemaClassNameCache = @{}
+
+            $schemaDN = $null
+            if ($Script:LDAPContext) {
+                $schemaDN = [string]$Script:LDAPContext.SchemaNamingContext
+                if (-not $schemaDN -and $Script:LDAPContext.ConfigurationNamingContext) {
+                    # RootDSE did not hand one over. The schema container is always a direct
+                    # child of the configuration container, so this is derivation, not a guess.
+                    $schemaDN = "CN=Schema,$($Script:LDAPContext.ConfigurationNamingContext)"
+                }
+            }
+
+            if (-not $schemaDN) {
+                Write-Log "[Resolve-SchemaClassName] No schema naming context available - GUIDs outside the static table stay unresolved"
+                return $null
+            }
+
+            try {
+                # -Raw because schemaIDGUID has no converter and would arrive as a byte[]
+                # under a name the consumer would then have to special-case anyway.
+                $classes = @(Get-DomainObject -LDAPFilter '(objectCategory=classSchema)' -SearchBase $schemaDN -Properties 'lDAPDisplayName','schemaIDGUID' -Raw @CredParams)
+
+                foreach ($class in $classes) {
+                    if (-not $class.lDAPDisplayName -or -not $class.schemaIDGUID) { continue }
+                    try {
+                        $classGuid = [GUID]::new([byte[]]$class.schemaIDGUID)
+                        $Script:SchemaClassNameCache[$classGuid.ToString()] = [string]$class.lDAPDisplayName
+                    }
+                    catch {
+                        # A schemaIDGUID that is not 16 bytes is not a GUID. Skipping one
+                        # entry is better than losing the whole map.
+                        Write-Log "[Resolve-SchemaClassName] Unreadable schemaIDGUID on $($class.lDAPDisplayName): $_"
+                    }
+                }
+
+                Write-Log "[Resolve-SchemaClassName] Cached $($Script:SchemaClassNameCache.Count) schema class name(s) from $schemaDN"
+            }
+            catch {
+                Write-Log "[Resolve-SchemaClassName] Schema partition not readable: $_" -Level Error
+            }
+        }
+
+        if ($Script:SchemaClassNameCache.ContainsKey($guidString)) {
+            return $Script:SchemaClassNameCache[$guidString]
+        }
+
+        return $null
+    }
+}
 
 
 
@@ -75112,7 +76041,7 @@ function Invoke-StandardHTTPRequest {
     4. Fallback: X-OWA-Version via HTTP (non-SSL)
 
     Additionally detects:
-    - Available endpoints (OWA, ECP, EWS, Autodiscover, MAPI, RPC, PowerShell, ActiveSync)
+    - Available endpoints (OWA, ECP, EWS, Autodiscover, MAPI, RPC, PowerShell, ActiveSync, MRSProxy)
     - Authentication methods (NTLM, Negotiate, Basic, Forms)
     - HTTP vs HTTPS availability
     - Extended Protection for Authentication (EPA) status per endpoint (with -TestEPA)
@@ -75163,15 +76092,23 @@ function Invoke-ExchangeScanInternal {
         # Available = reachable via any transport; AvailableHttp / AvailableHttps record the
         # specific transport(s) so endpoint lines can be rendered per endpoint instead of from
         # the global HttpAvailable / HttpsAvailable flags.
+        # Declared in $Script:ExchangeEndpointOrder's order so the structure reads the way
+        # the report does. Only that list decides the output order; this one is cosmetic.
         Endpoints        = [PSCustomObject]@{
             OWA          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             ECP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             EWS          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            # MRSProxy is a WCF service inside the EWS virtual directory, and it carries its
+            # own Extended Protection setting: Negotiate can be offered there without channel
+            # binding even on a server whose OWA and EWS roots enforce EPA, which is a
+            # published pre-authentication relay path. It has to be probed separately - the
+            # EWS entry says nothing about it.
+            MRSProxy     = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             Autodiscover = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             MAPI         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             RPC          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            PowerShell   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
             ActiveSync   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            PowerShell   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
         }
         # Protocol availability
         HttpAvailable    = $false
@@ -75368,6 +76305,29 @@ function Invoke-ExchangeScanInternal {
         Write-Log "[ScanExchange] EWS endpoint responded but is not Exchange (likely load balancer redirect)"
     }
 
+    # ===== Test MRSProxy endpoint (CVE-2026-62911) =====
+    # The Mailbox Replication Service proxy is a WCF service published inside the EWS
+    # virtual directory. It is probed on its own because Extended Protection is configured
+    # per endpoint: a server that enforces EPA on /ews/exchange.asmx can still offer
+    # Negotiate without channel binding here, which is the relay path CVE-2026-62911 uses.
+    #
+    # A negative result is not proof the service is gone. MRSProxy is only published on the
+    # EWS virtual directory when MRSProxyEnabled is set (cross-forest moves, hybrid), and
+    # the HTTP.sys namespace the advisory names is not reachable through this path at all.
+    # It is reported when found, never reported as absent.
+    $mrsUrl = "https://$targetHost/ews/mrsproxy.svc"
+    Write-Log "[ScanExchange] Testing MRSProxy endpoint: $mrsUrl"
+
+    $mrsResult = Test-ExchangeEndpoint -Url $mrsUrl -EndpointName "MRSProxy" -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
+    if ($mrsResult.IsExchangeEndpoint) {
+        $result.Endpoints.MRSProxy.Available = $true
+        $result.Endpoints.MRSProxy.AuthMethods = $mrsResult.AuthMethods -join ', '
+        Write-Log "[ScanExchange] MRSProxy available (HTTP $($mrsResult.StatusCode)), Auth: $($mrsResult.AuthMethods -join ', ')"
+    }
+    elseif ($mrsResult.Reachable) {
+        Write-Log "[ScanExchange] MRSProxy endpoint responded but is not Exchange (HTTP $($mrsResult.StatusCode) - service not published)"
+    }
+
     # ===== Test ECP endpoint (always test for auth methods, even if detected via exporttool) =====
     $ecpUrl = "https://$targetHost/ecp/"
     Write-Log "[ScanExchange] Testing ECP endpoint: $ecpUrl"
@@ -75477,7 +76437,7 @@ function Invoke-ExchangeScanInternal {
     if (-not $result.Success) {
         $anyEndpoint = $result.Endpoints.OWA.Available -or $result.Endpoints.ECP.Available -or $result.Endpoints.EWS.Available -or
                        $result.Endpoints.Autodiscover.Available -or $result.Endpoints.MAPI.Available -or $result.Endpoints.RPC.Available -or
-                       $result.Endpoints.PowerShell.Available -or $result.Endpoints.ActiveSync.Available
+                       $result.Endpoints.PowerShell.Available -or $result.Endpoints.ActiveSync.Available -or $result.Endpoints.MRSProxy.Available
 
         if ($anyEndpoint) {
             $result.Success = $true
@@ -75495,7 +76455,7 @@ function Invoke-ExchangeScanInternal {
     # https://), so a detected endpoint without an HTTP transport defaults to HTTPS. This makes
     # HttpsAvailable reflect ANY endpoint (EWS/MAPI/RPC/... previously did not update it).
     # Additive: never clears a flag.
-    foreach ($epName in @('OWA', 'ECP', 'EWS', 'Autodiscover', 'MAPI', 'RPC', 'PowerShell', 'ActiveSync')) {
+    foreach ($epName in $Script:ExchangeEndpointOrder) {
         $ep = $result.Endpoints.$epName
         if ($ep.Available -and -not $ep.AvailableHttp) { $ep.AvailableHttps = $true }
         if ($ep.AvailableHttp)  { $result.HttpAvailable  = $true }
@@ -75504,7 +76464,7 @@ function Invoke-ExchangeScanInternal {
 
     # Log summary of available endpoints with their auth methods
     $availableEndpoints = @()
-    foreach ($ep in @('OWA', 'ECP', 'EWS', 'Autodiscover', 'MAPI', 'RPC', 'PowerShell', 'ActiveSync')) {
+    foreach ($ep in $Script:ExchangeEndpointOrder) {
         if ($result.Endpoints.$ep.Available) {
             $authStr = if ($result.Endpoints.$ep.AuthMethods) { " ($($result.Endpoints.$ep.AuthMethods))" } else { "" }
             $availableEndpoints += "$ep$authStr"
@@ -75541,10 +76501,11 @@ function Invoke-ExchangeScanInternal {
             'RPC'          = "https://$targetHost/rpc/"
             'PowerShell'   = "https://$targetHost/powershell/"
             'ActiveSync'   = "https://$targetHost/Microsoft-Server-ActiveSync/"
+            'MRSProxy'     = "https://$targetHost/ews/mrsproxy.svc"
         }
 
         # Test EPA for each available endpoint with NTLM over HTTPS
-        foreach ($ep in @('OWA', 'ECP', 'EWS', 'Autodiscover', 'MAPI', 'RPC', 'PowerShell', 'ActiveSync')) {
+        foreach ($ep in $Script:ExchangeEndpointOrder) {
             if ($result.Endpoints.$ep.Available -and $result.Endpoints.$ep.AuthMethods -match 'NTLM') {
                 $epaTestUrl = $endpointUrls[$ep]
 
@@ -103733,9 +104694,17 @@ function Get-ExchangeInfrastructure {
     Detects Microsoft Exchange Server infrastructure and security issues via LDAP.
 
     .DESCRIPTION
-    Performs passive detection of Exchange Server infrastructure using LDAP queries only.
-    Identifies Exchange organization, servers, versions, privileged groups (especially
-    Exchange Trusted Subsystem with WriteDacl on Domain!), shared mailboxes, and service accounts.
+    Detects Exchange Server infrastructure from LDAP, with an optional HTTP probe of each
+    server's web endpoints. Reports:
+
+    - Exchange organization, accepted domains and send connectors (Configuration partition)
+    - Exchange servers, roles, version and lifecycle state
+    - Web endpoints with their authentication methods and per-endpoint Extended Protection,
+      including MRSProxy (CVE-2026-62911)
+    - Hybrid deployment with Exchange Online (CVE-2025-53786)
+    - SMTP receive connectors that grant relay or sender rights to unauthenticated senders
+    - Whether Exchange holds WriteDACL on the domain object (the PrivExchange escalation path)
+    - The three Exchange service groups, judged by what does not belong in them
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -103798,6 +104767,28 @@ function Get-ExchangeInfrastructure {
             if (-not $BuildNumber) { return "Standard" }
 
             return Get-ExchangeSeverity -BuildNumber $BuildNumber
+        }
+
+        # Collapses repeated lines into one carrying a count, preserving first-seen order.
+        # Two rows of identical text read as a fault in the renderer; the same row with
+        # "(x2)" says what is actually there, which for an ACE list is two grants of the
+        # same rights to the same trustee.
+        function Merge-DuplicateLine {
+            param([string[]]$Line)
+
+            if (-not $Line) { return @() }
+
+            $seen = [ordered]@{}
+            foreach ($entry in $Line) {
+                if ($seen.Contains($entry)) { $seen[$entry] = $seen[$entry] + 1 }
+                else { $seen[$entry] = 1 }
+            }
+
+            $merged = @()
+            foreach ($entry in $seen.Keys) {
+                $merged += $(if ($seen[$entry] -gt 1) { "$entry (x$($seen[$entry]))" } else { $entry })
+            }
+            return $merged
         }
 
         try {
@@ -104219,7 +105210,7 @@ function Get-ExchangeInfrastructure {
                             $activeEndpoints = @()
                             $endpointAuthMethods = @{}
 
-                            foreach ($ep in @('OWA', 'ECP', 'EWS', 'Autodiscover', 'MAPI', 'RPC', 'PowerShell', 'ActiveSync')) {
+                            foreach ($ep in $Script:ExchangeEndpointOrder) {
                                 if ($webEnrollmentResult.Endpoints.$ep.Available) {
                                     $activeEndpoints += $ep
                                     if ($webEnrollmentResult.Endpoints.$ep.AuthMethods) {
@@ -104265,6 +105256,16 @@ function Get-ExchangeInfrastructure {
                                 $serverObject | Add-Member -NotePropertyName 'WebEndpoints' -NotePropertyValue $endpointsWithAuth -Force
                             }
 
+                            # MRSProxy deliberately gets no attribute of its own. It is one
+                            # endpoint among the eight above and is reported the same way
+                            # they are - as a WebEndpoints line carrying its own auth
+                            # methods and its own EPA verdict, which is the point: Extended
+                            # Protection is configured per endpoint, so MRSProxy appearing
+                            # there with [EPA: Disabled] is the finding, whatever the EWS
+                            # root it lives in reports. A separate summary row repeated
+                            # that line in other words and singled out one endpoint for
+                            # treatment none of the others get.
+
                             # Add legacy EPA properties (for quick reference)
                             if ($null -ne $webEnrollmentResult.EPAEnabled) {
                                 $serverObject | Add-Member -NotePropertyName 'EPAEnabled' -NotePropertyValue $webEnrollmentResult.EPAEnabled -Force
@@ -104302,7 +105303,486 @@ function Get-ExchangeInfrastructure {
                 Show-Line "Exchange Organization: $organizationName - No active Exchange Servers found" -Class Note
             }
 
-            # ===== Steps 3-5: The Exchange service groups =====
+            # ===== Step 3: Hybrid deployment with Exchange Online =====
+            #
+            # A hybrid organization shares one service principal between the on-premises
+            # servers and the Exchange Online tenant. That shared trust is what
+            # CVE-2025-53786 abuses: administrative access to an on-premises Exchange
+            # server reaches the cloud tenant through it, and does so without leaving the
+            # kind of trace the tenant's own audit trail would show. Whether the dedicated
+            # hybrid application has been deployed since cannot be read from AD, so what is
+            # reported here is the exposure, not the patch state.
+            #
+            # The coexistence relationship object is the only signal, because it is the
+            # only one the Hybrid Configuration Wizard creates. In particular the account
+            # named "Exchange Online-ApplicationAccount" is NOT evidence of hybrid, however
+            # much the name suggests it: Exchange setup creates that account on every
+            # /PrepareAD and every cumulative update, in every organization. Treating it as
+            # a signal reported a purely on-premises organization as hybrid, on an object
+            # that is present in all of them.
+            Show-SubHeader "Checking for an Exchange hybrid deployment..." -ObjectType "ExchangeHybridConfiguration"
+
+            $hybridRelationships = @()
+            $hybridQueryFailed = $false
+            try {
+                $hybridRelationships = @(Get-DomainObject -LDAPFilter "(objectClass=msExchCoexistenceRelationship)" -SearchBase $exchangeBase @PSBoundParameters)
+            }
+            catch {
+                $hybridQueryFailed = $true
+                Write-Log "[Get-ExchangeInfrastructure] Error querying hybrid configuration: $_" -Level Error
+            }
+
+            if (@($hybridRelationships).Count -gt 0) {
+                $hybridObj = [PSCustomObject]@{
+                    Name         = 'Exchange Hybrid Deployment'
+                    HybridStatus = 'Hybrid with Exchange Online - administrative access to an on-premises Exchange server reaches the cloud tenant'
+                }
+
+                $hybridEvidence = @()
+                foreach ($rel in $hybridRelationships) {
+                    $relName = if ($rel.cn) { [string]$rel.cn } else { 'Hybrid Configuration' }
+                    $hybridEvidence += "msExchCoexistenceRelationship: $relName"
+                }
+                $hybridObj | Add-Member -NotePropertyName 'HybridEvidence' -NotePropertyValue $hybridEvidence -Force
+
+                # Coexistence details, where the relationship object carries them. Only
+                # attributes that are actually present are added - an empty row would
+                # suggest the feature is switched off rather than unset.
+                $coexistenceMap = [ordered]@{
+                    'msExchCoexistenceDomains'             = 'CoexistenceDomains'
+                    'msExchCoexistenceTransportServers'    = 'CoexistenceTransportServers'
+                    'msExchCoexistenceExternalIPAddresses' = 'CoexistenceExternalIPAddresses'
+                    'msExchCoexistenceOnPremisesSmartHost' = 'CoexistenceSmartHost'
+                }
+                foreach ($rel in $hybridRelationships) {
+                    foreach ($ldapName in $coexistenceMap.Keys) {
+                        $value = $rel.$ldapName
+                        if (-not $value) { continue }
+                        $displayValue = if ($value -is [array]) { @($value | ForEach-Object { [string]$_ }) } else { [string]$value }
+                        $hybridObj | Add-Member -NotePropertyName $coexistenceMap[$ldapName] -NotePropertyValue $displayValue -Force
+                    }
+                }
+
+                $hybridObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeHybridConfiguration' -Force
+                Show-Line "Exchange hybrid deployment detected" -Class Hint
+                Show-Object $hybridObj -Class Hint
+            }
+            elseif ($hybridQueryFailed) {
+                # Same reasoning as everywhere else in this check: a query that failed
+                # produces the same empty result as a query that found nothing, and only
+                # one of the two justifies the sentence below.
+                Show-Line "Hybrid configuration could not be read - result unknown, not absent" -Class Hint
+            }
+            else {
+                Show-Line "No hybrid configuration found - this organization appears to be purely on-premises" -Class Note
+            }
+
+            # ===== Step 4: SMTP receive connector permissions =====
+            #
+            # The connector object's own DACL decides what an unauthenticated SMTP session
+            # is allowed to do, and it is readable from here. The ms-Exch-SMTP-* extended
+            # rights granted to ANONYMOUS LOGON say whether the connector relays to
+            # arbitrary recipients and whether an anonymous sender may claim an internal
+            # address.
+            #
+            # The msExchSMTPReceive* bitmask attributes describe the same configuration in
+            # a numeric encoding Microsoft does not publish, so every verdict below is
+            # taken from the DACL alone. Guessing a bit value would produce a confidently
+            # worded label that happens to be wrong.
+            Show-SubHeader "Checking SMTP receive connector permissions..." -ObjectType "ExchangeReceiveConnector"
+
+            if (@($allRecvConnectors).Count -eq 0) {
+                Show-Line "No SMTP receive connectors found in the Configuration partition" -Class Note
+            }
+            else {
+                # Exchange registers its extended rights in the forest's own Extended-Rights
+                # container, so the GUIDs are read from there rather than hardcoded. A
+                # hardcoded GUID that is wrong fails silently - the right never matches and
+                # the connector reports as clean.
+                $smtpRightsByGuid = @{}
+                $smtpRightMeaning = @{
+                    'ms-exch-smtp-accept-any-recipient'               = 'relay to any recipient domain'
+                    'ms-exch-smtp-accept-any-sender'                  = 'use any sender address'
+                    'ms-exch-smtp-accept-authoritative-domain-sender' = 'use an internal sender address'
+                    'ms-exch-bypass-anti-spam'                        = 'bypass anti-spam filtering'
+                    'ms-exch-smtp-submit'                             = 'submit messages'
+                    'ms-exch-accept-headers-routing'                  = 'keep routing headers'
+                }
+
+                try {
+                    $rightNameFilters = @($smtpRightMeaning.Keys | ForEach-Object { "(displayName=$_)" })
+                    $rightsFilter = '(&(objectClass=controlAccessRight)(|' + ($rightNameFilters -join '') + '))'
+                    $smtpRights = @(Get-DomainObject -LDAPFilter $rightsFilter -SearchBase "CN=Extended-Rights,$configDN" -Properties 'displayName','rightsGuid' @PSBoundParameters)
+                    foreach ($right in $smtpRights) {
+                        if ($right.rightsGuid -and $right.displayName) {
+                            $smtpRightsByGuid[([string]$right.rightsGuid).ToLower()] = ([string]$right.displayName).ToLower()
+                        }
+                    }
+                    Write-Log "[Get-ExchangeInfrastructure] Resolved $($smtpRightsByGuid.Count) SMTP extended right(s) from the Configuration partition"
+                }
+                catch {
+                    Write-Log "[Get-ExchangeInfrastructure] Error resolving SMTP extended rights: $_" -Level Error
+                }
+
+                # Security descriptors for all connectors in one query. Get-ObjectACL reads
+                # a single object per call, so handing it the bytes keeps this at one round
+                # trip instead of one per connector.
+                $connectorDescriptors = @{}
+                try {
+                    $rawConnectors = @(Get-DomainObject -LDAPFilter "(objectClass=msExchSmtpReceiveConnector)" -SearchBase $exchangeBase -Properties 'distinguishedName','nTSecurityDescriptor' -Raw @PSBoundParameters)
+                    foreach ($rawConnector in $rawConnectors) {
+                        if ($rawConnector.distinguishedName -and $rawConnector.nTSecurityDescriptor) {
+                            $connectorDescriptors[[string]$rawConnector.distinguishedName] = $rawConnector.nTSecurityDescriptor
+                        }
+                    }
+                }
+                catch {
+                    Write-Log "[Get-ExchangeInfrastructure] Error reading receive connector descriptors: $_" -Level Error
+                }
+
+                # The unauthenticated subset of the central broad-principal list
+                # ($Script:BroadGroupSIDs in adPEAS-SIDs.ps1). A grant to either of these
+                # applies to a session that never presented a credential.
+                $anonymousSIDs = @('S-1-5-7', 'S-1-1-0')   # Anonymous Logon, Everyone
+
+                $connectorResults = @()
+
+                foreach ($connector in $allRecvConnectors) {
+                    $connectorDN = [string]$connector.distinguishedName
+                    $anonymousGrants = @()
+                    $broadGrants = @()
+                    $descriptorRead = $false
+
+                    $descriptorBytes = $connectorDescriptors[$connectorDN]
+                    if ($descriptorBytes) {
+                        try {
+                            $connectorACL = Get-ObjectACL -DistinguishedName $connectorDN -SecurityDescriptor $descriptorBytes -AllowOnly @PSBoundParameters
+                            if ($connectorACL) {
+                                $descriptorRead = $true
+                                foreach ($ace in @($connectorACL.ACEs)) {
+                                    if (-not $ace.ObjectType) { continue }
+                                    $rightName = $smtpRightsByGuid[([string]$ace.ObjectType).ToLower()]
+                                    if (-not $rightName) { continue }
+
+                                    $meaning = $smtpRightMeaning[$rightName]
+                                    $grant = "$($ace.Trustee): $meaning"
+
+                                    if ($anonymousSIDs -contains $ace.TrusteeSID) {
+                                        $anonymousGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                    }
+                                    elseif ($Script:BroadGroupSIDs -contains $ace.TrusteeSID) {
+                                        $broadGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                    }
+                                }
+                            }
+                        }
+                        catch {
+                            Write-Log "[Get-ExchangeInfrastructure] Error parsing connector ACL for ${connectorDN}: $_" -Level Error
+                        }
+                    }
+
+                    # One verdict per connector, drawn from a closed set. Worst condition
+                    # first, and each string starts with its own word so the finding
+                    # triggers stay mutually exclusive - the finding table is an unordered
+                    # hashtable, so two triggers that can both match one value would pick a
+                    # winner at random.
+                    $anonymousRights = @($anonymousGrants | ForEach-Object { $_.Right })
+                    $broadRights = @($broadGrants | ForEach-Object { $_.Right })
+
+                    $verdict = $null
+                    $consoleClass = 'Standard'
+
+                    if (-not $descriptorRead) {
+                        $verdict = 'Unknown - the connector security descriptor could not be read'
+                        $consoleClass = 'Hint'
+                    }
+                    elseif ($anonymousRights -contains 'ms-exch-smtp-accept-any-recipient') {
+                        $verdict = 'Open relay - unauthenticated senders can relay to any recipient domain'
+                        $consoleClass = 'Finding'
+                    }
+                    elseif (($anonymousRights -contains 'ms-exch-smtp-accept-authoritative-domain-sender') -or
+                            ($anonymousRights -contains 'ms-exch-smtp-accept-any-sender')) {
+                        $verdict = 'Sender spoofing - unauthenticated senders can claim an internal sender address'
+                        $consoleClass = 'Finding'
+                    }
+                    elseif ($broadRights -contains 'ms-exch-smtp-accept-any-recipient') {
+                        $verdict = 'Broad relay - every authenticated domain principal can relay to any recipient domain'
+                        $consoleClass = 'Hint'
+                    }
+                    elseif (@($anonymousGrants).Count -gt 0) {
+                        $verdict = 'Anonymous submission only - expected on an internet-facing connector'
+                        $consoleClass = 'Standard'
+                    }
+                    else {
+                        $verdict = 'Authenticated senders only'
+                        $consoleClass = 'Secure'
+                    }
+
+                    $connectorName = if ($connector.name) { [string]$connector.name } else { 'Unknown' }
+                    $connectorObj = [PSCustomObject]@{
+                        Name        = $connectorName
+                        RelayStatus = $verdict
+                    }
+
+                    if ($connectorDN -match 'CN=([^,]+),CN=Servers,') {
+                        $connectorObj | Add-Member -NotePropertyName 'ExchangeServer' -NotePropertyValue $Matches[1] -Force
+                    }
+
+                    $connectorBindings = $connector.msExchSMTPReceiveBindings
+                    if ($connectorBindings) {
+                        $bindingList = if ($connectorBindings -is [array]) { @($connectorBindings | ForEach-Object { [string]$_ }) } else { @([string]$connectorBindings) }
+                        $connectorObj | Add-Member -NotePropertyName 'Bindings' -NotePropertyValue $bindingList -Force
+                    }
+
+                    # Remote IP ranges say where the grants above apply from. The attribute
+                    # is only shown when every value reads as an address range - some
+                    # Exchange builds store it in an encoded form, and printing that raw
+                    # would look like a finding about a connector nobody can verify.
+                    $remoteRanges = $connector.msExchSMTPReceiveRemoteIPRanges
+                    if ($remoteRanges) {
+                        $rangeList = if ($remoteRanges -is [array]) { @($remoteRanges | ForEach-Object { [string]$_ }) } else { @([string]$remoteRanges) }
+                        $printableRanges = @($rangeList | Where-Object { $_ -match '^[0-9a-fA-F:.\-/]+$' })
+                        if (@($printableRanges).Count -eq @($rangeList).Count -and @($rangeList).Count -gt 0) {
+                            $connectorObj | Add-Member -NotePropertyName 'RemoteIPRanges' -NotePropertyValue $rangeList -Force
+                        }
+                    }
+
+                    $allGrants = @($anonymousGrants + $broadGrants | ForEach-Object { $_.Display })
+                    if (@($allGrants).Count -gt 0) {
+                        $connectorObj | Add-Member -NotePropertyName 'AnonymousPermissions' -NotePropertyValue $allGrants -Force
+                    }
+
+                    $connectorObj | Add-Member -NotePropertyName 'distinguishedName' -NotePropertyValue $connectorDN -Force
+                    $connectorObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeReceiveConnector' -Force
+                    $connectorObj | Add-Member -NotePropertyName 'ConsoleClass' -NotePropertyValue $consoleClass -Force
+
+                    $connectorResults += $connectorObj
+                }
+
+                $riskyConnectors = @($connectorResults | Where-Object { $_.ConsoleClass -eq 'Finding' })
+                $unreadConnectors = @($connectorResults | Where-Object { $_.RelayStatus -like 'Unknown*' })
+
+                if (@($riskyConnectors).Count -gt 0) {
+                    Show-Line "Found $(@($riskyConnectors).Count) of $(@($connectorResults).Count) receive connector(s) granting SMTP rights to unauthenticated senders" -Class Finding
+                }
+                elseif (@($unreadConnectors).Count -gt 0) {
+                    # A connector whose descriptor did not come back was not assessed. The
+                    # secure line below would claim a result for it, which is the one thing
+                    # an unread object must never produce.
+                    Show-Line "$(@($unreadConnectors).Count) of $(@($connectorResults).Count) receive connector(s) could not be assessed - their permissions are unknown, not clean" -Class Hint
+                }
+                else {
+                    Show-Line "No receive connector grants relay or sender-spoofing rights to unauthenticated senders" -Class Secure
+                }
+
+                foreach ($connectorObj in $connectorResults) {
+                    Show-Object $connectorObj -Class $connectorObj.ConsoleClass
+                }
+            }
+
+            # ===== Step 5: Exchange permissions model on the domain object =====
+            #
+            # In the shared permissions model Exchange setup places an ACE on the domain
+            # object granting Exchange Windows Permissions WriteDACL. A member of that
+            # group can therefore rewrite the domain DACL and give itself the replication
+            # rights DCSync needs - the payoff half of PrivExchange, and the reason the
+            # group's membership matters at all.
+            #
+            # Microsoft's own guidance narrows that ACE by adding the inherit-only flag, so
+            # it no longer applies to the domain object itself, and AD split permissions
+            # removes the model entirely. Both are visible here, which is why this is
+            # reported instead of being filtered away: the generic ACL check classifies
+            # every Exchange group as an expected trustee and drops it unless
+            # -IncludePrivileged is set, on the grounds that Exchange permissions are
+            # by design. For this one ACE that is not true - it is documented as removable.
+            Show-SubHeader "Checking the Exchange permissions model on the domain object..." -ObjectType "ExchangePermissionsModel"
+
+            $domainDN = $Script:LDAPContext.DomainDN
+
+            # Only these two hold the domain-object ACEs in the shared model. Resolved to
+            # SIDs because the trustee comparison has to be SID-based - the group names are
+            # English in every installation, but the ACE stores a SID either way.
+            $modelGroups = @()
+            foreach ($modelGroupName in @('Exchange Windows Permissions', 'Exchange Trusted Subsystem')) {
+                try {
+                    $modelGroup = @(Get-DomainGroup -Identity $modelGroupName @PSBoundParameters)[0]
+                    if ($modelGroup -and $modelGroup.objectSid) {
+                        $modelGroups += [PSCustomObject]@{
+                            Name = $modelGroupName
+                            SID  = [string]$modelGroup.objectSid
+                        }
+                    }
+                }
+                catch {
+                    Write-Log "[Get-ExchangeInfrastructure] Error resolving ${modelGroupName}: $_" -Level Error
+                }
+            }
+
+            # Split permissions creates this OU and moves the Exchange groups out of reach
+            # of Exchange itself. Its presence corroborates the ACE reading below.
+            $protectedGroupsOU = $null
+            try {
+                $protectedGroupsOU = @(Get-DomainObject -Identity "OU=Microsoft Exchange Protected Groups,$domainDN" @PSBoundParameters)[0]
+            }
+            catch {
+                Write-Log "[Get-ExchangeInfrastructure] Microsoft Exchange Protected Groups OU not present: $_"
+            }
+
+            if (@($modelGroups).Count -eq 0) {
+                # Not the same as "no ACE". Exchange prepares each domain separately, and a
+                # domain that was never prepared has no groups here to compare against.
+                Show-Line "Neither Exchange Windows Permissions nor Exchange Trusted Subsystem exists in this domain - the permissions model cannot be determined from here" -Class Note
+            }
+            else {
+                $domainACEs = @()
+                $domainACLReadable = $false
+                try {
+                    $domainACL = Get-ObjectACL -DistinguishedName $domainDN -AllowOnly @PSBoundParameters
+                    if ($domainACL) {
+                        $domainACLReadable = $true
+                        $domainACEs = @($domainACL.ACEs)
+                    }
+                }
+                catch {
+                    Write-Log "[Get-ExchangeInfrastructure] Error reading domain object ACL: $_" -Level Error
+                }
+
+                if (-not $domainACLReadable) {
+                    Show-Line "The domain object ACL could not be read - the permissions model is unknown, not clean" -Class Hint
+                }
+                else {
+                    # WriteDacl is the one that matters, but WriteOwner and GenericAll reach
+                    # the same place: ownership can rewrite the DACL afterwards.
+                    $escalationRights = @('WriteDacl', 'WriteOwner', 'GenericAll')
+                    $effectiveACEs = @()
+                    $inheritOnlyACEs = @()
+                    $inheritOnlyGrants = [ordered]@{}
+                    $effectiveHolders = @()
+
+                    foreach ($ace in $domainACEs) {
+                        $matchedGroup = @($modelGroups | Where-Object { $_.SID -eq $ace.TrusteeSID })[0]
+                        if (-not $matchedGroup) { continue }
+
+                        $grantedRights = @($ace.RightsRaw | Where-Object { $escalationRights -contains $_ })
+                        if (@($grantedRights).Count -eq 0) { continue }
+
+                        # An inherit-only ACE does not apply to the object carrying it. That
+                        # is exactly the shape Microsoft's mitigation produces, and telling
+                        # the two apart is the whole point of this check.
+                        $isInheritOnly = ([string]$ace.PropagationFlags) -match 'InheritOnly'
+
+                        $grantText = "$($matchedGroup.Name): $($grantedRights -join ', ')"
+
+                        if ($isInheritOnly) {
+                            # Name the class the ACE descends to, through the resolver rather
+                            # than the static table alone: an Exchange-extended schema puts
+                            # its own classes here (publicFolder, msExchActiveSyncDevices),
+                            # and no table adPEAS ships can hold those.
+                            $targetClass = if ($ace.InheritedObjectType) {
+                                $resolved = Resolve-SchemaClassName -GUID $ace.InheritedObjectType @PSBoundParameters
+                                if ($resolved) { $resolved } else { [string]$ace.InheritedObjectType }
+                            } else {
+                                'all classes'
+                            }
+
+                            # Grouped by trustee and rights, so the classes collect on one
+                            # line instead of repeating the trustee once per class. The
+                            # four rows a stock Exchange organization produces become two,
+                            # and the pattern - which group, which rights, which scope -
+                            # becomes visible instead of having to be reassembled by eye.
+                            if (-not $inheritOnlyGrants.Contains($grantText)) {
+                                $inheritOnlyGrants[$grantText] = @()
+                            }
+                            if ($inheritOnlyGrants[$grantText] -notcontains $targetClass) {
+                                $inheritOnlyGrants[$grantText] += $targetClass
+                            }
+                        }
+                        else {
+                            # No scope clause on either list. InheritOnlyDomainACEs and
+                            # EffectiveDomainACEs already say which is which, and repeating
+                            # it on every row turned the evidence into prose.
+                            $effectiveACEs += $grantText
+                            if ($effectiveHolders -notcontains $matchedGroup.Name) {
+                                $effectiveHolders += $matchedGroup.Name
+                            }
+                        }
+                    }
+
+                    # Classes sorted so the same directory renders the same way twice.
+                    foreach ($grantText in $inheritOnlyGrants.Keys) {
+                        $classList = @($inheritOnlyGrants[$grantText] | Sort-Object)
+                        $inheritOnlyACEs += "$grantText -> $($classList -join ', ')"
+                    }
+
+                    # Two ACEs that survive as the same sentence really are the same grant
+                    # twice. Printing the line once with a count says that, where two
+                    # identical lines just look like a defect in this check.
+                    # Only the effective list needs this. The inherit-only rows are keyed by
+                    # trustee and rights while they are collected, so a repeat lands in the
+                    # class list of an existing row rather than creating a second one.
+                    $effectiveACEs = @(Merge-DuplicateLine -Line $effectiveACEs)
+
+                    $modelObj = [PSCustomObject]@{
+                        Name = $Script:LDAPContext.DomainDN
+                    }
+
+                    if (@($effectiveACEs).Count -gt 0) {
+                        # The verdict names the group that actually holds the ACE. "An
+                        # Exchange group" left the reader to work out which of the two rows
+                        # below drove the finding, and the answer is the point: it decides
+                        # whose membership has to be reviewed.
+                        # Names who and what, and stops there. Why rewriting the domain DACL
+                        # matters is the write-up's job, not the row's.
+                        $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue "Shared permissions - $($effectiveHolders -join ' and ') can rewrite the domain DACL (PrivExchange)" -Force
+                        $modelConsoleClass = 'Finding'
+                    }
+                    elseif (@($inheritOnlyACEs).Count -gt 0) {
+                        $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Mitigated shared permissions - the Exchange ACE is inherit-only and does not apply to the domain object' -Force
+                        $modelConsoleClass = 'Secure'
+                    }
+                    elseif ($protectedGroupsOU) {
+                        $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Split permissions - no Exchange group holds escalation rights on the domain object' -Force
+                        $modelConsoleClass = 'Secure'
+                    }
+                    else {
+                        $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Clean - no Exchange group holds escalation rights on the domain object' -Force
+                        $modelConsoleClass = 'Secure'
+                    }
+
+                    # Two attributes, not one list. Mixing them meant the ACE that drives
+                    # the finding sat in the middle of four that do not, in the same
+                    # colour, with nothing saying which was which.
+                    if (@($effectiveACEs).Count -gt 0) {
+                        $modelObj | Add-Member -NotePropertyName 'EffectiveDomainACEs' -NotePropertyValue $effectiveACEs -Force
+                    }
+                    if (@($inheritOnlyACEs).Count -gt 0) {
+                        $modelObj | Add-Member -NotePropertyName 'InheritOnlyDomainACEs' -NotePropertyValue $inheritOnlyACEs -Force
+                    }
+
+                    # Naming the OU said what was observed but not what it means. Exchange
+                    # setup creates that OU only when it is run with
+                    # /ActiveDirectorySplitPermissions:true, and the same run is what strips
+                    # the Exchange Windows Permissions ACEs off the domain object - so its
+                    # presence or absence answers which permissions model this organization
+                    # was prepared with, which is the question a reader actually has.
+                    $splitPermissionsText = if ($protectedGroupsOU) {
+                        'Enabled - Exchange Windows Permissions holds no ACEs on the domain object'
+                    } else {
+                        'Not enabled - shared permissions model'
+                    }
+                    $modelObj | Add-Member -NotePropertyName 'ADSplitPermissions' -NotePropertyValue $splitPermissionsText -Force
+                    $modelObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangePermissionsModel' -Force
+
+                    # "Found <thing>:" with the severity as colour, the way every other
+                    # check announces its object ("Analyzing password policy..." ->
+                    # "Found password policy:"). The scope stays in the sub-header rather
+                    # than being repeated here.
+                    Show-Line "Found Exchange permissions model:" -Class $modelConsoleClass
+                    Show-Object $modelObj -Class $modelConsoleClass
+                }
+            }
+
+            # ===== Steps 6-8: The Exchange service groups =====
             #
             # Exchange Trusted Subsystem and Exchange Windows Permissions are supposed to
             # hold Exchange servers and nothing else. Exchange Windows Permissions carries
@@ -104384,6 +105864,328 @@ function Get-ExchangeInfrastructure {
         Write-Log "[Get-ExchangeInfrastructure] Check completed"
     }
 }
+
+
+# ----- Get-ExchangeRBACAssignments.ps1 -----
+
+function Get-ExchangeRBACAssignments {
+    <#
+    .SYNOPSIS
+    Reports who holds the Exchange management roles that grant access to mailbox content
+    or allow self-escalation inside Exchange.
+
+    .DESCRIPTION
+    Exchange stores its Role Based Access Control model in the Configuration partition,
+    where every assignment is an msExchRoleAssignment object linking a role
+    (msExchRoleLink) to a principal (msExchUserLink). Any domain user can read it.
+
+    Checking the Organization Management group alone is not enough: a role can be assigned
+    straight to a single user, and such an assignment appears in no group membership at
+    all. This check reads the assignments themselves.
+
+    Roles reported:
+    - Mailbox Import Export       - export the contents of any mailbox to a file
+    - ApplicationImpersonation    - act as any mailbox over EWS
+    - Role Management             - grant oneself any other Exchange role
+    - Unscoped Role Management    - publish a role that runs arbitrary code
+    - Mailbox Search              - search the contents of every mailbox
+    - Active Directory Permissions - change Active Directory ACLs through Exchange
+
+    Assignments that match the role group Exchange ships them on are reported as expected;
+    everything else is a finding.
+
+    Known limitations:
+    - Roles are matched by name, so a custom role derived from one of the parents above
+      carries a different name and is not matched.
+    - Whether an assignment is delegating (the assignee may pass the role on) is held in
+      msExchRoleAssignmentFlags, whose bit values Microsoft does not publish. It is not
+      reported rather than reported wrongly.
+
+    .PARAMETER Domain
+    Target domain (optional, uses current domain if not specified)
+
+    .PARAMETER Server
+    Domain Controller to query (optional, uses auto-discovery if not specified)
+
+    .PARAMETER Credential
+    PSCredential object for authentication (optional, uses current user if not specified)
+
+    .EXAMPLE
+    Get-ExchangeRBACAssignments
+    Reports the high-value Exchange role assignments in the current forest.
+
+    .EXAMPLE
+    Get-ExchangeRBACAssignments -Domain "contoso.com" -Credential (Get-Credential)
+    Reports the role assignments with explicit credentials.
+
+    .NOTES
+    Category: Application
+    Author: Alexander Sturz (@_61106960_)
+    #>
+
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+
+    begin {
+        Write-Log "[Get-ExchangeRBACAssignments] Starting check"
+    }
+
+    process {
+        try {
+            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+                return
+            }
+
+            Show-SubHeader "Checking Exchange management role assignments..." -ObjectType "ExchangeRoleAssignment"
+
+            $configDN = $Script:LDAPContext.ConfigurationNamingContext
+            $exchangeBase = "CN=Microsoft Exchange,CN=Services,$configDN"
+
+            # No organization means no RBAC container to read. Said out loud rather than
+            # logged, so a check that produced no rows is not mistaken for a clean result.
+            $exchangeOrgs = @()
+            try {
+                $exchangeOrgs = @(Get-DomainObject -LDAPFilter "(objectClass=msExchOrganizationContainer)" -SearchBase $exchangeBase @PSBoundParameters)
+            }
+            catch {
+                Write-Log "[Get-ExchangeRBACAssignments] Exchange Organization not found: $_"
+            }
+
+            if (@($exchangeOrgs).Count -eq 0) {
+                Show-Line "No Exchange Organization detected - no role assignments to analyze" -Class Note
+                return
+            }
+
+            # The roles worth reporting, with the role group Exchange assigns them to out of
+            # the box. An empty default list means Exchange ships the role unassigned, so
+            # every assignment of it was made by someone.
+            #
+            # Verdict text: each entry starts with its own distinct word. The finding table
+            # is an unordered hashtable, so when two triggers on one attribute can both
+            # match a value, which one wins is undefined - the strings are kept mutually
+            # exclusive to avoid that.
+            $watchedRoles = @{
+                'mailbox import export' = @{
+                    Defaults = @()
+                    Verdict  = 'Mailbox export - the assignee can export the contents of any mailbox to a file'
+                }
+                'applicationimpersonation' = @{
+                    Defaults = @()
+                    Verdict  = 'Mailbox impersonation - the assignee can act as any mailbox over EWS'
+                }
+                'role management' = @{
+                    Defaults = @('Organization Management')
+                    Verdict  = 'Role management - the assignee can grant itself any other Exchange role'
+                }
+                'unscoped role management' = @{
+                    Defaults = @()
+                    Verdict  = 'Unscoped role management - the assignee can publish a role that runs arbitrary code'
+                }
+                'mailbox search' = @{
+                    Defaults = @('Discovery Management')
+                    Verdict  = 'Mailbox search - the assignee can search the contents of every mailbox'
+                }
+                'active directory permissions' = @{
+                    Defaults = @('Organization Management')
+                    Verdict  = 'Directory permissions - the assignee can change Active Directory ACLs through Exchange'
+                }
+            }
+
+            $roleAssignments = @()
+            try {
+                $roleAssignments = @(Get-DomainObject -LDAPFilter "(objectClass=msExchRoleAssignment)" -SearchBase $exchangeBase @PSBoundParameters)
+            }
+            catch {
+                Write-Log "[Get-ExchangeRBACAssignments] Error querying role assignments: $_" -Level Error
+                Show-Line "Exchange role assignments could not be read - result unknown, not empty" -Class Hint
+                return
+            }
+
+            if (@($roleAssignments).Count -eq 0) {
+                Show-Line "No Exchange role assignments found in the Configuration partition" -Class Note
+                return
+            }
+
+            Write-Log "[Get-ExchangeRBACAssignments] Read $(@($roleAssignments).Count) role assignment(s)"
+
+            # Resolved assignees, keyed by DN. A role group holding several watched roles
+            # would otherwise be read once per assignment.
+            $assigneeCache = @{}
+            $results = @()
+
+            foreach ($assignment in $roleAssignments) {
+                $roleDN = [string]$assignment.msExchRoleLink
+                $userDN = [string]$assignment.msExchUserLink
+                if (-not $roleDN -or -not $userDN) { continue }
+
+                # Leaf RDN of the role DN. The escape-aware pattern matters because a DN
+                # value may contain an escaped comma; role names do not, but parsing a DN
+                # by splitting on commas is how that stops being true one day.
+                if ($roleDN -notmatch '^CN=((?:[^,\\]|\\.)+),') { continue }
+                $roleName = $Matches[1] -replace '\\(.)', '$1'
+
+                $roleKey = $roleName.ToLower()
+                if (-not $watchedRoles.ContainsKey($roleKey)) { continue }
+                $roleInfo = $watchedRoles[$roleKey]
+
+                # A role assignment policy is not a directory principal and does not resolve
+                # in the domain partition - it lives under CN=Policies,CN=RBAC. It also
+                # matters more than a group would: a policy applies to every mailbox that
+                # carries it, so a watched role assigned through one reaches all of them.
+                $assigneeName = $null
+                $assigneeType = $null
+
+                if ($userDN -match ',CN=Policies,CN=RBAC,') {
+                    if ($userDN -match '^CN=((?:[^,\\]|\\.)+),') {
+                        $assigneeName = $Matches[1] -replace '\\(.)', '$1'
+                    } else {
+                        $assigneeName = $userDN
+                    }
+                    $assigneeType = 'Role assignment policy'
+                }
+                else {
+                    if (-not $assigneeCache.ContainsKey($userDN)) {
+                        $resolved = $null
+                        try {
+                            $resolved = @(Get-DomainObject -Identity $userDN @PSBoundParameters)[0]
+                        }
+                        catch {
+                            Write-Log "[Get-ExchangeRBACAssignments] Could not resolve assignee ${userDN}: $_"
+                        }
+                        $assigneeCache[$userDN] = $resolved
+                    }
+
+                    $assigneeObject = $assigneeCache[$userDN]
+
+                    if ($assigneeObject) {
+                        $assigneeName = if ($assigneeObject.sAMAccountName) {
+                            [string]$assigneeObject.sAMAccountName
+                        } elseif ($assigneeObject.cn) {
+                            [string]$assigneeObject.cn
+                        } else {
+                            $userDN
+                        }
+
+                        $objectClasses = @($assigneeObject.objectClass)
+                        if ($objectClasses -icontains 'computer') {
+                            $assigneeType = 'Computer'
+                        }
+                        elseif ($objectClasses -icontains 'group') {
+                            # Test-IsExchangeServiceGroup answers this without matching on a
+                            # group name: it decides by the OU Exchange setup creates.
+                            $exchangeGroupCheck = Test-IsExchangeServiceGroup -Identity $userDN
+                            $assigneeType = if ($exchangeGroupCheck.IsExchangeService) { 'Exchange role group' } else { 'Group' }
+                        }
+                        elseif ($objectClasses -icontains 'user') {
+                            $assigneeType = 'User'
+                        }
+                        else {
+                            $assigneeType = 'Unknown'
+                        }
+                    }
+                    else {
+                        # A principal from another domain in the forest, or one this account
+                        # cannot read. Reported as unresolved rather than dropped.
+                        $assigneeName = $userDN
+                        $assigneeType = 'Unresolved'
+                    }
+                }
+
+                # Is this the assignment Exchange shipped? The role group names are created
+                # by Exchange setup and are English in every installation, which is the same
+                # basis Test-IsExchangeServiceGroup already relies on for its OU name.
+                $assigneeRDN = $assigneeName
+                if ($userDN -match '^CN=((?:[^,\\]|\\.)+),') {
+                    $assigneeRDN = $Matches[1] -replace '\\(.)', '$1'
+                }
+
+                $isDefaultAssignment = ($assigneeType -eq 'Exchange role group') -and
+                                       (@($roleInfo.Defaults) -contains $assigneeRDN)
+
+                if ($isDefaultAssignment) {
+                    $verdict = "Default assignment - $roleName is assigned to $assigneeRDN as shipped by Exchange"
+                    $consoleClass = 'Hint'
+                } else {
+                    $verdict = $roleInfo.Verdict
+                    $consoleClass = 'Finding'
+                }
+
+                $resultObj = [PSCustomObject]@{
+                    Name         = "$roleName -> $assigneeName"
+                    RoleName     = $roleName
+                    Assignee     = $assigneeName
+                    AssigneeType = $assigneeType
+                    RiskVerdict  = $verdict
+                }
+
+                # Scope is reported only from a scope object that actually exists. Exchange
+                # also encodes implicit scopes in attributes whose values are not published,
+                # so the absent case is stated as "no custom scope object", which is what
+                # was observed, rather than as "organization-wide", which would be a guess.
+                $recipientScope = [string]$assignment.msExchRecipientWriteScopeLink
+                $configScope = [string]$assignment.msExchConfigWriteScopeLink
+                $scopeNames = @()
+                foreach ($scopeDN in @($recipientScope, $configScope)) {
+                    if ($scopeDN -and $scopeDN -match '^CN=((?:[^,\\]|\\.)+),') {
+                        $scopeNames += ($Matches[1] -replace '\\(.)', '$1')
+                    }
+                }
+                $resultObj | Add-Member -NotePropertyName 'AssignmentScope' -NotePropertyValue $(
+                    if (@($scopeNames).Count -gt 0) { $scopeNames -join ', ' }
+                    else { 'No custom management scope attached' }
+                ) -Force
+
+                $resultObj | Add-Member -NotePropertyName 'AssigneeDN' -NotePropertyValue $userDN -Force
+                $resultObj | Add-Member -NotePropertyName 'distinguishedName' -NotePropertyValue ([string]$assignment.distinguishedName) -Force
+                $resultObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeRoleAssignment' -Force
+                $resultObj | Add-Member -NotePropertyName 'ConsoleClass' -NotePropertyValue $consoleClass -Force
+
+                $results += $resultObj
+            }
+
+            if (@($results).Count -eq 0) {
+                Show-Line "None of the high-value Exchange roles is assigned ($(@($roleAssignments).Count) role assignment(s) examined)" -Class Secure
+                return
+            }
+
+            $unexpected = @($results | Where-Object { $_.ConsoleClass -eq 'Finding' })
+            if (@($unexpected).Count -gt 0) {
+                Show-Line "Found $(@($unexpected).Count) high-value Exchange role assignment(s) beyond the roles Exchange ships assigned" -Class Finding
+            } else {
+                Show-Line "The high-value Exchange roles are assigned only to the role groups Exchange ships them on" -Class Hint
+            }
+
+            # Findings first, then the shipped defaults, each group by role name so repeated
+            # runs against the same organization produce the same order.
+            $ordered = @($results | Sort-Object -Property `
+                @{ Expression = { if ($_.ConsoleClass -eq 'Finding') { 0 } else { 1 } } }, `
+                @{ Expression = { $_.RoleName } }, `
+                @{ Expression = { $_.Assignee } })
+
+            foreach ($result in $ordered) {
+                Show-Object $result -Class $result.ConsoleClass
+            }
+        }
+        catch {
+            Write-Log "[Get-ExchangeRBACAssignments] Error: $_" -Level Error
+            Show-Line "Error during Exchange role assignment check: $_" -Class Finding
+        }
+    }
+
+    end {
+        Write-Log "[Get-ExchangeRBACAssignments] Check completed"
+    }
+}
+
 
 
 # ----- Get-SCCMInfrastructure.ps1 -----
@@ -119435,7 +121237,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.5.0+20260913-1230"
+$Script:adPEASVersion = "2.5.0+20260917-1759"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -120381,6 +122183,7 @@ try {
         Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['Application'])"
         try {
             Invoke-CheckWithContext -Category 'Application' -CheckName 'Get-ExchangeInfrastructure' -Title 'Exchange Infrastructure' -Check { Get-ExchangeInfrastructure }
+            Invoke-CheckWithContext -Category 'Application' -CheckName 'Get-ExchangeRBACAssignments' -Title 'Exchange Role Assignments' -Check { Get-ExchangeRBACAssignments }
             Invoke-CheckWithContext -Category 'Application' -CheckName 'Get-SCCMInfrastructure' -Title 'SCCM Infrastructure' -Check { Get-SCCMInfrastructure }
             Invoke-CheckWithContext -Category 'Application' -CheckName 'Get-SCOMInfrastructure' -Title 'SCOM Infrastructure' -Check { Get-SCOMInfrastructure }
         } catch {

@@ -65,7 +65,17 @@ $Script:ExtendedRightsGUIDs = @{
     'f30e3bbf-9ff0-11d1-b603-0000f80367c1' = 'GP-Options'
 
     # === Computer Related ===
-    '4828cc14-1437-45bc-9b07-ad6f015e5f28' = 'Allowed-To-Act-On-Behalf-Of-Other-Identity'
+    # No entry for RBCD here, deliberately. There is no such extended right:
+    # msDS-AllowedToActOnBehalfOfOtherIdentity is an attribute, and write access to it is
+    # what the attack needs - see 'WriteRBCD' in $Script:WritePropertyAliases, which carries
+    # the attribute's own GUID 3f78c3e5-f79a-46bd-a0b8-9d18116ddc79.
+    #
+    # This table used to map 4828cc14-1437-45bc-9b07-ad6f015e5f28 to that name. That GUID
+    # is the schemaIDGUID of the inetOrgPerson CLASS, and it appears as the
+    # InheritedObjectType of ordinary ACEs - in the default domain DACL, and in the ACE
+    # Microsoft's Exchange shared-permissions mitigation narrows. Because
+    # Resolve-ObjectTypeGUID checks extended rights before schema classes, every one of
+    # those ACEs resolved to an RBCD right that was never there.
     '9923a32a-3607-11d2-b9be-0000f87a36b2' = 'DS-Install-Replica'
     '69ae6200-7f46-11d2-b9ad-00c04f79f805' = 'DS-Check-Stale-Phantoms'
     '2f16c4a5-b98e-432c-952a-cb388ba33f2e' = 'DS-Execute-Intentions-Script'
@@ -204,6 +214,10 @@ $Script:ValidatedWriteGUIDs = @{
 $Script:SchemaClassGUIDs = @{
     # Core object classes
     'user'                           = [GUID]'bf967aba-0de6-11d0-a285-00aa003049e2'
+    # inetOrgPerson is not exotic: it sits beside 'user' in the default domain DACL and in
+    # the ACE Microsoft's Exchange shared-permissions mitigation narrows, so an ACE list
+    # that cannot name it prints two entries that look identical and are not.
+    'inetOrgPerson'                  = [GUID]'4828cc14-1437-45bc-9b07-ad6f015e5f28'
     'computer'                       = [GUID]'bf967a86-0de6-11d0-a285-00aa003049e2'
     'group'                          = [GUID]'bf967a9c-0de6-11d0-a285-00aa003049e2'
     'organizationalUnit'             = [GUID]'bf967aa5-0de6-11d0-a285-00aa003049e2'
@@ -783,8 +797,11 @@ $Script:ExtendedRightsAliases = @{
     'SIDHistory'        = '280f369c-67c7-438e-ae98-1d46f3c6f541'  # Alias
 
     # === RBCD (Resource-Based Constrained Delegation) ===
-    'RBCD' = '4828cc14-1437-45bc-9b07-ad6f015e5f28'  # Allowed-To-Act-On-Behalf-Of-Other-Identity
-    'AllowedToActOnBehalfOfOtherIdentity' = '4828cc14-1437-45bc-9b07-ad6f015e5f28'  # Full name alias
+    # Not an extended right and therefore not listed here. RBCD is granted by writing the
+    # msDS-AllowedToActOnBehalfOfOtherIdentity attribute, which is 'WriteRBCD' in
+    # $Script:WritePropertyAliases. The entries that used to sit here named the
+    # inetOrgPerson class GUID and were unreachable anyway - 'RBCD' is not in the
+    # -ExtendedRight ValidateSet of Set-DomainObject.
 
     # === Password Storage (Dangerous!) ===
     'ReversibleEncryption' = '05c74c5e-4deb-43b4-bd9f-86664c2a7fd5'  # Enable-Per-User-Reversibly-Encrypted-Password

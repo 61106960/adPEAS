@@ -440,6 +440,37 @@ $Script:PrimaryAttributes = @{
         'DangerousPermissions'
     )
 
+    # Exchange hybrid relationship with Exchange Online (Get-ExchangeInfrastructure)
+    ExchangeHybridConfiguration = @(
+        'HybridStatus', 'HybridEvidence',
+        'CoexistenceDomains', 'CoexistenceTransportServers',
+        'CoexistenceExternalIPAddresses', 'CoexistenceSmartHost'
+    )
+
+    # SMTP receive connector verdict (Get-ExchangeInfrastructure).
+    # RelayStatus first: it is the answer, and the bindings and grants below are the
+    # evidence for it.
+    ExchangeReceiveConnector = @(
+        'Name', 'RelayStatus', 'ExchangeServer',
+        'AnonymousPermissions', 'Bindings', 'RemoteIPRanges',
+        'distinguishedName'
+    )
+
+    # Shared vs. split permissions on the domain object (Get-ExchangeInfrastructure).
+    # The effective ACEs and the inherit-only ones are separate rows on purpose: one is
+    # the finding, the other is the mitigated shape Microsoft's guidance produces, and in
+    # a single list the reader could not tell which line drove the verdict.
+    ExchangePermissionsModel = @(
+        'PermissionsModel', 'EffectiveDomainACEs', 'InheritOnlyDomainACEs', 'ADSplitPermissions'
+    )
+
+    # Exchange RBAC role assignments (Get-ExchangeRBACAssignments).
+    # Role and assignee first - the pair is the finding; the verdict explains it.
+    ExchangeRoleAssignment = @(
+        'RoleName', 'Assignee', 'AssigneeType', 'RiskVerdict',
+        'AssignmentScope', 'AssigneeDN', 'distinguishedName'
+    )
+
     # The three Exchange service groups (Get-ExchangeInfrastructure).
     #
     # They need an entry of their own for two reasons that are really one.

@@ -60,9 +60,9 @@ function ConvertFrom-SecurityDescriptor {
         # scanning host is not joined to, which is the normal case for this tool, that is
         # every domain principal in the descriptor: the DACL came back with the built-in
         # identities only, or empty, and no error anywhere. Asking for SecurityIdentifier
-        # needs no name resolution at all, so nothing can be dropped, and it is also what
-        # CLAUDE.md requires - identity decisions are made on the SID, and the display
-        # name comes from ConvertFrom-SID rather than from the host's own account
+        # needs no name resolution at all, so nothing can be dropped, and it matches the
+        # rule the rest of adPEAS follows: identity decisions are made on the SID, and the
+        # display name comes from ConvertFrom-SID rather than from the host's own account
         # database, which would hand back a localized name on a non-English host.
         $AccessRules = $SD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 
