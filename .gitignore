@@ -1,8 +1,8 @@
-# Build artifacts (committed only via /release)
-adPEAS.ps1
-adPEAS_min.ps1
-adPEAS_ultra.ps1
-adPEAS_obf.ps1
+# Build artifacts are deliberately NOT ignored. main carries the current dev build
+# so the documented raw-URL download always serves the newest code, and each release
+# carries the stable build as a downloadable asset. Ignoring them here would have no
+# effect anyway - they are tracked, and .gitignore does not apply to tracked files,
+# which is how dev builds used to leak into main one broad `git add` at a time.
 
 # Development tools
 .claude/

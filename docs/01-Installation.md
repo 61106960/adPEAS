@@ -36,7 +36,7 @@ adPEAS does **not** require:
 
 ### Option 1: GitHub Releases (Recommended)
 
-Download the latest version from the [GitHub Releases](https://github.com/61106960/adPEAS) page.
+Download a stable build from the [GitHub Releases](https://github.com/61106960/adPEAS/releases) page. All four variants are attached to every release as individual assets, so you can take just the one you need without cloning. A release build carries a clean version string, which is what you want when the version has to be reproducible or citable in a report.
 
 ### Option 2: Clone Repository
 
@@ -138,7 +138,7 @@ Expected output should include functions like:
 
 ## Building from Source
 
-The `main` branch contains only source files (`src/`). Pre-built release files are attached to each [GitHub Release](https://github.com/61106960/adPEAS/releases). To build from the latest source yourself, use the included build script:
+The `main` branch always carries a current build of all four variants, rebuilt with every fix and feature, which is what the direct-download URLs above fetch. Those builds carry a development version string (`2.5.1+20260917-1759`); the four stable builds, with a clean version string, are attached as downloadable assets to each [GitHub Release](https://github.com/61106960/adPEAS/releases). To build from source yourself, use the included build script:
 
 ```powershell
 git clone https://github.com/61106960/adPEAS.git

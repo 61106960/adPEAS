@@ -78,7 +78,7 @@ cd adPEAS
 
 ### Building from Source
 
-The `main` branch contains only source files (`src/`). Release builds are attached to each [GitHub Release](https://github.com/61106960/adPEAS/releases). If you want to build from the latest source, use the included build script:
+The `main` branch always carries a current build of all four variants, rebuilt with every fix and feature, so the raw URLs above serve the newest code. Those builds carry a development version string (`2.5.1+20260917-1759`). Every tagged [GitHub Release](https://github.com/61106960/adPEAS/releases) has the four stable builds attached as downloadable assets, with a clean version string (`2.5.1`) — use those if you need a known, citable version. To build from source yourself:
 
 ```powershell
 git clone https://github.com/61106960/adPEAS.git
