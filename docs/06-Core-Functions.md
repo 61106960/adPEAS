@@ -32,6 +32,7 @@ For detailed documentation of `Set-*` and `New-*` functions (operations, attack 
 | [Set-DomainGroup](07-Set-Modules.md#set-domaingroup) | Modify groups (add/remove members) |
 | [Set-DomainGPO](07-Set-Modules.md#set-domaingpo) | Modify GPO attributes and links |
 | [Set-CertificateTemplate](07-Set-Modules.md#set-certificatetemplate) | Modify certificate template settings |
+| [Move-DomainObject](07-Set-Modules.md#move-domainobject) | Move or rename any AD object (ModifyDN) |
 | [New-DomainUser](07-Set-Modules.md#new-domainuser) | Create new user accounts |
 | [New-DomainComputer](07-Set-Modules.md#new-domaincomputer) | Create new computer accounts |
 | [New-DomainGroup](07-Set-Modules.md#new-domaingroup) | Create new groups |

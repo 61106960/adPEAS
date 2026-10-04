@@ -60,6 +60,7 @@ The Set- and New- Modules provide Active Directory modification capabilities for
 - **Certificate Requests** (Request-ADCSCertificate)
 - **Group Policy Objects** (Set-DomainGPO)
 - **Generic AD Objects** (Set-DomainObject)
+- **Object location** (Move-DomainObject) — move or rename any object
 
 ---
 
@@ -936,6 +937,125 @@ Set-DomainObject -Identity "DC=contoso,DC=com" -Principal "CONTOSO\attacker" -Ex
 ### Return Value
 
 Returns `$true` on success, `$false` on failure.
+
+---
+
+## Move-DomainObject
+
+Moves an object to a different container and/or renames it, via LDAP ModifyDN.
+
+An object's OU membership is **not an attribute**. It is the object's position in the directory tree, carried by its `distinguishedName` — there is nothing to write, which is why `Set-DomainObject` cannot relocate an object and this is a function of its own. Moving and renaming are the same LDAP operation (`ModifyDN`, RFC 4511), so one request can do either or both.
+
+Works on **any** object class: users, computers, groups, GPOs, and organizational units including their entire subtree.
+
+### Available Operations
+
+| Operation | Parameter | Description | Attack Technique |
+|-----------|-----------|-------------|------------------|
+| **Move** | `-DestinationOU` | Relocate object to another container | Apply a different GPO, or escape a hardening GPO |
+| **Rename** | `-NewName` | Change the object's RDN | Camouflage |
+| **Move + Rename** | both | Both in a single ModifyDN request | Relocate while camouflaging |
+
+### Syntax
+
+```powershell
+Move-DomainObject
+    -Identity <String>
+    [-DestinationOU <String>]
+    [-NewName <String>]
+    [-PassThru]
+    [-Domain <String>]
+    [-Server <String>]
+    [-Credential <PSCredential>]
+```
+
+At least one of `-DestinationOU` and `-NewName` is required.
+
+`-NewName` takes a **bare value without the attribute prefix** — `"Jane Smith"`, not `"CN=Jane Smith"`. The attribute type is carried over from the current RDN, because AD does not allow changing it (a `CN` cannot become an `OU`). Escaping is applied for you, so a name containing a comma, a leading `#` or a trailing space is handled correctly.
+
+An identity that matches more than one object is rejected rather than resolved to the first match — pass a `distinguishedName` to disambiguate.
+
+### Required Permissions
+
+A move needs rights at **both ends**, which is the usual reason it fails:
+
+| Right | Where |
+|-------|-------|
+| `Delete Child` for the object's class | the **source** container |
+| `Create Child` for the object's class | the **target** container |
+
+A move consumes the delete right, so write access to the target alone is not enough. A "protected from accidental deletion" ACE (`Deny Delete` / `Delete Tree` on Everyone) on the object blocks the move even for an account that holds both rights. A pure rename needs `WriteProperty` on the naming attribute (`cn` / `ou` / `name`) instead.
+
+Check both ends before trying:
+
+```powershell
+Get-ObjectACL -Identity "OU=Finance,DC=contoso,DC=com" -WriteOnly
+Get-ObjectACL -Identity "OU=Sales,DC=contoso,DC=com" -WriteOnly
+```
+
+`Create Child` on an OU is what [Get-AddComputerRights](04-Security-Checks.md#get-addcomputerrights) and [Get-GPOPermissions](04-Security-Checks.md#get-gpopermissions) report — those findings are what make a move possible in the first place.
+
+### What a Move Changes
+
+| | |
+|---|---|
+| **Unchanged** | `objectGUID`, `objectSID`, group memberships, Kerberos principal, every ACE that references the object |
+| **Changed** | which GPOs apply, which delegated ACLs reach the object, the `distinguishedName` |
+
+Because the SID survives, the account keeps working the moment the move completes. What actually changes is its policy and delegation context — which is usually the point of moving it.
+
+### Examples
+
+```powershell
+# Move a user to another OU
+Move-DomainObject -Identity "jdoe" -DestinationOU "OU=Sales,DC=contoso,DC=com"
+
+# Rename in place - the comma is escaped automatically
+Move-DomainObject -Identity "jdoe" -NewName "Doe, Jane"
+# Object is now CN=Doe\, Jane,OU=Finance,DC=contoso,DC=com
+
+# Move and rename in a single request
+Move-DomainObject -Identity "CN=WS01,CN=Computers,DC=contoso,DC=com" -DestinationOU "OU=Tier0,DC=contoso,DC=com" -NewName "WS01-T0"
+
+# Move an entire OU with its subtree
+Move-DomainObject -Identity "OU=Old,DC=contoso,DC=com" -DestinationOU "OU=Archive,DC=contoso,DC=com"
+
+# Escalation: move a controlled computer into an OU where a privileged GPO applies
+Move-DomainObject -Identity "EVILPC$" -DestinationOU "OU=Tier0 Servers,DC=contoso,DC=com"
+# On the next policy refresh the computer applies that OU's GPOs - including any
+# Restricted Groups membership or startup script they deploy
+
+# The defensive inverse: move a host OUT of the OU that applies a hardening GPO
+Move-DomainObject -Identity "SRV01$" -DestinationOU "OU=Unmanaged,DC=contoso,DC=com"
+# The host stops receiving the hardening policy on the next refresh
+
+# Scripted use
+$result = Move-DomainObject -Identity "jdoe" -DestinationOU "OU=Sales,DC=contoso,DC=com" -PassThru
+$result.NewDistinguishedName
+
+# Cleanup: move it back
+Move-DomainObject -Identity "jdoe" -DestinationOU "OU=Finance,DC=contoso,DC=com"
+```
+
+### Validation Before the Write
+
+These cases are rejected before any request is sent, because the DC's own error for each of them points away from the cause:
+
+| Rejected | Why the DC's own error misleads |
+|----------|---------------------------------|
+| Destination in **another domain** | `affectsMultipleDSAs` — ModifyDN cannot cross a domain boundary. A cross-domain move is a different operation entirely, requiring SID history. |
+| Destination is the object itself or **below it** | `unwillingToPerform`. Easy to hit when moving an OU — it would detach the subtree. |
+| Destination container missing or unreadable | `noSuchObject`, which could equally mean the source object. |
+| `systemFlags` forbids move or rename | A bare `unwillingToPerform` with no stated reason. |
+| Object already at that location and name | Reported as a no-op; nothing is written. |
+
+**Permissions are not pre-checked.** The DC decides that when the write is sent, so a move can still fail after every check above has passed — lacking rights is the most common outcome in practice. `ModifyDN` is atomic, so a rejected move leaves the object untouched: there is no partial or half-moved state. On failure, the error names the rights the operation needs.
+
+### Return Value
+
+Returns `$true` on success, or when the object is already in place. Returns `$false` on failure.
+
+With `-PassThru`, returns an object with `Operation`, `Object`, `NewDistinguishedName`, `ObjectClass`, `Success` and `Message`, plus `ResultCode` and `ResultName` when the directory rejected the write.
 
 ---
 
