@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.6.0] - 2026-10-04
+
+### Added
+
+- **`Move-DomainObject` moves and renames any Active Directory object.** An object's OU
+  membership is its position in the directory tree, carried by its `distinguishedName` -
+  no attribute holds it, which is why `Set-DomainObject` cannot relocate an object and
+  this is a function of its own, built on LDAP ModifyDN. Moving and renaming are the same
+  operation, so `-DestinationOU` and `-NewName` are each optional and may be combined in a
+  single request. It works on any object class, including an organizational unit with its
+  whole subtree. The object's `objectGUID`, `objectSID`, group memberships and Kerberos
+  principal survive the move unchanged; what changes is which GPOs apply and which
+  delegated ACLs reach it - the required `Create Child` on the target OU is the same right
+  the `Get-AddComputerRights` and `Get-GPOPermissions` checks already report. Moves are
+  validated before the write for a cross-domain target, a destination inside the object's
+  own subtree, a missing target container, a `systemFlags` move or rename block, and the
+  no-op case, each of which the directory would otherwise report with an error that points
+  away from the cause. A rename escapes the name per RFC 4514, so a value containing a
+  comma, a leading `#` or a trailing space is handled correctly.
+
+- **Tab completion for organizational-unit and container parameters.** `-SearchBase`
+  (across the `Get-Domain*` functions, `Set-DomainObject`, `Invoke-LDAPSearch` and
+  `Get-CertificateTemplate`), `-OrganizationalUnit` (the `New-Domain*` functions) and
+  `-DestinationOU` (`Move-DomainObject`) now complete to the domain's OUs and top-level
+  containers, built lazily on first use and cached for the session. The completion matches
+  on any part of the name rather than only a leading prefix, since a distinguished name
+  begins with `OU=` or `CN=` while what the operator knows is the OU name, and
+  `-SearchBase` additionally offers the Configuration and Schema naming contexts for
+  partition queries. `-Identity` completion is unchanged in behavior but now serves
+  `Move-DomainObject` as well.
+
 ## [2.5.1] - 2026-09-17
 
 ### Added
