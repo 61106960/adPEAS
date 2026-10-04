@@ -3,10 +3,25 @@
     Registers tab-completion for adPEAS Get-Domain*, Set-Domain* and Request-ADCSCertificate functions.
 
 .DESCRIPTION
-    Register-adPEASCompleters provides tab-completion functionality for:
-    - Identity parameters in Get-DomainUser, Get-DomainComputer, Get-DomainGroup, Get-DomainGPO
-    - Identity parameters in Set-DomainUser, Set-DomainComputer, Set-DomainGroup, Set-DomainGPO, Set-DomainObject
-    - TemplateName parameter in Request-ADCSCertificate
+    Provides tab-completion for two families of parameter, each one named function plus one
+    registration table:
+
+    IDENTITY (Get-adPEASIdentityCompletion / Register-adPEASIdentityCompleters)
+    - Identity in Get-DomainUser, Get-DomainComputer, Get-DomainGroup, Get-DomainGPO
+    - Identity in Set-DomainUser, Set-DomainComputer, Set-DomainGroup, Set-DomainGPO
+    - Identity in Set-DomainObject and Move-DomainObject (class-agnostic: every principal cache)
+    - TemplateName in Request-ADCSCertificate
+
+    CONTAINER DN (Get-adPEASContainerCompletion / Register-adPEASContainerCompleters)
+    - SearchBase in Get-Domain*, Set-DomainObject, Invoke-LDAPSearch, Get-CertificateTemplate
+    - OrganizationalUnit in New-DomainUser, New-DomainComputer, New-DomainGroup
+    - DestinationOU in Move-DomainObject
+
+    Both families are registered from a table rather than one Register-ArgumentCompleter block
+    per command. Twenty-three registrations as hand-written blocks would be twenty-three copies
+    of two bodies, and they had already drifted: the per-command blocks quoted on a character
+    class that omitted the comma, and matched with -like, which treats a bracketed GPO name as
+    a wildcard character class.
 
     Tab-completion allows users to quickly find and select AD objects by typing the first few characters and pressing TAB.
 
@@ -22,11 +37,12 @@
 
     The cache is stored in $Script:CompletionCache with the following structure:
     @{
-        Users     = @("sAMAccountName1", "sAMAccountName2", ...)
-        Computers = @("sAMAccountName1", "sAMAccountName2", ...)
-        Groups    = @("sAMAccountName1", "sAMAccountName2", ...)
-        GPOs      = @("displayName1", "displayName2", ...)
-        Templates = @("templateName1", "templateName2", ...)
+        Users      = @("sAMAccountName1", "sAMAccountName2", ...)
+        Computers  = @("sAMAccountName1", "sAMAccountName2", ...)
+        Groups     = @("sAMAccountName1", "sAMAccountName2", ...)
+        GPOs       = @("displayName1", "displayName2", ...)
+        Templates  = @("templateName1", "templateName2", ...)
+        Containers = @("OU=...,DC=...", "CN=Users,DC=...", ...)
     }
 
 .NOTES
@@ -36,22 +52,24 @@
 # Initialize completion cache if not exists
 if (-not $Script:CompletionCache) {
     $Script:CompletionCache = @{
-        Users     = @()
-        Computers = @()
-        Groups    = @()
-        GPOs      = @()
-        Templates = @()
+        Users      = @()
+        Computers  = @()
+        Groups     = @()
+        GPOs       = @()
+        Templates  = @()
+        Containers = @()
     }
 }
 
 # Track which object types have been attempted for lazy loading (prevents repeated failed attempts)
 if (-not $Script:CompletionCacheAttempted) {
     $Script:CompletionCacheAttempted = @{
-        Users     = $false
-        Computers = $false
-        Groups    = $false
-        GPOs      = $false
-        Templates = $false
+        Users      = $false
+        Computers  = $false
+        Groups     = $false
+        GPOs       = $false
+        Templates  = $false
+        Containers = $false
     }
 }
 
@@ -64,7 +82,8 @@ if (-not $Script:CompletionCacheAttempted) {
     This function is called by Connect-adPEAS when -BuildCompletionCache is specified.
 
 .PARAMETER ObjectTypes
-    Array of object types to cache. Valid values: Users, Computers, Groups, GPOs, All.
+    Array of object types to cache. Valid values: Users, Computers, Groups, GPOs, Templates,
+    Containers, All.
     Default: All
 
 .EXAMPLE
@@ -79,7 +98,7 @@ function Build-CompletionCache {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Users', 'Computers', 'Groups', 'GPOs', 'Templates', 'All')]
+        [ValidateSet('Users', 'Computers', 'Groups', 'GPOs', 'Templates', 'Containers', 'All')]
         [string[]]$ObjectTypes = @('All')
     )
 
@@ -188,14 +207,49 @@ function Build-CompletionCache {
             }
         }
 
+        # Cache OU and container DNs (for -SearchBase / -OrganizationalUnit / -DestinationOU)
+        if ($buildAll -or $ObjectTypes -contains 'Containers') {
+            Write-Log "[Build-CompletionCache] Caching organizational unit and container DNs..."
+            try {
+                $containerDNs = New-Object System.Collections.Generic.List[string]
+
+                # The domain root is a legitimate value for all three parameter kinds.
+                if ($Script:LDAPContext -and $Script:LDAPContext.DomainDN) {
+                    $containerDNs.Add([string]$Script:LDAPContext.DomainDN)
+                }
+
+                foreach ($ou in @(Get-DomainObject -LDAPFilter '(objectClass=organizationalUnit)' -Properties @('distinguishedName'))) {
+                    if ($ou.distinguishedName) { $containerDNs.Add([string]$ou.distinguishedName) }
+                }
+
+                # Containers are restricted to one level below the domain root. That covers
+                # CN=Users, CN=Computers and CN=Managed Service Accounts - real targets for
+                # New-Domain* - without dragging in the hundreds of objects under CN=System.
+                # Done with -Scope rather than a Where-Object so the DC does the filtering.
+                foreach ($container in @(Get-DomainObject -LDAPFilter '(objectClass=container)' -Scope OneLevel -Properties @('distinguishedName'))) {
+                    if ($container.distinguishedName) { $containerDNs.Add([string]$container.distinguishedName) }
+                }
+
+                $Script:CompletionCache.Containers = @($containerDNs | Sort-Object -Unique)
+                $Script:CompletionCacheAttempted.Containers = $true
+                Write-Log "[Build-CompletionCache] Cached $($Script:CompletionCache.Containers.Count) containers"
+            }
+            catch {
+                Write-Log "[Build-CompletionCache] Error caching containers: $_"
+                $Script:CompletionCache.Containers = @()
+                $Script:CompletionCacheAttempted.Containers = $true
+            }
+        }
+
         # Summary
         $totalCached = $Script:CompletionCache.Users.Count +
                        $Script:CompletionCache.Computers.Count +
                        $Script:CompletionCache.Groups.Count +
                        $Script:CompletionCache.GPOs.Count +
-                       $Script:CompletionCache.Templates.Count
+                       $Script:CompletionCache.Templates.Count +
+                       $Script:CompletionCache.Containers.Count
 
-        Write-Log "[Build-CompletionCache] Cache built: $($Script:CompletionCache.Users.Count) users, $($Script:CompletionCache.Computers.Count) computers, $($Script:CompletionCache.Groups.Count) groups, $($Script:CompletionCache.GPOs.Count) GPOs, $($Script:CompletionCache.Templates.Count) templates (Total: $totalCached)"
+        Write-Log "[Build-CompletionCache] Cache built: $($Script:CompletionCache.Users.Count) users, $($Script:CompletionCache.Computers.Count) computers, $($Script:CompletionCache.Groups.Count) groups, $($Script:CompletionCache.GPOs.Count) GPOs, $($Script:CompletionCache.Templates.Count) templates, $($Script:CompletionCache.Containers.Count) containers (Total: $totalCached)"
     }
 }
 
@@ -217,19 +271,21 @@ function Clear-CompletionCache {
 
     process {
         $Script:CompletionCache = @{
-            Users     = @()
-            Computers = @()
-            Groups    = @()
-            GPOs      = @()
-            Templates = @()
+            Users      = @()
+            Computers  = @()
+            Groups     = @()
+            GPOs       = @()
+            Templates  = @()
+            Containers = @()
         }
         # Reset lazy loading flags so cache can be rebuilt
         $Script:CompletionCacheAttempted = @{
-            Users     = $false
-            Computers = $false
-            Groups    = $false
-            GPOs      = $false
-            Templates = $false
+            Users      = $false
+            Computers  = $false
+            Groups     = $false
+            GPOs       = $false
+            Templates  = $false
+            Containers = $false
         }
         Write-Log "[Clear-CompletionCache] Completion cache cleared"
     }
@@ -252,21 +308,24 @@ function Get-CompletionCacheStats {
 
     process {
         [PSCustomObject]@{
-            Users     = $Script:CompletionCache.Users.Count
-            Computers = $Script:CompletionCache.Computers.Count
-            Groups    = $Script:CompletionCache.Groups.Count
-            GPOs      = $Script:CompletionCache.GPOs.Count
-            Templates = $Script:CompletionCache.Templates.Count
-            Total     = ($Script:CompletionCache.Users.Count +
+            Users      = $Script:CompletionCache.Users.Count
+            Computers  = $Script:CompletionCache.Computers.Count
+            Groups     = $Script:CompletionCache.Groups.Count
+            GPOs       = $Script:CompletionCache.GPOs.Count
+            Templates  = $Script:CompletionCache.Templates.Count
+            Containers = $Script:CompletionCache.Containers.Count
+            Total      = ($Script:CompletionCache.Users.Count +
                         $Script:CompletionCache.Computers.Count +
                         $Script:CompletionCache.Groups.Count +
                         $Script:CompletionCache.GPOs.Count +
-                        $Script:CompletionCache.Templates.Count)
+                        $Script:CompletionCache.Templates.Count +
+                        $Script:CompletionCache.Containers.Count)
             CacheExists = ($Script:CompletionCache.Users.Count -gt 0 -or
                           $Script:CompletionCache.Computers.Count -gt 0 -or
                           $Script:CompletionCache.Groups.Count -gt 0 -or
                           $Script:CompletionCache.GPOs.Count -gt 0 -or
-                          $Script:CompletionCache.Templates.Count -gt 0)
+                          $Script:CompletionCache.Templates.Count -gt 0 -or
+                          $Script:CompletionCache.Containers.Count -gt 0)
         }
     }
 }
@@ -287,357 +346,453 @@ function Get-adPEASCompletionState {
         HasConnection = ($null -ne $Script:LdapConnection)
         Cache = $Script:CompletionCache
         CacheAttempted = $Script:CompletionCacheAttempted
-    }
-}
 
-# Get-DomainUser -Identity completer
-Register-ArgumentCompleter -CommandName Get-DomainUser -ParameterName Identity -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-
-    # Get state from the adPEAS module scope
-    $state = Get-adPEASCompletionState -ObjectType 'Users'
-
-    # Lazy loading: Build cache on first TAB press if connection exists and not yet attempted
-    if ($state.HasConnection -and
-        (-not $state.Cache -or $state.Cache.Users.Count -eq 0) -and
-        (-not $state.CacheAttempted -or -not $state.CacheAttempted.Users)) {
-        # Build cache for Users only (lazy, on-demand)
-        Build-CompletionCache -ObjectTypes @('Users')
-        # Refresh state after building
-        $state = Get-adPEASCompletionState -ObjectType 'Users'
-    }
-
-    if ($state.Cache -and $state.Cache.Users -and $state.Cache.Users.Count -gt 0) {
-        $state.Cache.Users | Where-Object {
-            $_ -like "$wordToComplete*"
-        } | Select-Object -First 50 | ForEach-Object {
-            # Quote with double quotes and escape special characters (handles O'Brien, $vars, etc.)
-            $completionText = if ($_ -match "[\s'`"`$``]") {
-                '"' + ($_ -replace '"', '""') + '"'
-            } else { $_ }
-            [System.Management.Automation.CompletionResult]::new(
-                $completionText,
-                $_,
-                'ParameterValue',
-                "User: $_"
-            )
-        }
-    }
-}
-
-# Get-DomainComputer -Identity completer
-Register-ArgumentCompleter -CommandName Get-DomainComputer -ParameterName Identity -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-
-    # Get state from the adPEAS module scope
-    $state = Get-adPEASCompletionState -ObjectType 'Computers'
-
-    # Lazy loading: Build cache on first TAB press if connection exists and not yet attempted
-    if ($state.HasConnection -and
-        (-not $state.Cache -or $state.Cache.Computers.Count -eq 0) -and
-        (-not $state.CacheAttempted -or -not $state.CacheAttempted.Computers)) {
-        # Build cache for Computers only (lazy, on-demand)
-        Build-CompletionCache -ObjectTypes @('Computers')
-        # Refresh state after building
-        $state = Get-adPEASCompletionState -ObjectType 'Computers'
-    }
-
-    if ($state.Cache -and $state.Cache.Computers -and $state.Cache.Computers.Count -gt 0) {
-        $state.Cache.Computers | Where-Object {
-            $_ -like "$wordToComplete*"
-        } | Select-Object -First 50 | ForEach-Object {
-            # Quote with double quotes and escape special characters
-            $completionText = if ($_ -match "[\s'`"`$``]") {
-                '"' + ($_ -replace '"', '""') + '"'
-            } else { $_ }
-            [System.Management.Automation.CompletionResult]::new(
-                $completionText,
-                $_,
-                'ParameterValue',
-                "Computer: $_"
-            )
-        }
-    }
-}
-
-# Get-DomainGroup -Identity completer
-Register-ArgumentCompleter -CommandName Get-DomainGroup -ParameterName Identity -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-
-    # Get state from the adPEAS module scope
-    $state = Get-adPEASCompletionState -ObjectType 'Groups'
-
-    # Lazy loading: Build cache on first TAB press if connection exists and not yet attempted
-    if ($state.HasConnection -and
-        (-not $state.Cache -or $state.Cache.Groups.Count -eq 0) -and
-        (-not $state.CacheAttempted -or -not $state.CacheAttempted.Groups)) {
-        # Build cache for Groups only (lazy, on-demand)
-        Build-CompletionCache -ObjectTypes @('Groups')
-        # Refresh state after building
-        $state = Get-adPEASCompletionState -ObjectType 'Groups'
-    }
-
-    if ($state.Cache -and $state.Cache.Groups -and $state.Cache.Groups.Count -gt 0) {
-        $state.Cache.Groups | Where-Object {
-            $_ -like "$wordToComplete*"
-        } | Select-Object -First 50 | ForEach-Object {
-            # Quote with double quotes and escape special characters
-            $completionText = if ($_ -match "[\s'`"`$``]") {
-                '"' + ($_ -replace '"', '""') + '"'
-            } else { $_ }
-            [System.Management.Automation.CompletionResult]::new(
-                $completionText,
-                $_,
-                'ParameterValue',
-                "Group: $_"
-            )
-        }
-    }
-}
-
-# Get-DomainGPO -Identity completer
-Register-ArgumentCompleter -CommandName Get-DomainGPO -ParameterName Identity -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-
-    # Get state from the adPEAS module scope
-    $state = Get-adPEASCompletionState -ObjectType 'GPOs'
-
-    # Lazy loading: Build cache on first TAB press if connection exists and not yet attempted
-    if ($state.HasConnection -and
-        (-not $state.Cache -or $state.Cache.GPOs.Count -eq 0) -and
-        (-not $state.CacheAttempted -or -not $state.CacheAttempted.GPOs)) {
-        # Build cache for GPOs only (lazy, on-demand)
-        Build-CompletionCache -ObjectTypes @('GPOs')
-        # Refresh state after building
-        $state = Get-adPEASCompletionState -ObjectType 'GPOs'
-    }
-
-    if ($state.Cache -and $state.Cache.GPOs -and $state.Cache.GPOs.Count -gt 0) {
-        $state.Cache.GPOs | Where-Object {
-            $_ -like "$wordToComplete*"
-        } | Select-Object -First 50 | ForEach-Object {
-            # Quote with double quotes and escape special characters (GPO names often contain spaces)
-            $completionText = if ($_ -match "[\s'`"`$``]") {
-                '"' + ($_ -replace '"', '""') + '"'
-            } else { $_ }
-            [System.Management.Automation.CompletionResult]::new(
-                $completionText,
-                $_,
-                'ParameterValue',
-                "GPO: $_"
-            )
-        }
+        # Naming context roots, for -SearchBase completion. These come from the RootDSE read
+        # at bind time, so offering them costs no query - and they are the one thing
+        # -SearchBase accepts that is not an OU or container in the domain partition.
+        PartitionDNs = @(
+            @(
+                $Script:LDAPContext.DomainDN
+                $Script:LDAPContext.ConfigurationDN
+                $Script:LDAPContext.SchemaNamingContext
+            ) | Where-Object { $_ }
+        )
     }
 }
 
 # =====================================================================
-# SET-DOMAIN* COMPLETERS
-# These use the same cache as Get-Domain* functions
+# IDENTITY COMPLETER
+# Provides tab-completion for every -Identity parameter, plus
+# Request-ADCSCertificate -TemplateName. One scriptblock per
+# registration, built from a table with a captured object-type list.
 # =====================================================================
 
-# Set-DomainUser -Identity completer
-Register-ArgumentCompleter -CommandName Set-DomainUser -ParameterName Identity -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+<#
+.SYNOPSIS
+    Produces the name completions for an -Identity (or -TemplateName) parameter.
 
-    $state = Get-adPEASCompletionState -ObjectType 'Users'
+.DESCRIPTION
+    The body of the identity completer. Replaces ten near-identical
+    Register-ArgumentCompleter blocks that differed only in which cache they read and what
+    their tooltip said.
 
-    if ($state.HasConnection -and
-        (-not $state.Cache -or $state.Cache.Users.Count -eq 0) -and
-        (-not $state.CacheAttempted -or -not $state.CacheAttempted.Users)) {
-        Build-CompletionCache -ObjectTypes @('Users')
-        $state = Get-adPEASCompletionState -ObjectType 'Users'
+    Named rather than inline for the same two reasons as Get-adPEASContainerCompletion: a
+    registered scriptblock cannot be retrieved and called, so inline logic is untestable, and
+    a named function resolves in the module scope.
+
+    Builds each requested cache lazily on first use.
+
+.PARAMETER WordToComplete
+    The partial value the user has typed. An empty string returns the whole list.
+
+.PARAMETER ObjectTypes
+    Which caches to offer. Several may be given, which is what the class-agnostic
+    Set-DomainObject and Move-DomainObject need.
+
+.EXAMPLE
+    Get-adPEASIdentityCompletion -WordToComplete 'jd' -ObjectTypes @('Users')
+    Returns the users whose sAMAccountName starts with 'jd'.
+
+.EXAMPLE
+    Get-adPEASIdentityCompletion -WordToComplete '' -ObjectTypes @('Users', 'Computers', 'Groups')
+    The class-agnostic list, as Set-DomainObject and Move-DomainObject offer it.
+
+.OUTPUTS
+    [System.Management.Automation.CompletionResult] objects, at most 50.
+#>
+function Get-adPEASIdentityCompletion {
+    [CmdletBinding()]
+    [OutputType([System.Management.Automation.CompletionResult])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$WordToComplete = '',
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Users', 'Computers', 'Groups', 'GPOs', 'Templates')]
+        [string[]]$ObjectTypes
+    )
+
+    # Tooltip label per cache, singular - what the per-command blocks hard-coded.
+    $labels = @{
+        Users     = 'User'
+        Computers = 'Computer'
+        Groups    = 'Group'
+        GPOs      = 'GPO'
+        Templates = 'Template'
     }
 
-    if ($state.Cache -and $state.Cache.Users -and $state.Cache.Users.Count -gt 0) {
-        $state.Cache.Users | Where-Object {
-            $_ -like "$wordToComplete*"
-        } | Select-Object -First 50 | ForEach-Object {
-            $completionText = if ($_ -match "[\s'`"`$``]") {
-                '"' + ($_ -replace '"', '""') + '"'
-            } else { $_ }
-            [System.Management.Automation.CompletionResult]::new(
-                $completionText,
-                $_,
-                'ParameterValue',
-                "User: $_"
-            )
-        }
-    }
-}
+    # Get state from the adPEAS module scope
+    $state = Get-adPEASCompletionState -ObjectType 'Identity'
 
-# Set-DomainComputer -Identity completer
-Register-ArgumentCompleter -CommandName Set-DomainComputer -ParameterName Identity -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-
-    $state = Get-adPEASCompletionState -ObjectType 'Computers'
-
-    if ($state.HasConnection -and
-        (-not $state.Cache -or $state.Cache.Computers.Count -eq 0) -and
-        (-not $state.CacheAttempted -or -not $state.CacheAttempted.Computers)) {
-        Build-CompletionCache -ObjectTypes @('Computers')
-        $state = Get-adPEASCompletionState -ObjectType 'Computers'
-    }
-
-    if ($state.Cache -and $state.Cache.Computers -and $state.Cache.Computers.Count -gt 0) {
-        $state.Cache.Computers | Where-Object {
-            $_ -like "$wordToComplete*"
-        } | Select-Object -First 50 | ForEach-Object {
-            $completionText = if ($_ -match "[\s'`"`$``]") {
-                '"' + ($_ -replace '"', '""') + '"'
-            } else { $_ }
-            [System.Management.Automation.CompletionResult]::new(
-                $completionText,
-                $_,
-                'ParameterValue',
-                "Computer: $_"
-            )
-        }
-    }
-}
-
-# Set-DomainGroup -Identity completer
-Register-ArgumentCompleter -CommandName Set-DomainGroup -ParameterName Identity -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-
-    $state = Get-adPEASCompletionState -ObjectType 'Groups'
-
-    if ($state.HasConnection -and
-        (-not $state.Cache -or $state.Cache.Groups.Count -eq 0) -and
-        (-not $state.CacheAttempted -or -not $state.CacheAttempted.Groups)) {
-        Build-CompletionCache -ObjectTypes @('Groups')
-        $state = Get-adPEASCompletionState -ObjectType 'Groups'
-    }
-
-    if ($state.Cache -and $state.Cache.Groups -and $state.Cache.Groups.Count -gt 0) {
-        $state.Cache.Groups | Where-Object {
-            $_ -like "$wordToComplete*"
-        } | Select-Object -First 50 | ForEach-Object {
-            $completionText = if ($_ -match "[\s'`"`$``]") {
-                '"' + ($_ -replace '"', '""') + '"'
-            } else { $_ }
-            [System.Management.Automation.CompletionResult]::new(
-                $completionText,
-                $_,
-                'ParameterValue',
-                "Group: $_"
-            )
-        }
-    }
-}
-
-# Set-DomainGPO -Identity completer
-Register-ArgumentCompleter -CommandName Set-DomainGPO -ParameterName Identity -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-
-    $state = Get-adPEASCompletionState -ObjectType 'GPOs'
-
-    if ($state.HasConnection -and
-        (-not $state.Cache -or $state.Cache.GPOs.Count -eq 0) -and
-        (-not $state.CacheAttempted -or -not $state.CacheAttempted.GPOs)) {
-        Build-CompletionCache -ObjectTypes @('GPOs')
-        $state = Get-adPEASCompletionState -ObjectType 'GPOs'
-    }
-
-    if ($state.Cache -and $state.Cache.GPOs -and $state.Cache.GPOs.Count -gt 0) {
-        $state.Cache.GPOs | Where-Object {
-            $_ -like "$wordToComplete*"
-        } | Select-Object -First 50 | ForEach-Object {
-            $completionText = if ($_ -match "[\s'`"`$``]") {
-                '"' + ($_ -replace '"', '""') + '"'
-            } else { $_ }
-            [System.Management.Automation.CompletionResult]::new(
-                $completionText,
-                $_,
-                'ParameterValue',
-                "GPO: $_"
-            )
-        }
-    }
-}
-
-# Set-DomainObject -Identity completer (generic - uses all caches combined)
-Register-ArgumentCompleter -CommandName Set-DomainObject -ParameterName Identity -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-
-    $state = Get-adPEASCompletionState -ObjectType 'All'
-
-    # Lazy load all object types for generic Set-DomainObject
+    # Lazy loading: build only the caches this registration actually reads, and only once.
+    # Both guards short-circuit on a null table, which is the state Clear-SessionState leaves.
     if ($state.HasConnection) {
-        if ((-not $state.Cache -or $state.Cache.Users.Count -eq 0) -and
-            (-not $state.CacheAttempted -or -not $state.CacheAttempted.Users)) {
-            Build-CompletionCache -ObjectTypes @('Users')
+        $pending = New-Object System.Collections.Generic.List[string]
+        foreach ($objectType in $ObjectTypes) {
+            $isEmpty = (-not $state.Cache) -or (@($state.Cache[$objectType]).Count -eq 0)
+            $isUntried = (-not $state.CacheAttempted) -or (-not $state.CacheAttempted[$objectType])
+            if ($isEmpty -and $isUntried) { $pending.Add($objectType) }
         }
-        if ((-not $state.Cache -or $state.Cache.Computers.Count -eq 0) -and
-            (-not $state.CacheAttempted -or -not $state.CacheAttempted.Computers)) {
-            Build-CompletionCache -ObjectTypes @('Computers')
+        if ($pending.Count -gt 0) {
+            Build-CompletionCache -ObjectTypes @($pending)
+            # Refresh state after building
+            $state = Get-adPEASCompletionState -ObjectType 'Identity'
         }
-        if ((-not $state.Cache -or $state.Cache.Groups.Count -eq 0) -and
-            (-not $state.CacheAttempted -or -not $state.CacheAttempted.Groups)) {
-            Build-CompletionCache -ObjectTypes @('Groups')
-        }
-        $state = Get-adPEASCompletionState -ObjectType 'All'
     }
 
-    if ($state.Cache) {
-        # Combine all object types for generic completer
-        $allObjects = @()
-        if ($state.Cache.Users) { $allObjects += $state.Cache.Users | ForEach-Object { @{ Name = $_; Type = 'User' } } }
-        if ($state.Cache.Computers) { $allObjects += $state.Cache.Computers | ForEach-Object { @{ Name = $_; Type = 'Computer' } } }
-        if ($state.Cache.Groups) { $allObjects += $state.Cache.Groups | ForEach-Object { @{ Name = $_; Type = 'Group' } } }
+    $word = $WordToComplete
+    if ($null -eq $word) { $word = '' }
 
-        $allObjects | Where-Object {
-            $_.Name -like "$wordToComplete*"
-        } | Select-Object -First 50 | ForEach-Object {
-            $completionText = if ($_.Name -match "[\s'`"`$``]") {
-                '"' + ($_.Name -replace '"', '""') + '"'
-            } else { $_.Name }
-            [System.Management.Automation.CompletionResult]::new(
-                $completionText,
-                $_.Name,
-                'ParameterValue',
-                "$($_.Type): $($_.Name)"
-            )
+    # StartsWith, NOT -like. The prefix semantics are unchanged from the blocks this replaces,
+    # but -like reads [ ] * and ? as wildcard syntax, and a GPO displayName is free text: a
+    # policy named "[Baseline] Server Hardening" turned '-like "[Baseline]*"' into a CHARACTER
+    # CLASS, matching every name that starts with one of B a s e l i n. A half-typed "[Base"
+    # threw WildcardPatternException outright, and PowerShell swallows an exception raised
+    # inside a completer - so the symptom was silence, with nothing to explain it.
+    $comparison = [System.StringComparison]::OrdinalIgnoreCase
+    $matching = New-Object System.Collections.Generic.List[object]
+
+    foreach ($objectType in $ObjectTypes) {
+        if (-not $state.Cache) { break }
+        foreach ($name in @($state.Cache[$objectType])) {
+            if ([string]::IsNullOrEmpty($name)) { continue }
+            if (-not ([string]$name).StartsWith($word, $comparison)) { continue }
+            $matching.Add([PSCustomObject]@{ Name = [string]$name; Label = $labels[$objectType] })
         }
+    }
+
+    # Sorted across all requested types before the cap, not per type. Concatenating the caches
+    # and then taking the first 50 meant a domain with 50 or more users never offered a single
+    # computer or group on Set-DomainObject.
+    foreach ($entry in @($matching | Sort-Object -Property Name -Unique | Select-Object -First 50)) {
+        $name = [string]$entry.Name
+
+        # Whitelist, not blacklist - the principle this file's header states. A bareword is safe
+        # only as letters, digits, underscore, dot or hyphen, and not leading with a hyphen,
+        # which PowerShell would read as a parameter name. Everything else is single-quoted.
+        #
+        # The blacklist this replaces, [\s'"$`], missed the comma: a GPO named "Baseline,Tier0"
+        # has no whitespace, so it went out unquoted and bound as a two-element array instead of
+        # a name. Single quotes rather than double, because they also keep $ and ` literal.
+        $completionText = $name
+        if ($name -notmatch '^[A-Za-z0-9_.][A-Za-z0-9_.-]*$') {
+            $completionText = "'" + ($name -replace "'", "''") + "'"
+        }
+
+        [System.Management.Automation.CompletionResult]::new(
+            $completionText,
+            $name,
+            'ParameterValue',
+            "$($entry.Label): $name"
+        )
     }
 }
 
+<#
+.SYNOPSIS
+    The identity completer registration table: which caches each parameter offers.
+
+.DESCRIPTION
+    Data, as its own function, so the completer can look up its object types at completion time
+    and a test can assert the mapping without reaching into a registered scriptblock.
+
+.OUTPUTS
+    [hashtable[]] with Command, Parameter and ObjectTypes.
+#>
+function Get-adPEASIdentityCompleterRegistrations {
+    [CmdletBinding()]
+    [OutputType([hashtable[]])]
+    param()
+
+    return @(
+        @{ Command = 'Get-DomainUser';          Parameter = 'Identity';     ObjectTypes = @('Users') }
+        @{ Command = 'Get-DomainComputer';      Parameter = 'Identity';     ObjectTypes = @('Computers') }
+        @{ Command = 'Get-DomainGroup';         Parameter = 'Identity';     ObjectTypes = @('Groups') }
+        @{ Command = 'Get-DomainGPO';           Parameter = 'Identity';     ObjectTypes = @('GPOs') }
+        @{ Command = 'Set-DomainUser';          Parameter = 'Identity';     ObjectTypes = @('Users') }
+        @{ Command = 'Set-DomainComputer';      Parameter = 'Identity';     ObjectTypes = @('Computers') }
+        @{ Command = 'Set-DomainGroup';         Parameter = 'Identity';     ObjectTypes = @('Groups') }
+        @{ Command = 'Set-DomainGPO';           Parameter = 'Identity';     ObjectTypes = @('GPOs') }
+        # Class-agnostic: both accept any object, so both offer every principal cache.
+        @{ Command = 'Set-DomainObject';        Parameter = 'Identity';     ObjectTypes = @('Users', 'Computers', 'Groups') }
+        @{ Command = 'Move-DomainObject';       Parameter = 'Identity';     ObjectTypes = @('Users', 'Computers', 'Groups') }
+        @{ Command = 'Request-ADCSCertificate'; Parameter = 'TemplateName'; ObjectTypes = @('Templates') }
+    )
+}
+
+<#
+.SYNOPSIS
+    Resolves which caches a given command and parameter should offer.
+
+.DESCRIPTION
+    Looked up at completion time from $commandName and $parameterName, which PowerShell hands
+    every completer. This is what lets ONE shared scriptblock serve all eleven registrations.
+
+    Deliberately NOT a closure per registration. GetNewClosure would capture the object types
+    correctly, but it also rebinds the scriptblock to a fresh scope that does not chain to the
+    one it was defined in - so Get-adPEASIdentityCompletion stops resolving wherever adPEAS was
+    not loaded into the global scope, and the completer dies with CommandNotFoundException.
+    PowerShell swallows a completer's exception, so the symptom would be silence.
+
+.PARAMETER CommandName
+    The command being completed, as PowerShell passes it to the completer.
+
+.PARAMETER ParameterName
+    The parameter being completed.
+
+.OUTPUTS
+    [string[]] cache names, empty if the pair is not registered.
+#>
+function Get-adPEASIdentityCompleterTypes {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$CommandName,
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$ParameterName
+    )
+
+    foreach ($registration in Get-adPEASIdentityCompleterRegistrations) {
+        if ($registration.Command -eq $CommandName -and $registration.Parameter -eq $ParameterName) {
+            # Returned unrolled, NOT comma-protected. ',$array' hands the array back as a single
+            # object, so the caller's @(...) wraps it into a one-element array holding an array -
+            # and ObjectTypes then receives the string 'Users Computers Groups', which fails its
+            # ValidateSet. A completer's exception is swallowed by PowerShell, so that fails as
+            # silence. Callers wrap in @(), which rebuilds a one-element list correctly.
+            return @($registration.ObjectTypes)
+        }
+    }
+
+    return @()
+}
+
+<#
+.SYNOPSIS
+    Registers the identity completer for every parameter that takes an object name.
+
+.DESCRIPTION
+    Eleven registrations sharing ONE plain scriptblock, which resolves its object types per
+    call from the command and parameter name. Eleven hand-written blocks would be eleven copies
+    of the completer body, and eleven closures would break command resolution - see
+    Get-adPEASIdentityCompleterTypes.
+
+.EXAMPLE
+    Register-adPEASIdentityCompleters
+    Called once at module load, immediately below.
+#>
+function Register-adPEASIdentityCompleters {
+    [CmdletBinding()]
+    param()
+
+    $identityCompleter = {
+        param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+
+        $objectTypes = @(Get-adPEASIdentityCompleterTypes -CommandName $commandName -ParameterName $parameterName)
+        if ($objectTypes.Count -eq 0) { return }
+
+        Get-adPEASIdentityCompletion -WordToComplete $wordToComplete -ObjectTypes $objectTypes
+    }
+
+    $registrations = @(Get-adPEASIdentityCompleterRegistrations)
+    foreach ($registration in $registrations) {
+        Register-ArgumentCompleter -CommandName $registration.Command `
+            -ParameterName $registration.Parameter -ScriptBlock $identityCompleter
+    }
+
+    Write-Log "[Register-adPEASIdentityCompleters] Registered identity completion for $($registrations.Count) parameter(s)"
+}
+
+Register-adPEASIdentityCompleters
+
 # =====================================================================
-# CERTIFICATE TEMPLATE COMPLETER
-# Provides tab-completion for Request-ADCSCertificate -TemplateName
-# Templates are collected from all CAs published in Enrollment Services
+# CONTAINER DN COMPLETER
+# Provides tab-completion for every parameter that takes an OU or
+# container distinguishedName: -SearchBase, -OrganizationalUnit and
+# -DestinationOU.
 # =====================================================================
 
-# Request-ADCSCertificate -TemplateName completer
-Register-ArgumentCompleter -CommandName Request-ADCSCertificate -ParameterName TemplateName -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+<#
+.SYNOPSIS
+    Produces the container-DN completions for a given word and parameter name.
+
+.DESCRIPTION
+    The body of the container completer, as a named function rather than inline in the
+    registered scriptblock. Two reasons: a registered scriptblock cannot be retrieved and
+    called, so inline logic is untestable; and a named function resolves in the module scope,
+    which is the same reason Get-adPEASCompletionState exists.
+
+    Builds the Containers cache lazily on first use, exactly like the Identity completers.
+
+.PARAMETER WordToComplete
+    The partial value the user has typed. An empty string returns the whole list.
+
+.PARAMETER ParameterName
+    The parameter being completed. 'SearchBase' additionally offers the Configuration and
+    Schema naming contexts; the other parameters must not, because those partitions cannot
+    hold a user, computer or group.
+
+.EXAMPLE
+    Get-adPEASContainerCompletion -WordToComplete 'Sales' -ParameterName 'DestinationOU'
+    Returns the OUs whose DN contains 'Sales'.
+
+.OUTPUTS
+    [System.Management.Automation.CompletionResult] objects, at most 50.
+#>
+function Get-adPEASContainerCompletion {
+    [CmdletBinding()]
+    [OutputType([System.Management.Automation.CompletionResult])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$WordToComplete = '',
+
+        [Parameter(Mandatory = $false)]
+        [string]$ParameterName
+    )
 
     # Get state from the adPEAS module scope
-    $state = Get-adPEASCompletionState -ObjectType 'Templates'
+    $state = Get-adPEASCompletionState -ObjectType 'Containers'
 
     # Lazy loading: Build cache on first TAB press if connection exists and not yet attempted
     if ($state.HasConnection -and
-        (-not $state.Cache -or $state.Cache.Templates.Count -eq 0) -and
-        (-not $state.CacheAttempted -or -not $state.CacheAttempted.Templates)) {
-        # Build cache for Templates only (lazy, on-demand)
-        Build-CompletionCache -ObjectTypes @('Templates')
+        (-not $state.Cache -or $state.Cache.Containers.Count -eq 0) -and
+        (-not $state.CacheAttempted -or -not $state.CacheAttempted.Containers)) {
+        # Build cache for Containers only (lazy, on-demand)
+        Build-CompletionCache -ObjectTypes @('Containers')
         # Refresh state after building
-        $state = Get-adPEASCompletionState -ObjectType 'Templates'
+        $state = Get-adPEASCompletionState -ObjectType 'Containers'
     }
 
-    if ($state.Cache -and $state.Cache.Templates -and $state.Cache.Templates.Count -gt 0) {
-        $state.Cache.Templates | Where-Object {
-            $_ -like "$wordToComplete*"
-        } | Select-Object -First 50 | ForEach-Object {
-            # Quote with double quotes and escape special characters
-            $completionText = if ($_ -match "[\s'`"`$``]") {
-                '"' + ($_ -replace '"', '""') + '"'
-            } else { $_ }
-            [System.Management.Automation.CompletionResult]::new(
-                $completionText,
-                $_,
-                'ParameterValue',
-                "Template: $_"
-            )
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($state.Cache -and $state.Cache.Containers) {
+        foreach ($containerDN in $state.Cache.Containers) {
+            $candidates.Add([string]$containerDN)
         }
     }
+
+    # -SearchBase is the only one of these parameters that may point at another partition.
+    # Offering the Configuration and Schema roots for -OrganizationalUnit or -DestinationOU
+    # would suggest a target that cannot hold the object being created or moved.
+    if ($ParameterName -eq 'SearchBase' -and $state.PartitionDNs) {
+        foreach ($partitionDN in $state.PartitionDNs) {
+            $candidates.Add([string]$partitionDN)
+        }
+    }
+
+    $word = $WordToComplete
+    if ($null -eq $word) { $word = '' }
+
+    # Matched with IndexOf/StartsWith, NOT with -like. -like reads [ ] * and ? as wildcard
+    # syntax, and an OU named "[Tier 0] Servers" is an ordinary way to name one:
+    #   - '[Tier 0]' as a -like pattern is a CHARACTER CLASS, so it matches every DN that
+    #     contains a T, i, e, r, space or 0 - which is all of them.
+    #   - a half-typed 'OU=[' makes -like throw WildcardPatternException, and PowerShell
+    #     swallows an exception thrown inside a completer, so the user would get no completions
+    #     at all and no indication why.
+    # Ordinal comparison also matches how AD itself compares DNs.
+    $comparison = [System.StringComparison]::OrdinalIgnoreCase
+    $matching = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in @($candidates | Sort-Object -Unique)) {
+        if ($candidate.IndexOf($word, $comparison) -ge 0) {
+            $matching.Add($candidate)
+        }
+    }
+
+    # Substring match, not prefix: a DN starts with 'OU=' or 'CN=', so prefix-only completion
+    # would require typing the DN from the left - but what the user knows is the OU name.
+    # Prefix matches are still listed first, so an exact path keeps winning.
+    $ordered = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in $matching) {
+        if ($candidate.StartsWith($word, $comparison)) { $ordered.Add($candidate) }
+    }
+    foreach ($candidate in $matching) {
+        if (-not $candidate.StartsWith($word, $comparison)) { $ordered.Add($candidate) }
+    }
+
+    foreach ($containerDN in @($ordered | Select-Object -First 50)) {
+        # Always quoted, unlike the Identity completers above: a DN contains commas, which
+        # PowerShell parses as an array separator in argument position, so an unquoted DN never
+        # binds to a [string] parameter. Single quotes because a DN also carries RFC 4514
+        # backslash escapes and may contain '$' - both are literal inside single quotes, and
+        # only an embedded single quote needs doubling.
+        $completionText = "'" + ($containerDN -replace "'", "''") + "'"
+        [System.Management.Automation.CompletionResult]::new(
+            $completionText,
+            $containerDN,
+            'ParameterValue',
+            "Container: $containerDN"
+        )
+    }
 }
+
+<#
+.SYNOPSIS
+    The container completer registration table: every parameter that takes a container DN.
+
+.DESCRIPTION
+    Data, as its own function, so a test can assert the inventory without reaching into a
+    registered scriptblock. Unlike the identity table this needs no per-entry object types -
+    every container parameter wants the same candidate list, and -SearchBase is distinguished
+    inside Get-adPEASContainerCompletion by the parameter name it is handed.
+
+.OUTPUTS
+    [hashtable[]] with Command and Parameter.
+#>
+function Get-adPEASContainerCompleterRegistrations {
+    [CmdletBinding()]
+    [OutputType([hashtable[]])]
+    param()
+
+    return @(
+        @{ Command = 'Get-DomainObject';        Parameter = 'SearchBase' }
+        @{ Command = 'Get-DomainUser';          Parameter = 'SearchBase' }
+        @{ Command = 'Get-DomainComputer';      Parameter = 'SearchBase' }
+        @{ Command = 'Get-DomainGroup';         Parameter = 'SearchBase' }
+        @{ Command = 'Get-DomainGPO';           Parameter = 'SearchBase' }
+        @{ Command = 'Get-CertificateTemplate'; Parameter = 'SearchBase' }
+        @{ Command = 'Set-DomainObject';        Parameter = 'SearchBase' }
+        @{ Command = 'Invoke-LDAPSearch';       Parameter = 'SearchBase' }
+        @{ Command = 'New-DomainUser';          Parameter = 'OrganizationalUnit' }
+        @{ Command = 'New-DomainComputer';      Parameter = 'OrganizationalUnit' }
+        @{ Command = 'New-DomainGroup';         Parameter = 'OrganizationalUnit' }
+        @{ Command = 'Move-DomainObject';       Parameter = 'DestinationOU' }
+    )
+}
+
+<#
+.SYNOPSIS
+    Registers the shared container-DN completer for every parameter that takes one.
+
+.DESCRIPTION
+    Twelve parameters across eleven functions accept a container distinguishedName. They all
+    want the same candidate list, so one plain scriptblock serves all twelve.
+
+.EXAMPLE
+    Register-adPEASContainerCompleters
+    Called once at module load, immediately below.
+#>
+function Register-adPEASContainerCompleters {
+    [CmdletBinding()]
+    param()
+
+    $containerCompleter = {
+        param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+        Get-adPEASContainerCompletion -WordToComplete $wordToComplete -ParameterName $parameterName
+    }
+
+    $registrations = @(Get-adPEASContainerCompleterRegistrations)
+
+    foreach ($registration in $registrations) {
+        Register-ArgumentCompleter -CommandName $registration.Command `
+            -ParameterName $registration.Parameter -ScriptBlock $containerCompleter
+    }
+
+    Write-Log "[Register-adPEASContainerCompleters] Registered container completion for $($registrations.Count) parameter(s)"
+}
+
+Register-adPEASContainerCompleters

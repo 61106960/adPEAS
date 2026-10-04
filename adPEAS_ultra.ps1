@@ -2030,6 +2030,10 @@ $Script:LDAPWriteOperationHints = @(
 	    Pattern = '^modify '
 	    Hint    = 'Modifying this object needs GenericAll, GenericWrite, or a WriteProperty ACE covering the attribute being written. Verify with: Get-ObjectACL -Identity <target> -WriteOnly'
 	}
+	@{
+	    Pattern = '^move '
+	    Hint    = 'Moving an object needs Delete Child for its object class on the SOURCE container AND Create Child for that class on the TARGET container - a move consumes the delete right, so write access to the target alone is not enough. A "protected from accidental deletion" ACE (Deny Delete / Delete Tree on Everyone) on the object blocks the move until it is removed, even for an account that otherwise has both rights. A pure rename needs WriteProperty on the naming attribute (cn / ou / name) instead. Verify with: Get-ObjectACL -Identity <source container> -WriteOnly and Get-ObjectACL -Identity <target container> -WriteOnly'
+	}
 )
 $Script:ErrorCategories = @{
 	'Success'      = @{ IsError = $false; IsRetryable = $false; IsAccessDenied = $false; IsNotFound = $false }
@@ -2554,6 +2558,98 @@ function Escape-LDAPFilterDN {
 	        $i++
 	    }
 	    return $result.ToString()
+	}
+}
+function Escape-LDAPDNComponent {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+	    [AllowEmptyString()]
+	    [string]$Value
+	)
+	process {
+	    if ([string]::IsNullOrEmpty($Value)) {
+	        return $Value
+	    }
+	    $specials = ',+"\<>;'
+	    $result = [System.Text.StringBuilder]::new($Value.Length * 2)
+	    $lastIndex = $Value.Length - 1
+	    for ($i = 0; $i -lt $Value.Length; $i++) {
+	        $char = $Value[$i]
+	        if ($specials.IndexOf($char) -ge 0) {
+	            [void]$result.Append('\')
+	            [void]$result.Append($char)
+	        }
+	        elseif ($char -eq ' ' -and ($i -eq 0 -or $i -eq $lastIndex)) {
+	            [void]$result.Append('\ ')
+	        }
+	        elseif ($char -eq '#' -and $i -eq 0) {
+	            [void]$result.Append('\#')
+	        }
+	        elseif ([int]$char -lt 32) {
+	            [void]$result.Append('\')
+	            [void]$result.Append(([int]$char).ToString('X2'))
+	        }
+	        else {
+	            [void]$result.Append($char)
+	        }
+	    }
+	    return $result.ToString()
+	}
+}
+function Split-LDAPDN {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+	    [AllowEmptyString()]
+	    [string]$DistinguishedName
+	)
+	process {
+	    if ([string]::IsNullOrWhiteSpace($DistinguishedName)) {
+	        return $null
+	    }
+	    if ($DistinguishedName -notmatch '^([A-Za-z][A-Za-z0-9-]*)=((?:[^,\\+]|\\.)*)(?:,(.*))?$') {
+	        return $null
+	    }
+	    $rdnType = $Matches[1]
+	    $rdnValue = $Matches[2]
+	    $parent = ''
+	    if ($Matches.ContainsKey(3)) {
+	        $parent = $Matches[3]
+	    }
+	    $unescaped = [System.Text.StringBuilder]::new($rdnValue.Length)
+	    $valueChars = $rdnValue.ToCharArray()
+	    $j = 0
+	    while ($j -lt $valueChars.Length) {
+	        if ($valueChars[$j] -ne '\') {
+	            [void]$unescaped.Append($valueChars[$j])
+	            $j++
+	            continue
+	        }
+	        if (($j + 2) -lt $valueChars.Length) {
+	            $hexPair = [string]$valueChars[$j + 1] + [string]$valueChars[$j + 2]
+	            if ($hexPair -match '^[0-9A-Fa-f]{2}$') {
+	                [void]$unescaped.Append([char][Convert]::ToInt32($hexPair, 16))
+	                $j += 3
+	                continue
+	            }
+	        }
+	        if (($j + 1) -lt $valueChars.Length) {
+	            [void]$unescaped.Append($valueChars[$j + 1])
+	            $j += 2
+	            continue
+	        }
+	        [void]$unescaped.Append('\')
+	        $j++
+	    }
+	    return [PSCustomObject]@{
+	        RDN      = "$rdnType=$rdnValue"
+	        RDNType  = $rdnType
+	        RDNValue = $unescaped.ToString()
+	        Parent   = $parent
+	    }
 	}
 }
 function Test-ValidComputerName {
@@ -31245,6 +31341,250 @@ function Remove-GPOScriptEntry {
 	$null = Update-GPOVersion -GPODN $GPODN -GPOName $GPOName -Credential $Credential @incArg
 	return [PSCustomObject]@{ Operation = "Remove${Kind}Script"; GPO = $GPOName; ItemsRemoved = $smb.Removed; Success = $true }
 }
+function Move-DomainObject {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+	    [Alias('distinguishedName', 'Name', 'sAMAccountName')]
+	    [string]$Identity,
+	    [Parameter(Mandatory=$false, Position=1)]
+	    [Alias('TargetOU', 'NewParent')]
+	    [string]$DestinationOU,
+	    [Parameter(Mandatory=$false)]
+	    [string]$NewName,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Domain,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Server,
+	    [Parameter(Mandatory=$false)]
+	    [System.Management.Automation.PSCredential]$Credential,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$PassThru
+	)
+	begin {
+	    if ($PSBoundParameters.ContainsKey('NewName') -and [string]::IsNullOrWhiteSpace($NewName)) {
+	        throw "[Move-DomainObject] -NewName cannot be empty or whitespace"
+	    }
+	    if ($PSBoundParameters.ContainsKey('DestinationOU') -and [string]::IsNullOrWhiteSpace($DestinationOU)) {
+	        throw "[Move-DomainObject] -DestinationOU cannot be empty or whitespace"
+	    }
+	    if (-not $DestinationOU -and -not $NewName) {
+	        throw "[Move-DomainObject] Specify -DestinationOU, -NewName, or both"
+	    }
+	    $FLAG_DOMAIN_DISALLOW_MOVE = 0x04000000
+	    $FLAG_DOMAIN_DISALLOW_RENAME = 0x08000000
+	}
+	process {
+	    $ConnectionParams = @{}
+	    if ($Domain) { $ConnectionParams['Domain'] = $Domain }
+	    if ($Server) { $ConnectionParams['Server'] = $Server }
+	    if ($Credential) { $ConnectionParams['Credential'] = $Credential }
+	    $Connected = $false
+	    try {
+	        $Connected = Ensure-LDAPConnection @ConnectionParams
+	    } catch {
+	        Write-Error "[Move-DomainObject] $($_.Exception.Message)"
+	    }
+	    if (-not $Connected) {
+	        if ($PassThru) {
+	            return [PSCustomObject]@{
+	                Operation = "MoveObject"
+	                Object = $Identity
+	                Success = $false
+	                Message = "No LDAP connection available"
+	            }
+	        }
+	        return $false
+	    }
+	    try {
+	        $Candidates = @(Get-DomainObject -Identity $Identity `
+	            -Properties @('distinguishedName', 'objectClass', 'systemFlags') @ConnectionParams)
+	        if ($Candidates.Count -eq 0) {
+	            $Message = "Object not found: $Identity"
+	            Write-Error "[Move-DomainObject] $Message"
+	            if ($PassThru) {
+	                return [PSCustomObject]@{
+	                    Operation = "MoveObject"
+	                    Object = $Identity
+	                    Success = $false
+	                    Message = $Message
+	                }
+	            }
+	            return $false
+	        }
+	        if ($Candidates.Count -gt 1) {
+	            $DNList = (@($Candidates | ForEach-Object { $_.distinguishedName }) -join '; ')
+	            $Message = "Identity '$Identity' matches $($Candidates.Count) objects - pass a distinguishedName instead. Matches: $DNList"
+	            Write-Error "[Move-DomainObject] $Message"
+	            if ($PassThru) {
+	                return [PSCustomObject]@{
+	                    Operation = "MoveObject"
+	                    Object = $Identity
+	                    Success = $false
+	                    Message = $Message
+	                }
+	            }
+	            return $false
+	        }
+	        $SourceObject = $Candidates[0]
+	        $SourceDN = [string]$SourceObject.distinguishedName
+	        $ObjectClass = @($SourceObject.objectClass)[-1]
+	        $SourceParts = Split-LDAPDN -DistinguishedName $SourceDN
+	        if (-not $SourceParts) {
+	            $Message = "Cannot parse the object's distinguishedName: $SourceDN"
+	            Write-Error "[Move-DomainObject] $Message"
+	            if ($PassThru) {
+	                return [PSCustomObject]@{
+	                    Operation = "MoveObject"
+	                    Object = $SourceDN
+	                    Success = $false
+	                    Message = $Message
+	                }
+	            }
+	            return $false
+	        }
+	        $TargetParentDN = $SourceParts.Parent
+	        if ($DestinationOU) {
+	            $TargetParentDN = $DestinationOU.Trim()
+	        }
+	        if ($PSBoundParameters.ContainsKey('NewName')) {
+	            $TargetRDN = $SourceParts.RDNType + '=' + (Escape-LDAPDNComponent -Value $NewName)
+	        } else {
+	            $TargetRDN = $SourceParts.RDN
+	        }
+	        $Comparison = [System.StringComparison]::OrdinalIgnoreCase
+	        $ParentChanged = -not $TargetParentDN.Equals($SourceParts.Parent, $Comparison)
+	        $RDNChanged = -not $TargetRDN.Equals($SourceParts.RDN, $Comparison)
+	        if (-not $ParentChanged -and -not $RDNChanged) {
+	            if ($PassThru) {
+	                return [PSCustomObject]@{
+	                    Operation = "MoveObject"
+	                    Object = $SourceDN
+	                    NewDistinguishedName = $SourceDN
+	                    ObjectClass = $ObjectClass
+	                    Success = $true
+	                    NoOp = $true
+	                    Message = "Object is already at the requested location and name"
+	                }
+	            }
+	            Show-Line "Object is already at the requested location and name: $SourceDN" -Class Note
+	            return $true
+	        }
+	        $DomainDN = [string]$Script:LDAPContext.DomainDN
+	        $Rejection = $null
+	        $SystemFlags = 0
+	        if ($null -ne $SourceObject.systemFlags) {
+	            $SystemFlags = [int]$SourceObject.systemFlags
+	        }
+	        if ($TargetParentDN.Equals($SourceDN, $Comparison) -or
+	            $TargetParentDN.EndsWith(',' + $SourceDN, $Comparison)) {
+	            $Rejection = "Destination is the object itself or below it, which would detach the subtree: $TargetParentDN"
+	        }
+	        elseif (-not ($TargetParentDN.Equals($DomainDN, $Comparison) -or
+	                      $TargetParentDN.EndsWith(',' + $DomainDN, $Comparison))) {
+	            $Rejection = "Destination is outside the connected domain ($DomainDN). ModifyDN cannot move an object between domains - that needs a cross-domain migration with SID history. Destination: $TargetParentDN"
+	        }
+	        elseif ($ParentChanged -and ($SystemFlags -band $FLAG_DOMAIN_DISALLOW_MOVE) -ne 0) {
+	            $Rejection = "The object has systemFlags FLAG_DOMAIN_DISALLOW_MOVE set and cannot be moved: $SourceDN"
+	        }
+	        elseif ($RDNChanged -and ($SystemFlags -band $FLAG_DOMAIN_DISALLOW_RENAME) -ne 0) {
+	            $Rejection = "The object has systemFlags FLAG_DOMAIN_DISALLOW_RENAME set and cannot be renamed: $SourceDN"
+	        }
+	        if (-not $Rejection -and $ParentChanged) {
+	            $TargetFound = $false
+	            try {
+	                $TargetFound = @(Get-DomainObject -SearchBase $TargetParentDN -Scope Base `
+	                    -Properties @('distinguishedName') @ConnectionParams).Count -gt 0
+	            } catch {
+	            }
+	            if (-not $TargetFound) {
+	                $Rejection = "Destination container not found or not readable: $TargetParentDN"
+	            }
+	        }
+	        if ($Rejection) {
+	            Write-Error "[Move-DomainObject] $Rejection"
+	            if ($PassThru) {
+	                return [PSCustomObject]@{
+	                    Operation = "MoveObject"
+	                    Object = $SourceDN
+	                    ObjectClass = $ObjectClass
+	                    Success = $false
+	                    Message = $Rejection
+	                }
+	            }
+	            return $false
+	        }
+	        $TargetDN = $TargetRDN + ',' + $TargetParentDN
+	        $MoveRequest = New-Object System.DirectoryServices.Protocols.ModifyDNRequest
+	        $MoveRequest.DistinguishedName = $SourceDN
+	        $MoveRequest.NewParentDistinguishedName = $TargetParentDN
+	        $MoveRequest.NewName = $TargetRDN
+	        $MoveRequest.DeleteOldRdn = $true
+	        try {
+	            $Response = $Script:LdapConnection.SendRequest($MoveRequest)
+	            if ($Response.ResultCode -eq [System.DirectoryServices.Protocols.ResultCode]::Success) {
+	                if ($PassThru) {
+	                    return [PSCustomObject]@{
+	                        Operation = "MoveObject"
+	                        Object = $SourceDN
+	                        NewDistinguishedName = $TargetDN
+	                        ObjectClass = $ObjectClass
+	                        Success = $true
+	                        Message = "Object successfully moved"
+	                    }
+	                }
+	                Show-Line "Successfully moved $ObjectClass object" -Class Hint
+	                Show-KeyValue "From:" $SourceDN
+	                Show-KeyValue "To:" $TargetDN
+	                Show-Line "objectGUID and objectSID are unchanged, but applied GPOs and inherited ACLs now come from the new location" -Class Note
+	                return $true
+	            } else {
+	                $Message = "ModifyDNRequest failed: $($Response.ResultCode) - $($Response.ErrorMessage)"
+	                Write-Error "[Move-DomainObject] $Message"
+	                if ($PassThru) {
+	                    return [PSCustomObject]@{
+	                        Operation = "MoveObject"
+	                        Object = $SourceDN
+	                        ObjectClass = $ObjectClass
+	                        Success = $false
+	                        Message = $Message
+	                    }
+	                }
+	                return $false
+	            }
+	        } catch {
+	            $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "move object '$SourceDN'"
+	            Write-Error ("[Move-DomainObject] Failed to move object." + [Environment]::NewLine + '  ' + $writeError.Formatted)
+	            if ($PassThru) {
+	                return [PSCustomObject]@{
+	                    Operation  = "MoveObject"
+	                    Object     = $SourceDN
+	                    ObjectClass = $ObjectClass
+	                    Success    = $false
+	                    ResultCode = $writeError.ResultCode
+	                    ResultName = $writeError.ResultName
+	                    Message    = $writeError.Formatted
+	                }
+	            }
+	            return $false
+	        }
+	    } catch {
+	        $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "move object '$Identity'"
+	        Write-Error ("[Move-DomainObject] Error." + [Environment]::NewLine + '  ' + $writeError.Formatted)
+	        if ($PassThru) {
+	            return [PSCustomObject]@{
+	                Operation  = "MoveObject"
+	                Object     = $Identity
+	                Success    = $false
+	                ResultCode = $writeError.ResultCode
+	                ResultName = $writeError.ResultName
+	                Message    = $writeError.Formatted
+	            }
+	        }
+	        return $false
+	    }
+	}
+}
 function New-DomainUser {
 	[CmdletBinding()]
 	param(
@@ -48623,27 +48963,29 @@ function Parse-WWWAuthenticateHeader {
 }
 if (-not $Script:CompletionCache) {
 	$Script:CompletionCache = @{
-	    Users     = @()
-	    Computers = @()
-	    Groups    = @()
-	    GPOs      = @()
-	    Templates = @()
+	    Users      = @()
+	    Computers  = @()
+	    Groups     = @()
+	    GPOs       = @()
+	    Templates  = @()
+	    Containers = @()
 	}
 }
 if (-not $Script:CompletionCacheAttempted) {
 	$Script:CompletionCacheAttempted = @{
-	    Users     = $false
-	    Computers = $false
-	    Groups    = $false
-	    GPOs      = $false
-	    Templates = $false
+	    Users      = $false
+	    Computers  = $false
+	    Groups     = $false
+	    GPOs       = $false
+	    Templates  = $false
+	    Containers = $false
 	}
 }
 function Build-CompletionCache {
 	[CmdletBinding()]
 	param(
 	    [Parameter(Mandatory = $false)]
-	    [ValidateSet('Users', 'Computers', 'Groups', 'GPOs', 'Templates', 'All')]
+	    [ValidateSet('Users', 'Computers', 'Groups', 'GPOs', 'Templates', 'Containers', 'All')]
 	    [string[]]$ObjectTypes = @('All')
 	)
 	process {
@@ -48720,11 +49062,32 @@ function Build-CompletionCache {
 	            $Script:CompletionCacheAttempted.Templates = $true
 	        }
 	    }
+	    if ($buildAll -or $ObjectTypes -contains 'Containers') {
+	        try {
+	            $containerDNs = New-Object System.Collections.Generic.List[string]
+	            if ($Script:LDAPContext -and $Script:LDAPContext.DomainDN) {
+	                $containerDNs.Add([string]$Script:LDAPContext.DomainDN)
+	            }
+	            foreach ($ou in @(Get-DomainObject -LDAPFilter '(objectClass=organizationalUnit)' -Properties @('distinguishedName'))) {
+	                if ($ou.distinguishedName) { $containerDNs.Add([string]$ou.distinguishedName) }
+	            }
+	            foreach ($container in @(Get-DomainObject -LDAPFilter '(objectClass=container)' -Scope OneLevel -Properties @('distinguishedName'))) {
+	                if ($container.distinguishedName) { $containerDNs.Add([string]$container.distinguishedName) }
+	            }
+	            $Script:CompletionCache.Containers = @($containerDNs | Sort-Object -Unique)
+	            $Script:CompletionCacheAttempted.Containers = $true
+	        }
+	        catch {
+	            $Script:CompletionCache.Containers = @()
+	            $Script:CompletionCacheAttempted.Containers = $true
+	        }
+	    }
 	    $totalCached = $Script:CompletionCache.Users.Count +
 	                   $Script:CompletionCache.Computers.Count +
 	                   $Script:CompletionCache.Groups.Count +
 	                   $Script:CompletionCache.GPOs.Count +
-	                   $Script:CompletionCache.Templates.Count
+	                   $Script:CompletionCache.Templates.Count +
+	                   $Script:CompletionCache.Containers.Count
 	}
 }
 function Clear-CompletionCache {
@@ -48732,18 +49095,20 @@ function Clear-CompletionCache {
 	param()
 	process {
 	    $Script:CompletionCache = @{
-	        Users     = @()
-	        Computers = @()
-	        Groups    = @()
-	        GPOs      = @()
-	        Templates = @()
+	        Users      = @()
+	        Computers  = @()
+	        Groups     = @()
+	        GPOs       = @()
+	        Templates  = @()
+	        Containers = @()
 	    }
 	    $Script:CompletionCacheAttempted = @{
-	        Users     = $false
-	        Computers = $false
-	        Groups    = $false
-	        GPOs      = $false
-	        Templates = $false
+	        Users      = $false
+	        Computers  = $false
+	        Groups     = $false
+	        GPOs       = $false
+	        Templates  = $false
+	        Containers = $false
 	    }
 	}
 }
@@ -48752,21 +49117,24 @@ function Get-CompletionCacheStats {
 	param()
 	process {
 	    [PSCustomObject]@{
-	        Users     = $Script:CompletionCache.Users.Count
-	        Computers = $Script:CompletionCache.Computers.Count
-	        Groups    = $Script:CompletionCache.Groups.Count
-	        GPOs      = $Script:CompletionCache.GPOs.Count
-	        Templates = $Script:CompletionCache.Templates.Count
-	        Total     = ($Script:CompletionCache.Users.Count +
+	        Users      = $Script:CompletionCache.Users.Count
+	        Computers  = $Script:CompletionCache.Computers.Count
+	        Groups     = $Script:CompletionCache.Groups.Count
+	        GPOs       = $Script:CompletionCache.GPOs.Count
+	        Templates  = $Script:CompletionCache.Templates.Count
+	        Containers = $Script:CompletionCache.Containers.Count
+	        Total      = ($Script:CompletionCache.Users.Count +
 	                    $Script:CompletionCache.Computers.Count +
 	                    $Script:CompletionCache.Groups.Count +
 	                    $Script:CompletionCache.GPOs.Count +
-	                    $Script:CompletionCache.Templates.Count)
+	                    $Script:CompletionCache.Templates.Count +
+	                    $Script:CompletionCache.Containers.Count)
 	        CacheExists = ($Script:CompletionCache.Users.Count -gt 0 -or
 	                      $Script:CompletionCache.Computers.Count -gt 0 -or
 	                      $Script:CompletionCache.Groups.Count -gt 0 -or
 	                      $Script:CompletionCache.GPOs.Count -gt 0 -or
-	                      $Script:CompletionCache.Templates.Count -gt 0)
+	                      $Script:CompletionCache.Templates.Count -gt 0 -or
+	                      $Script:CompletionCache.Containers.Count -gt 0)
 	    }
 	}
 }
@@ -48777,271 +49145,211 @@ function Get-adPEASCompletionState {
 	    HasConnection = ($null -ne $Script:LdapConnection)
 	    Cache = $Script:CompletionCache
 	    CacheAttempted = $Script:CompletionCacheAttempted
+	    PartitionDNs = @(
+	        @(
+	            $Script:LDAPContext.DomainDN
+	            $Script:LDAPContext.ConfigurationDN
+	            $Script:LDAPContext.SchemaNamingContext
+	        ) | Where-Object { $_ }
+	    )
 	}
 }
-Register-ArgumentCompleter -CommandName Get-DomainUser -ParameterName Identity -ScriptBlock {
-	param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-	$state = Get-adPEASCompletionState -ObjectType 'Users'
-	if ($state.HasConnection -and
-	    (-not $state.Cache -or $state.Cache.Users.Count -eq 0) -and
-	    (-not $state.CacheAttempted -or -not $state.CacheAttempted.Users)) {
-	    Build-CompletionCache -ObjectTypes @('Users')
-	    $state = Get-adPEASCompletionState -ObjectType 'Users'
+function Get-adPEASIdentityCompletion {
+	[CmdletBinding()]
+	[OutputType([System.Management.Automation.CompletionResult])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowEmptyString()]
+	    [string]$WordToComplete = '',
+	    [Parameter(Mandatory = $true)]
+	    [ValidateSet('Users', 'Computers', 'Groups', 'GPOs', 'Templates')]
+	    [string[]]$ObjectTypes
+	)
+	$labels = @{
+	    Users     = 'User'
+	    Computers = 'Computer'
+	    Groups    = 'Group'
+	    GPOs      = 'GPO'
+	    Templates = 'Template'
 	}
-	if ($state.Cache -and $state.Cache.Users -and $state.Cache.Users.Count -gt 0) {
-	    $state.Cache.Users | Where-Object {
-	        $_ -like "$wordToComplete*"
-	    } | Select-Object -First 50 | ForEach-Object {
-	        $completionText = if ($_ -match "[\s'`"`$``]") {
-	            '"' + ($_ -replace '"', '""') + '"'
-	        } else { $_ }
-	        [System.Management.Automation.CompletionResult]::new(
-	            $completionText,
-	            $_,
-	            'ParameterValue',
-	            "User: $_"
-	        )
-	    }
-	}
-}
-Register-ArgumentCompleter -CommandName Get-DomainComputer -ParameterName Identity -ScriptBlock {
-	param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-	$state = Get-adPEASCompletionState -ObjectType 'Computers'
-	if ($state.HasConnection -and
-	    (-not $state.Cache -or $state.Cache.Computers.Count -eq 0) -and
-	    (-not $state.CacheAttempted -or -not $state.CacheAttempted.Computers)) {
-	    Build-CompletionCache -ObjectTypes @('Computers')
-	    $state = Get-adPEASCompletionState -ObjectType 'Computers'
-	}
-	if ($state.Cache -and $state.Cache.Computers -and $state.Cache.Computers.Count -gt 0) {
-	    $state.Cache.Computers | Where-Object {
-	        $_ -like "$wordToComplete*"
-	    } | Select-Object -First 50 | ForEach-Object {
-	        $completionText = if ($_ -match "[\s'`"`$``]") {
-	            '"' + ($_ -replace '"', '""') + '"'
-	        } else { $_ }
-	        [System.Management.Automation.CompletionResult]::new(
-	            $completionText,
-	            $_,
-	            'ParameterValue',
-	            "Computer: $_"
-	        )
-	    }
-	}
-}
-Register-ArgumentCompleter -CommandName Get-DomainGroup -ParameterName Identity -ScriptBlock {
-	param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-	$state = Get-adPEASCompletionState -ObjectType 'Groups'
-	if ($state.HasConnection -and
-	    (-not $state.Cache -or $state.Cache.Groups.Count -eq 0) -and
-	    (-not $state.CacheAttempted -or -not $state.CacheAttempted.Groups)) {
-	    Build-CompletionCache -ObjectTypes @('Groups')
-	    $state = Get-adPEASCompletionState -ObjectType 'Groups'
-	}
-	if ($state.Cache -and $state.Cache.Groups -and $state.Cache.Groups.Count -gt 0) {
-	    $state.Cache.Groups | Where-Object {
-	        $_ -like "$wordToComplete*"
-	    } | Select-Object -First 50 | ForEach-Object {
-	        $completionText = if ($_ -match "[\s'`"`$``]") {
-	            '"' + ($_ -replace '"', '""') + '"'
-	        } else { $_ }
-	        [System.Management.Automation.CompletionResult]::new(
-	            $completionText,
-	            $_,
-	            'ParameterValue',
-	            "Group: $_"
-	        )
-	    }
-	}
-}
-Register-ArgumentCompleter -CommandName Get-DomainGPO -ParameterName Identity -ScriptBlock {
-	param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-	$state = Get-adPEASCompletionState -ObjectType 'GPOs'
-	if ($state.HasConnection -and
-	    (-not $state.Cache -or $state.Cache.GPOs.Count -eq 0) -and
-	    (-not $state.CacheAttempted -or -not $state.CacheAttempted.GPOs)) {
-	    Build-CompletionCache -ObjectTypes @('GPOs')
-	    $state = Get-adPEASCompletionState -ObjectType 'GPOs'
-	}
-	if ($state.Cache -and $state.Cache.GPOs -and $state.Cache.GPOs.Count -gt 0) {
-	    $state.Cache.GPOs | Where-Object {
-	        $_ -like "$wordToComplete*"
-	    } | Select-Object -First 50 | ForEach-Object {
-	        $completionText = if ($_ -match "[\s'`"`$``]") {
-	            '"' + ($_ -replace '"', '""') + '"'
-	        } else { $_ }
-	        [System.Management.Automation.CompletionResult]::new(
-	            $completionText,
-	            $_,
-	            'ParameterValue',
-	            "GPO: $_"
-	        )
-	    }
-	}
-}
-Register-ArgumentCompleter -CommandName Set-DomainUser -ParameterName Identity -ScriptBlock {
-	param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-	$state = Get-adPEASCompletionState -ObjectType 'Users'
-	if ($state.HasConnection -and
-	    (-not $state.Cache -or $state.Cache.Users.Count -eq 0) -and
-	    (-not $state.CacheAttempted -or -not $state.CacheAttempted.Users)) {
-	    Build-CompletionCache -ObjectTypes @('Users')
-	    $state = Get-adPEASCompletionState -ObjectType 'Users'
-	}
-	if ($state.Cache -and $state.Cache.Users -and $state.Cache.Users.Count -gt 0) {
-	    $state.Cache.Users | Where-Object {
-	        $_ -like "$wordToComplete*"
-	    } | Select-Object -First 50 | ForEach-Object {
-	        $completionText = if ($_ -match "[\s'`"`$``]") {
-	            '"' + ($_ -replace '"', '""') + '"'
-	        } else { $_ }
-	        [System.Management.Automation.CompletionResult]::new(
-	            $completionText,
-	            $_,
-	            'ParameterValue',
-	            "User: $_"
-	        )
-	    }
-	}
-}
-Register-ArgumentCompleter -CommandName Set-DomainComputer -ParameterName Identity -ScriptBlock {
-	param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-	$state = Get-adPEASCompletionState -ObjectType 'Computers'
-	if ($state.HasConnection -and
-	    (-not $state.Cache -or $state.Cache.Computers.Count -eq 0) -and
-	    (-not $state.CacheAttempted -or -not $state.CacheAttempted.Computers)) {
-	    Build-CompletionCache -ObjectTypes @('Computers')
-	    $state = Get-adPEASCompletionState -ObjectType 'Computers'
-	}
-	if ($state.Cache -and $state.Cache.Computers -and $state.Cache.Computers.Count -gt 0) {
-	    $state.Cache.Computers | Where-Object {
-	        $_ -like "$wordToComplete*"
-	    } | Select-Object -First 50 | ForEach-Object {
-	        $completionText = if ($_ -match "[\s'`"`$``]") {
-	            '"' + ($_ -replace '"', '""') + '"'
-	        } else { $_ }
-	        [System.Management.Automation.CompletionResult]::new(
-	            $completionText,
-	            $_,
-	            'ParameterValue',
-	            "Computer: $_"
-	        )
-	    }
-	}
-}
-Register-ArgumentCompleter -CommandName Set-DomainGroup -ParameterName Identity -ScriptBlock {
-	param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-	$state = Get-adPEASCompletionState -ObjectType 'Groups'
-	if ($state.HasConnection -and
-	    (-not $state.Cache -or $state.Cache.Groups.Count -eq 0) -and
-	    (-not $state.CacheAttempted -or -not $state.CacheAttempted.Groups)) {
-	    Build-CompletionCache -ObjectTypes @('Groups')
-	    $state = Get-adPEASCompletionState -ObjectType 'Groups'
-	}
-	if ($state.Cache -and $state.Cache.Groups -and $state.Cache.Groups.Count -gt 0) {
-	    $state.Cache.Groups | Where-Object {
-	        $_ -like "$wordToComplete*"
-	    } | Select-Object -First 50 | ForEach-Object {
-	        $completionText = if ($_ -match "[\s'`"`$``]") {
-	            '"' + ($_ -replace '"', '""') + '"'
-	        } else { $_ }
-	        [System.Management.Automation.CompletionResult]::new(
-	            $completionText,
-	            $_,
-	            'ParameterValue',
-	            "Group: $_"
-	        )
-	    }
-	}
-}
-Register-ArgumentCompleter -CommandName Set-DomainGPO -ParameterName Identity -ScriptBlock {
-	param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-	$state = Get-adPEASCompletionState -ObjectType 'GPOs'
-	if ($state.HasConnection -and
-	    (-not $state.Cache -or $state.Cache.GPOs.Count -eq 0) -and
-	    (-not $state.CacheAttempted -or -not $state.CacheAttempted.GPOs)) {
-	    Build-CompletionCache -ObjectTypes @('GPOs')
-	    $state = Get-adPEASCompletionState -ObjectType 'GPOs'
-	}
-	if ($state.Cache -and $state.Cache.GPOs -and $state.Cache.GPOs.Count -gt 0) {
-	    $state.Cache.GPOs | Where-Object {
-	        $_ -like "$wordToComplete*"
-	    } | Select-Object -First 50 | ForEach-Object {
-	        $completionText = if ($_ -match "[\s'`"`$``]") {
-	            '"' + ($_ -replace '"', '""') + '"'
-	        } else { $_ }
-	        [System.Management.Automation.CompletionResult]::new(
-	            $completionText,
-	            $_,
-	            'ParameterValue',
-	            "GPO: $_"
-	        )
-	    }
-	}
-}
-Register-ArgumentCompleter -CommandName Set-DomainObject -ParameterName Identity -ScriptBlock {
-	param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-	$state = Get-adPEASCompletionState -ObjectType 'All'
+	$state = Get-adPEASCompletionState -ObjectType 'Identity'
 	if ($state.HasConnection) {
-	    if ((-not $state.Cache -or $state.Cache.Users.Count -eq 0) -and
-	        (-not $state.CacheAttempted -or -not $state.CacheAttempted.Users)) {
-	        Build-CompletionCache -ObjectTypes @('Users')
+	    $pending = New-Object System.Collections.Generic.List[string]
+	    foreach ($objectType in $ObjectTypes) {
+	        $isEmpty = (-not $state.Cache) -or (@($state.Cache[$objectType]).Count -eq 0)
+	        $isUntried = (-not $state.CacheAttempted) -or (-not $state.CacheAttempted[$objectType])
+	        if ($isEmpty -and $isUntried) { $pending.Add($objectType) }
 	    }
-	    if ((-not $state.Cache -or $state.Cache.Computers.Count -eq 0) -and
-	        (-not $state.CacheAttempted -or -not $state.CacheAttempted.Computers)) {
-	        Build-CompletionCache -ObjectTypes @('Computers')
+	    if ($pending.Count -gt 0) {
+	        Build-CompletionCache -ObjectTypes @($pending)
+	        $state = Get-adPEASCompletionState -ObjectType 'Identity'
 	    }
-	    if ((-not $state.Cache -or $state.Cache.Groups.Count -eq 0) -and
-	        (-not $state.CacheAttempted -or -not $state.CacheAttempted.Groups)) {
-	        Build-CompletionCache -ObjectTypes @('Groups')
-	    }
-	    $state = Get-adPEASCompletionState -ObjectType 'All'
 	}
-	if ($state.Cache) {
-	    $allObjects = @()
-	    if ($state.Cache.Users) { $allObjects += $state.Cache.Users | ForEach-Object { @{ Name = $_; Type = 'User' } } }
-	    if ($state.Cache.Computers) { $allObjects += $state.Cache.Computers | ForEach-Object { @{ Name = $_; Type = 'Computer' } } }
-	    if ($state.Cache.Groups) { $allObjects += $state.Cache.Groups | ForEach-Object { @{ Name = $_; Type = 'Group' } } }
-	    $allObjects | Where-Object {
-	        $_.Name -like "$wordToComplete*"
-	    } | Select-Object -First 50 | ForEach-Object {
-	        $completionText = if ($_.Name -match "[\s'`"`$``]") {
-	            '"' + ($_.Name -replace '"', '""') + '"'
-	        } else { $_.Name }
-	        [System.Management.Automation.CompletionResult]::new(
-	            $completionText,
-	            $_.Name,
-	            'ParameterValue',
-	            "$($_.Type): $($_.Name)"
-	        )
+	$word = $WordToComplete
+	if ($null -eq $word) { $word = '' }
+	$comparison = [System.StringComparison]::OrdinalIgnoreCase
+	$matching = New-Object System.Collections.Generic.List[object]
+	foreach ($objectType in $ObjectTypes) {
+	    if (-not $state.Cache) { break }
+	    foreach ($name in @($state.Cache[$objectType])) {
+	        if ([string]::IsNullOrEmpty($name)) { continue }
+	        if (-not ([string]$name).StartsWith($word, $comparison)) { continue }
+	        $matching.Add([PSCustomObject]@{ Name = [string]$name; Label = $labels[$objectType] })
 	    }
+	}
+	foreach ($entry in @($matching | Sort-Object -Property Name -Unique | Select-Object -First 50)) {
+	    $name = [string]$entry.Name
+	    $completionText = $name
+	    if ($name -notmatch '^[A-Za-z0-9_.][A-Za-z0-9_.-]*$') {
+	        $completionText = "'" + ($name -replace "'", "''") + "'"
+	    }
+	    [System.Management.Automation.CompletionResult]::new(
+	        $completionText,
+	        $name,
+	        'ParameterValue',
+	        "$($entry.Label): $name"
+	    )
 	}
 }
-Register-ArgumentCompleter -CommandName Request-ADCSCertificate -ParameterName TemplateName -ScriptBlock {
-	param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-	$state = Get-adPEASCompletionState -ObjectType 'Templates'
+function Get-adPEASIdentityCompleterRegistrations {
+	[CmdletBinding()]
+	[OutputType([hashtable[]])]
+	param()
+	return @(
+	    @{ Command = 'Get-DomainUser';          Parameter = 'Identity';     ObjectTypes = @('Users') }
+	    @{ Command = 'Get-DomainComputer';      Parameter = 'Identity';     ObjectTypes = @('Computers') }
+	    @{ Command = 'Get-DomainGroup';         Parameter = 'Identity';     ObjectTypes = @('Groups') }
+	    @{ Command = 'Get-DomainGPO';           Parameter = 'Identity';     ObjectTypes = @('GPOs') }
+	    @{ Command = 'Set-DomainUser';          Parameter = 'Identity';     ObjectTypes = @('Users') }
+	    @{ Command = 'Set-DomainComputer';      Parameter = 'Identity';     ObjectTypes = @('Computers') }
+	    @{ Command = 'Set-DomainGroup';         Parameter = 'Identity';     ObjectTypes = @('Groups') }
+	    @{ Command = 'Set-DomainGPO';           Parameter = 'Identity';     ObjectTypes = @('GPOs') }
+	    @{ Command = 'Set-DomainObject';        Parameter = 'Identity';     ObjectTypes = @('Users', 'Computers', 'Groups') }
+	    @{ Command = 'Move-DomainObject';       Parameter = 'Identity';     ObjectTypes = @('Users', 'Computers', 'Groups') }
+	    @{ Command = 'Request-ADCSCertificate'; Parameter = 'TemplateName'; ObjectTypes = @('Templates') }
+	)
+}
+function Get-adPEASIdentityCompleterTypes {
+	[CmdletBinding()]
+	[OutputType([string[]])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowEmptyString()]
+	    [string]$CommandName,
+	    [Parameter(Mandatory = $false)]
+	    [AllowEmptyString()]
+	    [string]$ParameterName
+	)
+	foreach ($registration in Get-adPEASIdentityCompleterRegistrations) {
+	    if ($registration.Command -eq $CommandName -and $registration.Parameter -eq $ParameterName) {
+	        return @($registration.ObjectTypes)
+	    }
+	}
+	return @()
+}
+function Register-adPEASIdentityCompleters {
+	[CmdletBinding()]
+	param()
+	$identityCompleter = {
+	    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+	    $objectTypes = @(Get-adPEASIdentityCompleterTypes -CommandName $commandName -ParameterName $parameterName)
+	    if ($objectTypes.Count -eq 0) { return }
+	    Get-adPEASIdentityCompletion -WordToComplete $wordToComplete -ObjectTypes $objectTypes
+	}
+	$registrations = @(Get-adPEASIdentityCompleterRegistrations)
+	foreach ($registration in $registrations) {
+	    Register-ArgumentCompleter -CommandName $registration.Command `
+	        -ParameterName $registration.Parameter -ScriptBlock $identityCompleter
+	}
+}
+Register-adPEASIdentityCompleters
+function Get-adPEASContainerCompletion {
+	[CmdletBinding()]
+	[OutputType([System.Management.Automation.CompletionResult])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowEmptyString()]
+	    [string]$WordToComplete = '',
+	    [Parameter(Mandatory = $false)]
+	    [string]$ParameterName
+	)
+	$state = Get-adPEASCompletionState -ObjectType 'Containers'
 	if ($state.HasConnection -and
-	    (-not $state.Cache -or $state.Cache.Templates.Count -eq 0) -and
-	    (-not $state.CacheAttempted -or -not $state.CacheAttempted.Templates)) {
-	    Build-CompletionCache -ObjectTypes @('Templates')
-	    $state = Get-adPEASCompletionState -ObjectType 'Templates'
+	    (-not $state.Cache -or $state.Cache.Containers.Count -eq 0) -and
+	    (-not $state.CacheAttempted -or -not $state.CacheAttempted.Containers)) {
+	    Build-CompletionCache -ObjectTypes @('Containers')
+	    $state = Get-adPEASCompletionState -ObjectType 'Containers'
 	}
-	if ($state.Cache -and $state.Cache.Templates -and $state.Cache.Templates.Count -gt 0) {
-	    $state.Cache.Templates | Where-Object {
-	        $_ -like "$wordToComplete*"
-	    } | Select-Object -First 50 | ForEach-Object {
-	        $completionText = if ($_ -match "[\s'`"`$``]") {
-	            '"' + ($_ -replace '"', '""') + '"'
-	        } else { $_ }
-	        [System.Management.Automation.CompletionResult]::new(
-	            $completionText,
-	            $_,
-	            'ParameterValue',
-	            "Template: $_"
-	        )
+	$candidates = New-Object System.Collections.Generic.List[string]
+	if ($state.Cache -and $state.Cache.Containers) {
+	    foreach ($containerDN in $state.Cache.Containers) {
+	        $candidates.Add([string]$containerDN)
 	    }
 	}
+	if ($ParameterName -eq 'SearchBase' -and $state.PartitionDNs) {
+	    foreach ($partitionDN in $state.PartitionDNs) {
+	        $candidates.Add([string]$partitionDN)
+	    }
+	}
+	$word = $WordToComplete
+	if ($null -eq $word) { $word = '' }
+	$comparison = [System.StringComparison]::OrdinalIgnoreCase
+	$matching = New-Object System.Collections.Generic.List[string]
+	foreach ($candidate in @($candidates | Sort-Object -Unique)) {
+	    if ($candidate.IndexOf($word, $comparison) -ge 0) {
+	        $matching.Add($candidate)
+	    }
+	}
+	$ordered = New-Object System.Collections.Generic.List[string]
+	foreach ($candidate in $matching) {
+	    if ($candidate.StartsWith($word, $comparison)) { $ordered.Add($candidate) }
+	}
+	foreach ($candidate in $matching) {
+	    if (-not $candidate.StartsWith($word, $comparison)) { $ordered.Add($candidate) }
+	}
+	foreach ($containerDN in @($ordered | Select-Object -First 50)) {
+	    $completionText = "'" + ($containerDN -replace "'", "''") + "'"
+	    [System.Management.Automation.CompletionResult]::new(
+	        $completionText,
+	        $containerDN,
+	        'ParameterValue',
+	        "Container: $containerDN"
+	    )
+	}
 }
+function Get-adPEASContainerCompleterRegistrations {
+	[CmdletBinding()]
+	[OutputType([hashtable[]])]
+	param()
+	return @(
+	    @{ Command = 'Get-DomainObject';        Parameter = 'SearchBase' }
+	    @{ Command = 'Get-DomainUser';          Parameter = 'SearchBase' }
+	    @{ Command = 'Get-DomainComputer';      Parameter = 'SearchBase' }
+	    @{ Command = 'Get-DomainGroup';         Parameter = 'SearchBase' }
+	    @{ Command = 'Get-DomainGPO';           Parameter = 'SearchBase' }
+	    @{ Command = 'Get-CertificateTemplate'; Parameter = 'SearchBase' }
+	    @{ Command = 'Set-DomainObject';        Parameter = 'SearchBase' }
+	    @{ Command = 'Invoke-LDAPSearch';       Parameter = 'SearchBase' }
+	    @{ Command = 'New-DomainUser';          Parameter = 'OrganizationalUnit' }
+	    @{ Command = 'New-DomainComputer';      Parameter = 'OrganizationalUnit' }
+	    @{ Command = 'New-DomainGroup';         Parameter = 'OrganizationalUnit' }
+	    @{ Command = 'Move-DomainObject';       Parameter = 'DestinationOU' }
+	)
+}
+function Register-adPEASContainerCompleters {
+	[CmdletBinding()]
+	param()
+	$containerCompleter = {
+	    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+	    Get-adPEASContainerCompletion -WordToComplete $wordToComplete -ParameterName $parameterName
+	}
+	$registrations = @(Get-adPEASContainerCompleterRegistrations)
+	foreach ($registration in $registrations) {
+	    Register-ArgumentCompleter -CommandName $registration.Command `
+	        -ParameterName $registration.Parameter -ScriptBlock $containerCompleter
+	}
+}
+Register-adPEASContainerCompleters
 function Export-adPEASFile {
 	[CmdletBinding()]
 	param(
@@ -77613,7 +77921,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.5.1"
+$Script:adPEASVersion = "2.5.1+20261003-1354"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
