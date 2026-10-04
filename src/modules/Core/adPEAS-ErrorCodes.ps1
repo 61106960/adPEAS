@@ -216,6 +216,12 @@ $Script:LDAPWriteOperationHints = @(
         Pattern = '^modify '
         Hint    = 'Modifying this object needs GenericAll, GenericWrite, or a WriteProperty ACE covering the attribute being written. Verify with: Get-ObjectACL -Identity <target> -WriteOnly'
     }
+    # Listed separately from '^modify ' because that pattern does not match it - "move" is not
+    # a prefix of "modify". Without this entry a rejected ModifyDN gets no rights line at all.
+    @{
+        Pattern = '^move '
+        Hint    = 'Moving an object needs Delete Child for its object class on the SOURCE container AND Create Child for that class on the TARGET container - a move consumes the delete right, so write access to the target alone is not enough. A "protected from accidental deletion" ACE (Deny Delete / Delete Tree on Everyone) on the object blocks the move until it is removed, even for an account that otherwise has both rights. A pure rename needs WriteProperty on the naming attribute (cn / ou / name) instead. Verify with: Get-ObjectACL -Identity <source container> -WriteOnly and Get-ObjectACL -Identity <target container> -WriteOnly'
+    }
 )
 
 # =============================================================================

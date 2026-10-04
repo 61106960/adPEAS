@@ -131,6 +131,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Core\Set-DomainGroup.ps1"
     . "$Script:ScriptPath\modules\Core\Set-DomainComputer.ps1"
     . "$Script:ScriptPath\modules\Core\Set-DomainGPO.ps1"
+    . "$Script:ScriptPath\modules\Core\Move-DomainObject.ps1"
     . "$Script:ScriptPath\modules\Core\New-DomainUser.ps1"
     . "$Script:ScriptPath\modules\Core\New-DomainComputer.ps1"
     . "$Script:ScriptPath\modules\Core\New-DomainGroup.ps1"

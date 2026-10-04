@@ -233,6 +233,200 @@ function Escape-LDAPFilterDN {
 
 #endregion
 
+#region LDAP DN Construction (RFC 4514)
+
+<#
+.SYNOPSIS
+    Escapes a single DN component value according to RFC 4514.
+
+.DESCRIPTION
+    RFC 4514 governs the string representation of a Distinguished Name, and its rules are
+    NOT the rules of RFC 4515 filter escaping. Use this function when CONSTRUCTING a DN or
+    an RDN - for example the NewName of a ModifyDNRequest. To place a DN into a filter
+    value, use Escape-LDAPFilterDN instead.
+
+    Escaped anywhere in the value:
+    - , + " \ < > ;                -> backslash-prefixed
+    - control characters (< 0x20)  -> \XX hex pair
+
+    Escaped only at a specific position:
+    - leading #                    -> \#  (a leading # introduces a hex-encoded BER value)
+    - leading space                -> backslash-space
+    - trailing space               -> backslash-space
+
+.PARAMETER Value
+    The unescaped attribute value, e.g. 'Doe, Jane'.
+
+.EXAMPLE
+    Escape-LDAPDNComponent -Value 'Doe, Jane'
+    # Returns: Doe\, Jane
+
+.EXAMPLE
+    # Safe RDN construction for a ModifyDNRequest
+    $newRDN = 'CN=' + (Escape-LDAPDNComponent -Value $NewName)
+
+.OUTPUTS
+    [string] The escaped value, safe to use as the value half of an RDN.
+
+.NOTES
+    Do NOT pass an AD-returned DN or RDN through this function. Those are already RFC 4514
+    escaped, and escaping them a second time turns CN=Doe\, Jane into CN=Doe\\\, Jane,
+    which files the object under a different name than intended.
+#>
+function Escape-LDAPDNComponent {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    process {
+        if ([string]::IsNullOrEmpty($Value)) {
+            return $Value
+        }
+
+        # Deliberately an if/elseif chain rather than a switch: 'continue' inside a switch
+        # that sits in a loop continues the LOOP, so a switch-based escaper reads as if it
+        # skipped characters it actually appended.
+        $specials = ',+"\<>;'
+        $result = [System.Text.StringBuilder]::new($Value.Length * 2)
+        $lastIndex = $Value.Length - 1
+
+        for ($i = 0; $i -lt $Value.Length; $i++) {
+            $char = $Value[$i]
+
+            if ($specials.IndexOf($char) -ge 0) {
+                [void]$result.Append('\')
+                [void]$result.Append($char)
+            }
+            elseif ($char -eq ' ' -and ($i -eq 0 -or $i -eq $lastIndex)) {
+                [void]$result.Append('\ ')
+            }
+            elseif ($char -eq '#' -and $i -eq 0) {
+                [void]$result.Append('\#')
+            }
+            elseif ([int]$char -lt 32) {
+                [void]$result.Append('\')
+                [void]$result.Append(([int]$char).ToString('X2'))
+            }
+            else {
+                [void]$result.Append($char)
+            }
+        }
+
+        return $result.ToString()
+    }
+}
+
+<#
+.SYNOPSIS
+    Splits a Distinguished Name into its leading RDN and parent DN, honouring RFC 4514 escapes.
+
+.DESCRIPTION
+    A DN cannot be split on ',': RFC 4514 allows an escaped comma inside an attribute value,
+    so 'CN=Doe\, Jane,OU=Finance,DC=contoso,DC=com' has four components, not five. Splitting
+    naively yields the parent 'Jane,OU=Finance,DC=contoso,DC=com', which does not exist.
+
+    The .NET type X500DistinguishedName is not an alternative: it throws outright on an
+    escaped comma, reverses component order, and truncates a trailing escaped space.
+
+.PARAMETER DistinguishedName
+    The DN to split, as returned by AD (already RFC 4514 escaped).
+
+.EXAMPLE
+    $parts = Split-LDAPDN -DistinguishedName 'CN=Doe\, Jane,OU=Finance,DC=contoso,DC=com'
+    $parts.RDN       # CN=Doe\, Jane                 (still escaped - reuse verbatim)
+    $parts.RDNType   # CN
+    $parts.RDNValue  # Doe, Jane                     (unescaped - for display only)
+    $parts.Parent    # OU=Finance,DC=contoso,DC=com
+
+.OUTPUTS
+    [PSCustomObject] with RDN, RDNType, RDNValue and Parent, or $null when the DN cannot be
+    parsed. Parent is an empty string for a single-component DN.
+
+.NOTES
+    RDN is returned verbatim so it can be handed straight back to AD. RDNValue is unescaped
+    and is for display only - never build a DN from it without re-escaping.
+
+    Multi-valued RDNs ('CN=a+SN=b,DC=x') return $null rather than a partial parse. AD permits
+    them in theory and never creates them in practice, and silently mis-parsing one is worse
+    than refusing it.
+#>
+function Split-LDAPDN {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyString()]
+        [string]$DistinguishedName
+    )
+
+    process {
+        if ([string]::IsNullOrWhiteSpace($DistinguishedName)) {
+            return $null
+        }
+
+        # (?:[^,\\+]|\\.)* consumes escape pairs atomically, so the capture stops at the first
+        # UNescaped comma - the same idiom as the leaf-RDN match in
+        # Get-ExchangeRBACAssignments.ps1. An unescaped '+' is excluded from the class on
+        # purpose: RFC 4514 reserves it as the multi-valued RDN separator, so a DN containing
+        # one fails the match as a whole and the function returns $null.
+        if ($DistinguishedName -notmatch '^([A-Za-z][A-Za-z0-9-]*)=((?:[^,\\+]|\\.)*)(?:,(.*))?$') {
+            Write-Log "[Split-LDAPDN] Rejected: not a parseable single-valued DN - '$DistinguishedName'"
+            return $null
+        }
+
+        $rdnType = $Matches[1]
+        $rdnValue = $Matches[2]
+        $parent = ''
+        if ($Matches.ContainsKey(3)) {
+            $parent = $Matches[3]
+        }
+
+        # RFC 4514 unescape, for display only: \XX is a hex pair, \<char> is that character.
+        $unescaped = [System.Text.StringBuilder]::new($rdnValue.Length)
+        $valueChars = $rdnValue.ToCharArray()
+        $j = 0
+
+        while ($j -lt $valueChars.Length) {
+            if ($valueChars[$j] -ne '\') {
+                [void]$unescaped.Append($valueChars[$j])
+                $j++
+                continue
+            }
+
+            if (($j + 2) -lt $valueChars.Length) {
+                $hexPair = [string]$valueChars[$j + 1] + [string]$valueChars[$j + 2]
+                if ($hexPair -match '^[0-9A-Fa-f]{2}$') {
+                    [void]$unescaped.Append([char][Convert]::ToInt32($hexPair, 16))
+                    $j += 3
+                    continue
+                }
+            }
+            if (($j + 1) -lt $valueChars.Length) {
+                [void]$unescaped.Append($valueChars[$j + 1])
+                $j += 2
+                continue
+            }
+
+            # Trailing lone backslash - keep it rather than dropping it silently.
+            [void]$unescaped.Append('\')
+            $j++
+        }
+
+        return [PSCustomObject]@{
+            RDN      = "$rdnType=$rdnValue"
+            RDNType  = $rdnType
+            RDNValue = $unescaped.ToString()
+            Parent   = $parent
+        }
+    }
+}
+
+#endregion
+
 #region Computer Name Validation
 
 <#
