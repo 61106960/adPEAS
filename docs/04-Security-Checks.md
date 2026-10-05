@@ -926,6 +926,58 @@ Get-NonDefaultUserOwners -IncludeHealthMailboxes
 
 Analyzes Group Policy security.
 
+**Locating a reported GPO in SYSVOL**: every finding that comes from a Group Policy names
+the policy the same way, whichever check produced it, so it can be opened without guessing:
+
+- `GPOName` - the display name. Convenient, but not unique and not a path.
+- `GPOGUID` - the policy's identifier, and literally its folder name under
+  `\\<domain>\SYSVOL\<domain>\Policies\`.
+- `GPOPath` - the full path to that folder, as the directory records it in
+  `gPCFileSysPath`. Read from LDAP rather than assembled from the GUID, so that it is the
+  same string in every section: `gPCFileSysPath` names the domain, while adPEAS reads
+  SYSVOL through one specific domain controller, and the two spell the same folder
+  differently.
+
+Checks that report a **setting found inside** a policy add one more row:
+
+- `SourceFile` - the file inside the GPO folder the setting was read from, relative to it,
+  for example `Machine\Registry.pol` or
+  `MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf`. The leading `Machine` or `User`
+  matters: both halves of a policy carry files of the same name and they reach different
+  targets.
+
+So the full path to the evidence behind such a finding is `<GPOPath>\<SourceFile>`.
+
+Checks that report the **GPO object itself** - `Get-GPOPermissions`, the SMB and LDAP
+signing checks, `Get-AddComputerRights` - have no `SourceFile`, because the policy is the
+finding rather than a file inside it. They additionally show `distinguishedName`, which has
+no counterpart among the setting-level findings. Under the hood these are native LDAP
+objects and the three shared rows are relabelled for display only, so `displayName`, `Name`
+and `gPCFileSysPath` keep their LDAP names as properties and in the JSON export.
+
+One deliberate departure: the credential checks (`Get-CredentialExposure`) print the
+complete path to the file as `FilePath` instead, because they also scan NETLOGON and a
+caller-supplied `-Path`, where there is no GPO folder to be relative to - and for a finding
+that does come from a GPO, that full path already contains the GUID.
+
+**Reading `EffectiveSetting`**: where several GPOs configure the same thing, this row says
+which of them decides the value, and why. It replaced a `True`/`False` called
+`IsEffectiveSetting`, which could not express the answer - a `False` meant either "a
+higher-priority policy overrides this one" or "this policy reaches no machine at all", and
+those call for completely different work.
+
+| Row reads | Means |
+|-----------|-------|
+| `Yes - wins precedence on the Domain Controllers OU` | Linked at or below the Domain Controllers OU and first in link order. This is the value the DCs run with. |
+| `Yes - wins precedence at the domain root` | Linked at the domain root, with no Domain Controllers OU policy outranking it. |
+| `Yes - applies on its linked OUs; no precedence comparison there` | Linked to ordinary OUs and applies to the machines in them. The caveat is literal: adPEAS does not compare link order below the domain level, so two policies on the same OU with opposite values are both reported this way. |
+| `No - overridden by '<name>' (link order <n>)` | Configured, reaches machines, but another policy wins. Read the named policy to see what actually applies. |
+| `No - the policy is linked nowhere` | Configured and linked to nothing. It changes nothing today, and is worth cleaning up or linking. |
+| `No - every link is disabled` | Linked, but every link is switched off, so it reaches nothing either. `GPOStatus` says the same in its own row. |
+
+`EffectiveSetting` only weighs linkage and link order. Whether the policy's computer
+configuration is switched off is a separate question, answered by `GPOStatus`.
+
 ### Get-GPOPermissions
 
 **Purpose**: Identifies who can modify Group Policy Objects.
@@ -1016,6 +1068,11 @@ Get-GPOScriptPaths
 
 **Output Properties**:
 - `GPOName`: Name of the GPO deploying the script
+- `GPOGUID`: The GPO's folder name under SYSVOL
+- `GPOPath`: Full path to that folder
+- `SourceFile`: The `scripts.ini` / `psscripts.ini` the entry was parsed from, relative to
+  the GPO folder - not to be confused with `ScriptPath` below, which is the script that
+  .ini points at
 - `ScriptType`: Startup, Shutdown, Logon, or Logoff
 - `ScriptPath`: Path to the script
 - `Parameters`: Script parameters (if configured)
