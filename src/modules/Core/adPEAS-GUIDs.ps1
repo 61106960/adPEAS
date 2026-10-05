@@ -1121,6 +1121,47 @@ $Script:WellKnownIdentities = @(
     @{ SID = 'S-1-5-18';    Name = 'NT AUTHORITY\SYSTEM';         Short = 'SYSTEM' }
     @{ SID = 'S-1-5-19';    Name = 'NT AUTHORITY\Local Service' }
     @{ SID = 'S-1-5-20';    Name = 'NT AUTHORITY\Network Service' }
+    @{ SID = 'S-1-5-33';    Name = 'NT AUTHORITY\WRITE RESTRICTED' }
+
+    # Account-type identities (S-1-5-113 / S-1-5-114)
+    #
+    # These are the two SIDs Microsoft's own pass-the-hash guidance tells an administrator to
+    # put into "Deny access to this computer from the network" and the other Deny rights, so
+    # they turn up in the [Privilege Rights] section of a GptTmpl.inf - which is exactly where
+    # Get-GPOUserRightsAssignment reads. Neither has an object in the directory, so the LDAP
+    # lookup in ConvertFrom-SID cannot resolve them and they fell through to UNRESOLVABLE.
+    #
+    # The effect was backwards: a domain that had applied the recommended hardening got
+    # "S-1-5-113 (UNRESOLVABLE)" on the very entries that prove it is hardened.
+    @{ SID = 'S-1-5-113';   Name = 'NT AUTHORITY\Local account';  Short = 'Local account' }
+    @{ SID = 'S-1-5-114';   Name = 'NT AUTHORITY\Local account and member of Administrators group' }
+
+    # Authentication package identities (S-1-5-64-x) and the organization certificate SID.
+    # Seen in authentication silos, claims and conditional-access ACLs.
+    @{ SID = 'S-1-5-64-10'; Name = 'NT AUTHORITY\NTLM Authentication' }
+    @{ SID = 'S-1-5-64-14'; Name = 'NT AUTHORITY\SChannel Authentication' }
+    @{ SID = 'S-1-5-64-21'; Name = 'NT AUTHORITY\Digest Authentication' }
+    @{ SID = 'S-1-5-65-1';  Name = 'NT AUTHORITY\This Organization Certificate' }
+
+    # Service and virtual machine groups. NT VIRTUAL MACHINE\Virtual Machines is another one
+    # that reaches a user right by design: Microsoft documents it as requiring
+    # SeCreateSymbolicLinkPrivilege and SeServiceLogonRight, so it appears in the privilege
+    # section on every Hyper-V host.
+    @{ SID = 'S-1-5-80-0';  Name = 'NT SERVICE\ALL SERVICES' }
+    @{ SID = 'S-1-5-83-0';  Name = 'NT VIRTUAL MACHINE\Virtual Machines' }
+
+    @{ SID = 'S-1-5-1000';  Name = 'NT AUTHORITY\Other Organization' }
+
+    # Asserted-identity SIDs (S-1-18-x). Not principals anybody adds to a group - the KDC
+    # puts them in a ticket to record how the client proved who it was - but they are named
+    # in authentication policies and silo conditions, and an unresolved one there reads like
+    # an orphaned account.
+    @{ SID = 'S-1-18-1';    Name = 'Authentication authority asserted identity' }
+    @{ SID = 'S-1-18-2';    Name = 'Service asserted identity' }
+    @{ SID = 'S-1-18-3';    Name = 'Fresh public key identity' }
+    @{ SID = 'S-1-18-4';    Name = 'Key trust identity' }
+    @{ SID = 'S-1-18-5';    Name = 'Key property MFA' }
+    @{ SID = 'S-1-18-6';    Name = 'Key property attestation' }
 
     # BUILTIN Groups (S-1-5-32-xxx)
     # NOTE: Localized names (German VORDEFINIERT, French BUILTIN, etc.) are automatically resolved via NTAccount.Translate() in ConvertTo-SID.
