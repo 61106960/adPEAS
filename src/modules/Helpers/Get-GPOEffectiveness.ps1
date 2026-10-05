@@ -280,3 +280,118 @@ function Get-GPOOverriddenText {
     if ($order) { return "No - overridden by '$WinnerName' (link order $order)" }
     return "No - overridden by '$WinnerName'"
 }
+
+<#
+.SYNOPSIS
+    Answers whether a Group Policy reaches a machine at all.
+
+.DESCRIPTION
+    The one question eleven checks need and each used to answer for itself, which is how
+    they drifted apart: the same unlinked policy was a finding in one section, a note in
+    another and the effective setting in a third.
+
+    What it reads is the directory: whether an enabled link exists, and whether the
+    relevant half of the policy is switched on.
+
+    WHAT IT DOES NOT DO, and the reason it is not called Test-GPOApplies. A policy that
+    passes this can still apply to nothing:
+
+      - A WMI filter that matches no machine.
+      - Security filtering. Remove Authenticated Users from the Apply Group Policy right
+        and grant it to nobody and the policy reaches nothing, while every link stays
+        enabled. This one is computable from the GPO's own DACL and Get-GPOPermissions
+        already parses it, so it is the obvious refinement - it is simply not read here.
+      - Block inheritance and Enforced, which together need real RSoP.
+
+    So a $true means "nothing in the directory stops this from applying", not "this
+    applies". A name that claimed the latter would invite the next reader to trust it as
+    an RSoP answer, which it is not.
+
+    Reaches is deliberately three-valued. $null is unknown, and a caller must not dampen a
+    finding on it: a linkage that could not be resolved is missing information, and
+    demoting a real finding for missing information is the worse direction to be wrong in.
+    Same discipline as the Resolved flag on Get-CertificateTrustAnchor.
+
+.PARAMETER StatusEntry
+    The policy's entry from Get-GPOStatusMap, or $null when it has none.
+
+.PARAMETER Scope
+    Which half of the policy the caller cares about. A check that reads MACHINE settings
+    passes 'Machine', and a disabled user configuration then does not count against it.
+
+.PARAMETER Link
+    The policy's link records. Follows the convention the GPO checks already use, and the
+    distinction carries the whole three-valued answer:
+
+      $null  linkage could not be resolved -> Reaches is $null
+      @()    resolved, and the policy is linked nowhere -> Reaches is $false
+
+    Wrapped defensively, because @($null) is an array of count one holding $null, and a
+    caller that built its list from a missing hashtable key hands over exactly that.
+
+.OUTPUTS
+    [PSCustomObject] with
+      Reaches - $true, $false, or $null for unknown
+      Reason  - $null when it reaches, otherwise a sentence naming what stops it
+
+.EXAMPLE
+    $reach = Get-GPOReach -StatusEntry $statusMap[$guid] -Scope 'Machine' -Link $links
+    if ($reach.Reaches -eq $false) { "inactive: $($reach.Reason)" }
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Get-GPOReach {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $StatusEntry,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateSet('Machine', 'User', 'Any')]
+        [string]$Scope = 'Any',
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Link
+    )
+
+    if ($null -eq $Link) {
+        return [PSCustomObject]@{
+            Reaches = $null
+            Reason  = 'Unknown - the linkage could not be resolved'
+        }
+    }
+
+    $reasons = @()
+
+    # Real link records only. A slot holding $null is not a link, and counting it as one
+    # would report a policy linked nowhere as linked.
+    $links = @(@($Link) | Where-Object { $_ })
+
+    if ($links.Count -eq 0) {
+        $reasons += 'the policy is linked nowhere'
+    } else {
+        # A record with no LinkStatus counts as enabled, which is the conservative
+        # direction - a cross-domain or hand-built entry carries none.
+        $activeLinks = @($links | Where-Object { $_.LinkStatus -ne 'Disabled' })
+        if ($activeLinks.Count -eq 0) { $reasons += 'every link is disabled' }
+    }
+
+    # The configuration half, worded once in Get-GPOEffectiveStatus. Called with no Link so
+    # it reports only the status reasons; the link state is decided above.
+    $statusReason = Get-GPOEffectiveStatus -StatusEntry $StatusEntry -Scope $Scope -Link $null
+    if ($statusReason) { $reasons += $statusReason.ToLower() }
+
+    if ($reasons.Count -eq 0) {
+        return [PSCustomObject]@{ Reaches = $true; Reason = $null }
+    }
+
+    $text = $reasons -join ', '
+    return [PSCustomObject]@{
+        Reaches = $false
+        Reason  = ($text.Substring(0, 1).ToUpper() + $text.Substring(1))
+    }
+}
