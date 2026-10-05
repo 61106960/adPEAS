@@ -284,7 +284,7 @@ function Get-AddComputerRights {
             $dangerousGPOs = @($gpoFindings | Where-Object { $_._HasAuthenticatedUsers -or $_._HasEveryone })
 
             if (@($dangerousGPOs).Count -gt 0) {
-                $effectiveGPO = @($gpoFindings | Where-Object { $_.IsEffectiveSetting -eq $true })[0]
+                $effectiveGPO = @($gpoFindings | Where-Object { $_._IsEffective -eq $true })[0]
                 $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
 
                 $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
@@ -297,7 +297,7 @@ function Get-AddComputerRights {
                 foreach ($gpo in $sortedGPOs) {
                     $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerGPO' -Force
 
-                    $isEffective = $gpo.IsEffectiveSetting -eq $true
+                    $isEffective = $gpo._IsEffective -eq $true
                     $isDangerous = $gpo._HasAuthenticatedUsers -or $gpo._HasEveryone
                     $objectClass = if ($isEffective) {
                         if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
@@ -468,19 +468,30 @@ function Check-GPOAddComputerRights {
                             $activeLinks = @()
                             $isDomainWide = $false
 
+                            # Reset per GPO. Assigned only inside the if below, so without
+                            # this the previous GPO's links decide this one's scope whenever
+                            # linkage could not be resolved.
+                            $activeLinks = @()
                             if ($links) {
                                 $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
                                 $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
                             }
 
-                            # Determine precedence info (for effective setting calculation after scriptblock)
+                            # Determine precedence info (for effective setting calculation after scriptblock).
+                            # The map only records links at the Domain Controllers OU and the
+                            # domain root, so a policy linked to an ordinary OU is absent from
+                            # it - which is not the same as being linked nowhere, and saying
+                            # "linked nowhere" about a linked policy would simply be wrong.
                             $precedenceInfo = $Script:gpoAddComputerPrecedenceMap[$gpoGUIDKey]
-                            $precedenceScope = if ($precedenceInfo) { $precedenceInfo.Scope } else { "NotLinked" }
+                            $precedenceScope = if ($precedenceInfo) { $precedenceInfo.Scope }
+                                               elseif ($activeLinks.Count -gt 0) { "OtherOU" }
+                                               else { "NotLinked" }
                             $precedenceOrder = if ($precedenceInfo -and $precedenceInfo.LinkOrder) { $precedenceInfo.LinkOrder } else { 999 }
 
                             # Enrich native GPO object (matching LDAP/SMB display pattern)
                             $gpo | Add-Member -NotePropertyName 'Accounts'              -NotePropertyValue $accountNames -Force
-                            $gpo | Add-Member -NotePropertyName 'IsEffectiveSetting'    -NotePropertyValue $false -Force
+                            $gpo | Add-Member -NotePropertyName '_IsEffective'          -NotePropertyValue $false -Force
+                            $gpo | Add-Member -NotePropertyName '_HasAnyLink'           -NotePropertyValue ([bool](@($links | Where-Object { $_ }).Count)) -Force
 
                             # Where the policy applies. The full link records, disabled ones
                             # included - the LinkedOUs transformer marks those and renders an
@@ -516,14 +527,34 @@ function Check-GPOAddComputerRights {
 
         # Determine effective setting: DC OU GPOs take precedence over Domain GPOs;
         # within same scope, lower _PrecedenceOrder = higher priority (1 = highest)
-        $linkedResults = @($result | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+        # Named explicitly rather than as "everything but NotLinked", so that the OtherOU
+        # scope cannot enter a contest only the domain-level scopes hold.
+        $linkedResults = @($result | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
+        $effectiveGPO = $null
         if ($linkedResults.Count -gt 0) {
             $scopePriority = @{ "DomainControllers" = 1; "Domain" = 2 }
             $effectiveGPO = $linkedResults | Sort-Object @{Expression={$scopePriority[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
             if ($effectiveGPO) {
-                $effectiveGPO.IsEffectiveSetting = $true
+                $effectiveGPO._IsEffective = $true
                 Write-Log "[Check-GPOAddComputerRights] Effective GPO: '$($effectiveGPO.displayName)' (Scope=$($effectiveGPO._PrecedenceScope), LinkOrder=$($effectiveGPO._PrecedenceOrder))"
             }
+        }
+
+        # A policy linked to an ordinary OU applies there. It was previously left
+        # non-effective, which is the mirror of the defect fixed in the LDAP and SMB
+        # checks: there an unlinked policy was called effective, here a linked one was not.
+        foreach ($gpo in @($result | Where-Object { $_._PrecedenceScope -eq 'OtherOU' })) {
+            $gpo._IsEffective = $true
+        }
+
+        foreach ($gpo in @($result)) {
+            $gpo | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
+                Get-GPOEffectiveSettingText -Scope $gpo._PrecedenceScope `
+                    -IsEffective $gpo._IsEffective `
+                    -WinnerName $(if ($effectiveGPO) { [string]$effectiveGPO.displayName } else { $null }) `
+                    -WinnerLinkOrder $(if ($effectiveGPO) { $effectiveGPO._PrecedenceOrder } else { $null }) `
+                    -HasAnyLink $gpo._HasAnyLink
+            ) -Force
         }
 
         return $result

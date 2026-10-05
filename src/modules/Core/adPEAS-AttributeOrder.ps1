@@ -154,14 +154,14 @@ $Script:PrimaryAttributes = @{
     SMBSigning = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'ServerSigning', 'ClientSigning',
-        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
 
     # LDAP Configuration GPO (only LDAP-relevant attributes, no SMB)
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'LDAPSigning', 'ChannelBinding', 'AnonymousBinding',
-        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
 
     # GPO-deployed dangerous registry settings (Get-GPORegistrySettings)
@@ -361,7 +361,7 @@ $Script:PrimaryAttributes = @{
     AddComputerGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'Accounts',
-        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
 
     # BitLocker Recovery Key (readable msFVE-RecoveryInformation child object)
@@ -636,6 +636,9 @@ $Script:ExcludeAttributes = @(
     # an Exchange service group rather than against privilege; it is read from the source
     # object by Get-RenderModel and has no business being a row.
     '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
+    # Precedence bookkeeping behind the EffectiveSetting sentence. _IsEffective is the
+    # boolean the row colouring still needs; the sentence is what a reader gets.
+    '_IsEffective', '_HasAnyLink',
     # GPO check internal analysis flags - used for severity calculation, not for display.
     # ConsoleClass decides the colour a row is rendered in and must not appear as a row.
     #

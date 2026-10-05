@@ -148,3 +148,135 @@ function Get-GPOEffectiveStatus {
     $text = $reasons -join ', '
     return ($text.Substring(0, 1).ToUpper() + $text.Substring(1))
 }
+
+<#
+.SYNOPSIS
+    Puts the effective-setting verdict of a GPO into words.
+
+.DESCRIPTION
+    Several checks report more than one GPO configuring the same thing and have to say
+    which of them actually decides the value. That used to be a boolean, IsEffectiveSetting,
+    and a boolean cannot carry the answer: False meant either "a higher-priority policy
+    overrides this one" or "this policy reaches no machine at all", which are different
+    facts with different remediations. One of them is a precedence problem, the other is a
+    policy nobody linked.
+
+    So the verdict is a sentence, in the same spirit as Get-GPOEffectiveStatus above, and
+    the wording lives here rather than in each check so that three reports do not describe
+    the same situation three ways.
+
+    The scopes mirror the precedence model the callers build:
+
+      DomainControllers - linked at or below the Domain Controllers OU
+      Domain            - linked at the domain root
+      OtherOU           - actively linked, but to some ordinary OU
+      NotLinked         - linked nowhere, or every link disabled
+
+    The OtherOU wording stops short of claiming precedence. Two policies linked to the same
+    workstation OU with opposite values are both reported as applying there, because none of
+    these checks compares link order below the domain level - and a row that claimed a
+    precedence it never evaluated would be worse than one that says so.
+
+.PARAMETER Scope
+    The precedence scope the caller determined.
+
+.PARAMETER IsEffective
+    Whether this GPO won its scope's precedence contest. Only consulted for the two scopes
+    that hold a contest, DomainControllers and Domain.
+
+.PARAMETER WinnerName
+    Display name of the GPO that won, for the overridden case. Omitted when unknown.
+
+.PARAMETER WinnerLinkOrder
+    Link order of the winner, appended when known - it is what decided the contest.
+
+.PARAMETER HasAnyLink
+    Whether the policy has link records at all. Separates "linked nowhere" from "every link
+    is disabled", which reach the same set of machines by different routes.
+
+.OUTPUTS
+    [string] A sentence beginning with Yes or No.
+
+.EXAMPLE
+    Get-GPOEffectiveSettingText -Scope 'DomainControllers' -IsEffective $true
+    Yes - wins precedence on the Domain Controllers OU
+
+.EXAMPLE
+    Get-GPOEffectiveSettingText -Scope 'Domain' -IsEffective $false -WinnerName 'DC LDAP Hardening' -WinnerLinkOrder 1
+    No - overridden by 'DC LDAP Hardening' (link order 1)
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Get-GPOEffectiveSettingText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Scope,
+
+        [Parameter(Mandatory=$false)]
+        [bool]$IsEffective,
+
+        [Parameter(Mandatory=$false)]
+        [string]$WinnerName,
+
+        [Parameter(Mandatory=$false)]
+        $WinnerLinkOrder,
+
+        [Parameter(Mandatory=$false)]
+        [bool]$HasAnyLink
+    )
+
+    switch ($Scope) {
+        'DomainControllers' {
+            if ($IsEffective) { return 'Yes - wins precedence on the Domain Controllers OU' }
+            return (Get-GPOOverriddenText -WinnerName $WinnerName -WinnerLinkOrder $WinnerLinkOrder)
+        }
+        'Domain' {
+            if ($IsEffective) { return 'Yes - wins precedence at the domain root' }
+            return (Get-GPOOverriddenText -WinnerName $WinnerName -WinnerLinkOrder $WinnerLinkOrder)
+        }
+        'OtherOU' {
+            return 'Yes - applies on its linked OUs; no precedence comparison there'
+        }
+        default {
+            if ($HasAnyLink) { return 'No - every link is disabled' }
+            return 'No - the policy is linked nowhere'
+        }
+    }
+}
+
+<#
+.SYNOPSIS
+    Wording for a GPO that lost its precedence contest.
+.DESCRIPTION
+    Split out so the two scopes that hold a contest cannot drift apart in how they phrase
+    the loss. The winner's name is what a reader needs in order to go and look at it; the
+    link order is what decided the contest and is appended when it is known.
+.OUTPUTS
+    [string]
+#>
+function Get-GPOOverriddenText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$WinnerName,
+
+        [Parameter(Mandatory=$false)]
+        $WinnerLinkOrder
+    )
+
+    if ([string]::IsNullOrWhiteSpace($WinnerName)) {
+        return 'No - overridden by a higher-priority GPO'
+    }
+
+    # 999 is the placeholder the callers use for "no link order recorded", so it says
+    # nothing worth printing.
+    $order = $null
+    if ($null -ne $WinnerLinkOrder -and "$WinnerLinkOrder" -ne '' -and "$WinnerLinkOrder" -ne '999') {
+        $order = "$WinnerLinkOrder"
+    }
+
+    if ($order) { return "No - overridden by '$WinnerName' (link order $order)" }
+    return "No - overridden by '$WinnerName'"
+}

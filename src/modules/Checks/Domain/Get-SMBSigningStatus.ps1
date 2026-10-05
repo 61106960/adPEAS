@@ -223,8 +223,20 @@ function Get-SMBSigningStatus {
                 # - DC OU / Domain scope: GPO with lowest LinkOrder (= highest priority) wins
                 # - Other OUs (Servers, Workstations, etc.): GPO is always effective for its own OU
                 $gpoLinkageForEff = Get-GPOLinkage
-                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
+                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2 }
 
+                # Four outcomes, and the distinction between the last two is what decides
+                # whether a policy reaches a machine at all:
+                #
+                #   DomainControllers - linked at or below the Domain Controllers OU
+                #   Domain            - linked at the domain root
+                #   OtherOU           - actively linked, but to some ordinary OU
+                #   NotLinked         - linked nowhere, or every link disabled
+                #
+                # OtherOU and NotLinked used to share the name "NotLinked", and the loop
+                # below declared that whole bucket effective on the argument that a policy
+                # is effective for its own OU. A policy linked nowhere has no own OU, so an
+                # unlinked GPO was reported as the setting in force.
                 foreach ($gpoFinding in $gpoFindings) {
                     $guid = $gpoFinding.Name.ToUpper()
                     $linksEff = if ($gpoLinkageForEff) { $gpoLinkageForEff[$guid] } else { $null }
@@ -236,24 +248,46 @@ function Get-SMBSigningStatus {
                         $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
                         if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
                         elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
+                        # A link that is switched off reaches nothing, so a policy whose
+                        # every link is disabled stays NotLinked.
+                        elseif ($activeLinksEff.Count -gt 0) { $precScope = "OtherOU" }
                     }
 
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
-                    $gpoFinding | Add-Member -NotePropertyName 'IsEffectiveSetting' -NotePropertyValue $false -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue ([bool](@($linksEff | Where-Object { $_ }).Count)) -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
                 }
 
-                # For DC OU / Domain scope: mark the single highest-priority GPO as effective
-                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+                # For DC OU / Domain scope: mark the single highest-priority GPO as
+                # effective. Named explicitly rather than as "everything but NotLinked",
+                # so that adding a scope cannot silently enter this contest.
+                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
+                $effectiveDC = $null
                 if ($dcDomainGPOs.Count -gt 0) {
                     $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
-                    if ($effectiveDC) { $effectiveDC.IsEffectiveSetting = $true }
+                    if ($effectiveDC) { $effectiveDC._IsEffective = $true }
                 }
 
                 # For other OUs (Servers, Workstations, etc.): each GPO is effective for its own OU
                 # since there are typically no competing SMB Signing GPOs in those OUs
-                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "NotLinked" })) {
-                    $gpoFinding.IsEffectiveSetting = $true
+                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "OtherOU" })) {
+                    $gpoFinding._IsEffective = $true
+                }
+
+                # NotLinked keeps the $false it was initialised with: a policy that reaches
+                # no machine configures nothing, however its settings read.
+
+                # The verdict goes out as a sentence rather than True/False - see
+                # Get-GPOEffectiveSettingText for why a boolean could not carry it.
+                foreach ($gpoFinding in $gpoFindings) {
+                    $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
+                        Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
+                            -IsEffective $gpoFinding._IsEffective `
+                            -WinnerName $(if ($effectiveDC) { [string]$effectiveDC.DisplayName } else { $null }) `
+                            -WinnerLinkOrder $(if ($effectiveDC) { $effectiveDC._PrecedenceOrder } else { $null }) `
+                            -HasAnyLink $gpoFinding._HasAnyLink
+                    ) -Force
                 }
 
                 Show-Line "Found SMB Signing configuration in $(@($gpoFindings).Count) GPO(s):" -Class Hint
