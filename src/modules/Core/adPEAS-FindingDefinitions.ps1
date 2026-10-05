@@ -4045,7 +4045,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
     # Impact, Attack and Remediation match what that specific right actually does.
     #
     # Each carries two triggers: an exact match on 'userRight' colours and tooltips the
-    # right's own name, and a Custom-gated match on 'grantedBeyondDefault' does the same for
+    # right's own name, and a Custom-gated match on 'GrantedBeyondDefault' does the same for
     # the holder names underneath it - the row a reader actually acts on. The gate is a
     # single shared evaluator (Test-CustomTrigger's 'user_right_is_*' case) dispatched from
     # the CustomType string itself, because Get-TriggerMatch always resolves FindingId to the
@@ -4077,8 +4077,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Mimikatz", "ProcDump", "Task Manager")
         MITRE = "T1003.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeDebugPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeDebugPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeDebugPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeDebugPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4107,8 +4107,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Incognito", "Mimikatz")
         MITRE = "T1134"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeTcbPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTcbPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeTcbPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeTcbPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4135,8 +4135,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "T1134"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeCreateTokenPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeCreateTokenPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeCreateTokenPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeCreateTokenPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4165,8 +4165,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("JuicyPotato", "PrintSpoofer", "RoguePotato", "GodPotato")
         MITRE = "T1134.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeImpersonatePrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeImpersonatePrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeImpersonatePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeImpersonatePrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4193,8 +4193,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("SharpToken", "Incognito")
         MITRE = "T1134.002"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeAssignPrimaryTokenPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeAssignPrimaryTokenPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeAssignPrimaryTokenPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeAssignPrimaryTokenPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4224,8 +4224,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("KDU (Kernel Driver Utility)", "EoPLoadDriver")
         MITRE = "T1068"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeLoadDriverPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeLoadDriverPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeLoadDriverPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeLoadDriverPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4254,8 +4254,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("robocopy /B", "diskshadow", "secretsdump.py", "PowerSploit SeBackupPrivilege module")
         MITRE = "T1003.003"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeBackupPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeBackupPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeBackupPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeBackupPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4284,8 +4284,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("SeRestoreAbuse", "PowerSploit SeRestorePrivilege module")
         MITRE = "T1574.010"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRestorePrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRestorePrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRestorePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRestorePrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4314,8 +4314,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("takeown.exe", "icacls")
         MITRE = "T1222"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeTakeOwnershipPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTakeOwnershipPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeTakeOwnershipPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeTakeOwnershipPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4345,8 +4345,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("PowerView", "Rubeus")
         MITRE = "T1558"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeEnableDelegationPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeEnableDelegationPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeEnableDelegationPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeEnableDelegationPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4374,8 +4374,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Mimikatz", "secretsdump.py")
         MITRE = "T1003.006"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeSyncAgentPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSyncAgentPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeSyncAgentPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSyncAgentPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4402,8 +4402,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("RawCopy")
         MITRE = "T1006"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeManageVolumePrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeManageVolumePrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeManageVolumePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeManageVolumePrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4432,8 +4432,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("wevtutil", "auditpol")
         MITRE = "T1070.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeSecurityPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSecurityPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeSecurityPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSecurityPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4460,8 +4460,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("icacls (integrity level flags)", "Process Hacker")
         MITRE = "T1548"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRelabelPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRelabelPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRelabelPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRelabelPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4488,8 +4488,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Mimikatz (vault::cred)", "VaultCmd")
         MITRE = "T1555"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeTrustedCredManAccessPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTrustedCredManAccessPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeTrustedCredManAccessPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeTrustedCredManAccessPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -4522,8 +4522,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("mstsc", "xfreerdp")
         MITRE = "T1021.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRemoteInteractiveLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRemoteInteractiveLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRemoteInteractiveLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRemoteInteractiveLogonRight'; Severity = 'Hint' }
         )
     }
 
@@ -4551,8 +4551,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "T1078.003"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeInteractiveLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeInteractiveLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeInteractiveLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeInteractiveLogonRight'; Severity = 'Hint' }
         )
     }
 
@@ -4579,8 +4579,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("schtasks.exe")
         MITRE = "T1053.005"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeBatchLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeBatchLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeBatchLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeBatchLogonRight'; Severity = 'Hint' }
         )
     }
 
@@ -4608,8 +4608,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("sc.exe", "PsExec")
         MITRE = "T1543.003"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeServiceLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeServiceLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeServiceLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeServiceLogonRight'; Severity = 'Hint' }
         )
     }
 
@@ -4636,8 +4636,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("w32tm.exe", "net time")
         MITRE = "T1070"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeSystemtimePrivilege$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSystemtimePrivilege'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeSystemtimePrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSystemtimePrivilege'; Severity = 'Hint' }
         )
     }
 
@@ -4664,8 +4664,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("shutdown.exe")
         MITRE = "T1529"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRemoteShutdownPrivilege$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRemoteShutdownPrivilege'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRemoteShutdownPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRemoteShutdownPrivilege'; Severity = 'Hint' }
         )
     }
 
@@ -4692,8 +4692,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("shutdown.exe")
         MITRE = "T1529"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeShutdownPrivilege$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeShutdownPrivilege'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeShutdownPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeShutdownPrivilege'; Severity = 'Hint' }
         )
     }
 
@@ -4724,7 +4724,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "-"
         Triggers = @(
-            @{ Attribute = 'removedFromDefault'; Severity = 'Note' }
+            @{ Attribute = 'RemovedFromDefault'; Severity = 'Note' }
         )
     }
 
@@ -4749,7 +4749,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "-"
         Triggers = @(
-            @{ Attribute = 'baselineUnknown'; Severity = 'Hint' }
+            @{ Attribute = 'BaselineUnknown'; Severity = 'Hint' }
         )
     }
 
@@ -12224,7 +12224,7 @@ function Test-CustomTrigger {
         }
 
         { $_ -like 'user_right_is_*' } {
-            # Shared by all 22 GPO_USERRIGHT_* definitions' grantedBeyondDefault trigger, one
+            # Shared by all 22 GPO_USERRIGHT_* definitions' GrantedBeyondDefault trigger, one
             # CustomType per right rather than one case per right: Get-TriggerMatch always
             # resolves FindingId to the trigger's OWNING definition, never to a value a Custom
             # evaluator returns, so the only way to route the holder-name row to the right's

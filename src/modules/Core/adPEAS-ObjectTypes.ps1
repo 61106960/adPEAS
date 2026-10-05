@@ -1209,7 +1209,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
     }
 
     'GPOUserRights' = @{
-        TitleFormat = "GPO User Right: {userRightName}"
+        TitleFormat = "GPO User Right: {UserRightName}"
         Module = "Rights"
         Category = "Rights"
         SectionTitle = "User Rights via GPO That Depart From the Windows Default"
@@ -1550,9 +1550,9 @@ function Get-ObjectTypeTitle {
 
     # Get object name (try various properties)
     # Note: displayName comes before Name because GPOs have Name=GUID but displayName=readable name
-    # gpoName is used by custom GPO objects (e.g., AddComputerGPO from Get-AddComputerRights)
+    # GPOName is what every custom GPO finding calls the policy it came from
     $objName = $Object.sAMAccountName
-    if (-not $objName) { $objName = $Object.gpoName }
+    if (-not $objName) { $objName = $Object.GPOName }
     if (-not $objName) { $objName = $Object.ouName }
     if (-not $objName) { $objName = $Object.displayName }
     if (-not $objName) { $objName = $Object.Name }
@@ -1621,7 +1621,7 @@ function Get-ObjectTypeTitle {
     }
 
     # Generic fallback: resolve any remaining {propertyName} placeholders
-    # directly from a matching object property (e.g. {userRightName}, {ComputerName}).
+    # directly from a matching object property (e.g. {UserRightName}, {ComputerName}).
     # Falls back to the object name when the property is absent. Uses literal
     # string replacement so property values containing '$' are not treated as
     # regex replacement tokens.

@@ -127,6 +127,7 @@ function Get-GPOPointAndPrint {
             foreach ($gpo in $gpos) {
                 if ($gpo.Name) { $gpoNameMap[([string]$gpo.Name).ToUpper()] = $gpo.DisplayName }
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
 
             $gpoLinkage = Get-GPOLinkage
 
@@ -178,16 +179,17 @@ function Get-GPOPointAndPrint {
                         }
 
                         $records = @()
-                        $source = $null
                         if ($file.Name -ieq 'Registry.pol') {
                             # Machine\Registry.pol -> HKLM, User\Registry.pol -> HKCU
                             $hive = if ($file.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
                             $records = @(Parse-PRegRecords -PolFilePath $file.FullName -Hive $hive)
-                            $source = 'Registry.pol'
                         } else {
                             $records = @(Parse-RegistryXml -XmlFilePath $file.FullName)
-                            $source = 'Registry.xml'
                         }
+                        # The path inside the GPO folder, not the bare file name: both
+                        # halves of a policy carry a Registry.pol, and a reader who wants
+                        # to open the file needs to know which one this was.
+                        $source = Get-GPORelativePath -Path $file.FullName
 
                         Add-PointAndPrintRecords -Records $records -GPOGUID $gpoGUID -Source $source
                     } catch {
@@ -222,6 +224,7 @@ function Get-GPOPointAndPrint {
             foreach ($bucketKey in $configs.Keys) {
                 $config = $configs[$bucketKey]
                 $config['GPOName'] = if ($gpoNameMap.ContainsKey($config['GPOGUID'])) { $gpoNameMap[$config['GPOGUID']] } else { $config['GPOGUID'] }
+                $config['GPOPath'] = $gpoPathMap[$config['GPOGUID']]
                 $objects += New-PointAndPrintObject -Config $config -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
             }
 
@@ -370,7 +373,7 @@ function Read-PrintSecurityOption {
         if ($registrySection -match $Script:AddPrinterDriversGptTmplPattern) {
             # GptTmpl.inf Security Options are always machine scope
             $bucket = Get-PointAndPrintBucket -GPOGUID $GPOGUID -Hive 'HKLM'
-            $bucket['Sources']['GptTmpl.inf'] = $true
+            $bucket['Sources'][(Get-GPORelativePath -Path $FilePath)] = $true
             $bucket['Values']['AddPrinterDrivers'] = [int64]$Matches[1]
         }
     } catch {
@@ -608,9 +611,11 @@ function New-PointAndPrintObject {
     $assessment = Get-PointAndPrintAssessment -Values $values -Hive $hive
 
     $obj = [PSCustomObject][ordered]@{
-        GPOName = $Config['GPOName']
-        Scope   = $(if ($hive -eq 'HKLM') { 'Computer Configuration' } else { 'User Configuration' })
-        Source  = (@($Config['Sources'].Keys | Sort-Object) -join ', ')
+        GPOName    = $Config['GPOName']
+        GPOGUID    = $Config['GPOGUID']
+        GPOPath    = $Config['GPOPath']
+        Scope      = $(if ($hive -eq 'HKLM') { 'Computer Configuration' } else { 'User Configuration' })
+        SourceFile = (@($Config['Sources'].Keys | Sort-Object) -join ', ')
     }
 
     $obj | Add-Member -NotePropertyName 'Exploitability' -NotePropertyValue $assessment.Exploitability -Force
@@ -754,9 +759,10 @@ function New-PointAndPrintObject {
         $obj | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
     }
 
-    # Hidden from display (see $Script:ExcludeAttributes) - used for sorting and correlation
+    # Hidden from display (see $Script:ExcludeAttributes) - used for sorting and correlation.
+    # GPOGUID is no longer added here: it is a displayed row now and is set in the ordered
+    # constructor above, which is what fixes its position next to the GPO name.
     $obj | Add-Member -NotePropertyName 'Severity' -NotePropertyValue $assessment.Severity -Force
-    $obj | Add-Member -NotePropertyName 'GPOGUID' -NotePropertyValue $gpoGuid -Force
     $obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PointAndPrintPolicy' -Force
 
     return $obj

@@ -104,6 +104,7 @@ function Get-GPOLocalGroupMembership {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
 
             # Track SYSVOL access status
             $Script:sysvolAccessible = $false
@@ -134,7 +135,7 @@ function Get-GPOLocalGroupMembership {
 
                         try {
                             Write-Log "[Get-GPOLocalGroupMembership] Reading: $($file.FullName)"
-                            $restrictedGroupsFindings = Parse-RestrictedGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID
+                            $restrictedGroupsFindings = Parse-RestrictedGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($restrictedGroupsFindings) {
                                 $linkedOUs = @()
@@ -180,7 +181,7 @@ function Get-GPOLocalGroupMembership {
 
                         try {
                             Write-Log "[Get-GPOLocalGroupMembership] Reading: $($file.FullName)"
-                            $gppGroupsFindings = Parse-GPPGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID
+                            $gppGroupsFindings = Parse-GPPGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($gppGroupsFindings) {
                                 $linkedOUs = @()
@@ -337,7 +338,12 @@ function Parse-RestrictedGroups {
         [string]$GPOName,
 
         [Parameter(Mandatory=$true)]
-        [string]$GPOGUID
+        [string]$GPOGUID,
+
+        # Optional: a GPO whose gPCFileSysPath the directory does not record yields an
+        # empty string here, and an empty row is skipped rather than printed blank.
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath
     )
 
     try {
@@ -392,6 +398,8 @@ function Parse-RestrictedGroups {
                         $findings += [PSCustomObject]@{
                             GPOName = $GPOName
                             GPOGUID = $GPOGUID
+                            GPOPath = $GPOPath
+                            SourceFile = Get-GPORelativePath -Path $FilePath
                             Type = "Restricted Groups"
                             TargetGroup = $groupName
                             TargetGroupSID = $groupSID
@@ -438,6 +446,8 @@ function Parse-RestrictedGroups {
                             $findings += [PSCustomObject]@{
                                 GPOName = $GPOName
                                 GPOGUID = $GPOGUID
+                                GPOPath = $GPOPath
+                                SourceFile = Get-GPORelativePath -Path $FilePath
                                 Type = "Restricted Groups"
                                 TargetGroup = $groupName
                                 TargetGroupSID = $groupSID
@@ -471,7 +481,12 @@ function Parse-GPPGroups {
         [string]$GPOName,
 
         [Parameter(Mandatory=$true)]
-        [string]$GPOGUID
+        [string]$GPOGUID,
+
+        # Optional: a GPO whose gPCFileSysPath the directory does not record yields an
+        # empty string here, and an empty row is skipped rather than printed blank.
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath
     )
 
     try {
@@ -554,6 +569,8 @@ function Parse-GPPGroups {
             $findings += [PSCustomObject]@{
                 GPOName = $GPOName
                 GPOGUID = $GPOGUID
+                GPOPath = $GPOPath
+                SourceFile = Get-GPORelativePath -Path $FilePath
                 Type = "Group Policy Preferences"
                 TargetGroup = $canonicalGroupName
                 TargetGroupSID = $groupSID

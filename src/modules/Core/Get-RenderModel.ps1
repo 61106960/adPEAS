@@ -316,11 +316,25 @@ function Build-RenderRow {
         [string]$Name,
 
         [Parameter(Mandatory=$true)]
-        [hashtable]$TransformResult
+        [hashtable]$TransformResult,
+
+        # Per-ObjectType label from $Script:AttributeLabels, when one is configured for
+        # this attribute. Used where the property name is not what a reader should see -
+        # a GPO's LDAP `Name`, which is its GUID.
+        [Parameter(Mandatory=$false)]
+        [string]$Label
     )
 
-    # Use custom display name if provided, otherwise use raw name
-    $displayName = if ($TransformResult.DisplayName) { $TransformResult.DisplayName } else { $Name }
+    # A transformer's own DisplayName wins: it is attribute-specific and may encode the
+    # value's state (e.g. "Owner (non-default)"). The type label is the next most
+    # specific, and the property name is the fallback.
+    $displayName = if ($TransformResult.DisplayName) {
+        $TransformResult.DisplayName
+    } elseif ($Label) {
+        $Label
+    } else {
+        $Name
+    }
 
     # Row-level FindingId: if single value with FindingId, promote to row level
     $rowFindingId = $TransformResult.FindingId
@@ -565,6 +579,9 @@ function Get-RenderModel {
     # Track attributes for PostObject (rendered after the card in console)
     $postObjectAttributes = @('KerberoastingHash', 'ASREPRoastingHash')
 
+    # Row labels configured for this object type, if any. $null for most types.
+    $typeLabels = $Script:AttributeLabels[$objectType]
+
     foreach ($section in @(
         @{ Source = $orderedAttrs.Primary; Target = 'Primary' },
         @{ Source = $orderedAttrs.Extended; Target = 'Extended' }
@@ -587,7 +604,8 @@ function Get-RenderModel {
             # Skip if transformer returns $null (e.g., Owner that IS default)
             if ($null -eq $result) { continue }
 
-            $row = Build-RenderRow -Name $name -TransformResult $result
+            $rowLabel = if ($typeLabels) { [string]$typeLabels[$name] } else { $null }
+            $row = Build-RenderRow -Name $name -TransformResult $result -Label $rowLabel
 
             if ($isPostObject) {
                 [void]$postObjectRows.Add($row)

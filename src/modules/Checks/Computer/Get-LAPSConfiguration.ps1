@@ -62,8 +62,18 @@ function New-LAPSGPOConfigObject {
     $isNative = ($Generation -eq 'Windows LAPS')
     $accountField = if ($isNative) { 'AdministratorAccountName' } else { 'AdminAccountName' }
 
+    # Read before the object is built so both can take a fixed position next to the name.
+    # The GUID is the GPO's folder under SYSVOL and the only reliable way to find the
+    # policy again - display names are neither unique nor a path.
+    $gpoGuid = if ($Metadata.ContainsKey('GPOGUID')) { $Metadata['GPOGUID'] } else { $null }
+    $gpoPath = if ($Metadata.ContainsKey('GPOPath')) { $Metadata['GPOPath'] } else { $null }
+    $sourceFile = if ($Metadata.ContainsKey('SourceFile')) { $Metadata['SourceFile'] } else { $null }
+
     $obj = [PSCustomObject][ordered]@{
         GPOName     = $GPOName
+        GPOGUID     = $gpoGuid
+        GPOPath     = $gpoPath
+        SourceFile  = $sourceFile
         LAPSVersion = $Generation
     }
 
@@ -143,7 +153,6 @@ function New-LAPSGPOConfigObject {
     # An unlinked GPO is reported explicitly rather than by an absent row: LAPS settings in a
     # GPO that is linked nowhere apply to nothing, which is easy to miss otherwise. A failed
     # linkage lookup must not be reported as "not linked".
-    $gpoGuid = if ($Metadata.ContainsKey('GPOGUID')) { $Metadata['GPOGUID'] } else { $null }
     $linkedOUs = @()
     if ($gpoGuid -and $GPOLinkage -and $GPOLinkage.ContainsKey($gpoGuid)) {
         $linkedOUs = @($GPOLinkage[$gpoGuid])
@@ -155,10 +164,6 @@ function New-LAPSGPOConfigObject {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Unknown - linkage could not be resolved' -Force
     } else {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
-    }
-
-    if ($gpoGuid) {
-        $obj | Add-Member -NotePropertyName 'GPOGUID' -NotePropertyValue $gpoGuid -Force
     }
 
     $obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSGPOConfig' -Force

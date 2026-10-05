@@ -91,6 +91,7 @@ function Get-GPORegistrySettings {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
 
             # Track SYSVOL access status (exception in Clear-SessionState - cleaned up inline below)
             $Script:sysvolAccessible = $false
@@ -134,12 +135,15 @@ function Get-GPORegistrySettings {
                             # Machine\Registry.pol -> HKLM, User\Registry.pol -> HKCU
                             $hive = if ($file.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
                             $records = @(Parse-PRegRecords -PolFilePath $file.FullName -Hive $hive)
-                            $source = 'Registry.pol'
                         } else {
                             $hive = 'HKLM/HKCU'
                             $records = @(Parse-RegistryXml -XmlFilePath $file.FullName)
-                            $source = 'Registry.xml'
                         }
+                        # The path inside the GPO folder, not the bare file name. Both
+                        # halves of a policy carry a file called Registry.pol, so a bare
+                        # name left the reader unable to tell Machine\ from User\ - and
+                        # those reach different targets.
+                        $source = Get-GPORelativePath -Path $file.FullName
                         if ($records.Count -gt 0) {
                             Write-Log "[Get-GPORegistrySettings] Analyzing GPO '$gpoName' - $source ($hive): $($records.Count) registry value(s)"
                         }
@@ -148,11 +152,12 @@ function Get-GPORegistrySettings {
                             $entry = Test-DangerousRegistryRecord -Record $record
                             if ($entry) {
                                 [void]$Script:_gpoRegMatches.Add([PSCustomObject]@{
-                                    GPOGUID = $gpoGUID
-                                    GPOName = $gpoName
-                                    Source  = $source
-                                    Entry   = $entry
-                                    Record  = $record
+                                    GPOGUID    = $gpoGUID
+                                    GPOName    = $gpoName
+                                    GPOPath    = $gpoPathMap[([string]$gpoGUID).ToUpper()]
+                                    SourceFile = $source
+                                    Entry      = $entry
+                                    Record     = $record
                                 })
                             }
                         }
@@ -360,7 +365,9 @@ function New-RegistryFinding {
 
     return [PSCustomObject][ordered]@{
         GPOName           = $RegMatch.GPOName
-        Source            = $RegMatch.Source
+        GPOGUID           = $RegMatch.GPOGUID
+        GPOPath           = $RegMatch.GPOPath
+        SourceFile        = $RegMatch.SourceFile
         RegistryKey       = "$($entry.Hive)\$($entry.Key)\$($entry.ValueName)"
         ConfiguredValue   = $configured
         VulnerabilityName = $entry.VulnerabilityName
@@ -369,7 +376,6 @@ function New-RegistryFinding {
         # Carried through so the caller can render the row in the class the central table
         # defines for it. Without it the field existed only in the table and nowhere else.
         ConsoleClass      = $entry.ConsoleClass
-        GPOGUID           = $RegMatch.GPOGUID
     }
 }
 

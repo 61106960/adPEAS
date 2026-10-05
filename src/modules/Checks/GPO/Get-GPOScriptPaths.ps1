@@ -82,6 +82,7 @@ function Get-GPOScriptPaths {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
 
             # Track SYSVOL access status
             $Script:sysvolAccessible = $false
@@ -122,7 +123,7 @@ function Get-GPOScriptPaths {
 
                         try {
                             Write-Log "[Get-GPOScriptPaths] Reading: $($file.FullName)"
-                            $findings = Parse-ScriptIni -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -Context $context -IsPowerShell $isPowerShell
+                            $findings = Parse-ScriptIni -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()] -Context $context -IsPowerShell $isPowerShell
 
                             if ($findings) {
                                 $linkedOUs = @()
@@ -204,6 +205,11 @@ function Parse-ScriptIni {
 
         [Parameter(Mandatory=$true)]
         [string]$GPOGUID,
+
+        # Optional: a GPO whose gPCFileSysPath the directory does not record yields an
+        # empty string here, and an empty row is skipped rather than printed blank.
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath,
 
         [Parameter(Mandatory=$true)]
         [string]$Context,
@@ -317,6 +323,10 @@ function Parse-ScriptIni {
             $finding = [PSCustomObject]@{
                 GPOName        = $GPOName
                 GPOGUID        = $GPOGUID
+                GPOPath        = $GPOPath
+                # The .ini the entry was parsed from - not ScriptPath below, which is the
+                # script that .ini points at.
+                SourceFile     = Get-GPORelativePath -Path $FilePath
                 ScriptType     = $scriptType
                 ScriptPath     = $cmdLine
                 Parameters     = $parameters

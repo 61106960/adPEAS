@@ -166,7 +166,7 @@ $Script:PrimaryAttributes = @{
 
     # GPO-deployed dangerous registry settings (Get-GPORegistrySettings)
     GPORegistrySetting = @(
-        'GPOName', 'Source', 'RegistryKey', 'ConfiguredValue',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'RegistryKey', 'ConfiguredValue',
         'VulnerabilityName', 'RiskReason',
         'LinkedOUs', 'GPOStatus'
     )
@@ -177,7 +177,7 @@ $Script:PrimaryAttributes = @{
     # Scope here is not the linkage Scope the other GPO types used to carry: it names the
     # hive the settings were read from, "Computer Configuration" or "User Configuration".
     PointAndPrintPolicy = @(
-        'GPOName', 'Scope', 'Source',
+        'GPOName', 'GPOGUID', 'GPOPath', 'Scope', 'SourceFile',
         'Exploitability',
         'DriverInstallRestriction', 'PointAndPrintRestrictions',
         'NewConnectionPrompt', 'DriverUpdatePrompt',
@@ -189,7 +189,7 @@ $Script:PrimaryAttributes = @{
 
     # LAPS policy settings deployed via GPO (Get-LAPSConfiguration, Step 3)
     LAPSGPOConfig = @(
-        'GPOName', 'LAPSVersion', 'ManagedAccount',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'LAPSVersion', 'ManagedAccount',
         'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
         'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
         'ExpirationProtection',
@@ -329,15 +329,9 @@ $Script:PrimaryAttributes = @{
     # well, but no other check prints its own prose next to the data, and the ObjectType
     # entry already carries the explanation for the whole section.
     GPOUserRights = @(
-        'gpoName', 'userRight', 'userRightName',
-        'grantedBeyondDefault', 'removedFromDefault', 'baselineUnknown',
-        'appliesTo', 'LinkedOUs', 'GPOStatus'
-    )
-
-    # Add Computer Rights findings (ACL-based)
-    AddComputerRights = @(
-        'sid', 'accountName', 'right', 'attributeName', 'value', 'isSecure',
-        'gpoName', 'accounts', 'hasAuthenticatedUsers', 'severity'
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
+        'GrantedBeyondDefault', 'RemovedFromDefault', 'BaselineUnknown',
+        'AppliesTo', 'LinkedOUs', 'GPOStatus'
     )
 
     # Machine Account Quota setting
@@ -347,19 +341,19 @@ $Script:PrimaryAttributes = @{
 
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
-        'GPOName', 'TaskName', 'Command', 'RunAs', 'Context',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'RunAs', 'Context',
         'Action', 'Trigger', 'LinkedOUs', 'GPOStatus'
     )
 
     # GPO Script Paths (custom PSCustomObject from Get-GPOScriptPaths)
     GPOScriptPath = @(
-        'GPOName', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
         'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'GPOStatus'
     )
 
     # GPO Local Group Membership (custom PSCustomObject from Get-GPOLocalGroupMembership)
     GPOLocalGroup = @(
-        'GPOName', 'Type', 'TargetGroup', 'MembersAdded',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'MembersAdded',
         'LinkedOUs', 'GPOStatus'
     )
 
@@ -381,11 +375,15 @@ $Script:PrimaryAttributes = @{
     )
 
     # Credential findings (GPP and SYSVOL)
+    # FilePath stays the complete path here, rather than being split into GPOGUID plus a
+    # relative SourceFile like the other GPO findings. These checks also scan NETLOGON and
+    # a caller-supplied -Path, where there is no GPO folder to be relative to, and for a
+    # finding that does come from a GPO the full path already contains the GUID.
     GPPCredential = @(
-        'credentialType', 'gpoName', 'filePath', 'userName', 'password', 'matchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
     )
     SYSVOLCredential = @(
-        'credentialType', 'gpoName', 'filePath', 'userName', 'password', 'matchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
     )
 
     # ACL findings (users/computers/groups with dangerous permissions)
@@ -573,6 +571,33 @@ $Script:StrictAttributeTypes = @(
     'GPOUserRights'
 )
 
+# Per-ObjectType row labels: what a row is called, where the property it comes from is
+# not what a reader should be shown.
+#
+# Ten checks report something about a Group Policy. Four of them report the GPO itself as
+# the finding and carry a native LDAP object; the other six report a setting found inside
+# a GPO and build their own object, naming the policy GPOName / GPOGUID / GPOPath. Left
+# alone, the same three facts appeared under two sets of labels depending on which check
+# a reader happened to be looking at - and one of the LDAP names, `Name`, is a GPO's GUID,
+# which is accurate and unreadable unless you already know that.
+#
+# Relabelled rather than renamed, because these are real LDAP attributes: `Name` is what
+# the HTML card title resolution reads, `displayName` and `gPCFileSysPath` are consumed by
+# other checks, and renaming them would also change the JSON export of an object that
+# genuinely is a directory object. Only the label changes. RawName on the row keeps the
+# property name, so finding triggers and the HTML data attributes are unaffected.
+#
+# distinguishedName keeps its own name: it has no counterpart among the setting-level
+# findings, so there is nothing for it to be consistent with.
+#
+# A transformer that supplies its own DisplayName still wins - see Build-RenderRow.
+$Script:AttributeLabels = @{
+    GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    SMBSigning     = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    LDAPConfigGPO  = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    AddComputerGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+}
+
 # Attributes to always exclude from display
 # These are internal/technical attributes that should never be shown in output:
 # - AD metadata (objectGUID, objectCategory, USN, whenCreated/Changed)
@@ -613,7 +638,14 @@ $Script:ExcludeAttributes = @(
     '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
     # GPO check internal analysis flags - used for severity calculation, not for display.
     # ConsoleClass decides the colour a row is rendered in and must not appear as a row.
-    'GPOGUID', 'Risk', 'Severity', 'ConsoleClass',
+    #
+    # GPOGUID used to be excluded here as an internal flag. It is not one: the GUID is the
+    # folder name under \\<domain>\SYSVOL\<domain>\Policies\, and without it a reader who
+    # wants to inspect the policy that produced a finding has only its display name - which
+    # is not unique, not a path, and not searchable in SYSVOL. Every GPO ObjectType now
+    # lists it in its PrimaryAttributes instead, so it appears in a fixed place next to the
+    # name rather than wherever the extended overflow happens to put it.
+    'Risk', 'Severity', 'ConsoleClass',
     'IsSystemAccount', 'IsPrivilegedAccount',
     'HasUNCPath', 'HasRiskyPath', 'HasUnquotedPath', 'IsPowerShell', 'IsScript',
     'RunsAsSystem', 'TargetGroupSID', 'MemberSIDs',
@@ -702,11 +734,6 @@ function Get-ObjectTypeForOrdering {
         return 'OutdatedComputer'
     }
 
-    # Add Computer Rights (ACL-based)
-    if ($Object.sid -and $Object.accountName -and $Object.right) {
-        return 'AddComputerRights'
-    }
-
     # Machine Account Quota
     if ($Object.PSObject.Properties['ms-DS-MachineAccountQuota']) {
         return 'MachineAccountQuota'
@@ -718,7 +745,7 @@ function Get-ObjectTypeForOrdering {
     }
 
     # Credential finding
-    if ($Object.credentialType -and ($Object.password -or $Object.matchedLine)) {
+    if ($Object.CredentialType -and ($Object.Password -or $Object.MatchedLine)) {
         return 'GPPCredential'
     }
 

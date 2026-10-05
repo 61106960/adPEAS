@@ -318,20 +318,22 @@ function Get-GPOUserRightsAssignment {
                         }
 
                         $finding = [PSCustomObject]@{
-                            gpoName          = $gpo.displayName
-                            gpoGuid          = $gpo.Name
-                            userRight        = $right
-                            userRightName    = $comparison.Name
-                            whyItMatters     = $comparison.Why
-                            appliesTo        = $machineScope
-                            grantedBeyondDefault = $addedNames
-                            removedFromDefault   = $removedNames
-                            LinkedOUs        = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
-                            _severity        = $severity
+                            GPOName              = $gpo.displayName
+                            GPOGUID              = $gpo.Name
+                            GPOPath              = $gpo.gPCFileSysPath
+                            SourceFile           = Get-GPORelativePath -Path $file.FullName
+                            UserRight            = $right
+                            UserRightName        = $comparison.Name
+                            WhyItMatters         = $comparison.Why
+                            AppliesTo            = $machineScope
+                            GrantedBeyondDefault = $addedNames
+                            RemovedFromDefault   = $removedNames
+                            LinkedOUs            = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
+                            _severity            = $severity
                         }
 
                         if (-not $comparison.HasBaseline) {
-                            $finding | Add-Member -NotePropertyName 'baselineUnknown' `
+                            $finding | Add-Member -NotePropertyName 'BaselineUnknown' `
                                 -NotePropertyValue 'Windows publishes no fixed default set for this right, so the holders above were filtered by identity instead of compared. Judge them against what this domain actually runs.' -Force
                         }
 
@@ -374,7 +376,7 @@ function Get-GPOUserRightsAssignment {
                 # Findings first, then hints, then the removals
                 $ordered = @($findings | Sort-Object @{Expression={
                     switch ($_._severity) { 'Finding' { 0 } 'Hint' { 1 } default { 2 } }
-                }}, gpoName, userRight)
+                }}, GPOName, UserRight)
                 foreach ($finding in $ordered) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOUserRights' -Force
                     Show-Object $finding -Class $finding._severity

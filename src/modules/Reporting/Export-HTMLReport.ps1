@@ -1233,7 +1233,7 @@ function Get-ObjectCardTitle {
             return "SID History: $objName$ctxInfo"
         }
         { $_ -in @('GPPCredential', 'SYSVOLCredential') } {
-            $credType = if ($Object.credentialType) { $Object.credentialType } else { "Credential" }
+            $credType = if ($Object.CredentialType) { $Object.CredentialType } else { "Credential" }
             return "Credential ($credType)"
         }
         'LAPSConfiguration' {

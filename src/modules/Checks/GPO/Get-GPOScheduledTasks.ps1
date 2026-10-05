@@ -109,6 +109,7 @@ function Get-GPOScheduledTasks {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
 
             # SYSVOL Access with Credential Support
             Invoke-SMBAccess -Description "Scanning GPO ScheduledTasks.xml files" -ScriptBlock {
@@ -142,7 +143,7 @@ function Get-GPOScheduledTasks {
 
                         try {
                             Write-Log "[Get-GPOScheduledTasks] Reading: $($file.FullName)"
-                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID
+                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($taskFindings) {
                                 $linkedOUs = @()
@@ -249,7 +250,12 @@ function Parse-ScheduledTasksXML {
         [string]$GPOName,
 
         [Parameter(Mandatory=$true)]
-        [string]$GPOGUID
+        [string]$GPOGUID,
+
+        # Optional: a GPO whose gPCFileSysPath the directory does not record yields an
+        # empty string here, and an empty row is skipped rather than printed blank.
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath
     )
 
     try {
@@ -410,6 +416,12 @@ function Parse-ScheduledTasksXML {
             # _Severity and _Risk are internal transport properties (removed before Show-Object)
             $taskProps = [ordered]@{
                 GPOName    = $GPOName
+                # The GUID arrived as a parameter from the start but was never written onto
+                # the object, so a reader had the policy's display name and no way to find
+                # the folder it lives in.
+                GPOGUID    = $GPOGUID
+                GPOPath    = $GPOPath
+                SourceFile = Get-GPORelativePath -Path $FilePath
                 TaskName   = $taskName
                 Command    = $fullCommand
                 RunAs      = $runAs

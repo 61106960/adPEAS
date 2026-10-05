@@ -194,10 +194,10 @@ function Get-CredentialExposure {
                                         elseif ($_.runAs) { $username = $_.runAs }
                                         # Create credential object for proper display
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "GPP Password"
-                                            filePath = $xmlFile.Fullname
-                                            userName = $username
-                                            password = $decryptedPassword
+                                            CredentialType = "GPP Password"
+                                            FilePath = $xmlFile.Fullname
+                                            UserName = $username
+                                            Password = $decryptedPassword
                                         }
                                         Show-Line "Found GPP credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -219,10 +219,10 @@ function Get-CredentialExposure {
                                     $fullUsername = if ($autoLogonDomain) { "$autoLogonDomain\$autoLogonUser" } else { $autoLogonUser }
                                     # Create credential object for proper display
                                     $credObj = [PSCustomObject]@{
-                                        credentialType = "AutoAdminLogon"
-                                        filePath = $xmlFile.Fullname
-                                        userName = $fullUsername
-                                        password = $autoLogonPassword
+                                        CredentialType = "AutoAdminLogon"
+                                        FilePath = $xmlFile.Fullname
+                                        UserName = $fullUsername
+                                        Password = $autoLogonPassword
                                     }
                                     Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -275,10 +275,10 @@ function Get-CredentialExposure {
                                     $fullUser = if ($foundDomain) { "$foundDomain\$foundUsername" } else { $foundUsername }
                                     # Create credential object for proper display
                                     $credObj = [PSCustomObject]@{
-                                        credentialType = "Net Use"
-                                        filePath = $file.FullName
-                                        userName = $fullUser
-                                        password = $foundPassword
+                                        CredentialType = "Net Use"
+                                        FilePath = $file.FullName
+                                        UserName = $fullUser
+                                        Password = $foundPassword
                                     }
                                     Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -314,9 +314,9 @@ function Get-CredentialExposure {
                                     if ($trimmedLine -match $pattern.Pattern) {
                                         # Create credential object for proper display
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = $pattern.Description
-                                            filePath = $file.FullName
-                                            matchedLine = $trimmedLine
+                                            CredentialType = $pattern.Description
+                                            FilePath = $file.FullName
+                                            MatchedLine = $trimmedLine
                                         }
                                         # Pattern hits in a script file are SYSVOLCredential, the same as in the
                                         # domain scan. Tagging them GPPCredential here routed them to the wrong help text.
@@ -335,9 +335,9 @@ function Get-CredentialExposure {
                                     if ($trimmedLine -match $pattern.Pattern) {
                                         # Create credential object for proper display (lower severity)
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "$($pattern.Description) (needs review)"
-                                            filePath = $file.FullName
-                                            matchedLine = $trimmedLine
+                                            CredentialType = "$($pattern.Description) (needs review)"
+                                            FilePath = $file.FullName
+                                            MatchedLine = $trimmedLine
                                         }
                                         Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -474,12 +474,12 @@ function Get-CredentialExposure {
                                             elseif ($_.runAs) { $username = $_.runAs }
 
                                             $credObj = [PSCustomObject]@{
-                                                credentialType = "GPP Password"
-                                                filePath = $xmlFile.Fullname
-                                                userName = $username
-                                                password = $decryptedPassword
+                                                CredentialType = "GPP Password"
+                                                FilePath = $xmlFile.Fullname
+                                                UserName = $username
+                                                Password = $decryptedPassword
                                             }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                             if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                             Show-Line "Found GPP credential" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -504,12 +504,12 @@ function Get-CredentialExposure {
                                     if ($autoLogonPassword -and $autoLogonPassword -ne '') {
                                         $fullUsername = if ($autoLogonDomain) { "$autoLogonDomain\$autoLogonUser" } else { $autoLogonUser }
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "AutoAdminLogon"
-                                            filePath = $xmlFile.Fullname
-                                            userName = $fullUsername
-                                            password = $autoLogonPassword
+                                            CredentialType = "AutoAdminLogon"
+                                            FilePath = $xmlFile.Fullname
+                                            UserName = $fullUsername
+                                            Password = $autoLogonPassword
                                         }
-                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                         if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                         Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -636,12 +636,12 @@ function Get-CredentialExposure {
                                     if ($foundUsername -and $foundPassword) {
                                         $fullUser = if ($foundDomain) { "$foundDomain\$foundUsername" } else { $foundUsername }
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "Net Use"
-                                            filePath = $file.FullName
-                                            userName = $fullUser
-                                            password = $foundPassword
+                                            CredentialType = "Net Use"
+                                            FilePath = $file.FullName
+                                            UserName = $fullUser
+                                            Password = $foundPassword
                                         }
-                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                         if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                         Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -682,11 +682,11 @@ function Get-CredentialExposure {
                                     foreach ($pattern in $tier1Patterns) {
                                         if ($trimmedLine -match $pattern.Pattern) {
                                             $credObj = [PSCustomObject]@{
-                                                credentialType = $pattern.Description
-                                                filePath = $file.FullName
-                                                matchedLine = $trimmedLine
+                                                CredentialType = $pattern.Description
+                                                FilePath = $file.FullName
+                                                MatchedLine = $trimmedLine
                                             }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                             if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                             Show-Line "Found credential pattern" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -703,11 +703,11 @@ function Get-CredentialExposure {
                                     foreach ($pattern in $tier2Patterns) {
                                         if ($trimmedLine -match $pattern.Pattern) {
                                             $credObj = [PSCustomObject]@{
-                                                credentialType = "$($pattern.Description) (needs review)"
-                                                filePath = $file.FullName
-                                                matchedLine = $trimmedLine
+                                                CredentialType = "$($pattern.Description) (needs review)"
+                                                FilePath = $file.FullName
+                                                MatchedLine = $trimmedLine
                                             }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                             if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                             Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
