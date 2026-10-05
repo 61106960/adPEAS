@@ -588,6 +588,22 @@ $Script:WellKnownIdentities = @(
     @{ SID = 'S-1-5-18';    Name = 'NT AUTHORITY\SYSTEM';         Short = 'SYSTEM' }
     @{ SID = 'S-1-5-19';    Name = 'NT AUTHORITY\Local Service' }
     @{ SID = 'S-1-5-20';    Name = 'NT AUTHORITY\Network Service' }
+    @{ SID = 'S-1-5-33';    Name = 'NT AUTHORITY\WRITE RESTRICTED' }
+    @{ SID = 'S-1-5-113';   Name = 'NT AUTHORITY\Local account';  Short = 'Local account' }
+    @{ SID = 'S-1-5-114';   Name = 'NT AUTHORITY\Local account and member of Administrators group' }
+    @{ SID = 'S-1-5-64-10'; Name = 'NT AUTHORITY\NTLM Authentication' }
+    @{ SID = 'S-1-5-64-14'; Name = 'NT AUTHORITY\SChannel Authentication' }
+    @{ SID = 'S-1-5-64-21'; Name = 'NT AUTHORITY\Digest Authentication' }
+    @{ SID = 'S-1-5-65-1';  Name = 'NT AUTHORITY\This Organization Certificate' }
+    @{ SID = 'S-1-5-80-0';  Name = 'NT SERVICE\ALL SERVICES' }
+    @{ SID = 'S-1-5-83-0';  Name = 'NT VIRTUAL MACHINE\Virtual Machines' }
+    @{ SID = 'S-1-5-1000';  Name = 'NT AUTHORITY\Other Organization' }
+    @{ SID = 'S-1-18-1';    Name = 'Authentication authority asserted identity' }
+    @{ SID = 'S-1-18-2';    Name = 'Service asserted identity' }
+    @{ SID = 'S-1-18-3';    Name = 'Fresh public key identity' }
+    @{ SID = 'S-1-18-4';    Name = 'Key trust identity' }
+    @{ SID = 'S-1-18-5';    Name = 'Key property MFA' }
+    @{ SID = 'S-1-18-6';    Name = 'Key property attestation' }
     @{ SID = 'S-1-5-32-544'; Name = 'BUILTIN\Administrators';     Short = 'Administrators' }
     @{ SID = 'S-1-5-32-545'; Name = 'BUILTIN\Users';              Short = 'Users' }
     @{ SID = 'S-1-5-32-546'; Name = 'BUILTIN\Guests';             Short = 'Guests' }
@@ -51331,6 +51347,65 @@ function Register-adPEASIdentityCompleters {
     Write-Log "[Register-adPEASIdentityCompleters] Registered identity completion for $($registrations.Count) parameter(s)"
 }
 Register-adPEASIdentityCompleters
+function Expand-adPEASDNEscape {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$Value = ''
+    )
+    if ([string]::IsNullOrEmpty($Value)) { return '' }
+    if ($Value.IndexOf('\') -lt 0) { return $Value }
+    return [regex]::Replace($Value, '\\([0-9A-Fa-f]{2}|.)', {
+        param($match)
+        $token = $match.Groups[1].Value
+        if ($token.Length -eq 2) { [string][char][Convert]::ToInt32($token, 16) } else { $token }
+    })
+}
+function Get-adPEASDNLeaf {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$DistinguishedName = ''
+    )
+    if ([string]::IsNullOrEmpty($DistinguishedName)) {
+        return [PSCustomObject]@{ LeafValue = ''; Depth = 0 }
+    }
+    $depth = 1
+    $firstComma = -1
+    $index = 0
+    while ($index -lt $DistinguishedName.Length) {
+        $char = $DistinguishedName[$index]
+        if ($char -eq '\') { $index += 2; continue }
+        if ($char -eq ',') {
+            $depth++
+            if ($firstComma -lt 0) { $firstComma = $index }
+        }
+        $index++
+    }
+    $leafRDN = if ($firstComma -ge 0) {
+        $DistinguishedName.Substring(0, $firstComma)
+    } else {
+        $DistinguishedName
+    }
+    $leafValue = $leafRDN
+    $cursor = 0
+    while ($cursor -lt $leafRDN.Length) {
+        if ($leafRDN[$cursor] -eq '\') { $cursor += 2; continue }
+        if ($leafRDN[$cursor] -eq '=') {
+            $leafValue = $leafRDN.Substring($cursor + 1)
+            break
+        }
+        $cursor++
+    }
+    return [PSCustomObject]@{
+        LeafValue = (Expand-adPEASDNEscape -Value $leafValue)
+        Depth     = $depth
+    }
+}
 function Get-adPEASContainerCompletion {
     [CmdletBinding()]
     [OutputType([System.Management.Automation.CompletionResult])]
@@ -51362,18 +51437,37 @@ function Get-adPEASContainerCompletion {
     $word = $WordToComplete
     if ($null -eq $word) { $word = '' }
     $comparison = [System.StringComparison]::OrdinalIgnoreCase
-    $matching = New-Object System.Collections.Generic.List[string]
+    $wordIsDNFragment = ($word -match '^[A-Za-z][A-Za-z0-9-]*=')
+    $ranked = New-Object System.Collections.Generic.List[object]
     foreach ($candidate in @($candidates | Sort-Object -Unique)) {
-        if ($candidate.IndexOf($word, $comparison) -ge 0) {
-            $matching.Add($candidate)
+        $parts = Get-adPEASDNLeaf -DistinguishedName $candidate
+        $leaf  = [string]$parts.LeafValue
+        $tier = $null
+        if ($word.Length -eq 0) {
+            $tier = 1
+        } elseif ($wordIsDNFragment) {
+            if ($candidate.StartsWith($word, $comparison))         { $tier = 1 }
+            elseif ($candidate.IndexOf($word, $comparison) -ge 0)  { $tier = 2 }
+            elseif ($leaf.IndexOf($word, $comparison) -ge 0)       { $tier = 3 }
+        } elseif ($leaf.Equals($word, $comparison)) {
+            $tier = 1
+        } elseif ($leaf.StartsWith($word, $comparison)) {
+            $tier = 2
+        } elseif ($leaf.IndexOf($word, $comparison) -ge 0) {
+            $tier = 3
+        } elseif ($candidate.IndexOf($word, $comparison) -ge 0) {
+            $tier = 4
         }
+        if ($null -eq $tier) { continue }
+        $ranked.Add([PSCustomObject]@{
+            DN    = $candidate
+            Tier  = $tier
+            Depth = $parts.Depth
+        })
     }
     $ordered = New-Object System.Collections.Generic.List[string]
-    foreach ($candidate in $matching) {
-        if ($candidate.StartsWith($word, $comparison)) { $ordered.Add($candidate) }
-    }
-    foreach ($candidate in $matching) {
-        if (-not $candidate.StartsWith($word, $comparison)) { $ordered.Add($candidate) }
+    foreach ($entry in @($ranked | Sort-Object -Property Tier, Depth, DN)) {
+        $ordered.Add([string]$entry.DN)
     }
     foreach ($containerDN in @($ordered | Select-Object -First 50)) {
         $completionText = "'" + ($containerDN -replace "'", "''") + "'"
@@ -81025,7 +81119,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.6.0+20261005-1351"
+$Script:adPEASVersion = "2.6.0+20261005-1545"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
