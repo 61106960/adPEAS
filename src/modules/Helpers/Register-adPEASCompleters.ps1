@@ -618,6 +618,121 @@ Register-adPEASIdentityCompleters
 
 <#
 .SYNOPSIS
+    Resolves the RFC 4514 escapes in one RDN value.
+
+.DESCRIPTION
+    A DN escapes the characters that would otherwise be syntax - a comma, a plus, a leading
+    space - either as a backslash pair or as a backslash and two hex digits. The completer
+    compares what the user typed against an RDN value, and the user types the name as it
+    reads in the console, not as the directory encodes it: 'Tier 0' rather than 'Tier\ 0'.
+
+    One pass, both forms. Unescaping in two passes would turn '\5C' into a backslash that
+    the second pass then reads as an escape of whatever followed it.
+
+.PARAMETER Value
+    The raw RDN value.
+
+.OUTPUTS
+    [string]
+#>
+function Expand-adPEASDNEscape {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$Value = ''
+    )
+
+    if ([string]::IsNullOrEmpty($Value)) { return '' }
+    if ($Value.IndexOf('\') -lt 0) { return $Value }
+
+    return [regex]::Replace($Value, '\\([0-9A-Fa-f]{2}|.)', {
+        param($match)
+        $token = $match.Groups[1].Value
+        if ($token.Length -eq 2) { [string][char][Convert]::ToInt32($token, 16) } else { $token }
+    })
+}
+
+<#
+.SYNOPSIS
+    Splits a DN into the value of its left-most RDN and the number of RDNs it has.
+
+.DESCRIPTION
+    The two facts the container completer ranks on: what the container is called, and how
+    deep it sits.
+
+    Parsed by walking the string rather than with Split(','), because a comma inside an RDN
+    value is legal when escaped. 'CN=Doe\, Jane (Contractor),OU=Sales,DC=contoso,DC=com'
+    would otherwise yield a leaf of 'CN=Doe\' - a value that matches nothing a user would
+    type - and a depth one greater than the container actually has, which moves it down the
+    list for a reason that does not exist. The same class of defect as interpolating an
+    unescaped DN into an LDAP filter.
+
+    Not handled: the legacy quoted form, "CN=some, name". Active Directory does not emit it,
+    and half-reading it would be worse than reading it as the literal text it appears to be.
+
+.PARAMETER DistinguishedName
+    The DN to parse.
+
+.OUTPUTS
+    [PSCustomObject] with LeafValue (escapes resolved) and Depth (RDN count, so
+    DC=contoso,DC=com is 2 and an OU directly below it is 3).
+#>
+function Get-adPEASDNLeaf {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$DistinguishedName = ''
+    )
+
+    if ([string]::IsNullOrEmpty($DistinguishedName)) {
+        return [PSCustomObject]@{ LeafValue = ''; Depth = 0 }
+    }
+
+    $depth = 1
+    $firstComma = -1
+    $index = 0
+    while ($index -lt $DistinguishedName.Length) {
+        $char = $DistinguishedName[$index]
+        if ($char -eq '\') { $index += 2; continue }
+        if ($char -eq ',') {
+            $depth++
+            if ($firstComma -lt 0) { $firstComma = $index }
+        }
+        $index++
+    }
+
+    $leafRDN = if ($firstComma -ge 0) {
+        $DistinguishedName.Substring(0, $firstComma)
+    } else {
+        $DistinguishedName
+    }
+
+    # The value is what follows the first unescaped '='. An RDN carrying none is malformed;
+    # it is kept whole rather than dropped, so a hand-built cache entry still ranks somewhere
+    # instead of vanishing from the list.
+    $leafValue = $leafRDN
+    $cursor = 0
+    while ($cursor -lt $leafRDN.Length) {
+        if ($leafRDN[$cursor] -eq '\') { $cursor += 2; continue }
+        if ($leafRDN[$cursor] -eq '=') {
+            $leafValue = $leafRDN.Substring($cursor + 1)
+            break
+        }
+        $cursor++
+    }
+
+    return [PSCustomObject]@{
+        LeafValue = (Expand-adPEASDNEscape -Value $leafValue)
+        Depth     = $depth
+    }
+}
+
+<#
+.SYNOPSIS
     Produces the container-DN completions for a given word and parameter name.
 
 .DESCRIPTION
@@ -696,22 +811,88 @@ function Get-adPEASContainerCompletion {
     #     at all and no indication why.
     # Ordinal comparison also matches how AD itself compares DNs.
     $comparison = [System.StringComparison]::OrdinalIgnoreCase
-    $matching = New-Object System.Collections.Generic.List[string]
-    foreach ($candidate in @($candidates | Sort-Object -Unique)) {
-        if ($candidate.IndexOf($word, $comparison) -ge 0) {
-            $matching.Add($candidate)
-        }
-    }
 
     # Substring match, not prefix: a DN starts with 'OU=' or 'CN=', so prefix-only completion
     # would require typing the DN from the left - but what the user knows is the OU name.
-    # Prefix matches are still listed first, so an exact path keeps winning.
-    $ordered = New-Object System.Collections.Generic.List[string]
-    foreach ($candidate in $matching) {
-        if ($candidate.StartsWith($word, $comparison)) { $ordered.Add($candidate) }
+    #
+    # Matched against the container's own name with its escapes resolved, and against the raw
+    # DN as a fallback. The name is the surface a user types at, and comparing only the raw DN
+    # missed every container whose name carries an escape: typing 'Doe, Jane' never found
+    # 'CN=Doe\, Jane (Contractor),...', because the stored form has a backslash in it that
+    # nobody types.
+    #
+    # Which makes the ORDER carry the weight, because the filter is deliberately generous.
+    # Ranked, then sorted, and the ranking is measured on the left-most RDN - the container's
+    # own name - because that is what a user types. Sorting the matches alphabetically, as
+    # this did before, let a container whose ANCESTOR matched outrank the one that actually
+    # bears the name: for 'computers', 'OU=Archiv,OU=Computers,DC=...' sorted ahead of
+    # 'OU=Computers,DC=...' on nothing but the letter A. It usually looked right, which was
+    # luck of the alphabet rather than design.
+    #
+    # It also decides what survives the 50-item cap below. Without a relevance order, the
+    # container someone is looking for can fall past the cap in a large domain and simply
+    # not be offered, with nothing to say it exists.
+    #
+    #   1  the name is exactly the word
+    #   2  the name starts with it
+    #   3  the name contains it
+    #   4  only an ancestor matched
+    #
+    # Relevance outranks depth, never the other way round - otherwise a shallow ancestor
+    # match climbs back above a deep exact one, which is the defect being fixed.
+    #
+    # A word that opens with an attribute type and an equals sign is not a name, it is a path
+    # someone is typing out, so it keeps the older DN-prefix-then-substring order. That is an
+    # explicitly stated intent and reinterpreting it as a name would match nothing.
+    #
+    # Recognised by that shape and not by the mere presence of ',' or '=', which was the first
+    # attempt and read 'Doe, Jane' as a path - a name may legitimately contain either
+    # character, as the escaped-comma case right below proves. A word like 'Tier=0' does look
+    # like an assignment and is read as one, so the fragment branch keeps a leaf fallback and
+    # no container ends up unreachable either way.
+    $wordIsDNFragment = ($word -match '^[A-Za-z][A-Za-z0-9-]*=')
+
+    # One pass: a candidate is kept and ranked together, because the tier a candidate lands
+    # in is the same question as whether it matches at all. Tier $null means no match.
+    $ranked = New-Object System.Collections.Generic.List[object]
+    foreach ($candidate in @($candidates | Sort-Object -Unique)) {
+        $parts = Get-adPEASDNLeaf -DistinguishedName $candidate
+        $leaf  = [string]$parts.LeafValue
+
+        $tier = $null
+        if ($word.Length -eq 0) {
+            $tier = 1
+        } elseif ($wordIsDNFragment) {
+            if ($candidate.StartsWith($word, $comparison))         { $tier = 1 }
+            elseif ($candidate.IndexOf($word, $comparison) -ge 0)  { $tier = 2 }
+            elseif ($leaf.IndexOf($word, $comparison) -ge 0)       { $tier = 3 }
+        } elseif ($leaf.Equals($word, $comparison)) {
+            $tier = 1
+        } elseif ($leaf.StartsWith($word, $comparison)) {
+            $tier = 2
+        } elseif ($leaf.IndexOf($word, $comparison) -ge 0) {
+            $tier = 3
+        } elseif ($candidate.IndexOf($word, $comparison) -ge 0) {
+            $tier = 4
+        }
+
+        if ($null -eq $tier) { continue }
+
+        $ranked.Add([PSCustomObject]@{
+            DN    = $candidate
+            Tier  = $tier
+            Depth = $parts.Depth
+        })
     }
-    foreach ($candidate in $matching) {
-        if (-not $candidate.StartsWith($word, $comparison)) { $ordered.Add($candidate) }
+
+    # Shallower first within a tier. A SearchBase is a scope, and the shallower container is
+    # the broader one: asked for 'computers', a reader means the main OU more often than a
+    # like-named one parked under an archive or a test structure. At equal depth the DN
+    # itself decides, which sorts on the parent from the leaf upwards and so keeps siblings
+    # together.
+    $ordered = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in @($ranked | Sort-Object -Property Tier, Depth, DN)) {
+        $ordered.Add([string]$entry.DN)
     }
 
     foreach ($containerDN in @($ordered | Select-Object -First 50)) {
