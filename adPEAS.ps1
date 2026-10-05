@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-04 11:22:49
-    Version: 2.6.0
+    Build: 2026-10-05 13:51:09
+    Version: 2.6.0+20261005-1351
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6037,19 +6037,19 @@ $Script:PrimaryAttributes = @{
     SMBSigning = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'ServerSigning', 'ClientSigning',
-        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
 
     # LDAP Configuration GPO (only LDAP-relevant attributes, no SMB)
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'LDAPSigning', 'ChannelBinding', 'AnonymousBinding',
-        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
 
     # GPO-deployed dangerous registry settings (Get-GPORegistrySettings)
     GPORegistrySetting = @(
-        'GPOName', 'Source', 'RegistryKey', 'ConfiguredValue',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'RegistryKey', 'ConfiguredValue',
         'VulnerabilityName', 'RiskReason',
         'LinkedOUs', 'GPOStatus'
     )
@@ -6060,7 +6060,7 @@ $Script:PrimaryAttributes = @{
     # Scope here is not the linkage Scope the other GPO types used to carry: it names the
     # hive the settings were read from, "Computer Configuration" or "User Configuration".
     PointAndPrintPolicy = @(
-        'GPOName', 'Scope', 'Source',
+        'GPOName', 'GPOGUID', 'GPOPath', 'Scope', 'SourceFile',
         'Exploitability',
         'DriverInstallRestriction', 'PointAndPrintRestrictions',
         'NewConnectionPrompt', 'DriverUpdatePrompt',
@@ -6072,7 +6072,7 @@ $Script:PrimaryAttributes = @{
 
     # LAPS policy settings deployed via GPO (Get-LAPSConfiguration, Step 3)
     LAPSGPOConfig = @(
-        'GPOName', 'LAPSVersion', 'ManagedAccount',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'LAPSVersion', 'ManagedAccount',
         'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
         'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
         'ExpirationProtection',
@@ -6212,15 +6212,9 @@ $Script:PrimaryAttributes = @{
     # well, but no other check prints its own prose next to the data, and the ObjectType
     # entry already carries the explanation for the whole section.
     GPOUserRights = @(
-        'gpoName', 'userRight', 'userRightName',
-        'grantedBeyondDefault', 'removedFromDefault', 'baselineUnknown',
-        'appliesTo', 'LinkedOUs', 'GPOStatus'
-    )
-
-    # Add Computer Rights findings (ACL-based)
-    AddComputerRights = @(
-        'sid', 'accountName', 'right', 'attributeName', 'value', 'isSecure',
-        'gpoName', 'accounts', 'hasAuthenticatedUsers', 'severity'
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
+        'GrantedBeyondDefault', 'RemovedFromDefault', 'BaselineUnknown',
+        'AppliesTo', 'LinkedOUs', 'GPOStatus'
     )
 
     # Machine Account Quota setting
@@ -6230,19 +6224,19 @@ $Script:PrimaryAttributes = @{
 
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
-        'GPOName', 'TaskName', 'Command', 'RunAs', 'Context',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'RunAs', 'Context',
         'Action', 'Trigger', 'LinkedOUs', 'GPOStatus'
     )
 
     # GPO Script Paths (custom PSCustomObject from Get-GPOScriptPaths)
     GPOScriptPath = @(
-        'GPOName', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
         'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'GPOStatus'
     )
 
     # GPO Local Group Membership (custom PSCustomObject from Get-GPOLocalGroupMembership)
     GPOLocalGroup = @(
-        'GPOName', 'Type', 'TargetGroup', 'MembersAdded',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'MembersAdded',
         'LinkedOUs', 'GPOStatus'
     )
 
@@ -6250,7 +6244,7 @@ $Script:PrimaryAttributes = @{
     AddComputerGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'Accounts',
-        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
 
     # BitLocker Recovery Key (readable msFVE-RecoveryInformation child object)
@@ -6264,11 +6258,15 @@ $Script:PrimaryAttributes = @{
     )
 
     # Credential findings (GPP and SYSVOL)
+    # FilePath stays the complete path here, rather than being split into GPOGUID plus a
+    # relative SourceFile like the other GPO findings. These checks also scan NETLOGON and
+    # a caller-supplied -Path, where there is no GPO folder to be relative to, and for a
+    # finding that does come from a GPO the full path already contains the GUID.
     GPPCredential = @(
-        'credentialType', 'gpoName', 'filePath', 'userName', 'password', 'matchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
     )
     SYSVOLCredential = @(
-        'credentialType', 'gpoName', 'filePath', 'userName', 'password', 'matchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
     )
 
     # ACL findings (users/computers/groups with dangerous permissions)
@@ -6456,6 +6454,33 @@ $Script:StrictAttributeTypes = @(
     'GPOUserRights'
 )
 
+# Per-ObjectType row labels: what a row is called, where the property it comes from is
+# not what a reader should be shown.
+#
+# Ten checks report something about a Group Policy. Four of them report the GPO itself as
+# the finding and carry a native LDAP object; the other six report a setting found inside
+# a GPO and build their own object, naming the policy GPOName / GPOGUID / GPOPath. Left
+# alone, the same three facts appeared under two sets of labels depending on which check
+# a reader happened to be looking at - and one of the LDAP names, `Name`, is a GPO's GUID,
+# which is accurate and unreadable unless you already know that.
+#
+# Relabelled rather than renamed, because these are real LDAP attributes: `Name` is what
+# the HTML card title resolution reads, `displayName` and `gPCFileSysPath` are consumed by
+# other checks, and renaming them would also change the JSON export of an object that
+# genuinely is a directory object. Only the label changes. RawName on the row keeps the
+# property name, so finding triggers and the HTML data attributes are unaffected.
+#
+# distinguishedName keeps its own name: it has no counterpart among the setting-level
+# findings, so there is nothing for it to be consistent with.
+#
+# A transformer that supplies its own DisplayName still wins - see Build-RenderRow.
+$Script:AttributeLabels = @{
+    GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    SMBSigning     = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    LDAPConfigGPO  = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    AddComputerGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+}
+
 # Attributes to always exclude from display
 # These are internal/technical attributes that should never be shown in output:
 # - AD metadata (objectGUID, objectCategory, USN, whenCreated/Changed)
@@ -6494,9 +6519,19 @@ $Script:ExcludeAttributes = @(
     # an Exchange service group rather than against privilege; it is read from the source
     # object by Get-RenderModel and has no business being a row.
     '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
+    # Precedence bookkeeping behind the EffectiveSetting sentence. _IsEffective is the
+    # boolean the row colouring still needs; the sentence is what a reader gets.
+    '_IsEffective', '_HasAnyLink',
     # GPO check internal analysis flags - used for severity calculation, not for display.
     # ConsoleClass decides the colour a row is rendered in and must not appear as a row.
-    'GPOGUID', 'Risk', 'Severity', 'ConsoleClass',
+    #
+    # GPOGUID used to be excluded here as an internal flag. It is not one: the GUID is the
+    # folder name under \\<domain>\SYSVOL\<domain>\Policies\, and without it a reader who
+    # wants to inspect the policy that produced a finding has only its display name - which
+    # is not unique, not a path, and not searchable in SYSVOL. Every GPO ObjectType now
+    # lists it in its PrimaryAttributes instead, so it appears in a fixed place next to the
+    # name rather than wherever the extended overflow happens to put it.
+    'Risk', 'Severity', 'ConsoleClass',
     'IsSystemAccount', 'IsPrivilegedAccount',
     'HasUNCPath', 'HasRiskyPath', 'HasUnquotedPath', 'IsPowerShell', 'IsScript',
     'RunsAsSystem', 'TargetGroupSID', 'MemberSIDs',
@@ -6585,11 +6620,6 @@ function Get-ObjectTypeForOrdering {
         return 'OutdatedComputer'
     }
 
-    # Add Computer Rights (ACL-based)
-    if ($Object.sid -and $Object.accountName -and $Object.right) {
-        return 'AddComputerRights'
-    }
-
     # Machine Account Quota
     if ($Object.PSObject.Properties['ms-DS-MachineAccountQuota']) {
         return 'MachineAccountQuota'
@@ -6601,7 +6631,7 @@ function Get-ObjectTypeForOrdering {
     }
 
     # Credential finding
-    if ($Object.credentialType -and ($Object.password -or $Object.matchedLine)) {
+    if ($Object.CredentialType -and ($Object.Password -or $Object.MatchedLine)) {
         return 'GPPCredential'
     }
 
@@ -7088,11 +7118,25 @@ function Build-RenderRow {
         [string]$Name,
 
         [Parameter(Mandatory=$true)]
-        [hashtable]$TransformResult
+        [hashtable]$TransformResult,
+
+        # Per-ObjectType label from $Script:AttributeLabels, when one is configured for
+        # this attribute. Used where the property name is not what a reader should see -
+        # a GPO's LDAP `Name`, which is its GUID.
+        [Parameter(Mandatory=$false)]
+        [string]$Label
     )
 
-    # Use custom display name if provided, otherwise use raw name
-    $displayName = if ($TransformResult.DisplayName) { $TransformResult.DisplayName } else { $Name }
+    # A transformer's own DisplayName wins: it is attribute-specific and may encode the
+    # value's state (e.g. "Owner (non-default)"). The type label is the next most
+    # specific, and the property name is the fallback.
+    $displayName = if ($TransformResult.DisplayName) {
+        $TransformResult.DisplayName
+    } elseif ($Label) {
+        $Label
+    } else {
+        $Name
+    }
 
     # Row-level FindingId: if single value with FindingId, promote to row level
     $rowFindingId = $TransformResult.FindingId
@@ -7337,6 +7381,9 @@ function Get-RenderModel {
     # Track attributes for PostObject (rendered after the card in console)
     $postObjectAttributes = @('KerberoastingHash', 'ASREPRoastingHash')
 
+    # Row labels configured for this object type, if any. $null for most types.
+    $typeLabels = $Script:AttributeLabels[$objectType]
+
     foreach ($section in @(
         @{ Source = $orderedAttrs.Primary; Target = 'Primary' },
         @{ Source = $orderedAttrs.Extended; Target = 'Extended' }
@@ -7359,7 +7406,8 @@ function Get-RenderModel {
             # Skip if transformer returns $null (e.g., Owner that IS default)
             if ($null -eq $result) { continue }
 
-            $row = Build-RenderRow -Name $name -TransformResult $result
+            $rowLabel = if ($typeLabels) { [string]$typeLabels[$name] } else { $null }
+            $row = Build-RenderRow -Name $name -TransformResult $result -Label $rowLabel
 
             if ($isPostObject) {
                 [void]$postObjectRows.Add($row)
@@ -11433,7 +11481,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
     # Impact, Attack and Remediation match what that specific right actually does.
     #
     # Each carries two triggers: an exact match on 'userRight' colours and tooltips the
-    # right's own name, and a Custom-gated match on 'grantedBeyondDefault' does the same for
+    # right's own name, and a Custom-gated match on 'GrantedBeyondDefault' does the same for
     # the holder names underneath it - the row a reader actually acts on. The gate is a
     # single shared evaluator (Test-CustomTrigger's 'user_right_is_*' case) dispatched from
     # the CustomType string itself, because Get-TriggerMatch always resolves FindingId to the
@@ -11465,8 +11513,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Mimikatz", "ProcDump", "Task Manager")
         MITRE = "T1003.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeDebugPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeDebugPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeDebugPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeDebugPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11495,8 +11543,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Incognito", "Mimikatz")
         MITRE = "T1134"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeTcbPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTcbPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeTcbPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeTcbPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11523,8 +11571,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "T1134"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeCreateTokenPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeCreateTokenPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeCreateTokenPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeCreateTokenPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11553,8 +11601,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("JuicyPotato", "PrintSpoofer", "RoguePotato", "GodPotato")
         MITRE = "T1134.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeImpersonatePrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeImpersonatePrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeImpersonatePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeImpersonatePrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11581,8 +11629,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("SharpToken", "Incognito")
         MITRE = "T1134.002"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeAssignPrimaryTokenPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeAssignPrimaryTokenPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeAssignPrimaryTokenPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeAssignPrimaryTokenPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11612,8 +11660,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("KDU (Kernel Driver Utility)", "EoPLoadDriver")
         MITRE = "T1068"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeLoadDriverPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeLoadDriverPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeLoadDriverPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeLoadDriverPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11642,8 +11690,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("robocopy /B", "diskshadow", "secretsdump.py", "PowerSploit SeBackupPrivilege module")
         MITRE = "T1003.003"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeBackupPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeBackupPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeBackupPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeBackupPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11672,8 +11720,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("SeRestoreAbuse", "PowerSploit SeRestorePrivilege module")
         MITRE = "T1574.010"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRestorePrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRestorePrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRestorePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRestorePrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11702,8 +11750,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("takeown.exe", "icacls")
         MITRE = "T1222"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeTakeOwnershipPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTakeOwnershipPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeTakeOwnershipPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeTakeOwnershipPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11733,8 +11781,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("PowerView", "Rubeus")
         MITRE = "T1558"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeEnableDelegationPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeEnableDelegationPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeEnableDelegationPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeEnableDelegationPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11762,8 +11810,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Mimikatz", "secretsdump.py")
         MITRE = "T1003.006"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeSyncAgentPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSyncAgentPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeSyncAgentPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSyncAgentPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11790,8 +11838,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("RawCopy")
         MITRE = "T1006"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeManageVolumePrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeManageVolumePrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeManageVolumePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeManageVolumePrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11820,8 +11868,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("wevtutil", "auditpol")
         MITRE = "T1070.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeSecurityPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSecurityPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeSecurityPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSecurityPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11848,8 +11896,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("icacls (integrity level flags)", "Process Hacker")
         MITRE = "T1548"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRelabelPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRelabelPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRelabelPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRelabelPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11876,8 +11924,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Mimikatz (vault::cred)", "VaultCmd")
         MITRE = "T1555"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeTrustedCredManAccessPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTrustedCredManAccessPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeTrustedCredManAccessPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeTrustedCredManAccessPrivilege'; Severity = 'Finding' }
         )
     }
 
@@ -11910,8 +11958,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("mstsc", "xfreerdp")
         MITRE = "T1021.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRemoteInteractiveLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRemoteInteractiveLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRemoteInteractiveLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRemoteInteractiveLogonRight'; Severity = 'Hint' }
         )
     }
 
@@ -11939,8 +11987,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "T1078.003"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeInteractiveLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeInteractiveLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeInteractiveLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeInteractiveLogonRight'; Severity = 'Hint' }
         )
     }
 
@@ -11967,8 +12015,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("schtasks.exe")
         MITRE = "T1053.005"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeBatchLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeBatchLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeBatchLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeBatchLogonRight'; Severity = 'Hint' }
         )
     }
 
@@ -11996,8 +12044,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("sc.exe", "PsExec")
         MITRE = "T1543.003"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeServiceLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeServiceLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeServiceLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeServiceLogonRight'; Severity = 'Hint' }
         )
     }
 
@@ -12024,8 +12072,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("w32tm.exe", "net time")
         MITRE = "T1070"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeSystemtimePrivilege$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSystemtimePrivilege'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeSystemtimePrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSystemtimePrivilege'; Severity = 'Hint' }
         )
     }
 
@@ -12052,8 +12100,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("shutdown.exe")
         MITRE = "T1529"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRemoteShutdownPrivilege$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRemoteShutdownPrivilege'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRemoteShutdownPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRemoteShutdownPrivilege'; Severity = 'Hint' }
         )
     }
 
@@ -12080,8 +12128,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("shutdown.exe")
         MITRE = "T1529"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeShutdownPrivilege$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeShutdownPrivilege'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeShutdownPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeShutdownPrivilege'; Severity = 'Hint' }
         )
     }
 
@@ -12112,7 +12160,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "-"
         Triggers = @(
-            @{ Attribute = 'removedFromDefault'; Severity = 'Note' }
+            @{ Attribute = 'RemovedFromDefault'; Severity = 'Note' }
         )
     }
 
@@ -12137,7 +12185,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "-"
         Triggers = @(
-            @{ Attribute = 'baselineUnknown'; Severity = 'Hint' }
+            @{ Attribute = 'BaselineUnknown'; Severity = 'Hint' }
         )
     }
 
@@ -19612,7 +19660,7 @@ function Test-CustomTrigger {
         }
 
         { $_ -like 'user_right_is_*' } {
-            # Shared by all 22 GPO_USERRIGHT_* definitions' grantedBeyondDefault trigger, one
+            # Shared by all 22 GPO_USERRIGHT_* definitions' GrantedBeyondDefault trigger, one
             # CustomType per right rather than one case per right: Get-TriggerMatch always
             # resolves FindingId to the trigger's OWNING definition, never to a value a Custom
             # evaluator returns, so the only way to route the holder-name row to the right's
@@ -23142,7 +23190,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Whether the mapped account is privileged"
             "Who may write altSecurityIdentities on a privileged account"
         )
-        FilteringNote = "Strong mappings (X509IssuerSerialNumber, X509SKI, X509SHA1PublicKey) are not reported. Write access is examined for privileged principals only, and trustees that are already privileged are filtered out. The Exchange service groups are reported separately, in their own attribute: their rights on user objects are written by the Exchange setup and land on every privileged account at once, which makes them an escalation path through Exchange rather than a delegation on this account."
+        FilteringNote = "Strong mappings (X509IssuerSerialNumber, X509SKI, X509SHA1PublicKey) are not reported. Write access is examined for privileged principals only, and trustees that are already privileged are filtered out. The Exchange service groups are reported separately, in their own attribute: their rights on user objects are written by the Exchange setup and land on every privileged account at once, which makes them an escalation path through Exchange rather than a delegation on this account. Both findings are reported as a hint instead of a vulnerability when no issuer is published in this domain's NTAuth store, because nothing can then authenticate against the mapping - neither through PKINIT nor through Schannel, which needs NTAuth as well. A published root CA does not change that: it governs chain validation in general, not permission to authenticate as an account. The dampening is not a clearance - the Enterprise NTAuth store is a machine store as well as a directory object, so an issuer added straight onto a domain controller is invisible from the directory, and publishing one makes every mapping live again. If the Configuration partition cannot be read, nothing is dampened: unknown is not absent."
         SecureMessage = "No weak explicit certificate mapping found, and no non-privileged principal can add one to a privileged account."
         PrimaryFindingId = 'ESC14_WEAK_EXPLICIT_MAPPING'
     }
@@ -23180,7 +23228,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
     }
 
     'GPOUserRights' = @{
-        TitleFormat = "GPO User Right: {userRightName}"
+        TitleFormat = "GPO User Right: {UserRightName}"
         Module = "Rights"
         Category = "Rights"
         SectionTitle = "User Rights via GPO That Depart From the Windows Default"
@@ -23521,9 +23569,9 @@ function Get-ObjectTypeTitle {
 
     # Get object name (try various properties)
     # Note: displayName comes before Name because GPOs have Name=GUID but displayName=readable name
-    # gpoName is used by custom GPO objects (e.g., AddComputerGPO from Get-AddComputerRights)
+    # GPOName is what every custom GPO finding calls the policy it came from
     $objName = $Object.sAMAccountName
-    if (-not $objName) { $objName = $Object.gpoName }
+    if (-not $objName) { $objName = $Object.GPOName }
     if (-not $objName) { $objName = $Object.ouName }
     if (-not $objName) { $objName = $Object.displayName }
     if (-not $objName) { $objName = $Object.Name }
@@ -23592,7 +23640,7 @@ function Get-ObjectTypeTitle {
     }
 
     # Generic fallback: resolve any remaining {propertyName} placeholders
-    # directly from a matching object property (e.g. {userRightName}, {ComputerName}).
+    # directly from a matching object property (e.g. {UserRightName}, {ComputerName}).
     # Falls back to the object name when the property is absent. Uses literal
     # string replacement so property values containing '$' are not treated as
     # regex replacement tokens.
@@ -30403,6 +30451,10 @@ function Clear-SessionState {
 
     # SYSVOL content cache (on-demand file content, e.g., GptTmpl.inf)
     $Script:SYSVOLContentCache = $null
+
+    # Whether this directory publishes a certificate issuer trusted for authentication
+    # (Get-CertificateTrustAnchor). Per domain, so it must not survive a reconnect.
+    $Script:CertificateTrustAnchor = $null
 
     # Findings collection (adPEAS-Messages / HTML export)
     $Script:adPEAS_FindingsCollection = $null
@@ -72878,6 +72930,7 @@ function Get-LAPSGPOConfig {
                     $gpoGuidToName[$GPO.cn.ToUpper()] = $GPO.displayName
                 }
             }
+            $gpoGuidToPath = Get-GPOPathMap -GPO $GPOs
 
             Write-Log "[Get-LAPSGPOConfig] Built mapping for $($gpoGuidToName.Count) GPOs"
 
@@ -72917,14 +72970,24 @@ function Get-LAPSGPOConfig {
                             try {
                                 $Metadata = Get-LAPSMetadataFromPol -PolFilePath $polFile.FullName
 
-                                # Carry the GUID so callers can resolve GPO links (Get-GPOLinkage)
+                                # Carry the GUID so callers can resolve GPO links (Get-GPOLinkage),
+                                # and the file it was read from so a reader can open it. Both
+                                # results are keyed by GPO display name, so a GPO carrying LAPS
+                                # settings in both its Machine and its User half keeps the last
+                                # file seen - the GUID is identical either way, the path is not.
+                                $sourceFile = Get-GPORelativePath -Path $polFile.FullName
+                                $gpoPath = $gpoGuidToPath[$gpoGuid]
                                 if ($Metadata.Legacy) {
                                     $Metadata.Legacy['GPOGUID'] = $gpoGuid
+                                    $Metadata.Legacy['GPOPath'] = $gpoPath
+                                    $Metadata.Legacy['SourceFile'] = $sourceFile
                                     $Script:lapsGPOResults.Legacy[$gpoName] = $Metadata.Legacy
                                     Write-Log "[Get-LAPSGPOConfig] Found Legacy LAPS settings in GPO '$gpoName': $($Metadata.Legacy.Keys -join ', ')"
                                 }
                                 if ($Metadata.Native) {
                                     $Metadata.Native['GPOGUID'] = $gpoGuid
+                                    $Metadata.Native['GPOPath'] = $gpoPath
+                                    $Metadata.Native['SourceFile'] = $sourceFile
                                     $Script:lapsGPOResults.Native[$gpoName] = $Metadata.Native
                                     Write-Log "[Get-LAPSGPOConfig] Found Windows LAPS settings in GPO '$gpoName': $($Metadata.Native.Keys -join ', ')"
                                 }
@@ -73598,6 +73661,426 @@ function Get-GPOEffectiveStatus {
 
     $text = $reasons -join ', '
     return ($text.Substring(0, 1).ToUpper() + $text.Substring(1))
+}
+
+<#
+.SYNOPSIS
+    Puts the effective-setting verdict of a GPO into words.
+
+.DESCRIPTION
+    Several checks report more than one GPO configuring the same thing and have to say
+    which of them actually decides the value. That used to be a boolean, IsEffectiveSetting,
+    and a boolean cannot carry the answer: False meant either "a higher-priority policy
+    overrides this one" or "this policy reaches no machine at all", which are different
+    facts with different remediations. One of them is a precedence problem, the other is a
+    policy nobody linked.
+
+    So the verdict is a sentence, in the same spirit as Get-GPOEffectiveStatus above, and
+    the wording lives here rather than in each check so that three reports do not describe
+    the same situation three ways.
+
+    The scopes mirror the precedence model the callers build:
+
+      DomainControllers - linked at or below the Domain Controllers OU
+      Domain            - linked at the domain root
+      OtherOU           - actively linked, but to some ordinary OU
+      NotLinked         - linked nowhere, or every link disabled
+
+    The OtherOU wording stops short of claiming precedence. Two policies linked to the same
+    workstation OU with opposite values are both reported as applying there, because none of
+    these checks compares link order below the domain level - and a row that claimed a
+    precedence it never evaluated would be worse than one that says so.
+
+.PARAMETER Scope
+    The precedence scope the caller determined.
+
+.PARAMETER IsEffective
+    Whether this GPO won its scope's precedence contest. Only consulted for the two scopes
+    that hold a contest, DomainControllers and Domain.
+
+.PARAMETER WinnerName
+    Display name of the GPO that won, for the overridden case. Omitted when unknown.
+
+.PARAMETER WinnerLinkOrder
+    Link order of the winner, appended when known - it is what decided the contest.
+
+.PARAMETER HasAnyLink
+    Whether the policy has link records at all. Separates "linked nowhere" from "every link
+    is disabled", which reach the same set of machines by different routes.
+
+.OUTPUTS
+    [string] A sentence beginning with Yes or No.
+
+.EXAMPLE
+    Get-GPOEffectiveSettingText -Scope 'DomainControllers' -IsEffective $true
+    Yes - wins precedence on the Domain Controllers OU
+
+.EXAMPLE
+    Get-GPOEffectiveSettingText -Scope 'Domain' -IsEffective $false -WinnerName 'DC LDAP Hardening' -WinnerLinkOrder 1
+    No - overridden by 'DC LDAP Hardening' (link order 1)
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Get-GPOEffectiveSettingText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Scope,
+
+        [Parameter(Mandatory=$false)]
+        [bool]$IsEffective,
+
+        [Parameter(Mandatory=$false)]
+        [string]$WinnerName,
+
+        [Parameter(Mandatory=$false)]
+        $WinnerLinkOrder,
+
+        [Parameter(Mandatory=$false)]
+        [bool]$HasAnyLink
+    )
+
+    switch ($Scope) {
+        'DomainControllers' {
+            if ($IsEffective) { return 'Yes - wins precedence on the Domain Controllers OU' }
+            return (Get-GPOOverriddenText -WinnerName $WinnerName -WinnerLinkOrder $WinnerLinkOrder)
+        }
+        'Domain' {
+            if ($IsEffective) { return 'Yes - wins precedence at the domain root' }
+            return (Get-GPOOverriddenText -WinnerName $WinnerName -WinnerLinkOrder $WinnerLinkOrder)
+        }
+        'OtherOU' {
+            return 'Yes - applies on its linked OUs; no precedence comparison there'
+        }
+        default {
+            if ($HasAnyLink) { return 'No - every link is disabled' }
+            return 'No - the policy is linked nowhere'
+        }
+    }
+}
+
+<#
+.SYNOPSIS
+    Wording for a GPO that lost its precedence contest.
+.DESCRIPTION
+    Split out so the two scopes that hold a contest cannot drift apart in how they phrase
+    the loss. The winner's name is what a reader needs in order to go and look at it; the
+    link order is what decided the contest and is appended when it is known.
+.OUTPUTS
+    [string]
+#>
+function Get-GPOOverriddenText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$WinnerName,
+
+        [Parameter(Mandatory=$false)]
+        $WinnerLinkOrder
+    )
+
+    if ([string]::IsNullOrWhiteSpace($WinnerName)) {
+        return 'No - overridden by a higher-priority GPO'
+    }
+
+    # 999 is the placeholder the callers use for "no link order recorded", so it says
+    # nothing worth printing.
+    $order = $null
+    if ($null -ne $WinnerLinkOrder -and "$WinnerLinkOrder" -ne '' -and "$WinnerLinkOrder" -ne '999') {
+        $order = "$WinnerLinkOrder"
+    }
+
+    if ($order) { return "No - overridden by '$WinnerName' (link order $order)" }
+    return "No - overridden by '$WinnerName'"
+}
+
+
+
+# ----- Get-GPORelativePath.ps1 -----
+
+<#
+.SYNOPSIS
+    Shortens a SYSVOL path to the part that sits inside the GPO's own folder.
+
+.DESCRIPTION
+    Turns
+
+      \\dc01.contoso.com\SYSVOL\contoso.com\Policies\{31B2F340-...}\MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf
+
+    into
+
+      MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf
+
+    A GPO finding already names the policy by GUID, and the GUID is the folder name, so
+    repeating the server, the domain and the Policies segment on every row costs width
+    without carrying information. What a reader still needs is which file inside that
+    folder produced the setting - MACHINE or USER above all, because the same file name
+    occurs under both and the two halves reach different targets. Reporting a bare file
+    name instead loses exactly that distinction.
+
+    Anchored on \Policies\{GUID}\ rather than on the SYSVOL base string: the base is not
+    in scope at every point a finding is built, and the cache may have walked the path via
+    a server name where the caller knows only the domain.
+
+    A path outside a Policies\{GUID} folder - NETLOGON, or a custom -Path scan - is
+    returned unchanged. There is no GPO folder to make it relative to, and shortening it
+    to its leaf would throw away the only location the reader has.
+
+    This sits in a file of its own rather than beside the SYSVOL cache in
+    Invoke-SMBAccess.ps1, where it started. That file's functions reach the network and
+    are therefore replaced by stubs in the test seam, so a suite cannot load it to get at
+    one pure string helper without losing the stubs it needs. Pure logic has to be
+    loadable on its own.
+
+.PARAMETER Path
+    Full path to a file below SYSVOL.
+
+.OUTPUTS
+    [string] The path relative to the GPO folder, the input unchanged if it is not below
+    one, or $null for empty input.
+
+.EXAMPLE
+    Get-GPORelativePath -Path "\\contoso.com\SYSVOL\contoso.com\Policies\{AAAA}\Machine\Registry.pol"
+    Machine\Registry.pol
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Get-GPORelativePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+
+    if ($Path -match '(?i)\\Policies\\\{[^}]*\}\\(.+)$') {
+        return $Matches[1]
+    }
+
+    return $Path
+}
+
+<#
+.SYNOPSIS
+    Maps each GPO's GUID to the SYSVOL path the directory records for it.
+
+.DESCRIPTION
+    Every GPO finding names its policy with the same three rows - GPOName, GPOGUID and
+    GPOPath - whether the check reports the GPO object itself or a setting found inside
+    one. This builds the lookup the setting-level checks need for the third of those.
+
+    The path is read from the directory, not assembled from the GUID, and that is the
+    whole reason this function exists. gPCFileSysPath names the domain:
+
+        \\contoso.com\sysvol\contoso.com\Policies\{AAAA...}
+
+    while the SYSVOL file cache walks one specific controller:
+
+        \\dc01.contoso.com\SYSVOL\contoso.com\Policies\{AAAA...}
+
+    Both are the same folder, and a reader comparing two sections of one report should not
+    have to work that out. Deriving the row from the file path a check happened to open
+    would print the second spelling next to the first.
+
+    Keys are upper-cased to match the other GPO lookups, which compare a GUID taken out of
+    a SYSVOL path against one read from LDAP; the two do not reliably agree on case.
+
+.PARAMETER GPO
+    The GPO objects the caller already fetched with Get-DomainGPO.
+
+.OUTPUTS
+    [hashtable] GUID, upper case and with braces, mapped to its gPCFileSysPath. Empty when
+    nothing was passed. A GPO whose gPCFileSysPath is absent is left out, so a caller can
+    tell "no path recorded" from "path is empty".
+
+.EXAMPLE
+    $gpoPathMap = Get-GPOPathMap -GPO $gpos
+    $gpoPathMap['{31B2F340-016D-11D2-945F-00C04FB984F9}']
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Get-GPOPathMap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $GPO
+    )
+
+    $map = @{}
+
+    foreach ($entry in @($GPO)) {
+        if (-not $entry) { continue }
+
+        # Get-DomainGPO returns the GUID as Name; Get-LAPSGPOConfig reads the same value
+        # from cn. Accept either so both kinds of caller can use this.
+        $guid = if ($entry.Name) { $entry.Name } elseif ($entry.cn) { $entry.cn } else { $null }
+        if (-not $guid) { continue }
+
+        if ([string]::IsNullOrWhiteSpace($entry.gPCFileSysPath)) { continue }
+
+        $map[([string]$guid).ToUpper()] = [string]$entry.gPCFileSysPath
+    }
+
+    return $map
+}
+
+
+
+# ----- Get-CertificateTrustAnchor.ps1 -----
+
+<#
+.SYNOPSIS
+    Reports whether this directory publishes any certificate issuer trusted for
+    authentication.
+
+.DESCRIPTION
+    Answers one question for the checks that report certificate mapping problems: could a
+    certificate authenticate in this domain at all?
+
+    One container carries the answer: CN=NTAuthCertificates under CN=Public Key
+    Services,CN=Services in the Configuration partition. It holds the issuers allowed to
+    authenticate an account to the domain, and it governs both routes a certificate can
+    take:
+
+      PKINIT   - Kerberos smartcard and certificate logon.
+      Schannel - TLS client authentication mapped to an account, as IIS and LDAPS do.
+
+    Schannel is the one worth stating explicitly, because it is easy to assume it only
+    needs the issuer in a trust store. It does not. Microsoft's own walkthrough for
+    certificate authentication across two forests with no trust between them still begins
+    by publishing the issuing CA into the Enterprise NTAuth store, and that holds on the
+    altSecurityIdentities route as well - the AltSecID note there replaces the requirement
+    to carry the UPN in the certificate's SAN, not the NTAuth requirement.
+
+    CN=Certification Authorities is read too, but only as context. Those are the roots
+    distributed to domain members as trusted, which governs chain validation in general -
+    a TLS server certificate, a signature - and not permission to authenticate as someone.
+    A domain can publish a root and still let nobody log on with a certificate, so this
+    count never decides the verdict. It is reported because "no NTAuth issuer, but a PKI
+    does exist here" is worth a reader's attention.
+
+    Why this is the right question for ESC14: altSecurityIdentities holds no certificate.
+    It holds a pattern - X509:<S>CN=jdoe,... - that a certificate must match, and the
+    certificate does not exist until an attacker enrols one. So there is no chain to
+    validate at scan time; what can be established is whether any chain could ever be
+    accepted. For the two weak forms that name no issuer at all, <S> and <RFC822>, any
+    trusted issuer will do, which makes the presence of an anchor the whole question.
+
+    What this does NOT establish, and why nothing here may be called secure:
+
+      - The Enterprise NTAuth store is a machine store as well as a directory object.
+        certutil -dspublish writes it into Active Directory and it is distributed from
+        there, but certutil -enterprise -addstore NTAuth writes it straight onto one
+        machine. An issuer added that way on a domain controller does not appear in the
+        directory and cannot be seen from here.
+      - An issuer can be published tomorrow, and every mapping in the domain becomes live
+        without anyone touching an account.
+
+    So the result dampens a finding and says why; it never clears one.
+
+    Resolved is the flag that matters most. A caller that cannot read the Configuration
+    partition - no permission, a dropped connection - must not read that as "no issuer is
+    trusted" and quietly downgrade a real finding. Unknown is not absent.
+
+    Cached for the session: two checks ask, and the answer cannot change while a scan runs.
+    Cleared by Clear-SessionState.
+
+.PARAMETER Refresh
+    Query again rather than answering from the session cache.
+
+.OUTPUTS
+    [PSCustomObject] with
+      Resolved                 - $true when both containers were queried without error
+      NTAuthCertificateCount   - issuers allowed to authenticate an account
+      RootCACount              - published trusted root CAs, context only
+      HasAuthenticationAnchor  - whether NTAuth holds an issuer. This is the verdict;
+                                 RootCACount deliberately does not feed into it.
+      Summary                  - one line naming what was found, for a report row
+
+.EXAMPLE
+    $anchor = Get-CertificateTrustAnchor
+    if ($anchor.Resolved -and -not $anchor.HasAuthenticationAnchor) { 'nothing can authenticate today' }
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+    Reference: https://support.microsoft.com/help/5014754
+#>
+function Get-CertificateTrustAnchor {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [switch]$Refresh
+    )
+
+    if ($Script:CertificateTrustAnchor -and -not $Refresh) {
+        return $Script:CertificateTrustAnchor
+    }
+
+    $result = [PSCustomObject]@{
+        Resolved                = $false
+        NTAuthCertificateCount  = 0
+        RootCACount             = 0
+        HasAuthenticationAnchor = $false
+        Summary                 = 'Unknown - the Configuration partition could not be read'
+    }
+
+    $configNC = $null
+    if ($Script:LDAPContext) { $configNC = $Script:LDAPContext.ConfigurationNamingContext }
+    if ([string]::IsNullOrWhiteSpace($configNC)) {
+        Write-Log "[Get-CertificateTrustAnchor] No ConfigurationNamingContext - leaving the answer unresolved"
+        $Script:CertificateTrustAnchor = $result
+        return $result
+    }
+
+    $pkiBase = "CN=Public Key Services,CN=Services,$configNC"
+
+    # Both queries must succeed. Counting one container and failing on the other would
+    # produce a confident "no anchor" from half an answer.
+    try {
+        $ntAuth = @(Invoke-LDAPSearch -Filter '(cn=NTAuthCertificates)' `
+            -SearchBase $pkiBase -Properties 'cn','cACertificate' -Scope OneLevel)
+
+        $ntAuthCount = 0
+        if (@($ntAuth).Count -gt 0) {
+            # The container existing is not the same as it holding an issuer: an empty
+            # NTAuthCertificates object trusts nobody.
+            $ntAuthCount = @($ntAuth[0].cACertificate | Where-Object { $_ }).Count
+        }
+
+        $rootCAs = @(Invoke-LDAPSearch -Filter '(objectClass=certificationAuthority)' `
+            -SearchBase "CN=Certification Authorities,$pkiBase" -Properties 'cn' -Scope OneLevel)
+        $rootCACount = @($rootCAs | Where-Object { $_ }).Count
+
+        $result.Resolved                = $true
+        $result.NTAuthCertificateCount  = $ntAuthCount
+        $result.RootCACount             = $rootCACount
+
+        # NTAuth alone. A published root CA is not permission to authenticate as an
+        # account, so it must not keep a finding at full severity on its own.
+        $result.HasAuthenticationAnchor = ($ntAuthCount -gt 0)
+
+        $result.Summary = if ($ntAuthCount -gt 0) {
+            "NTAuth issuers: $ntAuthCount, published root CAs: $rootCACount"
+        } elseif ($rootCACount -gt 0) {
+            "No NTAuth issuer, but $rootCACount published root CA(s) - a PKI exists here"
+        } else {
+            'No NTAuth issuer and no published root CA'
+        }
+
+        Write-Log "[Get-CertificateTrustAnchor] $($result.Summary)"
+    }
+    catch {
+        Write-Log "[Get-CertificateTrustAnchor] Query failed, answer stays unresolved: $_" -Level Warning
+        # $result keeps Resolved = $false, so no caller downgrades anything on this.
+    }
+
+    $Script:CertificateTrustAnchor = $result
+    return $result
 }
 
 
@@ -92715,8 +93198,21 @@ function Get-LDAPConfiguration {
                 # - DC OU / Domain scope: GPO with lowest LinkOrder (= highest priority) wins
                 # - Other OUs: GPO is always effective for its own OU
                 $gpoLinkage = Get-GPOLinkage
-                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
+                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2 }
 
+                # Four outcomes, and the distinction between the last two is what decides
+                # whether a policy reaches a machine at all:
+                #
+                #   DomainControllers - linked at or below the Domain Controllers OU
+                #   Domain            - linked at the domain root
+                #   OtherOU           - actively linked, but to some ordinary OU
+                #   NotLinked         - linked nowhere, or every link disabled
+                #
+                # OtherOU and NotLinked used to share the name "NotLinked", and the loop
+                # below declared that whole bucket effective on the argument that a policy
+                # is effective for its own OU. A policy linked nowhere has no own OU, so an
+                # unlinked GPO was reported as the setting in force - "LinkedOUs: Not
+                # linked" and "IsEffectiveSetting: True" on the same object.
                 foreach ($gpoFinding in $gpoFindings) {
                     $guid = $gpoFinding.Name.ToUpper()
                     $linksEff = if ($gpoLinkage) { $gpoLinkage[$guid] } else { $null }
@@ -92728,23 +93224,47 @@ function Get-LDAPConfiguration {
                         $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
                         if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
                         elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
+                        # A link that is switched off reaches nothing, so a policy whose
+                        # every link is disabled stays NotLinked.
+                        elseif ($activeLinksEff.Count -gt 0) { $precScope = "OtherOU" }
                     }
 
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
-                    $gpoFinding | Add-Member -NotePropertyName 'IsEffectiveSetting' -NotePropertyValue $false -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue ([bool](@($linksEff | Where-Object { $_ }).Count)) -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
                 }
 
-                # For DC OU / Domain scope: mark the single highest-priority GPO as effective
-                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+                # For DC OU / Domain scope: mark the single highest-priority GPO as
+                # effective. Named explicitly rather than as "everything but NotLinked",
+                # so that adding a scope cannot silently enter this contest.
+                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
+                $effectiveDC = $null
                 if ($dcDomainGPOs.Count -gt 0) {
                     $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
-                    if ($effectiveDC) { $effectiveDC.IsEffectiveSetting = $true }
+                    if ($effectiveDC) { $effectiveDC._IsEffective = $true }
                 }
 
                 # For other OUs: each GPO is effective for its own OU
-                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "NotLinked" })) {
-                    $gpoFinding.IsEffectiveSetting = $true
+                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "OtherOU" })) {
+                    $gpoFinding._IsEffective = $true
+                }
+
+                # NotLinked keeps the $false it was initialised with: a policy that reaches
+                # no machine configures nothing, however its settings read.
+
+                # The verdict goes out as a sentence rather than True/False. The boolean
+                # could not say which of the two reasons a False meant - overridden by a
+                # higher-priority policy, or linked nowhere at all - and those call for
+                # different work.
+                foreach ($gpoFinding in $gpoFindings) {
+                    $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
+                        Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
+                            -IsEffective $gpoFinding._IsEffective `
+                            -WinnerName $(if ($effectiveDC) { [string]$effectiveDC.DisplayName } else { $null }) `
+                            -WinnerLinkOrder $(if ($effectiveDC) { $effectiveDC._PrecedenceOrder } else { $null }) `
+                            -HasAnyLink $gpoFinding._HasAnyLink
+                    ) -Force
                 }
 
                 # Show Found message BEFORE data
@@ -92997,8 +93517,20 @@ function Get-SMBSigningStatus {
                 # - DC OU / Domain scope: GPO with lowest LinkOrder (= highest priority) wins
                 # - Other OUs (Servers, Workstations, etc.): GPO is always effective for its own OU
                 $gpoLinkageForEff = Get-GPOLinkage
-                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
+                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2 }
 
+                # Four outcomes, and the distinction between the last two is what decides
+                # whether a policy reaches a machine at all:
+                #
+                #   DomainControllers - linked at or below the Domain Controllers OU
+                #   Domain            - linked at the domain root
+                #   OtherOU           - actively linked, but to some ordinary OU
+                #   NotLinked         - linked nowhere, or every link disabled
+                #
+                # OtherOU and NotLinked used to share the name "NotLinked", and the loop
+                # below declared that whole bucket effective on the argument that a policy
+                # is effective for its own OU. A policy linked nowhere has no own OU, so an
+                # unlinked GPO was reported as the setting in force.
                 foreach ($gpoFinding in $gpoFindings) {
                     $guid = $gpoFinding.Name.ToUpper()
                     $linksEff = if ($gpoLinkageForEff) { $gpoLinkageForEff[$guid] } else { $null }
@@ -93010,24 +93542,46 @@ function Get-SMBSigningStatus {
                         $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
                         if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
                         elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
+                        # A link that is switched off reaches nothing, so a policy whose
+                        # every link is disabled stays NotLinked.
+                        elseif ($activeLinksEff.Count -gt 0) { $precScope = "OtherOU" }
                     }
 
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
-                    $gpoFinding | Add-Member -NotePropertyName 'IsEffectiveSetting' -NotePropertyValue $false -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue ([bool](@($linksEff | Where-Object { $_ }).Count)) -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
                 }
 
-                # For DC OU / Domain scope: mark the single highest-priority GPO as effective
-                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+                # For DC OU / Domain scope: mark the single highest-priority GPO as
+                # effective. Named explicitly rather than as "everything but NotLinked",
+                # so that adding a scope cannot silently enter this contest.
+                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
+                $effectiveDC = $null
                 if ($dcDomainGPOs.Count -gt 0) {
                     $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
-                    if ($effectiveDC) { $effectiveDC.IsEffectiveSetting = $true }
+                    if ($effectiveDC) { $effectiveDC._IsEffective = $true }
                 }
 
                 # For other OUs (Servers, Workstations, etc.): each GPO is effective for its own OU
                 # since there are typically no competing SMB Signing GPOs in those OUs
-                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "NotLinked" })) {
-                    $gpoFinding.IsEffectiveSetting = $true
+                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "OtherOU" })) {
+                    $gpoFinding._IsEffective = $true
+                }
+
+                # NotLinked keeps the $false it was initialised with: a policy that reaches
+                # no machine configures nothing, however its settings read.
+
+                # The verdict goes out as a sentence rather than True/False - see
+                # Get-GPOEffectiveSettingText for why a boolean could not carry it.
+                foreach ($gpoFinding in $gpoFindings) {
+                    $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
+                        Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
+                            -IsEffective $gpoFinding._IsEffective `
+                            -WinnerName $(if ($effectiveDC) { [string]$effectiveDC.DisplayName } else { $null }) `
+                            -WinnerLinkOrder $(if ($effectiveDC) { $effectiveDC._PrecedenceOrder } else { $null }) `
+                            -HasAnyLink $gpoFinding._HasAnyLink
+                    ) -Force
                 }
 
                 Show-Line "Found SMB Signing configuration in $(@($gpoFindings).Count) GPO(s):" -Class Hint
@@ -97751,7 +98305,7 @@ function Get-AddComputerRights {
             $dangerousGPOs = @($gpoFindings | Where-Object { $_._HasAuthenticatedUsers -or $_._HasEveryone })
 
             if (@($dangerousGPOs).Count -gt 0) {
-                $effectiveGPO = @($gpoFindings | Where-Object { $_.IsEffectiveSetting -eq $true })[0]
+                $effectiveGPO = @($gpoFindings | Where-Object { $_._IsEffective -eq $true })[0]
                 $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
 
                 $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
@@ -97764,7 +98318,7 @@ function Get-AddComputerRights {
                 foreach ($gpo in $sortedGPOs) {
                     $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerGPO' -Force
 
-                    $isEffective = $gpo.IsEffectiveSetting -eq $true
+                    $isEffective = $gpo._IsEffective -eq $true
                     $isDangerous = $gpo._HasAuthenticatedUsers -or $gpo._HasEveryone
                     $objectClass = if ($isEffective) {
                         if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
@@ -97935,19 +98489,30 @@ function Check-GPOAddComputerRights {
                             $activeLinks = @()
                             $isDomainWide = $false
 
+                            # Reset per GPO. Assigned only inside the if below, so without
+                            # this the previous GPO's links decide this one's scope whenever
+                            # linkage could not be resolved.
+                            $activeLinks = @()
                             if ($links) {
                                 $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
                                 $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
                             }
 
-                            # Determine precedence info (for effective setting calculation after scriptblock)
+                            # Determine precedence info (for effective setting calculation after scriptblock).
+                            # The map only records links at the Domain Controllers OU and the
+                            # domain root, so a policy linked to an ordinary OU is absent from
+                            # it - which is not the same as being linked nowhere, and saying
+                            # "linked nowhere" about a linked policy would simply be wrong.
                             $precedenceInfo = $Script:gpoAddComputerPrecedenceMap[$gpoGUIDKey]
-                            $precedenceScope = if ($precedenceInfo) { $precedenceInfo.Scope } else { "NotLinked" }
+                            $precedenceScope = if ($precedenceInfo) { $precedenceInfo.Scope }
+                                               elseif ($activeLinks.Count -gt 0) { "OtherOU" }
+                                               else { "NotLinked" }
                             $precedenceOrder = if ($precedenceInfo -and $precedenceInfo.LinkOrder) { $precedenceInfo.LinkOrder } else { 999 }
 
                             # Enrich native GPO object (matching LDAP/SMB display pattern)
                             $gpo | Add-Member -NotePropertyName 'Accounts'              -NotePropertyValue $accountNames -Force
-                            $gpo | Add-Member -NotePropertyName 'IsEffectiveSetting'    -NotePropertyValue $false -Force
+                            $gpo | Add-Member -NotePropertyName '_IsEffective'          -NotePropertyValue $false -Force
+                            $gpo | Add-Member -NotePropertyName '_HasAnyLink'           -NotePropertyValue ([bool](@($links | Where-Object { $_ }).Count)) -Force
 
                             # Where the policy applies. The full link records, disabled ones
                             # included - the LinkedOUs transformer marks those and renders an
@@ -97983,14 +98548,34 @@ function Check-GPOAddComputerRights {
 
         # Determine effective setting: DC OU GPOs take precedence over Domain GPOs;
         # within same scope, lower _PrecedenceOrder = higher priority (1 = highest)
-        $linkedResults = @($result | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+        # Named explicitly rather than as "everything but NotLinked", so that the OtherOU
+        # scope cannot enter a contest only the domain-level scopes hold.
+        $linkedResults = @($result | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
+        $effectiveGPO = $null
         if ($linkedResults.Count -gt 0) {
             $scopePriority = @{ "DomainControllers" = 1; "Domain" = 2 }
             $effectiveGPO = $linkedResults | Sort-Object @{Expression={$scopePriority[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
             if ($effectiveGPO) {
-                $effectiveGPO.IsEffectiveSetting = $true
+                $effectiveGPO._IsEffective = $true
                 Write-Log "[Check-GPOAddComputerRights] Effective GPO: '$($effectiveGPO.displayName)' (Scope=$($effectiveGPO._PrecedenceScope), LinkOrder=$($effectiveGPO._PrecedenceOrder))"
             }
+        }
+
+        # A policy linked to an ordinary OU applies there. It was previously left
+        # non-effective, which is the mirror of the defect fixed in the LDAP and SMB
+        # checks: there an unlinked policy was called effective, here a linked one was not.
+        foreach ($gpo in @($result | Where-Object { $_._PrecedenceScope -eq 'OtherOU' })) {
+            $gpo._IsEffective = $true
+        }
+
+        foreach ($gpo in @($result)) {
+            $gpo | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
+                Get-GPOEffectiveSettingText -Scope $gpo._PrecedenceScope `
+                    -IsEffective $gpo._IsEffective `
+                    -WinnerName $(if ($effectiveGPO) { [string]$effectiveGPO.displayName } else { $null }) `
+                    -WinnerLinkOrder $(if ($effectiveGPO) { $effectiveGPO._PrecedenceOrder } else { $null }) `
+                    -HasAnyLink $gpo._HasAnyLink
+            ) -Force
         }
 
         return $result
@@ -98324,20 +98909,22 @@ function Get-GPOUserRightsAssignment {
                         }
 
                         $finding = [PSCustomObject]@{
-                            gpoName          = $gpo.displayName
-                            gpoGuid          = $gpo.Name
-                            userRight        = $right
-                            userRightName    = $comparison.Name
-                            whyItMatters     = $comparison.Why
-                            appliesTo        = $machineScope
-                            grantedBeyondDefault = $addedNames
-                            removedFromDefault   = $removedNames
-                            LinkedOUs        = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
-                            _severity        = $severity
+                            GPOName              = $gpo.displayName
+                            GPOGUID              = $gpo.Name
+                            GPOPath              = $gpo.gPCFileSysPath
+                            SourceFile           = Get-GPORelativePath -Path $file.FullName
+                            UserRight            = $right
+                            UserRightName        = $comparison.Name
+                            WhyItMatters         = $comparison.Why
+                            AppliesTo            = $machineScope
+                            GrantedBeyondDefault = $addedNames
+                            RemovedFromDefault   = $removedNames
+                            LinkedOUs            = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
+                            _severity            = $severity
                         }
 
                         if (-not $comparison.HasBaseline) {
-                            $finding | Add-Member -NotePropertyName 'baselineUnknown' `
+                            $finding | Add-Member -NotePropertyName 'BaselineUnknown' `
                                 -NotePropertyValue 'Windows publishes no fixed default set for this right, so the holders above were filtered by identity instead of compared. Judge them against what this domain actually runs.' -Force
                         }
 
@@ -98380,7 +98967,7 @@ function Get-GPOUserRightsAssignment {
                 # Findings first, then hints, then the removals
                 $ordered = @($findings | Sort-Object @{Expression={
                     switch ($_._severity) { 'Finding' { 0 } 'Hint' { 1 } default { 2 } }
-                }}, gpoName, userRight)
+                }}, GPOName, UserRight)
                 foreach ($finding in $ordered) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOUserRights' -Force
                     Show-Object $finding -Class $finding._severity
@@ -98881,8 +99468,18 @@ function New-LAPSGPOConfigObject {
     $isNative = ($Generation -eq 'Windows LAPS')
     $accountField = if ($isNative) { 'AdministratorAccountName' } else { 'AdminAccountName' }
 
+    # Read before the object is built so both can take a fixed position next to the name.
+    # The GUID is the GPO's folder under SYSVOL and the only reliable way to find the
+    # policy again - display names are neither unique nor a path.
+    $gpoGuid = if ($Metadata.ContainsKey('GPOGUID')) { $Metadata['GPOGUID'] } else { $null }
+    $gpoPath = if ($Metadata.ContainsKey('GPOPath')) { $Metadata['GPOPath'] } else { $null }
+    $sourceFile = if ($Metadata.ContainsKey('SourceFile')) { $Metadata['SourceFile'] } else { $null }
+
     $obj = [PSCustomObject][ordered]@{
         GPOName     = $GPOName
+        GPOGUID     = $gpoGuid
+        GPOPath     = $gpoPath
+        SourceFile  = $sourceFile
         LAPSVersion = $Generation
     }
 
@@ -98962,7 +99559,6 @@ function New-LAPSGPOConfigObject {
     # An unlinked GPO is reported explicitly rather than by an absent row: LAPS settings in a
     # GPO that is linked nowhere apply to nothing, which is easy to miss otherwise. A failed
     # linkage lookup must not be reported as "not linked".
-    $gpoGuid = if ($Metadata.ContainsKey('GPOGUID')) { $Metadata['GPOGUID'] } else { $null }
     $linkedOUs = @()
     if ($gpoGuid -and $GPOLinkage -and $GPOLinkage.ContainsKey($gpoGuid)) {
         $linkedOUs = @($GPOLinkage[$gpoGuid])
@@ -98974,10 +99570,6 @@ function New-LAPSGPOConfigObject {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Unknown - linkage could not be resolved' -Force
     } else {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
-    }
-
-    if ($gpoGuid) {
-        $obj | Add-Member -NotePropertyName 'GPOGUID' -NotePropertyValue $gpoGuid -Force
     }
 
     $obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSGPOConfig' -Force
@@ -100754,6 +101346,7 @@ function Get-GPOLocalGroupMembership {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
 
             # Track SYSVOL access status
             $Script:sysvolAccessible = $false
@@ -100784,7 +101377,7 @@ function Get-GPOLocalGroupMembership {
 
                         try {
                             Write-Log "[Get-GPOLocalGroupMembership] Reading: $($file.FullName)"
-                            $restrictedGroupsFindings = Parse-RestrictedGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID
+                            $restrictedGroupsFindings = Parse-RestrictedGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($restrictedGroupsFindings) {
                                 $linkedOUs = @()
@@ -100830,7 +101423,7 @@ function Get-GPOLocalGroupMembership {
 
                         try {
                             Write-Log "[Get-GPOLocalGroupMembership] Reading: $($file.FullName)"
-                            $gppGroupsFindings = Parse-GPPGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID
+                            $gppGroupsFindings = Parse-GPPGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($gppGroupsFindings) {
                                 $linkedOUs = @()
@@ -100987,7 +101580,12 @@ function Parse-RestrictedGroups {
         [string]$GPOName,
 
         [Parameter(Mandatory=$true)]
-        [string]$GPOGUID
+        [string]$GPOGUID,
+
+        # Optional: a GPO whose gPCFileSysPath the directory does not record yields an
+        # empty string here, and an empty row is skipped rather than printed blank.
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath
     )
 
     try {
@@ -101042,6 +101640,8 @@ function Parse-RestrictedGroups {
                         $findings += [PSCustomObject]@{
                             GPOName = $GPOName
                             GPOGUID = $GPOGUID
+                            GPOPath = $GPOPath
+                            SourceFile = Get-GPORelativePath -Path $FilePath
                             Type = "Restricted Groups"
                             TargetGroup = $groupName
                             TargetGroupSID = $groupSID
@@ -101088,6 +101688,8 @@ function Parse-RestrictedGroups {
                             $findings += [PSCustomObject]@{
                                 GPOName = $GPOName
                                 GPOGUID = $GPOGUID
+                                GPOPath = $GPOPath
+                                SourceFile = Get-GPORelativePath -Path $FilePath
                                 Type = "Restricted Groups"
                                 TargetGroup = $groupName
                                 TargetGroupSID = $groupSID
@@ -101121,7 +101723,12 @@ function Parse-GPPGroups {
         [string]$GPOName,
 
         [Parameter(Mandatory=$true)]
-        [string]$GPOGUID
+        [string]$GPOGUID,
+
+        # Optional: a GPO whose gPCFileSysPath the directory does not record yields an
+        # empty string here, and an empty row is skipped rather than printed blank.
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath
     )
 
     try {
@@ -101204,6 +101811,8 @@ function Parse-GPPGroups {
             $findings += [PSCustomObject]@{
                 GPOName = $GPOName
                 GPOGUID = $GPOGUID
+                GPOPath = $GPOPath
+                SourceFile = Get-GPORelativePath -Path $FilePath
                 Type = "Group Policy Preferences"
                 TargetGroup = $canonicalGroupName
                 TargetGroupSID = $groupSID
@@ -101338,6 +101947,7 @@ function Get-GPOScheduledTasks {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
 
             # SYSVOL Access with Credential Support
             Invoke-SMBAccess -Description "Scanning GPO ScheduledTasks.xml files" -ScriptBlock {
@@ -101371,7 +101981,7 @@ function Get-GPOScheduledTasks {
 
                         try {
                             Write-Log "[Get-GPOScheduledTasks] Reading: $($file.FullName)"
-                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID
+                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($taskFindings) {
                                 $linkedOUs = @()
@@ -101478,7 +102088,12 @@ function Parse-ScheduledTasksXML {
         [string]$GPOName,
 
         [Parameter(Mandatory=$true)]
-        [string]$GPOGUID
+        [string]$GPOGUID,
+
+        # Optional: a GPO whose gPCFileSysPath the directory does not record yields an
+        # empty string here, and an empty row is skipped rather than printed blank.
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath
     )
 
     try {
@@ -101639,6 +102254,12 @@ function Parse-ScheduledTasksXML {
             # _Severity and _Risk are internal transport properties (removed before Show-Object)
             $taskProps = [ordered]@{
                 GPOName    = $GPOName
+                # The GUID arrived as a parameter from the start but was never written onto
+                # the object, so a reader had the policy's display name and no way to find
+                # the folder it lives in.
+                GPOGUID    = $GPOGUID
+                GPOPath    = $GPOPath
+                SourceFile = Get-GPORelativePath -Path $FilePath
                 TaskName   = $taskName
                 Command    = $fullCommand
                 RunAs      = $runAs
@@ -101749,6 +102370,7 @@ function Get-GPOScriptPaths {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
 
             # Track SYSVOL access status
             $Script:sysvolAccessible = $false
@@ -101789,7 +102411,7 @@ function Get-GPOScriptPaths {
 
                         try {
                             Write-Log "[Get-GPOScriptPaths] Reading: $($file.FullName)"
-                            $findings = Parse-ScriptIni -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -Context $context -IsPowerShell $isPowerShell
+                            $findings = Parse-ScriptIni -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()] -Context $context -IsPowerShell $isPowerShell
 
                             if ($findings) {
                                 $linkedOUs = @()
@@ -101871,6 +102493,11 @@ function Parse-ScriptIni {
 
         [Parameter(Mandatory=$true)]
         [string]$GPOGUID,
+
+        # Optional: a GPO whose gPCFileSysPath the directory does not record yields an
+        # empty string here, and an empty row is skipped rather than printed blank.
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath,
 
         [Parameter(Mandatory=$true)]
         [string]$Context,
@@ -101984,6 +102611,10 @@ function Parse-ScriptIni {
             $finding = [PSCustomObject]@{
                 GPOName        = $GPOName
                 GPOGUID        = $GPOGUID
+                GPOPath        = $GPOPath
+                # The .ini the entry was parsed from - not ScriptPath below, which is the
+                # script that .ini points at.
+                SourceFile     = Get-GPORelativePath -Path $FilePath
                 ScriptType     = $scriptType
                 ScriptPath     = $cmdLine
                 Parameters     = $parameters
@@ -102102,6 +102733,7 @@ function Get-GPORegistrySettings {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
 
             # Track SYSVOL access status (exception in Clear-SessionState - cleaned up inline below)
             $Script:sysvolAccessible = $false
@@ -102145,12 +102777,15 @@ function Get-GPORegistrySettings {
                             # Machine\Registry.pol -> HKLM, User\Registry.pol -> HKCU
                             $hive = if ($file.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
                             $records = @(Parse-PRegRecords -PolFilePath $file.FullName -Hive $hive)
-                            $source = 'Registry.pol'
                         } else {
                             $hive = 'HKLM/HKCU'
                             $records = @(Parse-RegistryXml -XmlFilePath $file.FullName)
-                            $source = 'Registry.xml'
                         }
+                        # The path inside the GPO folder, not the bare file name. Both
+                        # halves of a policy carry a file called Registry.pol, so a bare
+                        # name left the reader unable to tell Machine\ from User\ - and
+                        # those reach different targets.
+                        $source = Get-GPORelativePath -Path $file.FullName
                         if ($records.Count -gt 0) {
                             Write-Log "[Get-GPORegistrySettings] Analyzing GPO '$gpoName' - $source ($hive): $($records.Count) registry value(s)"
                         }
@@ -102159,11 +102794,12 @@ function Get-GPORegistrySettings {
                             $entry = Test-DangerousRegistryRecord -Record $record
                             if ($entry) {
                                 [void]$Script:_gpoRegMatches.Add([PSCustomObject]@{
-                                    GPOGUID = $gpoGUID
-                                    GPOName = $gpoName
-                                    Source  = $source
-                                    Entry   = $entry
-                                    Record  = $record
+                                    GPOGUID    = $gpoGUID
+                                    GPOName    = $gpoName
+                                    GPOPath    = $gpoPathMap[([string]$gpoGUID).ToUpper()]
+                                    SourceFile = $source
+                                    Entry      = $entry
+                                    Record     = $record
                                 })
                             }
                         }
@@ -102371,7 +103007,9 @@ function New-RegistryFinding {
 
     return [PSCustomObject][ordered]@{
         GPOName           = $RegMatch.GPOName
-        Source            = $RegMatch.Source
+        GPOGUID           = $RegMatch.GPOGUID
+        GPOPath           = $RegMatch.GPOPath
+        SourceFile        = $RegMatch.SourceFile
         RegistryKey       = "$($entry.Hive)\$($entry.Key)\$($entry.ValueName)"
         ConfiguredValue   = $configured
         VulnerabilityName = $entry.VulnerabilityName
@@ -102380,7 +103018,6 @@ function New-RegistryFinding {
         # Carried through so the caller can render the row in the class the central table
         # defines for it. Without it the field existed only in the table and nowhere else.
         ConsoleClass      = $entry.ConsoleClass
-        GPOGUID           = $RegMatch.GPOGUID
     }
 }
 
@@ -102524,6 +103161,7 @@ function Get-GPOPointAndPrint {
             foreach ($gpo in $gpos) {
                 if ($gpo.Name) { $gpoNameMap[([string]$gpo.Name).ToUpper()] = $gpo.DisplayName }
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
 
             $gpoLinkage = Get-GPOLinkage
 
@@ -102575,16 +103213,17 @@ function Get-GPOPointAndPrint {
                         }
 
                         $records = @()
-                        $source = $null
                         if ($file.Name -ieq 'Registry.pol') {
                             # Machine\Registry.pol -> HKLM, User\Registry.pol -> HKCU
                             $hive = if ($file.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
                             $records = @(Parse-PRegRecords -PolFilePath $file.FullName -Hive $hive)
-                            $source = 'Registry.pol'
                         } else {
                             $records = @(Parse-RegistryXml -XmlFilePath $file.FullName)
-                            $source = 'Registry.xml'
                         }
+                        # The path inside the GPO folder, not the bare file name: both
+                        # halves of a policy carry a Registry.pol, and a reader who wants
+                        # to open the file needs to know which one this was.
+                        $source = Get-GPORelativePath -Path $file.FullName
 
                         Add-PointAndPrintRecords -Records $records -GPOGUID $gpoGUID -Source $source
                     } catch {
@@ -102619,6 +103258,7 @@ function Get-GPOPointAndPrint {
             foreach ($bucketKey in $configs.Keys) {
                 $config = $configs[$bucketKey]
                 $config['GPOName'] = if ($gpoNameMap.ContainsKey($config['GPOGUID'])) { $gpoNameMap[$config['GPOGUID']] } else { $config['GPOGUID'] }
+                $config['GPOPath'] = $gpoPathMap[$config['GPOGUID']]
                 $objects += New-PointAndPrintObject -Config $config -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
             }
 
@@ -102767,7 +103407,7 @@ function Read-PrintSecurityOption {
         if ($registrySection -match $Script:AddPrinterDriversGptTmplPattern) {
             # GptTmpl.inf Security Options are always machine scope
             $bucket = Get-PointAndPrintBucket -GPOGUID $GPOGUID -Hive 'HKLM'
-            $bucket['Sources']['GptTmpl.inf'] = $true
+            $bucket['Sources'][(Get-GPORelativePath -Path $FilePath)] = $true
             $bucket['Values']['AddPrinterDrivers'] = [int64]$Matches[1]
         }
     } catch {
@@ -103005,9 +103645,11 @@ function New-PointAndPrintObject {
     $assessment = Get-PointAndPrintAssessment -Values $values -Hive $hive
 
     $obj = [PSCustomObject][ordered]@{
-        GPOName = $Config['GPOName']
-        Scope   = $(if ($hive -eq 'HKLM') { 'Computer Configuration' } else { 'User Configuration' })
-        Source  = (@($Config['Sources'].Keys | Sort-Object) -join ', ')
+        GPOName    = $Config['GPOName']
+        GPOGUID    = $Config['GPOGUID']
+        GPOPath    = $Config['GPOPath']
+        Scope      = $(if ($hive -eq 'HKLM') { 'Computer Configuration' } else { 'User Configuration' })
+        SourceFile = (@($Config['Sources'].Keys | Sort-Object) -join ', ')
     }
 
     $obj | Add-Member -NotePropertyName 'Exploitability' -NotePropertyValue $assessment.Exploitability -Force
@@ -103151,9 +103793,10 @@ function New-PointAndPrintObject {
         $obj | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
     }
 
-    # Hidden from display (see $Script:ExcludeAttributes) - used for sorting and correlation
+    # Hidden from display (see $Script:ExcludeAttributes) - used for sorting and correlation.
+    # GPOGUID is no longer added here: it is a displayed row now and is set in the ordered
+    # constructor above, which is what fixes its position next to the GPO name.
     $obj | Add-Member -NotePropertyName 'Severity' -NotePropertyValue $assessment.Severity -Force
-    $obj | Add-Member -NotePropertyName 'GPOGUID' -NotePropertyValue $gpoGuid -Force
     $obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PointAndPrintPolicy' -Force
 
     return $obj
@@ -105224,6 +105867,16 @@ function Get-WeakCertificateMapping {
             }
         }
 
+        # Can a certificate authenticate in this domain at all? A mapping names a pattern,
+        # not a certificate, so there is no chain to validate here - the certificate does
+        # not exist until someone enrols one. What can be established is whether any
+        # issuer is trusted to begin with, and without one the pattern matches nothing.
+        # Resolved guards the downgrade: an unreadable Configuration partition must not
+        # quietly turn a real finding into a hint.
+        $trustAnchor = Get-CertificateTrustAnchor
+        $noTrustAnchor = ($trustAnchor.Resolved -and -not $trustAnchor.HasAuthenticationAnchor)
+        $mappingClass = if ($noTrustAnchor) { 'Hint' } else { 'Finding' }
+
         if (@($weakFindings).Count -gt 0) {
             $privilegedCount = @($weakFindings | Where-Object { $_.IsPrivileged }).Count
             $countText = if ($privilegedCount -gt 0) {
@@ -105231,11 +105884,12 @@ function Get-WeakCertificateMapping {
             } else {
                 "$(@($weakFindings).Count) principal(s) with a weak explicit certificate mapping"
             }
-            Show-Line "Found $countText" -Class Finding -FindingId 'ESC14_WEAK_EXPLICIT_MAPPING'
+            Show-Line "Found $countText" -Class $mappingClass -FindingId 'ESC14_WEAK_EXPLICIT_MAPPING'
+            if ($noTrustAnchor) { Show-NoTrustAnchorNote }
 
             # Privileged targets first: those are the ones worth the reader's attention.
             foreach ($finding in ($weakFindings | Sort-Object -Property @{Expression = { -not $_.IsPrivileged }})) {
-                Show-Object $finding.Object -Class Finding
+                Show-Object $finding.Object -Class $mappingClass
             }
         }
         elseif (@($candidates).Count -gt 0) {
@@ -105367,9 +106021,12 @@ function Get-WeakCertificateMapping {
         }
 
         if (@($writableFindings).Count -gt 0) {
-            Show-Line "Found $(@($writableFindings).Count) privileged principal(s) whose altSecurityIdentities a non-privileged principal may write" -Class Finding -FindingId 'ESC14_WRITABLE_MAPPING'
+            # Same dampening as above, and for the same reason: the mapping an attacker
+            # would add still needs an issuer the domain accepts.
+            Show-Line "Found $(@($writableFindings).Count) privileged principal(s) whose altSecurityIdentities a non-privileged principal may write" -Class $mappingClass -FindingId 'ESC14_WRITABLE_MAPPING'
+            if ($noTrustAnchor) { Show-NoTrustAnchorNote }
             foreach ($finding in $writableFindings) {
-                Show-Object $finding -Class Finding
+                Show-Object $finding -Class $mappingClass
             }
         }
 
@@ -105404,6 +106061,35 @@ function Get-WeakCertificateMapping {
     [string] 'Strong', 'Weak', or 'Other' for a value that maps no certificate at all
     (the attribute also holds Kerberos and NTLM identities).
 #>
+<#
+.SYNOPSIS
+    Says why an ESC14 finding was reported as a hint rather than a vulnerability.
+.DESCRIPTION
+    Printed under a finding when this directory publishes no certificate issuer trusted
+    for authentication. Two sentences, because both halves matter: the mapping cannot be
+    used today, and that is not the same as it being harmless.
+
+    The wording stops short of "not exploitable". The Enterprise NTAuth store is a machine
+    store as well as a directory object: certutil -enterprise -addstore NTAuth writes an
+    issuer onto one machine without publishing it, and an issuer added that way on a domain
+    controller is invisible from here. So this is a reason to go and look, not a clean bill
+    of health. Nor is it durable - publishing an issuer tomorrow makes every one of these
+    mappings live without anyone touching an account.
+.OUTPUTS
+    None. Writes one Note line.
+#>
+function Show-NoTrustAnchorNote {
+    [CmdletBinding()]
+    param()
+
+    Show-Line ("No issuer is published in the NTAuth store, so no certificate can " +
+               "currently authenticate against these mappings - neither through PKINIT " +
+               "nor through Schannel. Check the domain controllers' own NTAuth store " +
+               "with 'certutil -viewstore -enterprise NTAuth' before ruling it out, " +
+               "because an issuer can be added there without being published, and treat " +
+               "the mappings as live again the moment one is.") -Class Note
+}
+
 function Get-CertificateMappingStrength {
     [CmdletBinding()]
     [OutputType([string])]
@@ -108422,10 +109108,10 @@ function Get-CredentialExposure {
                                         elseif ($_.runAs) { $username = $_.runAs }
                                         # Create credential object for proper display
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "GPP Password"
-                                            filePath = $xmlFile.Fullname
-                                            userName = $username
-                                            password = $decryptedPassword
+                                            CredentialType = "GPP Password"
+                                            FilePath = $xmlFile.Fullname
+                                            UserName = $username
+                                            Password = $decryptedPassword
                                         }
                                         Show-Line "Found GPP credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -108447,10 +109133,10 @@ function Get-CredentialExposure {
                                     $fullUsername = if ($autoLogonDomain) { "$autoLogonDomain\$autoLogonUser" } else { $autoLogonUser }
                                     # Create credential object for proper display
                                     $credObj = [PSCustomObject]@{
-                                        credentialType = "AutoAdminLogon"
-                                        filePath = $xmlFile.Fullname
-                                        userName = $fullUsername
-                                        password = $autoLogonPassword
+                                        CredentialType = "AutoAdminLogon"
+                                        FilePath = $xmlFile.Fullname
+                                        UserName = $fullUsername
+                                        Password = $autoLogonPassword
                                     }
                                     Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -108503,10 +109189,10 @@ function Get-CredentialExposure {
                                     $fullUser = if ($foundDomain) { "$foundDomain\$foundUsername" } else { $foundUsername }
                                     # Create credential object for proper display
                                     $credObj = [PSCustomObject]@{
-                                        credentialType = "Net Use"
-                                        filePath = $file.FullName
-                                        userName = $fullUser
-                                        password = $foundPassword
+                                        CredentialType = "Net Use"
+                                        FilePath = $file.FullName
+                                        UserName = $fullUser
+                                        Password = $foundPassword
                                     }
                                     Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -108542,9 +109228,9 @@ function Get-CredentialExposure {
                                     if ($trimmedLine -match $pattern.Pattern) {
                                         # Create credential object for proper display
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = $pattern.Description
-                                            filePath = $file.FullName
-                                            matchedLine = $trimmedLine
+                                            CredentialType = $pattern.Description
+                                            FilePath = $file.FullName
+                                            MatchedLine = $trimmedLine
                                         }
                                         # Pattern hits in a script file are SYSVOLCredential, the same as in the
                                         # domain scan. Tagging them GPPCredential here routed them to the wrong help text.
@@ -108563,9 +109249,9 @@ function Get-CredentialExposure {
                                     if ($trimmedLine -match $pattern.Pattern) {
                                         # Create credential object for proper display (lower severity)
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "$($pattern.Description) (needs review)"
-                                            filePath = $file.FullName
-                                            matchedLine = $trimmedLine
+                                            CredentialType = "$($pattern.Description) (needs review)"
+                                            FilePath = $file.FullName
+                                            MatchedLine = $trimmedLine
                                         }
                                         Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -108702,12 +109388,12 @@ function Get-CredentialExposure {
                                             elseif ($_.runAs) { $username = $_.runAs }
 
                                             $credObj = [PSCustomObject]@{
-                                                credentialType = "GPP Password"
-                                                filePath = $xmlFile.Fullname
-                                                userName = $username
-                                                password = $decryptedPassword
+                                                CredentialType = "GPP Password"
+                                                FilePath = $xmlFile.Fullname
+                                                UserName = $username
+                                                Password = $decryptedPassword
                                             }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                             if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                             Show-Line "Found GPP credential" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -108732,12 +109418,12 @@ function Get-CredentialExposure {
                                     if ($autoLogonPassword -and $autoLogonPassword -ne '') {
                                         $fullUsername = if ($autoLogonDomain) { "$autoLogonDomain\$autoLogonUser" } else { $autoLogonUser }
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "AutoAdminLogon"
-                                            filePath = $xmlFile.Fullname
-                                            userName = $fullUsername
-                                            password = $autoLogonPassword
+                                            CredentialType = "AutoAdminLogon"
+                                            FilePath = $xmlFile.Fullname
+                                            UserName = $fullUsername
+                                            Password = $autoLogonPassword
                                         }
-                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                         if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                         Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -108864,12 +109550,12 @@ function Get-CredentialExposure {
                                     if ($foundUsername -and $foundPassword) {
                                         $fullUser = if ($foundDomain) { "$foundDomain\$foundUsername" } else { $foundUsername }
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "Net Use"
-                                            filePath = $file.FullName
-                                            userName = $fullUser
-                                            password = $foundPassword
+                                            CredentialType = "Net Use"
+                                            FilePath = $file.FullName
+                                            UserName = $fullUser
+                                            Password = $foundPassword
                                         }
-                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                         if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                         Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -108910,11 +109596,11 @@ function Get-CredentialExposure {
                                     foreach ($pattern in $tier1Patterns) {
                                         if ($trimmedLine -match $pattern.Pattern) {
                                             $credObj = [PSCustomObject]@{
-                                                credentialType = $pattern.Description
-                                                filePath = $file.FullName
-                                                matchedLine = $trimmedLine
+                                                CredentialType = $pattern.Description
+                                                FilePath = $file.FullName
+                                                MatchedLine = $trimmedLine
                                             }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                             if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                             Show-Line "Found credential pattern" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -108931,11 +109617,11 @@ function Get-CredentialExposure {
                                     foreach ($pattern in $tier2Patterns) {
                                         if ($trimmedLine -match $pattern.Pattern) {
                                             $credObj = [PSCustomObject]@{
-                                                credentialType = "$($pattern.Description) (needs review)"
-                                                filePath = $file.FullName
-                                                matchedLine = $trimmedLine
+                                                CredentialType = "$($pattern.Description) (needs review)"
+                                                FilePath = $file.FullName
+                                                MatchedLine = $trimmedLine
                                             }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                             if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                             Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -111013,7 +111699,7 @@ function Get-ObjectCardTitle {
             return "SID History: $objName$ctxInfo"
         }
         { $_ -in @('GPPCredential', 'SYSVOLCredential') } {
-            $credType = if ($Object.credentialType) { $Object.credentialType } else { "Credential" }
+            $credType = if ($Object.CredentialType) { $Object.CredentialType } else { "Credential" }
             return "Credential ($credType)"
         }
         'LAPSConfiguration' {
@@ -122025,7 +122711,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.6.0"
+$Script:adPEASVersion = "2.6.0+20261005-1351"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

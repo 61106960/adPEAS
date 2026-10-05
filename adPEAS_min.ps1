@@ -3081,20 +3081,20 @@ $Script:PrimaryAttributes = @{
     SMBSigning = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'ServerSigning', 'ClientSigning',
-        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'LDAPSigning', 'ChannelBinding', 'AnonymousBinding',
-        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
     GPORegistrySetting = @(
-        'GPOName', 'Source', 'RegistryKey', 'ConfiguredValue',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'RegistryKey', 'ConfiguredValue',
         'VulnerabilityName', 'RiskReason',
         'LinkedOUs', 'GPOStatus'
     )
     PointAndPrintPolicy = @(
-        'GPOName', 'Scope', 'Source',
+        'GPOName', 'GPOGUID', 'GPOPath', 'Scope', 'SourceFile',
         'Exploitability',
         'DriverInstallRestriction', 'PointAndPrintRestrictions',
         'NewConnectionPrompt', 'DriverUpdatePrompt',
@@ -3104,7 +3104,7 @@ $Script:PrimaryAttributes = @{
         'LinkedOUs', 'GPOStatus'
     )
     LAPSGPOConfig = @(
-        'GPOName', 'LAPSVersion', 'ManagedAccount',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'LAPSVersion', 'ManagedAccount',
         'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
         'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
         'ExpirationProtection',
@@ -3188,33 +3188,29 @@ $Script:PrimaryAttributes = @{
         'eolDate', 'daysSinceEoL', 'lastLogonTimestamp'
     )
     GPOUserRights = @(
-        'gpoName', 'userRight', 'userRightName',
-        'grantedBeyondDefault', 'removedFromDefault', 'baselineUnknown',
-        'appliesTo', 'LinkedOUs', 'GPOStatus'
-    )
-    AddComputerRights = @(
-        'sid', 'accountName', 'right', 'attributeName', 'value', 'isSecure',
-        'gpoName', 'accounts', 'hasAuthenticatedUsers', 'severity'
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
+        'GrantedBeyondDefault', 'RemovedFromDefault', 'BaselineUnknown',
+        'AppliesTo', 'LinkedOUs', 'GPOStatus'
     )
     MachineAccountQuota = @(
         'ms-DS-MachineAccountQuota'
     )
     GPOScheduledTask = @(
-        'GPOName', 'TaskName', 'Command', 'RunAs', 'Context',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'RunAs', 'Context',
         'Action', 'Trigger', 'LinkedOUs', 'GPOStatus'
     )
     GPOScriptPath = @(
-        'GPOName', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
         'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'GPOStatus'
     )
     GPOLocalGroup = @(
-        'GPOName', 'Type', 'TargetGroup', 'MembersAdded',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'MembersAdded',
         'LinkedOUs', 'GPOStatus'
     )
     AddComputerGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'Accounts',
-        'LinkedOUs', 'GPOStatus', 'IsEffectiveSetting'
+        'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
     BitLockerRecoveryKey = @(
         'ComputerName',
@@ -3225,10 +3221,10 @@ $Script:PrimaryAttributes = @{
         'distinguishedName'
     )
     GPPCredential = @(
-        'credentialType', 'gpoName', 'filePath', 'userName', 'password', 'matchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
     )
     SYSVOLCredential = @(
-        'credentialType', 'gpoName', 'filePath', 'userName', 'password', 'matchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
     )
     ACLFinding = @(
         'sAMAccountName', 'userPrincipalName', 'distinguishedName', 'objectSid',
@@ -3338,6 +3334,12 @@ $Script:StrictAttributeTypes = @(
     'BitLockerRecoveryKey',
     'GPOUserRights'
 )
+$Script:AttributeLabels = @{
+    GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    SMBSigning     = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    LDAPConfigGPO  = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    AddComputerGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+}
 $Script:ExcludeAttributes = @(
     'objectClass', 'objectGUID', 'objectCategory', 'instanceType',
     'uSNCreated', 'uSNChanged', 'whenCreated', 'whenChanged',
@@ -3351,7 +3353,8 @@ $Script:ExcludeAttributes = @(
     'RiskyMembers',
     'MemberCount', 'ProtectedCount',
     '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
-    'GPOGUID', 'Risk', 'Severity', 'ConsoleClass',
+    '_IsEffective', '_HasAnyLink',
+    'Risk', 'Severity', 'ConsoleClass',
     'IsSystemAccount', 'IsPrivilegedAccount',
     'HasUNCPath', 'HasRiskyPath', 'HasUnquotedPath', 'IsPowerShell', 'IsScript',
     'RunsAsSystem', 'TargetGroupSID', 'MemberSIDs',
@@ -3401,16 +3404,13 @@ function Get-ObjectTypeForOrdering {
     if ($Object.eolDate -and $Object.daysSinceEoL) {
         return 'OutdatedComputer'
     }
-    if ($Object.sid -and $Object.accountName -and $Object.right) {
-        return 'AddComputerRights'
-    }
     if ($Object.PSObject.Properties['ms-DS-MachineAccountQuota']) {
         return 'MachineAccountQuota'
     }
     if ($Object._adPEASObjectType -eq 'AddComputerGPO') {
         return 'AddComputerGPO'
     }
-    if ($Object.credentialType -and ($Object.password -or $Object.matchedLine)) {
+    if ($Object.CredentialType -and ($Object.Password -or $Object.MatchedLine)) {
         return 'GPPCredential'
     }
     if ($Object.dangerousRights -or $Object.affectedOUs) {
@@ -3689,9 +3689,17 @@ function Build-RenderRow {
         [Parameter(Mandatory=$true)]
         [string]$Name,
         [Parameter(Mandatory=$true)]
-        [hashtable]$TransformResult
+        [hashtable]$TransformResult,
+        [Parameter(Mandatory=$false)]
+        [string]$Label
     )
-    $displayName = if ($TransformResult.DisplayName) { $TransformResult.DisplayName } else { $Name }
+    $displayName = if ($TransformResult.DisplayName) {
+        $TransformResult.DisplayName
+    } elseif ($Label) {
+        $Label
+    } else {
+        $Name
+    }
     $rowFindingId = $TransformResult.FindingId
     if (-not $rowFindingId -and $TransformResult.Values.Count -eq 1 -and $TransformResult.Values[0].FindingId) {
         $rowFindingId = $TransformResult.Values[0].FindingId
@@ -3807,6 +3815,7 @@ function Get-RenderModel {
     $extendedRows = [System.Collections.ArrayList]@()
     $postObjectRows = [System.Collections.ArrayList]@()
     $postObjectAttributes = @('KerberoastingHash', 'ASREPRoastingHash')
+    $typeLabels = $Script:AttributeLabels[$objectType]
     foreach ($section in @(
         @{ Source = $orderedAttrs.Primary; Target = 'Primary' },
         @{ Source = $orderedAttrs.Extended; Target = 'Extended' }
@@ -3822,7 +3831,8 @@ function Get-RenderModel {
                 $result = Convert-DefaultToRenderValues -Name $name -Value $value -Context $context
             }
             if ($null -eq $result) { continue }
-            $row = Build-RenderRow -Name $name -TransformResult $result
+            $rowLabel = if ($typeLabels) { [string]$typeLabels[$name] } else { $null }
+            $row = Build-RenderRow -Name $name -TransformResult $result -Label $rowLabel
             if ($isPostObject) {
                 [void]$postObjectRows.Add($row)
             } elseif ($section.Target -eq 'Primary') {
@@ -7655,8 +7665,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Mimikatz", "ProcDump", "Task Manager")
         MITRE = "T1003.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeDebugPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeDebugPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeDebugPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeDebugPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SETCB' = @{
@@ -7684,8 +7694,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Incognito", "Mimikatz")
         MITRE = "T1134"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeTcbPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTcbPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeTcbPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeTcbPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SECREATETOKEN' = @{
@@ -7711,8 +7721,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "T1134"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeCreateTokenPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeCreateTokenPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeCreateTokenPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeCreateTokenPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SEIMPERSONATE' = @{
@@ -7740,8 +7750,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("JuicyPotato", "PrintSpoofer", "RoguePotato", "GodPotato")
         MITRE = "T1134.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeImpersonatePrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeImpersonatePrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeImpersonatePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeImpersonatePrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SEASSIGNPRIMARYTOKEN' = @{
@@ -7767,8 +7777,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("SharpToken", "Incognito")
         MITRE = "T1134.002"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeAssignPrimaryTokenPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeAssignPrimaryTokenPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeAssignPrimaryTokenPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeAssignPrimaryTokenPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SELOADDRIVER' = @{
@@ -7797,8 +7807,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("KDU (Kernel Driver Utility)", "EoPLoadDriver")
         MITRE = "T1068"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeLoadDriverPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeLoadDriverPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeLoadDriverPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeLoadDriverPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SEBACKUP' = @{
@@ -7826,8 +7836,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("robocopy /B", "diskshadow", "secretsdump.py", "PowerSploit SeBackupPrivilege module")
         MITRE = "T1003.003"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeBackupPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeBackupPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeBackupPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeBackupPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SERESTORE' = @{
@@ -7855,8 +7865,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("SeRestoreAbuse", "PowerSploit SeRestorePrivilege module")
         MITRE = "T1574.010"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRestorePrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRestorePrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRestorePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRestorePrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SETAKEOWNERSHIP' = @{
@@ -7884,8 +7894,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("takeown.exe", "icacls")
         MITRE = "T1222"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeTakeOwnershipPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTakeOwnershipPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeTakeOwnershipPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeTakeOwnershipPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SEENABLEDELEGATION' = @{
@@ -7914,8 +7924,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("PowerView", "Rubeus")
         MITRE = "T1558"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeEnableDelegationPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeEnableDelegationPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeEnableDelegationPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeEnableDelegationPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SESYNCAGENT' = @{
@@ -7942,8 +7952,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Mimikatz", "secretsdump.py")
         MITRE = "T1003.006"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeSyncAgentPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSyncAgentPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeSyncAgentPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSyncAgentPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SEMANAGEVOLUME' = @{
@@ -7969,8 +7979,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("RawCopy")
         MITRE = "T1006"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeManageVolumePrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeManageVolumePrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeManageVolumePrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeManageVolumePrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SESECURITY' = @{
@@ -7998,8 +8008,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("wevtutil", "auditpol")
         MITRE = "T1070.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeSecurityPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSecurityPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeSecurityPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSecurityPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SERELABEL' = @{
@@ -8025,8 +8035,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("icacls (integrity level flags)", "Process Hacker")
         MITRE = "T1548"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRelabelPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRelabelPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRelabelPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRelabelPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SETRUSTEDCREDMANACCESS' = @{
@@ -8052,8 +8062,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("Mimikatz (vault::cred)", "VaultCmd")
         MITRE = "T1555"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeTrustedCredManAccessPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeTrustedCredManAccessPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeTrustedCredManAccessPrivilege$'; Severity = 'Finding' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeTrustedCredManAccessPrivilege'; Severity = 'Finding' }
         )
     }
     'GPO_USERRIGHT_SEREMOTEINTERACTIVELOGON' = @{
@@ -8081,8 +8091,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("mstsc", "xfreerdp")
         MITRE = "T1021.001"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRemoteInteractiveLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRemoteInteractiveLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRemoteInteractiveLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRemoteInteractiveLogonRight'; Severity = 'Hint' }
         )
     }
     'GPO_USERRIGHT_SEINTERACTIVELOGON' = @{
@@ -8109,8 +8119,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "T1078.003"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeInteractiveLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeInteractiveLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeInteractiveLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeInteractiveLogonRight'; Severity = 'Hint' }
         )
     }
     'GPO_USERRIGHT_SEBATCHLOGON' = @{
@@ -8136,8 +8146,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("schtasks.exe")
         MITRE = "T1053.005"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeBatchLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeBatchLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeBatchLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeBatchLogonRight'; Severity = 'Hint' }
         )
     }
     'GPO_USERRIGHT_SESERVICELOGON' = @{
@@ -8164,8 +8174,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("sc.exe", "PsExec")
         MITRE = "T1543.003"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeServiceLogonRight$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeServiceLogonRight'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeServiceLogonRight$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeServiceLogonRight'; Severity = 'Hint' }
         )
     }
     'GPO_USERRIGHT_SESYSTEMTIME' = @{
@@ -8191,8 +8201,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("w32tm.exe", "net time")
         MITRE = "T1070"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeSystemtimePrivilege$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeSystemtimePrivilege'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeSystemtimePrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSystemtimePrivilege'; Severity = 'Hint' }
         )
     }
     'GPO_USERRIGHT_SEREMOTESHUTDOWN' = @{
@@ -8218,8 +8228,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("shutdown.exe")
         MITRE = "T1529"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeRemoteShutdownPrivilege$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeRemoteShutdownPrivilege'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeRemoteShutdownPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeRemoteShutdownPrivilege'; Severity = 'Hint' }
         )
     }
     'GPO_USERRIGHT_SESHUTDOWN' = @{
@@ -8245,8 +8255,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("shutdown.exe")
         MITRE = "T1529"
         Triggers = @(
-            @{ Attribute = 'userRight'; Pattern = '^SeShutdownPrivilege$'; Severity = 'Hint' }
-            @{ Attribute = 'grantedBeyondDefault'; Custom = 'user_right_is_SeShutdownPrivilege'; Severity = 'Hint' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeShutdownPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeShutdownPrivilege'; Severity = 'Hint' }
         )
     }
     'GPO_USERRIGHT_DEFAULT_REMOVED' = @{
@@ -8271,7 +8281,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "-"
         Triggers = @(
-            @{ Attribute = 'removedFromDefault'; Severity = 'Note' }
+            @{ Attribute = 'RemovedFromDefault'; Severity = 'Note' }
         )
     }
     'GPO_USERRIGHT_BASELINE_UNKNOWN' = @{
@@ -8295,7 +8305,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("-")
         MITRE = "-"
         Triggers = @(
-            @{ Attribute = 'baselineUnknown'; Severity = 'Hint' }
+            @{ Attribute = 'BaselineUnknown'; Severity = 'Hint' }
         )
     }
     'LAPS_PASSWORD_READ_ACCESS' = @{
@@ -17673,7 +17683,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Whether the mapped account is privileged"
             "Who may write altSecurityIdentities on a privileged account"
         )
-        FilteringNote = "Strong mappings (X509IssuerSerialNumber, X509SKI, X509SHA1PublicKey) are not reported. Write access is examined for privileged principals only, and trustees that are already privileged are filtered out. The Exchange service groups are reported separately, in their own attribute: their rights on user objects are written by the Exchange setup and land on every privileged account at once, which makes them an escalation path through Exchange rather than a delegation on this account."
+        FilteringNote = "Strong mappings (X509IssuerSerialNumber, X509SKI, X509SHA1PublicKey) are not reported. Write access is examined for privileged principals only, and trustees that are already privileged are filtered out. The Exchange service groups are reported separately, in their own attribute: their rights on user objects are written by the Exchange setup and land on every privileged account at once, which makes them an escalation path through Exchange rather than a delegation on this account. Both findings are reported as a hint instead of a vulnerability when no issuer is published in this domain's NTAuth store, because nothing can then authenticate against the mapping - neither through PKINIT nor through Schannel, which needs NTAuth as well. A published root CA does not change that: it governs chain validation in general, not permission to authenticate as an account. The dampening is not a clearance - the Enterprise NTAuth store is a machine store as well as a directory object, so an issuer added straight onto a domain controller is invisible from the directory, and publishing one makes every mapping live again. If the Configuration partition cannot be read, nothing is dampened: unknown is not absent."
         SecureMessage = "No weak explicit certificate mapping found, and no non-privileged principal can add one to a privileged account."
         PrimaryFindingId = 'ESC14_WEAK_EXPLICIT_MAPPING'
     }
@@ -17708,7 +17718,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "Computer creation is properly restricted. ms-DS-MachineAccountQuota is set to 0, preventing regular users from joining computers to the domain."
     }
     'GPOUserRights' = @{
-        TitleFormat = "GPO User Right: {userRightName}"
+        TitleFormat = "GPO User Right: {UserRightName}"
         Module = "Rights"
         Category = "Rights"
         SectionTitle = "User Rights via GPO That Depart From the Windows Default"
@@ -17989,7 +17999,7 @@ function Get-ObjectTypeTitle {
     )
     $objectType = $Object._adPEASObjectType
     $objName = $Object.sAMAccountName
-    if (-not $objName) { $objName = $Object.gpoName }
+    if (-not $objName) { $objName = $Object.GPOName }
     if (-not $objName) { $objName = $Object.ouName }
     if (-not $objName) { $objName = $Object.displayName }
     if (-not $objName) { $objName = $Object.Name }
@@ -21959,6 +21969,7 @@ function Clear-SessionState {
         Reset-SYSVOLFileCache
     }
     $Script:SYSVOLContentCache = $null
+    $Script:CertificateTrustAnchor = $null
     $Script:adPEAS_FindingsCollection = $null
     $Script:adPEAS_FindingsCollectionEnabled = $false
     $Script:adPEAS_CurrentCheckContext = $null
@@ -47732,6 +47743,7 @@ function Get-LAPSGPOConfig {
                     $gpoGuidToName[$GPO.cn.ToUpper()] = $GPO.displayName
                 }
             }
+            $gpoGuidToPath = Get-GPOPathMap -GPO $GPOs
             Write-Log "[Get-LAPSGPOConfig] Built mapping for $($gpoGuidToName.Count) GPOs"
             $Script:lapsGPOResults = @{ Legacy = @{}; Native = @{} }
             Invoke-SMBAccess -Description "Scanning GPO Registry.pol for LAPS settings" -ScriptBlock {
@@ -47753,13 +47765,19 @@ function Get-LAPSGPOConfig {
                             Write-Log "[Get-LAPSGPOConfig] Checking GPO '$gpoName' at: $($polFile.FullName)"
                             try {
                                 $Metadata = Get-LAPSMetadataFromPol -PolFilePath $polFile.FullName
+                                $sourceFile = Get-GPORelativePath -Path $polFile.FullName
+                                $gpoPath = $gpoGuidToPath[$gpoGuid]
                                 if ($Metadata.Legacy) {
                                     $Metadata.Legacy['GPOGUID'] = $gpoGuid
+                                    $Metadata.Legacy['GPOPath'] = $gpoPath
+                                    $Metadata.Legacy['SourceFile'] = $sourceFile
                                     $Script:lapsGPOResults.Legacy[$gpoName] = $Metadata.Legacy
                                     Write-Log "[Get-LAPSGPOConfig] Found Legacy LAPS settings in GPO '$gpoName': $($Metadata.Legacy.Keys -join ', ')"
                                 }
                                 if ($Metadata.Native) {
                                     $Metadata.Native['GPOGUID'] = $gpoGuid
+                                    $Metadata.Native['GPOPath'] = $gpoPath
+                                    $Metadata.Native['SourceFile'] = $sourceFile
                                     $Script:lapsGPOResults.Native[$gpoName] = $Metadata.Native
                                     Write-Log "[Get-LAPSGPOConfig] Found Windows LAPS settings in GPO '$gpoName': $($Metadata.Native.Keys -join ', ')"
                                 }
@@ -48045,6 +48063,138 @@ function Get-GPOEffectiveStatus {
     if ($reasons.Count -eq 0) { return $null }
     $text = $reasons -join ', '
     return ($text.Substring(0, 1).ToUpper() + $text.Substring(1))
+}
+function Get-GPOEffectiveSettingText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Scope,
+        [Parameter(Mandatory=$false)]
+        [bool]$IsEffective,
+        [Parameter(Mandatory=$false)]
+        [string]$WinnerName,
+        [Parameter(Mandatory=$false)]
+        $WinnerLinkOrder,
+        [Parameter(Mandatory=$false)]
+        [bool]$HasAnyLink
+    )
+    switch ($Scope) {
+        'DomainControllers' {
+            if ($IsEffective) { return 'Yes - wins precedence on the Domain Controllers OU' }
+            return (Get-GPOOverriddenText -WinnerName $WinnerName -WinnerLinkOrder $WinnerLinkOrder)
+        }
+        'Domain' {
+            if ($IsEffective) { return 'Yes - wins precedence at the domain root' }
+            return (Get-GPOOverriddenText -WinnerName $WinnerName -WinnerLinkOrder $WinnerLinkOrder)
+        }
+        'OtherOU' {
+            return 'Yes - applies on its linked OUs; no precedence comparison there'
+        }
+        default {
+            if ($HasAnyLink) { return 'No - every link is disabled' }
+            return 'No - the policy is linked nowhere'
+        }
+    }
+}
+function Get-GPOOverriddenText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$WinnerName,
+        [Parameter(Mandatory=$false)]
+        $WinnerLinkOrder
+    )
+    if ([string]::IsNullOrWhiteSpace($WinnerName)) {
+        return 'No - overridden by a higher-priority GPO'
+    }
+    $order = $null
+    if ($null -ne $WinnerLinkOrder -and "$WinnerLinkOrder" -ne '' -and "$WinnerLinkOrder" -ne '999') {
+        $order = "$WinnerLinkOrder"
+    }
+    if ($order) { return "No - overridden by '$WinnerName' (link order $order)" }
+    return "No - overridden by '$WinnerName'"
+}
+function Get-GPORelativePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Path
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    if ($Path -match '(?i)\\Policies\\\{[^}]*\}\\(.+)$') {
+        return $Matches[1]
+    }
+    return $Path
+}
+function Get-GPOPathMap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $GPO
+    )
+    $map = @{}
+    foreach ($entry in @($GPO)) {
+        if (-not $entry) { continue }
+        $guid = if ($entry.Name) { $entry.Name } elseif ($entry.cn) { $entry.cn } else { $null }
+        if (-not $guid) { continue }
+        if ([string]::IsNullOrWhiteSpace($entry.gPCFileSysPath)) { continue }
+        $map[([string]$guid).ToUpper()] = [string]$entry.gPCFileSysPath
+    }
+    return $map
+}
+function Get-CertificateTrustAnchor {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [switch]$Refresh
+    )
+    if ($Script:CertificateTrustAnchor -and -not $Refresh) {
+        return $Script:CertificateTrustAnchor
+    }
+    $result = [PSCustomObject]@{
+        Resolved                = $false
+        NTAuthCertificateCount  = 0
+        RootCACount             = 0
+        HasAuthenticationAnchor = $false
+        Summary                 = 'Unknown - the Configuration partition could not be read'
+    }
+    $configNC = $null
+    if ($Script:LDAPContext) { $configNC = $Script:LDAPContext.ConfigurationNamingContext }
+    if ([string]::IsNullOrWhiteSpace($configNC)) {
+        Write-Log "[Get-CertificateTrustAnchor] No ConfigurationNamingContext - leaving the answer unresolved"
+        $Script:CertificateTrustAnchor = $result
+        return $result
+    }
+    $pkiBase = "CN=Public Key Services,CN=Services,$configNC"
+    try {
+        $ntAuth = @(Invoke-LDAPSearch -Filter '(cn=NTAuthCertificates)' `
+            -SearchBase $pkiBase -Properties 'cn','cACertificate' -Scope OneLevel)
+        $ntAuthCount = 0
+        if (@($ntAuth).Count -gt 0) {
+            $ntAuthCount = @($ntAuth[0].cACertificate | Where-Object { $_ }).Count
+        }
+        $rootCAs = @(Invoke-LDAPSearch -Filter '(objectClass=certificationAuthority)' `
+            -SearchBase "CN=Certification Authorities,$pkiBase" -Properties 'cn' -Scope OneLevel)
+        $rootCACount = @($rootCAs | Where-Object { $_ }).Count
+        $result.Resolved                = $true
+        $result.NTAuthCertificateCount  = $ntAuthCount
+        $result.RootCACount             = $rootCACount
+        $result.HasAuthenticationAnchor = ($ntAuthCount -gt 0)
+        $result.Summary = if ($ntAuthCount -gt 0) {
+            "NTAuth issuers: $ntAuthCount, published root CAs: $rootCACount"
+        } elseif ($rootCACount -gt 0) {
+            "No NTAuth issuer, but $rootCACount published root CA(s) - a PKI exists here"
+        } else {
+            'No NTAuth issuer and no published root CA'
+        }
+        Write-Log "[Get-CertificateTrustAnchor] $($result.Summary)"
+    }
+    catch {
+        Write-Log "[Get-CertificateTrustAnchor] Query failed, answer stays unresolved: $_" -Level Warning
+    }
+    $Script:CertificateTrustAnchor = $result
+    return $result
 }
 function ConvertTo-LDAPDNFilter {
     [CmdletBinding()]
@@ -60108,7 +60258,7 @@ function Get-LDAPConfiguration {
             }
             if ($gpoFindings -and $gpoFindings.Count -gt 0) {
                 $gpoLinkage = Get-GPOLinkage
-                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
+                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2 }
                 foreach ($gpoFinding in $gpoFindings) {
                     $guid = $gpoFinding.Name.ToUpper()
                     $linksEff = if ($gpoLinkage) { $gpoLinkage[$guid] } else { $null }
@@ -60119,18 +60269,30 @@ function Get-LDAPConfiguration {
                         $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
                         if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
                         elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
+                        elseif ($activeLinksEff.Count -gt 0) { $precScope = "OtherOU" }
                     }
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
-                    $gpoFinding | Add-Member -NotePropertyName 'IsEffectiveSetting' -NotePropertyValue $false -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue ([bool](@($linksEff | Where-Object { $_ }).Count)) -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
                 }
-                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
+                $effectiveDC = $null
                 if ($dcDomainGPOs.Count -gt 0) {
                     $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
-                    if ($effectiveDC) { $effectiveDC.IsEffectiveSetting = $true }
+                    if ($effectiveDC) { $effectiveDC._IsEffective = $true }
                 }
-                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "NotLinked" })) {
-                    $gpoFinding.IsEffectiveSetting = $true
+                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "OtherOU" })) {
+                    $gpoFinding._IsEffective = $true
+                }
+                foreach ($gpoFinding in $gpoFindings) {
+                    $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
+                        Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
+                            -IsEffective $gpoFinding._IsEffective `
+                            -WinnerName $(if ($effectiveDC) { [string]$effectiveDC.DisplayName } else { $null }) `
+                            -WinnerLinkOrder $(if ($effectiveDC) { $effectiveDC._PrecedenceOrder } else { $null }) `
+                            -HasAnyLink $gpoFinding._HasAnyLink
+                    ) -Force
                 }
                 Show-Line "Found LDAP security configuration in $($gpoFindings.Count) GPO(s):" -Class Hint
                 foreach ($gpoFinding in $gpoFindings) {
@@ -60286,7 +60448,7 @@ function Get-SMBSigningStatus {
             }
             if ($gpoFindings -and @($gpoFindings).Count -gt 0) {
                 $gpoLinkageForEff = Get-GPOLinkage
-                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
+                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2 }
                 foreach ($gpoFinding in $gpoFindings) {
                     $guid = $gpoFinding.Name.ToUpper()
                     $linksEff = if ($gpoLinkageForEff) { $gpoLinkageForEff[$guid] } else { $null }
@@ -60297,18 +60459,30 @@ function Get-SMBSigningStatus {
                         $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
                         if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
                         elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
+                        elseif ($activeLinksEff.Count -gt 0) { $precScope = "OtherOU" }
                     }
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
-                    $gpoFinding | Add-Member -NotePropertyName 'IsEffectiveSetting' -NotePropertyValue $false -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue ([bool](@($linksEff | Where-Object { $_ }).Count)) -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
                 }
-                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
+                $effectiveDC = $null
                 if ($dcDomainGPOs.Count -gt 0) {
                     $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
-                    if ($effectiveDC) { $effectiveDC.IsEffectiveSetting = $true }
+                    if ($effectiveDC) { $effectiveDC._IsEffective = $true }
                 }
-                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "NotLinked" })) {
-                    $gpoFinding.IsEffectiveSetting = $true
+                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "OtherOU" })) {
+                    $gpoFinding._IsEffective = $true
+                }
+                foreach ($gpoFinding in $gpoFindings) {
+                    $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
+                        Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
+                            -IsEffective $gpoFinding._IsEffective `
+                            -WinnerName $(if ($effectiveDC) { [string]$effectiveDC.DisplayName } else { $null }) `
+                            -WinnerLinkOrder $(if ($effectiveDC) { $effectiveDC._PrecedenceOrder } else { $null }) `
+                            -HasAnyLink $gpoFinding._HasAnyLink
+                    ) -Force
                 }
                 Show-Line "Found SMB Signing configuration in $(@($gpoFindings).Count) GPO(s):" -Class Hint
                 foreach ($gpoFinding in $gpoFindings) {
@@ -63139,7 +63313,7 @@ function Get-AddComputerRights {
             }
             $dangerousGPOs = @($gpoFindings | Where-Object { $_._HasAuthenticatedUsers -or $_._HasEveryone })
             if (@($dangerousGPOs).Count -gt 0) {
-                $effectiveGPO = @($gpoFindings | Where-Object { $_.IsEffectiveSetting -eq $true })[0]
+                $effectiveGPO = @($gpoFindings | Where-Object { $_._IsEffective -eq $true })[0]
                 $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
                 $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
                 Show-Line "Found $(@($gpoFindings).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
@@ -63147,7 +63321,7 @@ function Get-AddComputerRights {
                 $sortedGPOs = @($gpoFindings | Sort-Object @{Expression={$scopePriorityMap[$_._PrecedenceScope]}}, _PrecedenceOrder)
                 foreach ($gpo in $sortedGPOs) {
                     $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerGPO' -Force
-                    $isEffective = $gpo.IsEffectiveSetting -eq $true
+                    $isEffective = $gpo._IsEffective -eq $true
                     $isDangerous = $gpo._HasAuthenticatedUsers -or $gpo._HasEveryone
                     $objectClass = if ($isEffective) {
                         if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
@@ -63263,15 +63437,19 @@ function Check-GPOAddComputerRights {
                             $links = if ($gpoLinkage) { $gpoLinkage[$gpoGUIDKey] } else { $null }
                             $activeLinks = @()
                             $isDomainWide = $false
+                            $activeLinks = @()
                             if ($links) {
                                 $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
                                 $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
                             }
                             $precedenceInfo = $Script:gpoAddComputerPrecedenceMap[$gpoGUIDKey]
-                            $precedenceScope = if ($precedenceInfo) { $precedenceInfo.Scope } else { "NotLinked" }
+                            $precedenceScope = if ($precedenceInfo) { $precedenceInfo.Scope }
+                                               elseif ($activeLinks.Count -gt 0) { "OtherOU" }
+                                               else { "NotLinked" }
                             $precedenceOrder = if ($precedenceInfo -and $precedenceInfo.LinkOrder) { $precedenceInfo.LinkOrder } else { 999 }
                             $gpo | Add-Member -NotePropertyName 'Accounts'              -NotePropertyValue $accountNames -Force
-                            $gpo | Add-Member -NotePropertyName 'IsEffectiveSetting'    -NotePropertyValue $false -Force
+                            $gpo | Add-Member -NotePropertyName '_IsEffective'          -NotePropertyValue $false -Force
+                            $gpo | Add-Member -NotePropertyName '_HasAnyLink'           -NotePropertyValue ([bool](@($links | Where-Object { $_ }).Count)) -Force
                             $gpo | Add-Member -NotePropertyName 'LinkedOUs' `
                                 -NotePropertyValue $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { @($links | Where-Object { $_ }) }) -Force
                             $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUIDKey] `
@@ -63295,14 +63473,27 @@ function Check-GPOAddComputerRights {
         $result = $Script:gpoAddComputerFindings
         $Script:gpoAddComputerFindings = $null
         $Script:gpoAddComputerPrecedenceMap = $null
-        $linkedResults = @($result | Where-Object { $_._PrecedenceScope -ne "NotLinked" })
+        $linkedResults = @($result | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
+        $effectiveGPO = $null
         if ($linkedResults.Count -gt 0) {
             $scopePriority = @{ "DomainControllers" = 1; "Domain" = 2 }
             $effectiveGPO = $linkedResults | Sort-Object @{Expression={$scopePriority[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
             if ($effectiveGPO) {
-                $effectiveGPO.IsEffectiveSetting = $true
+                $effectiveGPO._IsEffective = $true
                 Write-Log "[Check-GPOAddComputerRights] Effective GPO: '$($effectiveGPO.displayName)' (Scope=$($effectiveGPO._PrecedenceScope), LinkOrder=$($effectiveGPO._PrecedenceOrder))"
             }
+        }
+        foreach ($gpo in @($result | Where-Object { $_._PrecedenceScope -eq 'OtherOU' })) {
+            $gpo._IsEffective = $true
+        }
+        foreach ($gpo in @($result)) {
+            $gpo | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
+                Get-GPOEffectiveSettingText -Scope $gpo._PrecedenceScope `
+                    -IsEffective $gpo._IsEffective `
+                    -WinnerName $(if ($effectiveGPO) { [string]$effectiveGPO.displayName } else { $null }) `
+                    -WinnerLinkOrder $(if ($effectiveGPO) { $effectiveGPO._PrecedenceOrder } else { $null }) `
+                    -HasAnyLink $gpo._HasAnyLink
+            ) -Force
         }
         return $result
     } catch {
@@ -63462,19 +63653,21 @@ function Get-GPOUserRightsAssignment {
                             $comparison.Tier
                         }
                         $finding = [PSCustomObject]@{
-                            gpoName          = $gpo.displayName
-                            gpoGuid          = $gpo.Name
-                            userRight        = $right
-                            userRightName    = $comparison.Name
-                            whyItMatters     = $comparison.Why
-                            appliesTo        = $machineScope
-                            grantedBeyondDefault = $addedNames
-                            removedFromDefault   = $removedNames
-                            LinkedOUs        = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
-                            _severity        = $severity
+                            GPOName              = $gpo.displayName
+                            GPOGUID              = $gpo.Name
+                            GPOPath              = $gpo.gPCFileSysPath
+                            SourceFile           = Get-GPORelativePath -Path $file.FullName
+                            UserRight            = $right
+                            UserRightName        = $comparison.Name
+                            WhyItMatters         = $comparison.Why
+                            AppliesTo            = $machineScope
+                            GrantedBeyondDefault = $addedNames
+                            RemovedFromDefault   = $removedNames
+                            LinkedOUs            = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
+                            _severity            = $severity
                         }
                         if (-not $comparison.HasBaseline) {
-                            $finding | Add-Member -NotePropertyName 'baselineUnknown' `
+                            $finding | Add-Member -NotePropertyName 'BaselineUnknown' `
                                 -NotePropertyValue 'Windows publishes no fixed default set for this right, so the holders above were filtered by identity instead of compared. Judge them against what this domain actually runs.' -Force
                         }
                         $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $statusMap[$gpoGUIDKey] `
@@ -63508,7 +63701,7 @@ function Get-GPOUserRightsAssignment {
                 }
                 $ordered = @($findings | Sort-Object @{Expression={
                     switch ($_._severity) { 'Finding' { 0 } 'Hint' { 1 } default { 2 } }
-                }}, gpoName, userRight)
+                }}, GPOName, UserRight)
                 foreach ($finding in $ordered) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOUserRights' -Force
                     Show-Object $finding -Class $finding._severity
@@ -63836,8 +64029,14 @@ function New-LAPSGPOConfigObject {
     )
     $isNative = ($Generation -eq 'Windows LAPS')
     $accountField = if ($isNative) { 'AdministratorAccountName' } else { 'AdminAccountName' }
+    $gpoGuid = if ($Metadata.ContainsKey('GPOGUID')) { $Metadata['GPOGUID'] } else { $null }
+    $gpoPath = if ($Metadata.ContainsKey('GPOPath')) { $Metadata['GPOPath'] } else { $null }
+    $sourceFile = if ($Metadata.ContainsKey('SourceFile')) { $Metadata['SourceFile'] } else { $null }
     $obj = [PSCustomObject][ordered]@{
         GPOName     = $GPOName
+        GPOGUID     = $gpoGuid
+        GPOPath     = $gpoPath
+        SourceFile  = $sourceFile
         LAPSVersion = $Generation
     }
     $managedAccount = if ($Metadata.ContainsKey($accountField)) {
@@ -63898,7 +64097,6 @@ function New-LAPSGPOConfigObject {
         }
         $obj | Add-Member -NotePropertyName 'ExpirationProtection' -NotePropertyValue $expText -Force
     }
-    $gpoGuid = if ($Metadata.ContainsKey('GPOGUID')) { $Metadata['GPOGUID'] } else { $null }
     $linkedOUs = @()
     if ($gpoGuid -and $GPOLinkage -and $GPOLinkage.ContainsKey($gpoGuid)) {
         $linkedOUs = @($GPOLinkage[$gpoGuid])
@@ -63907,9 +64105,6 @@ function New-LAPSGPOConfigObject {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Unknown - linkage could not be resolved' -Force
     } else {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
-    }
-    if ($gpoGuid) {
-        $obj | Add-Member -NotePropertyName 'GPOGUID' -NotePropertyValue $gpoGuid -Force
     }
     $obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSGPOConfig' -Force
     return $obj
@@ -64888,6 +65083,7 @@ function Get-GPOLocalGroupMembership {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
             $Script:sysvolAccessible = $false
             Invoke-SMBAccess -Description "Scanning GPO Groups.xml files" -ScriptBlock {
                 $sysvolPath = "\\$($Script:LDAPContext.Server)\SYSVOL\$domainFQDN\Policies"
@@ -64907,7 +65103,7 @@ function Get-GPOLocalGroupMembership {
                         $gpoName = if ($gpoNameMap.ContainsKey($gpoGUID)) { $gpoNameMap[$gpoGUID] } else { $gpoGUID }
                         try {
                             Write-Log "[Get-GPOLocalGroupMembership] Reading: $($file.FullName)"
-                            $restrictedGroupsFindings = Parse-RestrictedGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID
+                            $restrictedGroupsFindings = Parse-RestrictedGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
                             if ($restrictedGroupsFindings) {
                                 $linkedOUs = @()
                                 if ($gpoLinkage.ContainsKey($gpoGUID)) {
@@ -64941,7 +65137,7 @@ function Get-GPOLocalGroupMembership {
                         $gpoName = if ($gpoNameMap.ContainsKey($gpoGUID)) { $gpoNameMap[$gpoGUID] } else { $gpoGUID }
                         try {
                             Write-Log "[Get-GPOLocalGroupMembership] Reading: $($file.FullName)"
-                            $gppGroupsFindings = Parse-GPPGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID
+                            $gppGroupsFindings = Parse-GPPGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
                             if ($gppGroupsFindings) {
                                 $linkedOUs = @()
                                 if ($gpoLinkage.ContainsKey($gpoGUID)) {
@@ -65047,7 +65243,9 @@ function Parse-RestrictedGroups {
         [Parameter(Mandatory=$true)]
         [string]$GPOName,
         [Parameter(Mandatory=$true)]
-        [string]$GPOGUID
+        [string]$GPOGUID,
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath
     )
     try {
         $content = Get-CachedSYSVOLContent -Path $FilePath
@@ -65083,6 +65281,8 @@ function Parse-RestrictedGroups {
                         $findings += [PSCustomObject]@{
                             GPOName = $GPOName
                             GPOGUID = $GPOGUID
+                            GPOPath = $GPOPath
+                            SourceFile = Get-GPORelativePath -Path $FilePath
                             Type = "Restricted Groups"
                             TargetGroup = $groupName
                             TargetGroupSID = $groupSID
@@ -65117,6 +65317,8 @@ function Parse-RestrictedGroups {
                             $findings += [PSCustomObject]@{
                                 GPOName = $GPOName
                                 GPOGUID = $GPOGUID
+                                GPOPath = $GPOPath
+                                SourceFile = Get-GPORelativePath -Path $FilePath
                                 Type = "Restricted Groups"
                                 TargetGroup = $groupName
                                 TargetGroupSID = $groupSID
@@ -65145,7 +65347,9 @@ function Parse-GPPGroups {
         [Parameter(Mandatory=$true)]
         [string]$GPOName,
         [Parameter(Mandatory=$true)]
-        [string]$GPOGUID
+        [string]$GPOGUID,
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath
     )
     try {
         $xmlContent = New-Object System.Xml.XmlDocument
@@ -65190,6 +65394,8 @@ function Parse-GPPGroups {
             $findings += [PSCustomObject]@{
                 GPOName = $GPOName
                 GPOGUID = $GPOGUID
+                GPOPath = $GPOPath
+                SourceFile = Get-GPORelativePath -Path $FilePath
                 Type = "Group Policy Preferences"
                 TargetGroup = $canonicalGroupName
                 TargetGroupSID = $groupSID
@@ -65260,6 +65466,7 @@ function Get-GPOScheduledTasks {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
             Invoke-SMBAccess -Description "Scanning GPO ScheduledTasks.xml files" -ScriptBlock {
                 $sysvolPath = "\\$($Script:LDAPContext.Server)\SYSVOL\$domainFQDN\Policies"
                 if (-not (Test-Path $sysvolPath)) {
@@ -65282,7 +65489,7 @@ function Get-GPOScheduledTasks {
                         $gpoName = if ($gpoNameMap.ContainsKey($gpoGUID)) { $gpoNameMap[$gpoGUID] } else { $gpoGUID }
                         try {
                             Write-Log "[Get-GPOScheduledTasks] Reading: $($file.FullName)"
-                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID
+                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
                             if ($taskFindings) {
                                 $linkedOUs = @()
                                 if ($gpoLinkage.ContainsKey($gpoGUID)) {
@@ -65357,7 +65564,9 @@ function Parse-ScheduledTasksXML {
         [Parameter(Mandatory=$true)]
         [string]$GPOName,
         [Parameter(Mandatory=$true)]
-        [string]$GPOGUID
+        [string]$GPOGUID,
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath
     )
     try {
         $xmlContent = New-Object System.Xml.XmlDocument
@@ -65471,6 +65680,9 @@ function Parse-ScheduledTasksXML {
             }
             $taskProps = [ordered]@{
                 GPOName    = $GPOName
+                GPOGUID    = $GPOGUID
+                GPOPath    = $GPOPath
+                SourceFile = Get-GPORelativePath -Path $FilePath
                 TaskName   = $taskName
                 Command    = $fullCommand
                 RunAs      = $runAs
@@ -65521,6 +65733,7 @@ function Get-GPOScriptPaths {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
             $Script:sysvolAccessible = $false
             Invoke-SMBAccess -Description "Scanning GPO script configuration files" -ScriptBlock {
                 $sysvolPath = "\\$($Script:LDAPContext.Server)\SYSVOL\$domainFQDN\Policies"
@@ -65546,7 +65759,7 @@ function Get-GPOScriptPaths {
                         $isPowerShell = $file.Name -eq 'psscripts.ini'
                         try {
                             Write-Log "[Get-GPOScriptPaths] Reading: $($file.FullName)"
-                            $findings = Parse-ScriptIni -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -Context $context -IsPowerShell $isPowerShell
+                            $findings = Parse-ScriptIni -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()] -Context $context -IsPowerShell $isPowerShell
                             if ($findings) {
                                 $linkedOUs = @()
                                 if ($gpoLinkage.ContainsKey($gpoGUID)) {
@@ -65608,6 +65821,8 @@ function Parse-ScriptIni {
         [string]$GPOName,
         [Parameter(Mandatory=$true)]
         [string]$GPOGUID,
+        [Parameter(Mandatory=$false)]
+        [string]$GPOPath,
         [Parameter(Mandatory=$true)]
         [string]$Context,
         [Parameter(Mandatory=$true)]
@@ -65680,6 +65895,8 @@ function Parse-ScriptIni {
             $finding = [PSCustomObject]@{
                 GPOName        = $GPOName
                 GPOGUID        = $GPOGUID
+                GPOPath        = $GPOPath
+                SourceFile     = Get-GPORelativePath -Path $FilePath
                 ScriptType     = $scriptType
                 ScriptPath     = $cmdLine
                 Parameters     = $parameters
@@ -65729,6 +65946,7 @@ function Get-GPORegistrySettings {
             foreach ($gpo in $gpos) {
                 $gpoNameMap[$gpo.Name] = $gpo.DisplayName
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
             $Script:sysvolAccessible = $false
             Invoke-SMBAccess -Description "Scanning GPO registry configuration files" -ScriptBlock {
                 $sysvolPath = "\\$($Script:LDAPContext.Server)\SYSVOL\$($Script:LDAPContext.Domain)\Policies"
@@ -65757,12 +65975,11 @@ function Get-GPORegistrySettings {
                         if ($file.Name -ieq 'Registry.pol') {
                             $hive = if ($file.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
                             $records = @(Parse-PRegRecords -PolFilePath $file.FullName -Hive $hive)
-                            $source = 'Registry.pol'
                         } else {
                             $hive = 'HKLM/HKCU'
                             $records = @(Parse-RegistryXml -XmlFilePath $file.FullName)
-                            $source = 'Registry.xml'
                         }
+                        $source = Get-GPORelativePath -Path $file.FullName
                         if ($records.Count -gt 0) {
                             Write-Log "[Get-GPORegistrySettings] Analyzing GPO '$gpoName' - $source ($hive): $($records.Count) registry value(s)"
                         }
@@ -65770,11 +65987,12 @@ function Get-GPORegistrySettings {
                             $entry = Test-DangerousRegistryRecord -Record $record
                             if ($entry) {
                                 [void]$Script:_gpoRegMatches.Add([PSCustomObject]@{
-                                    GPOGUID = $gpoGUID
-                                    GPOName = $gpoName
-                                    Source  = $source
-                                    Entry   = $entry
-                                    Record  = $record
+                                    GPOGUID    = $gpoGUID
+                                    GPOName    = $gpoName
+                                    GPOPath    = $gpoPathMap[([string]$gpoGUID).ToUpper()]
+                                    SourceFile = $source
+                                    Entry      = $entry
+                                    Record     = $record
                                 })
                             }
                         }
@@ -65923,14 +66141,15 @@ function New-RegistryFinding {
     }
     return [PSCustomObject][ordered]@{
         GPOName           = $RegMatch.GPOName
-        Source            = $RegMatch.Source
+        GPOGUID           = $RegMatch.GPOGUID
+        GPOPath           = $RegMatch.GPOPath
+        SourceFile        = $RegMatch.SourceFile
         RegistryKey       = "$($entry.Hive)\$($entry.Key)\$($entry.ValueName)"
         ConfiguredValue   = $configured
         VulnerabilityName = $entry.VulnerabilityName
         RiskReason        = $entry.RiskReason
         Severity          = $entry.Severity
         ConsoleClass      = $entry.ConsoleClass
-        GPOGUID           = $RegMatch.GPOGUID
     }
 }
 $Script:PointAndPrintKeyRoot        = 'Software\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
@@ -65977,6 +66196,7 @@ function Get-GPOPointAndPrint {
             foreach ($gpo in $gpos) {
                 if ($gpo.Name) { $gpoNameMap[([string]$gpo.Name).ToUpper()] = $gpo.DisplayName }
             }
+            $gpoPathMap = Get-GPOPathMap -GPO $gpos
             $gpoLinkage = Get-GPOLinkage
             $gpoStatusMap = Get-GPOStatusMap -GPO $gpos
             $Script:_pnpConfigs = @{}
@@ -66008,15 +66228,13 @@ function Get-GPOPointAndPrint {
                             continue
                         }
                         $records = @()
-                        $source = $null
                         if ($file.Name -ieq 'Registry.pol') {
                             $hive = if ($file.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
                             $records = @(Parse-PRegRecords -PolFilePath $file.FullName -Hive $hive)
-                            $source = 'Registry.pol'
                         } else {
                             $records = @(Parse-RegistryXml -XmlFilePath $file.FullName)
-                            $source = 'Registry.xml'
                         }
+                        $source = Get-GPORelativePath -Path $file.FullName
                         Add-PointAndPrintRecords -Records $records -GPOGUID $gpoGUID -Source $source
                     } catch {
                         Write-Log "[Get-GPOPointAndPrint] Error parsing $($file.FullName): $_"
@@ -66044,6 +66262,7 @@ function Get-GPOPointAndPrint {
             foreach ($bucketKey in $configs.Keys) {
                 $config = $configs[$bucketKey]
                 $config['GPOName'] = if ($gpoNameMap.ContainsKey($config['GPOGUID'])) { $gpoNameMap[$config['GPOGUID']] } else { $config['GPOGUID'] }
+                $config['GPOPath'] = $gpoPathMap[$config['GPOGUID']]
                 $objects += New-PointAndPrintObject -Config $config -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
             }
             $severityRank = @{ 'Critical' = 0; 'High' = 1; 'Medium' = 2; 'Low' = 3; 'Info' = 4 }
@@ -66143,7 +66362,7 @@ function Read-PrintSecurityOption {
         $registrySection = $Matches[1]
         if ($registrySection -match $Script:AddPrinterDriversGptTmplPattern) {
             $bucket = Get-PointAndPrintBucket -GPOGUID $GPOGUID -Hive 'HKLM'
-            $bucket['Sources']['GptTmpl.inf'] = $true
+            $bucket['Sources'][(Get-GPORelativePath -Path $FilePath)] = $true
             $bucket['Values']['AddPrinterDrivers'] = [int64]$Matches[1]
         }
     } catch {
@@ -66273,9 +66492,11 @@ function New-PointAndPrintObject {
     $hive   = $Config['Hive']
     $assessment = Get-PointAndPrintAssessment -Values $values -Hive $hive
     $obj = [PSCustomObject][ordered]@{
-        GPOName = $Config['GPOName']
-        Scope   = $(if ($hive -eq 'HKLM') { 'Computer Configuration' } else { 'User Configuration' })
-        Source  = (@($Config['Sources'].Keys | Sort-Object) -join ', ')
+        GPOName    = $Config['GPOName']
+        GPOGUID    = $Config['GPOGUID']
+        GPOPath    = $Config['GPOPath']
+        Scope      = $(if ($hive -eq 'HKLM') { 'Computer Configuration' } else { 'User Configuration' })
+        SourceFile = (@($Config['Sources'].Keys | Sort-Object) -join ', ')
     }
     $obj | Add-Member -NotePropertyName 'Exploitability' -NotePropertyValue $assessment.Exploitability -Force
     $restrictToAdmins = Get-PointAndPrintValue -Values $values -Name 'RestrictDriverInstallationToAdministrators'
@@ -66383,7 +66604,6 @@ function New-PointAndPrintObject {
         $obj | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
     }
     $obj | Add-Member -NotePropertyName 'Severity' -NotePropertyValue $assessment.Severity -Force
-    $obj | Add-Member -NotePropertyName 'GPOGUID' -NotePropertyValue $gpoGuid -Force
     $obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PointAndPrintPolicy' -Force
     return $obj
 }
@@ -67625,6 +67845,9 @@ function Get-WeakCertificateMapping {
                 IsPrivileged = $isPrivileged
             }
         }
+        $trustAnchor = Get-CertificateTrustAnchor
+        $noTrustAnchor = ($trustAnchor.Resolved -and -not $trustAnchor.HasAuthenticationAnchor)
+        $mappingClass = if ($noTrustAnchor) { 'Hint' } else { 'Finding' }
         if (@($weakFindings).Count -gt 0) {
             $privilegedCount = @($weakFindings | Where-Object { $_.IsPrivileged }).Count
             $countText = if ($privilegedCount -gt 0) {
@@ -67632,9 +67855,10 @@ function Get-WeakCertificateMapping {
             } else {
                 "$(@($weakFindings).Count) principal(s) with a weak explicit certificate mapping"
             }
-            Show-Line "Found $countText" -Class Finding -FindingId 'ESC14_WEAK_EXPLICIT_MAPPING'
+            Show-Line "Found $countText" -Class $mappingClass -FindingId 'ESC14_WEAK_EXPLICIT_MAPPING'
+            if ($noTrustAnchor) { Show-NoTrustAnchorNote }
             foreach ($finding in ($weakFindings | Sort-Object -Property @{Expression = { -not $_.IsPrivileged }})) {
-                Show-Object $finding.Object -Class Finding
+                Show-Object $finding.Object -Class $mappingClass
             }
         }
         elseif (@($candidates).Count -gt 0) {
@@ -67714,9 +67938,10 @@ function Get-WeakCertificateMapping {
             Write-Log "[Get-WeakCertificateMapping] Write-access analysis failed: $_" -Level Warning
         }
         if (@($writableFindings).Count -gt 0) {
-            Show-Line "Found $(@($writableFindings).Count) privileged principal(s) whose altSecurityIdentities a non-privileged principal may write" -Class Finding -FindingId 'ESC14_WRITABLE_MAPPING'
+            Show-Line "Found $(@($writableFindings).Count) privileged principal(s) whose altSecurityIdentities a non-privileged principal may write" -Class $mappingClass -FindingId 'ESC14_WRITABLE_MAPPING'
+            if ($noTrustAnchor) { Show-NoTrustAnchorNote }
             foreach ($finding in $writableFindings) {
-                Show-Object $finding -Class Finding
+                Show-Object $finding -Class $mappingClass
             }
         }
         if (@($exchangeOnlyFindings).Count -gt 0) {
@@ -67732,6 +67957,16 @@ function Get-WeakCertificateMapping {
     end {
         Write-Log "[Get-WeakCertificateMapping] Completed"
     }
+}
+function Show-NoTrustAnchorNote {
+    [CmdletBinding()]
+    param()
+    Show-Line ("No issuer is published in the NTAuth store, so no certificate can " +
+               "currently authenticate against these mappings - neither through PKINIT " +
+               "nor through Schannel. Check the domain controllers' own NTAuth store " +
+               "with 'certutil -viewstore -enterprise NTAuth' before ruling it out, " +
+               "because an issuer can be added there without being published, and treat " +
+               "the mappings as live again the moment one is.") -Class Note
 }
 function Get-CertificateMappingStrength {
     [CmdletBinding()]
@@ -69562,10 +69797,10 @@ function Get-CredentialExposure {
                                         elseif ($_.newName) { $username = $_.newName }
                                         elseif ($_.runAs) { $username = $_.runAs }
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "GPP Password"
-                                            filePath = $xmlFile.Fullname
-                                            userName = $username
-                                            password = $decryptedPassword
+                                            CredentialType = "GPP Password"
+                                            FilePath = $xmlFile.Fullname
+                                            UserName = $username
+                                            Password = $decryptedPassword
                                         }
                                         Show-Line "Found GPP credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -69586,10 +69821,10 @@ function Get-CredentialExposure {
                                 if ($autoLogonPassword -and $autoLogonPassword -ne '') {
                                     $fullUsername = if ($autoLogonDomain) { "$autoLogonDomain\$autoLogonUser" } else { $autoLogonUser }
                                     $credObj = [PSCustomObject]@{
-                                        credentialType = "AutoAdminLogon"
-                                        filePath = $xmlFile.Fullname
-                                        userName = $fullUsername
-                                        password = $autoLogonPassword
+                                        CredentialType = "AutoAdminLogon"
+                                        FilePath = $xmlFile.Fullname
+                                        UserName = $fullUsername
+                                        Password = $autoLogonPassword
                                     }
                                     Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -69635,10 +69870,10 @@ function Get-CredentialExposure {
                                 if ($foundUsername -and $foundPassword) {
                                     $fullUser = if ($foundDomain) { "$foundDomain\$foundUsername" } else { $foundUsername }
                                     $credObj = [PSCustomObject]@{
-                                        credentialType = "Net Use"
-                                        filePath = $file.FullName
-                                        userName = $fullUser
-                                        password = $foundPassword
+                                        CredentialType = "Net Use"
+                                        FilePath = $file.FullName
+                                        UserName = $fullUser
+                                        Password = $foundPassword
                                     }
                                     Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -69664,9 +69899,9 @@ function Get-CredentialExposure {
                                 foreach ($pattern in $tier1Patterns) {
                                     if ($trimmedLine -match $pattern.Pattern) {
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = $pattern.Description
-                                            filePath = $file.FullName
-                                            matchedLine = $trimmedLine
+                                            CredentialType = $pattern.Description
+                                            FilePath = $file.FullName
+                                            MatchedLine = $trimmedLine
                                         }
                                         Show-Line "Found credential pattern" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -69681,9 +69916,9 @@ function Get-CredentialExposure {
                                 foreach ($pattern in $tier2Patterns) {
                                     if ($trimmedLine -match $pattern.Pattern) {
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "$($pattern.Description) (needs review)"
-                                            filePath = $file.FullName
-                                            matchedLine = $trimmedLine
+                                            CredentialType = "$($pattern.Description) (needs review)"
+                                            FilePath = $file.FullName
+                                            MatchedLine = $trimmedLine
                                         }
                                         Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -69785,12 +70020,12 @@ function Get-CredentialExposure {
                                             elseif ($_.newName) { $username = $_.newName }
                                             elseif ($_.runAs) { $username = $_.runAs }
                                             $credObj = [PSCustomObject]@{
-                                                credentialType = "GPP Password"
-                                                filePath = $xmlFile.Fullname
-                                                userName = $username
-                                                password = $decryptedPassword
+                                                CredentialType = "GPP Password"
+                                                FilePath = $xmlFile.Fullname
+                                                UserName = $username
+                                                Password = $decryptedPassword
                                             }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                             if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                             Show-Line "Found GPP credential" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -69812,12 +70047,12 @@ function Get-CredentialExposure {
                                     if ($autoLogonPassword -and $autoLogonPassword -ne '') {
                                         $fullUsername = if ($autoLogonDomain) { "$autoLogonDomain\$autoLogonUser" } else { $autoLogonUser }
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "AutoAdminLogon"
-                                            filePath = $xmlFile.Fullname
-                                            userName = $fullUsername
-                                            password = $autoLogonPassword
+                                            CredentialType = "AutoAdminLogon"
+                                            FilePath = $xmlFile.Fullname
+                                            UserName = $fullUsername
+                                            Password = $autoLogonPassword
                                         }
-                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                         if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                         Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
@@ -69922,12 +70157,12 @@ function Get-CredentialExposure {
                                     if ($foundUsername -and $foundPassword) {
                                         $fullUser = if ($foundDomain) { "$foundDomain\$foundUsername" } else { $foundUsername }
                                         $credObj = [PSCustomObject]@{
-                                            credentialType = "Net Use"
-                                            filePath = $file.FullName
-                                            userName = $fullUser
-                                            password = $foundPassword
+                                            CredentialType = "Net Use"
+                                            FilePath = $file.FullName
+                                            UserName = $fullUser
+                                            Password = $foundPassword
                                         }
-                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                         if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                         Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -69961,11 +70196,11 @@ function Get-CredentialExposure {
                                     foreach ($pattern in $tier1Patterns) {
                                         if ($trimmedLine -match $pattern.Pattern) {
                                             $credObj = [PSCustomObject]@{
-                                                credentialType = $pattern.Description
-                                                filePath = $file.FullName
-                                                matchedLine = $trimmedLine
+                                                CredentialType = $pattern.Description
+                                                FilePath = $file.FullName
+                                                MatchedLine = $trimmedLine
                                             }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                             if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                             Show-Line "Found credential pattern" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -69981,11 +70216,11 @@ function Get-CredentialExposure {
                                     foreach ($pattern in $tier2Patterns) {
                                         if ($trimmedLine -match $pattern.Pattern) {
                                             $credObj = [PSCustomObject]@{
-                                                credentialType = "$($pattern.Description) (needs review)"
-                                                filePath = $file.FullName
-                                                matchedLine = $trimmedLine
+                                                CredentialType = "$($pattern.Description) (needs review)"
+                                                FilePath = $file.FullName
+                                                MatchedLine = $trimmedLine
                                             }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'gpoName' -NotePropertyValue $fileGpoName -Force }
+                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                             if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
                                             Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
@@ -71162,7 +71397,7 @@ function Get-ObjectCardTitle {
             return "SID History: $objName$ctxInfo"
         }
         { $_ -in @('GPPCredential', 'SYSVOLCredential') } {
-            $credType = if ($Object.credentialType) { $Object.credentialType } else { "Credential" }
+            $credType = if ($Object.CredentialType) { $Object.CredentialType } else { "Credential" }
             return "Credential ($credType)"
         }
         'LAPSConfiguration' {
@@ -80790,7 +81025,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.6.0"
+$Script:adPEASVersion = "2.6.0+20261005-1351"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
