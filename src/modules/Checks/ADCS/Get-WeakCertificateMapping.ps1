@@ -197,6 +197,16 @@ function Get-WeakCertificateMapping {
             }
         }
 
+        # Can a certificate authenticate in this domain at all? A mapping names a pattern,
+        # not a certificate, so there is no chain to validate here - the certificate does
+        # not exist until someone enrols one. What can be established is whether any
+        # issuer is trusted to begin with, and without one the pattern matches nothing.
+        # Resolved guards the downgrade: an unreadable Configuration partition must not
+        # quietly turn a real finding into a hint.
+        $trustAnchor = Get-CertificateTrustAnchor
+        $noTrustAnchor = ($trustAnchor.Resolved -and -not $trustAnchor.HasAuthenticationAnchor)
+        $mappingClass = if ($noTrustAnchor) { 'Hint' } else { 'Finding' }
+
         if (@($weakFindings).Count -gt 0) {
             $privilegedCount = @($weakFindings | Where-Object { $_.IsPrivileged }).Count
             $countText = if ($privilegedCount -gt 0) {
@@ -204,11 +214,12 @@ function Get-WeakCertificateMapping {
             } else {
                 "$(@($weakFindings).Count) principal(s) with a weak explicit certificate mapping"
             }
-            Show-Line "Found $countText" -Class Finding -FindingId 'ESC14_WEAK_EXPLICIT_MAPPING'
+            Show-Line "Found $countText" -Class $mappingClass -FindingId 'ESC14_WEAK_EXPLICIT_MAPPING'
+            if ($noTrustAnchor) { Show-NoTrustAnchorNote }
 
             # Privileged targets first: those are the ones worth the reader's attention.
             foreach ($finding in ($weakFindings | Sort-Object -Property @{Expression = { -not $_.IsPrivileged }})) {
-                Show-Object $finding.Object -Class Finding
+                Show-Object $finding.Object -Class $mappingClass
             }
         }
         elseif (@($candidates).Count -gt 0) {
@@ -340,9 +351,12 @@ function Get-WeakCertificateMapping {
         }
 
         if (@($writableFindings).Count -gt 0) {
-            Show-Line "Found $(@($writableFindings).Count) privileged principal(s) whose altSecurityIdentities a non-privileged principal may write" -Class Finding -FindingId 'ESC14_WRITABLE_MAPPING'
+            # Same dampening as above, and for the same reason: the mapping an attacker
+            # would add still needs an issuer the domain accepts.
+            Show-Line "Found $(@($writableFindings).Count) privileged principal(s) whose altSecurityIdentities a non-privileged principal may write" -Class $mappingClass -FindingId 'ESC14_WRITABLE_MAPPING'
+            if ($noTrustAnchor) { Show-NoTrustAnchorNote }
             foreach ($finding in $writableFindings) {
-                Show-Object $finding -Class Finding
+                Show-Object $finding -Class $mappingClass
             }
         }
 
@@ -377,6 +391,35 @@ function Get-WeakCertificateMapping {
     [string] 'Strong', 'Weak', or 'Other' for a value that maps no certificate at all
     (the attribute also holds Kerberos and NTLM identities).
 #>
+<#
+.SYNOPSIS
+    Says why an ESC14 finding was reported as a hint rather than a vulnerability.
+.DESCRIPTION
+    Printed under a finding when this directory publishes no certificate issuer trusted
+    for authentication. Two sentences, because both halves matter: the mapping cannot be
+    used today, and that is not the same as it being harmless.
+
+    The wording stops short of "not exploitable". The Enterprise NTAuth store is a machine
+    store as well as a directory object: certutil -enterprise -addstore NTAuth writes an
+    issuer onto one machine without publishing it, and an issuer added that way on a domain
+    controller is invisible from here. So this is a reason to go and look, not a clean bill
+    of health. Nor is it durable - publishing an issuer tomorrow makes every one of these
+    mappings live without anyone touching an account.
+.OUTPUTS
+    None. Writes one Note line.
+#>
+function Show-NoTrustAnchorNote {
+    [CmdletBinding()]
+    param()
+
+    Show-Line ("No issuer is published in the NTAuth store, so no certificate can " +
+               "currently authenticate against these mappings - neither through PKINIT " +
+               "nor through Schannel. Check the domain controllers' own NTAuth store " +
+               "with 'certutil -viewstore -enterprise NTAuth' before ruling it out, " +
+               "because an issuer can be added there without being published, and treat " +
+               "the mappings as live again the moment one is.") -Class Note
+}
+
 function Get-CertificateMappingStrength {
     [CmdletBinding()]
     [OutputType([string])]

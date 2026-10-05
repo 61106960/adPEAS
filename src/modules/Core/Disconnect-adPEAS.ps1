@@ -274,6 +274,10 @@ function Clear-SessionState {
     # SYSVOL content cache (on-demand file content, e.g., GptTmpl.inf)
     $Script:SYSVOLContentCache = $null
 
+    # Whether this directory publishes a certificate issuer trusted for authentication
+    # (Get-CertificateTrustAnchor). Per domain, so it must not survive a reconnect.
+    $Script:CertificateTrustAnchor = $null
+
     # Findings collection (adPEAS-Messages / HTML export)
     $Script:adPEAS_FindingsCollection = $null
     $Script:adPEAS_FindingsCollectionEnabled = $false
