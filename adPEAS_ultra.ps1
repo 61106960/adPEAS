@@ -199,6 +199,9 @@ $Script:PropertyGUIDs = @{
 	'gPLink'                         = [GUID]'f30e3bbe-9ff0-11d1-b603-0000f80367c1'
 	'dNSHostName'                    = [GUID]'72e39547-7b18-11d1-adef-00c04fd8d5cd'
 	'msDS-ManagedPassword'           = [GUID]'e362ed86-b728-0842-b27d-2dea7a9df218'
+	'ms-PKI-AccountCredentials'      = [GUID]'b8dfa744-31dc-4ef1-ac7c-84baf7ef9da7'
+	'ms-PKI-DPAPIMasterKeys'         = [GUID]'b3f93023-9239-4f7c-b99c-6745d87adbc2'
+	'ms-PKI-RoamingTimeStamp'        = [GUID]'91e647de-d96f-4b70-9557-d63ff4f3ccd8'
 	'msDS-KeyCredentialLink'         = [GUID]'5b47d60f-6090-40b2-9f37-2a4de88f3063'
 	'altSecurityIdentities'          = [GUID]'00fbf30c-91fe-11d1-aebc-0000f80367c1'
 }
@@ -3220,6 +3223,10 @@ $Script:PrimaryAttributes = @{
 	    'sAMAccountName', 'distinguishedName', 'RoamedMaterial', 'ReadableBy',
 	    'PrivilegedAccount', 'RoamingTimeStamp'
 	)
+	CredentialRoamingPermission = @(
+	    'sAMAccountName', 'objectSid', 'dangerousRights', 'EffectiveToday',
+	    'PrivilegedAccount', 'affectedOUs'
+	)
 	GPPCredential = @(
 	    'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
 	)
@@ -3356,6 +3363,7 @@ $Script:ExcludeAttributes = @(
 	'_IsEffective', '_HasAnyLink',
 	'_ReachScope', '_ReachInactive', '_ReachUnlinked',
 	'msPKIAccountCredentials', 'msPKIDPAPIMasterKeys',
+	'_IsFinding',
 	'Risk', 'Severity', 'ConsoleClass',
 	'IsSystemAccount', 'IsPrivilegedAccount',
 	'HasUNCPath', 'HasRiskyPath', 'HasUnquotedPath', 'IsPowerShell', 'IsScript',
@@ -12071,6 +12079,73 @@ Get-ADUser <targetuser> -Properties msPKIAccountCredentials, msPKIDPAPIMasterKey
 	        @{ Attribute = 'ReadableBy'; Pattern = '^Unknown'; Severity = 'Hint' }
 	    )
 	}
+	'CREDENTIAL_ROAMING_DELEGATED' = @{
+	    Title = "Credential Roaming - Read of Private Keys and Master Keys Delegated to a Principal"
+	    Risk = "Finding"
+	    BaseScore = 85
+	    Description = "A principal holds an explicit read of the Credential Roaming attributes on a container whose users carry roamed material. This is the case the confidential flag says nothing about, and the one most likely to have happened by accident: a delegation wizard pointed at the wrong attribute set, or a script copied from a Credential Roaming rollout guide, gives a helpdesk group a read of another user's private keys and DPAPI master keys. Nothing about the result looks unusual afterwards. Whether the right is live depends on the schema - a confidential attribute needs READ_PROPERTY and CONTROL_ACCESS, a non-confidential one needs only the former - so the same ACE is exploitable in one forest and dormant in another, and the row says which."
+	    Impact = @(
+	        "The holder reads another user's private keys and DPAPI master keys with a plain LDAP query, no exploit involved"
+	        "With the domain backup key, or the target's password or hash, that material decrypts offline"
+	        "A roamed client-authentication certificate then authenticates as the target without their password"
+	        "The right usually applies to a whole container, so it covers every user below it, not one account"
+	        "A right the confidential flag currently blocks becomes live the moment somebody clears the flag"
+	    )
+	    Attack = @(
+	        "1. As the delegated principal, read msPKIDPAPIMasterKeys and msPKIAccountCredentials from the users in scope"
+	        "2. Obtain the domain backup key, or the target's password or hash"
+	        "3. Decrypt the master keys offline, then the private keys they protect"
+	        "4. Authenticate as the target with a recovered certificate, or decrypt their stored DPAPI secrets"
+	    )
+	    Remediation = @(
+	        "Remove the ACE unless the principal genuinely needs to read other users' private keys - almost nothing does"
+	        "Check what the delegation was meant to grant; a wizard or script that produced this one has probably produced others"
+	        "Mark the two attributes confidential in the schema, which at least stops READ_PROPERTY alone from working"
+	        "Clear the attributes on accounts that do not need roaming, and turn Credential Roaming off where it is not needed"
+	        "Treat the domain backup key as a Tier 0 secret - it is the other half of every one of these findings"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show the delegated read ACEs on a container, resolved to attribute names"
+	            Command = @'
+$roaming = @{
+    'b8dfa744-31dc-4ef1-ac7c-84baf7ef9da7' = 'ms-PKI-AccountCredentials'
+    'b3f93023-9239-4f7c-b99c-6745d87adbc2' = 'ms-PKI-DPAPIMasterKeys'
+    '91e647de-d96f-4b70-9557-d63ff4f3ccd8' = 'ms-PKI-RoamingTimeStamp'
+}
+(Get-Acl "AD:\<container DN>").Access |
+    Where-Object { $roaming.ContainsKey($_.ObjectType.ToString()) } |
+    Select-Object IdentityReference, ActiveDirectoryRights, IsInherited,
+        @{n='Attribute'; e={ $roaming[$_.ObjectType.ToString()] }}
+'@
+	        }
+	        @{
+	            Description = "Remove one delegated read. Check the output above first - the ACE may be inherited, in which case it has to go from the container it is inherited from"
+	            Command = @'
+$acl = Get-Acl "AD:\<container DN>"
+$ace = $acl.Access | Where-Object {
+    $_.IdentityReference -eq '<DOMAIN\principal>' -and
+    $_.ObjectType -eq 'b3f93023-9239-4f7c-b99c-6745d87adbc2'
+}
+$null = $acl.RemoveAccessRule($ace)
+Set-Acl -Path "AD:\<container DN>" -AclObject $acl
+'@
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Credential Roaming (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/credential-roaming" }
+	        @{ Title = "Confidential attributes - READ_PROPERTY plus CONTROL_ACCESS"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/mark-attribute-as-confidential" }
+	    )
+	    Tools = @("adPEAS", "SharpDPAPI", "mimikatz")
+	    MITRE = "T1552.004"
+	    Triggers = @(
+	        @{ Attribute = 'dangerousRights'; Pattern = 'ms-PKI-'; Severity = 'Finding' }
+	        @{ Attribute = 'dangerousRights'; Pattern = 'includes the roaming attributes'; Severity = 'Finding' }
+	        @{ Attribute = 'EffectiveToday'; Pattern = '^Yes'; Severity = 'Finding' }
+	        @{ Attribute = 'EffectiveToday'; Pattern = '^No'; Severity = 'Secure' }
+	        @{ Attribute = 'EffectiveToday'; Pattern = '^Unknown'; Severity = 'Hint' }
+	    )
+	}
 	'ESC14_WEAK_EXPLICIT_MAPPING' = @{
 	    Title = "ESC14 - Weak Explicit Certificate Mapping"
 	    Risk = "Finding"
@@ -17711,6 +17786,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    FilteringNote = "The blob attributes are never retrieved. Their presence is established with an LDAP presence filter and only the name, the DN and the sync timestamp are read back, so no ciphertext travels and none reaches the report. Both attributes are also excluded from display centrally, so another check fetching a full user object cannot surface them either. Not covered yet: who holds an explicit read permission on these attributes. The confidential flag answers the blanket readability that comes from the default ACL, but a right delegated to one group by accident is invisible here. Nothing here constrains DCSync, a copy of ntds.dit or an AD backup, which read the material regardless of the flag."
 	    SecureMessage = "No user object carries roamed credential material. Credential Roaming is either not in use or has never synchronised, so no private keys or DPAPI master keys are stored in the directory."
 	    PrimaryFindingId = 'CREDENTIAL_ROAMING_READABLE'
+	}
+	'CredentialRoamingPermission' = @{
+	    TitleFormat = "Roaming Read Delegated: {Name}"
+	    Module = "Creds"
+	    Category = "Credentials"
+	    SectionTitle = "Delegated Credential Roaming Read"
+	    Summary = "Finds principals that have been given an explicit read of another user's private keys and DPAPI master keys."
+	    WhyItMatters = "The confidential flag decides whether every authenticated user can read the roaming attributes. A delegated read is the case it says nothing about, and the one most likely to have happened by accident: a delegation wizard pointed at the wrong attribute set, or a script copied from a Credential Roaming rollout guide, hands a helpdesk group a read of another user's private keys. Nothing about the result looks unusual afterwards, and the holder needs no exploit - a plain LDAP read returns the material, and the domain backup key or the target's hash turns it into their private keys and every DPAPI secret of their profile."
+	    WhatWeCheck = @(
+	        "ReadProperty on ms-PKI-DPAPIMasterKeys, ms-PKI-AccountCredentials or ms-PKI-RoamingTimeStamp"
+	        "Reads granted through All Properties or GenericAll"
+	        "Whether the ACE also carries Control Access, which is what defeats the confidential flag"
+	        "Whether the holder is privileged, and could read the material anyway"
+	    )
+	    FilteringNote = "Scoped to the containers that hold users with roamed material - a delegation on a container whose users have never roamed anything reaches nothing to read, and becomes visible as soon as the first user synchronises. The containers are read once each rather than once per user, because a container's DACL already carries what it inherits from above; the consequence is that an ACE set directly on a single user object, bypassing the container, is not seen. Reads that only cover the roaming timestamp are rated Low and drop out of a default report: a timestamp is a date, not a credential. Privileged principals are hidden unless -IncludePrivileged, since they can read the material regardless. A right that the confidential flag currently blocks is reported as a hint rather than dropped - the delegation is still there, and clearing the flag makes every one of them live at once."
+	    SecureMessage = "No principal holds a delegated read of the Credential Roaming attributes on the containers that hold roamed material."
+	    PrimaryFindingId = 'CREDENTIAL_ROAMING_DELEGATED'
 	}
 	'GPPCredential' = @{
 	    TitleFormat = "GPP Credential: {Name}"
@@ -46956,6 +47048,7 @@ function Get-OUPermissions {
 	        'ScriptPath',
 	        'Delegation',
 	        'LAPS',
+	        'CredentialRoaming',
 	        'ObjectCreation',
 	        'GPOLinking'
 	    )]
@@ -46972,7 +47065,7 @@ function Get-OUPermissions {
 	            'GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner',
 	            'PasswordReset', 'AccountControl', 'GroupMembership',
 	            'SPNModification', 'DNSHostName', 'ScriptPath', 'Delegation', 'LAPS',
-	            'ObjectCreation', 'GPOLinking'
+	            'CredentialRoaming', 'ObjectCreation', 'GPOLinking'
 	        )
 	    }
 	}
@@ -47430,6 +47523,64 @@ function Get-OUPermissions {
 	                            SID           = $TrusteeSID
 	                            Severity      = $Severity
 	                            InheritedFrom = $InheritedFrom
+	                        }
+	                    }
+	                }
+	            }
+	            if ($CheckType -contains 'CredentialRoaming') {
+	                $crHasRead          = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty)
+	                $crHasGenericAll    = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)
+	                $crHasControlAccess = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
+	                if (($crHasRead -or $crHasGenericAll -or $crHasControlAccess) -and $AppliesToUsers) {
+	                    $crControlAccess = ($crHasGenericAll -or $crHasControlAccess)
+	                    $crAttributes = @(
+	                        @{ Name = 'ms-PKI-DPAPIMasterKeys'
+	                           Note = 'DPAPI master keys'
+	                           Severity = 'High' }
+	                        @{ Name = 'ms-PKI-AccountCredentials'
+	                           Note = 'private keys and certificates'
+	                           Severity = 'High' }
+	                        @{ Name = 'ms-PKI-RoamingTimeStamp'
+	                           Note = 'roaming timestamp'
+	                           Severity = 'Low' }
+	                    )
+	                    $crRightPrefix = if ($crHasGenericAll) {
+	                        'GenericAll'
+	                    } elseif (($crHasRead -or $crHasGenericAll) -and $crHasControlAccess) {
+	                        'ReadProperty + ControlAccess'
+	                    } elseif ($crHasRead) {
+	                        'ReadProperty'
+	                    } else {
+	                        'ControlAccess'
+	                    }
+	                    $crPropertyFound = $false
+	                    foreach ($crAttribute in $crAttributes) {
+	                        $crGuid = $PropertyGUIDs[$crAttribute.Name]
+	                        if ($ACE.ObjectType -and $crGuid -and $ACE.ObjectType.Guid -eq $crGuid.Guid) {
+	                            $Severity = if ($IsPrivileged) { "Info" } else { $crAttribute.Severity }
+	                            $Findings += [PSCustomObject]@{
+	                                CheckType           = "CredentialRoaming"
+	                                Right               = "$crRightPrefix ($($crAttribute.Name) - $($crAttribute.Note))"
+	                                Principal           = $TrusteeName
+	                                SID                 = $TrusteeSID
+	                                Severity            = $Severity
+	                                InheritedFrom       = $InheritedFrom
+	                                GrantsControlAccess = $crControlAccess
+	                            }
+	                            $crPropertyFound = $true
+	                        }
+	                    }
+	                    if ($IsAllProperties -and ($crHasRead -or $crHasGenericAll) -and
+	                        -not $crPropertyFound -and -not $skipAllPropertiesOnly) {
+	                        $Severity = if ($IsPrivileged) { "Info" } else { "High" }
+	                        $Findings += [PSCustomObject]@{
+	                            CheckType           = "CredentialRoaming"
+	                            Right               = "$crRightPrefix (All Properties - includes the roaming attributes)"
+	                            Principal           = $TrusteeName
+	                            SID                 = $TrusteeSID
+	                            Severity            = $Severity
+	                            InheritedFrom       = $InheritedFrom
+	                            GrantsControlAccess = $crControlAccess
 	                        }
 	                    }
 	                }
@@ -68253,7 +68404,9 @@ function Get-CredentialRoaming {
 	    [Parameter(Mandatory=$false)]
 	    [string]$Server,
 	    [Parameter(Mandatory=$false)]
-	    [System.Management.Automation.PSCredential]$Credential
+	    [System.Management.Automation.PSCredential]$Credential,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$IncludePrivileged
 	)
 	process {
 	    try {
@@ -68299,7 +68452,7 @@ function Get-CredentialRoaming {
 	            $privileged = $false
 	            try {
 	                if ($user.objectSid) {
-	                    $privileged = ((Test-IsPrivileged -Identity $user.objectSid).IsPrivileged -eq $true)
+	                    $privileged = ((Test-IsPrivileged -Identity $user).IsPrivileged -eq $true)
 	                }
 	            } catch {
 	            }
@@ -68338,12 +68491,149 @@ function Get-CredentialRoaming {
 	        foreach ($finding in @($findings | Sort-Object -Property @{Expression = { $_.PrivilegedAccount -ne 'Yes' }}, sAMAccountName)) {
 	            Show-Object $finding -Class $(if ($confidential.Confidential -eq $false) { 'Finding' } else { 'Hint' })
 	        }
+	        Show-CredentialRoamingDelegation -AffectedUserDNs @($byDN.Keys) `
+	            -Confidentiality $confidential -IncludePrivileged:$IncludePrivileged `
+	            -ConnectionParams $CredParams
 	        Show-Line ("Reading these attributes is not constrained for anybody with DCSync, a copy of ntds.dit or " +
 	                   "an AD backup - the confidential flag protects against ordinary users, not against Tier 0") -Class Note
 	    }
 	    catch {
 	        Show-Line "Error during check: $_" -Class Finding
 	    }
+	}
+}
+function Show-CredentialRoamingDelegation {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [AllowEmptyCollection()]
+	    [string[]]$AffectedUserDNs,
+	    [Parameter(Mandatory=$true)]
+	    $Confidentiality,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$IncludePrivileged,
+	    [Parameter(Mandatory=$false)]
+	    [hashtable]$ConnectionParams = @{}
+	)
+	$usersByContainer = @{}
+	foreach ($userDN in $AffectedUserDNs) {
+	    if ([string]::IsNullOrWhiteSpace($userDN)) { continue }
+	    if ($userDN -match '^[A-Za-z][A-Za-z0-9-]*=(?:[^,\\]|\\.)+,(.+)$') {
+	        $containerDN = $Matches[1]
+	        if (-not $usersByContainer.ContainsKey($containerDN)) { $usersByContainer[$containerDN] = 0 }
+	        $usersByContainer[$containerDN]++
+	    }
+	}
+	if ($usersByContainer.Count -eq 0) {
+	    return
+	}
+	$allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Medium', 'Info') } else { @('Critical', 'High', 'Medium') }
+	$byPrincipal = @{}
+	$suppressedPrivileged = @{}
+	$totalContainers = $usersByContainer.Keys.Count
+	$currentIndex = 0
+	foreach ($containerDN in @($usersByContainer.Keys)) {
+	    $currentIndex++
+	    if ($totalContainers -gt $Script:ProgressThreshold) {
+	        Show-Progress -Activity "Checking Credential Roaming delegations" -Current $currentIndex -Total $totalContainers -ObjectName $containerDN
+	    }
+	    try {
+	        $perms = Get-OUPermissions -DistinguishedName $containerDN -CheckType 'CredentialRoaming'
+	    }
+	    catch {
+	        continue
+	    }
+	    if (-not $perms -or -not $perms.Findings) { continue }
+	    foreach ($aclFinding in @($perms.Findings)) {
+	        $sid = [string]$aclFinding.SID
+	        if ([string]::IsNullOrEmpty($sid)) { continue }
+	        if ($aclFinding.Severity -notin $allowedSeverities) {
+	            if ($aclFinding.Severity -eq 'Info') { $suppressedPrivileged[$sid] = $true }
+	            continue
+	        }
+	        if (-not $byPrincipal.ContainsKey($sid)) {
+	            $byPrincipal[$sid] = [PSCustomObject]@{
+	                Principal           = $aclFinding.Principal
+	                SID                 = $sid
+	                Rights              = New-Object System.Collections.Generic.List[string]
+	                Containers          = New-Object System.Collections.Generic.List[string]
+	                GrantsControlAccess = $false
+	                IsPrivileged        = ($aclFinding.Severity -eq 'Info')
+	            }
+	        }
+	        $entry = $byPrincipal[$sid]
+	        if (-not $entry.Rights.Contains([string]$aclFinding.Right)) {
+	            $entry.Rights.Add([string]$aclFinding.Right)
+	        }
+	        $containerEntry = "$containerDN ($($usersByContainer[$containerDN]) user(s) with material)"
+	        if (-not $entry.Containers.Contains($containerEntry)) {
+	            $entry.Containers.Add($containerEntry)
+	        }
+	        if ($aclFinding.GrantsControlAccess -eq $true) { $entry.GrantsControlAccess = $true }
+	    }
+	}
+	if ($totalContainers -gt $Script:ProgressThreshold) {
+	    Show-Progress -Activity "Checking Credential Roaming delegations" -Completed
+	}
+	if ($byPrincipal.Count -eq 0) {
+	    if ($suppressedPrivileged.Count -gt 0) {
+	        Show-Line ("No non-privileged principal holds a delegated read of the roaming attributes, but " +
+	                   "$($suppressedPrivileged.Count) privileged one(s) do - use -IncludePrivileged to see them") -Class Note
+	    } else {
+	        Show-Line ("No principal holds a delegated read of the roaming attributes on the $totalContainers " +
+	                   "container(s) holding this material") -Class Secure
+	    }
+	    return
+	}
+	$rows = New-Object System.Collections.Generic.List[object]
+	foreach ($sid in @($byPrincipal.Keys | Sort-Object)) {
+	    $entry = $byPrincipal[$sid]
+	    $isLive = $null
+	    if ($entry.GrantsControlAccess) {
+	        $isLive = $true
+	    } elseif ($Confidentiality.Confidential -eq $false) {
+	        $isLive = $true
+	    } elseif ($Confidentiality.Confidential -eq $true) {
+	        $isLive = $false
+	    }
+	    $effectiveText = if ($isLive -eq $true) {
+	        'Yes - the principal can read the material today'
+	    } elseif ($isLive -eq $false) {
+	        'No - blocked by the confidential flag, live the moment it is cleared'
+	    } else {
+	        'Unknown - the schema could not be read'
+	    }
+	    $isFinding = (-not $entry.IsPrivileged) -and ($isLive -eq $true)
+	    $row = [PSCustomObject]@{
+	        sAMAccountName          = $(if ($entry.Principal) { $entry.Principal } else { ConvertFrom-SID -SID $sid })
+	        objectSid               = $sid
+	        dangerousRights         = (@($entry.Rights) -join ', ')
+	        EffectiveToday          = $effectiveText
+	        PrivilegedAccount       = $(if ($entry.IsPrivileged) { 'Yes' } else { 'No' })
+	        affectedOUs             = @($entry.Containers)
+	    }
+	    if (-not $isFinding) {
+	        $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
+	    }
+	    $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CredentialRoamingPermission' -Force
+	    $row | Add-Member -NotePropertyName '_IsFinding' -NotePropertyValue $isFinding -Force
+	    $rows.Add($row)
+	}
+	$findingRows = @($rows | Where-Object { $_._IsFinding })
+	$hintRows    = @($rows | Where-Object { -not $_._IsFinding })
+	if (@($findingRows).Count -gt 0) {
+	    Show-Line ("Found $(@($findingRows).Count) non-privileged principal(s) with a delegated read of the " +
+	               "roaming attributes") -Class Finding -FindingId 'CREDENTIAL_ROAMING_DELEGATED'
+	    foreach ($row in $findingRows) { Show-Object $row -Class Finding }
+	}
+	if (@($hintRows).Count -gt 0) {
+	    Show-Line ("Found $(@($hintRows).Count) further delegated read(s) of the roaming attributes that do not " +
+	               "grant access today or belong to a privileged principal") -Class Hint -FindingId 'CREDENTIAL_ROAMING_DELEGATED'
+	    foreach ($row in $hintRows) { Show-Object $row -Class Hint }
+	}
+	if ($suppressedPrivileged.Count -gt 0) {
+	    Show-Line ("$($suppressedPrivileged.Count) privileged principal(s) hold the same right and are not " +
+	               "listed - they can read the material regardless. Use -IncludePrivileged to see them") -Class Note
 	}
 }
 function Get-CredentialRoamingConfidentiality {
@@ -78847,7 +79137,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.6.0+20261006-1252"
+$Script:adPEASVersion = "2.6.0+20261006-1400"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -79252,7 +79542,7 @@ try {
 	    try {
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-LAPSCredentialAccess' -Title 'LAPS Credential Access' -Check { Get-LAPSCredentialAccess }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-BitLockerRecoveryKeyAccess' -Title 'BitLocker Recovery Key Access' -Check { Get-BitLockerRecoveryKeyAccess }
-	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialRoaming' -Title 'Credential Roaming' -Check { Get-CredentialRoaming }
+	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialRoaming' -Title 'Credential Roaming' -Check { Get-CredentialRoaming -IncludePrivileged:$IncludePrivileged }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialExposure' -Title 'Credential Exposure' -Check { Get-CredentialExposure }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-PasswordInDescription' -Title 'Passwords in Description/Info' -Check { Get-PasswordInDescription -OPSEC:$OPSEC }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-KerberoastableAccounts' -Title 'Kerberoastable Accounts' -Check { Get-KerberoastableAccounts -OPSEC:$OPSEC }
