@@ -149,9 +149,28 @@ function Get-GPOLocalGroupMembership {
                             $restrictedGroupsFindings = Parse-RestrictedGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($restrictedGroupsFindings) {
-                                $linkedOUs = @()
-                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
-                                    $linkedOUs = $gpoLinkage[$gpoGUID]
+                                # $null-guarded, and three-valued. Get-GPOLinkage returns $null
+                                # when the linkage could not be resolved, and .ContainsKey on
+                                # that throws - inside a try/catch that logs and moves on, so
+                                # every finding was dropped and the check closed with "No
+                                # vulnerable GPO local group assignments found". A transient
+                                # LDAP failure reported the quietest result as the truth.
+                                $linkedOUs = $null
+                                if ($null -ne $gpoLinkage) {
+                                    $linkedOUs = @()
+                                    if ($gpoLinkage.ContainsKey($gpoGUID)) {
+                                        $linkedOUs = @($gpoLinkage[$gpoGUID])
+                                    }
+                                }
+                                # "Not linked" is what the transformer makes of an empty list,
+                                # and that would be a claim the failed lookup cannot support.
+                                # Plain assignment, then an override. An "if" whose branch
+                                # yields @() writes nothing to the output stream, so
+                                # "$x = if (...) { ... } else { $empty }" lands $x as $null -
+                                # and @() is precisely the value that means "linked nowhere".
+                                $linkedOUsDisplay = $linkedOUs
+                                if ($null -eq $linkedOUs) {
+                                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
                                 # Restricted Groups is a computer-side policy, so the
@@ -162,7 +181,7 @@ function Get-GPOLocalGroupMembership {
                                     -Link $linkedOUs
 
                                 foreach ($finding in $restrictedGroupsFindings) {
-                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
@@ -195,9 +214,24 @@ function Get-GPOLocalGroupMembership {
                             $gppGroupsFindings = Parse-GPPGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($gppGroupsFindings) {
-                                $linkedOUs = @()
-                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
-                                    $linkedOUs = $gpoLinkage[$gpoGUID]
+                                # Same three-valued handling as the Restricted Groups branch
+                                # above: $null means the linkage was never resolved, @() means
+                                # resolved and linked nowhere, and .ContainsKey on a $null map
+                                # throws into the catch below.
+                                $linkedOUs = $null
+                                if ($null -ne $gpoLinkage) {
+                                    $linkedOUs = @()
+                                    if ($gpoLinkage.ContainsKey($gpoGUID)) {
+                                        $linkedOUs = @($gpoLinkage[$gpoGUID])
+                                    }
+                                }
+                                # Plain assignment, then an override. An "if" whose branch
+                                # yields @() writes nothing to the output stream, so
+                                # "$x = if (...) { ... } else { $empty }" lands $x as $null -
+                                # and @() is precisely the value that means "linked nowhere".
+                                $linkedOUsDisplay = $linkedOUs
+                                if ($null -eq $linkedOUs) {
+                                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
                                 # Group Policy Preferences local groups can be deployed from
@@ -208,7 +242,7 @@ function Get-GPOLocalGroupMembership {
                                     -Link $linkedOUs
 
                                 foreach ($finding in $gppGroupsFindings) {
-                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }

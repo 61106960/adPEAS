@@ -241,13 +241,32 @@ function Get-GPORegistrySettings {
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
 
                 foreach ($finding in $shown) {
-                    $linkedOUs = @()
-                    if ($gpoLinkage.ContainsKey($finding.GPOGUID)) {
-                        $linkedOUs = $gpoLinkage[$finding.GPOGUID]
+                    # $null-guarded, and three-valued. Get-GPOLinkage returns $null when the
+                    # linkage could not be resolved, and .ContainsKey on that throws. This
+                    # loop is the display loop, so the throw was caught check-wide: the
+                    # "Found N vulnerable registry setting(s)" header printed and then not a
+                    # single row followed it.
+                    $linkedOUs = $null
+                    if ($null -ne $gpoLinkage) {
+                        $linkedOUs = @()
+                        if ($gpoLinkage.ContainsKey($finding.GPOGUID)) {
+                            $linkedOUs = @($gpoLinkage[$finding.GPOGUID])
+                        }
                     }
                     # Set unconditionally, including when the list is empty: the transformer
-                    # turns that into an explicit "Not linked" row.
-                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+                    # turns that into an explicit "Not linked" row. Only the unresolved case
+                    # needs a string of its own - "Not linked" would be a claim the failed
+                    # lookup cannot support.
+                    #
+                    # Plain assignment, then an override. An "if" whose branch yields @()
+                    # writes nothing to the output stream, so "$x = if (...) { ... } else
+                    # { $empty }" lands $x as $null - and @() is precisely the value that
+                    # means "linked nowhere".
+                    $linkedOUsDisplay = $linkedOUs
+                    if ($null -eq $linkedOUs) {
+                        $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                    }
+                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 
                     # A value in a policy whose relevant half is switched off reaches no

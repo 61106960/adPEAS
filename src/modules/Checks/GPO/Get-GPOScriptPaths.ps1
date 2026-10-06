@@ -138,9 +138,24 @@ function Get-GPOScriptPaths {
                             $findings = Parse-ScriptIni -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()] -Context $context -IsPowerShell $isPowerShell
 
                             if ($findings) {
-                                $linkedOUs = @()
-                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
-                                    $linkedOUs = $gpoLinkage[$gpoGUID]
+                                # $null-guarded, and three-valued. Get-GPOLinkage returns
+                                # $null when the linkage could not be resolved at all, and
+                                # calling .ContainsKey on that throws - inside a try/catch
+                                # that logs and moves to the next file, so every finding was
+                                # dropped and the check closed with "No scripts distributed
+                                # via GPO". A transient LDAP failure therefore reported the
+                                # quietest possible result as the truth.
+                                #
+                                # $null now means unresolved and @() means resolved-to-none;
+                                # the LinkedOUs transformer renders the latter as "Not
+                                # linked", and Get-GPOEffectiveStatus declines to judge the
+                                # former rather than asserting the policy is linked nowhere.
+                                $linkedOUs = $null
+                                if ($null -ne $gpoLinkage) {
+                                    $linkedOUs = @()
+                                    if ($gpoLinkage.ContainsKey($gpoGUID)) {
+                                        $linkedOUs = @($gpoLinkage[$gpoGUID])
+                                    }
                                 }
 
                                 # Whether the GPO's half that carries this script is switched
@@ -152,8 +167,20 @@ function Get-GPOScriptPaths {
                                     -StatusEntry $gpoStatusMap[$gpoGUID] -Scope $context `
                                     -Link $linkedOUs
 
+                                # "Not linked" is what the transformer makes of an empty list,
+                                # and that would be a claim the failed lookup cannot support.
+                                #
+                                # Plain assignment, then an override. An "if" whose branch
+                                # yields @() writes nothing to the output stream, so
+                                # "$x = if (...) { ... } else { $empty }" lands $x as $null -
+                                # and @() is precisely the value that means "linked nowhere".
+                                $linkedOUsDisplay = $linkedOUs
+                                if ($null -eq $linkedOUs) {
+                                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                                }
+
                                 foreach ($finding in $findings) {
-                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }

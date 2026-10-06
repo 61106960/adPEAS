@@ -158,9 +158,29 @@ function Get-GPOScheduledTasks {
                             $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($taskFindings) {
-                                $linkedOUs = @()
-                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
-                                    $linkedOUs = $gpoLinkage[$gpoGUID]
+                                # $null-guarded, and three-valued. Get-GPOLinkage returns $null
+                                # when the linkage could not be resolved, and .ContainsKey on
+                                # that throws - inside a try/catch that logs and moves to the
+                                # next file, so every task was dropped and the check closed
+                                # with "No scheduled tasks distributed via GPO". A transient
+                                # LDAP failure reported the quietest result as the truth.
+                                $linkedOUs = $null
+                                if ($null -ne $gpoLinkage) {
+                                    $linkedOUs = @()
+                                    if ($gpoLinkage.ContainsKey($gpoGUID)) {
+                                        $linkedOUs = @($gpoLinkage[$gpoGUID])
+                                    }
+                                }
+                                # "Not linked" is what the transformer makes of an empty list,
+                                # and that would be a claim the failed lookup cannot support.
+                                #
+                                # Plain assignment, then an override. An "if" whose branch
+                                # yields @() writes nothing to the output stream, so
+                                # "$x = if (...) { ... } else { $empty }" lands $x as $null -
+                                # and @() is precisely the value that means "linked nowhere".
+                                $linkedOUsDisplay = $linkedOUs
+                                if ($null -eq $linkedOUs) {
+                                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
                                 foreach ($task in $taskFindings) {
@@ -168,7 +188,7 @@ function Get-GPOScheduledTasks {
                                     # the transformer turns that into an explicit "Not
                                     # linked" row, and a policy that runs nowhere is a
                                     # statement rather than an absence.
-                                    $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+                                    $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 
                                     # A task in a policy whose relevant half is switched off
                                     # does not run, and it used to read exactly like one that
