@@ -1042,6 +1042,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'READABLE_UNIX_PASSWORD_ATTRIBUTES'
     }
 
+    'CredentialRoaming' = @{
+        TitleFormat = "Roamed Credentials: {Name}"
+        Module = "Creds"
+        Category = "Credentials"
+        SectionTitle = "Roamed Credential Material"
+        Summary = "Finds users whose DPAPI master keys and private keys are stored in Active Directory."
+        WhyItMatters = "Credential Roaming copies a user's certificates, private keys and DPAPI master keys into attributes on their user object so the profile follows them between machines. A DPAPI master key protects everything else that user stored under DPAPI - saved RDP credentials, browser secrets, WLAN keys, the Credential Manager. The attributes hold ciphertext, not plaintext: a master key is sealed with a pre-key derived from the user's password and with the domain backup key, and the private keys are sealed with those master keys in turn. So the material becomes usable with the user's password or hash, or with the domain backup key that every domain administrator holds - and a roamed client-authentication certificate then impersonates that user without their password."
+        WhatWeCheck = @(
+            "Which users carry msPKIDPAPIMasterKeys or msPKIAccountCredentials"
+            "Whether those attributes are marked confidential in the schema (searchFlags bit 7)"
+            "Whether a roamed account is privileged"
+        )
+        FilteringNote = "The blob attributes are never retrieved. Their presence is established with an LDAP presence filter and only the name, the DN and the sync timestamp are read back, so no ciphertext travels and none reaches the report. Both attributes are also excluded from display centrally, so another check fetching a full user object cannot surface them either. Not covered yet: who holds an explicit read permission on these attributes. The confidential flag answers the blanket readability that comes from the default ACL, but a right delegated to one group by accident is invisible here. Nothing here constrains DCSync, a copy of ntds.dit or an AD backup, which read the material regardless of the flag."
+        SecureMessage = "No user object carries roamed credential material. Credential Roaming is either not in use or has never synchronised, so no private keys or DPAPI master keys are stored in the directory."
+        PrimaryFindingId = 'CREDENTIAL_ROAMING_READABLE'
+    }
+
     'GPPCredential' = @{
         TitleFormat = "GPP Credential: {Name}"
         Module = "Creds"

@@ -374,6 +374,14 @@ $Script:PrimaryAttributes = @{
         'distinguishedName'
     )
 
+    # Roamed credential material on a user object (Get-CredentialRoaming).
+    # ReadableBy carries the verdict that decides the severity, so it sits next to the
+    # material rather than at the end.
+    CredentialRoaming = @(
+        'sAMAccountName', 'distinguishedName', 'RoamedMaterial', 'ReadableBy',
+        'PrivilegedAccount', 'RoamingTimeStamp'
+    )
+
     # Credential findings (GPP and SYSVOL)
     # FilePath stays the complete path here, rather than being split into GPOGUID plus a
     # relative SourceFile like the other GPO findings. These checks also scan NETLOGON and
@@ -643,6 +651,12 @@ $Script:ExcludeAttributes = @(
     # it per finding rather than per check, and the reach verdict where a check stamps it
     # instead of partitioning. Internal bookkeeping, never a row.
     '_ReachScope', '_ReachInactive', '_ReachUnlinked',
+    # Roamed credential material. These hold DPAPI master keys and DPAPI-protected private
+    # keys, and Get-CredentialRoaming deliberately never retrieves them - presence comes
+    # from an LDAP filter instead. Excluded here as well so that another check fetching a
+    # full user object cannot put base64-encoded master keys into an HTML report somebody
+    # then mails around, which would create the exposure that check exists to report.
+    'msPKIAccountCredentials', 'msPKIDPAPIMasterKeys',
     # GPO check internal analysis flags - used for severity calculation, not for display.
     # ConsoleClass decides the colour a row is rendered in and must not appear as a row.
     #

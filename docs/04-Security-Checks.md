@@ -248,6 +248,28 @@ Get-BitLockerRecoveryKeyAccess
 
 ---
 
+### Get-CredentialRoaming
+
+**Purpose**: Reports users whose DPAPI master keys and private keys are stored in Active Directory, and whether anybody can read them.
+
+**What it checks**:
+- Which user objects carry roamed credential material (`msPKIDPAPIMasterKeys`, `msPKIAccountCredentials`), and when it last synchronised (`msPKIRoamingTimeStamp`)
+- Whether those two attributes are marked confidential in the schema (`searchFlags` bit 7, `fCONFIDENTIAL`, value 128)
+- Whether any of the affected accounts are privileged
+
+**How it works**: Two server-side presence filters, `(msPKIDPAPIMasterKeys=*)` and `(msPKIAccountCredentials=*)`. The blob attributes themselves are deliberately **not** retrieved — only the account name, DN and timestamp travel. adPEAS has no use for the ciphertext, and writing base64-encoded DPAPI master keys into an HTML report would create the very exposure the check reports. Both attributes are also excluded from display centrally, so no other check can surface them either. Readability is then read once per forest from the two `attributeSchema` objects; the schema object names (`ms-PKI-DPAPIMasterKeys`) differ from the attribute names, so both are matched. The weaker of the two attributes decides, and a forest whose schema cannot be read is reported as *unknown* rather than as either verdict.
+
+**Security Impact**: The attributes hold ciphertext, not plaintext — a master key blob is sealed with a pre-key derived from the user's password **and** with the domain backup key, and the private keys are sealed with those master keys in turn. Material present is therefore a *Hint*: private keys are sitting in the directory where they need not be, and anybody who later obtains the user's hash or the domain backup key can use them. Material a low-privileged account can read is a *Finding*: without the confidential flag, readability follows the ordinary read ACEs of the user object, so in a default domain every authenticated user harvests the roamed material of every other user with a plain LDAP read. Combined with the domain backup key — which every domain administrator holds — that yields another user's private keys offline, and a roamed client-authentication certificate then authenticates as that user without their password. None of this constrains anybody with DCSync, a copy of `ntds.dit` or an AD backup.
+
+**Not covered**: who holds an *explicit* read ACE on these attributes. The confidential flag answers the blanket readability that comes from the default ACL; a right delegated to a single group by accident is not yet detected.
+
+**Usage**:
+```powershell
+Get-CredentialRoaming
+```
+
+---
+
 ### Get-CredentialExposure
 
 **Purpose**: Detects credential exposure in SYSVOL, NETLOGON scripts, and Group Policy Preferences.
