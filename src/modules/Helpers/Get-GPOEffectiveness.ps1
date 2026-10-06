@@ -395,3 +395,228 @@ function Get-GPOReach {
         Reason  = ($text.Substring(0, 1).ToUpper() + $text.Substring(1))
     }
 }
+
+<#
+.SYNOPSIS
+    Splits GPO findings into the ones whose policy reaches a machine and the ones whose
+    does not.
+
+.DESCRIPTION
+    The partition every settings-level GPO check needs. A finding that says "this policy
+    grants SeDebugPrivilege to Helpdesk" asserts that something is configured and takes
+    effect; if the policy reaches nothing, the second half of that is false. A service
+    provider who ships a library of policies and links a handful of them turns the rest
+    into pages of findings about configuration that applies nowhere.
+
+    What it does NOT do is drop them. "Nothing found" and "found but not shown" are
+    different statements, and an unlinked policy is one gPLink write away from being live -
+    a pre-staged policy with dangerous settings is a finding a tester wants, not noise. The
+    caller decides what to print; this only sorts.
+
+    Deliberately NOT applied to the checks that report a disclosure rather than a setting.
+    A cpassword in Groups.xml is readable by Authenticated Users whether the policy is
+    linked or not, so linkage has no bearing on it. Nor to the delegation checks: who may
+    edit an unlinked policy still matters, because editing it and linking it is a two-step
+    path.
+
+.PARAMETER Finding
+    The finding objects. Each must carry the policy's GUID under GuidProperty.
+
+.PARAMETER GPOStatusMap
+    From Get-GPOStatusMap, or $null when it could not be built.
+
+.PARAMETER GPOLinkage
+    From Get-GPOLinkage. $null means the linkage could not be resolved, and every finding
+    then counts as active - see below.
+
+.PARAMETER Scope
+    Which half of the policy the check reads.
+
+.PARAMETER GuidProperty
+    Where the GUID sits on the finding. GPOGUID for the checks that build their own
+    objects; the checks that enrich a native GPO object pass 'Name', because that is what
+    a GPO's GUID is called in the directory.
+
+.OUTPUTS
+    [PSCustomObject] with Active and Inactive, both arrays, and the two counts that say
+    which of the two reasons applied: Unlinked and Disabled. There is no third reason - a
+    policy either has no enabled link, or its relevant configuration half is switched off -
+    and the summary line names them rather than saying "reaches no machine", which would
+    claim a check on the target machines that nothing here performs. A policy linked to an
+    OU holding no computer at all reaches nothing and still counts as active here.
+
+    A finding whose reach is unknown counts as ACTIVE. Unknown is not inactive: demoting or
+    hiding a real finding because the linkage could not be read would lose it, and that is
+    the worse direction to be wrong in. This is why the test below is -eq $false rather
+    than a falsiness check - $null is falsy too.
+
+.EXAMPLE
+    $split = Split-GPOFindingByReach -Finding $findings -GPOStatusMap $map -GPOLinkage $linkage -Scope 'Machine'
+    $split.Active.Count
+    $split.Inactive.Count
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Split-GPOFindingByReach {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Finding,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $GPOStatusMap,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $GPOLinkage,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateSet('Machine', 'User', 'Any')]
+        [string]$Scope = 'Any',
+
+        [Parameter(Mandatory=$false)]
+        [string]$GuidProperty = 'GPOGUID'
+    )
+
+    $active   = New-Object System.Collections.Generic.List[object]
+    $inactive = New-Object System.Collections.Generic.List[object]
+    $unlinked = 0
+    $disabled = 0
+
+    foreach ($item in @(@($Finding) | Where-Object { $_ })) {
+        $guid = "$($item.$GuidProperty)".ToUpper()
+
+        # Tested against $null, not for truth. An empty map is a real answer - the query
+        # ran and nothing in the domain carries a gPLink - and it has to stay
+        # distinguishable from a linkage that could not be read at all. Truthiness cannot
+        # carry that: @{} happens to be truthy in PowerShell, so it would read as resolved,
+        # but a caller that wrote `if ($GPOLinkage)` would be relying on an accident rather
+        # than on the contract.
+        $links = $null
+        if ($null -ne $GPOLinkage) {
+            $links = @()
+            if ($GPOLinkage.ContainsKey($guid)) { $links = @($GPOLinkage[$guid]) }
+        }
+
+        $statusEntry = $null
+        if ($GPOStatusMap -and $GPOStatusMap.ContainsKey($guid)) { $statusEntry = $GPOStatusMap[$guid] }
+
+        $reach = Get-GPOReach -StatusEntry $statusEntry -Scope $Scope -Link $links
+
+        # -eq $false, not -not: $null is falsy, and an unresolved linkage must not be read
+        # as inactive. See the OUTPUTS note above.
+        if ($reach.Reaches -eq $false) {
+            $inactive.Add($item)
+
+            # Which of the two reasons, for the summary line. "Linked nowhere" is checked
+            # first because it is the one a reader acts on differently: an unlinked policy
+            # is a cleanup candidate, a disabled one is a deliberate switch somebody threw.
+            # A policy that is both counts as unlinked, since linking it would still not
+            # make it apply.
+            if ($reach.Reason -like '*linked nowhere*') { $unlinked++ } else { $disabled++ }
+        } else {
+            $active.Add($item)
+        }
+    }
+
+    # ToArray(), not @($active). Casting a hashtable to PSCustomObject throws
+    # "Argument types do not match" when a value is @() wrapped around a
+    # List[object] - @($list) and $list.ToArray() are not interchangeable here, and the
+    # failure is a terminating error inside the function, which the calling check turns
+    # into "Error during check" with no hint of where it came from.
+    return [PSCustomObject]@{
+        Active   = $active.ToArray()
+        Inactive = $inactive.ToArray()
+        Unlinked = $unlinked
+        Disabled = $disabled
+    }
+}
+
+<#
+.SYNOPSIS
+    The one line that stands in for the GPO findings whose policy reaches nothing.
+
+.DESCRIPTION
+    Worded here so that eight checks say it the same way, and so that the count is never
+    silently absent. Without this line a reader cannot tell a domain with nothing to report
+    from one whose findings were all filtered out - the distinction a blind SYSVOL scan
+    once got wrong by reporting a failed read as a clean result.
+
+    Short on purpose. Ten GPO checks print this during a full scan, and a sentence of
+    advice repeated ten times is the kind of noise the dampening exists to remove.
+
+    It names the reason rather than the consequence. An earlier wording said the policy
+    "reaches no machine", which claimed more than adPEAS establishes: a policy linked to an
+    OU that holds no computer reaches nothing and is not what this counts. There are only
+    two reasons here, and they are the two a reader acts on differently - an unlinked
+    policy is a cleanup candidate, a disabled one is a switch somebody threw on purpose.
+
+    The -IncludeInactive hint appears only when the check was called directly, because that
+    is the only context in which it is true: the switch belongs to the individual check and
+    is deliberately not plumbed through Invoke-adPEAS, so telling a reader of a full scan
+    to pass it would send them to a parameter that is not there. The check knows which
+    context it is in - Invoke-adPEAS sets the check context before each check and clears it
+    after, so an absent context means a direct call.
+
+.PARAMETER Unlinked
+    How many findings sit on a policy that is linked nowhere.
+
+.PARAMETER Disabled
+    How many sit on a policy whose links or whose relevant configuration half are switched
+    off. Both are "not active" from a reader's point of view, so they share a word.
+
+.PARAMETER Listed
+    Whether those findings are being printed as well. Changes the line from an account of
+    what is missing into an explanation of what is there.
+
+.OUTPUTS
+    None. Writes one Note line, and nothing at all when both counts are zero.
+
+.EXAMPLE
+    Show-GPOInactiveSummary -Unlinked 2 -Disabled 1
+    [*] 3 further finding(s) hidden - 2 on unlinked policies, 1 on disabled ones
+#>
+function Show-GPOInactiveSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [int]$Unlinked = 0,
+
+        [Parameter(Mandatory=$false)]
+        [int]$Disabled = 0,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$Listed
+    )
+
+    $Count = $Unlinked + $Disabled
+    if ($Count -le 0) { return }
+
+    # One reason or both. Naming only the reason that applies keeps the common case short.
+    $reason = if ($Unlinked -gt 0 -and $Disabled -gt 0) {
+        "$Unlinked on unlinked policies, $Disabled on disabled ones"
+    } elseif ($Unlinked -gt 0) {
+        'the policy is not linked'
+    } else {
+        'the policy is disabled'
+    }
+
+    if ($Listed) {
+        Show-Line "$Count of the findings below sit on a policy that is not linked or not enabled" -Class Note
+        return
+    }
+
+    $text = "$Count further finding(s) hidden - $reason"
+
+    # Invoke-adPEAS sets the context for the duration of each check, so no context means
+    # the check was called on its own and the switch is reachable.
+    if ($null -eq $Script:adPEAS_CurrentCheckContext) {
+        $text += ' (-IncludeInactive to list)'
+    }
+
+    Show-Line $text -Class Note
+}

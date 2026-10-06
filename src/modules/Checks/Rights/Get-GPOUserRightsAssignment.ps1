@@ -88,7 +88,10 @@ function Get-GPOUserRightsAssignment {
 
         [Parameter(Mandatory=$false)]
         [Alias('IncludePrivileged')]
-        [switch]$IncludeDefaults
+        [switch]$IncludeDefaults,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -358,28 +361,54 @@ function Get-GPOUserRightsAssignment {
             $Script:gpoUserRightsSysvolScanned = $null
 
             if ($findings.Count -gt 0) {
-                $deviations = @($findings | Where-Object { $_._severity -ne 'Note' })
-                $hasFinding = @($findings | Where-Object { $_._severity -eq 'Finding' }).Count -gt 0
+                # A deviation in a policy that reaches no machine is configured and applies
+                # nowhere. Reported, because an unlinked policy is one gPLink write from
+                # being live, but not counted among the deviations and not printed row by
+                # row: a service provider who ships a library of policies and links a few
+                # otherwise buries the live ones under the dormant ones.
+                $split = Split-GPOFindingByReach -Finding $findings -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -Scope 'Machine'
+
+                $shown = if ($IncludeInactive) { @($findings) } else { @($split.Active) }
+                $inactiveCount = @($split.Inactive).Count
+
+                # Counted over what is actually printed. Counting all of them would promise
+                # a number the body does not deliver.
+                $deviations = @($shown | Where-Object { $_._severity -ne 'Note' })
+                $hasFinding = @($shown | Where-Object { $_._severity -eq 'Finding' }).Count -gt 0
                 $headerClass = if ($hasFinding) { "Finding" } else { "Hint" }
 
                 if ($deviations.Count -gt 0) {
                     Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
+                } elseif ($inactiveCount -gt 0) {
+                    # Not Secure. Every departure sits on a policy that reaches nothing,
+                    # which is a different statement from having none, and the summary line
+                    # below carries the count.
+                    Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class "Secure"
                 } else {
                     Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
                 }
 
-                $removalsOnly = @($findings | Where-Object { $_._severity -eq 'Note' })
+                $removalsOnly = @($shown | Where-Object { $_._severity -eq 'Note' })
                 if ($removalsOnly.Count -gt 0) {
                     Show-Line "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break" -Class "Note"
                 }
 
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
                 # Findings first, then hints, then the removals
-                $ordered = @($findings | Sort-Object @{Expression={
+                $ordered = @($shown | Sort-Object @{Expression={
                     switch ($_._severity) { 'Finding' { 0 } 'Hint' { 1 } default { 2 } }
                 }}, GPOName, UserRight)
                 foreach ($finding in $ordered) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOUserRights' -Force
-                    Show-Object $finding -Class $finding._severity
+
+                    # An inactive one is printed in the colour of a note whatever its own
+                    # severity says. The severity describes the setting; the colour has to
+                    # describe the risk, and a setting that applies nowhere carries none
+                    # today. LinkedOUs and GPOStatus on the row say why.
+                    $class = if (@($split.Inactive) -contains $finding) { 'Note' } else { $finding._severity }
+                    Show-Object $finding -Class $class
                 }
             } elseif ((Test-SysvolAccessible) -eq $false) {
                 # SYSVOL could not be read - report honestly instead of implying a clean result
