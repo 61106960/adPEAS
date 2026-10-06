@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-05 15:45:07
-    Version: 2.6.0+20261005-1545
+    Build: 2026-10-06 10:00:41
+    Version: 2.6.0+20261006-1000
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6563,6 +6563,10 @@ $Script:ExcludeAttributes = @(
     # Precedence bookkeeping behind the EffectiveSetting sentence. _IsEffective is the
     # boolean the row colouring still needs; the sentence is what a reader gets.
     '_IsEffective', '_HasAnyLink',
+    # Which half of the policy a finding depends on, so Split-GPOFindingByReach can judge
+    # it per finding rather than per check, and the reach verdict where a check stamps it
+    # instead of partitioning. Internal bookkeeping, never a row.
+    '_ReachScope', '_ReachInactive', '_ReachUnlinked',
     # GPO check internal analysis flags - used for severity calculation, not for display.
     # ConsoleClass decides the colour a row is rendered in and must not appear as a row.
     #
@@ -73836,6 +73840,368 @@ function Get-GPOOverriddenText {
     return "No - overridden by '$WinnerName'"
 }
 
+<#
+.SYNOPSIS
+    Answers whether a Group Policy reaches a machine at all.
+
+.DESCRIPTION
+    The one question eleven checks need and each used to answer for itself, which is how
+    they drifted apart: the same unlinked policy was a finding in one section, a note in
+    another and the effective setting in a third.
+
+    What it reads is the directory: whether an enabled link exists, and whether the
+    relevant half of the policy is switched on.
+
+    WHAT IT DOES NOT DO, and the reason it is not called Test-GPOApplies. A policy that
+    passes this can still apply to nothing:
+
+      - A WMI filter that matches no machine.
+      - Security filtering. Remove Authenticated Users from the Apply Group Policy right
+        and grant it to nobody and the policy reaches nothing, while every link stays
+        enabled. This one is computable from the GPO's own DACL and Get-GPOPermissions
+        already parses it, so it is the obvious refinement - it is simply not read here.
+      - Block inheritance and Enforced, which together need real RSoP.
+
+    So a $true means "nothing in the directory stops this from applying", not "this
+    applies". A name that claimed the latter would invite the next reader to trust it as
+    an RSoP answer, which it is not.
+
+    Reaches is deliberately three-valued. $null is unknown, and a caller must not dampen a
+    finding on it: a linkage that could not be resolved is missing information, and
+    demoting a real finding for missing information is the worse direction to be wrong in.
+    Same discipline as the Resolved flag on Get-CertificateTrustAnchor.
+
+.PARAMETER StatusEntry
+    The policy's entry from Get-GPOStatusMap, or $null when it has none.
+
+.PARAMETER Scope
+    Which half of the policy the caller cares about. A check that reads MACHINE settings
+    passes 'Machine', and a disabled user configuration then does not count against it.
+
+.PARAMETER Link
+    The policy's link records. Follows the convention the GPO checks already use, and the
+    distinction carries the whole three-valued answer:
+
+      $null  linkage could not be resolved -> Reaches is $null
+      @()    resolved, and the policy is linked nowhere -> Reaches is $false
+
+    Wrapped defensively, because @($null) is an array of count one holding $null, and a
+    caller that built its list from a missing hashtable key hands over exactly that.
+
+.OUTPUTS
+    [PSCustomObject] with
+      Reaches - $true, $false, or $null for unknown
+      Reason  - $null when it reaches, otherwise a sentence naming what stops it
+
+.EXAMPLE
+    $reach = Get-GPOReach -StatusEntry $statusMap[$guid] -Scope 'Machine' -Link $links
+    if ($reach.Reaches -eq $false) { "inactive: $($reach.Reason)" }
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Get-GPOReach {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $StatusEntry,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateSet('Machine', 'User', 'Any')]
+        [string]$Scope = 'Any',
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Link
+    )
+
+    if ($null -eq $Link) {
+        return [PSCustomObject]@{
+            Reaches = $null
+            Reason  = 'Unknown - the linkage could not be resolved'
+        }
+    }
+
+    $reasons = @()
+
+    # Real link records only. A slot holding $null is not a link, and counting it as one
+    # would report a policy linked nowhere as linked.
+    $links = @(@($Link) | Where-Object { $_ })
+
+    if ($links.Count -eq 0) {
+        $reasons += 'the policy is linked nowhere'
+    } else {
+        # A record with no LinkStatus counts as enabled, which is the conservative
+        # direction - a cross-domain or hand-built entry carries none.
+        $activeLinks = @($links | Where-Object { $_.LinkStatus -ne 'Disabled' })
+        if ($activeLinks.Count -eq 0) { $reasons += 'every link is disabled' }
+    }
+
+    # The configuration half, worded once in Get-GPOEffectiveStatus. Called with no Link so
+    # it reports only the status reasons; the link state is decided above.
+    $statusReason = Get-GPOEffectiveStatus -StatusEntry $StatusEntry -Scope $Scope -Link $null
+    if ($statusReason) { $reasons += $statusReason.ToLower() }
+
+    if ($reasons.Count -eq 0) {
+        return [PSCustomObject]@{ Reaches = $true; Reason = $null }
+    }
+
+    $text = $reasons -join ', '
+    return [PSCustomObject]@{
+        Reaches = $false
+        Reason  = ($text.Substring(0, 1).ToUpper() + $text.Substring(1))
+    }
+}
+
+<#
+.SYNOPSIS
+    Splits GPO findings into the ones whose policy reaches a machine and the ones whose
+    does not.
+
+.DESCRIPTION
+    The partition every settings-level GPO check needs. A finding that says "this policy
+    grants SeDebugPrivilege to Helpdesk" asserts that something is configured and takes
+    effect; if the policy reaches nothing, the second half of that is false. A service
+    provider who ships a library of policies and links a handful of them turns the rest
+    into pages of findings about configuration that applies nowhere.
+
+    What it does NOT do is drop them. "Nothing found" and "found but not shown" are
+    different statements, and an unlinked policy is one gPLink write away from being live -
+    a pre-staged policy with dangerous settings is a finding a tester wants, not noise. The
+    caller decides what to print; this only sorts.
+
+    Deliberately NOT applied to the checks that report a disclosure rather than a setting.
+    A cpassword in Groups.xml is readable by Authenticated Users whether the policy is
+    linked or not, so linkage has no bearing on it. Nor to the delegation checks: who may
+    edit an unlinked policy still matters, because editing it and linking it is a two-step
+    path.
+
+.PARAMETER Finding
+    The finding objects. Each must carry the policy's GUID under GuidProperty.
+
+.PARAMETER GPOStatusMap
+    From Get-GPOStatusMap, or $null when it could not be built.
+
+.PARAMETER GPOLinkage
+    From Get-GPOLinkage. $null means the linkage could not be resolved, and every finding
+    then counts as active - see below.
+
+.PARAMETER Scope
+    Which half of the policy the check reads, when that is the same for every finding.
+
+.PARAMETER ScopeProperty
+    For a check whose findings do not share one half. The registry check derives it per
+    finding from the hive - a value under Machine\Registry.pol writes HKLM, the one under
+    User writes HKCU - and a policy with only its computer configuration switched off
+    stops the first and not the second. Passing one scope for all of them would lose that
+    and leave such a finding at full severity.
+
+    Names a property holding 'Machine', 'User' or 'Any'. Where it is absent or holds
+    something else, Scope applies.
+
+.PARAMETER GuidProperty
+    Where the GUID sits on the finding. GPOGUID for the checks that build their own
+    objects; the checks that enrich a native GPO object pass 'Name', because that is what
+    a GPO's GUID is called in the directory.
+
+.OUTPUTS
+    [PSCustomObject] with Active and Inactive, both arrays, and the two counts that say
+    which of the two reasons applied: Unlinked and Disabled. There is no third reason - a
+    policy either has no enabled link, or its relevant configuration half is switched off -
+    and the summary line names them rather than saying "reaches no machine", which would
+    claim a check on the target machines that nothing here performs. A policy linked to an
+    OU holding no computer at all reaches nothing and still counts as active here.
+
+    A finding whose reach is unknown counts as ACTIVE. Unknown is not inactive: demoting or
+    hiding a real finding because the linkage could not be read would lose it, and that is
+    the worse direction to be wrong in. This is why the test below is -eq $false rather
+    than a falsiness check - $null is falsy too.
+
+.EXAMPLE
+    $split = Split-GPOFindingByReach -Finding $findings -GPOStatusMap $map -GPOLinkage $linkage -Scope 'Machine'
+    $split.Active.Count
+    $split.Inactive.Count
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Split-GPOFindingByReach {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Finding,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $GPOStatusMap,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $GPOLinkage,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateSet('Machine', 'User', 'Any')]
+        [string]$Scope = 'Any',
+
+        [Parameter(Mandatory=$false)]
+        [string]$ScopeProperty,
+
+        [Parameter(Mandatory=$false)]
+        [string]$GuidProperty = 'GPOGUID'
+    )
+
+    $active   = New-Object System.Collections.Generic.List[object]
+    $inactive = New-Object System.Collections.Generic.List[object]
+    $unlinked = 0
+    $disabled = 0
+
+    foreach ($item in @(@($Finding) | Where-Object { $_ })) {
+        $guid = "$($item.$GuidProperty)".ToUpper()
+
+        # Tested against $null, not for truth. An empty map is a real answer - the query
+        # ran and nothing in the domain carries a gPLink - and it has to stay
+        # distinguishable from a linkage that could not be read at all. Truthiness cannot
+        # carry that: @{} happens to be truthy in PowerShell, so it would read as resolved,
+        # but a caller that wrote `if ($GPOLinkage)` would be relying on an accident rather
+        # than on the contract.
+        $links = $null
+        if ($null -ne $GPOLinkage) {
+            $links = @()
+            if ($GPOLinkage.ContainsKey($guid)) { $links = @($GPOLinkage[$guid]) }
+        }
+
+        $statusEntry = $null
+        if ($GPOStatusMap -and $GPOStatusMap.ContainsKey($guid)) { $statusEntry = $GPOStatusMap[$guid] }
+
+        # Per-finding scope where the check supplies one. Anything other than the three
+        # Get-GPOReach accepts falls back rather than throwing on a ValidateSet: a finding
+        # with a missing or malformed scope should be judged, not lose the whole run.
+        $itemScope = $Scope
+        if ($ScopeProperty) {
+            $candidate = "$($item.$ScopeProperty)"
+            if ($candidate -in @('Machine', 'User', 'Any')) { $itemScope = $candidate }
+        }
+
+        $reach = Get-GPOReach -StatusEntry $statusEntry -Scope $itemScope -Link $links
+
+        # -eq $false, not -not: $null is falsy, and an unresolved linkage must not be read
+        # as inactive. See the OUTPUTS note above.
+        if ($reach.Reaches -eq $false) {
+            $inactive.Add($item)
+
+            # Which of the two reasons, for the summary line. "Linked nowhere" is checked
+            # first because it is the one a reader acts on differently: an unlinked policy
+            # is a cleanup candidate, a disabled one is a deliberate switch somebody threw.
+            # A policy that is both counts as unlinked, since linking it would still not
+            # make it apply.
+            if ($reach.Reason -like '*linked nowhere*') { $unlinked++ } else { $disabled++ }
+        } else {
+            $active.Add($item)
+        }
+    }
+
+    # ToArray(), not @($active). Casting a hashtable to PSCustomObject throws
+    # "Argument types do not match" when a value is @() wrapped around a
+    # List[object] - @($list) and $list.ToArray() are not interchangeable here, and the
+    # failure is a terminating error inside the function, which the calling check turns
+    # into "Error during check" with no hint of where it came from.
+    return [PSCustomObject]@{
+        Active   = $active.ToArray()
+        Inactive = $inactive.ToArray()
+        Unlinked = $unlinked
+        Disabled = $disabled
+    }
+}
+
+<#
+.SYNOPSIS
+    The one line that stands in for the GPO findings whose policy reaches nothing.
+
+.DESCRIPTION
+    Worded here so that eight checks say it the same way, and so that the count is never
+    silently absent. Without this line a reader cannot tell a domain with nothing to report
+    from one whose findings were all filtered out - the distinction a blind SYSVOL scan
+    once got wrong by reporting a failed read as a clean result.
+
+    Short on purpose. Ten GPO checks print this during a full scan, and a sentence of
+    advice repeated ten times is the kind of noise the dampening exists to remove.
+
+    It names the reason rather than the consequence. An earlier wording said the policy
+    "reaches no machine", which claimed more than adPEAS establishes: a policy linked to an
+    OU that holds no computer reaches nothing and is not what this counts. There are only
+    two reasons here, and they are the two a reader acts on differently - an unlinked
+    policy is a cleanup candidate, a disabled one is a switch somebody threw on purpose.
+
+    The -IncludeInactive hint appears only when the check was called directly, because that
+    is the only context in which it is true: the switch belongs to the individual check and
+    is deliberately not plumbed through Invoke-adPEAS, so telling a reader of a full scan
+    to pass it would send them to a parameter that is not there. The check knows which
+    context it is in - Invoke-adPEAS sets the check context before each check and clears it
+    after, so an absent context means a direct call.
+
+.PARAMETER Unlinked
+    How many findings sit on a policy that is linked nowhere.
+
+.PARAMETER Disabled
+    How many sit on a policy whose links or whose relevant configuration half are switched
+    off. Both are "not active" from a reader's point of view, so they share a word.
+
+.PARAMETER Listed
+    Whether those findings are being printed as well. Changes the line from an account of
+    what is missing into an explanation of what is there.
+
+.OUTPUTS
+    None. Writes one Note line, and nothing at all when both counts are zero.
+
+.EXAMPLE
+    Show-GPOInactiveSummary -Unlinked 2 -Disabled 1
+    [*] 3 further finding(s) hidden - 2 on unlinked policies, 1 on disabled ones
+#>
+function Show-GPOInactiveSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [int]$Unlinked = 0,
+
+        [Parameter(Mandatory=$false)]
+        [int]$Disabled = 0,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$Listed
+    )
+
+    $Count = $Unlinked + $Disabled
+    if ($Count -le 0) { return }
+
+    # One reason or both. Naming only the reason that applies keeps the common case short.
+    $reason = if ($Unlinked -gt 0 -and $Disabled -gt 0) {
+        "$Unlinked on unlinked policies, $Disabled on disabled ones"
+    } elseif ($Unlinked -gt 0) {
+        'the policy is not linked'
+    } else {
+        'the policy is disabled'
+    }
+
+    if ($Listed) {
+        Show-Line "$Count of the findings below sit on a policy that is not linked or not enabled" -Class Note
+        return
+    }
+
+    $text = "$Count further finding(s) hidden - $reason"
+
+    # Invoke-adPEAS sets the context for the duration of each check, so no context means
+    # the check was called on its own and the switch is reachable.
+    if ($null -eq $Script:adPEAS_CurrentCheckContext) {
+        $text += ' (-IncludeInactive to list)'
+    }
+
+    Show-Line $text -Class Note
+}
+
 
 
 # ----- Get-GPORelativePath.ps1 -----
@@ -75332,6 +75698,12 @@ function Get-GPOLinkage {
     .OUTPUTS
     Hashtable with GPO GUID as key and array of linked locations as value.
 
+    $null when the linkage could not be established - no LDAP session, no domain DN, or an
+    enumeration that threw. An empty hashtable means the opposite: the query ran and no
+    object in the domain carries a gPLink. Callers rely on that distinction, so the two
+    must never be conflated; @{} is truthy in PowerShell while $null is not, which is how
+    a caller tells them apart.
+
     .NOTES
     Author: Alexander Sturz (@_61106960_)
     #>
@@ -75500,6 +75872,23 @@ function Get-GPOLinkage {
         catch {
             Write-Error "Error during GPO linkage enumeration: $_"
             Write-Log $_.Exception.StackTrace
+
+            # $null, not the map built so far. An enumeration that threw knows nothing
+            # about the links it never read, and an empty or partial hashtable is
+            # indistinguishable from "nothing is linked in this domain" - note that @{} is
+            # truthy in PowerShell, unlike @(), so a caller testing the result for truth
+            # cannot tell the two apart either.
+            #
+            # That difference used to be cosmetic: a finding showed "Not linked" where it
+            # should have said "Unknown". It stopped being cosmetic once callers began
+            # dampening findings on policies that reach nothing, because a transient LDAP
+            # failure would then silence the entire GPO analysis and report the quietest
+            # possible result as the truth.
+            #
+            # The cache is cleared with it, so the next call retries rather than serving a
+            # failure as an answer for the rest of the session.
+            $Script:CachedGPOLinkage = $null
+            return $null
         }
 
         return $gpoLinkage
@@ -93124,7 +93513,10 @@ function Get-LDAPConfiguration {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -93133,8 +93525,16 @@ function Get-LDAPConfiguration {
 
     process {
         try {
+            # Connection parameters only. -IncludeInactive belongs to this check and none
+            # of the callees below has a parameter by that name, so splatting
+            # $PSBoundParameters failed to bind - a terminating error before any output.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -93143,7 +93543,7 @@ function Get-LDAPConfiguration {
             $domainFQDN = $Script:LDAPContext.Domain
             $dcServer = $Script:LDAPContext.Server
 
-            $allGPOs = Get-DomainGPO @PSBoundParameters
+            $allGPOs = Get-DomainGPO @connectionParams
 
             if (-not $allGPOs) {
                 Show-Line "No GPOs found" -Class Hint
@@ -93158,7 +93558,7 @@ function Get-LDAPConfiguration {
             # -DomainController rather than the SERVER_TRUST_ACCOUNT bit written out: an
             # RODC does not carry that bit and answers LDAP just the same, so the count
             # below was short and the configuration of every read-only DC went unexamined.
-            $domainControllers = @(Get-DomainComputer -DomainController @PSBoundParameters)
+            $domainControllers = @(Get-DomainComputer -DomainController @connectionParams)
 
             $dcCount = $domainControllers.Count
 
@@ -93489,11 +93889,39 @@ function Get-LDAPConfiguration {
                     ) -Force
                 }
 
+                # A signing setting in a policy that is not linked or not enabled reaches no
+                # domain controller. Held back rather than dropped - see
+                # Show-GPOInactiveSummary. GuidProperty is Name, because these are native
+                # GPO objects and that is what a GPO's GUID is called in the directory.
+                #
+                # The reach predicate overlaps with EffectiveSetting above and does not
+                # replace it: that one says which policy wins the precedence contest, this
+                # one whether the policy applies at all. A policy can reach the DCs and
+                # still lose to another.
+                $split = Split-GPOFindingByReach -Finding $gpoFindings -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -Scope 'Machine' -GuidProperty 'Name'
+
+                $shown = if ($IncludeInactive) { @($gpoFindings) } else { @($split.Active) }
+
                 # Show Found message BEFORE data
-                Show-Line "Found LDAP security configuration in $($gpoFindings.Count) GPO(s):" -Class Hint
-                foreach ($gpoFinding in $gpoFindings) {
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found LDAP security configuration in $(@($shown).Count) GPO(s):" -Class Hint
+                } else {
+                    # Every policy that configures it is dormant, which leaves the DCs on
+                    # whatever the OS defaults to - the same exposure as configuring nothing.
+                    Show-Line "No LDAP security configuration is deployed by a policy that is linked and enabled - all $dcCount DC(s) potentially vulnerable" -Class Finding
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($gpoFinding in $shown) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
-                    Show-Object $gpoFinding
+
+                    if (@($split.Inactive) -contains $gpoFinding) {
+                        Show-Object $gpoFinding -Class Note
+                    } else {
+                        Show-Object $gpoFinding
+                    }
                 }
 
             } else {
@@ -93552,7 +93980,10 @@ function Get-SMBSigningStatus {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -93561,8 +93992,16 @@ function Get-SMBSigningStatus {
 
     process {
         try {
+            # Connection parameters only. -IncludeInactive belongs to this check and
+            # neither callee has a parameter by that name, so splatting $PSBoundParameters
+            # failed to bind - a terminating error before any output.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -93571,7 +94010,7 @@ function Get-SMBSigningStatus {
             $domainFQDN = $Script:LDAPContext.Domain
             $dcServer = $Script:LDAPContext.Server
 
-            $allGPOs = Get-DomainGPO @PSBoundParameters
+            $allGPOs = Get-DomainGPO @connectionParams
 
             if (-not $allGPOs -or @($allGPOs).Count -eq 0) {
                 Show-Line "No GPOs found" -Class Note
@@ -93806,10 +94245,33 @@ function Get-SMBSigningStatus {
                     ) -Force
                 }
 
-                Show-Line "Found SMB Signing configuration in $(@($gpoFindings).Count) GPO(s):" -Class Hint
-                foreach ($gpoFinding in $gpoFindings) {
+                # A signing setting in a policy that is not linked or not enabled reaches no
+                # machine. Held back rather than dropped - see Show-GPOInactiveSummary.
+                # GuidProperty is Name: these are native GPO objects, and that is what a
+                # GPO's GUID is called in the directory.
+                $split = Split-GPOFindingByReach -Finding $gpoFindings -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkageForEff -Scope 'Machine' -GuidProperty 'Name'
+
+                $shown = if ($IncludeInactive) { @($gpoFindings) } else { @($split.Active) }
+
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found SMB Signing configuration in $(@($shown).Count) GPO(s):" -Class Hint
+                } else {
+                    # Every policy that configures signing is dormant, which leaves every
+                    # machine on the OS default - the same exposure as configuring nothing.
+                    Show-Line "No SMB Signing configuration is deployed by a policy that is linked and enabled" -Class Finding
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($gpoFinding in $shown) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigning' -Force
-                    Show-Object $gpoFinding
+
+                    if (@($split.Inactive) -contains $gpoFinding) {
+                        Show-Object $gpoFinding -Class Note
+                    } else {
+                        Show-Object $gpoFinding
+                    }
                 }
 
                 # Check if SMB Signing is only configured for Domain Controllers
@@ -98292,7 +98754,9 @@ function Get-AddComputerRights {
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory=$false)]
-        [switch]$IncludePrivileged
+        [switch]$IncludePrivileged,
+
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -98530,19 +98994,41 @@ function Get-AddComputerRights {
                 $effectiveGPO = @($gpoFindings | Where-Object { $_._IsEffective -eq $true })[0]
                 $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
 
-                $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
-                Show-Line "Found $(@($gpoFindings).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
+                # A policy that is not linked or not enabled grants the privilege to nobody.
+                # Held back rather than dropped - see Show-GPOInactiveSummary. The verdict
+                # was stamped in Check-GPOAddComputerRights, where the linkage lives.
+                $inactiveGPOs = @($gpoFindings | Where-Object { $_._ReachInactive })
+                $shownGPOs    = if ($IncludeInactive) { @($gpoFindings) } else { @($gpoFindings | Where-Object { -not $_._ReachInactive }) }
 
-                # Show all GPOs that define SeMachineAccountPrivilege, sorted by precedence (highest first)
-                $scopePriorityMap = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
-                $sortedGPOs = @($gpoFindings | Sort-Object @{Expression={$scopePriorityMap[$_._PrecedenceScope]}}, _PrecedenceOrder)
+                $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
+                if (@($shownGPOs).Count -gt 0) {
+                    Show-Line "Found $(@($shownGPOs).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
+                } else {
+                    Show-Line "No policy that is linked and enabled configures SeMachineAccountPrivilege" -Class Note
+                }
+
+                Show-GPOInactiveSummary `
+                    -Unlinked @($inactiveGPOs | Where-Object { $_._ReachUnlinked }).Count `
+                    -Disabled @($inactiveGPOs | Where-Object { -not $_._ReachUnlinked }).Count `
+                    -Listed:$IncludeInactive
+
+                # Show all GPOs that define SeMachineAccountPrivilege, sorted by precedence
+                # (highest first). OtherOU is in the map because a scope missing from it
+                # sorts as $null, which puts it ahead of the domain-level winner.
+                $scopePriorityMap = @{ "DomainControllers" = 1; "Domain" = 2; "OtherOU" = 3; "NotLinked" = 4 }
+                $sortedGPOs = @($shownGPOs | Sort-Object @{Expression={$scopePriorityMap[$_._PrecedenceScope]}}, _PrecedenceOrder)
 
                 foreach ($gpo in $sortedGPOs) {
                     $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerGPO' -Force
 
                     $isEffective = $gpo._IsEffective -eq $true
                     $isDangerous = $gpo._HasAuthenticatedUsers -or $gpo._HasEveryone
-                    $objectClass = if ($isEffective) {
+                    $objectClass = if ($gpo._ReachInactive) {
+                        # Grey whatever the accounts say: the privilege is granted to nobody
+                        # while the policy reaches nothing, and EffectiveSetting on the row
+                        # says why.
+                        'Note'
+                    } elseif ($isEffective) {
                         if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
                     } else {
                         if ($isDangerous) { "Hint" } else { "Standard" }
@@ -98736,6 +99222,19 @@ function Check-GPOAddComputerRights {
                             $gpo | Add-Member -NotePropertyName '_IsEffective'          -NotePropertyValue $false -Force
                             $gpo | Add-Member -NotePropertyName '_HasAnyLink'           -NotePropertyValue ([bool](@($links | Where-Object { $_ }).Count)) -Force
 
+                            # Whether this policy reaches a machine at all, stamped here
+                            # rather than in the output block because the linkage and the
+                            # status map only exist in this function. Split-GPOFindingByReach
+                            # would need both, so the caller reads the verdict instead.
+                            #
+                            # -eq $false on purpose: an unresolved linkage answers $null,
+                            # which must not be read as inactive.
+                            $reach = Get-GPOReach -StatusEntry $gpoStatusMap[$gpoGUIDKey] -Scope 'Machine' -Link $links
+                            $gpo | Add-Member -NotePropertyName '_ReachInactive' `
+                                -NotePropertyValue ($reach.Reaches -eq $false) -Force
+                            $gpo | Add-Member -NotePropertyName '_ReachUnlinked' `
+                                -NotePropertyValue ([bool]($reach.Reason -like '*linked nowhere*')) -Force
+
                             # Where the policy applies. The full link records, disabled ones
                             # included - the LinkedOUs transformer marks those and renders an
                             # empty list as "Not linked".
@@ -98901,7 +99400,10 @@ function Get-GPOUserRightsAssignment {
 
         [Parameter(Mandatory=$false)]
         [Alias('IncludePrivileged')]
-        [switch]$IncludeDefaults
+        [switch]$IncludeDefaults,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -99171,28 +99673,54 @@ function Get-GPOUserRightsAssignment {
             $Script:gpoUserRightsSysvolScanned = $null
 
             if ($findings.Count -gt 0) {
-                $deviations = @($findings | Where-Object { $_._severity -ne 'Note' })
-                $hasFinding = @($findings | Where-Object { $_._severity -eq 'Finding' }).Count -gt 0
+                # A deviation in a policy that reaches no machine is configured and applies
+                # nowhere. Reported, because an unlinked policy is one gPLink write from
+                # being live, but not counted among the deviations and not printed row by
+                # row: a service provider who ships a library of policies and links a few
+                # otherwise buries the live ones under the dormant ones.
+                $split = Split-GPOFindingByReach -Finding $findings -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -Scope 'Machine'
+
+                $shown = if ($IncludeInactive) { @($findings) } else { @($split.Active) }
+                $inactiveCount = @($split.Inactive).Count
+
+                # Counted over what is actually printed. Counting all of them would promise
+                # a number the body does not deliver.
+                $deviations = @($shown | Where-Object { $_._severity -ne 'Note' })
+                $hasFinding = @($shown | Where-Object { $_._severity -eq 'Finding' }).Count -gt 0
                 $headerClass = if ($hasFinding) { "Finding" } else { "Hint" }
 
                 if ($deviations.Count -gt 0) {
                     Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
+                } elseif ($inactiveCount -gt 0) {
+                    # Not Secure. Every departure sits on a policy that reaches nothing,
+                    # which is a different statement from having none, and the summary line
+                    # below carries the count.
+                    Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class "Secure"
                 } else {
                     Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
                 }
 
-                $removalsOnly = @($findings | Where-Object { $_._severity -eq 'Note' })
+                $removalsOnly = @($shown | Where-Object { $_._severity -eq 'Note' })
                 if ($removalsOnly.Count -gt 0) {
                     Show-Line "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break" -Class "Note"
                 }
 
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
                 # Findings first, then hints, then the removals
-                $ordered = @($findings | Sort-Object @{Expression={
+                $ordered = @($shown | Sort-Object @{Expression={
                     switch ($_._severity) { 'Finding' { 0 } 'Hint' { 1 } default { 2 } }
                 }}, GPOName, UserRight)
                 foreach ($finding in $ordered) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOUserRights' -Force
-                    Show-Object $finding -Class $finding._severity
+
+                    # An inactive one is printed in the colour of a note whatever its own
+                    # severity says. The severity describes the setting; the colour has to
+                    # describe the risk, and a setting that applies nowhere carries none
+                    # today. LinkedOUs and GPOStatus on the row say why.
+                    $class = if (@($split.Inactive) -contains $finding) { 'Note' } else { $finding._severity }
+                    Show-Object $finding -Class $class
                 }
             } elseif ((Test-SysvolAccessible) -eq $false) {
                 # SYSVOL could not be read - report honestly instead of implying a clean result
@@ -101505,7 +102033,10 @@ function Get-GPOLocalGroupMembership {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -101540,8 +102071,16 @@ function Get-GPOLocalGroupMembership {
 
     process {
         try {
+            # Connection parameters only. -IncludeInactive belongs to this check and
+            # neither callee has a parameter by that name, so splatting $PSBoundParameters
+            # failed to bind - a terminating error before any output.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -101550,7 +102089,7 @@ function Get-GPOLocalGroupMembership {
 
             Show-SubHeader "Searching for GPO local group assignments..." -ObjectType "GPOLocalGroup"
 
-            $gpos = Get-DomainGPO @PSBoundParameters
+            $gpos = Get-DomainGPO @connectionParams
 
             if (-not $gpos -or @($gpos).Count -eq 0) {
                 Show-Line "No GPOs found in domain" -Class Note
@@ -101695,11 +102234,34 @@ function Get-GPOLocalGroupMembership {
             }
 
             if (@($vulnerableGPOs).Count -gt 0) {
-                Show-Line "Found $(@($vulnerableGPOs).Count) vulnerable GPO local group assignment(s)" -Class Finding
+                # A local group assignment made by a policy that is not linked or not
+                # enabled adds nobody to any group. Held back rather than dropped - see
+                # Show-GPOInactiveSummary. Restricted Groups is a computer-side section and
+                # the GPP Groups variant is read from the Machine half as well, so Machine
+                # throughout.
+                $split = Split-GPOFindingByReach -Finding $vulnerableGPOs -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -Scope 'Machine'
 
-                foreach ($finding in $vulnerableGPOs) {
+                $shown = if ($IncludeInactive) { @($vulnerableGPOs) } else { @($split.Active) }
+
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found $(@($shown).Count) vulnerable GPO local group assignment(s)" -Class Finding
+                } else {
+                    # Not Secure: the assignments exist, they just apply nowhere. Calling
+                    # the domain clean here would be a different statement.
+                    Show-Line "No local group assignment is made by a policy that is linked and enabled" -Class Note
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOLocalGroup' -Force
-                    Show-Object $finding
+
+                    if (@($split.Inactive) -contains $finding) {
+                        Show-Object $finding -Class Note
+                    } else {
+                        Show-Object $finding
+                    }
                 }
             } else {
                 Show-Line "No vulnerable GPO local group assignments found in $(@($gpos).Count) analyzed GPO(s)" -Class Secure
@@ -102106,7 +102668,10 @@ function Get-GPOScheduledTasks {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -102138,8 +102703,17 @@ function Get-GPOScheduledTasks {
 
     process {
         try {
+            # Connection parameters only. -IncludeInactive belongs to this check and
+            # neither of the two callees below has a parameter by that name, so splatting
+            # $PSBoundParameters failed to bind - a terminating error before the first line
+            # of output, which showed up as a check that silently produced nothing.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -102148,7 +102722,7 @@ function Get-GPOScheduledTasks {
 
             Show-SubHeader "Searching for GPO scheduled tasks..." -ObjectType "GPOScheduledTask"
 
-            $gpos = Get-DomainGPO @PSBoundParameters
+            $gpos = Get-DomainGPO @connectionParams
 
             if (-not $gpos) {
                 Show-Line "No GPOs found in domain" -Class Note
@@ -102266,12 +102840,37 @@ function Get-GPOScheduledTasks {
                     @{ Expression = { if ($severityRank.ContainsKey([string]$_._Severity)) { $severityRank[[string]$_._Severity] } else { 9 } } }, `
                     @{ Expression = { $_.GPOName } })
 
-                $hasFinding = @($scheduledTasks | Where-Object { $_._Severity -eq 'Finding' }).Count -gt 0
-                $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
-                Show-Line "Found $($scheduledTasks.Count) scheduled task(s) distributed via GPO" -Class $headerClass
+                # A task defined by a policy that is not linked or not enabled is never
+                # registered on any machine. Held back rather than dropped - see
+                # Show-GPOInactiveSummary. The scope is Machine throughout: a GPP scheduled
+                # task under User\ still registers the task on the computer the user logs
+                # on to, and the Context property on the row says which half it came from.
+                $split = Split-GPOFindingByReach -Finding $scheduledTasks -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -Scope 'Machine'
 
-                foreach ($task in $scheduledTasks) {
-                    $taskClass = if ($task._Severity) { [string]$task._Severity } else { 'Standard' }
+                $shown = if ($IncludeInactive) { @($scheduledTasks) } else { @($split.Active) }
+
+                $hasFinding = @($shown | Where-Object { $_._Severity -eq 'Finding' }).Count -gt 0
+                $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
+
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found $(@($shown).Count) scheduled task(s) distributed via GPO" -Class $headerClass
+                } else {
+                    Show-Line "No scheduled task is distributed by a policy that is linked and enabled" -Class Note
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($task in $shown) {
+                    # Grey whatever the severity analysis concluded: the class describes the
+                    # task, the colour has to describe today's risk.
+                    $taskClass = if (@($split.Inactive) -contains $task) {
+                        'Note'
+                    } elseif ($task._Severity) {
+                        [string]$task._Severity
+                    } else {
+                        'Standard'
+                    }
                     $taskRisk  = [string]$task._Risk
 
                     $task.PSObject.Properties.Remove('_Severity')
@@ -102555,7 +103154,10 @@ function Get-GPOScriptPaths {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -102564,8 +103166,17 @@ function Get-GPOScriptPaths {
 
     process {
         try {
+            # Connection parameters only. -IncludeInactive belongs to this check and neither
+            # callee below has a parameter by that name, so splatting $PSBoundParameters
+            # failed to bind - a terminating error before any output, which looks like a
+            # check that silently produced nothing.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -102574,7 +103185,7 @@ function Get-GPOScriptPaths {
 
             Show-SubHeader "Searching for GPO-deployed scripts..." -ObjectType "GPOScriptPath"
 
-            $gpos = Get-DomainGPO @PSBoundParameters
+            $gpos = Get-DomainGPO @connectionParams
 
             if (-not $gpos) {
                 Show-Line "No GPOs found in domain" -Class Note
@@ -102683,11 +103294,39 @@ function Get-GPOScriptPaths {
             }
 
             if ($scriptFindings.Count -gt 0) {
-                Show-Line "Found $($scriptFindings.Count) script(s) distributed via GPO" -Class Hint
-
+                # A script named by a policy that is not linked or not enabled never runs.
+                # Held back rather than dropped - see Show-GPOInactiveSummary. The scope
+                # comes from the entry itself: a startup script depends on the computer
+                # half, a logon script on the user half, and ExecutionContext already says
+                # which.
                 foreach ($finding in $scriptFindings) {
+                    $finding | Add-Member -NotePropertyName '_ReachScope' `
+                        -NotePropertyValue $(if ("$($finding.ScriptType)" -in @('Startup', 'Shutdown')) { 'Machine' } else { 'User' }) -Force
+                }
+
+                $split = Split-GPOFindingByReach -Finding $scriptFindings -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
+
+                $shown = if ($IncludeInactive) { @($scriptFindings) } else { @($split.Active) }
+
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found $(@($shown).Count) script(s) distributed via GPO" -Class Hint
+                } else {
+                    Show-Line "No script is distributed by a policy that is linked and enabled" -Class Note
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOScriptPath' -Force
-                    Show-Object $finding
+
+                    # This check announces everything as a hint and renders its rows in the
+                    # default class, so a dormant one only needs the grey.
+                    if (@($split.Inactive) -contains $finding) {
+                        Show-Object $finding -Class Note
+                    } else {
+                        Show-Object $finding
+                    }
                 }
             } else {
                 Show-Line "No scripts distributed via GPO" -Class Note
@@ -102919,7 +103558,10 @@ function Get-GPORegistrySettings {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -102928,8 +103570,19 @@ function Get-GPORegistrySettings {
 
     process {
         try {
+            # Connection parameters only, built by hand rather than splatting
+            # $PSBoundParameters. -IncludeInactive belongs to this check and neither
+            # Ensure-LDAPConnection nor Get-DomainGPO has a parameter by that name, so
+            # splatting the lot made the call fail to bind - and the failure is a
+            # terminating error before the first line of output, so the check produced
+            # nothing at all rather than an error anybody could read.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -102937,7 +103590,7 @@ function Get-GPORegistrySettings {
 
             Show-SubHeader "Searching for vulnerable registry settings deployed via GPO..." -ObjectType "GPORegistrySetting"
 
-            $gpos = Get-DomainGPO @PSBoundParameters
+            $gpos = Get-DomainGPO @connectionParams
 
             if (-not $gpos) {
                 Show-Line "No GPOs found in domain" -Class Note
@@ -103059,14 +103712,38 @@ function Get-GPORegistrySettings {
                     @{ Expression = { if ($severityRank.ContainsKey($_.Severity)) { $severityRank[$_.Severity] } else { 9 } } }, `
                     @{ Expression = { $_.GPOName } })
 
-                # Red when at least one finding is a real vulnerability, yellow otherwise.
-                # The announcement used to be Hint unconditionally, so even a Critical
-                # AlwaysInstallElevated was introduced in yellow.
-                $hasFinding = @($findings | Where-Object { $_.ConsoleClass -eq 'Finding' }).Count -gt 0
-                $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
-                Show-Line "Found $($findings.Count) vulnerable registry setting(s) deployed via GPO" -Class $headerClass
-
+                # Which half of the policy each value depends on, derived from the hive: a
+                # Registry.pol under Machine writes HKLM, the one under User writes HKCU. The
+                # partition below reads it per finding, because a policy with only its
+                # computer configuration switched off stops the first and not the second.
                 foreach ($finding in $findings) {
+                    $finding | Add-Member -NotePropertyName '_ReachScope' `
+                        -NotePropertyValue $(if ("$($finding.RegistryKey)" -like 'HKLM*') { 'Machine' } else { 'User' }) -Force
+                }
+
+                # A value deployed by a policy that is not linked or not enabled is written
+                # to no registry. Held back rather than dropped - see Show-GPOInactiveSummary.
+                $split = Split-GPOFindingByReach -Finding $findings -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
+
+                $shown = if ($IncludeInactive) { @($findings) } else { @($split.Active) }
+
+                # Counted over what is printed, or the number promises more than the body
+                # delivers.
+                $hasFinding = @($shown | Where-Object { $_.ConsoleClass -eq 'Finding' }).Count -gt 0
+                $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
+
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found $(@($shown).Count) vulnerable registry setting(s) deployed via GPO" -Class $headerClass
+                } else {
+                    # Not "none deployed". Every one of them is deployed by a policy that
+                    # does not apply, which is a different statement.
+                    Show-Line "No vulnerable registry setting is deployed by a policy that is linked and enabled" -Class Note
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($finding in $shown) {
                     $linkedOUs = @()
                     if ($gpoLinkage.ContainsKey($finding.GPOGUID)) {
                         $linkedOUs = $gpoLinkage[$finding.GPOGUID]
@@ -103090,7 +103767,17 @@ function Get-GPORegistrySettings {
                     # ConsoleClass is what the central table documents per entry. It was
                     # carried all the way here and then never used, so the Finding/Hint
                     # distinction the table defines had no effect on the output.
-                    $rowClass = if ($finding.ConsoleClass) { [string]$finding.ConsoleClass } else { 'Standard' }
+                    #
+                    # A dormant one is printed as a note whatever the table says: the class
+                    # describes the setting, the colour has to describe today's risk, and
+                    # LinkedOUs and GPOStatus on the row say why it is grey.
+                    $rowClass = if (@($split.Inactive) -contains $finding) {
+                        'Note'
+                    } elseif ($finding.ConsoleClass) {
+                        [string]$finding.ConsoleClass
+                    } else {
+                        'Standard'
+                    }
                     Show-Object $finding -Class $rowClass
                 }
             } else {
@@ -103357,7 +104044,10 @@ function Get-GPOPointAndPrint {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -103366,13 +104056,21 @@ function Get-GPOPointAndPrint {
 
     process {
         try {
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            # Connection parameters only. -IncludeInactive belongs to this check and
+            # neither callee has a parameter by that name, so splatting $PSBoundParameters
+            # failed to bind - a terminating error before any output.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
             Show-SubHeader "Analyzing Point and Print printer driver policies..." -ObjectType "PointAndPrintPolicy"
 
-            $gpos = Get-DomainGPO @PSBoundParameters
+            $gpos = Get-DomainGPO @connectionParams
 
             if (-not $gpos) {
                 Show-Line "No GPOs found in domain" -Class Note
@@ -103490,16 +104188,44 @@ function Get-GPOPointAndPrint {
                 @{ Expression = { if ($severityRank.ContainsKey($_.Severity)) { $severityRank[$_.Severity] } else { 9 } } }, `
                 @{ Expression = { $_.GPOName } })
 
-            $exploitable = @($objects | Where-Object { $_.Exploitability -like 'Exploitable*' })
+            # A driver policy in a GPO that is not linked or not enabled installs nothing.
+            # Held back rather than dropped - see Show-GPOInactiveSummary. The scope comes
+            # from the bucket's own hive, which is why each object carries it: HKLM settings
+            # depend on the computer half, HKCU on the user half, and a policy with one of
+            # them switched off stops one and not the other.
+            foreach ($object in $objects) {
+                $object | Add-Member -NotePropertyName '_ReachScope' `
+                    -NotePropertyValue $(if ("$($object.Scope)" -like 'Computer*') { 'Machine' } else { 'User' }) -Force
+            }
 
-            Show-Line "Found $($objects.Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+            $split = Split-GPOFindingByReach -Finding $objects -GPOStatusMap $gpoStatusMap `
+                -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
+
+            $shown = if ($IncludeInactive) { @($objects) } else { @($split.Active) }
+
+            # Counted over what is printed, including the exploitable tally: a count of
+            # exploitable policies that are not listed sends a reader hunting for rows that
+            # are not there.
+            $exploitable = @($shown | Where-Object { $_.Exploitability -like 'Exploitable*' })
+
+            if (@($shown).Count -gt 0) {
+                Show-Line "Found $(@($shown).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+            } else {
+                Show-Line "No Point and Print configuration is deployed by a policy that is linked and enabled" -Class Note
+            }
 
             if ($exploitable.Count -gt 0) {
                 Show-Line "$($exploitable.Count) GPO configuration(s) let non-administrators install printer drivers without an elevation prompt" -Class Finding
             }
 
-            foreach ($object in $objects) {
-                Show-Object $object
+            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+            foreach ($object in $shown) {
+                if (@($split.Inactive) -contains $object) {
+                    Show-Object $object -Class Note
+                } else {
+                    Show-Object $object
+                }
             }
 
         } catch {
@@ -122933,7 +123659,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.6.0+20261005-1545"
+$Script:adPEASVersion = "2.6.0+20261006-1000"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
