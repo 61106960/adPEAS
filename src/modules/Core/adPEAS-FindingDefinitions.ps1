@@ -8752,6 +8752,80 @@ Get-ADUser <targetuser> -Properties msPKIAccountCredentials, msPKIDPAPIMasterKey
         )
     }
 
+    'CREDENTIAL_ROAMING_DELEGATED' = @{
+        Title = "Credential Roaming - Read of Private Keys and Master Keys Delegated to a Principal"
+        Risk = "Finding"
+        BaseScore = 85
+        Description = "A principal holds an explicit read of the Credential Roaming attributes on a container whose users carry roamed material. This is the case the confidential flag says nothing about, and the one most likely to have happened by accident: a delegation wizard pointed at the wrong attribute set, or a script copied from a Credential Roaming rollout guide, gives a helpdesk group a read of another user's private keys and DPAPI master keys. Nothing about the result looks unusual afterwards. Whether the right is live depends on the schema - a confidential attribute needs READ_PROPERTY and CONTROL_ACCESS, a non-confidential one needs only the former - so the same ACE is exploitable in one forest and dormant in another, and the row says which."
+        Impact = @(
+            "The holder reads another user's private keys and DPAPI master keys with a plain LDAP query, no exploit involved"
+            "With the domain backup key, or the target's password or hash, that material decrypts offline"
+            "A roamed client-authentication certificate then authenticates as the target without their password"
+            "The right usually applies to a whole container, so it covers every user below it, not one account"
+            "A right the confidential flag currently blocks becomes live the moment somebody clears the flag"
+        )
+        Attack = @(
+            "1. As the delegated principal, read msPKIDPAPIMasterKeys and msPKIAccountCredentials from the users in scope"
+            "2. Obtain the domain backup key, or the target's password or hash"
+            "3. Decrypt the master keys offline, then the private keys they protect"
+            "4. Authenticate as the target with a recovered certificate, or decrypt their stored DPAPI secrets"
+        )
+        Remediation = @(
+            "Remove the ACE unless the principal genuinely needs to read other users' private keys - almost nothing does"
+            "Check what the delegation was meant to grant; a wizard or script that produced this one has probably produced others"
+            "Mark the two attributes confidential in the schema, which at least stops READ_PROPERTY alone from working"
+            "Clear the attributes on accounts that do not need roaming, and turn Credential Roaming off where it is not needed"
+            "Treat the domain backup key as a Tier 0 secret - it is the other half of every one of these findings"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the delegated read ACEs on a container, resolved to attribute names"
+                Command = @'
+$roaming = @{
+    'b8dfa744-31dc-4ef1-ac7c-84baf7ef9da7' = 'ms-PKI-AccountCredentials'
+    'b3f93023-9239-4f7c-b99c-6745d87adbc2' = 'ms-PKI-DPAPIMasterKeys'
+    '91e647de-d96f-4b70-9557-d63ff4f3ccd8' = 'ms-PKI-RoamingTimeStamp'
+}
+(Get-Acl "AD:\<container DN>").Access |
+    Where-Object { $roaming.ContainsKey($_.ObjectType.ToString()) } |
+    Select-Object IdentityReference, ActiveDirectoryRights, IsInherited,
+        @{n='Attribute'; e={ $roaming[$_.ObjectType.ToString()] }}
+'@
+            }
+            @{
+                Description = "Remove one delegated read. Check the output above first - the ACE may be inherited, in which case it has to go from the container it is inherited from"
+                Command = @'
+$acl = Get-Acl "AD:\<container DN>"
+$ace = $acl.Access | Where-Object {
+    $_.IdentityReference -eq '<DOMAIN\principal>' -and
+    $_.ObjectType -eq 'b3f93023-9239-4f7c-b99c-6745d87adbc2'
+}
+$null = $acl.RemoveAccessRule($ace)
+Set-Acl -Path "AD:\<container DN>" -AclObject $acl
+'@
+            }
+        )
+        References = @(
+            @{ Title = "Credential Roaming (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/credential-roaming" }
+            @{ Title = "Confidential attributes - READ_PROPERTY plus CONTROL_ACCESS"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/mark-attribute-as-confidential" }
+        )
+        Tools = @("adPEAS", "SharpDPAPI", "mimikatz")
+        MITRE = "T1552.004"
+        Triggers = @(
+            # The rights string is split per value by the dangerousRights transformer, so each
+            # named attribute gets its own tooltip. ms-PKI- covers all three; the timestamp
+            # alone is rated Low upstream and does not reach a default report.
+            @{ Attribute = 'dangerousRights'; Pattern = 'ms-PKI-'; Severity = 'Finding' }
+            @{ Attribute = 'dangerousRights'; Pattern = 'includes the roaming attributes'; Severity = 'Finding' }
+
+            # The verdict row. Dormant is green because the flag is doing its job today, and
+            # the row's own text says it goes live the moment that changes.
+            @{ Attribute = 'EffectiveToday'; Pattern = '^Yes'; Severity = 'Finding' }
+            @{ Attribute = 'EffectiveToday'; Pattern = '^No'; Severity = 'Secure' }
+            @{ Attribute = 'EffectiveToday'; Pattern = '^Unknown'; Severity = 'Hint' }
+        )
+    }
+
     'ESC14_WEAK_EXPLICIT_MAPPING' = @{
         Title = "ESC14 - Weak Explicit Certificate Mapping"
         Risk = "Finding"

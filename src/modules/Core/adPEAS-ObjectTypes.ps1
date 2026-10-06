@@ -1059,6 +1059,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'CREDENTIAL_ROAMING_READABLE'
     }
 
+    'CredentialRoamingPermission' = @{
+        TitleFormat = "Roaming Read Delegated: {Name}"
+        Module = "Creds"
+        Category = "Credentials"
+        SectionTitle = "Delegated Credential Roaming Read"
+        Summary = "Finds principals that have been given an explicit read of another user's private keys and DPAPI master keys."
+        WhyItMatters = "The confidential flag decides whether every authenticated user can read the roaming attributes. A delegated read is the case it says nothing about, and the one most likely to have happened by accident: a delegation wizard pointed at the wrong attribute set, or a script copied from a Credential Roaming rollout guide, hands a helpdesk group a read of another user's private keys. Nothing about the result looks unusual afterwards, and the holder needs no exploit - a plain LDAP read returns the material, and the domain backup key or the target's hash turns it into their private keys and every DPAPI secret of their profile."
+        WhatWeCheck = @(
+            "ReadProperty on ms-PKI-DPAPIMasterKeys, ms-PKI-AccountCredentials or ms-PKI-RoamingTimeStamp"
+            "Reads granted through All Properties or GenericAll"
+            "Whether the ACE also carries Control Access, which is what defeats the confidential flag"
+            "Whether the holder is privileged, and could read the material anyway"
+        )
+        FilteringNote = "Scoped to the containers that hold users with roamed material - a delegation on a container whose users have never roamed anything reaches nothing to read, and becomes visible as soon as the first user synchronises. The containers are read once each rather than once per user, because a container's DACL already carries what it inherits from above; the consequence is that an ACE set directly on a single user object, bypassing the container, is not seen. Reads that only cover the roaming timestamp are rated Low and drop out of a default report: a timestamp is a date, not a credential. Privileged principals are hidden unless -IncludePrivileged, since they can read the material regardless. A right that the confidential flag currently blocks is reported as a hint rather than dropped - the delegation is still there, and clearing the flag makes every one of them live at once."
+        SecureMessage = "No principal holds a delegated read of the Credential Roaming attributes on the containers that hold roamed material."
+        PrimaryFindingId = 'CREDENTIAL_ROAMING_DELEGATED'
+    }
+
     'GPPCredential' = @{
         TitleFormat = "GPP Credential: {Name}"
         Module = "Creds"

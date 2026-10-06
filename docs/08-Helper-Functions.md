@@ -775,8 +775,11 @@ $perms = Get-OUPermissions -DistinguishedName "OU=Admins,DC=contoso,DC=com" -Che
 - `ScriptPath` - Logon script path modification (scriptPath)
 - `Delegation` - Delegation attribute modification (msDS-AllowedToDelegateTo, msDS-AllowedToActOnBehalfOfOtherIdentity)
 - `LAPS` - LAPS password read (Legacy ms-Mcs-AdmPwd + Windows LAPS attributes)
+- `CredentialRoaming` - read of the Credential Roaming attributes on user objects (ms-PKI-DPAPIMasterKeys, ms-PKI-AccountCredentials, ms-PKI-RoamingTimeStamp)
 - `ObjectCreation` - CreateChild rights (User, Computer, Group, OU creation)
 - `GPOLinking` - GPO link modification (gPLink attribute on OUs)
+
+**Finding fields**: `CheckType`, `Right`, `Principal`, `SID`, `Severity`, `InheritedFrom`. `CredentialRoaming` findings additionally carry `GrantsControlAccess`, because a confidential attribute needs `READ_PROPERTY` **and** `CONTROL_ACCESS` while a non-confidential one needs only the former — the schema decides, and only the caller knows what it says.
 
 ---
 

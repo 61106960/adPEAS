@@ -180,6 +180,11 @@ function Get-ACEInheritanceSource {
     - ScriptPath: scriptPath write access
     - Delegation: Delegation attribute write access
     - LAPS: LAPS password read access
+    - CredentialRoaming: read access to the Credential Roaming attributes on user objects
+      (ms-PKI-DPAPIMasterKeys, ms-PKI-AccountCredentials, ms-PKI-RoamingTimeStamp). These
+      findings additionally carry GrantsControlAccess, because a confidential attribute
+      needs READ_PROPERTY and CONTROL_ACCESS while a non-confidential one needs only the
+      former - and only the caller knows which the schema says.
     - ObjectCreation: CreateChild rights
     - GPOLinking: gPLink write access
 
@@ -228,6 +233,7 @@ function Get-OUPermissions {
             'ScriptPath',
             'Delegation',
             'LAPS',
+            'CredentialRoaming',
             'ObjectCreation',
             'GPOLinking'
         )]
@@ -253,13 +259,16 @@ function Get-OUPermissions {
         # Track if this is a full scan (All check types) for cross-module caching
         $isFullScan = $CheckType -contains 'All'
 
-        # Expand 'All' to all check types
+        # Expand 'All' to all check types. This list has to stay complete: only a full scan
+        # writes the cross-module cache, and a later narrow call filters that cache by
+        # CheckType. A type missing here would therefore come back with zero findings from
+        # a cache hit - a silent pass rather than an error.
         if ($isFullScan) {
             $CheckType = @(
                 'GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner',
                 'PasswordReset', 'AccountControl', 'GroupMembership',
                 'SPNModification', 'DNSHostName', 'ScriptPath', 'Delegation', 'LAPS',
-                'ObjectCreation', 'GPOLinking'
+                'CredentialRoaming', 'ObjectCreation', 'GPOLinking'
             )
         }
     }
@@ -898,6 +907,118 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                            }
+                        }
+                    }
+                }
+
+                # Check 8b: Credential Roaming read rights on user objects
+                #
+                # Credential Roaming stores a user's private keys and DPAPI master keys in
+                # attributes on their user object. A delegated read of those is the one way a
+                # principal gets at another user's private key without touching a password,
+                # and it is the kind of right a delegation wizard hands out by accident.
+                #
+                # Two booleans travel with each finding instead of one verdict, because
+                # whether the right actually grants read depends on the schema. Marked
+                # confidential (searchFlags bit 7), an attribute needs READ_PROPERTY *and*
+                # CONTROL_ACCESS; without the flag, READ_PROPERTY alone is enough. Only the
+                # caller knows the flag, so the decision is left to it - and the two are
+                # reported per ACE so that a principal holding them in two separate ACEs is
+                # still judged correctly once the caller ORs them per principal.
+                if ($CheckType -contains 'CredentialRoaming') {
+
+                    # Test-ADRightsMask rather than -band, for the reason given in the LAPS
+                    # block: GenericAll is a composite mask that overlaps nearly everything,
+                    # and a right granted only through a generic bit is invisible to a raw
+                    # overlap test.
+                    $crHasRead          = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty)
+                    $crHasGenericAll    = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)
+                    $crHasControlAccess = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
+
+                    # CONTROL_ACCESS belongs in the gate, not only in the verdict. An ACE
+                    # that carries it alone, scoped to one of these attributes, is the other
+                    # half of the confidential-attribute pair - and the READ_PROPERTY half
+                    # usually needs no delegation at all, because the default ACL already
+                    # gives every authenticated user a blanket read of all properties. So a
+                    # CONTROL_ACCESS-only ACE is in practice a complete grant, and gating it
+                    # out would have missed exactly the delegation Microsoft's own
+                    # instructions for confidential attributes produce.
+                    if (($crHasRead -or $crHasGenericAll -or $crHasControlAccess) -and $AppliesToUsers) {
+
+                        # GenericAll carries CONTROL_ACCESS, so it defeats the confidential
+                        # flag on its own.
+                        $crControlAccess = ($crHasGenericAll -or $crHasControlAccess)
+
+                        # Attribute GUID -> what a read of it yields. The timestamp is only a
+                        # date and is rated Low so that it drops out of a default report,
+                        # while still showing up for anybody who asks for everything: on its
+                        # own it says somebody ran a Credential Roaming delegation.
+                        $crAttributes = @(
+                            @{ Name = 'ms-PKI-DPAPIMasterKeys'
+                               Note = 'DPAPI master keys'
+                               Severity = 'High' }
+                            @{ Name = 'ms-PKI-AccountCredentials'
+                               Note = 'private keys and certificates'
+                               Severity = 'High' }
+                            @{ Name = 'ms-PKI-RoamingTimeStamp'
+                               Note = 'roaming timestamp'
+                               Severity = 'Low' }
+                        )
+
+                        # The label names what the ACE actually carries rather than assuming
+                        # ReadProperty. A CONTROL_ACCESS-only ACE printed as "ReadProperty"
+                        # would send a reader looking for a permission that is not there.
+                        $crRightPrefix = if ($crHasGenericAll) {
+                            'GenericAll'
+                        } elseif (($crHasRead -or $crHasGenericAll) -and $crHasControlAccess) {
+                            'ReadProperty + ControlAccess'
+                        } elseif ($crHasRead) {
+                            'ReadProperty'
+                        } else {
+                            'ControlAccess'
+                        }
+
+                        $crPropertyFound = $false
+                        foreach ($crAttribute in $crAttributes) {
+                            $crGuid = $PropertyGUIDs[$crAttribute.Name]
+                            if ($ACE.ObjectType -and $crGuid -and $ACE.ObjectType.Guid -eq $crGuid.Guid) {
+                                $Severity = if ($IsPrivileged) { "Info" } else { $crAttribute.Severity }
+                                $Findings += [PSCustomObject]@{
+                                    CheckType           = "CredentialRoaming"
+                                    Right               = "$crRightPrefix ($($crAttribute.Name) - $($crAttribute.Note))"
+                                    Principal           = $TrusteeName
+                                    SID                 = $TrusteeSID
+                                    Severity            = $Severity
+                                    InheritedFrom       = $InheritedFrom
+                                    GrantsControlAccess = $crControlAccess
+                                }
+                                $crPropertyFound = $true
+                            }
+                        }
+
+                        # All Properties, same treatment as LAPS: reported only when no
+                        # specific attribute matched, and never for the broad groups whose
+                        # default ACE is a blanket read of everything. That blanket read is
+                        # what the confidential flag exists to cut off, and reporting it here
+                        # would duplicate the caller's own schema verdict for every OU.
+                        #
+                        # A read is required here even though the gate accepts CONTROL_ACCESS
+                        # alone. An unscoped CONTROL_ACCESS ACE is "all extended rights",
+                        # which says nothing about Credential Roaming in particular; it is
+                        # Get-DangerousACLs' business, and claiming it under this CheckType
+                        # would attribute a generic grant to this one attribute set.
+                        if ($IsAllProperties -and ($crHasRead -or $crHasGenericAll) -and
+                            -not $crPropertyFound -and -not $skipAllPropertiesOnly) {
+                            $Severity = if ($IsPrivileged) { "Info" } else { "High" }
+                            $Findings += [PSCustomObject]@{
+                                CheckType           = "CredentialRoaming"
+                                Right               = "$crRightPrefix (All Properties - includes the roaming attributes)"
+                                Principal           = $TrusteeName
+                                SID                 = $TrusteeSID
+                                Severity            = $Severity
+                                InheritedFrom       = $InheritedFrom
+                                GrantsControlAccess = $crControlAccess
                             }
                         }
                     }

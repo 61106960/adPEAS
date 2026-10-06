@@ -382,6 +382,16 @@ $Script:PrimaryAttributes = @{
         'PrivilegedAccount', 'RoamingTimeStamp'
     )
 
+    # A delegated read of those attributes (Get-CredentialRoaming, step 3). dangerousRights
+    # and affectedOUs keep the names the other ACL findings use, so the same transformer
+    # splits the rights into per-value tooltips. EffectiveToday follows immediately, because
+    # it is what turns the same ACE into a finding in one forest and a dormant right in
+    # another.
+    CredentialRoamingPermission = @(
+        'sAMAccountName', 'objectSid', 'dangerousRights', 'EffectiveToday',
+        'PrivilegedAccount', 'affectedOUs'
+    )
+
     # Credential findings (GPP and SYSVOL)
     # FilePath stays the complete path here, rather than being split into GPOGUID plus a
     # relative SourceFile like the other GPO findings. These checks also scan NETLOGON and
@@ -657,6 +667,9 @@ $Script:ExcludeAttributes = @(
     # full user object cannot put base64-encoded master keys into an HTML report somebody
     # then mails around, which would create the exposure that check exists to report.
     'msPKIAccountCredentials', 'msPKIDPAPIMasterKeys',
+    # Whether a delegated roaming read is live, dormant or undecidable. Decides the colour of
+    # the row; the reader sees the verdict in EffectiveToday instead.
+    '_IsFinding',
     # GPO check internal analysis flags - used for severity calculation, not for display.
     # ConsoleClass decides the colour a row is rendered in and must not appear as a row.
     #

@@ -23,7 +23,7 @@ function Get-CredentialRoaming {
     becomes usable with the user's password or hash, or with the domain backup key - which
     every domain administrator has.
 
-    That is why this check reports two separate things rather than one:
+    That is why this check reports three separate things rather than one:
 
       1. Which users have roamed material at all. On its own that is a hint: private keys
          and master keys are sitting in the directory where they need not be, and anybody
@@ -31,7 +31,13 @@ function Get-CredentialRoaming {
          precondition for everything else - without material, the rest is academic.
 
       2. Whether the two sensitive attributes are marked confidential in the schema. This is
-         the part that decides who can read them, and it is a single forest-wide answer.
+         the part that decides the blanket readability, and it is a single forest-wide
+         answer.
+
+      3. Who has been given an explicit read of the attributes by delegation. That is the
+         case the flag does not cover, and the one most likely to have happened by
+         accident: a delegation wizard pointed at the wrong attribute set hands a helpdesk
+         group a right nobody intended it to have.
 
     The confidential flag is searchFlags bit 7, fCONFIDENTIAL, value 128. These attributes
     do not carry it by default and most forests have never set it. Without it, readability
@@ -39,10 +45,16 @@ function Get-CredentialRoaming {
     every authenticated user can read the roamed material of every other user. With it, a
     reader additionally needs the Control Access right, which generic read does not grant.
 
-    What this check does NOT do, and what the next step adds: it does not enumerate who
-    holds an explicit read ACE on these attributes. The confidential flag answers the
-    common case - the blanket readability that comes from the default ACL - but a right
-    delegated to a single group by accident is invisible here.
+    That flag is also what decides whether a delegated right is live. A confidential
+    attribute needs READ_PROPERTY *and* CONTROL_ACCESS; without the flag, READ_PROPERTY
+    alone is enough. So the same ACE is a finding in one forest and dormant in another, and
+    step 3 reports which of the two it is rather than printing the ACE and leaving the
+    reader to work it out.
+
+    Step 3 is scoped to the containers that hold users with material, because that is where
+    a read of it has any effect. A delegation on a container whose users have never roamed
+    anything is not reported - there is nothing there to read - and it becomes visible as
+    soon as the first user synchronises.
 
     Nor does any of this constrain somebody with DCSync, a copy of ntds.dit or an AD backup.
     They read the material regardless of the attribute ACL and regardless of the flag, so
@@ -63,6 +75,11 @@ function Get-CredentialRoaming {
 
     .PARAMETER Credential
     PSCredential object for authentication (optional, uses current user if not specified)
+
+    .PARAMETER IncludePrivileged
+    Also report privileged principals that hold a delegated read of the roaming attributes
+    (shown as yellow/Hint severity). Privileged principals can read the material anyway, so
+    they are hidden by default.
 
     .EXAMPLE
     Get-CredentialRoaming
@@ -86,7 +103,10 @@ function Get-CredentialRoaming {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludePrivileged
     )
 
     begin {
@@ -166,10 +186,16 @@ function Get-CredentialRoaming {
                 # helpdesk account: the certificate it carries authenticates as that
                 # account. Reported as its own row so a reader does not have to recognise
                 # the names.
+                # The whole object, not the SID. Test-IsPrivileged takes sAMAccountName and
+                # distinguishedName from an object, and both are already on this one from the
+                # query above; handed a bare SID it calls ConvertFrom-SID to get the name,
+                # which is an LDAP round trip per user that has not been resolved before.
+                # The DN is a smaller gain - the sIDHistory check fetches it anyway - but
+                # passing the object costs nothing either way.
                 $privileged = $false
                 try {
                     if ($user.objectSid) {
-                        $privileged = ((Test-IsPrivileged -Identity $user.objectSid).IsPrivileged -eq $true)
+                        $privileged = ((Test-IsPrivileged -Identity $user).IsPrivileged -eq $true)
                     }
                 } catch {
                     Write-Log "[Get-CredentialRoaming] Privilege check failed for '$($user.sAMAccountName)': $_"
@@ -222,6 +248,11 @@ function Get-CredentialRoaming {
                 Show-Object $finding -Class $(if ($confidential.Confidential -eq $false) { 'Finding' } else { 'Hint' })
             }
 
+            # ----- Step 3: who has been given an explicit read of the material? -----
+            Show-CredentialRoamingDelegation -AffectedUserDNs @($byDN.Keys) `
+                -Confidentiality $confidential -IncludePrivileged:$IncludePrivileged `
+                -ConnectionParams $CredParams
+
             Show-Line ("Reading these attributes is not constrained for anybody with DCSync, a copy of ntds.dit or " +
                        "an AD backup - the confidential flag protects against ordinary users, not against Tier 0") -Class Note
         }
@@ -233,6 +264,252 @@ function Get-CredentialRoaming {
 
     end {
         Write-Log "[Get-CredentialRoaming] Check completed"
+    }
+}
+
+<#
+.SYNOPSIS
+    Reports principals that hold a delegated read of the Credential Roaming attributes.
+
+.DESCRIPTION
+    Step 3 of Get-CredentialRoaming. The confidential flag read in step 2 answers the
+    blanket question - can every authenticated user read the material - and this answers the
+    narrower one the flag says nothing about: has somebody been given the right explicitly.
+
+    That is the case worth catching, because it is the one that happens by accident. A
+    delegation wizard pointed at the wrong attribute set, or a script copied from a
+    Credential Roaming rollout guide, hands a helpdesk group a read of another user's
+    private keys, and nothing about the result looks unusual afterwards.
+
+    Scoped to the containers that hold users with roamed material. Those are read once each
+    rather than once per user: the DACL of a container already carries everything it
+    inherits from above, so one read answers for every user below it, and an OU delegation
+    is what this is looking for in the first place. The consequence is the one documented
+    limitation - an ACE set directly on a single user object, bypassing the container, is
+    not seen.
+
+    Whether a delegated right is live depends on the schema, which is why the verdict needs
+    step 2's answer:
+
+      not confidential  the delegated READ_PROPERTY works today                   Finding
+      confidential      READ_PROPERTY alone is blocked; CONTROL_ACCESS is needed
+                          with CONTROL_ACCESS   works today                       Finding
+                          without               dormant until the flag is cleared  Hint
+      unknown           cannot be decided                                         Hint
+
+    The dormant case is reported rather than dropped because the delegation is still there:
+    the day somebody clears the flag, every one of those rights becomes live at once.
+
+    Privileged principals are hidden unless -IncludePrivileged. They can read the material
+    anyway, through the domain backup key if not through the attribute, so reporting them by
+    default would bury the one row that matters under the rows that do not.
+
+.PARAMETER AffectedUserDNs
+    DNs of the users found to carry roamed material. Their parent containers are what gets
+    analysed.
+
+.PARAMETER Confidentiality
+    The result of Get-CredentialRoamingConfidentiality. Its three-valued Confidential field
+    decides whether a delegated right is live, dormant or undecidable.
+
+.PARAMETER IncludePrivileged
+    Also report privileged principals, as Hint rather than Finding.
+
+.PARAMETER ConnectionParams
+    Domain/Server/Credential hashtable, passed through unchanged.
+#>
+function Show-CredentialRoamingDelegation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        [string[]]$AffectedUserDNs,
+
+        [Parameter(Mandatory=$true)]
+        $Confidentiality,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludePrivileged,
+
+        [Parameter(Mandatory=$false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    # Parent container per affected user, with a count, so the row can say how much material
+    # a delegation actually reaches. The DN pattern strips exactly one RDN; a user DN whose
+    # RDN contains an escaped comma (CN=Doe\, Jane) still has its comma escaped at this
+    # point, so [^,] must not stop at it.
+    $usersByContainer = @{}
+    foreach ($userDN in $AffectedUserDNs) {
+        if ([string]::IsNullOrWhiteSpace($userDN)) { continue }
+        if ($userDN -match '^[A-Za-z][A-Za-z0-9-]*=(?:[^,\\]|\\.)+,(.+)$') {
+            $containerDN = $Matches[1]
+            if (-not $usersByContainer.ContainsKey($containerDN)) { $usersByContainer[$containerDN] = 0 }
+            $usersByContainer[$containerDN]++
+        }
+    }
+
+    if ($usersByContainer.Count -eq 0) {
+        Write-Log "[Get-CredentialRoaming] No container could be derived from the affected users"
+        return
+    }
+
+    # Low is left out on purpose: it is the roaming timestamp alone, which is a date and not
+    # a credential. Info is what Get-OUPermissions assigns a privileged principal.
+    $allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Medium', 'Info') } else { @('Critical', 'High', 'Medium') }
+
+    # Aggregated per principal, not per ACE. A principal can hold the right on several
+    # containers and on several attributes, and the two halves of the confidential-attribute
+    # requirement can sit in two separate ACEs - ORing GrantsControlAccess across them is
+    # the only way to judge that combination correctly.
+    $byPrincipal = @{}
+
+    # Counted rather than assumed. The closing note used to be printed whenever anything was
+    # found, which reads as a claim that privileged holders exist and sends somebody looking
+    # for rows that are not there.
+    $suppressedPrivileged = @{}
+
+    $totalContainers = $usersByContainer.Keys.Count
+    $currentIndex = 0
+    foreach ($containerDN in @($usersByContainer.Keys)) {
+        $currentIndex++
+        if ($totalContainers -gt $Script:ProgressThreshold) {
+            Show-Progress -Activity "Checking Credential Roaming delegations" -Current $currentIndex -Total $totalContainers -ObjectName $containerDN
+        }
+
+        try {
+            $perms = Get-OUPermissions -DistinguishedName $containerDN -CheckType 'CredentialRoaming'
+        }
+        catch {
+            Write-Log "[Get-CredentialRoaming] Failed to read permissions for '$containerDN': $($_.Exception.Message)"
+            continue
+        }
+
+        if (-not $perms -or -not $perms.Findings) { continue }
+
+        foreach ($aclFinding in @($perms.Findings)) {
+            $sid = [string]$aclFinding.SID
+            if ([string]::IsNullOrEmpty($sid)) { continue }
+
+            if ($aclFinding.Severity -notin $allowedSeverities) {
+                if ($aclFinding.Severity -eq 'Info') { $suppressedPrivileged[$sid] = $true }
+                continue
+            }
+
+            if (-not $byPrincipal.ContainsKey($sid)) {
+                $byPrincipal[$sid] = [PSCustomObject]@{
+                    Principal           = $aclFinding.Principal
+                    SID                 = $sid
+                    Rights              = New-Object System.Collections.Generic.List[string]
+                    Containers          = New-Object System.Collections.Generic.List[string]
+                    GrantsControlAccess = $false
+                    IsPrivileged        = ($aclFinding.Severity -eq 'Info')
+                }
+            }
+
+            $entry = $byPrincipal[$sid]
+            if (-not $entry.Rights.Contains([string]$aclFinding.Right)) {
+                $entry.Rights.Add([string]$aclFinding.Right)
+            }
+
+            $containerEntry = "$containerDN ($($usersByContainer[$containerDN]) user(s) with material)"
+            if (-not $entry.Containers.Contains($containerEntry)) {
+                $entry.Containers.Add($containerEntry)
+            }
+
+            if ($aclFinding.GrantsControlAccess -eq $true) { $entry.GrantsControlAccess = $true }
+        }
+    }
+    if ($totalContainers -gt $Script:ProgressThreshold) {
+        Show-Progress -Activity "Checking Credential Roaming delegations" -Completed
+    }
+
+    if ($byPrincipal.Count -eq 0) {
+        # "Nobody" and "nobody except the principals we filtered out" are different
+        # statements. Printing the first when the second is true would call a forest clean on
+        # the strength of a filter this function applied itself.
+        if ($suppressedPrivileged.Count -gt 0) {
+            Show-Line ("No non-privileged principal holds a delegated read of the roaming attributes, but " +
+                       "$($suppressedPrivileged.Count) privileged one(s) do - use -IncludePrivileged to see them") -Class Note
+        } else {
+            Show-Line ("No principal holds a delegated read of the roaming attributes on the $totalContainers " +
+                       "container(s) holding this material") -Class Secure
+        }
+        return
+    }
+
+    # Live rights first, then dormant ones, then the privileged rows. Sorting on the verdict
+    # rather than on the name keeps the rows that need acting on at the top.
+    $rows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($sid in @($byPrincipal.Keys | Sort-Object)) {
+        $entry = $byPrincipal[$sid]
+
+        # CONTROL_ACCESS is tested first and on its own, because it satisfies the stricter of
+        # the two schema states. A principal holding it reads the attribute whether the flag
+        # is set or not, so the schema answer does not enter into it - including when that
+        # answer is unknown, where asking the flag first would have downgraded a live right
+        # to "cannot tell".
+        #
+        # Only read-without-control depends on the flag, and there the test is -eq $false
+        # rather than -not: $null is falsy in PowerShell, and unknown must not read as
+        # "not confidential".
+        $isLive = $null
+        if ($entry.GrantsControlAccess) {
+            $isLive = $true
+        } elseif ($Confidentiality.Confidential -eq $false) {
+            $isLive = $true
+        } elseif ($Confidentiality.Confidential -eq $true) {
+            $isLive = $false
+        }
+
+        $effectiveText = if ($isLive -eq $true) {
+            'Yes - the principal can read the material today'
+        } elseif ($isLive -eq $false) {
+            'No - blocked by the confidential flag, live the moment it is cleared'
+        } else {
+            'Unknown - the schema could not be read'
+        }
+
+        # A privileged principal reads the material anyway, so the right is expected rather
+        # than wrong. A dormant right is a warning, not a finding. Everything else is live.
+        $isFinding = (-not $entry.IsPrivileged) -and ($isLive -eq $true)
+
+        $row = [PSCustomObject]@{
+            sAMAccountName          = $(if ($entry.Principal) { $entry.Principal } else { ConvertFrom-SID -SID $sid })
+            objectSid               = $sid
+            dangerousRights         = (@($entry.Rights) -join ', ')
+            EffectiveToday          = $effectiveText
+            PrivilegedAccount       = $(if ($entry.IsPrivileged) { 'Yes' } else { 'No' })
+            affectedOUs             = @($entry.Containers)
+        }
+        if (-not $isFinding) {
+            $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
+        }
+        $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CredentialRoamingPermission' -Force
+        $row | Add-Member -NotePropertyName '_IsFinding' -NotePropertyValue $isFinding -Force
+
+        $rows.Add($row)
+    }
+
+    $findingRows = @($rows | Where-Object { $_._IsFinding })
+    $hintRows    = @($rows | Where-Object { -not $_._IsFinding })
+
+    if (@($findingRows).Count -gt 0) {
+        Show-Line ("Found $(@($findingRows).Count) non-privileged principal(s) with a delegated read of the " +
+                   "roaming attributes") -Class Finding -FindingId 'CREDENTIAL_ROAMING_DELEGATED'
+        foreach ($row in $findingRows) { Show-Object $row -Class Finding }
+    }
+
+    if (@($hintRows).Count -gt 0) {
+        Show-Line ("Found $(@($hintRows).Count) further delegated read(s) of the roaming attributes that do not " +
+                   "grant access today or belong to a privileged principal") -Class Hint -FindingId 'CREDENTIAL_ROAMING_DELEGATED'
+        foreach ($row in $hintRows) { Show-Object $row -Class Hint }
+    }
+
+    if ($suppressedPrivileged.Count -gt 0) {
+        Show-Line ("$($suppressedPrivileged.Count) privileged principal(s) hold the same right and are not " +
+                   "listed - they can read the material regardless. Use -IncludePrivileged to see them") -Class Note
     }
 }
 

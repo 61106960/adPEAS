@@ -255,17 +255,31 @@ Get-BitLockerRecoveryKeyAccess
 **What it checks**:
 - Which user objects carry roamed credential material (`msPKIDPAPIMasterKeys`, `msPKIAccountCredentials`), and when it last synchronised (`msPKIRoamingTimeStamp`)
 - Whether those two attributes are marked confidential in the schema (`searchFlags` bit 7, `fCONFIDENTIAL`, value 128)
-- Whether any of the affected accounts are privileged
+- Which principals hold a **delegated** read of the attributes on the containers that carry the material
+- Whether any of the affected accounts, or any of the delegated principals, are privileged
 
-**How it works**: Two server-side presence filters, `(msPKIDPAPIMasterKeys=*)` and `(msPKIAccountCredentials=*)`. The blob attributes themselves are deliberately **not** retrieved — only the account name, DN and timestamp travel. adPEAS has no use for the ciphertext, and writing base64-encoded DPAPI master keys into an HTML report would create the very exposure the check reports. Both attributes are also excluded from display centrally, so no other check can surface them either. Readability is then read once per forest from the two `attributeSchema` objects; the schema object names (`ms-PKI-DPAPIMasterKeys`) differ from the attribute names, so both are matched. The weaker of the two attributes decides, and a forest whose schema cannot be read is reported as *unknown* rather than as either verdict.
+**How it works**: Two server-side presence filters, `(msPKIDPAPIMasterKeys=*)` and `(msPKIAccountCredentials=*)`. The blob attributes themselves are deliberately **not** retrieved — only the account name, DN and timestamp travel. adPEAS has no use for the ciphertext, and writing base64-encoded DPAPI master keys into an HTML report would create the very exposure the check reports. Both attributes are also excluded from display centrally, so no other check can surface them either. Readability is then read once per forest from the two `attributeSchema` objects; the schema object names (`ms-PKI-DPAPIMasterKeys`) differ from the attribute names, so both are matched. The weaker of the two attributes decides, and a forest whose schema cannot be read is reported as *unknown* rather than as either verdict. Finally the containers holding those users are analysed for delegated read ACEs via `Get-OUPermissions -CheckType CredentialRoaming` — once per container, not once per user, since a container's DACL already carries what it inherits from above.
 
 **Security Impact**: The attributes hold ciphertext, not plaintext — a master key blob is sealed with a pre-key derived from the user's password **and** with the domain backup key, and the private keys are sealed with those master keys in turn. Material present is therefore a *Hint*: private keys are sitting in the directory where they need not be, and anybody who later obtains the user's hash or the domain backup key can use them. Material a low-privileged account can read is a *Finding*: without the confidential flag, readability follows the ordinary read ACEs of the user object, so in a default domain every authenticated user harvests the roamed material of every other user with a plain LDAP read. Combined with the domain backup key — which every domain administrator holds — that yields another user's private keys offline, and a roamed client-authentication certificate then authenticates as that user without their password. None of this constrains anybody with DCSync, a copy of `ntds.dit` or an AD backup.
 
-**Not covered**: who holds an *explicit* read ACE on these attributes. The confidential flag answers the blanket readability that comes from the default ACL; a right delegated to a single group by accident is not yet detected.
+**Delegated reads**: the confidential flag covers the blanket case; a delegated read is the one it says nothing about, and the one most likely to have happened by accident. Whether such a right is live depends on the schema, so the same ACE is a *Finding* in one forest and a dormant *Hint* in another:
+
+| ACE grants | Attributes confidential | Verdict |
+|---|---|---|
+| `ReadProperty` | no | works today — Finding |
+| `ReadProperty` | yes | blocked by the flag — Hint (live the moment it is cleared) |
+| `ReadProperty` + `ControlAccess`, or `GenericAll` | either | works today — Finding |
+
+A `ControlAccess`-only ACE scoped to one of the attributes counts as a grant: the `ReadProperty` half usually needs no delegation at all, because the default ACL already gives every authenticated user a blanket read of all properties. An *unscoped* `ControlAccess` ACE ("all extended rights") is not claimed here — that is `Get-DangerousACLs`' business. Reads covering only `ms-PKI-RoamingTimeStamp` are rated Low and drop out of a default report: a timestamp is a date, not a credential. Privileged holders are hidden unless `-IncludePrivileged`.
+
+**Not covered**: an ACE set directly on a single user object, bypassing the container; and a delegation on a container whose users have never roamed anything — there is nothing there to read, and it becomes visible as soon as the first user synchronises.
 
 **Usage**:
 ```powershell
 Get-CredentialRoaming
+
+# Also list privileged principals holding a delegated read
+Get-CredentialRoaming -IncludePrivileged
 ```
 
 ---

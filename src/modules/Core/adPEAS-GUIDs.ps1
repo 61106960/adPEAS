@@ -148,6 +148,15 @@ $Script:PropertyGUIDs = @{
     # gMSA (Group Managed Service Account) password attribute
     'msDS-ManagedPassword'           = [GUID]'e362ed86-b728-0842-b27d-2dea7a9df218'
 
+    # Credential Roaming - private keys and DPAPI master keys on the user object.
+    # Keyed by the schema object name, which differs from the attribute name here
+    # (ms-PKI-DPAPIMasterKeys vs msPKIDPAPIMasterKeys) and is what an ACL editor shows.
+    # The same GUIDs appear in $Script:ReadPropertyAliases for Set-DomainObject; these
+    # entries exist so Get-OUPermissions can recognise a delegated read.
+    'ms-PKI-AccountCredentials'      = [GUID]'b8dfa744-31dc-4ef1-ac7c-84baf7ef9da7'
+    'ms-PKI-DPAPIMasterKeys'         = [GUID]'b3f93023-9239-4f7c-b99c-6745d87adbc2'
+    'ms-PKI-RoamingTimeStamp'        = [GUID]'91e647de-d96f-4b70-9557-d63ff4f3ccd8'
+
     # Shadow Credentials (CVE-2022-26923, Key Trust attack)
     # schemaIdGuid per MS-ADA2: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-ada2/45916e5b-d66f-444e-b1e5-5b0666ed4d66
     'msDS-KeyCredentialLink'         = [GUID]'5b47d60f-6090-40b2-9f37-2a4de88f3063'
