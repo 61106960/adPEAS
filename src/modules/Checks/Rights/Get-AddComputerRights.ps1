@@ -488,8 +488,24 @@ function Check-GPOAddComputerRights {
                             # Get linkage data for Scope/LinkedOUs (same pattern as LDAP/SMB checks)
                             $gpoLinkage = Get-GPOLinkage
                             $gpoGUIDKey = $gpo.Name.ToUpper()
-                            $links = if ($gpoLinkage) { $gpoLinkage[$gpoGUIDKey] } else { $null }
-                            $activeLinks = @()
+
+                            # Three-valued, and the distinction is the whole point. A plain
+                            # $gpoLinkage[$key] answers $null both when the map could not be
+                            # built and when the map is fine but holds no entry for this GPO -
+                            # two states that have to be reported as opposites. The second one
+                            # means "linked nowhere", which is knowledge; collapsing it into
+                            # "unknown" printed "Unknown - linkage could not be resolved" next
+                            # to an EffectiveSetting of "linked nowhere" in the same block, and
+                            # let the policy escape the dormant-GPO dampening, because an
+                            # unknown reach deliberately never dampens.
+                            #
+                            # @($linkage[$missingKey]) is not a substitute: that is an array
+                            # holding one $null, which is Count 1 and therefore looks linked.
+                            $links = $null
+                            if ($gpoLinkage) {
+                                $links = @()
+                                if ($gpoLinkage.ContainsKey($gpoGUIDKey)) { $links = @($gpoLinkage[$gpoGUIDKey]) }
+                            }
                             $isDomainWide = $false
 
                             # Reset per GPO. Assigned only inside the if below, so without
@@ -506,8 +522,13 @@ function Check-GPOAddComputerRights {
                             # domain root, so a policy linked to an ordinary OU is absent from
                             # it - which is not the same as being linked nowhere, and saying
                             # "linked nowhere" about a linked policy would simply be wrong.
+                            #
+                            # The unresolved case gets a scope of its own. Falling through to
+                            # "NotLinked" made the EffectiveSetting row assert "the policy is
+                            # linked nowhere" on the strength of a lookup that failed.
                             $precedenceInfo = $Script:gpoAddComputerPrecedenceMap[$gpoGUIDKey]
                             $precedenceScope = if ($precedenceInfo) { $precedenceInfo.Scope }
+                                               elseif ($null -eq $links) { "Unknown" }
                                                elseif ($activeLinks.Count -gt 0) { "OtherOU" }
                                                else { "NotLinked" }
                             $precedenceOrder = if ($precedenceInfo -and $precedenceInfo.LinkOrder) { $precedenceInfo.LinkOrder } else { 999 }

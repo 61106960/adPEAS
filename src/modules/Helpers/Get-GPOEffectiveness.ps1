@@ -178,7 +178,9 @@ function Get-GPOEffectiveStatus {
     precedence it never evaluated would be worse than one that says so.
 
 .PARAMETER Scope
-    The precedence scope the caller determined.
+    The precedence scope the caller determined: DomainControllers, Domain, OtherOU,
+    NotLinked, or Unknown when the linkage could not be resolved. Anything else is treated
+    as Unknown rather than as NotLinked - see the default branch.
 
 .PARAMETER IsEffective
     Whether this GPO won its scope's precedence contest. Only consulted for the two scopes
@@ -195,7 +197,7 @@ function Get-GPOEffectiveStatus {
     is disabled", which reach the same set of machines by different routes.
 
 .OUTPUTS
-    [string] A sentence beginning with Yes or No.
+    [string] A sentence beginning with Yes, No, or Unknown.
 
 .EXAMPLE
     Get-GPOEffectiveSettingText -Scope 'DomainControllers' -IsEffective $true
@@ -239,9 +241,23 @@ function Get-GPOEffectiveSettingText {
         'OtherOU' {
             return 'Yes - applies on its linked OUs; no precedence comparison there'
         }
-        default {
+        'NotLinked' {
             if ($HasAnyLink) { return 'No - every link is disabled' }
             return 'No - the policy is linked nowhere'
+        }
+        'Unknown' {
+            return 'Unknown - the linkage could not be resolved'
+        }
+        default {
+            # NotLinked used to live here, which made this the fall-through for every scope
+            # the function does not recognise - including the unresolved one, which was then
+            # reported as the definite "linked nowhere" while the LinkedOUs row on the same
+            # object correctly said Unknown. The two contradicted each other in one block.
+            #
+            # Failing to "unknown" is the right direction for an unexpected value: a wrong
+            # claim about where a policy applies sends a reader to the wrong GPO, an admission
+            # of ignorance only sends them to check by hand.
+            return 'Unknown - the policy scope could not be determined'
         }
     }
 }
