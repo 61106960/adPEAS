@@ -49,7 +49,9 @@ function Get-AddComputerRights {
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory=$false)]
-        [switch]$IncludePrivileged
+        [switch]$IncludePrivileged,
+
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -287,19 +289,41 @@ function Get-AddComputerRights {
                 $effectiveGPO = @($gpoFindings | Where-Object { $_._IsEffective -eq $true })[0]
                 $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
 
-                $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
-                Show-Line "Found $(@($gpoFindings).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
+                # A policy that is not linked or not enabled grants the privilege to nobody.
+                # Held back rather than dropped - see Show-GPOInactiveSummary. The verdict
+                # was stamped in Check-GPOAddComputerRights, where the linkage lives.
+                $inactiveGPOs = @($gpoFindings | Where-Object { $_._ReachInactive })
+                $shownGPOs    = if ($IncludeInactive) { @($gpoFindings) } else { @($gpoFindings | Where-Object { -not $_._ReachInactive }) }
 
-                # Show all GPOs that define SeMachineAccountPrivilege, sorted by precedence (highest first)
-                $scopePriorityMap = @{ "DomainControllers" = 1; "Domain" = 2; "NotLinked" = 3 }
-                $sortedGPOs = @($gpoFindings | Sort-Object @{Expression={$scopePriorityMap[$_._PrecedenceScope]}}, _PrecedenceOrder)
+                $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
+                if (@($shownGPOs).Count -gt 0) {
+                    Show-Line "Found $(@($shownGPOs).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
+                } else {
+                    Show-Line "No policy that is linked and enabled configures SeMachineAccountPrivilege" -Class Note
+                }
+
+                Show-GPOInactiveSummary `
+                    -Unlinked @($inactiveGPOs | Where-Object { $_._ReachUnlinked }).Count `
+                    -Disabled @($inactiveGPOs | Where-Object { -not $_._ReachUnlinked }).Count `
+                    -Listed:$IncludeInactive
+
+                # Show all GPOs that define SeMachineAccountPrivilege, sorted by precedence
+                # (highest first). OtherOU is in the map because a scope missing from it
+                # sorts as $null, which puts it ahead of the domain-level winner.
+                $scopePriorityMap = @{ "DomainControllers" = 1; "Domain" = 2; "OtherOU" = 3; "NotLinked" = 4 }
+                $sortedGPOs = @($shownGPOs | Sort-Object @{Expression={$scopePriorityMap[$_._PrecedenceScope]}}, _PrecedenceOrder)
 
                 foreach ($gpo in $sortedGPOs) {
                     $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerGPO' -Force
 
                     $isEffective = $gpo._IsEffective -eq $true
                     $isDangerous = $gpo._HasAuthenticatedUsers -or $gpo._HasEveryone
-                    $objectClass = if ($isEffective) {
+                    $objectClass = if ($gpo._ReachInactive) {
+                        # Grey whatever the accounts say: the privilege is granted to nobody
+                        # while the policy reaches nothing, and EffectiveSetting on the row
+                        # says why.
+                        'Note'
+                    } elseif ($isEffective) {
                         if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
                     } else {
                         if ($isDangerous) { "Hint" } else { "Standard" }
@@ -492,6 +516,19 @@ function Check-GPOAddComputerRights {
                             $gpo | Add-Member -NotePropertyName 'Accounts'              -NotePropertyValue $accountNames -Force
                             $gpo | Add-Member -NotePropertyName '_IsEffective'          -NotePropertyValue $false -Force
                             $gpo | Add-Member -NotePropertyName '_HasAnyLink'           -NotePropertyValue ([bool](@($links | Where-Object { $_ }).Count)) -Force
+
+                            # Whether this policy reaches a machine at all, stamped here
+                            # rather than in the output block because the linkage and the
+                            # status map only exist in this function. Split-GPOFindingByReach
+                            # would need both, so the caller reads the verdict instead.
+                            #
+                            # -eq $false on purpose: an unresolved linkage answers $null,
+                            # which must not be read as inactive.
+                            $reach = Get-GPOReach -StatusEntry $gpoStatusMap[$gpoGUIDKey] -Scope 'Machine' -Link $links
+                            $gpo | Add-Member -NotePropertyName '_ReachInactive' `
+                                -NotePropertyValue ($reach.Reaches -eq $false) -Force
+                            $gpo | Add-Member -NotePropertyName '_ReachUnlinked' `
+                                -NotePropertyValue ([bool]($reach.Reason -like '*linked nowhere*')) -Force
 
                             # Where the policy applies. The full link records, disabled ones
                             # included - the LinkedOUs transformer marks those and renders an

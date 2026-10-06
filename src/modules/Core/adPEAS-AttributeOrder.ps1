@@ -639,6 +639,10 @@ $Script:ExcludeAttributes = @(
     # Precedence bookkeeping behind the EffectiveSetting sentence. _IsEffective is the
     # boolean the row colouring still needs; the sentence is what a reader gets.
     '_IsEffective', '_HasAnyLink',
+    # Which half of the policy a finding depends on, so Split-GPOFindingByReach can judge
+    # it per finding rather than per check, and the reach verdict where a check stamps it
+    # instead of partitioning. Internal bookkeeping, never a row.
+    '_ReachScope', '_ReachInactive', '_ReachUnlinked',
     # GPO check internal analysis flags - used for severity calculation, not for display.
     # ConsoleClass decides the colour a row is rendered in and must not appear as a row.
     #

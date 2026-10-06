@@ -430,7 +430,17 @@ function Get-GPOReach {
     then counts as active - see below.
 
 .PARAMETER Scope
-    Which half of the policy the check reads.
+    Which half of the policy the check reads, when that is the same for every finding.
+
+.PARAMETER ScopeProperty
+    For a check whose findings do not share one half. The registry check derives it per
+    finding from the hive - a value under Machine\Registry.pol writes HKLM, the one under
+    User writes HKCU - and a policy with only its computer configuration switched off
+    stops the first and not the second. Passing one scope for all of them would lose that
+    and leave such a finding at full severity.
+
+    Names a property holding 'Machine', 'User' or 'Any'. Where it is absent or holds
+    something else, Scope applies.
 
 .PARAMETER GuidProperty
     Where the GUID sits on the finding. GPOGUID for the checks that build their own
@@ -479,6 +489,9 @@ function Split-GPOFindingByReach {
         [string]$Scope = 'Any',
 
         [Parameter(Mandatory=$false)]
+        [string]$ScopeProperty,
+
+        [Parameter(Mandatory=$false)]
         [string]$GuidProperty = 'GPOGUID'
     )
 
@@ -505,7 +518,16 @@ function Split-GPOFindingByReach {
         $statusEntry = $null
         if ($GPOStatusMap -and $GPOStatusMap.ContainsKey($guid)) { $statusEntry = $GPOStatusMap[$guid] }
 
-        $reach = Get-GPOReach -StatusEntry $statusEntry -Scope $Scope -Link $links
+        # Per-finding scope where the check supplies one. Anything other than the three
+        # Get-GPOReach accepts falls back rather than throwing on a ValidateSet: a finding
+        # with a missing or malformed scope should be judged, not lose the whole run.
+        $itemScope = $Scope
+        if ($ScopeProperty) {
+            $candidate = "$($item.$ScopeProperty)"
+            if ($candidate -in @('Machine', 'User', 'Any')) { $itemScope = $candidate }
+        }
+
+        $reach = Get-GPOReach -StatusEntry $statusEntry -Scope $itemScope -Link $links
 
         # -eq $false, not -not: $null is falsy, and an unresolved linkage must not be read
         # as inactive. See the OUTPUTS note above.
