@@ -960,6 +960,38 @@ complete path to the file as `FilePath` instead, because they also scan NETLOGON
 caller-supplied `-Path`, where there is no GPO folder to be relative to - and for a finding
 that does come from a GPO, that full path already contains the GUID.
 
+**Dormant policies are held back by default**: a service provider who ships a library of
+Group Policies and links a handful of them leaves the rest configured and applying nowhere.
+Reporting their settings buries the policies that are live, so a finding whose policy is
+not linked or not enabled is not listed. One line gives the count and the reason:
+
+```
+[*] 3 further finding(s) hidden - 2 on unlinked policies, 1 on disabled ones
+```
+
+It is held back, not dropped. `-IncludeInactive` on the individual check lists them,
+greyed, with `LinkedOUs` and `GPOStatus` on the row saying why. The switch is deliberately
+not available on `Invoke-adPEAS`, so the hint naming it appears only when a check was
+called directly.
+
+Three things worth knowing about where the line is drawn:
+
+- It applies to checks that report a **setting inside** a policy. The credential checks are
+  exempt: a `cpassword` in `Groups.xml` is readable by Authenticated Users whether the
+  policy is linked or not, so linkage has no bearing on the exposure. `Get-GPOPermissions`
+  is exempt too - who may edit a dormant policy still matters, because editing it and then
+  linking it is a two-step path - and it shows `LinkedOUs` and `GPOStatus` anyway.
+- "Not linked or not enabled" is read from the directory: no enabled link, or the relevant
+  configuration half switched off. It is **not** an RSoP answer. A WMI filter that matches
+  nothing, security filtering on the Apply Group Policy right, Enforced and block
+  inheritance are all invisible, and a policy linked to an OU holding no computer counts as
+  active.
+- Nothing is held back when the linkage could not be read. An enumeration that failed
+  answers unknown, and a finding is never demoted on missing information.
+
+Suppressing a finding also keeps it out of the HTML report and the JSON export, so a scan
+comparison will show such a finding as gone once someone disables a link.
+
 **Reading `EffectiveSetting`**: where several GPOs configure the same thing, this row says
 which of them decides the value, and why. It replaced a `True`/`False` called
 `IsEffectiveSetting`, which could not express the answer - a `False` meant either "a
