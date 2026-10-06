@@ -19,6 +19,12 @@ function Get-GPOLinkage {
     .OUTPUTS
     Hashtable with GPO GUID as key and array of linked locations as value.
 
+    $null when the linkage could not be established - no LDAP session, no domain DN, or an
+    enumeration that threw. An empty hashtable means the opposite: the query ran and no
+    object in the domain carries a gPLink. Callers rely on that distinction, so the two
+    must never be conflated; @{} is truthy in PowerShell while $null is not, which is how
+    a caller tells them apart.
+
     .NOTES
     Author: Alexander Sturz (@_61106960_)
     #>
@@ -187,6 +193,23 @@ function Get-GPOLinkage {
         catch {
             Write-Error "Error during GPO linkage enumeration: $_"
             Write-Log $_.Exception.StackTrace
+
+            # $null, not the map built so far. An enumeration that threw knows nothing
+            # about the links it never read, and an empty or partial hashtable is
+            # indistinguishable from "nothing is linked in this domain" - note that @{} is
+            # truthy in PowerShell, unlike @(), so a caller testing the result for truth
+            # cannot tell the two apart either.
+            #
+            # That difference used to be cosmetic: a finding showed "Not linked" where it
+            # should have said "Unknown". It stopped being cosmetic once callers began
+            # dampening findings on policies that reach nothing, because a transient LDAP
+            # failure would then silence the entire GPO analysis and report the quietest
+            # possible result as the truth.
+            #
+            # The cache is cleared with it, so the next call retries rather than serving a
+            # failure as an answer for the rest of the session.
+            $Script:CachedGPOLinkage = $null
+            return $null
         }
 
         return $gpoLinkage
