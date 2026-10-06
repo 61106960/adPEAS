@@ -316,7 +316,20 @@ function Get-LDAPConfiguration {
                             $gpoLinkage = Get-GPOLinkage
                             # Normalize GUID to uppercase for hashtable lookup (Get-GPOLinkage uses uppercase keys)
                             $gpoNameUpper = $gpo.Name.ToUpper()
-                            $links = $gpoLinkage[$gpoNameUpper]
+
+                            # Three-valued. A bare $gpoLinkage[$key] answers $null both when
+                            # the map could not be built and when the map is fine but holds no
+                            # entry for this GPO - and those two have to be reported as
+                            # opposites: the second means "linked nowhere", which is knowledge.
+                            # On a $null map the bare index also emits a "Cannot index into a
+                            # null array" error record into the host.
+                            $links = $null
+                            if ($null -ne $gpoLinkage) {
+                                $links = @()
+                                if ($gpoLinkage.ContainsKey($gpoNameUpper)) {
+                                    $links = @($gpoLinkage[$gpoNameUpper])
+                                }
+                            }
                             $activeLinks = @()
                             $isDomainWide = $false
                             $coversDCs = $false
@@ -339,10 +352,18 @@ function Get-LDAPConfiguration {
                             # empty list as "Not linked". The Scope attribute this replaces
                             # said the same thing in a second vocabulary and a count that was
                             # the length of the list beside it.
-                            $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
+                            # Only the unresolved case needs a string: "Not linked" would be a
+                            # claim the failed lookup cannot support. Plain assignment, then an
+                            # override - an "if" whose branch yields @() writes nothing to the
+                            # output stream and would land the variable as $null.
+                            $linkedOUsDisplay = $links
+                            if ($null -eq $links) {
+                                $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                            }
+                            $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 
                             $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoNameUpper] `
-                                -Scope 'Machine' -Link @($links | Where-Object { $_ })
+                                -Scope 'Machine' -Link $links
                             if ($gpoStatus) {
                                 $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                             }
@@ -370,9 +391,16 @@ function Get-LDAPConfiguration {
                         default { "Unknown" }
                     }
 
+                    # Three-valued, same as the GptTmpl.inf loop: $null for an unresolved map,
+                    # @() for a resolved one that holds no entry for this GPO.
                     $links = $null
                     $gpoLinkage = Get-GPOLinkage
-                    if ($gpoLinkage) { $links = $gpoLinkage[$leftoverGuid] }
+                    if ($null -ne $gpoLinkage) {
+                        $links = @()
+                        if ($gpoLinkage.ContainsKey($leftoverGuid)) {
+                            $links = @($gpoLinkage[$leftoverGuid])
+                        }
+                    }
                     $activeLinks = @($links | Where-Object { $_ -and $_.LinkStatus -ne "Disabled" })
                     $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
 
@@ -384,10 +412,14 @@ function Get-LDAPConfiguration {
                     $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue (
                         Test-GPOCoversDomainControllers -ActiveLink $activeLinks -DomainController $domainControllers) -Force
 
-                    $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
+                    $linkedOUsDisplay = $links
+                    if ($null -eq $links) {
+                        $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                    }
+                    $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 
                     $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$leftoverGuid] `
-                        -Scope 'Machine' -Link @($links | Where-Object { $_ })
+                        -Scope 'Machine' -Link $links
                     if ($gpoStatus) {
                         $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                     }
@@ -426,6 +458,12 @@ function Get-LDAPConfiguration {
                 #   Domain            - linked at the domain root
                 #   OtherOU           - actively linked, but to some ordinary OU
                 #   NotLinked         - linked nowhere, or every link disabled
+                #   Unknown           - the linkage could not be resolved at all
+                #
+                # Unknown is the fifth and it has to be separate: falling through to
+                # NotLinked made the EffectiveSetting row assert "the policy is linked
+                # nowhere" on the strength of a lookup that failed, next to a LinkedOUs row
+                # that correctly said Unknown.
                 #
                 # OtherOU and NotLinked used to share the name "NotLinked", and the loop
                 # below declared that whole bucket effective on the argument that a policy
@@ -434,8 +472,13 @@ function Get-LDAPConfiguration {
                 # linked" and "IsEffectiveSetting: True" on the same object.
                 foreach ($gpoFinding in $gpoFindings) {
                     $guid = $gpoFinding.Name.ToUpper()
-                    $linksEff = if ($gpoLinkage) { $gpoLinkage[$guid] } else { $null }
-                    $precScope = "NotLinked"; $precOrder = 999
+                    $linksEff = $null
+                    if ($null -ne $gpoLinkage) {
+                        $linksEff = @()
+                        if ($gpoLinkage.ContainsKey($guid)) { $linksEff = @($gpoLinkage[$guid]) }
+                    }
+                    $precScope = if ($null -eq $linksEff) { "Unknown" } else { "NotLinked" }
+                    $precOrder = 999
 
                     if ($linksEff) {
                         $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })

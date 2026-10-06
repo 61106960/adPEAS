@@ -178,7 +178,20 @@ function Get-SMBSigningStatus {
                                 $gpoLinkage = Get-GPOLinkage
                                 # Normalize GUID to uppercase for hashtable lookup (Get-GPOLinkage uses uppercase keys)
                                 $gpoGUIDUpper = $gpoGUID.ToUpper()
-                                $links = $gpoLinkage[$gpoGUIDUpper]
+
+                                # Three-valued. A bare $gpoLinkage[$key] answers $null both
+                                # when the map could not be built and when the map is fine but
+                                # holds no entry for this GPO - and those two have to be
+                                # reported as opposites: the second means "linked nowhere",
+                                # which is knowledge. On a $null map the bare index also emits
+                                # a "Cannot index into a null array" error record into the host.
+                                $links = $null
+                                if ($null -ne $gpoLinkage) {
+                                    $links = @()
+                                    if ($gpoLinkage.ContainsKey($gpoGUIDUpper)) {
+                                        $links = @($gpoLinkage[$gpoGUIDUpper])
+                                    }
+                                }
                                 $activeLinks = @()
                                 $isDomainWide = $false
 
@@ -196,10 +209,18 @@ function Get-SMBSigningStatus {
                                 # Where the policy applies. The full link records, disabled
                                 # ones included - the LinkedOUs transformer marks those and
                                 # renders an empty list as "Not linked".
-                                $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
+                                # Only the unresolved case needs a string: "Not linked" would
+                                # be a claim the failed lookup cannot support. Plain
+                                # assignment, then an override - an "if" whose branch yields
+                                # @() writes nothing and would land the variable as $null.
+                                $linkedOUsDisplay = $links
+                                if ($null -eq $links) {
+                                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                                }
+                                $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 
                                 $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUIDUpper] `
-                                    -Scope 'Machine' -Link @($links | Where-Object { $_ })
+                                    -Scope 'Machine' -Link $links
                                 if ($gpoStatus) {
                                     $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                                 }
@@ -250,8 +271,16 @@ function Get-SMBSigningStatus {
                 # unlinked GPO was reported as the setting in force.
                 foreach ($gpoFinding in $gpoFindings) {
                     $guid = $gpoFinding.Name.ToUpper()
-                    $linksEff = if ($gpoLinkageForEff) { $gpoLinkageForEff[$guid] } else { $null }
-                    $precScope = "NotLinked"; $precOrder = 999
+                    # Unknown is a scope of its own. Falling through to NotLinked made the
+                    # EffectiveSetting row assert "the policy is linked nowhere" on the
+                    # strength of a lookup that failed.
+                    $linksEff = $null
+                    if ($null -ne $gpoLinkageForEff) {
+                        $linksEff = @()
+                        if ($gpoLinkageForEff.ContainsKey($guid)) { $linksEff = @($gpoLinkageForEff[$guid]) }
+                    }
+                    $precScope = if ($null -eq $linksEff) { "Unknown" } else { "NotLinked" }
+                    $precOrder = 999
 
                     if ($linksEff) {
                         $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
@@ -334,8 +363,11 @@ function Get-SMBSigningStatus {
                 # This means member servers and clients rely on OS defaults (which vary by version)
                 $gpoLinkage = Get-GPOLinkage
                 $dcOnlyGPOs = @($gpoFindings | Where-Object {
-                    # Normalize GUID to uppercase for hashtable lookup
-                    $links = $gpoLinkage[$_.Name.ToUpper()]
+                    # Normalize GUID to uppercase for hashtable lookup. Guarded, because a
+                    # bare index on an unresolved ($null) map emits an error record into the
+                    # host for every GPO in the list.
+                    $links = $null
+                    if ($null -ne $gpoLinkage) { $links = $gpoLinkage[$_.Name.ToUpper()] }
                     if (-not $links) { return $false }
 
                     $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })

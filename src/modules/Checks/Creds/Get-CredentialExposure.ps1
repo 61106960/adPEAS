@@ -451,13 +451,29 @@ function Get-CredentialExposure {
                                 # Extract GPO GUID from SYSVOL path for linkage resolution
                                 $fileGpoGUID = $null
                                 $fileGpoName = $null
-                                $fileLinkedOUs = @()
+                                # Three-valued like every other GPO check: $null when the
+                                # linkage could not be resolved, @() when it resolved and this
+                                # policy is linked nowhere. The row is then emitted either way
+                                # below - "Not linked" is a statement about where a plaintext
+                                # password applies, not an absence, and this check was the one
+                                # place that let it vanish instead.
+                                $fileLinkedOUs = $null
                                 if ($xmlFile.FullName -match '\\Policies\\(\{[^}]+\})\\') {
                                     $fileGpoGUID = $Matches[1].ToUpper()
                                     $fileGpoName = if ($gpoNameMap[$fileGpoGUID]) { $gpoNameMap[$fileGpoGUID] } else { $fileGpoGUID }
-                                    if ($gpoLinkage -and $gpoLinkage.ContainsKey($fileGpoGUID)) {
-                                        $fileLinkedOUs = $gpoLinkage[$fileGpoGUID]
+                                    if ($null -ne $gpoLinkage) {
+                                        $fileLinkedOUs = @()
+                                        if ($gpoLinkage.ContainsKey($fileGpoGUID)) {
+                                            $fileLinkedOUs = @($gpoLinkage[$fileGpoGUID])
+                                        }
                                     }
+                                }
+                                # A credential found outside a GPO folder has no linkage
+                                # question at all, which is why the row is suppressed for it
+                                # rather than printed as Unknown.
+                                $fileLinkedOUsDisplay = $fileLinkedOUs
+                                if ($fileGpoGUID -and $null -eq $fileLinkedOUs) {
+                                    $fileLinkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
                                 # Check 1: cpassword attribute (GPP encrypted passwords)
@@ -480,7 +496,7 @@ function Get-CredentialExposure {
                                                 Password = $decryptedPassword
                                             }
                                             if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                            if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+                                            if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                             Show-Line "Found GPP credential" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'GPP Password' -Force
@@ -510,7 +526,7 @@ function Get-CredentialExposure {
                                             Password = $autoLogonPassword
                                         }
                                         if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                        if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+                                        if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                         Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
@@ -595,13 +611,21 @@ function Get-CredentialExposure {
                                 # Extract GPO GUID from SYSVOL path for linkage resolution
                                 $fileGpoGUID = $null
                                 $fileGpoName = $null
-                                $fileLinkedOUs = @()
+                                # Same three-valued handling as the XML branch above.
+                                $fileLinkedOUs = $null
                                 if ($file.FullName -match '\\Policies\\(\{[^}]+\})\\') {
                                     $fileGpoGUID = $Matches[1].ToUpper()
                                     $fileGpoName = if ($gpoNameMap[$fileGpoGUID]) { $gpoNameMap[$fileGpoGUID] } else { $fileGpoGUID }
-                                    if ($gpoLinkage -and $gpoLinkage.ContainsKey($fileGpoGUID)) {
-                                        $fileLinkedOUs = $gpoLinkage[$fileGpoGUID]
+                                    if ($null -ne $gpoLinkage) {
+                                        $fileLinkedOUs = @()
+                                        if ($gpoLinkage.ContainsKey($fileGpoGUID)) {
+                                            $fileLinkedOUs = @($gpoLinkage[$fileGpoGUID])
+                                        }
                                     }
+                                }
+                                $fileLinkedOUsDisplay = $fileLinkedOUs
+                                if ($fileGpoGUID -and $null -eq $fileLinkedOUs) {
+                                    $fileLinkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
                                 $fileContent = $null
@@ -642,7 +666,7 @@ function Get-CredentialExposure {
                                             Password = $foundPassword
                                         }
                                         if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                        if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+                                        if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                         Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
@@ -687,7 +711,7 @@ function Get-CredentialExposure {
                                                 MatchedLine = $trimmedLine
                                             }
                                             if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                            if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+                                            if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                             Show-Line "Found credential pattern" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
@@ -708,7 +732,7 @@ function Get-CredentialExposure {
                                                 MatchedLine = $trimmedLine
                                             }
                                             if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                            if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+                                            if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                             Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force

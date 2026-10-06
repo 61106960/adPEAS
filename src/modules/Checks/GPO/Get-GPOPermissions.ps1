@@ -238,8 +238,16 @@ function Get-GPOPermissions {
 
                     # If we found vulnerable identities for this GPO, add to results
                     if (@($vulnerableIdentities).Count -gt 0) {
-                        # Get GPO Linkage for this GPO
-                        $links = $gpoLinkage[$gpoGUID]
+                        # Get GPO Linkage for this GPO. Three-valued: $null when the map could
+                        # not be built, @() when the map is fine but holds no entry - the
+                        # second means "linked nowhere", which is knowledge and not the same
+                        # thing. A bare index on a $null map also emits a "Cannot index into a
+                        # null array" error record into the host.
+                        $links = $null
+                        if ($null -ne $gpoLinkage) {
+                            $links = @()
+                            if ($gpoLinkage.ContainsKey($gpoGUID)) { $links = @($gpoLinkage[$gpoGUID]) }
+                        }
                         $activeLinks = @()
                         $isDomainWide = $false
                         $linkCount = 0
@@ -296,7 +304,12 @@ function Get-GPOPermissions {
                         # empty list as "Not linked". Handed over as an array rather than a
                         # newline-joined string, so each link is its own row and can carry
                         # its own colour.
-                        $linkedOUsDisplay = @($links | Where-Object { $_ })
+                        # Only the unresolved case needs a string: "Not linked" would be a
+                        # claim the failed lookup cannot support.
+                        $linkedOUsDisplay = $links
+                        if ($null -eq $links) {
+                            $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                        }
 
                         # Format vulnerable identities for display
                         $identityDisplay = ($vulnerableIdentities | ForEach-Object {
@@ -335,8 +348,11 @@ function Get-GPOPermissions {
                         # This only adds what that attribute cannot know: links that exist
                         # and are switched off to the last one. Scope 'Any' - a permission on
                         # the GPO object belongs to neither half of the policy.
+                        # $links, not $linkedOUsDisplay: the display value may be the Unknown
+                        # string, and Get-GPOEffectiveStatus needs the $null that makes it
+                        # decline to judge rather than a one-element array of text.
                         $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUID] `
-                            -Scope 'Any' -Link $linkedOUsDisplay
+                            -Scope 'Any' -Link $links
                         if ($gpoStatus) {
                             $enrichedGPO | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                         }
