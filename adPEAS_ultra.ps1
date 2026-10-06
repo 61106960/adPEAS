@@ -3216,6 +3216,10 @@ $Script:PrimaryAttributes = @{
 	    'whenCreated',
 	    'distinguishedName'
 	)
+	CredentialRoaming = @(
+	    'sAMAccountName', 'distinguishedName', 'RoamedMaterial', 'ReadableBy',
+	    'PrivilegedAccount', 'RoamingTimeStamp'
+	)
 	GPPCredential = @(
 	    'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
 	)
@@ -3351,6 +3355,7 @@ $Script:ExcludeAttributes = @(
 	'_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
 	'_IsEffective', '_HasAnyLink',
 	'_ReachScope', '_ReachInactive', '_ReachUnlinked',
+	'msPKIAccountCredentials', 'msPKIDPAPIMasterKeys',
 	'Risk', 'Severity', 'ConsoleClass',
 	'IsSystemAccount', 'IsPrivilegedAccount',
 	'HasUNCPath', 'HasRiskyPath', 'HasUnquotedPath', 'IsPowerShell', 'IsScript',
@@ -11937,6 +11942,135 @@ certutil -getreg policy\DisableExtensionList
 	        @{ Attribute = 'SchemaVersion'; Pattern = '^1$'; Severity = 'Hint' }
 	    )
 	}
+	'CREDENTIAL_ROAMING_PRESENT' = @{
+	    Title = "Credential Roaming - Private Keys and DPAPI Master Keys Stored in AD"
+	    Risk = "Hint"
+	    BaseScore = 45
+	    Description = "This user object carries roamed credential material. Credential Roaming copies the public-key part of a Windows profile into attributes on the user object so that it follows the user to every machine they log on to: certificates, certificate requests, private keys in msPKIAccountCredentials, and the user's DPAPI master keys in msPKIDPAPIMasterKeys. A DPAPI master key is what protects everything else that user stored under DPAPI - saved RDP credentials in .rdg files, browser secrets, WLAN keys, the Credential Manager. The attributes hold ciphertext rather than plaintext, which is why this is reported as a hint on its own: a master key is sealed with a pre-key derived from the user's password and with the domain backup key, and the private keys are sealed with those master keys in turn. What it establishes is that the material is in the directory at all, which is the precondition for the rest."
+	    Impact = @(
+	        "Anybody who later obtains the user's password or hash decrypts the master keys and with them every DPAPI secret of that profile"
+	        "Anybody who obtains the domain backup key decrypts them without the user's password - and every domain administrator holds it"
+	        "A roamed client-authentication or smartcard certificate then impersonates the user through PKINIT or Schannel, with no password involved"
+	        "The material survives a password change, because the domain backup key path does not depend on the password"
+	        "DCSync, a copy of ntds.dit or an AD backup yields it regardless of any permission on the attributes"
+	    )
+	    Attack = @(
+	        "1. Read msPKIDPAPIMasterKeys and msPKIAccountCredentials from the target user object"
+	        "2. Export the domain backup key from a domain controller (lsadump::backupkeys /export) or use the user's password or hash"
+	        "3. Decrypt the master keys offline (dpapi::masterkey /in:<blob> /pvk:<backupkey>.pvk)"
+	        "4. Decrypt the private key out of msPKIAccountCredentials with the recovered master key"
+	        "5. Authenticate as the user with the recovered certificate, or decrypt their stored DPAPI secrets"
+	    )
+	    Remediation = @(
+	        "Turn Credential Roaming off where it is not genuinely needed - every unnecessary deployment puts private keys and master keys into the directory for nothing"
+	        "Mark msPKIAccountCredentials and msPKIDPAPIMasterKeys confidential in the schema, which stops ordinary users reading them"
+	        "Clear the attributes on accounts that no longer need roaming; disabling the policy does not remove what has already synchronised"
+	        "Prefer smartcards or Windows Hello for Business with non-exportable, TPM-bound keys, which never roam"
+	        "Treat the domain backup key as a Tier 0 secret and rotate it after a domain controller compromise, or all roamed material stays decryptable"
+	        "Keep clients on the September 2022 patch level or later for CVE-2022-30170, a client-side flaw in how roamed data is written back"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "List every user carrying roamed credential material, without retrieving the blobs"
+	            Command = @'
+Get-ADUser -LDAPFilter '(msPKIDPAPIMasterKeys=*)' -Properties msPKIRoamingTimeStamp |
+    Select-Object SamAccountName, msPKIRoamingTimeStamp
+'@
+	        }
+	        @{
+	            Description = "Read the confidential flag on both attributes (bit 7, value 128)"
+	            Command = @'
+Get-ADObject -SearchBase (Get-ADRootDSE).schemaNamingContext `
+    -LDAPFilter '(|(lDAPDisplayName=msPKIAccountCredentials)(lDAPDisplayName=msPKIDPAPIMasterKeys))' `
+    -Properties lDAPDisplayName, searchFlags |
+    Select-Object lDAPDisplayName, searchFlags,
+        @{n='Confidential'; e={ ($_.searchFlags -band 128) -ne 0 }}
+'@
+	        }
+	        @{
+	            Description = "Mark both attributes confidential. Forest-wide and needs Schema Admin - test first, a reader with only generic read loses access"
+	            Command = @'
+$schema = (Get-ADRootDSE).schemaNamingContext
+foreach ($name in 'ms-PKI-AccountCredentials', 'ms-PKI-DPAPIMasterKeys') {
+    $attr = Get-ADObject -SearchBase $schema -LDAPFilter "(cn=$name)" -Properties searchFlags
+    Set-ADObject -Identity $attr.DistinguishedName `
+        -Replace @{ searchFlags = ($attr.searchFlags -bor 128) }
+}
+'@
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Credential Roaming (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/credential-roaming" }
+	        @{ Title = "Confidential attributes (searchFlags fCONFIDENTIAL)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-searchflags" }
+	        @{ Title = "CVE-2022-30170 - Credential Roaming elevation of privilege"; Url = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2022-30170" }
+	    )
+	    Tools = @("adPEAS", "SharpDPAPI", "mimikatz")
+	    MITRE = "T1552.004"
+	    Triggers = @(
+	        @{ Attribute = 'RoamedMaterial'; Severity = 'Hint' }
+	        @{ Attribute = 'PrivilegedAccount'; Pattern = '^Yes$'; Severity = 'Finding' }
+	    )
+	}
+	'CREDENTIAL_ROAMING_READABLE' = @{
+	    Title = "Credential Roaming - Roamed Material Readable by Any Authenticated User"
+	    Risk = "Finding"
+	    BaseScore = 80
+	    Description = "The two attributes that hold roamed private keys and DPAPI master keys are not marked confidential in the schema, so reading them follows the ordinary read permissions of the user object. In a default domain that means every authenticated user can read the roamed material of every other user, including privileged ones. Readability is controlled by searchFlags bit 7, fCONFIDENTIAL, value 128; these attributes ship without it and most forests have never set it. The material is still ciphertext, so this is not an immediate takeover - but the one thing an attacker normally cannot obtain, the private key of another user, is then a single offline decryption away, and the key needed for that decryption is held by every domain administrator."
+	    Impact = @(
+	        "Any authenticated user harvests the roamed material of every user in the domain, with no special rights and nothing to exploit"
+	        "The harvest is a read, so it leaves no trace beyond LDAP query logging"
+	        "Combined with the domain backup key, or the target's password or hash, it yields their private keys and every DPAPI secret of their profile"
+	        "A roamed client-authentication certificate then authenticates as that user without their password"
+	        "Collected material stays usable after a password change, because decryption through the domain backup key does not depend on it"
+	    )
+	    Attack = @(
+	        "1. As any domain user, query every user object for msPKIDPAPIMasterKeys and msPKIAccountCredentials"
+	        "2. Store the blobs - no privileges were needed to read them and none are needed to keep them"
+	        "3. Wait for, or work towards, either the target's hash or the domain backup key"
+	        "4. Decrypt the master keys offline, then the private keys they protect"
+	        "5. Impersonate the user with a roamed authentication certificate"
+	    )
+	    Remediation = @(
+	        "Mark msPKIAccountCredentials and msPKIDPAPIMasterKeys confidential in the schema - this is the one change that stops ordinary users reading them"
+	        "Verify afterwards as a low-privileged user that the attributes no longer come back"
+	        "Turn Credential Roaming off where it is not needed, and clear the attributes that already synchronised"
+	        "Treat the domain backup key as a Tier 0 secret, since it is the other half of this"
+	        "Monitor for unusual read or replication activity against these attributes"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Mark both attributes confidential. Forest-wide and needs Schema Admin"
+	            Command = @'
+$schema = (Get-ADRootDSE).schemaNamingContext
+foreach ($name in 'ms-PKI-AccountCredentials', 'ms-PKI-DPAPIMasterKeys') {
+    $attr = Get-ADObject -SearchBase $schema -LDAPFilter "(cn=$name)" -Properties searchFlags
+    Set-ADObject -Identity $attr.DistinguishedName `
+        -Replace @{ searchFlags = ($attr.searchFlags -bor 128) }
+}
+'@
+	        }
+	        @{
+	            Description = "The honest verification - run as a low-privileged user and expect nothing back"
+	            Command = @'
+Get-ADUser <targetuser> -Properties msPKIAccountCredentials, msPKIDPAPIMasterKeys |
+    Select-Object Name,
+        @{n='Cred'; e={ @($_.msPKIAccountCredentials).Count }},
+        @{n='MK';   e={ @($_.msPKIDPAPIMasterKeys).Count }}
+'@
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Confidential attributes (searchFlags fCONFIDENTIAL)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-searchflags" }
+	        @{ Title = "Credential Roaming (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/credential-roaming" }
+	    )
+	    Tools = @("adPEAS", "SharpDPAPI", "mimikatz")
+	    MITRE = "T1552.004"
+	    Triggers = @(
+	        @{ Attribute = 'ReadableBy'; Pattern = '^Any authenticated user'; Severity = 'Finding' }
+	        @{ Attribute = 'ReadableBy'; Pattern = '^Control Access holders only'; Severity = 'Secure' }
+	        @{ Attribute = 'ReadableBy'; Pattern = '^Unknown'; Severity = 'Hint' }
+	    )
+	}
 	'ESC14_WEAK_EXPLICIT_MAPPING' = @{
 	    Title = "ESC14 - Weak Explicit Certificate Mapping"
 	    Risk = "Finding"
@@ -17561,6 +17695,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    )
 	    SecureMessage = "No accounts with readable Unix password attributes found. Legacy password attributes that could expose credentials are not present in the domain."
 	    PrimaryFindingId = 'READABLE_UNIX_PASSWORD_ATTRIBUTES'
+	}
+	'CredentialRoaming' = @{
+	    TitleFormat = "Roamed Credentials: {Name}"
+	    Module = "Creds"
+	    Category = "Credentials"
+	    SectionTitle = "Roamed Credential Material"
+	    Summary = "Finds users whose DPAPI master keys and private keys are stored in Active Directory."
+	    WhyItMatters = "Credential Roaming copies a user's certificates, private keys and DPAPI master keys into attributes on their user object so the profile follows them between machines. A DPAPI master key protects everything else that user stored under DPAPI - saved RDP credentials, browser secrets, WLAN keys, the Credential Manager. The attributes hold ciphertext, not plaintext: a master key is sealed with a pre-key derived from the user's password and with the domain backup key, and the private keys are sealed with those master keys in turn. So the material becomes usable with the user's password or hash, or with the domain backup key that every domain administrator holds - and a roamed client-authentication certificate then impersonates that user without their password."
+	    WhatWeCheck = @(
+	        "Which users carry msPKIDPAPIMasterKeys or msPKIAccountCredentials"
+	        "Whether those attributes are marked confidential in the schema (searchFlags bit 7)"
+	        "Whether a roamed account is privileged"
+	    )
+	    FilteringNote = "The blob attributes are never retrieved. Their presence is established with an LDAP presence filter and only the name, the DN and the sync timestamp are read back, so no ciphertext travels and none reaches the report. Both attributes are also excluded from display centrally, so another check fetching a full user object cannot surface them either. Not covered yet: who holds an explicit read permission on these attributes. The confidential flag answers the blanket readability that comes from the default ACL, but a right delegated to one group by accident is invisible here. Nothing here constrains DCSync, a copy of ntds.dit or an AD backup, which read the material regardless of the flag."
+	    SecureMessage = "No user object carries roamed credential material. Credential Roaming is either not in use or has never synchronised, so no private keys or DPAPI master keys are stored in the directory."
+	    PrimaryFindingId = 'CREDENTIAL_ROAMING_READABLE'
 	}
 	'GPPCredential' = @{
 	    TitleFormat = "GPP Credential: {Name}"
@@ -68095,6 +68245,161 @@ function Get-BitLockerRecoveryKeyAccess {
 	    }
 	}
 }
+function Get-CredentialRoaming {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [string]$Domain,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Server,
+	    [Parameter(Mandatory=$false)]
+	    [System.Management.Automation.PSCredential]$Credential
+	)
+	process {
+	    try {
+	        $CredParams = @{}
+	        if ($Domain)     { $CredParams['Domain']     = $Domain }
+	        if ($Server)     { $CredParams['Server']     = $Server }
+	        if ($Credential) { $CredParams['Credential'] = $Credential }
+	        if (-not (Ensure-LDAPConnection @CredParams)) {
+	            return
+	        }
+	        Show-SubHeader "Checking for roamed DPAPI master keys and private keys in AD..." -ObjectType "CredentialRoaming"
+	        $confidential = Get-CredentialRoamingConfidentiality @CredParams
+	        $lightProperties = @('sAMAccountName', 'distinguishedName', 'objectSid', 'msPKIRoamingTimeStamp')
+	        $byDN = @{}
+	        foreach ($pair in @(
+	            @{ Filter = '(msPKIDPAPIMasterKeys=*)';    Material = 'DPAPI master keys' }
+	            @{ Filter = '(msPKIAccountCredentials=*)'; Material = 'private keys and certificates' }
+	        )) {
+	            try {
+	                foreach ($user in @(Get-DomainUser -LDAPFilter $pair.Filter -Properties $lightProperties @CredParams)) {
+	                    if (-not $user.distinguishedName) { continue }
+	                    $key = [string]$user.distinguishedName
+	                    if (-not $byDN.ContainsKey($key)) {
+	                        $byDN[$key] = [PSCustomObject]@{
+	                            User     = $user
+	                            Material = New-Object System.Collections.Generic.List[string]
+	                        }
+	                    }
+	                    $byDN[$key].Material.Add([string]$pair.Material)
+	                }
+	            }
+	            catch {
+	            }
+	        }
+	        if ($byDN.Count -eq 0) {
+	            Show-Line "No user object carries roamed credential material" -Class Secure
+	            return
+	        }
+	        $findings = New-Object System.Collections.Generic.List[object]
+	        foreach ($key in @($byDN.Keys | Sort-Object)) {
+	            $entry = $byDN[$key]
+	            $user  = $entry.User
+	            $privileged = $false
+	            try {
+	                if ($user.objectSid) {
+	                    $privileged = ((Test-IsPrivileged -Identity $user.objectSid).IsPrivileged -eq $true)
+	                }
+	            } catch {
+	            }
+	            $finding = [PSCustomObject]@{
+	                sAMAccountName    = [string]$user.sAMAccountName
+	                distinguishedName = [string]$user.distinguishedName
+	                RoamedMaterial    = (@($entry.Material) -join ', ')
+	                RoamingTimeStamp  = $(if ($user.msPKIRoamingTimeStamp) { [string]$user.msPKIRoamingTimeStamp } else { 'Unknown' })
+	                PrivilegedAccount = $(if ($privileged) { 'Yes' } else { 'No' })
+	                ReadableBy        = $confidential.ReadableBy
+	            }
+	            $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CredentialRoaming' -Force
+	            $findings.Add($finding)
+	        }
+	        $privilegedCount = @($findings | Where-Object { $_.PrivilegedAccount -eq 'Yes' }).Count
+	        $countText = if ($privilegedCount -gt 0) {
+	            "$($findings.Count) user(s) carry roamed credential material in Active Directory, $privilegedCount of them privileged"
+	        } else {
+	            "$($findings.Count) user(s) carry roamed credential material in Active Directory"
+	        }
+	        if ($confidential.Confidential -eq $false) {
+	            Show-Line "Found $countText" -Class Finding -FindingId 'CREDENTIAL_ROAMING_READABLE'
+	            Show-Line ("The attributes are not marked confidential in the schema, so reading them follows the " +
+	                       "ordinary read permissions of the user object - in a default domain every authenticated " +
+	                       "user can read them") -Class Finding -FindingId 'CREDENTIAL_ROAMING_READABLE'
+	        } else {
+	            Show-Line "Found $countText" -Class Hint -FindingId 'CREDENTIAL_ROAMING_PRESENT'
+	            if ($confidential.Confidential -eq $true) {
+	                Show-Line ("Both attributes are marked confidential in the schema, so reading them needs the " +
+	                           "Control Access right and generic read does not grant it") -Class Secure
+	            } else {
+	                Show-Line ("Whether the attributes are readable could not be established - the schema could not " +
+	                           "be read, so treat them as readable until checked by hand") -Class Note
+	            }
+	        }
+	        foreach ($finding in @($findings | Sort-Object -Property @{Expression = { $_.PrivilegedAccount -ne 'Yes' }}, sAMAccountName)) {
+	            Show-Object $finding -Class $(if ($confidential.Confidential -eq $false) { 'Finding' } else { 'Hint' })
+	        }
+	        Show-Line ("Reading these attributes is not constrained for anybody with DCSync, a copy of ntds.dit or " +
+	                   "an AD backup - the confidential flag protects against ordinary users, not against Tier 0") -Class Note
+	    }
+	    catch {
+	        Show-Line "Error during check: $_" -Class Finding
+	    }
+	}
+}
+function Get-CredentialRoamingConfidentiality {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [string]$Domain,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Server,
+	    [Parameter(Mandatory=$false)]
+	    [System.Management.Automation.PSCredential]$Credential
+	)
+	$CredParams = @{}
+	if ($Domain)     { $CredParams['Domain']     = $Domain }
+	if ($Server)     { $CredParams['Server']     = $Server }
+	if ($Credential) { $CredParams['Credential'] = $Credential }
+	$unknown = [PSCustomObject]@{
+	    Confidential = $null
+	    ReadableBy   = 'Unknown - the schema could not be read'
+	}
+	$schemaDN = $null
+	if ($Script:LDAPContext) { $schemaDN = $Script:LDAPContext.SchemaNamingContext }
+	if ([string]::IsNullOrWhiteSpace($schemaDN)) {
+	    return $unknown
+	}
+	$filter = '(&(objectClass=attributeSchema)' +
+	          '(|(lDAPDisplayName=msPKIAccountCredentials)(cn=ms-PKI-AccountCredentials)' +
+	          '(lDAPDisplayName=msPKIDPAPIMasterKeys)(cn=ms-PKI-DPAPIMasterKeys)))'
+	try {
+	    $attributes = @(Get-DomainObject -LDAPFilter $filter -SearchBase $schemaDN `
+	        -Properties 'lDAPDisplayName', 'cn', 'searchFlags' @CredParams)
+	}
+	catch {
+	    return $unknown
+	}
+	if (@($attributes).Count -eq 0) {
+	    return $unknown
+	}
+	$allConfidential = $true
+	foreach ($attribute in $attributes) {
+	    $flags = 0
+	    if ($null -ne $attribute.searchFlags) { $flags = [int]$attribute.searchFlags }
+	    if (($flags -band 128) -eq 0) { $allConfidential = $false }
+	}
+	if ($allConfidential) {
+	    return [PSCustomObject]@{
+	        Confidential = $true
+	        ReadableBy   = 'Control Access holders only (attributes are confidential)'
+	    }
+	}
+	return [PSCustomObject]@{
+	    Confidential = $false
+	    ReadableBy   = 'Any authenticated user (attributes are not confidential)'
+	}
+}
 function Get-PasswordInDescription {
 	[CmdletBinding()]
 	param(
@@ -78542,7 +78847,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.6.0+20261006-1000"
+$Script:adPEASVersion = "2.6.0+20261006-1252"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -78947,6 +79252,7 @@ try {
 	    try {
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-LAPSCredentialAccess' -Title 'LAPS Credential Access' -Check { Get-LAPSCredentialAccess }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-BitLockerRecoveryKeyAccess' -Title 'BitLocker Recovery Key Access' -Check { Get-BitLockerRecoveryKeyAccess }
+	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialRoaming' -Title 'Credential Roaming' -Check { Get-CredentialRoaming }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialExposure' -Title 'Credential Exposure' -Check { Get-CredentialExposure }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-PasswordInDescription' -Title 'Passwords in Description/Info' -Check { Get-PasswordInDescription -OPSEC:$OPSEC }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-KerberoastableAccounts' -Title 'Kerberoastable Accounts' -Check { Get-KerberoastableAccounts -OPSEC:$OPSEC }
