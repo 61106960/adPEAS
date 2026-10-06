@@ -110,7 +110,10 @@ function Get-LDAPConfiguration {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -119,8 +122,16 @@ function Get-LDAPConfiguration {
 
     process {
         try {
+            # Connection parameters only. -IncludeInactive belongs to this check and none
+            # of the callees below has a parameter by that name, so splatting
+            # $PSBoundParameters failed to bind - a terminating error before any output.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -129,7 +140,7 @@ function Get-LDAPConfiguration {
             $domainFQDN = $Script:LDAPContext.Domain
             $dcServer = $Script:LDAPContext.Server
 
-            $allGPOs = Get-DomainGPO @PSBoundParameters
+            $allGPOs = Get-DomainGPO @connectionParams
 
             if (-not $allGPOs) {
                 Show-Line "No GPOs found" -Class Hint
@@ -144,7 +155,7 @@ function Get-LDAPConfiguration {
             # -DomainController rather than the SERVER_TRUST_ACCOUNT bit written out: an
             # RODC does not carry that bit and answers LDAP just the same, so the count
             # below was short and the configuration of every read-only DC went unexamined.
-            $domainControllers = @(Get-DomainComputer -DomainController @PSBoundParameters)
+            $domainControllers = @(Get-DomainComputer -DomainController @connectionParams)
 
             $dcCount = $domainControllers.Count
 
@@ -475,11 +486,39 @@ function Get-LDAPConfiguration {
                     ) -Force
                 }
 
+                # A signing setting in a policy that is not linked or not enabled reaches no
+                # domain controller. Held back rather than dropped - see
+                # Show-GPOInactiveSummary. GuidProperty is Name, because these are native
+                # GPO objects and that is what a GPO's GUID is called in the directory.
+                #
+                # The reach predicate overlaps with EffectiveSetting above and does not
+                # replace it: that one says which policy wins the precedence contest, this
+                # one whether the policy applies at all. A policy can reach the DCs and
+                # still lose to another.
+                $split = Split-GPOFindingByReach -Finding $gpoFindings -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -Scope 'Machine' -GuidProperty 'Name'
+
+                $shown = if ($IncludeInactive) { @($gpoFindings) } else { @($split.Active) }
+
                 # Show Found message BEFORE data
-                Show-Line "Found LDAP security configuration in $($gpoFindings.Count) GPO(s):" -Class Hint
-                foreach ($gpoFinding in $gpoFindings) {
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found LDAP security configuration in $(@($shown).Count) GPO(s):" -Class Hint
+                } else {
+                    # Every policy that configures it is dormant, which leaves the DCs on
+                    # whatever the OS defaults to - the same exposure as configuring nothing.
+                    Show-Line "No LDAP security configuration is deployed by a policy that is linked and enabled - all $dcCount DC(s) potentially vulnerable" -Class Finding
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($gpoFinding in $shown) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
-                    Show-Object $gpoFinding
+
+                    if (@($split.Inactive) -contains $gpoFinding) {
+                        Show-Object $gpoFinding -Class Note
+                    } else {
+                        Show-Object $gpoFinding
+                    }
                 }
 
             } else {

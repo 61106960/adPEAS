@@ -36,7 +36,10 @@ function Get-SMBSigningStatus {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -45,8 +48,16 @@ function Get-SMBSigningStatus {
 
     process {
         try {
+            # Connection parameters only. -IncludeInactive belongs to this check and
+            # neither callee has a parameter by that name, so splatting $PSBoundParameters
+            # failed to bind - a terminating error before any output.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -55,7 +66,7 @@ function Get-SMBSigningStatus {
             $domainFQDN = $Script:LDAPContext.Domain
             $dcServer = $Script:LDAPContext.Server
 
-            $allGPOs = Get-DomainGPO @PSBoundParameters
+            $allGPOs = Get-DomainGPO @connectionParams
 
             if (-not $allGPOs -or @($allGPOs).Count -eq 0) {
                 Show-Line "No GPOs found" -Class Note
@@ -290,10 +301,33 @@ function Get-SMBSigningStatus {
                     ) -Force
                 }
 
-                Show-Line "Found SMB Signing configuration in $(@($gpoFindings).Count) GPO(s):" -Class Hint
-                foreach ($gpoFinding in $gpoFindings) {
+                # A signing setting in a policy that is not linked or not enabled reaches no
+                # machine. Held back rather than dropped - see Show-GPOInactiveSummary.
+                # GuidProperty is Name: these are native GPO objects, and that is what a
+                # GPO's GUID is called in the directory.
+                $split = Split-GPOFindingByReach -Finding $gpoFindings -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkageForEff -Scope 'Machine' -GuidProperty 'Name'
+
+                $shown = if ($IncludeInactive) { @($gpoFindings) } else { @($split.Active) }
+
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found SMB Signing configuration in $(@($shown).Count) GPO(s):" -Class Hint
+                } else {
+                    # Every policy that configures signing is dormant, which leaves every
+                    # machine on the OS default - the same exposure as configuring nothing.
+                    Show-Line "No SMB Signing configuration is deployed by a policy that is linked and enabled" -Class Finding
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($gpoFinding in $shown) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigning' -Force
-                    Show-Object $gpoFinding
+
+                    if (@($split.Inactive) -contains $gpoFinding) {
+                        Show-Object $gpoFinding -Class Note
+                    } else {
+                        Show-Object $gpoFinding
+                    }
                 }
 
                 # Check if SMB Signing is only configured for Domain Controllers

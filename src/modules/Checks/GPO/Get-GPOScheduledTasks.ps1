@@ -46,7 +46,10 @@ function Get-GPOScheduledTasks {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -78,8 +81,17 @@ function Get-GPOScheduledTasks {
 
     process {
         try {
+            # Connection parameters only. -IncludeInactive belongs to this check and
+            # neither of the two callees below has a parameter by that name, so splatting
+            # $PSBoundParameters failed to bind - a terminating error before the first line
+            # of output, which showed up as a check that silently produced nothing.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -88,7 +100,7 @@ function Get-GPOScheduledTasks {
 
             Show-SubHeader "Searching for GPO scheduled tasks..." -ObjectType "GPOScheduledTask"
 
-            $gpos = Get-DomainGPO @PSBoundParameters
+            $gpos = Get-DomainGPO @connectionParams
 
             if (-not $gpos) {
                 Show-Line "No GPOs found in domain" -Class Note
@@ -206,12 +218,37 @@ function Get-GPOScheduledTasks {
                     @{ Expression = { if ($severityRank.ContainsKey([string]$_._Severity)) { $severityRank[[string]$_._Severity] } else { 9 } } }, `
                     @{ Expression = { $_.GPOName } })
 
-                $hasFinding = @($scheduledTasks | Where-Object { $_._Severity -eq 'Finding' }).Count -gt 0
-                $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
-                Show-Line "Found $($scheduledTasks.Count) scheduled task(s) distributed via GPO" -Class $headerClass
+                # A task defined by a policy that is not linked or not enabled is never
+                # registered on any machine. Held back rather than dropped - see
+                # Show-GPOInactiveSummary. The scope is Machine throughout: a GPP scheduled
+                # task under User\ still registers the task on the computer the user logs
+                # on to, and the Context property on the row says which half it came from.
+                $split = Split-GPOFindingByReach -Finding $scheduledTasks -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -Scope 'Machine'
 
-                foreach ($task in $scheduledTasks) {
-                    $taskClass = if ($task._Severity) { [string]$task._Severity } else { 'Standard' }
+                $shown = if ($IncludeInactive) { @($scheduledTasks) } else { @($split.Active) }
+
+                $hasFinding = @($shown | Where-Object { $_._Severity -eq 'Finding' }).Count -gt 0
+                $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
+
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found $(@($shown).Count) scheduled task(s) distributed via GPO" -Class $headerClass
+                } else {
+                    Show-Line "No scheduled task is distributed by a policy that is linked and enabled" -Class Note
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($task in $shown) {
+                    # Grey whatever the severity analysis concluded: the class describes the
+                    # task, the colour has to describe today's risk.
+                    $taskClass = if (@($split.Inactive) -contains $task) {
+                        'Note'
+                    } elseif ($task._Severity) {
+                        [string]$task._Severity
+                    } else {
+                        'Standard'
+                    }
                     $taskRisk  = [string]$task._Risk
 
                     $task.PSObject.Properties.Remove('_Severity')

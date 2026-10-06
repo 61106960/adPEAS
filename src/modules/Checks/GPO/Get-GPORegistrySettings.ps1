@@ -55,7 +55,10 @@ function Get-GPORegistrySettings {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -64,8 +67,19 @@ function Get-GPORegistrySettings {
 
     process {
         try {
+            # Connection parameters only, built by hand rather than splatting
+            # $PSBoundParameters. -IncludeInactive belongs to this check and neither
+            # Ensure-LDAPConnection nor Get-DomainGPO has a parameter by that name, so
+            # splatting the lot made the call fail to bind - and the failure is a
+            # terminating error before the first line of output, so the check produced
+            # nothing at all rather than an error anybody could read.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -73,7 +87,7 @@ function Get-GPORegistrySettings {
 
             Show-SubHeader "Searching for vulnerable registry settings deployed via GPO..." -ObjectType "GPORegistrySetting"
 
-            $gpos = Get-DomainGPO @PSBoundParameters
+            $gpos = Get-DomainGPO @connectionParams
 
             if (-not $gpos) {
                 Show-Line "No GPOs found in domain" -Class Note
@@ -195,14 +209,38 @@ function Get-GPORegistrySettings {
                     @{ Expression = { if ($severityRank.ContainsKey($_.Severity)) { $severityRank[$_.Severity] } else { 9 } } }, `
                     @{ Expression = { $_.GPOName } })
 
-                # Red when at least one finding is a real vulnerability, yellow otherwise.
-                # The announcement used to be Hint unconditionally, so even a Critical
-                # AlwaysInstallElevated was introduced in yellow.
-                $hasFinding = @($findings | Where-Object { $_.ConsoleClass -eq 'Finding' }).Count -gt 0
-                $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
-                Show-Line "Found $($findings.Count) vulnerable registry setting(s) deployed via GPO" -Class $headerClass
-
+                # Which half of the policy each value depends on, derived from the hive: a
+                # Registry.pol under Machine writes HKLM, the one under User writes HKCU. The
+                # partition below reads it per finding, because a policy with only its
+                # computer configuration switched off stops the first and not the second.
                 foreach ($finding in $findings) {
+                    $finding | Add-Member -NotePropertyName '_ReachScope' `
+                        -NotePropertyValue $(if ("$($finding.RegistryKey)" -like 'HKLM*') { 'Machine' } else { 'User' }) -Force
+                }
+
+                # A value deployed by a policy that is not linked or not enabled is written
+                # to no registry. Held back rather than dropped - see Show-GPOInactiveSummary.
+                $split = Split-GPOFindingByReach -Finding $findings -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
+
+                $shown = if ($IncludeInactive) { @($findings) } else { @($split.Active) }
+
+                # Counted over what is printed, or the number promises more than the body
+                # delivers.
+                $hasFinding = @($shown | Where-Object { $_.ConsoleClass -eq 'Finding' }).Count -gt 0
+                $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
+
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found $(@($shown).Count) vulnerable registry setting(s) deployed via GPO" -Class $headerClass
+                } else {
+                    # Not "none deployed". Every one of them is deployed by a policy that
+                    # does not apply, which is a different statement.
+                    Show-Line "No vulnerable registry setting is deployed by a policy that is linked and enabled" -Class Note
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($finding in $shown) {
                     $linkedOUs = @()
                     if ($gpoLinkage.ContainsKey($finding.GPOGUID)) {
                         $linkedOUs = $gpoLinkage[$finding.GPOGUID]
@@ -226,7 +264,17 @@ function Get-GPORegistrySettings {
                     # ConsoleClass is what the central table documents per entry. It was
                     # carried all the way here and then never used, so the Finding/Hint
                     # distinction the table defines had no effect on the output.
-                    $rowClass = if ($finding.ConsoleClass) { [string]$finding.ConsoleClass } else { 'Standard' }
+                    #
+                    # A dormant one is printed as a note whatever the table says: the class
+                    # describes the setting, the colour has to describe today's risk, and
+                    # LinkedOUs and GPOStatus on the row say why it is grey.
+                    $rowClass = if (@($split.Inactive) -contains $finding) {
+                        'Note'
+                    } elseif ($finding.ConsoleClass) {
+                        [string]$finding.ConsoleClass
+                    } else {
+                        'Standard'
+                    }
                     Show-Object $finding -Class $rowClass
                 }
             } else {

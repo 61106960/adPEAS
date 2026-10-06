@@ -41,7 +41,10 @@ function Get-GPOLocalGroupMembership {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -76,8 +79,16 @@ function Get-GPOLocalGroupMembership {
 
     process {
         try {
+            # Connection parameters only. -IncludeInactive belongs to this check and
+            # neither callee has a parameter by that name, so splatting $PSBoundParameters
+            # failed to bind - a terminating error before any output.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -86,7 +97,7 @@ function Get-GPOLocalGroupMembership {
 
             Show-SubHeader "Searching for GPO local group assignments..." -ObjectType "GPOLocalGroup"
 
-            $gpos = Get-DomainGPO @PSBoundParameters
+            $gpos = Get-DomainGPO @connectionParams
 
             if (-not $gpos -or @($gpos).Count -eq 0) {
                 Show-Line "No GPOs found in domain" -Class Note
@@ -231,11 +242,34 @@ function Get-GPOLocalGroupMembership {
             }
 
             if (@($vulnerableGPOs).Count -gt 0) {
-                Show-Line "Found $(@($vulnerableGPOs).Count) vulnerable GPO local group assignment(s)" -Class Finding
+                # A local group assignment made by a policy that is not linked or not
+                # enabled adds nobody to any group. Held back rather than dropped - see
+                # Show-GPOInactiveSummary. Restricted Groups is a computer-side section and
+                # the GPP Groups variant is read from the Machine half as well, so Machine
+                # throughout.
+                $split = Split-GPOFindingByReach -Finding $vulnerableGPOs -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -Scope 'Machine'
 
-                foreach ($finding in $vulnerableGPOs) {
+                $shown = if ($IncludeInactive) { @($vulnerableGPOs) } else { @($split.Active) }
+
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found $(@($shown).Count) vulnerable GPO local group assignment(s)" -Class Finding
+                } else {
+                    # Not Secure: the assignments exist, they just apply nowhere. Calling
+                    # the domain clean here would be a different statement.
+                    Show-Line "No local group assignment is made by a policy that is linked and enabled" -Class Note
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOLocalGroup' -Force
-                    Show-Object $finding
+
+                    if (@($split.Inactive) -contains $finding) {
+                        Show-Object $finding -Class Note
+                    } else {
+                        Show-Object $finding
+                    }
                 }
             } else {
                 Show-Line "No vulnerable GPO local group assignments found in $(@($gpos).Count) analyzed GPO(s)" -Class Secure

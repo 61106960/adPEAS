@@ -45,7 +45,10 @@ function Get-GPOScriptPaths {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -54,8 +57,17 @@ function Get-GPOScriptPaths {
 
     process {
         try {
+            # Connection parameters only. -IncludeInactive belongs to this check and neither
+            # callee below has a parameter by that name, so splatting $PSBoundParameters
+            # failed to bind - a terminating error before any output, which looks like a
+            # check that silently produced nothing.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -64,7 +76,7 @@ function Get-GPOScriptPaths {
 
             Show-SubHeader "Searching for GPO-deployed scripts..." -ObjectType "GPOScriptPath"
 
-            $gpos = Get-DomainGPO @PSBoundParameters
+            $gpos = Get-DomainGPO @connectionParams
 
             if (-not $gpos) {
                 Show-Line "No GPOs found in domain" -Class Note
@@ -173,11 +185,39 @@ function Get-GPOScriptPaths {
             }
 
             if ($scriptFindings.Count -gt 0) {
-                Show-Line "Found $($scriptFindings.Count) script(s) distributed via GPO" -Class Hint
-
+                # A script named by a policy that is not linked or not enabled never runs.
+                # Held back rather than dropped - see Show-GPOInactiveSummary. The scope
+                # comes from the entry itself: a startup script depends on the computer
+                # half, a logon script on the user half, and ExecutionContext already says
+                # which.
                 foreach ($finding in $scriptFindings) {
+                    $finding | Add-Member -NotePropertyName '_ReachScope' `
+                        -NotePropertyValue $(if ("$($finding.ScriptType)" -in @('Startup', 'Shutdown')) { 'Machine' } else { 'User' }) -Force
+                }
+
+                $split = Split-GPOFindingByReach -Finding $scriptFindings -GPOStatusMap $gpoStatusMap `
+                    -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
+
+                $shown = if ($IncludeInactive) { @($scriptFindings) } else { @($split.Active) }
+
+                if (@($shown).Count -gt 0) {
+                    Show-Line "Found $(@($shown).Count) script(s) distributed via GPO" -Class Hint
+                } else {
+                    Show-Line "No script is distributed by a policy that is linked and enabled" -Class Note
+                }
+
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+                foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOScriptPath' -Force
-                    Show-Object $finding
+
+                    # This check announces everything as a hint and renders its rows in the
+                    # default class, so a dormant one only needs the grey.
+                    if (@($split.Inactive) -contains $finding) {
+                        Show-Object $finding -Class Note
+                    } else {
+                        Show-Object $finding
+                    }
                 }
             } else {
                 Show-Line "No scripts distributed via GPO" -Class Note

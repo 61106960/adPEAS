@@ -101,7 +101,10 @@ function Get-GPOPointAndPrint {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -110,13 +113,21 @@ function Get-GPOPointAndPrint {
 
     process {
         try {
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            # Connection parameters only. -IncludeInactive belongs to this check and
+            # neither callee has a parameter by that name, so splatting $PSBoundParameters
+            # failed to bind - a terminating error before any output.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
             Show-SubHeader "Analyzing Point and Print printer driver policies..." -ObjectType "PointAndPrintPolicy"
 
-            $gpos = Get-DomainGPO @PSBoundParameters
+            $gpos = Get-DomainGPO @connectionParams
 
             if (-not $gpos) {
                 Show-Line "No GPOs found in domain" -Class Note
@@ -234,16 +245,44 @@ function Get-GPOPointAndPrint {
                 @{ Expression = { if ($severityRank.ContainsKey($_.Severity)) { $severityRank[$_.Severity] } else { 9 } } }, `
                 @{ Expression = { $_.GPOName } })
 
-            $exploitable = @($objects | Where-Object { $_.Exploitability -like 'Exploitable*' })
+            # A driver policy in a GPO that is not linked or not enabled installs nothing.
+            # Held back rather than dropped - see Show-GPOInactiveSummary. The scope comes
+            # from the bucket's own hive, which is why each object carries it: HKLM settings
+            # depend on the computer half, HKCU on the user half, and a policy with one of
+            # them switched off stops one and not the other.
+            foreach ($object in $objects) {
+                $object | Add-Member -NotePropertyName '_ReachScope' `
+                    -NotePropertyValue $(if ("$($object.Scope)" -like 'Computer*') { 'Machine' } else { 'User' }) -Force
+            }
 
-            Show-Line "Found $($objects.Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+            $split = Split-GPOFindingByReach -Finding $objects -GPOStatusMap $gpoStatusMap `
+                -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
+
+            $shown = if ($IncludeInactive) { @($objects) } else { @($split.Active) }
+
+            # Counted over what is printed, including the exploitable tally: a count of
+            # exploitable policies that are not listed sends a reader hunting for rows that
+            # are not there.
+            $exploitable = @($shown | Where-Object { $_.Exploitability -like 'Exploitable*' })
+
+            if (@($shown).Count -gt 0) {
+                Show-Line "Found $(@($shown).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+            } else {
+                Show-Line "No Point and Print configuration is deployed by a policy that is linked and enabled" -Class Note
+            }
 
             if ($exploitable.Count -gt 0) {
                 Show-Line "$($exploitable.Count) GPO configuration(s) let non-administrators install printer drivers without an elevation prompt" -Class Finding
             }
 
-            foreach ($object in $objects) {
-                Show-Object $object
+            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+
+            foreach ($object in $shown) {
+                if (@($split.Inactive) -contains $object) {
+                    Show-Object $object -Class Note
+                } else {
+                    Show-Object $object
+                }
             }
 
         } catch {
