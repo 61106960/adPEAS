@@ -46642,9 +46642,15 @@ function Get-GPOEffectiveSettingText {
 	    'OtherOU' {
 	        return 'Yes - applies on its linked OUs; no precedence comparison there'
 	    }
-	    default {
+	    'NotLinked' {
 	        if ($HasAnyLink) { return 'No - every link is disabled' }
 	        return 'No - the policy is linked nowhere'
+	    }
+	    'Unknown' {
+	        return 'Unknown - the linkage could not be resolved'
+	    }
+	    default {
+	        return 'Unknown - the policy scope could not be determined'
 	    }
 	}
 }
@@ -58487,7 +58493,13 @@ function Get-LDAPConfiguration {
 	                        }
 	                        $gpoLinkage = Get-GPOLinkage
 	                        $gpoNameUpper = $gpo.Name.ToUpper()
-	                        $links = $gpoLinkage[$gpoNameUpper]
+	                        $links = $null
+	                        if ($null -ne $gpoLinkage) {
+	                            $links = @()
+	                            if ($gpoLinkage.ContainsKey($gpoNameUpper)) {
+	                                $links = @($gpoLinkage[$gpoNameUpper])
+	                            }
+	                        }
 	                        $activeLinks = @()
 	                        $isDomainWide = $false
 	                        $coversDCs = $false
@@ -58501,9 +58513,13 @@ function Get-LDAPConfiguration {
 	                        $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
 	                        $gpo | Add-Member -NotePropertyName "AnonymousBinding" -NotePropertyValue $anonymousBindingStatus -Force
 	                        $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue $coversDCs -Force
-	                        $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
+	                        $linkedOUsDisplay = $links
+	                        if ($null -eq $links) {
+	                            $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+	                        }
+	                        $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 	                        $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoNameUpper] `
-	                            -Scope 'Machine' -Link @($links | Where-Object { $_ })
+	                            -Scope 'Machine' -Link $links
 	                        if ($gpoStatus) {
 	                            $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
 	                        }
@@ -58525,7 +58541,12 @@ function Get-LDAPConfiguration {
 	                }
 	                $links = $null
 	                $gpoLinkage = Get-GPOLinkage
-	                if ($gpoLinkage) { $links = $gpoLinkage[$leftoverGuid] }
+	                if ($null -ne $gpoLinkage) {
+	                    $links = @()
+	                    if ($gpoLinkage.ContainsKey($leftoverGuid)) {
+	                        $links = @($gpoLinkage[$leftoverGuid])
+	                    }
+	                }
 	                $activeLinks = @($links | Where-Object { $_ -and $_.LinkStatus -ne "Disabled" })
 	                $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
 	                $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue "Not Configured" -Force
@@ -58533,9 +58554,13 @@ function Get-LDAPConfiguration {
 	                $gpo | Add-Member -NotePropertyName "AnonymousBinding" -NotePropertyValue "Not Configured" -Force
 	                $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue (
 	                    Test-GPOCoversDomainControllers -ActiveLink $activeLinks -DomainController $domainControllers) -Force
-	                $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
+	                $linkedOUsDisplay = $links
+	                if ($null -eq $links) {
+	                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+	                }
+	                $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 	                $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$leftoverGuid] `
-	                    -Scope 'Machine' -Link @($links | Where-Object { $_ })
+	                    -Scope 'Machine' -Link $links
 	                if ($gpoStatus) {
 	                    $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
 	                }
@@ -58559,8 +58584,13 @@ function Get-LDAPConfiguration {
 	            $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2 }
 	            foreach ($gpoFinding in $gpoFindings) {
 	                $guid = $gpoFinding.Name.ToUpper()
-	                $linksEff = if ($gpoLinkage) { $gpoLinkage[$guid] } else { $null }
-	                $precScope = "NotLinked"; $precOrder = 999
+	                $linksEff = $null
+	                if ($null -ne $gpoLinkage) {
+	                    $linksEff = @()
+	                    if ($gpoLinkage.ContainsKey($guid)) { $linksEff = @($gpoLinkage[$guid]) }
+	                }
+	                $precScope = if ($null -eq $linksEff) { "Unknown" } else { "NotLinked" }
+	                $precOrder = 999
 	                if ($linksEff) {
 	                    $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
 	                    $dcLink  = $activeLinksEff | Where-Object { $_.DistinguishedName -match 'OU=Domain Controllers' } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
@@ -58716,7 +58746,13 @@ function Get-SMBSigningStatus {
 	                            }
 	                            $gpoLinkage = Get-GPOLinkage
 	                            $gpoGUIDUpper = $gpoGUID.ToUpper()
-	                            $links = $gpoLinkage[$gpoGUIDUpper]
+	                            $links = $null
+	                            if ($null -ne $gpoLinkage) {
+	                                $links = @()
+	                                if ($gpoLinkage.ContainsKey($gpoGUIDUpper)) {
+	                                    $links = @($gpoLinkage[$gpoGUIDUpper])
+	                                }
+	                            }
 	                            $activeLinks = @()
 	                            $isDomainWide = $false
 	                            if ($links) {
@@ -58727,9 +58763,13 @@ function Get-SMBSigningStatus {
 	                            $gpo | Add-Member -NotePropertyName "ServerSigning" -NotePropertyValue $serverStatus -Force
 	                            $gpo | Add-Member -NotePropertyName "ClientSigning" -NotePropertyValue $clientStatus -Force
 	                            $gpo | Add-Member -NotePropertyName "IsDomainWide" -NotePropertyValue $isDomainWide -Force
-	                            $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
+	                            $linkedOUsDisplay = $links
+	                            if ($null -eq $links) {
+	                                $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+	                            }
+	                            $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 	                            $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUIDUpper] `
-	                                -Scope 'Machine' -Link @($links | Where-Object { $_ })
+	                                -Scope 'Machine' -Link $links
 	                            if ($gpoStatus) {
 	                                $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
 	                            }
@@ -58759,8 +58799,13 @@ function Get-SMBSigningStatus {
 	            $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2 }
 	            foreach ($gpoFinding in $gpoFindings) {
 	                $guid = $gpoFinding.Name.ToUpper()
-	                $linksEff = if ($gpoLinkageForEff) { $gpoLinkageForEff[$guid] } else { $null }
-	                $precScope = "NotLinked"; $precOrder = 999
+	                $linksEff = $null
+	                if ($null -ne $gpoLinkageForEff) {
+	                    $linksEff = @()
+	                    if ($gpoLinkageForEff.ContainsKey($guid)) { $linksEff = @($gpoLinkageForEff[$guid]) }
+	                }
+	                $precScope = if ($null -eq $linksEff) { "Unknown" } else { "NotLinked" }
+	                $precOrder = 999
 	                if ($linksEff) {
 	                    $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
 	                    $dcLink  = $activeLinksEff | Where-Object { $_.DistinguishedName -match 'OU=Domain Controllers' } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
@@ -58811,7 +58856,8 @@ function Get-SMBSigningStatus {
 	            }
 	            $gpoLinkage = Get-GPOLinkage
 	            $dcOnlyGPOs = @($gpoFindings | Where-Object {
-	                $links = $gpoLinkage[$_.Name.ToUpper()]
+	                $links = $null
+	                if ($null -ne $gpoLinkage) { $links = $gpoLinkage[$_.Name.ToUpper()] }
 	                if (-not $links) { return $false }
 	                $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
 	                if ($activeLinks.Count -eq 0) { return $false }
@@ -61545,8 +61591,11 @@ function Check-GPOAddComputerRights {
 	                        }
 	                        $gpoLinkage = Get-GPOLinkage
 	                        $gpoGUIDKey = $gpo.Name.ToUpper()
-	                        $links = if ($gpoLinkage) { $gpoLinkage[$gpoGUIDKey] } else { $null }
-	                        $activeLinks = @()
+	                        $links = $null
+	                        if ($gpoLinkage) {
+	                            $links = @()
+	                            if ($gpoLinkage.ContainsKey($gpoGUIDKey)) { $links = @($gpoLinkage[$gpoGUIDKey]) }
+	                        }
 	                        $isDomainWide = $false
 	                        $activeLinks = @()
 	                        if ($links) {
@@ -61555,6 +61604,7 @@ function Check-GPOAddComputerRights {
 	                        }
 	                        $precedenceInfo = $Script:gpoAddComputerPrecedenceMap[$gpoGUIDKey]
 	                        $precedenceScope = if ($precedenceInfo) { $precedenceInfo.Scope }
+	                                           elseif ($null -eq $links) { "Unknown" }
 	                                           elseif ($activeLinks.Count -gt 0) { "OtherOU" }
 	                                           else { "NotLinked" }
 	                        $precedenceOrder = if ($precedenceInfo -and $precedenceInfo.LinkOrder) { $precedenceInfo.LinkOrder } else { 999 }
@@ -63001,7 +63051,11 @@ function Get-GPOPermissions {
 	                    }
 	                }
 	                if (@($vulnerableIdentities).Count -gt 0) {
-	                    $links = $gpoLinkage[$gpoGUID]
+	                    $links = $null
+	                    if ($null -ne $gpoLinkage) {
+	                        $links = @()
+	                        if ($gpoLinkage.ContainsKey($gpoGUID)) { $links = @($gpoLinkage[$gpoGUID]) }
+	                    }
 	                    $activeLinks = @()
 	                    $isDomainWide = $false
 	                    $linkCount = 0
@@ -63043,7 +63097,10 @@ function Get-GPOPermissions {
 	                            }
 	                        }
 	                    }
-	                    $linkedOUsDisplay = @($links | Where-Object { $_ })
+	                    $linkedOUsDisplay = $links
+	                    if ($null -eq $links) {
+	                        $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+	                    }
 	                    $identityDisplay = ($vulnerableIdentities | ForEach-Object {
 	                        "$($_.Identity) ($($_.DangerousRight))"
 	                    }) -join "`n"
@@ -63055,7 +63112,7 @@ function Get-GPOPermissions {
 	                    $enrichedGPO | Add-Member -NotePropertyName "dangerousRightsSeverity" -NotePropertyValue $blockSeverity -Force
 	                    $enrichedGPO | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 	                    $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUID] `
-	                        -Scope 'Any' -Link $linkedOUsDisplay
+	                        -Scope 'Any' -Link $links
 	                    if ($gpoStatus) {
 	                        $enrichedGPO | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
 	                    }
@@ -63159,15 +63216,22 @@ function Get-GPOLocalGroupMembership {
 	                    try {
 	                        $restrictedGroupsFindings = Parse-RestrictedGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 	                        if ($restrictedGroupsFindings) {
-	                            $linkedOUs = @()
-	                            if ($gpoLinkage.ContainsKey($gpoGUID)) {
-	                                $linkedOUs = $gpoLinkage[$gpoGUID]
+	                            $linkedOUs = $null
+	                            if ($null -ne $gpoLinkage) {
+	                                $linkedOUs = @()
+	                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
+	                                    $linkedOUs = @($gpoLinkage[$gpoGUID])
+	                                }
+	                            }
+	                            $linkedOUsDisplay = $linkedOUs
+	                            if ($null -eq $linkedOUs) {
+	                                $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
 	                            }
 	                            $gpoStatus = Get-GPOEffectiveStatus `
 	                                -StatusEntry $gpoStatusMap[$gpoGUID] -Scope 'Machine' `
 	                                -Link $linkedOUs
 	                            foreach ($finding in $restrictedGroupsFindings) {
-	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 	                                if ($gpoStatus) {
 	                                    $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
 	                                }
@@ -63191,16 +63255,23 @@ function Get-GPOLocalGroupMembership {
 	                    try {
 	                        $gppGroupsFindings = Parse-GPPGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 	                        if ($gppGroupsFindings) {
-	                            $linkedOUs = @()
-	                            if ($gpoLinkage.ContainsKey($gpoGUID)) {
-	                                $linkedOUs = $gpoLinkage[$gpoGUID]
+	                            $linkedOUs = $null
+	                            if ($null -ne $gpoLinkage) {
+	                                $linkedOUs = @()
+	                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
+	                                    $linkedOUs = @($gpoLinkage[$gpoGUID])
+	                                }
+	                            }
+	                            $linkedOUsDisplay = $linkedOUs
+	                            if ($null -eq $linkedOUs) {
+	                                $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
 	                            }
 	                            $gpoStatus = Get-GPOEffectiveStatus `
 	                                -StatusEntry $gpoStatusMap[$gpoGUID] `
 	                                -Scope $(if ($file.FullName -match '\\Machine\\') { 'Machine' } else { 'User' }) `
 	                                -Link $linkedOUs
 	                            foreach ($finding in $gppGroupsFindings) {
-	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 	                                if ($gpoStatus) {
 	                                    $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
 	                                }
@@ -63548,12 +63619,19 @@ function Get-GPOScheduledTasks {
 	                    try {
 	                        $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 	                        if ($taskFindings) {
-	                            $linkedOUs = @()
-	                            if ($gpoLinkage.ContainsKey($gpoGUID)) {
-	                                $linkedOUs = $gpoLinkage[$gpoGUID]
+	                            $linkedOUs = $null
+	                            if ($null -ne $gpoLinkage) {
+	                                $linkedOUs = @()
+	                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
+	                                    $linkedOUs = @($gpoLinkage[$gpoGUID])
+	                                }
+	                            }
+	                            $linkedOUsDisplay = $linkedOUs
+	                            if ($null -eq $linkedOUs) {
+	                                $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
 	                            }
 	                            foreach ($task in $taskFindings) {
-	                                $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+	                                $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 	                                $gpoStatus = Get-GPOEffectiveStatus `
 	                                    -StatusEntry $gpoStatusMap[$gpoGUID] `
 	                                    -Scope $(if ($task.Context -eq 'Machine') { 'Machine' } else { 'User' }) `
@@ -63825,15 +63903,22 @@ function Get-GPOScriptPaths {
 	                    try {
 	                        $findings = Parse-ScriptIni -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()] -Context $context -IsPowerShell $isPowerShell
 	                        if ($findings) {
-	                            $linkedOUs = @()
-	                            if ($gpoLinkage.ContainsKey($gpoGUID)) {
-	                                $linkedOUs = $gpoLinkage[$gpoGUID]
+	                            $linkedOUs = $null
+	                            if ($null -ne $gpoLinkage) {
+	                                $linkedOUs = @()
+	                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
+	                                    $linkedOUs = @($gpoLinkage[$gpoGUID])
+	                                }
 	                            }
 	                            $gpoStatus = Get-GPOEffectiveStatus `
 	                                -StatusEntry $gpoStatusMap[$gpoGUID] -Scope $context `
 	                                -Link $linkedOUs
+	                            $linkedOUsDisplay = $linkedOUs
+	                            if ($null -eq $linkedOUs) {
+	                                $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+	                            }
 	                            foreach ($finding in $findings) {
-	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 	                                if ($gpoStatus) {
 	                                    $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
 	                                }
@@ -64109,11 +64194,18 @@ function Get-GPORegistrySettings {
 	            }
 	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
 	            foreach ($finding in $shown) {
-	                $linkedOUs = @()
-	                if ($gpoLinkage.ContainsKey($finding.GPOGUID)) {
-	                    $linkedOUs = $gpoLinkage[$finding.GPOGUID]
+	                $linkedOUs = $null
+	                if ($null -ne $gpoLinkage) {
+	                    $linkedOUs = @()
+	                    if ($gpoLinkage.ContainsKey($finding.GPOGUID)) {
+	                        $linkedOUs = @($gpoLinkage[$finding.GPOGUID])
+	                    }
 	                }
-	                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+	                $linkedOUsDisplay = $linkedOUs
+	                if ($null -eq $linkedOUs) {
+	                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+	                }
+	                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 	                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 	                $gpoStatus = Get-GPOEffectiveStatus `
 	                    -StatusEntry $gpoStatusMap[$finding.GPOGUID] `
@@ -67921,13 +68013,20 @@ function Get-CredentialExposure {
 	                            $fileName = Split-Path $xmlFile.FullName -Leaf
 	                            $fileGpoGUID = $null
 	                            $fileGpoName = $null
-	                            $fileLinkedOUs = @()
+	                            $fileLinkedOUs = $null
 	                            if ($xmlFile.FullName -match '\\Policies\\(\{[^}]+\})\\') {
 	                                $fileGpoGUID = $Matches[1].ToUpper()
 	                                $fileGpoName = if ($gpoNameMap[$fileGpoGUID]) { $gpoNameMap[$fileGpoGUID] } else { $fileGpoGUID }
-	                                if ($gpoLinkage -and $gpoLinkage.ContainsKey($fileGpoGUID)) {
-	                                    $fileLinkedOUs = $gpoLinkage[$fileGpoGUID]
+	                                if ($null -ne $gpoLinkage) {
+	                                    $fileLinkedOUs = @()
+	                                    if ($gpoLinkage.ContainsKey($fileGpoGUID)) {
+	                                        $fileLinkedOUs = @($gpoLinkage[$fileGpoGUID])
+	                                    }
 	                                }
+	                            }
+	                            $fileLinkedOUsDisplay = $fileLinkedOUs
+	                            if ($fileGpoGUID -and $null -eq $fileLinkedOUs) {
+	                                $fileLinkedOUsDisplay = 'Unknown - linkage could not be resolved'
 	                            }
 	                            if ($xmlContent.InnerXml -match 'cpassword') {
 	                                $xmlContent.GetElementsByTagName('Properties') | ForEach-Object {
@@ -67946,7 +68045,7 @@ function Get-CredentialExposure {
 	                                            Password = $decryptedPassword
 	                                        }
 	                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-	                                        if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+	                                        if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
 	                                        Show-Line "Found GPP credential" -Class Finding
 	                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
 	                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'GPP Password' -Force
@@ -67973,7 +68072,7 @@ function Get-CredentialExposure {
 	                                        Password = $autoLogonPassword
 	                                    }
 	                                    if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-	                                    if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+	                                    if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
 	                                    Show-Line "Found AutoAdminLogon credential" -Class Finding
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
@@ -68040,13 +68139,20 @@ function Get-CredentialExposure {
 	                        try {
 	                            $fileGpoGUID = $null
 	                            $fileGpoName = $null
-	                            $fileLinkedOUs = @()
+	                            $fileLinkedOUs = $null
 	                            if ($file.FullName -match '\\Policies\\(\{[^}]+\})\\') {
 	                                $fileGpoGUID = $Matches[1].ToUpper()
 	                                $fileGpoName = if ($gpoNameMap[$fileGpoGUID]) { $gpoNameMap[$fileGpoGUID] } else { $fileGpoGUID }
-	                                if ($gpoLinkage -and $gpoLinkage.ContainsKey($fileGpoGUID)) {
-	                                    $fileLinkedOUs = $gpoLinkage[$fileGpoGUID]
+	                                if ($null -ne $gpoLinkage) {
+	                                    $fileLinkedOUs = @()
+	                                    if ($gpoLinkage.ContainsKey($fileGpoGUID)) {
+	                                        $fileLinkedOUs = @($gpoLinkage[$fileGpoGUID])
+	                                    }
 	                                }
+	                            }
+	                            $fileLinkedOUsDisplay = $fileLinkedOUs
+	                            if ($fileGpoGUID -and $null -eq $fileLinkedOUs) {
+	                                $fileLinkedOUsDisplay = 'Unknown - linkage could not be resolved'
 	                            }
 	                            $fileContent = $null
 	                            if ($file.Extension -eq ".vbe") {
@@ -68078,7 +68184,7 @@ function Get-CredentialExposure {
 	                                        Password = $foundPassword
 	                                    }
 	                                    if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-	                                    if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+	                                    if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
 	                                    Show-Line "Found net use credential" -Class Finding
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
@@ -68115,7 +68221,7 @@ function Get-CredentialExposure {
 	                                            MatchedLine = $trimmedLine
 	                                        }
 	                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-	                                        if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+	                                        if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
 	                                        Show-Line "Found credential pattern" -Class Finding
 	                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
 	                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
@@ -68135,7 +68241,7 @@ function Get-CredentialExposure {
 	                                            MatchedLine = $trimmedLine
 	                                        }
 	                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-	                                        if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+	                                        if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
 	                                        Show-Line "Found possible sensitive information" -Class Hint
 	                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
 	                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
@@ -79137,7 +79243,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.6.0+20261006-1400"
+$Script:adPEASVersion = "2.6.0+20261006-1451"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-06 14:00:18
-    Version: 2.6.0+20261006-1400
+    Build: 2026-10-06 14:51:19
+    Version: 2.6.0+20261006-1451
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -74023,7 +74023,9 @@ function Get-GPOEffectiveStatus {
     precedence it never evaluated would be worse than one that says so.
 
 .PARAMETER Scope
-    The precedence scope the caller determined.
+    The precedence scope the caller determined: DomainControllers, Domain, OtherOU,
+    NotLinked, or Unknown when the linkage could not be resolved. Anything else is treated
+    as Unknown rather than as NotLinked - see the default branch.
 
 .PARAMETER IsEffective
     Whether this GPO won its scope's precedence contest. Only consulted for the two scopes
@@ -74040,7 +74042,7 @@ function Get-GPOEffectiveStatus {
     is disabled", which reach the same set of machines by different routes.
 
 .OUTPUTS
-    [string] A sentence beginning with Yes or No.
+    [string] A sentence beginning with Yes, No, or Unknown.
 
 .EXAMPLE
     Get-GPOEffectiveSettingText -Scope 'DomainControllers' -IsEffective $true
@@ -74084,9 +74086,23 @@ function Get-GPOEffectiveSettingText {
         'OtherOU' {
             return 'Yes - applies on its linked OUs; no precedence comparison there'
         }
-        default {
+        'NotLinked' {
             if ($HasAnyLink) { return 'No - every link is disabled' }
             return 'No - the policy is linked nowhere'
+        }
+        'Unknown' {
+            return 'Unknown - the linkage could not be resolved'
+        }
+        default {
+            # NotLinked used to live here, which made this the fall-through for every scope
+            # the function does not recognise - including the unresolved one, which was then
+            # reported as the definite "linked nowhere" while the LinkedOUs row on the same
+            # object correctly said Unknown. The two contradicted each other in one block.
+            #
+            # Failing to "unknown" is the right direction for an unexpected value: a wrong
+            # claim about where a policy applies sends a reader to the wrong GPO, an admission
+            # of ignorance only sends them to check by hand.
+            return 'Unknown - the policy scope could not be determined'
         }
     }
 }
@@ -94126,7 +94142,20 @@ function Get-LDAPConfiguration {
                             $gpoLinkage = Get-GPOLinkage
                             # Normalize GUID to uppercase for hashtable lookup (Get-GPOLinkage uses uppercase keys)
                             $gpoNameUpper = $gpo.Name.ToUpper()
-                            $links = $gpoLinkage[$gpoNameUpper]
+
+                            # Three-valued. A bare $gpoLinkage[$key] answers $null both when
+                            # the map could not be built and when the map is fine but holds no
+                            # entry for this GPO - and those two have to be reported as
+                            # opposites: the second means "linked nowhere", which is knowledge.
+                            # On a $null map the bare index also emits a "Cannot index into a
+                            # null array" error record into the host.
+                            $links = $null
+                            if ($null -ne $gpoLinkage) {
+                                $links = @()
+                                if ($gpoLinkage.ContainsKey($gpoNameUpper)) {
+                                    $links = @($gpoLinkage[$gpoNameUpper])
+                                }
+                            }
                             $activeLinks = @()
                             $isDomainWide = $false
                             $coversDCs = $false
@@ -94149,10 +94178,18 @@ function Get-LDAPConfiguration {
                             # empty list as "Not linked". The Scope attribute this replaces
                             # said the same thing in a second vocabulary and a count that was
                             # the length of the list beside it.
-                            $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
+                            # Only the unresolved case needs a string: "Not linked" would be a
+                            # claim the failed lookup cannot support. Plain assignment, then an
+                            # override - an "if" whose branch yields @() writes nothing to the
+                            # output stream and would land the variable as $null.
+                            $linkedOUsDisplay = $links
+                            if ($null -eq $links) {
+                                $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                            }
+                            $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 
                             $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoNameUpper] `
-                                -Scope 'Machine' -Link @($links | Where-Object { $_ })
+                                -Scope 'Machine' -Link $links
                             if ($gpoStatus) {
                                 $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                             }
@@ -94180,9 +94217,16 @@ function Get-LDAPConfiguration {
                         default { "Unknown" }
                     }
 
+                    # Three-valued, same as the GptTmpl.inf loop: $null for an unresolved map,
+                    # @() for a resolved one that holds no entry for this GPO.
                     $links = $null
                     $gpoLinkage = Get-GPOLinkage
-                    if ($gpoLinkage) { $links = $gpoLinkage[$leftoverGuid] }
+                    if ($null -ne $gpoLinkage) {
+                        $links = @()
+                        if ($gpoLinkage.ContainsKey($leftoverGuid)) {
+                            $links = @($gpoLinkage[$leftoverGuid])
+                        }
+                    }
                     $activeLinks = @($links | Where-Object { $_ -and $_.LinkStatus -ne "Disabled" })
                     $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
 
@@ -94194,10 +94238,14 @@ function Get-LDAPConfiguration {
                     $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue (
                         Test-GPOCoversDomainControllers -ActiveLink $activeLinks -DomainController $domainControllers) -Force
 
-                    $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
+                    $linkedOUsDisplay = $links
+                    if ($null -eq $links) {
+                        $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                    }
+                    $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 
                     $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$leftoverGuid] `
-                        -Scope 'Machine' -Link @($links | Where-Object { $_ })
+                        -Scope 'Machine' -Link $links
                     if ($gpoStatus) {
                         $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                     }
@@ -94236,6 +94284,12 @@ function Get-LDAPConfiguration {
                 #   Domain            - linked at the domain root
                 #   OtherOU           - actively linked, but to some ordinary OU
                 #   NotLinked         - linked nowhere, or every link disabled
+                #   Unknown           - the linkage could not be resolved at all
+                #
+                # Unknown is the fifth and it has to be separate: falling through to
+                # NotLinked made the EffectiveSetting row assert "the policy is linked
+                # nowhere" on the strength of a lookup that failed, next to a LinkedOUs row
+                # that correctly said Unknown.
                 #
                 # OtherOU and NotLinked used to share the name "NotLinked", and the loop
                 # below declared that whole bucket effective on the argument that a policy
@@ -94244,8 +94298,13 @@ function Get-LDAPConfiguration {
                 # linked" and "IsEffectiveSetting: True" on the same object.
                 foreach ($gpoFinding in $gpoFindings) {
                     $guid = $gpoFinding.Name.ToUpper()
-                    $linksEff = if ($gpoLinkage) { $gpoLinkage[$guid] } else { $null }
-                    $precScope = "NotLinked"; $precOrder = 999
+                    $linksEff = $null
+                    if ($null -ne $gpoLinkage) {
+                        $linksEff = @()
+                        if ($gpoLinkage.ContainsKey($guid)) { $linksEff = @($gpoLinkage[$guid]) }
+                    }
+                    $precScope = if ($null -eq $linksEff) { "Unknown" } else { "NotLinked" }
+                    $precOrder = 999
 
                     if ($linksEff) {
                         $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
@@ -94529,7 +94588,20 @@ function Get-SMBSigningStatus {
                                 $gpoLinkage = Get-GPOLinkage
                                 # Normalize GUID to uppercase for hashtable lookup (Get-GPOLinkage uses uppercase keys)
                                 $gpoGUIDUpper = $gpoGUID.ToUpper()
-                                $links = $gpoLinkage[$gpoGUIDUpper]
+
+                                # Three-valued. A bare $gpoLinkage[$key] answers $null both
+                                # when the map could not be built and when the map is fine but
+                                # holds no entry for this GPO - and those two have to be
+                                # reported as opposites: the second means "linked nowhere",
+                                # which is knowledge. On a $null map the bare index also emits
+                                # a "Cannot index into a null array" error record into the host.
+                                $links = $null
+                                if ($null -ne $gpoLinkage) {
+                                    $links = @()
+                                    if ($gpoLinkage.ContainsKey($gpoGUIDUpper)) {
+                                        $links = @($gpoLinkage[$gpoGUIDUpper])
+                                    }
+                                }
                                 $activeLinks = @()
                                 $isDomainWide = $false
 
@@ -94547,10 +94619,18 @@ function Get-SMBSigningStatus {
                                 # Where the policy applies. The full link records, disabled
                                 # ones included - the LinkedOUs transformer marks those and
                                 # renders an empty list as "Not linked".
-                                $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue @($links | Where-Object { $_ }) -Force
+                                # Only the unresolved case needs a string: "Not linked" would
+                                # be a claim the failed lookup cannot support. Plain
+                                # assignment, then an override - an "if" whose branch yields
+                                # @() writes nothing and would land the variable as $null.
+                                $linkedOUsDisplay = $links
+                                if ($null -eq $links) {
+                                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                                }
+                                $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 
                                 $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUIDUpper] `
-                                    -Scope 'Machine' -Link @($links | Where-Object { $_ })
+                                    -Scope 'Machine' -Link $links
                                 if ($gpoStatus) {
                                     $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                                 }
@@ -94601,8 +94681,16 @@ function Get-SMBSigningStatus {
                 # unlinked GPO was reported as the setting in force.
                 foreach ($gpoFinding in $gpoFindings) {
                     $guid = $gpoFinding.Name.ToUpper()
-                    $linksEff = if ($gpoLinkageForEff) { $gpoLinkageForEff[$guid] } else { $null }
-                    $precScope = "NotLinked"; $precOrder = 999
+                    # Unknown is a scope of its own. Falling through to NotLinked made the
+                    # EffectiveSetting row assert "the policy is linked nowhere" on the
+                    # strength of a lookup that failed.
+                    $linksEff = $null
+                    if ($null -ne $gpoLinkageForEff) {
+                        $linksEff = @()
+                        if ($gpoLinkageForEff.ContainsKey($guid)) { $linksEff = @($gpoLinkageForEff[$guid]) }
+                    }
+                    $precScope = if ($null -eq $linksEff) { "Unknown" } else { "NotLinked" }
+                    $precOrder = 999
 
                     if ($linksEff) {
                         $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
@@ -94685,8 +94773,11 @@ function Get-SMBSigningStatus {
                 # This means member servers and clients rely on OS defaults (which vary by version)
                 $gpoLinkage = Get-GPOLinkage
                 $dcOnlyGPOs = @($gpoFindings | Where-Object {
-                    # Normalize GUID to uppercase for hashtable lookup
-                    $links = $gpoLinkage[$_.Name.ToUpper()]
+                    # Normalize GUID to uppercase for hashtable lookup. Guarded, because a
+                    # bare index on an unresolved ($null) map emits an error record into the
+                    # host for every GPO in the list.
+                    $links = $null
+                    if ($null -ne $gpoLinkage) { $links = $gpoLinkage[$_.Name.ToUpper()] }
                     if (-not $links) { return $false }
 
                     $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
@@ -99600,8 +99691,24 @@ function Check-GPOAddComputerRights {
                             # Get linkage data for Scope/LinkedOUs (same pattern as LDAP/SMB checks)
                             $gpoLinkage = Get-GPOLinkage
                             $gpoGUIDKey = $gpo.Name.ToUpper()
-                            $links = if ($gpoLinkage) { $gpoLinkage[$gpoGUIDKey] } else { $null }
-                            $activeLinks = @()
+
+                            # Three-valued, and the distinction is the whole point. A plain
+                            # $gpoLinkage[$key] answers $null both when the map could not be
+                            # built and when the map is fine but holds no entry for this GPO -
+                            # two states that have to be reported as opposites. The second one
+                            # means "linked nowhere", which is knowledge; collapsing it into
+                            # "unknown" printed "Unknown - linkage could not be resolved" next
+                            # to an EffectiveSetting of "linked nowhere" in the same block, and
+                            # let the policy escape the dormant-GPO dampening, because an
+                            # unknown reach deliberately never dampens.
+                            #
+                            # @($linkage[$missingKey]) is not a substitute: that is an array
+                            # holding one $null, which is Count 1 and therefore looks linked.
+                            $links = $null
+                            if ($gpoLinkage) {
+                                $links = @()
+                                if ($gpoLinkage.ContainsKey($gpoGUIDKey)) { $links = @($gpoLinkage[$gpoGUIDKey]) }
+                            }
                             $isDomainWide = $false
 
                             # Reset per GPO. Assigned only inside the if below, so without
@@ -99618,8 +99725,13 @@ function Check-GPOAddComputerRights {
                             # domain root, so a policy linked to an ordinary OU is absent from
                             # it - which is not the same as being linked nowhere, and saying
                             # "linked nowhere" about a linked policy would simply be wrong.
+                            #
+                            # The unresolved case gets a scope of its own. Falling through to
+                            # "NotLinked" made the EffectiveSetting row assert "the policy is
+                            # linked nowhere" on the strength of a lookup that failed.
                             $precedenceInfo = $Script:gpoAddComputerPrecedenceMap[$gpoGUIDKey]
                             $precedenceScope = if ($precedenceInfo) { $precedenceInfo.Scope }
+                                               elseif ($null -eq $links) { "Unknown" }
                                                elseif ($activeLinks.Count -gt 0) { "OtherOU" }
                                                else { "NotLinked" }
                             $precedenceOrder = if ($precedenceInfo -and $precedenceInfo.LinkOrder) { $precedenceInfo.LinkOrder } else { 999 }
@@ -102255,8 +102367,16 @@ function Get-GPOPermissions {
 
                     # If we found vulnerable identities for this GPO, add to results
                     if (@($vulnerableIdentities).Count -gt 0) {
-                        # Get GPO Linkage for this GPO
-                        $links = $gpoLinkage[$gpoGUID]
+                        # Get GPO Linkage for this GPO. Three-valued: $null when the map could
+                        # not be built, @() when the map is fine but holds no entry - the
+                        # second means "linked nowhere", which is knowledge and not the same
+                        # thing. A bare index on a $null map also emits a "Cannot index into a
+                        # null array" error record into the host.
+                        $links = $null
+                        if ($null -ne $gpoLinkage) {
+                            $links = @()
+                            if ($gpoLinkage.ContainsKey($gpoGUID)) { $links = @($gpoLinkage[$gpoGUID]) }
+                        }
                         $activeLinks = @()
                         $isDomainWide = $false
                         $linkCount = 0
@@ -102313,7 +102433,12 @@ function Get-GPOPermissions {
                         # empty list as "Not linked". Handed over as an array rather than a
                         # newline-joined string, so each link is its own row and can carry
                         # its own colour.
-                        $linkedOUsDisplay = @($links | Where-Object { $_ })
+                        # Only the unresolved case needs a string: "Not linked" would be a
+                        # claim the failed lookup cannot support.
+                        $linkedOUsDisplay = $links
+                        if ($null -eq $links) {
+                            $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                        }
 
                         # Format vulnerable identities for display
                         $identityDisplay = ($vulnerableIdentities | ForEach-Object {
@@ -102352,8 +102477,11 @@ function Get-GPOPermissions {
                         # This only adds what that attribute cannot know: links that exist
                         # and are switched off to the last one. Scope 'Any' - a permission on
                         # the GPO object belongs to neither half of the policy.
+                        # $links, not $linkedOUsDisplay: the display value may be the Unknown
+                        # string, and Get-GPOEffectiveStatus needs the $null that makes it
+                        # decline to judge rather than a one-element array of text.
                         $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUID] `
-                            -Scope 'Any' -Link $linkedOUsDisplay
+                            -Scope 'Any' -Link $links
                         if ($gpoStatus) {
                             $enrichedGPO | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                         }
@@ -102548,9 +102676,28 @@ function Get-GPOLocalGroupMembership {
                             $restrictedGroupsFindings = Parse-RestrictedGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($restrictedGroupsFindings) {
-                                $linkedOUs = @()
-                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
-                                    $linkedOUs = $gpoLinkage[$gpoGUID]
+                                # $null-guarded, and three-valued. Get-GPOLinkage returns $null
+                                # when the linkage could not be resolved, and .ContainsKey on
+                                # that throws - inside a try/catch that logs and moves on, so
+                                # every finding was dropped and the check closed with "No
+                                # vulnerable GPO local group assignments found". A transient
+                                # LDAP failure reported the quietest result as the truth.
+                                $linkedOUs = $null
+                                if ($null -ne $gpoLinkage) {
+                                    $linkedOUs = @()
+                                    if ($gpoLinkage.ContainsKey($gpoGUID)) {
+                                        $linkedOUs = @($gpoLinkage[$gpoGUID])
+                                    }
+                                }
+                                # "Not linked" is what the transformer makes of an empty list,
+                                # and that would be a claim the failed lookup cannot support.
+                                # Plain assignment, then an override. An "if" whose branch
+                                # yields @() writes nothing to the output stream, so
+                                # "$x = if (...) { ... } else { $empty }" lands $x as $null -
+                                # and @() is precisely the value that means "linked nowhere".
+                                $linkedOUsDisplay = $linkedOUs
+                                if ($null -eq $linkedOUs) {
+                                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
                                 # Restricted Groups is a computer-side policy, so the
@@ -102561,7 +102708,7 @@ function Get-GPOLocalGroupMembership {
                                     -Link $linkedOUs
 
                                 foreach ($finding in $restrictedGroupsFindings) {
-                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
@@ -102594,9 +102741,24 @@ function Get-GPOLocalGroupMembership {
                             $gppGroupsFindings = Parse-GPPGroups -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($gppGroupsFindings) {
-                                $linkedOUs = @()
-                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
-                                    $linkedOUs = $gpoLinkage[$gpoGUID]
+                                # Same three-valued handling as the Restricted Groups branch
+                                # above: $null means the linkage was never resolved, @() means
+                                # resolved and linked nowhere, and .ContainsKey on a $null map
+                                # throws into the catch below.
+                                $linkedOUs = $null
+                                if ($null -ne $gpoLinkage) {
+                                    $linkedOUs = @()
+                                    if ($gpoLinkage.ContainsKey($gpoGUID)) {
+                                        $linkedOUs = @($gpoLinkage[$gpoGUID])
+                                    }
+                                }
+                                # Plain assignment, then an override. An "if" whose branch
+                                # yields @() writes nothing to the output stream, so
+                                # "$x = if (...) { ... } else { $empty }" lands $x as $null -
+                                # and @() is precisely the value that means "linked nowhere".
+                                $linkedOUsDisplay = $linkedOUs
+                                if ($null -eq $linkedOUs) {
+                                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
                                 # Group Policy Preferences local groups can be deployed from
@@ -102607,7 +102769,7 @@ function Get-GPOLocalGroupMembership {
                                     -Link $linkedOUs
 
                                 foreach ($finding in $gppGroupsFindings) {
-                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
@@ -103187,9 +103349,29 @@ function Get-GPOScheduledTasks {
                             $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($taskFindings) {
-                                $linkedOUs = @()
-                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
-                                    $linkedOUs = $gpoLinkage[$gpoGUID]
+                                # $null-guarded, and three-valued. Get-GPOLinkage returns $null
+                                # when the linkage could not be resolved, and .ContainsKey on
+                                # that throws - inside a try/catch that logs and moves to the
+                                # next file, so every task was dropped and the check closed
+                                # with "No scheduled tasks distributed via GPO". A transient
+                                # LDAP failure reported the quietest result as the truth.
+                                $linkedOUs = $null
+                                if ($null -ne $gpoLinkage) {
+                                    $linkedOUs = @()
+                                    if ($gpoLinkage.ContainsKey($gpoGUID)) {
+                                        $linkedOUs = @($gpoLinkage[$gpoGUID])
+                                    }
+                                }
+                                # "Not linked" is what the transformer makes of an empty list,
+                                # and that would be a claim the failed lookup cannot support.
+                                #
+                                # Plain assignment, then an override. An "if" whose branch
+                                # yields @() writes nothing to the output stream, so
+                                # "$x = if (...) { ... } else { $empty }" lands $x as $null -
+                                # and @() is precisely the value that means "linked nowhere".
+                                $linkedOUsDisplay = $linkedOUs
+                                if ($null -eq $linkedOUs) {
+                                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
                                 foreach ($task in $taskFindings) {
@@ -103197,7 +103379,7 @@ function Get-GPOScheduledTasks {
                                     # the transformer turns that into an explicit "Not
                                     # linked" row, and a policy that runs nowhere is a
                                     # statement rather than an absence.
-                                    $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+                                    $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 
                                     # A task in a policy whose relevant half is switched off
                                     # does not run, and it used to read exactly like one that
@@ -103654,9 +103836,24 @@ function Get-GPOScriptPaths {
                             $findings = Parse-ScriptIni -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()] -Context $context -IsPowerShell $isPowerShell
 
                             if ($findings) {
-                                $linkedOUs = @()
-                                if ($gpoLinkage.ContainsKey($gpoGUID)) {
-                                    $linkedOUs = $gpoLinkage[$gpoGUID]
+                                # $null-guarded, and three-valued. Get-GPOLinkage returns
+                                # $null when the linkage could not be resolved at all, and
+                                # calling .ContainsKey on that throws - inside a try/catch
+                                # that logs and moves to the next file, so every finding was
+                                # dropped and the check closed with "No scripts distributed
+                                # via GPO". A transient LDAP failure therefore reported the
+                                # quietest possible result as the truth.
+                                #
+                                # $null now means unresolved and @() means resolved-to-none;
+                                # the LinkedOUs transformer renders the latter as "Not
+                                # linked", and Get-GPOEffectiveStatus declines to judge the
+                                # former rather than asserting the policy is linked nowhere.
+                                $linkedOUs = $null
+                                if ($null -ne $gpoLinkage) {
+                                    $linkedOUs = @()
+                                    if ($gpoLinkage.ContainsKey($gpoGUID)) {
+                                        $linkedOUs = @($gpoLinkage[$gpoGUID])
+                                    }
                                 }
 
                                 # Whether the GPO's half that carries this script is switched
@@ -103668,8 +103865,20 @@ function Get-GPOScriptPaths {
                                     -StatusEntry $gpoStatusMap[$gpoGUID] -Scope $context `
                                     -Link $linkedOUs
 
+                                # "Not linked" is what the transformer makes of an empty list,
+                                # and that would be a claim the failed lookup cannot support.
+                                #
+                                # Plain assignment, then an override. An "if" whose branch
+                                # yields @() writes nothing to the output stream, so
+                                # "$x = if (...) { ... } else { $empty }" lands $x as $null -
+                                # and @() is precisely the value that means "linked nowhere".
+                                $linkedOUsDisplay = $linkedOUs
+                                if ($null -eq $linkedOUs) {
+                                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                                }
+
                                 foreach ($finding in $findings) {
-                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+                                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
@@ -104151,13 +104360,32 @@ function Get-GPORegistrySettings {
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
 
                 foreach ($finding in $shown) {
-                    $linkedOUs = @()
-                    if ($gpoLinkage.ContainsKey($finding.GPOGUID)) {
-                        $linkedOUs = $gpoLinkage[$finding.GPOGUID]
+                    # $null-guarded, and three-valued. Get-GPOLinkage returns $null when the
+                    # linkage could not be resolved, and .ContainsKey on that throws. This
+                    # loop is the display loop, so the throw was caught check-wide: the
+                    # "Found N vulnerable registry setting(s)" header printed and then not a
+                    # single row followed it.
+                    $linkedOUs = $null
+                    if ($null -ne $gpoLinkage) {
+                        $linkedOUs = @()
+                        if ($gpoLinkage.ContainsKey($finding.GPOGUID)) {
+                            $linkedOUs = @($gpoLinkage[$finding.GPOGUID])
+                        }
                     }
                     # Set unconditionally, including when the list is empty: the transformer
-                    # turns that into an explicit "Not linked" row.
-                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+                    # turns that into an explicit "Not linked" row. Only the unresolved case
+                    # needs a string of its own - "Not linked" would be a claim the failed
+                    # lookup cannot support.
+                    #
+                    # Plain assignment, then an override. An "if" whose branch yields @()
+                    # writes nothing to the output stream, so "$x = if (...) { ... } else
+                    # { $empty }" lands $x as $null - and @() is precisely the value that
+                    # means "linked nowhere".
+                    $linkedOUsDisplay = $linkedOUs
+                    if ($null -eq $linkedOUs) {
+                        $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
+                    }
+                    $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 
                     # A value in a policy whose relevant half is switched off reaches no
@@ -110720,13 +110948,29 @@ function Get-CredentialExposure {
                                 # Extract GPO GUID from SYSVOL path for linkage resolution
                                 $fileGpoGUID = $null
                                 $fileGpoName = $null
-                                $fileLinkedOUs = @()
+                                # Three-valued like every other GPO check: $null when the
+                                # linkage could not be resolved, @() when it resolved and this
+                                # policy is linked nowhere. The row is then emitted either way
+                                # below - "Not linked" is a statement about where a plaintext
+                                # password applies, not an absence, and this check was the one
+                                # place that let it vanish instead.
+                                $fileLinkedOUs = $null
                                 if ($xmlFile.FullName -match '\\Policies\\(\{[^}]+\})\\') {
                                     $fileGpoGUID = $Matches[1].ToUpper()
                                     $fileGpoName = if ($gpoNameMap[$fileGpoGUID]) { $gpoNameMap[$fileGpoGUID] } else { $fileGpoGUID }
-                                    if ($gpoLinkage -and $gpoLinkage.ContainsKey($fileGpoGUID)) {
-                                        $fileLinkedOUs = $gpoLinkage[$fileGpoGUID]
+                                    if ($null -ne $gpoLinkage) {
+                                        $fileLinkedOUs = @()
+                                        if ($gpoLinkage.ContainsKey($fileGpoGUID)) {
+                                            $fileLinkedOUs = @($gpoLinkage[$fileGpoGUID])
+                                        }
                                     }
+                                }
+                                # A credential found outside a GPO folder has no linkage
+                                # question at all, which is why the row is suppressed for it
+                                # rather than printed as Unknown.
+                                $fileLinkedOUsDisplay = $fileLinkedOUs
+                                if ($fileGpoGUID -and $null -eq $fileLinkedOUs) {
+                                    $fileLinkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
                                 # Check 1: cpassword attribute (GPP encrypted passwords)
@@ -110749,7 +110993,7 @@ function Get-CredentialExposure {
                                                 Password = $decryptedPassword
                                             }
                                             if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                            if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+                                            if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                             Show-Line "Found GPP credential" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'GPP Password' -Force
@@ -110779,7 +111023,7 @@ function Get-CredentialExposure {
                                             Password = $autoLogonPassword
                                         }
                                         if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                        if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+                                        if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                         Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
@@ -110864,13 +111108,21 @@ function Get-CredentialExposure {
                                 # Extract GPO GUID from SYSVOL path for linkage resolution
                                 $fileGpoGUID = $null
                                 $fileGpoName = $null
-                                $fileLinkedOUs = @()
+                                # Same three-valued handling as the XML branch above.
+                                $fileLinkedOUs = $null
                                 if ($file.FullName -match '\\Policies\\(\{[^}]+\})\\') {
                                     $fileGpoGUID = $Matches[1].ToUpper()
                                     $fileGpoName = if ($gpoNameMap[$fileGpoGUID]) { $gpoNameMap[$fileGpoGUID] } else { $fileGpoGUID }
-                                    if ($gpoLinkage -and $gpoLinkage.ContainsKey($fileGpoGUID)) {
-                                        $fileLinkedOUs = $gpoLinkage[$fileGpoGUID]
+                                    if ($null -ne $gpoLinkage) {
+                                        $fileLinkedOUs = @()
+                                        if ($gpoLinkage.ContainsKey($fileGpoGUID)) {
+                                            $fileLinkedOUs = @($gpoLinkage[$fileGpoGUID])
+                                        }
                                     }
+                                }
+                                $fileLinkedOUsDisplay = $fileLinkedOUs
+                                if ($fileGpoGUID -and $null -eq $fileLinkedOUs) {
+                                    $fileLinkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
                                 $fileContent = $null
@@ -110911,7 +111163,7 @@ function Get-CredentialExposure {
                                             Password = $foundPassword
                                         }
                                         if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                        if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+                                        if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                         Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
@@ -110956,7 +111208,7 @@ function Get-CredentialExposure {
                                                 MatchedLine = $trimmedLine
                                             }
                                             if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                            if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+                                            if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                             Show-Line "Found credential pattern" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
@@ -110977,7 +111229,7 @@ function Get-CredentialExposure {
                                                 MatchedLine = $trimmedLine
                                             }
                                             if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                            if ($fileLinkedOUs.Count -gt 0) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUs -Force }
+                                            if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                             Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
@@ -124698,7 +124950,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.6.0+20261006-1400"
+$Script:adPEASVersion = "2.6.0+20261006-1451"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
