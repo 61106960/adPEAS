@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-07 14:49:46
-    Version: 2.6.0+20261007-1449
+    Build: 2026-10-07 15:29:24
+    Version: 2.6.0+20261007-1529
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -95170,7 +95170,13 @@ function Get-LDAPConfiguration {
 
                 $shown = if ($IncludeInactive) { @($gpoFindings) } else { @($split.Active) }
 
-                # Show Found message BEFORE data
+                # Held-back policies first, then the headline for the active ones, then the
+                # active ones. The "Found ..." line is the heading for the finding objects, so
+                # it belongs directly above them - not above the dampening block, which is a
+                # separate statement about what was left out.
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
+
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found LDAP security configuration in $(@($shown).Count) GPO(s):" -Class Hint
                 } else {
@@ -95178,9 +95184,6 @@ function Get-LDAPConfiguration {
                     # whatever the OS defaults to - the same exposure as configuring nothing.
                     Show-Line "No LDAP security configuration is deployed by a policy that is linked and enabled - all $dcCount DC(s) potentially vulnerable" -Class Finding
                 }
-
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($gpoFinding in $shown) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
@@ -95551,6 +95554,12 @@ function Get-SMBSigningStatus {
 
                 $shown = if ($IncludeInactive) { @($gpoFindings) } else { @($split.Active) }
 
+                # Held-back policies first, then the headline for the active ones, then the
+                # active ones - the "Found ..." line heads the finding objects, not the
+                # dampening block.
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
+
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found SMB Signing configuration in $(@($shown).Count) GPO(s):" -Class Hint
                 } else {
@@ -95558,9 +95567,6 @@ function Get-SMBSigningStatus {
                     # machine on the OS default - the same exposure as configuring nothing.
                     Show-Line "No SMB Signing configuration is deployed by a policy that is linked and enabled" -Class Finding
                 }
-
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($gpoFinding in $shown) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigning' -Force
@@ -100301,13 +100307,6 @@ function Get-AddComputerRights {
                 $inactiveGPOs = @($gpoFindings | Where-Object { $_._ReachInactive })
                 $shownGPOs    = if ($IncludeInactive) { @($gpoFindings) } else { @($gpoFindings | Where-Object { -not $_._ReachInactive }) }
 
-                $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
-                if (@($shownGPOs).Count -gt 0) {
-                    Show-Line "Found $(@($shownGPOs).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
-                } else {
-                    Show-Line "No policy that is linked and enabled configures SeMachineAccountPrivilege" -Class Note
-                }
-
                 # The dormant list in the shape Split-GPOFindingByReach produces, built by
                 # hand because this check stamps the reach verdict itself - the linkage and
                 # the status map only exist inside Check-GPOAddComputerRights. One entry per
@@ -100326,11 +100325,20 @@ function Get-AddComputerRights {
                     }
                 })
 
+                # Held-back policies first, then the headline for the active ones - the
+                # "Found ..." line heads the finding objects, not the dampening block.
                 Show-GPOInactiveSummary `
                     -Unlinked @($inactiveGPOs | Where-Object { $_._ReachUnlinked }).Count `
                     -Disabled @($inactiveGPOs | Where-Object { -not $_._ReachUnlinked }).Count `
                     -Dormant $dormantGPOs `
                     -Listed:$IncludeInactive
+
+                $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
+                if (@($shownGPOs).Count -gt 0) {
+                    Show-Line "Found $(@($shownGPOs).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
+                } else {
+                    Show-Line "No policy that is linked and enabled configures SeMachineAccountPrivilege" -Class Note
+                }
 
                 # Show all GPOs that define SeMachineAccountPrivilege, sorted by precedence
                 # (highest first). OtherOU is in the map because a scope missing from it
@@ -101045,31 +101053,20 @@ function Get-GPOUserRightsAssignment {
                 $hasFinding = @($shown | Where-Object { $_._severity -eq 'Finding' }).Count -gt 0
                 $headerClass = if ($hasFinding) { "Finding" } else { "Hint" }
 
-                if ($deviations.Count -gt 0) {
-                    Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
-                } elseif ($inactiveCount -gt 0) {
-                    # Not Secure. Every departure sits on a policy that reaches nothing,
-                    # which is a different statement from having none, and the summary line
-                    # below carries the count.
-                    Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class "Secure"
-                } else {
-                    Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
-                }
-
-                # Everything that is not a deviation in the direction this tool cares about:
-                # assignments that only take default holders away, and - with
-                # -IncludeDefaults - assignments that match the default exactly. Both carry
-                # severity Note, and both are counted here rather than printed.
+                # Held back first, then the headline, then the deviations. Three kinds of
+                # held-back material sit above the "Found ..." line: the assignments that only
+                # remove default holders, and (through the dampening summary) the dormant
+                # policies. The headline heads the deviations that are actually reported.
                 #
-                # adPEAS looks for a right granted to somebody who should not have it. A GPO
-                # that removes Backup Operators from SeDebugPrivilege is hardening: good to
-                # know it happened, nothing to act on, and nine of those printed as full
-                # blocks bury the two that matter. The count stays because silence would be
-                # indistinguishable from a domain where no hardening was done at all.
-                # Counted AND named, the same treatment the dormant policies get. A count alone
-                # tells a reader that something was held back but not whether they care, and
-                # "10 assignment(s) only remove default holders" over thirteen named dormant
-                # policies was the one line in the block that left them guessing.
+                # Everything that is not a deviation in the direction this tool cares about:
+                # assignments that only take default holders away, and - with -IncludeDefaults -
+                # assignments that match the default exactly. Both carry severity Note.
+                #
+                # adPEAS looks for a right granted to somebody who should not have it. A GPO that
+                # removes Backup Operators from SeDebugPrivilege is hardening: worth knowing,
+                # nothing to act on, and nine of those as full blocks bury the two that matter.
+                # Counted AND named, the same treatment the dormant policies get - a count alone
+                # leaves a reader guessing which policies, which the dormant list does not.
                 $removalsOnly = @($shown | Where-Object { $_._severity -eq 'Note' })
                 if ($removalsOnly.Count -gt 0) {
                     $removalPolicies = @(Get-GPOPolicySummary -Finding $removalsOnly)
@@ -101085,8 +101082,6 @@ function Get-GPOUserRightsAssignment {
                     }
                     if (-not $showDefaults) { $text += ' (-IncludeDefaults to list)' }
 
-                    # Headline is the entry point; the policies follow as one card, the same
-                    # shape the dormant groups use.
                     Show-Line $text -Class "Note"
                     Show-GPOSuppressedGroup -Group 'Assignments that only remove default holders' `
                         -Reason 'Hardening more often than not, occasionally a service about to break - never a grant.' `
@@ -101095,6 +101090,17 @@ function Get-GPOUserRightsAssignment {
 
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
                     -Dormant $split.Dormant -Listed:$IncludeInactive
+
+                if ($deviations.Count -gt 0) {
+                    Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
+                } elseif ($inactiveCount -gt 0) {
+                    # Not Secure. Every departure sits on a policy that reaches nothing, which is
+                    # a different statement from having none, and the dampening line above
+                    # carries the count.
+                    Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class "Secure"
+                } else {
+                    Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
+                }
 
                 # Findings first, then hints, then the removals.
                 #
@@ -103689,6 +103695,12 @@ function Get-GPOLocalGroupMembership {
 
                 $shown = if ($IncludeInactive) { @($vulnerableGPOs) } else { @($split.Active) }
 
+                # Held-back policies first, then the headline for the active ones, then the
+                # active ones - the "Found ..." line heads the finding objects, not the
+                # dampening block.
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
+
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found $(@($shown).Count) vulnerable GPO local group assignment(s)" -Class Finding
                 } else {
@@ -103696,9 +103708,6 @@ function Get-GPOLocalGroupMembership {
                     # the domain clean here would be a different statement.
                     Show-Line "No local group assignment is made by a policy that is linked and enabled" -Class Note
                 }
-
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOLocalGroup' -Force
@@ -104319,14 +104328,17 @@ function Get-GPOScheduledTasks {
                 $hasFinding = @($shown | Where-Object { $_._Severity -eq 'Finding' }).Count -gt 0
                 $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
 
+                # Held-back policies first, then the headline for the active ones, then the
+                # active ones - the "Found ..." line heads the finding objects, not the
+                # dampening block.
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
+
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found $(@($shown).Count) scheduled task(s) distributed via GPO" -Class $headerClass
                 } else {
                     Show-Line "No scheduled task is distributed by a policy that is linked and enabled" -Class Note
                 }
-
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($task in $shown) {
                     # Grey whatever the severity analysis concluded: the class describes the
@@ -104803,14 +104815,17 @@ function Get-GPOScriptPaths {
 
                 $shown = if ($IncludeInactive) { @($scriptFindings) } else { @($split.Active) }
 
+                # Held-back policies first, then the headline for the active ones, then the
+                # active ones - the "Found ..." line heads the finding objects, not the
+                # dampening block.
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
+
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found $(@($shown).Count) script(s) distributed via GPO" -Class Hint
                 } else {
                     Show-Line "No script is distributed by a policy that is linked and enabled" -Class Note
                 }
-
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOScriptPath' -Force
@@ -105228,6 +105243,12 @@ function Get-GPORegistrySettings {
                 $hasFinding = @($shown | Where-Object { $_.ConsoleClass -eq 'Finding' }).Count -gt 0
                 $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
 
+                # Held-back policies first, then the headline for the active ones, then the
+                # active ones - the "Found ..." line heads the finding objects, not the
+                # dampening block.
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
+
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found $(@($shown).Count) vulnerable registry setting(s) deployed via GPO" -Class $headerClass
                 } else {
@@ -105235,9 +105256,6 @@ function Get-GPORegistrySettings {
                     # does not apply, which is a different statement.
                     Show-Line "No vulnerable registry setting is deployed by a policy that is linked and enabled" -Class Note
                 }
-
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($finding in $shown) {
                     # $null-guarded, and three-valued. Get-GPOLinkage returns $null when the
@@ -105763,24 +105781,12 @@ function Get-GPOPointAndPrint {
             # Counted over what is printed, for the same reason the exploitable tally is.
             $exploitable = @($listed | Where-Object { $_.Exploitability -like 'Exploitable*' })
 
-            if (@($listed).Count -gt 0) {
-                Show-Line "Found $(@($listed).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
-            } elseif ($settled.Count -gt 0) {
-                # Not the "nothing is deployed" line below: something is deployed, and it is
-                # the hardened kind. Saying nothing is deployed would be false, and saying
-                # nothing at all would read as a check that found no policies to look at.
-                Show-Line "No linked and enabled policy leaves printer driver installation open to non-administrators" -Class Secure
-            } else {
-                Show-Line "No Point and Print configuration is deployed by a policy that is linked and enabled" -Class Note
-            }
-
-            if ($exploitable.Count -gt 0) {
-                Show-Line "$($exploitable.Count) GPO configuration(s) let non-administrators install printer drivers without an elevation prompt" -Class Finding
-            }
-
-            # Counted AND named, the same treatment the dormant policies get below: a count alone
-            # tells a reader that something was held back but not whether they care, and a GPO
-            # nobody can identify cannot be looked at either.
+            # Held back first: the hardened configurations, then the dormant policies. Both are
+            # separate statements about what was left out, so they sit above the "Found ..."
+            # headline, which heads the configurations that are actually reported.
+            #
+            # Counted AND named: a count alone tells a reader something was held back but not
+            # whether they care, and a GPO nobody can identify cannot be looked at either.
             if (-not $IncludeDefaults -and $settled.Count -gt 0) {
                 $settledPolicies = @(Get-GPOPolicySummary -Finding $settled)
 
@@ -105803,6 +105809,21 @@ function Get-GPOPointAndPrint {
 
             Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
                 -Dormant $split.Dormant -Listed:$IncludeInactive
+
+            if (@($listed).Count -gt 0) {
+                Show-Line "Found $(@($listed).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+            } elseif ($settled.Count -gt 0) {
+                # Not the "nothing is deployed" line below: something is deployed, and it is
+                # the hardened kind. Saying nothing is deployed would be false, and saying
+                # nothing at all would read as a check that found no policies to look at.
+                Show-Line "No linked and enabled policy leaves printer driver installation open to non-administrators" -Class Secure
+            } else {
+                Show-Line "No Point and Print configuration is deployed by a policy that is linked and enabled" -Class Note
+            }
+
+            if ($exploitable.Count -gt 0) {
+                Show-Line "$($exploitable.Count) GPO configuration(s) let non-administrators install printer drivers without an elevation prompt" -Class Finding
+            }
 
             foreach ($object in $listed) {
                 if (@($split.Inactive) -contains $object) {
@@ -125918,7 +125939,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.6.0+20261007-1449"
+$Script:adPEASVersion = "2.6.0+20261007-1529"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
