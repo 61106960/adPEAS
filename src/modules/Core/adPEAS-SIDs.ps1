@@ -318,6 +318,41 @@ $Script:WellKnownServiceSIDs = @(
     'S-1-5-32-568'    # BUILTIN\IIS_IUSRS
 )
 
+<#
+.SYNOPSIS
+    SID authorities under S-1-5 whose members are synthesised on a machine and can never be
+    directory objects.
+.DESCRIPTION
+    Each of these is derived from a name on the local computer - a SHA-1 of the service or
+    application pool name - so the SID is reproducible from the name but not reversible, and
+    no such object exists in a domain or in the forest.
+
+    They turn up in GptTmpl.inf because installing IIS or a service adds its own identity to a
+    user right, and the GPO then stores the SID. Looking one up in AD returns nothing, which
+    used to send ConvertFrom-SID on to the Foreign Security Principal and Global Catalog
+    fallback - a query that cannot succeed by construction, and on a segment where port 3268
+    is filtered it cost a TCP timeout per GC target per SID and printed a connection error for
+    each.
+
+    The value is what to call them. The sub-authorities are a hash, so the original name is
+    not recoverable; naming the authority is all that can honestly be said, and it is the
+    thing a reader needs - "an IIS application pool holds this right" rather than
+    "(UNRESOLVABLE)", which reads as a missing object somebody should go and find.
+
+    Keyed by the authority RID that follows S-1-5-. The general service authorities only, not
+    the fixed well-known SIDs under them: S-1-5-80-0 is ALL SERVICES and resolves by name from
+    $Script:SIDToName before this table is consulted.
+#>
+$Script:MachineLocalSIDAuthorities = @{
+    '80' = 'NT SERVICE\<service SID>'
+    '82' = 'IIS APPPOOL\<application pool SID>'
+    '83' = 'NT VIRTUAL MACHINE\<virtual machine SID>'
+    '84' = 'Usermode driver SID'
+    '90' = 'Window Manager\<desktop window manager SID>'
+    '94' = 'WinRM Virtual Users\<WinRM SID>'
+    '96' = 'Font Driver Host\<font driver SID>'
+}
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================

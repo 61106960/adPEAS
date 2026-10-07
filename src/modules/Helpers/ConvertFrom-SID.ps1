@@ -111,6 +111,30 @@ function ConvertFrom-SID {
             # Convert to LDAP hex format (\XX\XX\XX...)
             $SIDHex = ($SIDBytes | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
 
+            # A machine-local authority is answered here and never asked of the directory.
+            #
+            # S-1-5-82-<hash> is an IIS application pool, S-1-5-80-<hash> a service SID, and
+            # so on: each is a SHA-1 of a name on some computer, so it exists nowhere in the
+            # domain and nowhere in the forest. The LDAP query returned nothing, which sent the
+            # lookup on to the Foreign Security Principal and Global Catalog fallback below -
+            # a query that cannot succeed by construction. On a segment where port 3268 is
+            # filtered that cost a TCP timeout per GC target per SID, and printed a connection
+            # error for each; two such SIDs in one GPO produced four of them.
+            #
+            # The authority is all that can honestly be reported - the hash does not give the
+            # name back - but it is the part a reader acts on: "an IIS application pool holds
+            # this right" rather than "(UNRESOLVABLE)", which reads as an object to go and find.
+            if ($SID -match '^S-1-5-(\d+)-\d+') {
+                $authority = $Matches[1]
+                if ($Script:MachineLocalSIDAuthorities.ContainsKey($authority)) {
+                    $resolvedName = $Script:MachineLocalSIDAuthorities[$authority]
+                    Write-Log "[ConvertFrom-SID] S-1-5-$authority is a machine-local authority - not a directory object: $resolvedName"
+                    $Script:SIDResolutionCache[$SID] = $resolvedName
+                    $Script:SIDVerboseCache[$SID] = $true
+                    return $resolvedName
+                }
+            }
+
             # Check if this is a foreign domain SID before querying local domain
             # If the SID's domain part doesn't match the current domain, skip local domain lookup
             $skipLocalLookup = $false

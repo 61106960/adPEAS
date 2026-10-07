@@ -1158,6 +1158,11 @@ $Script:WellKnownIdentities = @(
     # section on every Hyper-V host.
     @{ SID = 'S-1-5-80-0';  Name = 'NT SERVICE\ALL SERVICES' }
     @{ SID = 'S-1-5-83-0';  Name = 'NT VIRTUAL MACHINE\Virtual Machines' }
+    # The fixed group under the Window Manager authority. adPEAS already counted it among
+    # $Script:WellKnownServiceSIDs but could not put a name to it, so it fell through to the
+    # machine-local authority fallback in ConvertFrom-SID and came out as the generic
+    # "Window Manager\<desktop window manager SID>" rather than the group it actually is.
+    @{ SID = 'S-1-5-90-0';  Name = 'Window Manager\Window Manager Group' }
 
     @{ SID = 'S-1-5-1000';  Name = 'NT AUTHORITY\Other Organization' }
 
