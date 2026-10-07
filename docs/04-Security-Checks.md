@@ -1030,11 +1030,20 @@ truncated — its length is bounded by the number of policies in the domain, and
 would leave `-IncludeInactive` as the only way to learn the missing names, which prints every
 held-back finding and is far more output than a cap saves.
 
-**A configuration that exposes nothing is counted, not printed.** The same reasoning in a
-second direction: adPEAS reports a right or a setting granted to somebody who should not have
-it, so the opposite - a GPO that hardens - is worth one line and not a block. Two checks apply
-it today, both behind `-IncludeDefaults` (aliased `-IncludePrivileged`, which `Invoke-adPEAS`
-passes, so the hint naming it is reachable from a full scan):
+**A configuration that exposes nothing is counted and named, not printed in full.** The same
+reasoning in a second direction: adPEAS reports a right or a setting granted to somebody who
+should not have it, so the opposite - a GPO that hardens - is worth one line and the policy
+named, not a block. The short list is the same one the dampening summary uses - display name
+left, GUID on column 45, one line per policy, deduplicated and sorted by name - so the held-back
+hardening and the held-back dormant policies read identically. Both checks are behind
+`-IncludeDefaults` (aliased `-IncludePrivileged`, which `Invoke-adPEAS` passes, so the hint
+naming it is reachable from a full scan), which lists them in full:
+
+```
+[*] 10 assignment(s) only remove default holders - hardening, or a service about to break on 2 GPO(s) (-IncludeDefaults to list):
+[*]   Addon WSUS V1.0                        {51462F84-B01D-4104-A4E5-BA2CF3C8AACC}
+[*]   Systemhaertung Ws2022 DC V24.07        {02FF1399-2A08-4922-9C0E-A1EAB771699C}
+```
 
 - `Get-GPOUserRightsAssignment`: an assignment that only *removes* default holders. Nine of
   those printed as full blocks ahead of two real findings is how the rule was arrived at. An
@@ -1045,6 +1054,10 @@ passes, so the hint naming it is reachable from a full scan):
   line above them. The User Configuration case stays visible: Windows ignores it (KB2307161),
   so it is not an exposure either, but somebody hardened and it does not take effect - a
   different statement from a hardening that works.
+
+As with the dormant list, the headline counts findings while the named list counts policies -
+several rights in one GPO, or both halves of one Point and Print policy - so the headline names
+its unit (`on N GPO(s)`) whenever the two numbers differ.
 
 It is held back, not dropped. `-IncludeInactive` on the individual check lists them,
 greyed, with `LinkedOUs` and `GPOStatus` on the row saying why. The switch is deliberately

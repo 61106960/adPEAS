@@ -413,11 +413,26 @@ function Get-GPOUserRightsAssignment {
                 # know it happened, nothing to act on, and nine of those printed as full
                 # blocks bury the two that matter. The count stays because silence would be
                 # indistinguishable from a domain where no hardening was done at all.
+                # Counted AND named, the same treatment the dormant policies get. A count alone
+                # tells a reader that something was held back but not whether they care, and
+                # "10 assignment(s) only remove default holders" over thirteen named dormant
+                # policies was the one line in the block that left them guessing.
                 $removalsOnly = @($shown | Where-Object { $_._severity -eq 'Note' })
                 if ($removalsOnly.Count -gt 0) {
+                    $removalPolicies = @(Get-GPOPolicySummary -Finding $removalsOnly)
+
                     $text = "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break"
+
+                    # Assignments up front, policies in the list, so the unit is named whenever
+                    # the two numbers differ - several rights in one GPO is the normal case here.
+                    if ($removalPolicies.Count -gt 0 -and $removalPolicies.Count -ne $removalsOnly.Count) {
+                        $text += " on $($removalPolicies.Count) GPO(s)"
+                    }
                     if (-not $showDefaults) { $text += ' (-IncludeDefaults to list)' }
+                    if ($removalPolicies.Count -gt 0) { $text += ':' }
+
                     Show-Line $text -Class "Note"
+                    Show-GPOPolicyList -Policy $removalPolicies
                 }
 
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `

@@ -753,17 +753,9 @@ function Show-GPOInactiveSummary {
     # The length is bounded by the number of policies in the domain, which is bounded by what
     # somebody has to administer, and one line per policy is already the compression: those
     # thirty-four findings are twelve lines.
-    # Two fields, not three, and on the column every other adPEAS row uses: the display name
-    # left, the GUID at 45. The category used to be a third field in the middle of the line,
-    # which read as three unlabelled blocks pushed to the right; it is now the group header,
-    # where it explains the rows under it instead of repeating beside each one.
-    #
-    # 45 is the AlignAt every Show-KeyValue and every rendered attribute uses. Four of those
-    # columns go to the "[*] " class prefix and two to the indent, so the name field is 39.
-    # A longer name pushes its own GUID right rather than being truncated - the same thing
-    # every other adPEAS row does, and a cut-off GPO name is no longer findable in SYSVOL.
-    $nameWidth = 45 - 4 - 2
-
+    # The rows themselves go through Show-GPOPolicyList, which is the one place that decides what
+    # a policy looks like in a short list. Every count-and-suppress line in every GPO check names
+    # its policies the same way because they all end up there.
     $lastCategory = $null
     foreach ($row in $rows) {
         if ($grouped -and $row.Category -ne $lastCategory) {
@@ -773,6 +765,62 @@ function Show-GPOInactiveSummary {
             Show-Line "${label} (${inGroup}):" -Class Note
         }
 
+        # One at a time, because the group headers are interleaved. The helper sorts and
+        # deduplicates, and a single-element call is a no-op for both.
+        Show-GPOPolicyList -Policy @($row)
+    }
+}
+
+<#
+.SYNOPSIS
+    Prints a short list of policies - display name left, GUID on column 45.
+
+.DESCRIPTION
+    The one place that decides what a Group Policy looks like when a check names it in passing
+    rather than reporting it. Every count-and-suppress line routes through here, so the dormant
+    policies under a dampening summary, the assignments that only remove default holders, and the
+    Point and Print configurations that expose nothing all read identically.
+
+    Name left, GUID at column 45 - the AlignAt every Show-KeyValue and every rendered attribute
+    uses, so the block sits in the same grid as the object rows around it. Four of those columns
+    go to the "[*] " class prefix the renderer adds and two to the indent, leaving 39 for the
+    name. A longer name pushes its own GUID right rather than being truncated: a cut-off GPO name
+    is no longer findable under \\<domain>\SYSVOL\<domain>\Policies\, which is the whole reason
+    the GUID is there.
+
+    Both fields, because the name is what a reader recognises and the GUID is the folder they
+    need in order to go and look.
+
+    Deduplicated by GUID and sorted by name. Several findings commonly sit on one policy - ten
+    registry values in one GPO, four rights in one assignment - and this is a list of policies,
+    not of findings. Sorting means two runs against the same domain print the same thing instead
+    of whatever order the caller happened to collect them in.
+
+.PARAMETER Policy
+    Objects carrying GPOName and GPOGUID. Anything else is ignored rather than printed blank.
+
+.OUTPUTS
+    None. Writes one Note line per distinct policy.
+
+.EXAMPLE
+    Show-GPOPolicyList -Policy $split.Dormant
+    [*]   Altlast Tasks                          {11112222-3333-4444-5555-666677778888}
+#>
+function Show-GPOPolicyList {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Policy
+    )
+
+    $rows = @(Get-GPOPolicySummary -Finding $Policy)
+    if ($rows.Count -eq 0) { return }
+
+    $nameWidth = 45 - 4 - 2
+
+    foreach ($row in $rows) {
+        # A missing value is still padded, or one short entry would shift every line after it.
         $guid = "$($row.GPOGUID)"
         if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
 
@@ -781,4 +829,63 @@ function Show-GPOInactiveSummary {
 
         Show-Line ('  ' + $name.PadRight($nameWidth) + $guid) -Class Note
     }
+}
+
+<#
+.SYNOPSIS
+    Reduces findings to the distinct policies they sit on.
+
+.DESCRIPTION
+    Split from Show-GPOPolicyList because the caller needs the count before the list is printed:
+    a headline reads "35 finding(s) hidden on 13 GPO(s)", and the two numbers count different
+    things. Asking the printer for them afterwards would mean deduplicating twice and would put
+    the headline after the rows it introduces.
+
+    Keyed on the GUID, uppercased, since that is the only identifier guaranteed unique - two
+    policies may share a display name. The name of the first occurrence wins; they agree in
+    practice, and a disagreement would mean the directory has two names for one GUID.
+
+.PARAMETER Finding
+    Objects carrying GPOName and GPOGUID.
+
+.OUTPUTS
+    [PSCustomObject[]] with GPOName and GPOGUID, sorted by name, one per distinct GUID.
+#>
+function Get-GPOPolicySummary {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Finding
+    )
+
+    $byGuid = [ordered]@{}
+    foreach ($item in @(@($Finding) | Where-Object { $_ })) {
+        $guid = "$($item.GPOGUID)"
+        if ([string]::IsNullOrWhiteSpace($guid)) { continue }
+
+        $key = $guid.ToUpperInvariant()
+        if ($byGuid.Contains($key)) { continue }
+
+        $byGuid[$key] = [PSCustomObject]@{
+            GPOName = "$($item.GPOName)"
+            GPOGUID = $guid
+        }
+    }
+
+    # @(...Values), not .Values: an OrderedDictionary's value collection is not an array, and a
+    # single entry would reach the caller as a bare object whose .Count is empty.
+    $rows = @($byGuid.Values)
+    if ($rows.Count -eq 0) { return @() }
+
+    # A policy with no name sorts under its GUID rather than to the front.
+    #
+    # Returned bare, to be wrapped in @() by the caller. A leading comma was tried and is wrong
+    # here: it nests the whole list inside a one-element array, which the caller's @() then
+    # unrolls back to the inner array - fine for one policy, but it collapses several into one.
+    # Every caller wraps, so the one-element unroll is handled where it has to be anyway.
+    return $rows | Sort-Object @{Expression = {
+        if ([string]::IsNullOrWhiteSpace($_.GPOName)) { $_.GPOGUID } else { $_.GPOName }
+    }}
 }

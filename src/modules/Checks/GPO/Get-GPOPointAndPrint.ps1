@@ -320,9 +320,24 @@ function Get-GPOPointAndPrint {
                 Show-Line "$($exploitable.Count) GPO configuration(s) let non-administrators install printer drivers without an elevation prompt" -Class Finding
             }
 
+            # Counted AND named, the same treatment the dormant policies get below: a count alone
+            # tells a reader that something was held back but not whether they care, and a GPO
+            # nobody can identify cannot be looked at either.
             if (-not $IncludeDefaults -and $settled.Count -gt 0) {
-                Show-Line ("$($settled.Count) configuration(s) are hardened or control no driver installation " +
-                           '(-IncludeDefaults to list)') -Class Note
+                $settledPolicies = @(Get-GPOPolicySummary -Finding $settled)
+
+                $text = "$($settled.Count) configuration(s) are hardened or control no driver installation"
+
+                # One GPO can hold a Computer and a User configuration, so the two counts differ
+                # whenever both halves are settled.
+                if ($settledPolicies.Count -gt 0 -and $settledPolicies.Count -ne $settled.Count) {
+                    $text += " on $($settledPolicies.Count) GPO(s)"
+                }
+                $text += ' (-IncludeDefaults to list)'
+                if ($settledPolicies.Count -gt 0) { $text += ':' }
+
+                Show-Line $text -Class Note
+                Show-GPOPolicyList -Policy $settledPolicies
             }
 
             Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
