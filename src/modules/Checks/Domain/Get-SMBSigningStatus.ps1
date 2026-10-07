@@ -347,7 +347,8 @@ function Get-SMBSigningStatus {
                     Show-Line "No SMB Signing configuration is deployed by a policy that is linked and enabled" -Class Finding
                 }
 
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($gpoFinding in $shown) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigning' -Force

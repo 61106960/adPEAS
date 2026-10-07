@@ -516,6 +516,11 @@ function Split-GPOFindingByReach {
     $unlinked = 0
     $disabled = 0
 
+    # One entry per dormant POLICY, not per dormant finding, so that ten registry values in
+    # one unlinked GPO name it once. Keyed by GUID; the first category wins, which is the
+    # same precedence the counters use.
+    $dormantByGuid = [ordered]@{}
+
     foreach ($item in @(@($Finding) | Where-Object { $_ })) {
         $guid = "$($item.$GuidProperty)".ToUpper()
 
@@ -555,7 +560,28 @@ function Split-GPOFindingByReach {
             # is a cleanup candidate, a disabled one is a deliberate switch somebody threw.
             # A policy that is both counts as unlinked, since linking it would still not
             # make it apply.
-            if ($reach.Reason -like '*linked nowhere*') { $unlinked++ } else { $disabled++ }
+            $category = if ($reach.Reason -like '*linked nowhere*') { 'unlinked' } else { 'disabled' }
+            if ($category -eq 'unlinked') { $unlinked++ } else { $disabled++ }
+
+            if (-not $dormantByGuid.Contains($guid)) {
+                # The display name off the finding. Checks name it GPOName; the two that work
+                # on native GPO objects carry displayName, and Name there is the GUID - so
+                # falling back to Name would print the GUID twice on one line.
+                $name = $null
+                foreach ($candidate in @('GPOName', 'displayName')) {
+                    if ($item.PSObject.Properties[$candidate] -and
+                        -not [string]::IsNullOrWhiteSpace("$($item.$candidate)")) {
+                        $name = "$($item.$candidate)"
+                        break
+                    }
+                }
+
+                $dormantByGuid[$guid] = [PSCustomObject]@{
+                    GPOGUID  = "$($item.$GuidProperty)"
+                    GPOName  = $name
+                    Category = $category
+                }
+            }
         } else {
             $active.Add($item)
         }
@@ -566,11 +592,14 @@ function Split-GPOFindingByReach {
     # List[object] - @($list) and $list.ToArray() are not interchangeable here, and the
     # failure is a terminating error inside the function, which the calling check turns
     # into "Error during check" with no hint of where it came from.
+    # @(...Values) rather than .Values: an OrderedDictionary's value collection is not an
+    # array, and a single entry would reach the caller as a bare object whose .Count is empty.
     return [PSCustomObject]@{
         Active   = $active.ToArray()
         Inactive = $inactive.ToArray()
         Unlinked = $unlinked
         Disabled = $disabled
+        Dormant  = @($dormantByGuid.Values)
     }
 }
 
@@ -611,12 +640,35 @@ function Split-GPOFindingByReach {
     Whether those findings are being printed as well. Changes the line from an account of
     what is missing into an explanation of what is there.
 
+.PARAMETER Dormant
+    One entry per dormant POLICY - GPOGUID, GPOName, Category ('unlinked' or 'disabled') -
+    as Split-GPOFindingByReach returns it in its Dormant field. Each is named on its own
+    line below the summary.
+
+    Naming them is the point: a count alone tells a reader that something was held back but
+    not whether they care, and a GPO nobody can identify cannot be cleaned up either. The
+    GUID leads because it is the folder name under \\<domain>\SYSVOL\<domain>\Policies\ and
+    is fixed width, so the lines form a column; the display name follows and may be any
+    length. Both, because the name is what a reader recognises and the GUID is what they
+    need in order to go and look.
+
+    Policies, not findings: ten registry values in one unlinked GPO are one line. The
+    summary above still counts findings, which is why the two numbers can differ.
+
+    Not truncated. The list is bounded by the number of policies in the domain, and cutting
+    it off would leave a reader with only -IncludeInactive to learn the missing names - which
+    prints every held-back finding, far more output than the lines a cap saves.
+
 .OUTPUTS
-    None. Writes one Note line, and nothing at all when both counts are zero.
+    None. Writes one Note line plus one per dormant policy, and nothing at all when both
+    counts are zero.
 
 .EXAMPLE
-    Show-GPOInactiveSummary -Unlinked 2 -Disabled 1
-    [*] 3 further finding(s) hidden - 2 on unlinked policies, 1 on disabled ones
+    Show-GPOInactiveSummary -Unlinked 2 -Disabled 1 -Dormant $split.Dormant
+    [*] 3 finding(s) hidden - 2 on unlinked policies, 1 on disabled ones:
+    [*]   {02FF1399-2A08-4922-9C0E-A1EAB771699C}  unlinked  Systemhaertung Ws2022 DC
+    [*]   {11112222-3333-4444-5555-666677778888}  unlinked  Altlast Tasks
+    [*]   {6AC1786C-016F-11D2-945F-00C04FB984F9}  disabled  Kiosk Tasks
 #>
 function Show-GPOInactiveSummary {
     [CmdletBinding()]
@@ -628,7 +680,11 @@ function Show-GPOInactiveSummary {
         [int]$Disabled = 0,
 
         [Parameter(Mandatory=$false)]
-        [switch]$Listed
+        [switch]$Listed,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Dormant
     )
 
     $Count = $Unlinked + $Disabled
@@ -648,7 +704,14 @@ function Show-GPOInactiveSummary {
         return
     }
 
-    $text = "$Count further finding(s) hidden - $reason"
+    # Unlinked before disabled, matching the order the summary names them, and by name
+    # within each so that two runs against the same domain print the same thing. A policy
+    # with no name sorts under its GUID rather than to the front.
+    $rows = @(@($Dormant) | Where-Object { $_ } | Sort-Object `
+        @{Expression = { if ($_.Category -eq 'unlinked') { 0 } else { 1 } }}, `
+        @{Expression = { if ([string]::IsNullOrWhiteSpace("$($_.GPOName)")) { "$($_.GPOGUID)" } else { "$($_.GPOName)" } }})
+
+    $text = "$Count finding(s) hidden - $reason"
 
     # Invoke-adPEAS sets the context for the duration of each check, so no context means
     # the check was called on its own and the switch is reachable.
@@ -656,5 +719,33 @@ function Show-GPOInactiveSummary {
         $text += ' (-IncludeInactive to list)'
     }
 
-    Show-Line $text -Class Note
+    if ($rows.Count -eq 0) {
+        Show-Line $text -Class Note
+        return
+    }
+
+    Show-Line "${text}:" -Class Note
+
+    # Not capped, deliberately.
+    #
+    # It was, at ten, and the first real domain it met had twelve dormant policies: the cap
+    # saved two lines and cost the list its completeness. A truncated list of identifiers is
+    # worse than no list, because the only way left to learn the missing names is
+    # -IncludeInactive, which prints every held-back finding - thirty-four of them in that
+    # domain, to recover two names.
+    #
+    # The length is bounded by the number of policies in the domain, which is bounded by what
+    # somebody has to administer, and one line per policy is already the compression: those
+    # thirty-four findings are twelve lines.
+    foreach ($row in $rows) {
+        # Padded to the width of a braced GUID so the three fields line up. A missing value
+        # is still padded, or one short entry would shift every line after it.
+        $guid = "$($row.GPOGUID)"
+        if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
+
+        $name = "$($row.GPOName)"
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
+
+        Show-Line ('  ' + $guid.PadRight(38) + '  ' + "$($row.Category)".PadRight(8) + '  ' + $name) -Class Note
+    }
 }

@@ -302,9 +302,28 @@ function Get-AddComputerRights {
                     Show-Line "No policy that is linked and enabled configures SeMachineAccountPrivilege" -Class Note
                 }
 
+                # The dormant list in the shape Split-GPOFindingByReach produces, built by
+                # hand because this check stamps the reach verdict itself - the linkage and
+                # the status map only exist inside Check-GPOAddComputerRights. One entry per
+                # policy, and here that is also one per finding: this check reports one row
+                # per GPO to begin with.
+                #
+                # Name and displayName, not GPOGUID and GPOName: these are native GPO objects
+                # and those two are only the row LABELS that $Script:AttributeLabels puts on
+                # them for display. Reading the label names here would yield empty strings and
+                # print a list of blanks.
+                $dormantGPOs = @($inactiveGPOs | ForEach-Object {
+                    [PSCustomObject]@{
+                        GPOGUID  = "$($_.Name)"
+                        GPOName  = "$($_.displayName)"
+                        Category = if ($_._ReachUnlinked) { 'unlinked' } else { 'disabled' }
+                    }
+                })
+
                 Show-GPOInactiveSummary `
                     -Unlinked @($inactiveGPOs | Where-Object { $_._ReachUnlinked }).Count `
                     -Disabled @($inactiveGPOs | Where-Object { -not $_._ReachUnlinked }).Count `
+                    -Dormant $dormantGPOs `
                     -Listed:$IncludeInactive
 
                 # Show all GPOs that define SeMachineAccountPrivilege, sorted by precedence

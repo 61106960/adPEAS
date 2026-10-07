@@ -238,7 +238,8 @@ function Get-GPORegistrySettings {
                     Show-Line "No vulnerable registry setting is deployed by a policy that is linked and enabled" -Class Note
                 }
 
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($finding in $shown) {
                     # $null-guarded, and three-valued. Get-GPOLinkage returns $null when the
