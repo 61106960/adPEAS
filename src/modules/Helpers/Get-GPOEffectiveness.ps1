@@ -668,10 +668,13 @@ function Split-GPOFindingByReach {
 
 .EXAMPLE
     Show-GPOInactiveSummary -Unlinked 2 -Disabled 1 -Dormant $split.Dormant
-    [*] 3 finding(s) hidden - 2 on unlinked policies, 1 on disabled ones:
-    [*]   {02FF1399-2A08-4922-9C0E-A1EAB771699C}  unlinked  Systemhaertung Ws2022 DC
-    [*]   {11112222-3333-4444-5555-666677778888}  unlinked  Altlast Tasks
-    [*]   {6AC1786C-016F-11D2-945F-00C04FB984F9}  disabled  Kiosk Tasks
+
+    [*] 3 finding(s) hidden:
+
+    Group:       Dormant policies - not linked
+    Count:       2 policies
+    Policies:    Example Policy A    {11111111-1111-1111-1111-111111111111}
+                 Example Policy B    {22222222-2222-2222-2222-222222222222}
 #>
 function Show-GPOInactiveSummary {
     [CmdletBinding()]

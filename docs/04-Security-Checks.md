@@ -1009,9 +1009,9 @@ distinct GPOs it covers, and one card per reason names the policies held back:
 Group:       Dormant policies - not linked
 Reason:      Linked nowhere, so the settings reach no machine until the policy is linked.
 Count:       3 policies
-Policies:    Systemhaertung Ws2022 Basis V25.02     {0217CBDE-4840-4E06-B245-D91F8B4B3C19}
-             Systemhaertung Ws2022 DC V24.07        {02FF1399-2A08-4922-9C0E-A1EAB771699C}
-             Systemhaertung Ws2022 Member V23.11    {7D4A0775-96C8-4EBF-B364-2FC582B048F1}
+Policies:    Workstation Baseline V2              {11111111-1111-1111-1111-111111111111}
+             DC Hardening V2                     {22222222-2222-2222-2222-222222222222}
+             Member Server Baseline V2           {33333333-3333-3333-3333-333333333333}
 
 [+] Found LDAP security configuration in 2 GPO(s):
     ... the active findings ...
@@ -1052,8 +1052,8 @@ naming it is reachable from a full scan), which lists them in full:
 Group:       Assignments that only remove default holders
 Reason:      Hardening more often than not, occasionally a service about to break - never a grant.
 Count:       10 assignment(s) on 2 GPO(s)
-Policies:    Addon WSUS V1.0                        {51462F84-B01D-4104-A4E5-BA2CF3C8AACC}
-             Systemhaertung Ws2022 DC V24.07        {02FF1399-2A08-4922-9C0E-A1EAB771699C}
+Policies:    WSUS Baseline V1                    {44444444-4444-4444-4444-444444444444}
+             DC Hardening V2                     {22222222-2222-2222-2222-222222222222}
 ```
 
 - `Get-GPOUserRightsAssignment`: an assignment that only *removes* default holders. Nine of
