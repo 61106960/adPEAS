@@ -46812,7 +46812,11 @@ function Show-GPOInactiveSummary {
 	$rows = @(@($Dormant) | Where-Object { $_ } | Sort-Object `
 	    @{Expression = { if ($_.Category -eq 'unlinked') { 0 } else { 1 } }}, `
 	    @{Expression = { if ([string]::IsNullOrWhiteSpace("$($_.GPOName)")) { "$($_.GPOGUID)" } else { "$($_.GPOName)" } }})
-	$text = "$Count finding(s) hidden - $reason"
+	$grouped = ($rows.Count -gt 0 -and $Unlinked -gt 0 -and $Disabled -gt 0)
+	$text = if ($grouped) { "$Count finding(s) hidden" } else { "$Count finding(s) hidden - $reason" }
+	if ($rows.Count -gt 0 -and $rows.Count -ne $Count) {
+	    $text += " on $($rows.Count) GPO(s)"
+	}
 	if ($null -eq $Script:adPEAS_CurrentCheckContext) {
 	    $text += ' (-IncludeInactive to list)'
 	}
@@ -46821,12 +46825,20 @@ function Show-GPOInactiveSummary {
 	    return
 	}
 	Show-Line "${text}:" -Class Note
+	$nameWidth = 45 - 4 - 2
+	$lastCategory = $null
 	foreach ($row in $rows) {
+	    if ($grouped -and $row.Category -ne $lastCategory) {
+	        $lastCategory = $row.Category
+	        $label = if ($row.Category -eq 'unlinked') { 'Not linked' } else { 'Disabled' }
+	        $inGroup = @($rows | Where-Object { $_.Category -eq $row.Category }).Count
+	        Show-Line "${label} (${inGroup}):" -Class Note
+	    }
 	    $guid = "$($row.GPOGUID)"
 	    if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
 	    $name = "$($row.GPOName)"
 	    if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
-	    Show-Line ('  ' + $guid.PadRight(38) + '  ' + "$($row.Category)".PadRight(8) + '  ' + $name) -Class Note
+	    Show-Line ('  ' + $name.PadRight($nameWidth) + $guid) -Class Note
 	}
 }
 function Get-GPORelativePath {
@@ -79308,7 +79320,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.6.0+20261007-1053"
+$Script:adPEASVersion = "2.6.0+20261007-1117"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
