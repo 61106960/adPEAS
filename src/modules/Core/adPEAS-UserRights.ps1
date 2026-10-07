@@ -150,8 +150,19 @@ $Script:UserRightsBaseline = [ordered]@{
         Name = 'Enable computer and user accounts to be trusted for delegation'
         Tier = 'Finding'
         Why  = 'Configures Kerberos delegation, which is impersonation of any user against the delegated service.'
-        # Nobody on a member; Administrators on a domain controller, where it means anything.
-        Member = @()
+        # Administrators in both scopes, which takes the Default values table over the body
+        # text where the two disagree. The table gives "Member Server Effective" and "Client
+        # Computer Effective" as Administrators; the body says there is "no reason to assign
+        # this user right to anyone on member servers and workstations ... because it has no
+        # meaning in those contexts". That sentence is advice, not a statement of the default -
+        # and it is the reason this list used to be empty.
+        #
+        # Empty made a member-scoped GPO that grants Administrators the right - a right the
+        # local effective policy already gives them - a Tier-1 Finding. The union across scopes
+        # masked it for any GPO that also reaches a domain controller, so what was exposed was
+        # the member-only case. Granting it to anybody else there is still reported.
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/enable-computer-and-user-accounts-to-be-trusted-for-delegation
+        Member = @('S-1-5-32-544')
         DC     = @('S-1-5-32-544')
     }
 
@@ -212,8 +223,22 @@ $Script:UserRightsBaseline = [ordered]@{
         Name = 'Allow log on locally'
         Tier = 'Hint'
         Why  = 'A console session. On a domain controller it is the difference between a member and an admin of the domain.'
-        Member = @('S-1-5-32-544', 'S-1-5-32-545', 'S-1-5-32-551', 'S-1-5-32-546')
-        DC     = @('S-1-5-32-544', 'S-1-5-32-548', 'S-1-5-32-551', 'S-1-5-32-550', 'S-1-5-32-549')
+        # Administrators, Backup Operators, Users - the three Microsoft documents for
+        # workstations and servers. Guests (S-1-5-32-546) used to sit here and does not
+        # belong: the same page names Guests as a candidate for "Deny log on locally", so
+        # listing it as a default suppressed a finding on a GPO that genuinely grants Guests
+        # a console session.
+        Member = @('S-1-5-32-544', 'S-1-5-32-551', 'S-1-5-32-545')
+        # Six on a domain controller, not five. S-1-5-9 ENTERPRISE DOMAIN CONTROLLERS is a
+        # documented default here and was missing, which reported the untouched Default
+        # Domain Controllers Policy of every domain as departing from the default.
+        #
+        # It reads like a mistake because a computer account does not open a console session,
+        # but the default is the default: Microsoft names it both in the body text ("the
+        # members of the following groups have this right on domain controllers") and in the
+        # Default Domain Controller Policy row of the Default values table.
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/allow-log-on-locally
+        DC     = @('S-1-5-32-544', 'S-1-5-32-548', 'S-1-5-32-551', 'S-1-5-9', 'S-1-5-32-550', 'S-1-5-32-549')
     }
 
     'SeBatchLogonRight' = @{
@@ -256,8 +281,27 @@ $Script:UserRightsBaseline = [ordered]@{
         Name = 'Shut down the system'
         Tier = 'Hint'
         Why  = 'Denial of service, and on a domain controller a way to force authentication elsewhere.'
+        # Users (S-1-5-32-545) is a CLIENT default, not a member-server one: Microsoft gives
+        # "Member Server Effective" as Administrators and Backup Operators, and only "Client
+        # Computer Effective" adds Users. adPEAS has one non-DC bucket for both, so it has to
+        # pick, and it picks the wider one - dropping Users would report the untouched default
+        # of every workstation baseline GPO, which is the far more common object.
         Member = @('S-1-5-32-544', 'S-1-5-32-545', 'S-1-5-32-551')
-        DC     = @('S-1-5-32-544', 'S-1-5-32-548', 'S-1-5-32-551', 'S-1-5-32-550', 'S-1-5-32-549')
+        # Four on a domain controller, not five. Account Operators (S-1-5-32-548) was here and
+        # is not a documented holder: "By default this setting is Administrators, Backup
+        # Operators, Server Operators, and Print Operators on domain controllers", and both
+        # the Default Domain Controller Policy and the Domain Controller Effective rows name
+        # those same four. The AD DS groups page gives Account Operators exactly one default
+        # right, Allow log on locally - shutdown is not among them.
+        #
+        # The entry most likely came from the Windows Server 2003 page, which did list "Allow
+        # log on locally; Shut down the system" for Account Operators. The modern pages dropped
+        # the second while keeping it on Print, Backup and Server Operators.
+        #
+        # Direction matters: this was a false NEGATIVE. It silently accepted a GPO granting
+        # Account Operators shutdown on domain controllers.
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/shut-down-the-system
+        DC     = @('S-1-5-32-544', 'S-1-5-32-551', 'S-1-5-32-550', 'S-1-5-32-549')
     }
 }
 
