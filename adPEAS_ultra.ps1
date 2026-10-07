@@ -2208,9 +2208,7 @@ function Get-ExceptionErrorInfo {
 	    [Parameter(Mandatory=$true)]
 	    [System.Exception]$Exception,
 	    [Parameter(Mandatory=$false)]
-	    [string]$Context = "Operation",
-	    [Parameter(Mandatory=$false)]
-	    [switch]$IncludeOriginalMessage
+	    [string]$Context = "Operation"
 	)
 	$result = [PSCustomObject]@{
 	    HResult        = $null
@@ -2308,10 +2306,12 @@ function Get-ExceptionErrorInfo {
 	    $result.IsNotFound = $ldapInfo.IsNotFound
 	    return $result
 	}
-	if ($IncludeOriginalMessage -or -not $hresult) {
-	    $result.Message = "$Context error: $($Exception.Message)"
-	} else {
+	if ([string]::IsNullOrWhiteSpace($Exception.Message)) {
 	    $result.Message = "$Context error (0x{0:X8})" -f $hresult
+	} elseif ($hresult) {
+	    $result.Message = "$Context error: $($Exception.Message) (0x{0:X8})" -f $hresult
+	} else {
+	    $result.Message = "$Context error: $($Exception.Message)"
 	}
 	return $result
 }
@@ -18962,10 +18962,15 @@ function Show-Output {
 	        Write-adPEASHeader -Value $Value
 	    }
 	    "SubInfo" {
+	        $subHeaderText = $Value
+	        if ($null -ne $Script:adPEAS_CurrentCheckContext -and
+	            $Script:adPEAS_CurrentCheckContext.CheckName) {
+	            $subHeaderText = "$Value ($($Script:adPEAS_CurrentCheckContext.CheckName))"
+	        }
 	        if ($Raw) {
-	            Write-adPEASOutput -Text $Value -Class "Standard" -NoPrefix -LeadingNewline
+	            Write-adPEASOutput -Text $subHeaderText -Class "Standard" -NoPrefix -LeadingNewline
 	        } else {
-	            Write-adPEASOutput -Text $Value -Class "SubInfo" -LeadingNewline
+	            Write-adPEASOutput -Text $subHeaderText -Class "SubInfo" -LeadingNewline
 	        }
 	    }
 	    default {
@@ -19509,8 +19514,8 @@ function Show-ConnectionError {
 	                $detailsArray += $effectiveDetails
 	            }
 	            $hints = @(
-	                "Server may not support LDAPS on port 636",
-	                "Server may require specific TLS version (1.2+)",
+	                "Port 636 answered, so the TLS negotiation itself failed - not a missing LDAPS listener",
+	                "Server may require a specific TLS version, or offer no cipher suite this client accepts",
 	                "Try: Remove -UseLDAPS to use unencrypted LDAP"
 	            )
 	            Show-Message -Type Error -Title "LDAPS failed: SSL/TLS handshake error" -Details $detailsArray -Hints $hints
@@ -20133,8 +20138,14 @@ function Connect-LDAP {
 	            if (-not $SSLTestPassed) {
 	                $errorType = if ($sslErrorInfo.Category -eq 'SSLCertificate') { "CertificateError" } else { "SSLHandshakeError" }
 	                if (-not $AsGlobalCatalog) { $Script:ConnectionState = $errorType }
+	                $probeSummary = $null
+	                if ($errorType -eq 'SSLHandshakeError' -and -not $SuppressErrorDisplay) {
+	                    $probe = Test-LDAPSProtocolSupport -Server $Server -ConnectTarget $ConnectTarget -Port $SSLPort
+	                    if ($probe) { $probeSummary = $probe.Summary }
+	                }
 	                if (-not $SuppressErrorDisplay) {
 	                    Show-ConnectionError -ErrorType $errorType -Details $sslErrorInfo.Message -NoThrow
+	                    if ($probeSummary) { Show-Line $probeSummary -Class Hint }
 	                }
 	                return $null
 	            }
@@ -21059,6 +21070,11 @@ function Connect-adPEAS {
 	                            }
 	                            return $null
 	                        }
+	                        if ($UseLDAPS -and $Script:ConnectionState -in @('SSLHandshakeError', 'CertificateError')) {
+	                            Show-Line ('LDAPS transport failed - authentication runs inside TLS, so NTLM and ' +
+	                                       'SimpleBind are not attempted') -Class Note
+	                            return $null
+	                        }
 	                        Show-Line "Kerberos failed - trying NTLM impersonation" -Class Info
 	                    }
 	                }
@@ -21080,6 +21096,11 @@ function Connect-adPEAS {
 	                        $ConnParams['ForceNTLM'] = $true
 	                        $Connection = Connect-LDAP @ConnParams
 	                        if (-not $Connection) {
+	                            if ($UseLDAPS -and $Script:ConnectionState -in @('SSLHandshakeError', 'CertificateError')) {
+	                                Show-Line ('LDAPS transport failed - authentication runs inside TLS, so SimpleBind ' +
+	                                           'is not attempted') -Class Note
+	                                return $null
+	                            }
 	                            Show-Line "NTLM failed - falling back to SimpleBind" -Class Hint
 	                        }
 	                        else {
@@ -32937,6 +32958,121 @@ function ConvertTo-AccessRules {
 	    AccessRules        = $AccessRules
 	    OwnerSID           = $OwnerSID
 	}
+}
+function Test-LDAPSProtocolSupport {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [string]$Server,
+	    [Parameter(Mandatory=$false)]
+	    [string]$ConnectTarget,
+	    [Parameter(Mandatory=$false)]
+	    [int]$Port = 636,
+	    [Parameter(Mandatory=$false)]
+	    [int]$TimeoutMs = 2000
+	)
+	if ([string]::IsNullOrWhiteSpace($ConnectTarget)) { $ConnectTarget = $Server }
+	$accepted          = New-Object System.Collections.Generic.List[string]
+	$rejected          = New-Object System.Collections.Generic.List[string]
+	$unreachable       = New-Object System.Collections.Generic.List[string]
+	$resetBeforeTls    = New-Object System.Collections.Generic.List[string]
+	$negotiationFailed = New-Object System.Collections.Generic.List[string]
+	$socketCodes       = New-Object System.Collections.Generic.List[string]
+	foreach ($name in @('Tls13', 'Tls12', 'Tls11', 'Tls')) {
+	    $protocol = $null
+	    try {
+	        $protocol = [System.Security.Authentication.SslProtocols]$name
+	    } catch {
+	        continue
+	    }
+	    $tcp = $null
+	    $ssl = $null
+	    try {
+	        $connected = $false
+	        try {
+	            $tcp = New-Object System.Net.Sockets.TcpClient
+	            $connect = $tcp.BeginConnect($ConnectTarget, $Port, $null, $null)
+	            if ($connect.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
+	                $tcp.EndConnect($connect)
+	                $connected = $true
+	            }
+	        } catch {
+	        }
+	        if (-not $connected) {
+	            $unreachable.Add($name)
+	            continue
+	        }
+	        $ssl = New-Object System.Net.Security.SslStream($tcp.GetStream(), $false, { $true })
+	        $ssl.AuthenticateAsClient($Server, $null, $protocol, $false)
+	        $accepted.Add($name)
+	    }
+	    catch {
+	        $socketError = $null
+	        $sawAuthFailure = $false
+	        $detail = $_.Exception.Message
+	        $walk = $_.Exception
+	        while ($walk) {
+	            if ($walk -is [System.Net.Sockets.SocketException]) {
+	                $socketError = $walk.SocketErrorCode
+	                $detail = $walk.Message
+	            }
+	            if ($walk -is [System.Security.Authentication.AuthenticationException]) {
+	                $sawAuthFailure = $true
+	                $detail = $walk.Message
+	            }
+	            $walk = $walk.InnerException
+	        }
+	        if ($socketError -and -not $sawAuthFailure) {
+	            $resetBeforeTls.Add($name)
+	            if (-not $socketCodes.Contains([string]$socketError)) { $socketCodes.Add([string]$socketError) }
+	        } else {
+	            $negotiationFailed.Add($name)
+	        }
+	        $rejected.Add($name)
+	    }
+	    finally {
+	        if ($ssl) { try { $ssl.Dispose() } catch { } }
+	        if ($tcp) { try { $tcp.Close() } catch { } }
+	    }
+	}
+	$result = [PSCustomObject]@{
+	    Accepted          = $accepted.ToArray()
+	    Rejected          = $rejected.ToArray()
+	    Unreachable       = $unreachable.ToArray()
+	    ResetBeforeTls    = $resetBeforeTls.ToArray()
+	    NegotiationFailed = $negotiationFailed.ToArray()
+	    SocketErrors      = $socketCodes.ToArray()
+	    Summary           = $null
+	}
+	$friendly = @{ 'Tls13' = 'TLS 1.3'; 'Tls12' = 'TLS 1.2'; 'Tls11' = 'TLS 1.1'; 'Tls' = 'TLS 1.0' }
+	$nameOf = { param($keys) (@($keys) | ForEach-Object { $friendly[$_] }) -join ', ' }
+	if ($accepted.Count -gt 0) {
+	    $result.Summary = ('Asked one version at a time, the server accepted ' +
+	        (& $nameOf $accepted.ToArray()) +
+	        ' - so the versions are not the problem and the default negotiation offered something it refused.' +
+	        ' Check the protocols and cipher suites this client enables under SCHANNEL.')
+	}
+	elseif ($resetBeforeTls.Count -gt 0 -and $negotiationFailed.Count -eq 0) {
+	    $result.Summary = ('The server accepted the TCP connection and then tore it down (' +
+	        (($socketCodes.ToArray() | Sort-Object) -join ', ') +
+	        ') before any TLS message was exchanged, identically for ' +
+	        (& $nameOf $resetBeforeTls.ToArray()) +
+	        '. A version or cipher mismatch answers with a TLS alert rather than resetting, so this' +
+	        ' is not a TLS configuration problem - look for a device in the path that proxies the' +
+	        ' handshake and drops the session, or a listener on 636 with no TLS behind it.')
+	}
+	elseif ($rejected.Count -gt 0) {
+	    $result.Summary = ('Asked one version at a time, the server accepted none of ' +
+	        (& $nameOf $rejected.ToArray()) +
+	        ' - which points at the cipher suites or a device in the path rather than the TLS version.')
+	}
+	elseif ($unreachable.Count -gt 0) {
+	    $result.Summary = ("Port $Port did not answer on any retry, so the handshake could not be " +
+	        'measured - the earlier reachability test and these attempts disagree, which suggests ' +
+	        'something between this host and the server is closing the connection.')
+	}
+	return $result
 }
 function Get-GCConnection {
 	[CmdletBinding()]
@@ -68639,7 +68775,6 @@ function Get-CredentialRoaming {
 	            return
 	        }
 	        Show-SubHeader "Checking for roamed DPAPI master keys and private keys in AD..." -ObjectType "CredentialRoaming"
-	        $confidential = Get-CredentialRoamingConfidentiality @CredParams
 	        $lightProperties = @('sAMAccountName', 'distinguishedName', 'objectSid', 'msPKIRoamingTimeStamp')
 	        $byDN = @{}
 	        foreach ($pair in @(
@@ -68666,6 +68801,7 @@ function Get-CredentialRoaming {
 	            Show-Line "No user object carries roamed credential material" -Class Secure
 	            return
 	        }
+	        $confidential = Get-CredentialRoamingConfidentiality @CredParams
 	        $findings = New-Object System.Collections.Generic.List[object]
 	        foreach ($key in @($byDN.Keys | Sort-Object)) {
 	            $entry = $byDN[$key]
@@ -79358,7 +79494,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.6.0+20261007-1213"
+$Script:adPEASVersion = "2.6.0+20261007-1325"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

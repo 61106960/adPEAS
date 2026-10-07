@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-07 12:13:57
-    Version: 2.6.0+20261007-1213
+    Build: 2026-10-07 13:25:08
+    Version: 2.6.0+20261007-1325
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -4397,9 +4397,6 @@ function Get-ExceptionErrorInfo {
     .PARAMETER Context
         Optional context string for the error message (e.g., "SMB", "WMI", "LDAP").
 
-    .PARAMETER IncludeOriginalMessage
-        Include the original exception message in unknown errors.
-
     .EXAMPLE
         try {
             Get-Item "\\server\share" -ErrorAction Stop
@@ -4418,10 +4415,12 @@ function Get-ExceptionErrorInfo {
         [System.Exception]$Exception,
 
         [Parameter(Mandatory=$false)]
-        [string]$Context = "Operation",
+        [string]$Context = "Operation"
 
-        [Parameter(Mandatory=$false)]
-        [switch]$IncludeOriginalMessage
+        # -IncludeOriginalMessage is gone. It gated whether the fallback branch carried the
+        # exception's own message, which is now unconditional - the branch is reached precisely
+        # because nothing was recognised, so that message is the only information there is. No
+        # caller ever passed the switch, which is why the HRESULT-only output went unnoticed.
     )
 
     $result = [PSCustomObject]@{
@@ -4539,11 +4538,25 @@ function Get-ExceptionErrorInfo {
         return $result
     }
 
-    # Fallback: Unknown error
-    if ($IncludeOriginalMessage -or -not $hresult) {
-        $result.Message = "$Context error: $($Exception.Message)"
-    } else {
+    # Fallback: nothing above recognised this exception.
+    #
+    # Which is exactly why the exception's own message has to be carried out. Without
+    # -IncludeOriginalMessage this branch used to print the HRESULT alone, and a reader got
+    # "SSL handshake error (0x80131501)" - 0x80131501 is COR_E_SYSTEM, the HRESULT of a plain
+    # System.SystemException, so it carries no diagnosis at all while looking like a protocol
+    # error code. Meanwhile the line that says WHY - "The remote certificate is invalid
+    # according to the validation procedure", "the remote party has closed the transport
+    # stream", "they do not possess a common algorithm" - sat in $Exception.Message and was
+    # dropped. That is the difference between "try without LDAPS" and "the certificate expired".
+    #
+    # The code is kept after the message rather than instead of it: an unrecognised HRESULT is
+    # still worth something to somebody searching for it, just not worth the diagnosis.
+    if ([string]::IsNullOrWhiteSpace($Exception.Message)) {
         $result.Message = "$Context error (0x{0:X8})" -f $hresult
+    } elseif ($hresult) {
+        $result.Message = "$Context error: $($Exception.Message) (0x{0:X8})" -f $hresult
+    } else {
+        $result.Message = "$Context error: $($Exception.Message)"
     }
 
     return $result
@@ -25512,11 +25525,32 @@ function Show-Output {
         }
 
         "SubInfo" {
-            # Sub-section header with leading newline
+            # Sub-section header with leading newline.
+            #
+            # The function that produced the section is named here, and only here: a full scan
+            # runs around sixty checks, and a reader who wants to re-run one of them by hand
+            # had no way to learn what it is called. It also completes the hints the checks
+            # already print - "(-IncludeDefaults to list)" is only actionable once you know
+            # which command takes that switch.
+            #
+            # Appended at render time rather than to $Value, so the text collected a few lines
+            # above for the HTML and plain-text reports stays clean. A PowerShell function name
+            # beside a section heading is provenance for an operator and clutter for the person
+            # the report is written for.
+            #
+            # Only in a full scan, the same condition that gates the -IncludeInactive hint:
+            # Invoke-adPEAS sets the check context around every check, so a context means the
+            # name is not already on the reader's screen from their own command line.
+            $subHeaderText = $Value
+            if ($null -ne $Script:adPEAS_CurrentCheckContext -and
+                $Script:adPEAS_CurrentCheckContext.CheckName) {
+                $subHeaderText = "$Value ($($Script:adPEAS_CurrentCheckContext.CheckName))"
+            }
+
             if ($Raw) {
-                Write-adPEASOutput -Text $Value -Class "Standard" -NoPrefix -LeadingNewline
+                Write-adPEASOutput -Text $subHeaderText -Class "Standard" -NoPrefix -LeadingNewline
             } else {
-                Write-adPEASOutput -Text $Value -Class "SubInfo" -LeadingNewline
+                Write-adPEASOutput -Text $subHeaderText -Class "SubInfo" -LeadingNewline
             }
         }
 
@@ -26708,9 +26742,19 @@ function Show-ConnectionError {
                 if ($effectiveDetails) {
                     $detailsArray += $effectiveDetails
                 }
+                # The first hint used to read "Server may not support LDAPS on port 636", which
+                # is the one cause that has already been ruled out by the time this is printed:
+                # Connect-LDAP tests the TCP port before the handshake, and a server not
+                # listening on 636 produces a NetworkError with "Port 636 (LDAPS) unreachable".
+                # Reaching this branch means the port answered and the TLS negotiation is what
+                # failed, so the hints point there.
+                #
+                # A certificate that merely fails validation routes to CertificateError, which
+                # carries the -IgnoreSSLErrors hint; that switch does not help against a
+                # protocol or cipher mismatch, so it is deliberately not repeated here.
                 $hints = @(
-                    "Server may not support LDAPS on port 636",
-                    "Server may require specific TLS version (1.2+)",
+                    "Port 636 answered, so the TLS negotiation itself failed - not a missing LDAPS listener",
+                    "Server may require a specific TLS version, or offer no cipher suite this client accepts",
                     "Try: Remove -UseLDAPS to use unencrypted LDAP"
                 )
                 Show-Message -Type Error -Title "LDAPS failed: SSL/TLS handshake error" -Details $detailsArray -Hints $hints
@@ -27709,8 +27753,30 @@ function Connect-LDAP {
                 if (-not $SSLTestPassed) {
                     $errorType = if ($sslErrorInfo.Category -eq 'SSLCertificate') { "CertificateError" } else { "SSLHandshakeError" }
                     if (-not $AsGlobalCatalog) { $Script:ConnectionState = $errorType }
+
+                    # The negotiation failed; ask each version on its own to find out whether it
+                    # was the version or the cipher suites. "An existing connection was forcibly
+                    # closed by the remote host" is the same sentence for both, and the two call
+                    # for different work.
+                    #
+                    # Only for a handshake failure, and only when the error is going to be shown.
+                    # A certificate the client does not trust is a different answer with its own
+                    # error type, and probing would add three connections to say nothing new.
+                    # Suppressed output means an auxiliary connection whose caller degrades
+                    # quietly - the GC - and there nobody reads the diagnosis either.
+                    $probeSummary = $null
+                    if ($errorType -eq 'SSLHandshakeError' -and -not $SuppressErrorDisplay) {
+                        $probe = Test-LDAPSProtocolSupport -Server $Server -ConnectTarget $ConnectTarget -Port $SSLPort
+                        if ($probe) { $probeSummary = $probe.Summary }
+                    }
+
                     if (-not $SuppressErrorDisplay) {
                         Show-ConnectionError -ErrorType $errorType -Details $sslErrorInfo.Message -NoThrow
+
+                        # After the hint block rather than folded into Details: the probe result
+                        # is a hint, and joining it onto the exception message would make one
+                        # unreadable line out of two statements.
+                        if ($probeSummary) { Show-Line $probeSummary -Class Hint }
                     }
                     return $null
                 }
@@ -29472,6 +29538,32 @@ function Connect-adPEAS {
                                 return $null
                             }
 
+                            # A failed TLS handshake ends the chain here.
+                            #
+                            # Authentication happens inside the TLS session, so Kerberos, NTLM
+                            # and SimpleBind all ride on the same transport: if the handshake
+                            # failed, none of them can succeed. Without this the same
+                            # "LDAPS failed: SSL/TLS handshake error" block printed three times,
+                            # each preceded by a banner blaming the authentication method, and
+                            # each paying for another handshake attempt.
+                            #
+                            # Narrow on purpose. Only the two states that a TLS negotiation can
+                            # produce, and only when -UseLDAPS actually asked for one - the SSL
+                            # phase in Connect-LDAP runs only then, so neither state can arise
+                            # otherwise, and naming the switch keeps the guard inert for plain
+                            # LDAP. NetworkError is deliberately NOT in the list: port 88 blocked
+                            # while 389 answers is a legitimate reason to fall back, and the
+                            # Kerberos path already reports that case on its own.
+                            #
+                            # Connect-LDAP has already shown the error, so this only says why
+                            # nothing further is tried.
+                            if ($UseLDAPS -and $Script:ConnectionState -in @('SSLHandshakeError', 'CertificateError')) {
+                                Write-Log "[Connect-adPEAS] LDAPS transport failed ($Script:ConnectionState) - no authentication fallback can help"
+                                Show-Line ('LDAPS transport failed - authentication runs inside TLS, so NTLM and ' +
+                                           'SimpleBind are not attempted') -Class Note
+                                return $null
+                            }
+
                             Write-Log "[Connect-adPEAS] Kerberos PTT failed - trying NTLM impersonation fallback..."
                             Show-Line "Kerberos failed - trying NTLM impersonation" -Class Info
                         }
@@ -29503,6 +29595,18 @@ function Connect-adPEAS {
                             $Connection = Connect-LDAP @ConnParams
 
                             if (-not $Connection) {
+                                # Same guard as before the NTLM attempt, and for the same
+                                # reason. It is repeated rather than hoisted because the two
+                                # decisions are about different attempts: the first NTLM try may
+                                # be the one that reaches LDAPS at all, so the state this reads
+                                # is the one that attempt produced.
+                                if ($UseLDAPS -and $Script:ConnectionState -in @('SSLHandshakeError', 'CertificateError')) {
+                                    Write-Log "[Connect-adPEAS] LDAPS transport failed ($Script:ConnectionState) - not attempting SimpleBind"
+                                    Show-Line ('LDAPS transport failed - authentication runs inside TLS, so SimpleBind ' +
+                                               'is not attempted') -Class Note
+                                    return $null
+                                }
+
                                 Write-Log "[Connect-adPEAS] LDAP connection failed with explicit NTLM - trying SimpleBind..."
                                 Show-Line "NTLM failed - falling back to SimpleBind" -Class Hint
                                 # Fall through to SimpleBind below
@@ -49557,6 +49661,260 @@ function ConvertTo-AccessRules {
         AccessRules        = $AccessRules
         OwnerSID           = $OwnerSID
     }
+}
+
+
+
+# ----- Test-LDAPSProtocolSupport.ps1 -----
+
+function Test-LDAPSProtocolSupport {
+    <#
+    .SYNOPSIS
+    Asks a domain controller, one TLS version at a time, which ones it will accept on the LDAPS
+    port.
+
+    .DESCRIPTION
+    Runs only when the LDAPS handshake has already failed, and turns the one line Windows gives
+    for that failure into a diagnosis.
+
+    The message a failed handshake produces is almost always "An existing connection was
+    forcibly closed by the remote host" - a TCP reset in the middle of the negotiation, which
+    Microsoft attributes to the client and the server not agreeing on a protocol version or a
+    cipher suite. Which of the two it was, the message does not say, and the difference decides
+    what somebody does next.
+
+    So this asks each version on its own:
+
+      some accepted   the versions are fine and the default negotiation offered something the
+                      server killed the connection over - the thing to look at is which
+                      protocols and ciphers this client enables, under
+                      HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL
+      all reset       every attempt was torn down at the socket before a TLS byte was exchanged.
+                      A server refusing a version or a cipher answers with a TLS alert; it does
+                      not reset. So this is not a TLS configuration at all - look for a device
+                      in the path that proxies the TCP handshake and then drops the session, or
+                      a listener on 636 with nothing speaking TLS behind it.
+      none accepted   TLS was spoken and refused, so it is the cipher suites rather than the
+                      version
+
+    The three are told apart by the exception chain and never by its text. The message is
+    localised, and the same teardown surfaces as "Unable to read data" or "Unable to write data"
+    depending on whether the ClientHello had left yet. A SocketException at the bottom means the
+    transport died; an AuthenticationException means TLS was negotiated and refused.
+
+    Deliberately NOT done here: using a version that worked for the real connection. The
+    handshake adPEAS tests is a .NET SslStream, while the LdapConnection that follows negotiates
+    through Schannel and takes no protocol parameter - there is nothing to pass a result to. The
+    probe reports, it does not steer.
+
+    Nothing here throws. It is called from an error path, and a diagnostic that fails has to
+    leave the original error standing rather than replace it with its own.
+
+    .PARAMETER Server
+    The host name to authenticate against - the name that has to match the certificate, which is
+    why it stays the name even when the TCP connection goes to an address.
+
+    .PARAMETER ConnectTarget
+    Where to open the socket. Differs from Server when a custom DNS server resolved the name
+    already. Defaults to Server.
+
+    .PARAMETER Port
+    LDAPS port, 636 by default.
+
+    .PARAMETER TimeoutMs
+    Per-attempt TCP connect timeout. The handshake itself is left to the OS; a server that
+    answers the port but never completes the negotiation is the case being measured, and it
+    fails fast by resetting.
+
+    .OUTPUTS
+    [PSCustomObject] with
+      Accepted  - version names that completed a handshake, strongest first
+      Rejected  - version names that did not
+      Summary   - one sentence for the error block, or $null when nothing could be measured
+
+    .EXAMPLE
+    Test-LDAPSProtocolSupport -Server 'dc01.contoso.com'
+
+    .NOTES
+    Author: Alexander Sturz (@_61106960_)
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Server,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ConnectTarget,
+
+        [Parameter(Mandatory=$false)]
+        [int]$Port = 636,
+
+        [Parameter(Mandatory=$false)]
+        [int]$TimeoutMs = 2000
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ConnectTarget)) { $ConnectTarget = $Server }
+
+    $accepted          = New-Object System.Collections.Generic.List[string]
+    $rejected          = New-Object System.Collections.Generic.List[string]
+    $unreachable       = New-Object System.Collections.Generic.List[string]
+    $resetBeforeTls    = New-Object System.Collections.Generic.List[string]
+    $negotiationFailed = New-Object System.Collections.Generic.List[string]
+    $socketCodes       = New-Object System.Collections.Generic.List[string]
+
+    # Strongest first, so the Accepted list reads as "the best it would do".
+    #
+    # Each name is cast at runtime rather than written as an enum literal: Tls13 exists only from
+    # .NET Framework 4.8, and a literal would make this file fail to load on an older host
+    # instead of simply skipping that one probe.
+    foreach ($name in @('Tls13', 'Tls12', 'Tls11', 'Tls')) {
+        $protocol = $null
+        try {
+            $protocol = [System.Security.Authentication.SslProtocols]$name
+        } catch {
+            Write-Log "[Test-LDAPSProtocolSupport] $name is not available on this host - skipped"
+            continue
+        }
+
+        $tcp = $null
+        $ssl = $null
+        try {
+            # The socket is opened in its own step so that a failure here is not counted as the
+            # server rejecting a TLS version. It is the same distinction the summary rests on:
+            # a port that stopped answering says nothing about cipher suites, and reporting it
+            # as "accepted none of TLS 1.0 to 1.3" would be an assertion about the server built
+            # on the absence of a server.
+            $connected = $false
+            try {
+                $tcp = New-Object System.Net.Sockets.TcpClient
+                $connect = $tcp.BeginConnect($ConnectTarget, $Port, $null, $null)
+                if ($connect.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
+                    $tcp.EndConnect($connect)
+                    $connected = $true
+                }
+            } catch {
+                Write-Log "[Test-LDAPSProtocolSupport] $name - TCP connect failed: $($_.Exception.Message)"
+            }
+
+            if (-not $connected) {
+                Write-Log "[Test-LDAPSProtocolSupport] $name - port $Port did not answer"
+                $unreachable.Add($name)
+                continue
+            }
+
+            # Everything accepted on purpose. The question is which versions the server will
+            # negotiate, and a certificate this client does not trust is a different finding -
+            # one that CertificateError already reports.
+            $ssl = New-Object System.Net.Security.SslStream($tcp.GetStream(), $false, { $true })
+            $ssl.AuthenticateAsClient($Server, $null, $protocol, $false)
+
+            Write-Log "[Test-LDAPSProtocolSupport] $name accepted - $($ssl.SslProtocol) / $($ssl.CipherAlgorithm)"
+            $accepted.Add($name)
+        }
+        catch {
+            # Classified by the exception chain, not by its text. The message is localised - on a
+            # German host the same reset reads "Eine bestehende Verbindung wurde ... abgebrochen"
+            # - and it also differs by timing: the same teardown surfaces as "Unable to read
+            # data" or "Unable to write data" depending on whether the client had got its
+            # ClientHello out yet. Neither is a basis for a conclusion.
+            #
+            # What distinguishes the two cases is what sits at the bottom:
+            #
+            #   SocketException          the transport was torn down. No TLS message was
+            #                            exchanged, so the server never refused a version - it
+            #                            refused the conversation.
+            #   AuthenticationException  TLS was spoken and the negotiation failed. That is the
+            #                            version or cipher case.
+            $socketError = $null
+            $sawAuthFailure = $false
+            $detail = $_.Exception.Message
+            $walk = $_.Exception
+            while ($walk) {
+                if ($walk -is [System.Net.Sockets.SocketException]) {
+                    $socketError = $walk.SocketErrorCode
+                    $detail = $walk.Message
+                }
+                if ($walk -is [System.Security.Authentication.AuthenticationException]) {
+                    $sawAuthFailure = $true
+                    $detail = $walk.Message
+                }
+                $walk = $walk.InnerException
+            }
+
+            if ($socketError -and -not $sawAuthFailure) {
+                Write-Log "[Test-LDAPSProtocolSupport] $name - connection torn down ($socketError) before any TLS message"
+                $resetBeforeTls.Add($name)
+                if (-not $socketCodes.Contains([string]$socketError)) { $socketCodes.Add([string]$socketError) }
+            } else {
+                Write-Log "[Test-LDAPSProtocolSupport] $name - negotiation refused: $detail"
+                $negotiationFailed.Add($name)
+            }
+            $rejected.Add($name)
+        }
+        finally {
+            if ($ssl) { try { $ssl.Dispose() } catch { } }
+            if ($tcp) { try { $tcp.Close() } catch { } }
+        }
+    }
+
+    # ToArray(), not @($list): casting a hashtable to PSCustomObject throws "Argument types do
+    # not match" when a value is @() around a List[object]. Same reason as in
+    # Split-GPOFindingByReach.
+    $result = [PSCustomObject]@{
+        Accepted          = $accepted.ToArray()
+        Rejected          = $rejected.ToArray()
+        Unreachable       = $unreachable.ToArray()
+        ResetBeforeTls    = $resetBeforeTls.ToArray()
+        NegotiationFailed = $negotiationFailed.ToArray()
+        SocketErrors      = $socketCodes.ToArray()
+        Summary           = $null
+    }
+
+    $friendly = @{ 'Tls13' = 'TLS 1.3'; 'Tls12' = 'TLS 1.2'; 'Tls11' = 'TLS 1.1'; 'Tls' = 'TLS 1.0' }
+    $nameOf = { param($keys) (@($keys) | ForEach-Object { $friendly[$_] }) -join ', ' }
+
+    if ($accepted.Count -gt 0) {
+        $result.Summary = ('Asked one version at a time, the server accepted ' +
+            (& $nameOf $accepted.ToArray()) +
+            ' - so the versions are not the problem and the default negotiation offered something it refused.' +
+            ' Check the protocols and cipher suites this client enables under SCHANNEL.')
+    }
+    elseif ($resetBeforeTls.Count -gt 0 -and $negotiationFailed.Count -eq 0) {
+        # The strongest statement this probe can make, and the one that was missing: every
+        # attempt was torn down at the socket before a single TLS byte was exchanged, and
+        # identically for every version. A server refusing a version or a cipher answers with a
+        # TLS alert; it does not reset the socket. So this is not a TLS configuration at all.
+        #
+        # The port answered during the reachability test, which is what makes a middlebox the
+        # likely explanation: a firewall that proxies the TCP handshake and then drops the
+        # session when the payload arrives looks exactly like this.
+        $result.Summary = ('The server accepted the TCP connection and then tore it down (' +
+            (($socketCodes.ToArray() | Sort-Object) -join ', ') +
+            ') before any TLS message was exchanged, identically for ' +
+            (& $nameOf $resetBeforeTls.ToArray()) +
+            '. A version or cipher mismatch answers with a TLS alert rather than resetting, so this' +
+            ' is not a TLS configuration problem - look for a device in the path that proxies the' +
+            ' handshake and drops the session, or a listener on 636 with no TLS behind it.')
+    }
+    elseif ($rejected.Count -gt 0) {
+        $result.Summary = ('Asked one version at a time, the server accepted none of ' +
+            (& $nameOf $rejected.ToArray()) +
+            ' - which points at the cipher suites or a device in the path rather than the TLS version.')
+    }
+    elseif ($unreachable.Count -gt 0) {
+        # Every attempt failed before any TLS was spoken. The port answered a moment ago, during
+        # the reachability test, so something closed in between - and that is a different
+        # statement from the server refusing a version. Claiming the latter here would blame a
+        # cipher configuration for a socket that was never open.
+        $result.Summary = ("Port $Port did not answer on any retry, so the handshake could not be " +
+            'measured - the earlier reachability test and these attempts disagree, which suggests ' +
+            'something between this host and the server is closing the connection.')
+    }
+    # Nothing at all measured - not one version could even be constructed on this host. No
+    # summary, because every sentence available would be a claim about the server.
+
+    return $result
 }
 
 
@@ -112282,10 +112640,14 @@ function Get-CredentialRoaming {
 
             Show-SubHeader "Checking for roamed DPAPI master keys and private keys in AD..." -ObjectType "CredentialRoaming"
 
-            # ----- Step 1: is the material readable by everyone? -----
-            $confidential = Get-CredentialRoamingConfidentiality @CredParams
-
-            # ----- Step 2: who has roamed material? -----
+            # ----- Step 1: who has roamed material? -----
+            #
+            # Before the schema, not after. Whether the attributes are confidential only
+            # matters once something is in them, and in a domain that never switched Credential
+            # Roaming on - the common case, and the first one this met - reading the schema
+            # partition first was a query for an answer nobody uses. The comment on
+            # Get-CredentialRoamingConfidentiality already claimed the caller "only asks once
+            # material has been found"; now it does.
             #
             # Two presence filters rather than one with the blobs requested. The filter
             # establishes presence server-side, so only the identity and the timestamp
@@ -112322,10 +112684,17 @@ function Get-CredentialRoaming {
                 }
             }
 
+            # Nothing after this point runs when there is no material, which is the point of
+            # the ordering above: no schema read, and no container ACL sweep either.
             if ($byDN.Count -eq 0) {
                 Show-Line "No user object carries roamed credential material" -Class Secure
                 return
             }
+
+            # ----- Step 2: is the material readable by everyone? -----
+            #
+            # One forest-wide answer, and now only asked when there is material to read.
+            $confidential = Get-CredentialRoamingConfidentiality @CredParams
 
             # ----- Build the findings -----
             $findings = New-Object System.Collections.Generic.List[object]
@@ -125356,7 +125725,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.6.0+20261007-1213"
+$Script:adPEASVersion = "2.6.0+20261007-1325"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
