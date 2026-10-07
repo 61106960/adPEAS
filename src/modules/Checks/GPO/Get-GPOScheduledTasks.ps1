@@ -251,14 +251,17 @@ function Get-GPOScheduledTasks {
                 $hasFinding = @($shown | Where-Object { $_._Severity -eq 'Finding' }).Count -gt 0
                 $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
 
+                # Held-back policies first, then the headline for the active ones, then the
+                # active ones - the "Found ..." line heads the finding objects, not the
+                # dampening block.
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
+
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found $(@($shown).Count) scheduled task(s) distributed via GPO" -Class $headerClass
                 } else {
                     Show-Line "No scheduled task is distributed by a policy that is linked and enabled" -Class Note
                 }
-
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($task in $shown) {
                     # Grey whatever the severity analysis concluded: the class describes the

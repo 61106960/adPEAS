@@ -227,14 +227,17 @@ function Get-GPOScriptPaths {
 
                 $shown = if ($IncludeInactive) { @($scriptFindings) } else { @($split.Active) }
 
+                # Held-back policies first, then the headline for the active ones, then the
+                # active ones - the "Found ..." line heads the finding objects, not the
+                # dampening block.
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
+
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found $(@($shown).Count) script(s) distributed via GPO" -Class Hint
                 } else {
                     Show-Line "No script is distributed by a policy that is linked and enabled" -Class Note
                 }
-
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOScriptPath' -Force

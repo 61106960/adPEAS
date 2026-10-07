@@ -999,50 +999,61 @@ that does come from a GPO, that full path already contains the GUID.
 **Dormant policies are held back by default**: a service provider who ships a library of
 Group Policies and links a handful of them leaves the rest configured and applying nowhere.
 Reporting their settings buries the policies that are live, so a finding whose policy is
-not linked or not enabled is not listed. A summary gives the count and the reason, and names
-each policy that was held back:
+not linked or not enabled is not listed. A count line gives the number and names how many
+distinct GPOs it covers, and one card per reason names the policies held back:
 
 ```
-[*] 34 finding(s) hidden on 4 GPO(s):
-[*] Not linked (2):
-[*]   Addon AppServer-VIM V25.09             {A9420797-B784-487A-BA44-A0D972CE4527}
-[*]   Systemhaertung Ws2022 Basis V25.02     {0217CBDE-4840-4E06-B245-D91F8B4B3C19}
-[*] Disabled (2):
-[*]   Addon WSUS V1.0                        {51462F84-B01D-4104-A4E5-BA2CF3C8AACC}
-[*]   HL-MMI V25.09                          {C6372006-3F3F-4D9E-AD99-C8A99D743ABF}
+[?] Analyzing LDAP Signing/Channel Binding via GPO (SYSVOL)... (Get-LDAPConfiguration)
+[*] 4 finding(s) hidden:
+
+Group:       Dormant policies - not linked
+Reason:      Linked nowhere, so the settings reach no machine until the policy is linked.
+Count:       3 policies
+Policies:    Systemhaertung Ws2022 Basis V25.02     {0217CBDE-4840-4E06-B245-D91F8B4B3C19}
+             Systemhaertung Ws2022 DC V24.07        {02FF1399-2A08-4922-9C0E-A1EAB771699C}
+             Systemhaertung Ws2022 Member V23.11    {7D4A0775-96C8-4EBF-B364-2FC582B048F1}
+
+[+] Found LDAP security configuration in 2 GPO(s):
+    ... the active findings ...
 ```
 
-One line per **policy**, not per finding, so ten registry values in one unlinked GPO are one
-line. The headline counts findings and the group headers count policies, which is why it names
-its unit whenever the two numbers differ.
+**The held-back block comes first, before the active findings.** After the `[?] Analyzing`
+line a reader sees what was held back and why, then `[+] Found ...` as the heading for the
+policies actually reported. The `[+] Found` line heads the finding objects, not the dampening
+block, so it sits directly above them.
 
-Laid out as every other adPEAS row is: display name left, GUID on column 45. Both, because the
-name is what a reader recognises and the GUID is the folder under
-`\\<domain>\SYSVOL\<domain>\Policies\` they need in order to go and look. A name longer than
-the column pushes its own GUID right rather than being truncated — a cut-off GPO name is no
-longer findable in SYSVOL.
+Each reason is one **card** - a grey object in the console, a collapsible card in the HTML
+report, folded by default and sorted behind the real findings. One card per reason, not per
+policy: sixteen held-back GPOs become two or three cards. The policies live inside the card,
+display name left and GUID on column 45 - both, because the name is what a reader recognises
+and the GUID is the folder under `\\<domain>\SYSVOL\<domain>\Policies\` they need in order to
+look. A name longer than the column pushes its GUID right rather than being truncated; a
+cut-off GPO name is no longer findable in SYSVOL.
 
-Unlinked policies come first, since an unlinked policy is a cleanup candidate while a disabled
-one is a switch somebody threw on purpose, and within a group the order is by name so two runs
-against the same domain print the same thing. When only one reason occurs there is no group
-header: the summary keeps the sentence and the rows follow it directly. The list is not
-truncated — its length is bounded by the number of policies in the domain, and cutting it off
-would leave `-IncludeInactive` as the only way to learn the missing names, which prints every
-held-back finding and is far more output than a cap saves.
+The count line counts findings and the card counts policies, which is why it names its unit
+(`on N GPO(s)`) whenever the two numbers differ - ten registry values in one unlinked GPO are
+one card line. Unlinked before disabled, since an unlinked policy is a cleanup candidate while
+a disabled one is a switch somebody threw on purpose; within a card the policies sort by name,
+so two runs against the same domain print the same thing. The list is not truncated - its
+length is bounded by the number of policies in the domain, and cutting it off would leave
+`-IncludeInactive` as the only way to learn the missing names, far more output than a cap saves.
 
 **A configuration that exposes nothing is counted and named, not printed in full.** The same
 reasoning in a second direction: adPEAS reports a right or a setting granted to somebody who
-should not have it, so the opposite - a GPO that hardens - is worth one line and the policy
-named, not a block. The short list is the same one the dampening summary uses - display name
-left, GUID on column 45, one line per policy, deduplicated and sorted by name - so the held-back
-hardening and the held-back dormant policies read identically. Both checks are behind
+should not have it, so the opposite - a GPO that hardens - is worth a card and the policy
+named, not a block per finding. It is the same card the dampening summary uses and sits in the
+same place: before the active headline, grey, folded in the HTML report. Both checks are behind
 `-IncludeDefaults` (aliased `-IncludePrivileged`, which `Invoke-adPEAS` passes, so the hint
 naming it is reachable from a full scan), which lists them in full:
 
 ```
-[*] 10 assignment(s) only remove default holders - hardening, or a service about to break on 2 GPO(s) (-IncludeDefaults to list):
-[*]   Addon WSUS V1.0                        {51462F84-B01D-4104-A4E5-BA2CF3C8AACC}
-[*]   Systemhaertung Ws2022 DC V24.07        {02FF1399-2A08-4922-9C0E-A1EAB771699C}
+[*] 10 assignment(s) only remove default holders - hardening, or a service about to break on 2 GPO(s) (-IncludeDefaults to list)
+
+Group:       Assignments that only remove default holders
+Reason:      Hardening more often than not, occasionally a service about to break - never a grant.
+Count:       10 assignment(s) on 2 GPO(s)
+Policies:    Addon WSUS V1.0                        {51462F84-B01D-4104-A4E5-BA2CF3C8AACC}
+             Systemhaertung Ws2022 DC V24.07        {02FF1399-2A08-4922-9C0E-A1EAB771699C}
 ```
 
 - `Get-GPOUserRightsAssignment`: an assignment that only *removes* default holders. Nine of
@@ -1055,14 +1066,14 @@ naming it is reachable from a full scan), which lists them in full:
   so it is not an exposure either, but somebody hardened and it does not take effect - a
   different statement from a hardening that works.
 
-As with the dormant list, the headline counts findings while the named list counts policies -
-several rights in one GPO, or both halves of one Point and Print policy - so the headline names
-its unit (`on N GPO(s)`) whenever the two numbers differ.
+As with the dormant cards, the count line counts findings while the card counts policies -
+several rights in one GPO, or both halves of one Point and Print policy - so it names its unit
+(`on N GPO(s)`) whenever the two numbers differ.
 
-It is held back, not dropped. `-IncludeInactive` on the individual check lists them,
-greyed, with `LinkedOUs` and `GPOStatus` on the row saying why. The switch is deliberately
-not available on `Invoke-adPEAS`, so the hint naming it appears only when a check was
-called directly.
+It is held back, not dropped. `-IncludeInactive` on the individual check lists the dormant
+findings in full, greyed, with `LinkedOUs` and `GPOStatus` on the row saying why. The switch is
+deliberately not available on `Invoke-adPEAS`, so the hint naming it appears only when a check
+was called directly.
 
 Three things worth knowing about where the line is drawn:
 

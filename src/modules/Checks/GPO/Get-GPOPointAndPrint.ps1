@@ -305,24 +305,12 @@ function Get-GPOPointAndPrint {
             # Counted over what is printed, for the same reason the exploitable tally is.
             $exploitable = @($listed | Where-Object { $_.Exploitability -like 'Exploitable*' })
 
-            if (@($listed).Count -gt 0) {
-                Show-Line "Found $(@($listed).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
-            } elseif ($settled.Count -gt 0) {
-                # Not the "nothing is deployed" line below: something is deployed, and it is
-                # the hardened kind. Saying nothing is deployed would be false, and saying
-                # nothing at all would read as a check that found no policies to look at.
-                Show-Line "No linked and enabled policy leaves printer driver installation open to non-administrators" -Class Secure
-            } else {
-                Show-Line "No Point and Print configuration is deployed by a policy that is linked and enabled" -Class Note
-            }
-
-            if ($exploitable.Count -gt 0) {
-                Show-Line "$($exploitable.Count) GPO configuration(s) let non-administrators install printer drivers without an elevation prompt" -Class Finding
-            }
-
-            # Counted AND named, the same treatment the dormant policies get below: a count alone
-            # tells a reader that something was held back but not whether they care, and a GPO
-            # nobody can identify cannot be looked at either.
+            # Held back first: the hardened configurations, then the dormant policies. Both are
+            # separate statements about what was left out, so they sit above the "Found ..."
+            # headline, which heads the configurations that are actually reported.
+            #
+            # Counted AND named: a count alone tells a reader something was held back but not
+            # whether they care, and a GPO nobody can identify cannot be looked at either.
             if (-not $IncludeDefaults -and $settled.Count -gt 0) {
                 $settledPolicies = @(Get-GPOPolicySummary -Finding $settled)
 
@@ -345,6 +333,21 @@ function Get-GPOPointAndPrint {
 
             Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
                 -Dormant $split.Dormant -Listed:$IncludeInactive
+
+            if (@($listed).Count -gt 0) {
+                Show-Line "Found $(@($listed).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+            } elseif ($settled.Count -gt 0) {
+                # Not the "nothing is deployed" line below: something is deployed, and it is
+                # the hardened kind. Saying nothing is deployed would be false, and saying
+                # nothing at all would read as a check that found no policies to look at.
+                Show-Line "No linked and enabled policy leaves printer driver installation open to non-administrators" -Class Secure
+            } else {
+                Show-Line "No Point and Print configuration is deployed by a policy that is linked and enabled" -Class Note
+            }
+
+            if ($exploitable.Count -gt 0) {
+                Show-Line "$($exploitable.Count) GPO configuration(s) let non-administrators install printer drivers without an elevation prompt" -Class Finding
+            }
 
             foreach ($object in $listed) {
                 if (@($split.Inactive) -contains $object) {

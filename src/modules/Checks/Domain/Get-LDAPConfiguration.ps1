@@ -543,7 +543,13 @@ function Get-LDAPConfiguration {
 
                 $shown = if ($IncludeInactive) { @($gpoFindings) } else { @($split.Active) }
 
-                # Show Found message BEFORE data
+                # Held-back policies first, then the headline for the active ones, then the
+                # active ones. The "Found ..." line is the heading for the finding objects, so
+                # it belongs directly above them - not above the dampening block, which is a
+                # separate statement about what was left out.
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
+
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found LDAP security configuration in $(@($shown).Count) GPO(s):" -Class Hint
                 } else {
@@ -551,9 +557,6 @@ function Get-LDAPConfiguration {
                     # whatever the OS defaults to - the same exposure as configuring nothing.
                     Show-Line "No LDAP security configuration is deployed by a policy that is linked and enabled - all $dcCount DC(s) potentially vulnerable" -Class Finding
                 }
-
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($gpoFinding in $shown) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force

@@ -295,13 +295,6 @@ function Get-AddComputerRights {
                 $inactiveGPOs = @($gpoFindings | Where-Object { $_._ReachInactive })
                 $shownGPOs    = if ($IncludeInactive) { @($gpoFindings) } else { @($gpoFindings | Where-Object { -not $_._ReachInactive }) }
 
-                $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
-                if (@($shownGPOs).Count -gt 0) {
-                    Show-Line "Found $(@($shownGPOs).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
-                } else {
-                    Show-Line "No policy that is linked and enabled configures SeMachineAccountPrivilege" -Class Note
-                }
-
                 # The dormant list in the shape Split-GPOFindingByReach produces, built by
                 # hand because this check stamps the reach verdict itself - the linkage and
                 # the status map only exist inside Check-GPOAddComputerRights. One entry per
@@ -320,11 +313,20 @@ function Get-AddComputerRights {
                     }
                 })
 
+                # Held-back policies first, then the headline for the active ones - the
+                # "Found ..." line heads the finding objects, not the dampening block.
                 Show-GPOInactiveSummary `
                     -Unlinked @($inactiveGPOs | Where-Object { $_._ReachUnlinked }).Count `
                     -Disabled @($inactiveGPOs | Where-Object { -not $_._ReachUnlinked }).Count `
                     -Dormant $dormantGPOs `
                     -Listed:$IncludeInactive
+
+                $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
+                if (@($shownGPOs).Count -gt 0) {
+                    Show-Line "Found $(@($shownGPOs).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
+                } else {
+                    Show-Line "No policy that is linked and enabled configures SeMachineAccountPrivilege" -Class Note
+                }
 
                 # Show all GPOs that define SeMachineAccountPrivilege, sorted by precedence
                 # (highest first). OtherOU is in the map because a scope missing from it

@@ -339,6 +339,12 @@ function Get-SMBSigningStatus {
 
                 $shown = if ($IncludeInactive) { @($gpoFindings) } else { @($split.Active) }
 
+                # Held-back policies first, then the headline for the active ones, then the
+                # active ones - the "Found ..." line heads the finding objects, not the
+                # dampening block.
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
+
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found SMB Signing configuration in $(@($shown).Count) GPO(s):" -Class Hint
                 } else {
@@ -346,9 +352,6 @@ function Get-SMBSigningStatus {
                     # machine on the OS default - the same exposure as configuring nothing.
                     Show-Line "No SMB Signing configuration is deployed by a policy that is linked and enabled" -Class Finding
                 }
-
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($gpoFinding in $shown) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigning' -Force

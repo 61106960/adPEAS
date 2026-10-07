@@ -286,6 +286,12 @@ function Get-GPOLocalGroupMembership {
 
                 $shown = if ($IncludeInactive) { @($vulnerableGPOs) } else { @($split.Active) }
 
+                # Held-back policies first, then the headline for the active ones, then the
+                # active ones - the "Found ..." line heads the finding objects, not the
+                # dampening block.
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
+
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found $(@($shown).Count) vulnerable GPO local group assignment(s)" -Class Finding
                 } else {
@@ -293,9 +299,6 @@ function Get-GPOLocalGroupMembership {
                     # the domain clean here would be a different statement.
                     Show-Line "No local group assignment is made by a policy that is linked and enabled" -Class Note
                 }
-
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOLocalGroup' -Force

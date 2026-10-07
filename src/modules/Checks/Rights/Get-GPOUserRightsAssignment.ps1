@@ -392,31 +392,20 @@ function Get-GPOUserRightsAssignment {
                 $hasFinding = @($shown | Where-Object { $_._severity -eq 'Finding' }).Count -gt 0
                 $headerClass = if ($hasFinding) { "Finding" } else { "Hint" }
 
-                if ($deviations.Count -gt 0) {
-                    Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
-                } elseif ($inactiveCount -gt 0) {
-                    # Not Secure. Every departure sits on a policy that reaches nothing,
-                    # which is a different statement from having none, and the summary line
-                    # below carries the count.
-                    Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class "Secure"
-                } else {
-                    Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
-                }
-
-                # Everything that is not a deviation in the direction this tool cares about:
-                # assignments that only take default holders away, and - with
-                # -IncludeDefaults - assignments that match the default exactly. Both carry
-                # severity Note, and both are counted here rather than printed.
+                # Held back first, then the headline, then the deviations. Three kinds of
+                # held-back material sit above the "Found ..." line: the assignments that only
+                # remove default holders, and (through the dampening summary) the dormant
+                # policies. The headline heads the deviations that are actually reported.
                 #
-                # adPEAS looks for a right granted to somebody who should not have it. A GPO
-                # that removes Backup Operators from SeDebugPrivilege is hardening: good to
-                # know it happened, nothing to act on, and nine of those printed as full
-                # blocks bury the two that matter. The count stays because silence would be
-                # indistinguishable from a domain where no hardening was done at all.
-                # Counted AND named, the same treatment the dormant policies get. A count alone
-                # tells a reader that something was held back but not whether they care, and
-                # "10 assignment(s) only remove default holders" over thirteen named dormant
-                # policies was the one line in the block that left them guessing.
+                # Everything that is not a deviation in the direction this tool cares about:
+                # assignments that only take default holders away, and - with -IncludeDefaults -
+                # assignments that match the default exactly. Both carry severity Note.
+                #
+                # adPEAS looks for a right granted to somebody who should not have it. A GPO that
+                # removes Backup Operators from SeDebugPrivilege is hardening: worth knowing,
+                # nothing to act on, and nine of those as full blocks bury the two that matter.
+                # Counted AND named, the same treatment the dormant policies get - a count alone
+                # leaves a reader guessing which policies, which the dormant list does not.
                 $removalsOnly = @($shown | Where-Object { $_._severity -eq 'Note' })
                 if ($removalsOnly.Count -gt 0) {
                     $removalPolicies = @(Get-GPOPolicySummary -Finding $removalsOnly)
@@ -432,8 +421,6 @@ function Get-GPOUserRightsAssignment {
                     }
                     if (-not $showDefaults) { $text += ' (-IncludeDefaults to list)' }
 
-                    # Headline is the entry point; the policies follow as one card, the same
-                    # shape the dormant groups use.
                     Show-Line $text -Class "Note"
                     Show-GPOSuppressedGroup -Group 'Assignments that only remove default holders' `
                         -Reason 'Hardening more often than not, occasionally a service about to break - never a grant.' `
@@ -442,6 +429,17 @@ function Get-GPOUserRightsAssignment {
 
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
                     -Dormant $split.Dormant -Listed:$IncludeInactive
+
+                if ($deviations.Count -gt 0) {
+                    Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
+                } elseif ($inactiveCount -gt 0) {
+                    # Not Secure. Every departure sits on a policy that reaches nothing, which is
+                    # a different statement from having none, and the dampening line above
+                    # carries the count.
+                    Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class "Secure"
+                } else {
+                    Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
+                }
 
                 # Findings first, then hints, then the removals.
                 #
