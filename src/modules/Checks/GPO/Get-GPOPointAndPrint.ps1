@@ -66,6 +66,17 @@ function Get-GPOPointAndPrint {
     configure it, which is not the same as the domain being insecure - and since the Windows
     default is the secure one, absence is never reported as a finding.
 
+    A configuration that exposes nothing is counted rather than printed. Two verdicts qualify:
+    driver installation limited to Administrators, which overrides every prompt setting in the
+    same GPO, and a GPO that controls driver installation at all. Both carry severity Info,
+    and printing one meant eight rows agreeing with the Exploitability line above them - a
+    hardened policy linked to seventeen OUs produced thirty lines saying the same thing, ahead
+    of the policy that was not hardened. -IncludeDefaults lists them.
+
+    The User Configuration case stays visible. Windows ignores it (KB2307161), so it is not an
+    exposure either - but somebody hardened and it does not take effect, and an ineffective
+    hardening is a different statement from a working one.
+
     Requires SMB access to \\domain\SYSVOL.
 
     .PARAMETER Domain
@@ -76,6 +87,14 @@ function Get-GPOPointAndPrint {
 
     .PARAMETER Credential
     PSCredential object for authentication (optional, uses current user if not specified)
+
+    .PARAMETER IncludeInactive
+    Also list findings whose policy is not linked or not enabled. Held back by default.
+
+    .PARAMETER IncludeDefaults
+    Also list the configurations that expose nothing - hardened, or controlling no driver
+    installation. Aliased as -IncludePrivileged, which is the switch Invoke-adPEAS passes, so
+    the hint naming it is reachable from a full scan.
 
     .EXAMPLE
     Get-GPOPointAndPrint
@@ -104,7 +123,11 @@ function Get-GPOPointAndPrint {
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory=$false)]
-        [switch]$IncludeInactive
+        [switch]$IncludeInactive,
+
+        [Parameter(Mandatory=$false)]
+        [Alias('IncludePrivileged')]
+        [switch]$IncludeDefaults
     )
 
     begin {
@@ -263,10 +286,32 @@ function Get-GPOPointAndPrint {
             # Counted over what is printed, including the exploitable tally: a count of
             # exploitable policies that are not listed sends a reader hunting for rows that
             # are not there.
-            $exploitable = @($shown | Where-Object { $_.Exploitability -like 'Exploitable*' })
+            # A configuration whose verdict is Info exposes nothing: either driver
+            # installation is limited to Administrators, which overrides every prompt setting
+            # in the same GPO, or the GPO controls driver installation at all. Printing it
+            # restates the Exploitability line eight more times in green, and a hardened
+            # policy linked to seventeen OUs buries the one that is not hardened under thirty
+            # lines of agreement.
+            #
+            # Severity, not the Exploitability text: the text is for a reader, the severity is
+            # the verdict, and matching on a sentence would break the moment it is reworded.
+            #
+            # 'Low' stays visible on purpose. That is the User Configuration case, which
+            # Windows ignores (KB2307161) - not an exposure, but somebody hardened and it does
+            # not take effect, and an ineffective hardening is worth a line of its own.
+            $settled = @($shown | Where-Object { $_.Severity -eq 'Info' })
+            $listed  = if ($IncludeDefaults) { @($shown) } else { @($shown | Where-Object { $_.Severity -ne 'Info' }) }
 
-            if (@($shown).Count -gt 0) {
-                Show-Line "Found $(@($shown).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+            # Counted over what is printed, for the same reason the exploitable tally is.
+            $exploitable = @($listed | Where-Object { $_.Exploitability -like 'Exploitable*' })
+
+            if (@($listed).Count -gt 0) {
+                Show-Line "Found $(@($listed).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+            } elseif ($settled.Count -gt 0) {
+                # Not the "nothing is deployed" line below: something is deployed, and it is
+                # the hardened kind. Saying nothing is deployed would be false, and saying
+                # nothing at all would read as a check that found no policies to look at.
+                Show-Line "No linked and enabled policy leaves printer driver installation open to non-administrators" -Class Secure
             } else {
                 Show-Line "No Point and Print configuration is deployed by a policy that is linked and enabled" -Class Note
             }
@@ -275,9 +320,15 @@ function Get-GPOPointAndPrint {
                 Show-Line "$($exploitable.Count) GPO configuration(s) let non-administrators install printer drivers without an elevation prompt" -Class Finding
             }
 
-            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+            if (-not $IncludeDefaults -and $settled.Count -gt 0) {
+                Show-Line ("$($settled.Count) configuration(s) are hardened or control no driver installation " +
+                           '(-IncludeDefaults to list)') -Class Note
+            }
 
-            foreach ($object in $shown) {
+            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                -Dormant $split.Dormant -Listed:$IncludeInactive
+
+            foreach ($object in $listed) {
                 if (@($split.Inactive) -contains $object) {
                     Show-Object $object -Class Note
                 } else {

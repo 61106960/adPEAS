@@ -999,11 +999,42 @@ that does come from a GPO, that full path already contains the GUID.
 **Dormant policies are held back by default**: a service provider who ships a library of
 Group Policies and links a handful of them leaves the rest configured and applying nowhere.
 Reporting their settings buries the policies that are live, so a finding whose policy is
-not linked or not enabled is not listed. One line gives the count and the reason:
+not linked or not enabled is not listed. A summary gives the count and the reason, and names
+each policy that was held back:
 
 ```
-[*] 3 further finding(s) hidden - 2 on unlinked policies, 1 on disabled ones
+[*] 3 finding(s) hidden - 2 on unlinked policies, 1 on disabled ones:
+[*]   {11112222-3333-4444-5555-666677778888}  unlinked  Altlast Tasks
+[*]   {02FF1399-2A08-4922-9C0E-A1EAB771699C}  unlinked  Systemhaertung Ws2022 DC V24.07
+[*]   {6AC1786C-016F-11D2-945F-00C04FB984F9}  disabled  Kiosk Tasks
 ```
+
+One line per **policy**, not per finding, so ten registry values in one unlinked GPO are one
+line - which is why the count above and the number of lines can differ. The GUID leads
+because it is fixed width, so the fields form a column, and because it is the folder name
+under `\\<domain>\SYSVOL\<domain>\Policies\`; the display name follows, because that is what
+a reader recognises. Unlinked policies come first, since an unlinked policy is a cleanup
+candidate while a disabled one is a switch somebody threw on purpose, and within a category
+the order is by name so two runs against the same domain print the same thing. The list is
+not truncated: its length is bounded by the number of policies in the domain, and cutting it
+off would leave `-IncludeInactive` as the only way to learn the missing names - which prints
+every held-back finding, far more output than a cap saves.
+
+**A configuration that exposes nothing is counted, not printed.** The same reasoning in a
+second direction: adPEAS reports a right or a setting granted to somebody who should not have
+it, so the opposite - a GPO that hardens - is worth one line and not a block. Two checks apply
+it today, both behind `-IncludeDefaults` (aliased `-IncludePrivileged`, which `Invoke-adPEAS`
+passes, so the hint naming it is reachable from a full scan):
+
+- `Get-GPOUserRightsAssignment`: an assignment that only *removes* default holders. Nine of
+  those printed as full blocks ahead of two real findings is how the rule was arrived at. An
+  assignment that adds *and* removes keeps its `RemovedFromDefault` row - there the removals
+  are the rest of that right's holder set, not a separate claim.
+- `Get-GPOPointAndPrint`: a configuration whose verdict is *Hardened* or *controls no driver
+  installation*. Printing one meant eight rows agreeing in green with the `Exploitability`
+  line above them. The User Configuration case stays visible: Windows ignores it (KB2307161),
+  so it is not an exposure either, but somebody hardened and it does not take effect - a
+  different statement from a hardening that works.
 
 It is held back, not dropped. `-IncludeInactive` on the individual check lists them,
 greyed, with `LinkedOUs` and `GPOStatus` on the row saying why. The switch is deliberately
