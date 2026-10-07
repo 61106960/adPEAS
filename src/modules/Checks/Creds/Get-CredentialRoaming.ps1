@@ -130,10 +130,14 @@ function Get-CredentialRoaming {
 
             Show-SubHeader "Checking for roamed DPAPI master keys and private keys in AD..." -ObjectType "CredentialRoaming"
 
-            # ----- Step 1: is the material readable by everyone? -----
-            $confidential = Get-CredentialRoamingConfidentiality @CredParams
-
-            # ----- Step 2: who has roamed material? -----
+            # ----- Step 1: who has roamed material? -----
+            #
+            # Before the schema, not after. Whether the attributes are confidential only
+            # matters once something is in them, and in a domain that never switched Credential
+            # Roaming on - the common case, and the first one this met - reading the schema
+            # partition first was a query for an answer nobody uses. The comment on
+            # Get-CredentialRoamingConfidentiality already claimed the caller "only asks once
+            # material has been found"; now it does.
             #
             # Two presence filters rather than one with the blobs requested. The filter
             # establishes presence server-side, so only the identity and the timestamp
@@ -170,10 +174,17 @@ function Get-CredentialRoaming {
                 }
             }
 
+            # Nothing after this point runs when there is no material, which is the point of
+            # the ordering above: no schema read, and no container ACL sweep either.
             if ($byDN.Count -eq 0) {
                 Show-Line "No user object carries roamed credential material" -Class Secure
                 return
             }
+
+            # ----- Step 2: is the material readable by everyone? -----
+            #
+            # One forest-wide answer, and now only asked when there is material to read.
+            $confidential = Get-CredentialRoamingConfidentiality @CredParams
 
             # ----- Build the findings -----
             $findings = New-Object System.Collections.Generic.List[object]
