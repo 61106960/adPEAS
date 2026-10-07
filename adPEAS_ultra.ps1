@@ -599,6 +599,7 @@ $Script:WellKnownIdentities = @(
 	@{ SID = 'S-1-5-65-1';  Name = 'NT AUTHORITY\This Organization Certificate' }
 	@{ SID = 'S-1-5-80-0';  Name = 'NT SERVICE\ALL SERVICES' }
 	@{ SID = 'S-1-5-83-0';  Name = 'NT VIRTUAL MACHINE\Virtual Machines' }
+	@{ SID = 'S-1-5-90-0';  Name = 'Window Manager\Window Manager Group' }
 	@{ SID = 'S-1-5-1000';  Name = 'NT AUTHORITY\Other Organization' }
 	@{ SID = 'S-1-18-1';    Name = 'Authentication authority asserted identity' }
 	@{ SID = 'S-1-18-2';    Name = 'Service asserted identity' }
@@ -926,6 +927,15 @@ $Script:WellKnownServiceSIDs = @(
 	'S-1-5-32-559',
 	'S-1-5-32-568'
 )
+$Script:MachineLocalSIDAuthorities = @{
+	'80' = 'NT SERVICE\<service SID>'
+	'82' = 'IIS APPPOOL\<application pool SID>'
+	'83' = 'NT VIRTUAL MACHINE\<virtual machine SID>'
+	'84' = 'Usermode driver SID'
+	'90' = 'Window Manager\<desktop window manager SID>'
+	'94' = 'WinRM Virtual Users\<WinRM SID>'
+	'96' = 'Font Driver Host\<font driver SID>'
+}
 function Test-IsPrivilegedSID {
 	[CmdletBinding()]
 	param(
@@ -19916,8 +19926,10 @@ function Connect-LDAP {
 	    [switch]$SuppressErrorDisplay
 	)
 	begin {
-	    $Script:ConnectionState = $null
-	    $Script:LastLDAPErrorCode = $null
+	    if (-not $AsGlobalCatalog) {
+	        $Script:ConnectionState = $null
+	        $Script:LastLDAPErrorCode = $null
+	    }
 	    if ($IgnoreSSLErrors) {
 	        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
 	        [System.Net.ServicePointManager]::CheckCertificateRevocationList = $false
@@ -19976,7 +19988,7 @@ function Connect-LDAP {
 	        if ($ldapErrorCode -eq 81 -and $BindSucceeded) {
 	            $errorType = "GenericError"
 	        }
-	        $Script:ConnectionState = $errorType
+	        if (-not $AsGlobalCatalog) { $Script:ConnectionState = $errorType }
 	        if (-not $SuppressErrorDisplay) {
 	            if ($null -ne $ldapErrorCode) {
 	                $extraDetails = $null
@@ -20010,8 +20022,10 @@ function Connect-LDAP {
 	                    $CurrentDomain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
 	                    $Domain = $CurrentDomain.Name
 	                } catch {
-	                    $Script:ConnectionState = "DomainError"
-	                    Show-ConnectionError -ErrorType "DomainError" -Details "Domain parameter required or system must be domain-joined" -NoThrow
+	                    if (-not $AsGlobalCatalog) { $Script:ConnectionState = "DomainError" }
+	                    if (-not $SuppressErrorDisplay) {
+	                        Show-ConnectionError -ErrorType "DomainError" -Details "Domain parameter required or system must be domain-joined" -NoThrow
+	                    }
 	                    return $null
 	                }
 	            }
@@ -20041,13 +20055,15 @@ function Connect-LDAP {
 	                $ResolvedIPString = $ResolvedIPs[0].IPAddressToString
 	            }
 	        } catch {
-	            $Script:ConnectionState = "DomainError"
+	            if (-not $AsGlobalCatalog) { $Script:ConnectionState = "DomainError" }
 	            $Detail = if ($Server -eq $Domain) {
 	                "Domain '$Domain' could not be resolved"
 	            } else {
 	                "Server '$Server' could not be resolved"
 	            }
-	            Show-ConnectionError -ErrorType "DomainError" -Details $Detail -NoThrow
+	            if (-not $SuppressErrorDisplay) {
+	                Show-ConnectionError -ErrorType "DomainError" -Details $Detail -NoThrow
+	            }
 	            return $null
 	        }
 	        $ConnectTarget = if ($CustomDnsServer -and $ResolvedIPString) { $ResolvedIPString } else { $Server }
@@ -20069,9 +20085,11 @@ function Connect-LDAP {
 	        } catch {
 	        }
 	        if (-not $ServerReachable) {
-	            $Script:ConnectionState = "NetworkError"
+	            if (-not $AsGlobalCatalog) { $Script:ConnectionState = "NetworkError" }
 	            $PortDesc = "$TestPort ($(if ($AsGlobalCatalog) { 'GC' } else { if ($UseLDAPS) { 'LDAPS' } else { 'LDAP' } }))"
-	            Show-ConnectionError -ErrorType "NetworkError" -Details "Port $PortDesc unreachable on $Server" -NoThrow
+	            if (-not $SuppressErrorDisplay) {
+	                Show-ConnectionError -ErrorType "NetworkError" -Details "Port $PortDesc unreachable on $Server" -NoThrow
+	            }
 	            return $null
 	        }
 	        if ($UseLDAPS) {
@@ -20114,8 +20132,10 @@ function Connect-LDAP {
 	            }
 	            if (-not $SSLTestPassed) {
 	                $errorType = if ($sslErrorInfo.Category -eq 'SSLCertificate') { "CertificateError" } else { "SSLHandshakeError" }
-	                $Script:ConnectionState = $errorType
-	                Show-ConnectionError -ErrorType $errorType -Details $sslErrorInfo.Message -NoThrow
+	                if (-not $AsGlobalCatalog) { $Script:ConnectionState = $errorType }
+	                if (-not $SuppressErrorDisplay) {
+	                    Show-ConnectionError -ErrorType $errorType -Details $sslErrorInfo.Message -NoThrow
+	                }
 	                return $null
 	            }
 	        }
@@ -20506,7 +20526,7 @@ function Connect-LDAP {
 	            $Script:LDAPContext = $DomainInfo
 	        }
 	        $Script:LDAPCredential = $Credential
-	        $Script:ConnectionState = "Success"
+	        if (-not $AsGlobalCatalog) { $Script:ConnectionState = "Success" }
 	        if (-not $Script:LDAPContext['AuthMethod']) {
 	            if ($ClientCertificate) {
 	                $Script:LDAPContext['AuthMethod'] = 'Schannel'
@@ -21891,6 +21911,7 @@ function Disconnect-adPEAS {
 function Clear-SessionState {
 	$Script:LdapConnection = $null
 	$Script:GCConnection = $null
+	$Script:GCConnectionFailed = $null
 	$Script:LDAPContext = $null
 	$Script:LDAPCredential = $null
 	$Script:ConnectionState = $null
@@ -32923,6 +32944,9 @@ function Get-GCConnection {
 	if ($Script:GCConnection) {
 	    return $Script:GCConnection
 	}
+	if ($Script:GCConnectionFailed) {
+	    return $null
+	}
 	if (-not $Script:LdapConnection -or
 	    -not ($Script:LDAPContext -is [hashtable]) -or
 	    -not $Script:LDAPContext.ContainsKey('Domain') -or
@@ -32956,10 +32980,11 @@ function Get-GCConnection {
 	    $targets += $Script:LDAPContext['Domain']
 	}
 	$ConnectParams = @{
-	    Domain          = $Script:LDAPContext['Domain']
-	    AsGlobalCatalog = $true
-	    IgnoreSSLErrors = $true
-	    TimeoutSeconds  = 5
+	    Domain               = $Script:LDAPContext['Domain']
+	    AsGlobalCatalog      = $true
+	    IgnoreSSLErrors      = $true
+	    TimeoutSeconds       = 5
+	    SuppressErrorDisplay = $true
 	}
 	if ($Script:LDAPContext.ContainsKey('UseLDAPS') -and $Script:LDAPContext['UseLDAPS']) {
 	    $ConnectParams['UseLDAPS'] = $true
@@ -32987,6 +33012,9 @@ function Get-GCConnection {
 	        return $GCConn
 	    }
 	}
+	$Script:GCConnectionFailed = $true
+	Show-Line ("Global Catalog (port 3268) is not reachable on $($targets -join ', ') - identities from " +
+	           'another domain cannot be resolved and are reported as unresolved') -Class Note
 	return $null
 }
 function Resolve-SIDViaGC {
@@ -33144,6 +33172,15 @@ function ConvertFrom-SID {
 	        $SIDBytes = New-Object byte[] $SIDObj.BinaryLength
 	        $SIDObj.GetBinaryForm($SIDBytes, 0)
 	        $SIDHex = ($SIDBytes | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
+	        if ($SID -match '^S-1-5-(\d+)-\d+') {
+	            $authority = $Matches[1]
+	            if ($Script:MachineLocalSIDAuthorities.ContainsKey($authority)) {
+	                $resolvedName = $Script:MachineLocalSIDAuthorities[$authority]
+	                $Script:SIDResolutionCache[$SID] = $resolvedName
+	                $Script:SIDVerboseCache[$SID] = $true
+	                return $resolvedName
+	            }
+	        }
 	        $skipLocalLookup = $false
 	        if ($SID -match '^S-1-5-21-(\d+-\d+-\d+)-\d+$') {
 	            $sidDomainPart = $matches[1]
@@ -33370,6 +33407,7 @@ function ConvertTo-SID {
 	            if ($crossDomainInfo.IsCrossDomain) {
 	                $gcConn = Get-GCConnection
 	                if (-not $gcConn) {
+	                    $Script:NameToSIDCache[$Identity] = $null
 	                    return $null
 	                }
 	                $filter = "(sAMAccountName=$(Escape-LDAPFilterValue -Value $crossDomainInfo.Identity))"
@@ -79320,7 +79358,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.6.0+20261007-1117"
+$Script:adPEASVersion = "2.6.0+20261007-1213"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

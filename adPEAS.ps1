@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-07 11:17:56
-    Version: 2.6.0+20261007-1117
+    Build: 2026-10-07 12:13:57
+    Version: 2.6.0+20261007-1213
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -1511,6 +1511,11 @@ $Script:WellKnownIdentities = @(
     # section on every Hyper-V host.
     @{ SID = 'S-1-5-80-0';  Name = 'NT SERVICE\ALL SERVICES' }
     @{ SID = 'S-1-5-83-0';  Name = 'NT VIRTUAL MACHINE\Virtual Machines' }
+    # The fixed group under the Window Manager authority. adPEAS already counted it among
+    # $Script:WellKnownServiceSIDs but could not put a name to it, so it fell through to the
+    # machine-local authority fallback in ConvertFrom-SID and came out as the generic
+    # "Window Manager\<desktop window manager SID>" rather than the group it actually is.
+    @{ SID = 'S-1-5-90-0';  Name = 'Window Manager\Window Manager Group' }
 
     @{ SID = 'S-1-5-1000';  Name = 'NT AUTHORITY\Other Organization' }
 
@@ -2304,6 +2309,41 @@ $Script:WellKnownServiceSIDs = @(
     'S-1-5-32-559',   # BUILTIN\Performance Log Users
     'S-1-5-32-568'    # BUILTIN\IIS_IUSRS
 )
+
+<#
+.SYNOPSIS
+    SID authorities under S-1-5 whose members are synthesised on a machine and can never be
+    directory objects.
+.DESCRIPTION
+    Each of these is derived from a name on the local computer - a SHA-1 of the service or
+    application pool name - so the SID is reproducible from the name but not reversible, and
+    no such object exists in a domain or in the forest.
+
+    They turn up in GptTmpl.inf because installing IIS or a service adds its own identity to a
+    user right, and the GPO then stores the SID. Looking one up in AD returns nothing, which
+    used to send ConvertFrom-SID on to the Foreign Security Principal and Global Catalog
+    fallback - a query that cannot succeed by construction, and on a segment where port 3268
+    is filtered it cost a TCP timeout per GC target per SID and printed a connection error for
+    each.
+
+    The value is what to call them. The sub-authorities are a hash, so the original name is
+    not recoverable; naming the authority is all that can honestly be said, and it is the
+    thing a reader needs - "an IIS application pool holds this right" rather than
+    "(UNRESOLVABLE)", which reads as a missing object somebody should go and find.
+
+    Keyed by the authority RID that follows S-1-5-. The general service authorities only, not
+    the fixed well-known SIDs under them: S-1-5-80-0 is ALL SERVICES and resolves by name from
+    $Script:SIDToName before this table is consulted.
+#>
+$Script:MachineLocalSIDAuthorities = @{
+    '80' = 'NT SERVICE\<service SID>'
+    '82' = 'IIS APPPOOL\<application pool SID>'
+    '83' = 'NT VIRTUAL MACHINE\<virtual machine SID>'
+    '84' = 'Usermode driver SID'
+    '90' = 'Window Manager\<desktop window manager SID>'
+    '94' = 'WinRM Virtual Users\<WinRM SID>'
+    '96' = 'Font Driver Host\<font driver SID>'
+}
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -27339,7 +27379,12 @@ function Connect-LDAP {
         [switch]$ForceNTLM,
 
         # Suppress user-visible error messages (Show-ConnectionError) while still tracking error codes.
-        # Used by Connect-adPEAS when it knows it will auto-retry (e.g., LDAPS upgrade after SimpleBind failure).
+        # Used by Connect-adPEAS when it knows it will auto-retry (e.g., LDAPS upgrade after SimpleBind failure),
+        # and by Get-GCConnection, whose connection is auxiliary and whose failure is tolerated.
+        #
+        # It is honoured at every Show-ConnectionError in this function. It used to be checked
+        # at one of five, so a caller that asked for silence still got "Connection failed" from
+        # the DNS, port and SSL phases - the port one being the single most likely to fire.
         [Parameter(Mandatory=$false)]
         [switch]$SuppressErrorDisplay
     )
@@ -27347,9 +27392,22 @@ function Connect-LDAP {
     begin {
         Write-Log "[Connect-LDAP] Starting LDAP connection..."
 
-        # Reset connection state at the beginning
-        $Script:ConnectionState = $null
-        $Script:LastLDAPErrorCode = $null
+        # Reset connection state at the beginning.
+        #
+        # Not in GC mode. This function's own contract says a Global Catalog connection
+        # "returns the raw LdapConnection without modifying global state", and both of these
+        # belong to the main session. An auxiliary GC probe wiped the main connection's
+        # recorded state on entry and then overwrote it with its own outcome - Success or
+        # NetworkError - long after Connect-adPEAS had finished.
+        #
+        # The consequence was the quiet kind: the unhandled-error catch at the end of this
+        # function skips reporting when $Script:ConnectionState is already set, so a stale
+        # NetworkError left behind by a blocked port 3268 silenced the report of a later,
+        # genuine connection failure.
+        if (-not $AsGlobalCatalog) {
+            $Script:ConnectionState = $null
+            $Script:LastLDAPErrorCode = $null
+        }
 
         # SSL Certificate Validation Callback (only relevant for LDAPS)
         if ($IgnoreSSLErrors) {
@@ -27443,7 +27501,7 @@ function Connect-LDAP {
                 $errorType = "GenericError"
             }
 
-            $Script:ConnectionState = $errorType
+            if (-not $AsGlobalCatalog) { $Script:ConnectionState = $errorType }
             if (-not $SuppressErrorDisplay) {
                 if ($null -ne $ldapErrorCode) {
                     # For LDAP 81 after a successful Bind(), provide more specific details:
@@ -27489,8 +27547,10 @@ function Connect-LDAP {
                         $Domain = $CurrentDomain.Name
                         Write-Log "[Connect-LDAP] Automatically detected domain: $Domain"
                     } catch {
-                        $Script:ConnectionState = "DomainError"
-                        Show-ConnectionError -ErrorType "DomainError" -Details "Domain parameter required or system must be domain-joined" -NoThrow
+                        if (-not $AsGlobalCatalog) { $Script:ConnectionState = "DomainError" }
+                        if (-not $SuppressErrorDisplay) {
+                            Show-ConnectionError -ErrorType "DomainError" -Details "Domain parameter required or system must be domain-joined" -NoThrow
+                        }
                         return $null
                     }
                 }
@@ -27537,13 +27597,15 @@ function Connect-LDAP {
                     Write-Log "[Connect-LDAP] DNS resolution successful: $ResolvedIPString"
                 }
             } catch {
-                $Script:ConnectionState = "DomainError"
+                if (-not $AsGlobalCatalog) { $Script:ConnectionState = "DomainError" }
                 $Detail = if ($Server -eq $Domain) {
                     "Domain '$Domain' could not be resolved"
                 } else {
                     "Server '$Server' could not be resolved"
                 }
-                Show-ConnectionError -ErrorType "DomainError" -Details $Detail -NoThrow
+                if (-not $SuppressErrorDisplay) {
+                    Show-ConnectionError -ErrorType "DomainError" -Details $Detail -NoThrow
+                }
                 return $null
             }
 
@@ -27574,9 +27636,11 @@ function Connect-LDAP {
             }
 
             if (-not $ServerReachable) {
-                $Script:ConnectionState = "NetworkError"
+                if (-not $AsGlobalCatalog) { $Script:ConnectionState = "NetworkError" }
                 $PortDesc = "$TestPort ($(if ($AsGlobalCatalog) { 'GC' } else { if ($UseLDAPS) { 'LDAPS' } else { 'LDAP' } }))"
-                Show-ConnectionError -ErrorType "NetworkError" -Details "Port $PortDesc unreachable on $Server" -NoThrow
+                if (-not $SuppressErrorDisplay) {
+                    Show-ConnectionError -ErrorType "NetworkError" -Details "Port $PortDesc unreachable on $Server" -NoThrow
+                }
                 return $null
             }
 
@@ -27644,8 +27708,10 @@ function Connect-LDAP {
 
                 if (-not $SSLTestPassed) {
                     $errorType = if ($sslErrorInfo.Category -eq 'SSLCertificate') { "CertificateError" } else { "SSLHandshakeError" }
-                    $Script:ConnectionState = $errorType
-                    Show-ConnectionError -ErrorType $errorType -Details $sslErrorInfo.Message -NoThrow
+                    if (-not $AsGlobalCatalog) { $Script:ConnectionState = $errorType }
+                    if (-not $SuppressErrorDisplay) {
+                        Show-ConnectionError -ErrorType $errorType -Details $sslErrorInfo.Message -NoThrow
+                    }
                     return $null
                 }
             }
@@ -28303,7 +28369,7 @@ function Connect-LDAP {
             }
 
             $Script:LDAPCredential = $Credential
-            $Script:ConnectionState = "Success"
+            if (-not $AsGlobalCatalog) { $Script:ConnectionState = "Success" }
 
             # Set AuthMethod if not already set by Connect-adPEAS
             # This handles direct calls to Connect-LDAP (via Ensure-LDAPConnection)
@@ -30753,6 +30819,10 @@ function Clear-SessionState {
     # Connection references (already disposed at this point)
     $Script:LdapConnection = $null
     $Script:GCConnection = $null
+    # The negative half of the GC cache. Left standing it would survive into the next
+    # Connect-adPEAS in the same process and suppress the Global Catalog there - against a
+    # different domain, and possibly from a segment where 3268 is open.
+    $Script:GCConnectionFailed = $null
 
     # Core session state
     $Script:LDAPContext = $null
@@ -49521,6 +49591,21 @@ function Get-GCConnection {
         return $Script:GCConnection
     }
 
+    # The failure is cached too, not just the success.
+    #
+    # Without this every caller retried the whole target list. A firewall blocking port 3268
+    # then cost a 2-second TCP probe per target per call and printed "[!] Connection failed:
+    # Server unreachable" once per target per call - four red lines in the middle of one check
+    # for two resolvable names, and the same again for the next check.
+    #
+    # Negative caching is only safe because the result is advisory: the callers degrade to a
+    # local lookup or report the identity as unresolved, so a GC that comes back later in the
+    # session costs a few unresolved names rather than a wrong answer.
+    if ($Script:GCConnectionFailed) {
+        Write-Log "[Get-GCConnection] GC was already found unreachable in this session - not retrying"
+        return $null
+    }
+
     # Prerequisites: main connection must exist (GC is auxiliary)
     if (-not $Script:LdapConnection -or
         -not ($Script:LDAPContext -is [hashtable]) -or
@@ -49565,11 +49650,16 @@ function Get-GCConnection {
     }
 
     # Build common parameters from existing session for Connect-LDAP -AsGlobalCatalog
+    # -SuppressErrorDisplay: this connection is auxiliary and its failure is tolerated, so
+    # Connect-LDAP's "[!] Connection failed" belongs in the log and not in the middle of a
+    # check's output, where it reads as the check itself having failed. The one line a reader
+    # needs is emitted below, once, and it names the consequence rather than the port.
     $ConnectParams = @{
-        Domain          = $Script:LDAPContext['Domain']
-        AsGlobalCatalog = $true
-        IgnoreSSLErrors = $true
-        TimeoutSeconds  = 5
+        Domain               = $Script:LDAPContext['Domain']
+        AsGlobalCatalog      = $true
+        IgnoreSSLErrors      = $true
+        TimeoutSeconds       = 5
+        SuppressErrorDisplay = $true
     }
     if ($Script:LDAPContext.ContainsKey('UseLDAPS') -and $Script:LDAPContext['UseLDAPS']) {
         $ConnectParams['UseLDAPS'] = $true
@@ -49606,7 +49696,14 @@ function Get-GCConnection {
         }
     }
 
+    # Said once per session, as a Note, and it names what the reader loses rather than the port
+    # that was shut. A blocked 3268 is usually a firewall between the tester and the DC, not an
+    # AD finding, and the only thing it changes about the result is that identities from another
+    # domain come back unresolved - which the checks then say on the row.
+    $Script:GCConnectionFailed = $true
     Write-Log "[Get-GCConnection] All GC connection attempts failed - cross-domain resolution unavailable"
+    Show-Line ("Global Catalog (port 3268) is not reachable on $($targets -join ', ') - identities from " +
+               'another domain cannot be resolved and are reported as unresolved') -Class Note
     return $null
 }
 
@@ -50013,6 +50110,30 @@ function ConvertFrom-SID {
 
             # Convert to LDAP hex format (\XX\XX\XX...)
             $SIDHex = ($SIDBytes | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
+
+            # A machine-local authority is answered here and never asked of the directory.
+            #
+            # S-1-5-82-<hash> is an IIS application pool, S-1-5-80-<hash> a service SID, and
+            # so on: each is a SHA-1 of a name on some computer, so it exists nowhere in the
+            # domain and nowhere in the forest. The LDAP query returned nothing, which sent the
+            # lookup on to the Foreign Security Principal and Global Catalog fallback below -
+            # a query that cannot succeed by construction. On a segment where port 3268 is
+            # filtered that cost a TCP timeout per GC target per SID, and printed a connection
+            # error for each; two such SIDs in one GPO produced four of them.
+            #
+            # The authority is all that can honestly be reported - the hash does not give the
+            # name back - but it is the part a reader acts on: "an IIS application pool holds
+            # this right" rather than "(UNRESOLVABLE)", which reads as an object to go and find.
+            if ($SID -match '^S-1-5-(\d+)-\d+') {
+                $authority = $Matches[1]
+                if ($Script:MachineLocalSIDAuthorities.ContainsKey($authority)) {
+                    $resolvedName = $Script:MachineLocalSIDAuthorities[$authority]
+                    Write-Log "[ConvertFrom-SID] S-1-5-$authority is a machine-local authority - not a directory object: $resolvedName"
+                    $Script:SIDResolutionCache[$SID] = $resolvedName
+                    $Script:SIDVerboseCache[$SID] = $true
+                    return $resolvedName
+                }
+            }
 
             # Check if this is a foreign domain SID before querying local domain
             # If the SID's domain part doesn't match the current domain, skip local domain lookup
@@ -50476,7 +50597,14 @@ function ConvertTo-SID {
                     # Use GC for cross-domain query
                     $gcConn = Get-GCConnection
                     if (-not $gcConn) {
+                        # Cached as unresolvable, like every other failing path in this
+                        # function. This return used to bypass the negative cache write at the
+                        # end, so the same name re-entered the branch on every occurrence -
+                        # and each time paid for the CN=Partitions lookup in
+                        # Resolve-CrossDomainIdentity above, plus a full GC target sweep.
+                        # A right holder named in three GPOs cost three of each.
                         Write-Log "[ConvertTo-SID] GC connection unavailable - cannot resolve cross-domain identity" -Level Warning
+                        $Script:NameToSIDCache[$Identity] = $null
                         return $null
                     }
 
@@ -125228,7 +125356,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.6.0+20261007-1117"
+$Script:adPEASVersion = "2.6.0+20261007-1213"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
