@@ -17,6 +17,18 @@ function Get-GPOUserRightsAssignment {
       Removed - default holders the GPO drops. Usually deliberate hardening, occasionally
                 an operational foot-gun; reported as a note, never as a finding.
 
+    Only the Added direction is listed by default. adPEAS looks for a right granted to
+    somebody who should not have it, and a GPO that takes Backup Operators off
+    SeDebugPrivilege is the opposite of that: worth knowing it happened, nothing to act on.
+    An assignment that only removes holders is therefore counted in one line and not printed,
+    the same treatment as one that matches the default exactly; -IncludeDefaults lists both.
+    Nine blocks of hardening printed ahead of two real findings is how that line was reached.
+
+    A finding that does have additions still carries its RemovedFromDefault row. There the
+    removals are not a separate claim but the rest of that right's holder set, and reading
+    "svc_backup added" without seeing that Administrators was removed in the same breath
+    would describe the wrong configuration.
+
     This replaces a filter on the identity of the holder, which asked the wrong question
     and failed both ways round. Backup Operators holding SeDebugPrivilege is not a Windows
     default and is a clean path to SYSTEM - and it was suppressed, because the group looked
@@ -55,8 +67,10 @@ function Get-GPOUserRightsAssignment {
     PSCredential object for authentication (optional, uses current user if not specified)
 
     .PARAMETER IncludeDefaults
-    Also report the assignments that match the Windows default. Off by default: they are
-    the majority of what a domain contains and none of them is a deviation.
+    Also report the assignments that are not a deviation in the direction this check looks:
+    the ones that match the Windows default exactly, and the ones that only remove default
+    holders. Off by default - together they are the majority of what a domain contains, and
+    none of them grants anybody anything.
 
     .PARAMETER IncludePrivileged
     Kept as an alias of -IncludeDefaults, so an existing invocation keeps working. Under
@@ -389,15 +403,35 @@ function Get-GPOUserRightsAssignment {
                     Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
                 }
 
+                # Everything that is not a deviation in the direction this tool cares about:
+                # assignments that only take default holders away, and - with
+                # -IncludeDefaults - assignments that match the default exactly. Both carry
+                # severity Note, and both are counted here rather than printed.
+                #
+                # adPEAS looks for a right granted to somebody who should not have it. A GPO
+                # that removes Backup Operators from SeDebugPrivilege is hardening: good to
+                # know it happened, nothing to act on, and nine of those printed as full
+                # blocks bury the two that matter. The count stays because silence would be
+                # indistinguishable from a domain where no hardening was done at all.
                 $removalsOnly = @($shown | Where-Object { $_._severity -eq 'Note' })
                 if ($removalsOnly.Count -gt 0) {
-                    Show-Line "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break" -Class "Note"
+                    $text = "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break"
+                    if (-not $showDefaults) { $text += ' (-IncludeDefaults to list)' }
+                    Show-Line $text -Class "Note"
                 }
 
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
-                # Findings first, then hints, then the removals
-                $ordered = @($shown | Sort-Object @{Expression={
+                # Findings first, then hints, then the removals.
+                #
+                # The removals are only in this list with -IncludeDefaults. Filtered on
+                # _severity and not on the render class: an inactive finding is printed in the
+                # colour of a note while its own severity still says Finding, and dropping
+                # those would hide every deviation that sits on a dormant policy - which the
+                # dampening already decides on separately.
+                $listed = if ($showDefaults) { @($shown) } else { @($shown | Where-Object { $_._severity -ne 'Note' }) }
+                $ordered = @($listed | Sort-Object @{Expression={
                     switch ($_._severity) { 'Finding' { 0 } 'Hint' { 1 } default { 2 } }
                 }}, GPOName, UserRight)
                 foreach ($finding in $ordered) {
