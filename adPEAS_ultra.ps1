@@ -1366,7 +1366,7 @@ $Script:UserRightsBaseline = [ordered]@{
 	    Name = 'Enable computer and user accounts to be trusted for delegation'
 	    Tier = 'Finding'
 	    Why  = 'Configures Kerberos delegation, which is impersonation of any user against the delegated service.'
-	    Member = @()
+	    Member = @('S-1-5-32-544')
 	    DC     = @('S-1-5-32-544')
 	}
 	'SeSyncAgentPrivilege' = @{
@@ -1415,8 +1415,8 @@ $Script:UserRightsBaseline = [ordered]@{
 	    Name = 'Allow log on locally'
 	    Tier = 'Hint'
 	    Why  = 'A console session. On a domain controller it is the difference between a member and an admin of the domain.'
-	    Member = @('S-1-5-32-544', 'S-1-5-32-545', 'S-1-5-32-551', 'S-1-5-32-546')
-	    DC     = @('S-1-5-32-544', 'S-1-5-32-548', 'S-1-5-32-551', 'S-1-5-32-550', 'S-1-5-32-549')
+	    Member = @('S-1-5-32-544', 'S-1-5-32-551', 'S-1-5-32-545')
+	    DC     = @('S-1-5-32-544', 'S-1-5-32-548', 'S-1-5-32-551', 'S-1-5-9', 'S-1-5-32-550', 'S-1-5-32-549')
 	}
 	'SeBatchLogonRight' = @{
 	    Name = 'Log on as a batch job'
@@ -1451,7 +1451,7 @@ $Script:UserRightsBaseline = [ordered]@{
 	    Tier = 'Hint'
 	    Why  = 'Denial of service, and on a domain controller a way to force authentication elsewhere.'
 	    Member = @('S-1-5-32-544', 'S-1-5-32-545', 'S-1-5-32-551')
-	    DC     = @('S-1-5-32-544', 'S-1-5-32-548', 'S-1-5-32-551', 'S-1-5-32-550', 'S-1-5-32-549')
+	    DC     = @('S-1-5-32-544', 'S-1-5-32-551', 'S-1-5-32-550', 'S-1-5-32-549')
 	}
 }
 function Compare-UserRightAssignment {
@@ -46736,6 +46736,7 @@ function Split-GPOFindingByReach {
 	$inactive = New-Object System.Collections.Generic.List[object]
 	$unlinked = 0
 	$disabled = 0
+	$dormantByGuid = [ordered]@{}
 	foreach ($item in @(@($Finding) | Where-Object { $_ })) {
 	    $guid = "$($item.$GuidProperty)".ToUpper()
 	    $links = $null
@@ -46753,7 +46754,23 @@ function Split-GPOFindingByReach {
 	    $reach = Get-GPOReach -StatusEntry $statusEntry -Scope $itemScope -Link $links
 	    if ($reach.Reaches -eq $false) {
 	        $inactive.Add($item)
-	        if ($reach.Reason -like '*linked nowhere*') { $unlinked++ } else { $disabled++ }
+	        $category = if ($reach.Reason -like '*linked nowhere*') { 'unlinked' } else { 'disabled' }
+	        if ($category -eq 'unlinked') { $unlinked++ } else { $disabled++ }
+	        if (-not $dormantByGuid.Contains($guid)) {
+	            $name = $null
+	            foreach ($candidate in @('GPOName', 'displayName')) {
+	                if ($item.PSObject.Properties[$candidate] -and
+	                    -not [string]::IsNullOrWhiteSpace("$($item.$candidate)")) {
+	                    $name = "$($item.$candidate)"
+	                    break
+	                }
+	            }
+	            $dormantByGuid[$guid] = [PSCustomObject]@{
+	                GPOGUID  = "$($item.$GuidProperty)"
+	                GPOName  = $name
+	                Category = $category
+	            }
+	        }
 	    } else {
 	        $active.Add($item)
 	    }
@@ -46763,6 +46780,7 @@ function Split-GPOFindingByReach {
 	    Inactive = $inactive.ToArray()
 	    Unlinked = $unlinked
 	    Disabled = $disabled
+	    Dormant  = @($dormantByGuid.Values)
 	}
 }
 function Show-GPOInactiveSummary {
@@ -46773,7 +46791,10 @@ function Show-GPOInactiveSummary {
 	    [Parameter(Mandatory=$false)]
 	    [int]$Disabled = 0,
 	    [Parameter(Mandatory=$false)]
-	    [switch]$Listed
+	    [switch]$Listed,
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Dormant
 	)
 	$Count = $Unlinked + $Disabled
 	if ($Count -le 0) { return }
@@ -46788,11 +46809,25 @@ function Show-GPOInactiveSummary {
 	    Show-Line "$Count of the findings below sit on a policy that is not linked or not enabled" -Class Note
 	    return
 	}
-	$text = "$Count further finding(s) hidden - $reason"
+	$rows = @(@($Dormant) | Where-Object { $_ } | Sort-Object `
+	    @{Expression = { if ($_.Category -eq 'unlinked') { 0 } else { 1 } }}, `
+	    @{Expression = { if ([string]::IsNullOrWhiteSpace("$($_.GPOName)")) { "$($_.GPOGUID)" } else { "$($_.GPOName)" } }})
+	$text = "$Count finding(s) hidden - $reason"
 	if ($null -eq $Script:adPEAS_CurrentCheckContext) {
 	    $text += ' (-IncludeInactive to list)'
 	}
-	Show-Line $text -Class Note
+	if ($rows.Count -eq 0) {
+	    Show-Line $text -Class Note
+	    return
+	}
+	Show-Line "${text}:" -Class Note
+	foreach ($row in $rows) {
+	    $guid = "$($row.GPOGUID)"
+	    if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
+	    $name = "$($row.GPOName)"
+	    if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
+	    Show-Line ('  ' + $guid.PadRight(38) + '  ' + "$($row.Category)".PadRight(8) + '  ' + $name) -Class Note
+	}
 }
 function Get-GPORelativePath {
 	[CmdletBinding()]
@@ -58630,7 +58665,8 @@ function Get-LDAPConfiguration {
 	            } else {
 	                Show-Line "No LDAP security configuration is deployed by a policy that is linked and enabled - all $dcCount DC(s) potentially vulnerable" -Class Finding
 	            }
-	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+	                -Dormant $split.Dormant -Listed:$IncludeInactive
 	            foreach ($gpoFinding in $shown) {
 	                $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
 	                if (@($split.Inactive) -contains $gpoFinding) {
@@ -58845,7 +58881,8 @@ function Get-SMBSigningStatus {
 	            } else {
 	                Show-Line "No SMB Signing configuration is deployed by a policy that is linked and enabled" -Class Finding
 	            }
-	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+	                -Dormant $split.Dormant -Listed:$IncludeInactive
 	            foreach ($gpoFinding in $shown) {
 	                $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigning' -Force
 	                if (@($split.Inactive) -contains $gpoFinding) {
@@ -61475,9 +61512,17 @@ function Get-AddComputerRights {
 	            } else {
 	                Show-Line "No policy that is linked and enabled configures SeMachineAccountPrivilege" -Class Note
 	            }
+	            $dormantGPOs = @($inactiveGPOs | ForEach-Object {
+	                [PSCustomObject]@{
+	                    GPOGUID  = "$($_.Name)"
+	                    GPOName  = "$($_.displayName)"
+	                    Category = if ($_._ReachUnlinked) { 'unlinked' } else { 'disabled' }
+	                }
+	            })
 	            Show-GPOInactiveSummary `
 	                -Unlinked @($inactiveGPOs | Where-Object { $_._ReachUnlinked }).Count `
 	                -Disabled @($inactiveGPOs | Where-Object { -not $_._ReachUnlinked }).Count `
+	                -Dormant $dormantGPOs `
 	                -Listed:$IncludeInactive
 	            $scopePriorityMap = @{ "DomainControllers" = 1; "Domain" = 2; "OtherOU" = 3; "NotLinked" = 4 }
 	            $sortedGPOs = @($shownGPOs | Sort-Object @{Expression={$scopePriorityMap[$_._PrecedenceScope]}}, _PrecedenceOrder)
@@ -61865,10 +61910,14 @@ function Get-GPOUserRightsAssignment {
 	            }
 	            $removalsOnly = @($shown | Where-Object { $_._severity -eq 'Note' })
 	            if ($removalsOnly.Count -gt 0) {
-	                Show-Line "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break" -Class "Note"
+	                $text = "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break"
+	                if (-not $showDefaults) { $text += ' (-IncludeDefaults to list)' }
+	                Show-Line $text -Class "Note"
 	            }
-	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
-	            $ordered = @($shown | Sort-Object @{Expression={
+	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+	                -Dormant $split.Dormant -Listed:$IncludeInactive
+	            $listed = if ($showDefaults) { @($shown) } else { @($shown | Where-Object { $_._severity -ne 'Note' }) }
+	            $ordered = @($listed | Sort-Object @{Expression={
 	                switch ($_._severity) { 'Finding' { 0 } 'Hint' { 1 } default { 2 } }
 	            }}, GPOName, UserRight)
 	            foreach ($finding in $ordered) {
@@ -63305,7 +63354,8 @@ function Get-GPOLocalGroupMembership {
 	            } else {
 	                Show-Line "No local group assignment is made by a policy that is linked and enabled" -Class Note
 	            }
-	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+	                -Dormant $split.Dormant -Listed:$IncludeInactive
 	            foreach ($finding in $shown) {
 	                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOLocalGroup' -Force
 	                if (@($split.Inactive) -contains $finding) {
@@ -63675,7 +63725,8 @@ function Get-GPOScheduledTasks {
 	            } else {
 	                Show-Line "No scheduled task is distributed by a policy that is linked and enabled" -Class Note
 	            }
-	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+	                -Dormant $split.Dormant -Listed:$IncludeInactive
 	            foreach ($task in $shown) {
 	                $taskClass = if (@($split.Inactive) -contains $task) {
 	                    'Note'
@@ -63956,7 +64007,8 @@ function Get-GPOScriptPaths {
 	            } else {
 	                Show-Line "No script is distributed by a policy that is linked and enabled" -Class Note
 	            }
-	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+	                -Dormant $split.Dormant -Listed:$IncludeInactive
 	            foreach ($finding in $shown) {
 	                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOScriptPath' -Force
 	                if (@($split.Inactive) -contains $finding) {
@@ -64192,7 +64244,8 @@ function Get-GPORegistrySettings {
 	            } else {
 	                Show-Line "No vulnerable registry setting is deployed by a policy that is linked and enabled" -Class Note
 	            }
-	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+	                -Dormant $split.Dormant -Listed:$IncludeInactive
 	            foreach ($finding in $shown) {
 	                $linkedOUs = $null
 	                if ($null -ne $gpoLinkage) {
@@ -64356,7 +64409,10 @@ function Get-GPOPointAndPrint {
 	    [Parameter(Mandatory=$false)]
 	    [System.Management.Automation.PSCredential]$Credential,
 	    [Parameter(Mandatory=$false)]
-	    [switch]$IncludeInactive
+	    [switch]$IncludeInactive,
+	    [Parameter(Mandatory=$false)]
+	    [Alias('IncludePrivileged')]
+	    [switch]$IncludeDefaults
 	)
 	process {
 	    try {
@@ -64454,17 +64510,26 @@ function Get-GPOPointAndPrint {
 	        $split = Split-GPOFindingByReach -Finding $objects -GPOStatusMap $gpoStatusMap `
 	            -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
 	        $shown = if ($IncludeInactive) { @($objects) } else { @($split.Active) }
-	        $exploitable = @($shown | Where-Object { $_.Exploitability -like 'Exploitable*' })
-	        if (@($shown).Count -gt 0) {
-	            Show-Line "Found $(@($shown).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+	        $settled = @($shown | Where-Object { $_.Severity -eq 'Info' })
+	        $listed  = if ($IncludeDefaults) { @($shown) } else { @($shown | Where-Object { $_.Severity -ne 'Info' }) }
+	        $exploitable = @($listed | Where-Object { $_.Exploitability -like 'Exploitable*' })
+	        if (@($listed).Count -gt 0) {
+	            Show-Line "Found $(@($listed).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+	        } elseif ($settled.Count -gt 0) {
+	            Show-Line "No linked and enabled policy leaves printer driver installation open to non-administrators" -Class Secure
 	        } else {
 	            Show-Line "No Point and Print configuration is deployed by a policy that is linked and enabled" -Class Note
 	        }
 	        if ($exploitable.Count -gt 0) {
 	            Show-Line "$($exploitable.Count) GPO configuration(s) let non-administrators install printer drivers without an elevation prompt" -Class Finding
 	        }
-	        Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
-	        foreach ($object in $shown) {
+	        if (-not $IncludeDefaults -and $settled.Count -gt 0) {
+	            Show-Line ("$($settled.Count) configuration(s) are hardened or control no driver installation " +
+	                       '(-IncludeDefaults to list)') -Class Note
+	        }
+	        Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+	            -Dormant $split.Dormant -Listed:$IncludeInactive
+	        foreach ($object in $listed) {
 	            if (@($split.Inactive) -contains $object) {
 	                Show-Object $object -Class Note
 	            } else {
@@ -79243,7 +79308,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.6.0+20261006-1451"
+$Script:adPEASVersion = "2.6.0+20261007-1053"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -79734,7 +79799,7 @@ try {
 	        Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks }
 	        Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScriptPaths' -Title 'GPO Script Paths' -Check { Get-GPOScriptPaths }
 	        Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPORegistrySettings' -Title 'GPO Registry Settings' -Check { Get-GPORegistrySettings }
-	        Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPointAndPrint' -Title 'Point and Print Policies' -Check { Get-GPOPointAndPrint }
+	        Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPointAndPrint' -Title 'Point and Print Policies' -Check { Get-GPOPointAndPrint -IncludeDefaults:$IncludePrivileged }
 	    } catch {
 	        Write-Warning "[adPEAS] Error executing GPO Module: $_"
 	    }

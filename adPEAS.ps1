@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-06 14:51:19
-    Version: 2.6.0+20261006-1451
+    Build: 2026-10-07 10:53:52
+    Version: 2.6.0+20261007-1053
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -3122,8 +3122,19 @@ $Script:UserRightsBaseline = [ordered]@{
         Name = 'Enable computer and user accounts to be trusted for delegation'
         Tier = 'Finding'
         Why  = 'Configures Kerberos delegation, which is impersonation of any user against the delegated service.'
-        # Nobody on a member; Administrators on a domain controller, where it means anything.
-        Member = @()
+        # Administrators in both scopes, which takes the Default values table over the body
+        # text where the two disagree. The table gives "Member Server Effective" and "Client
+        # Computer Effective" as Administrators; the body says there is "no reason to assign
+        # this user right to anyone on member servers and workstations ... because it has no
+        # meaning in those contexts". That sentence is advice, not a statement of the default -
+        # and it is the reason this list used to be empty.
+        #
+        # Empty made a member-scoped GPO that grants Administrators the right - a right the
+        # local effective policy already gives them - a Tier-1 Finding. The union across scopes
+        # masked it for any GPO that also reaches a domain controller, so what was exposed was
+        # the member-only case. Granting it to anybody else there is still reported.
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/enable-computer-and-user-accounts-to-be-trusted-for-delegation
+        Member = @('S-1-5-32-544')
         DC     = @('S-1-5-32-544')
     }
 
@@ -3184,8 +3195,22 @@ $Script:UserRightsBaseline = [ordered]@{
         Name = 'Allow log on locally'
         Tier = 'Hint'
         Why  = 'A console session. On a domain controller it is the difference between a member and an admin of the domain.'
-        Member = @('S-1-5-32-544', 'S-1-5-32-545', 'S-1-5-32-551', 'S-1-5-32-546')
-        DC     = @('S-1-5-32-544', 'S-1-5-32-548', 'S-1-5-32-551', 'S-1-5-32-550', 'S-1-5-32-549')
+        # Administrators, Backup Operators, Users - the three Microsoft documents for
+        # workstations and servers. Guests (S-1-5-32-546) used to sit here and does not
+        # belong: the same page names Guests as a candidate for "Deny log on locally", so
+        # listing it as a default suppressed a finding on a GPO that genuinely grants Guests
+        # a console session.
+        Member = @('S-1-5-32-544', 'S-1-5-32-551', 'S-1-5-32-545')
+        # Six on a domain controller, not five. S-1-5-9 ENTERPRISE DOMAIN CONTROLLERS is a
+        # documented default here and was missing, which reported the untouched Default
+        # Domain Controllers Policy of every domain as departing from the default.
+        #
+        # It reads like a mistake because a computer account does not open a console session,
+        # but the default is the default: Microsoft names it both in the body text ("the
+        # members of the following groups have this right on domain controllers") and in the
+        # Default Domain Controller Policy row of the Default values table.
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/allow-log-on-locally
+        DC     = @('S-1-5-32-544', 'S-1-5-32-548', 'S-1-5-32-551', 'S-1-5-9', 'S-1-5-32-550', 'S-1-5-32-549')
     }
 
     'SeBatchLogonRight' = @{
@@ -3228,8 +3253,27 @@ $Script:UserRightsBaseline = [ordered]@{
         Name = 'Shut down the system'
         Tier = 'Hint'
         Why  = 'Denial of service, and on a domain controller a way to force authentication elsewhere.'
+        # Users (S-1-5-32-545) is a CLIENT default, not a member-server one: Microsoft gives
+        # "Member Server Effective" as Administrators and Backup Operators, and only "Client
+        # Computer Effective" adds Users. adPEAS has one non-DC bucket for both, so it has to
+        # pick, and it picks the wider one - dropping Users would report the untouched default
+        # of every workstation baseline GPO, which is the far more common object.
         Member = @('S-1-5-32-544', 'S-1-5-32-545', 'S-1-5-32-551')
-        DC     = @('S-1-5-32-544', 'S-1-5-32-548', 'S-1-5-32-551', 'S-1-5-32-550', 'S-1-5-32-549')
+        # Four on a domain controller, not five. Account Operators (S-1-5-32-548) was here and
+        # is not a documented holder: "By default this setting is Administrators, Backup
+        # Operators, Server Operators, and Print Operators on domain controllers", and both
+        # the Default Domain Controller Policy and the Domain Controller Effective rows name
+        # those same four. The AD DS groups page gives Account Operators exactly one default
+        # right, Allow log on locally - shutdown is not among them.
+        #
+        # The entry most likely came from the Windows Server 2003 page, which did list "Allow
+        # log on locally; Shut down the system" for Account Operators. The modern pages dropped
+        # the second while keeping it on Print, Backup and Server Operators.
+        #
+        # Direction matters: this was a false NEGATIVE. It silently accepted a GPO granting
+        # Account Operators shutdown on domain controllers.
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/shut-down-the-system
+        DC     = @('S-1-5-32-544', 'S-1-5-32-551', 'S-1-5-32-550', 'S-1-5-32-549')
     }
 }
 
@@ -74361,6 +74405,11 @@ function Split-GPOFindingByReach {
     $unlinked = 0
     $disabled = 0
 
+    # One entry per dormant POLICY, not per dormant finding, so that ten registry values in
+    # one unlinked GPO name it once. Keyed by GUID; the first category wins, which is the
+    # same precedence the counters use.
+    $dormantByGuid = [ordered]@{}
+
     foreach ($item in @(@($Finding) | Where-Object { $_ })) {
         $guid = "$($item.$GuidProperty)".ToUpper()
 
@@ -74400,7 +74449,28 @@ function Split-GPOFindingByReach {
             # is a cleanup candidate, a disabled one is a deliberate switch somebody threw.
             # A policy that is both counts as unlinked, since linking it would still not
             # make it apply.
-            if ($reach.Reason -like '*linked nowhere*') { $unlinked++ } else { $disabled++ }
+            $category = if ($reach.Reason -like '*linked nowhere*') { 'unlinked' } else { 'disabled' }
+            if ($category -eq 'unlinked') { $unlinked++ } else { $disabled++ }
+
+            if (-not $dormantByGuid.Contains($guid)) {
+                # The display name off the finding. Checks name it GPOName; the two that work
+                # on native GPO objects carry displayName, and Name there is the GUID - so
+                # falling back to Name would print the GUID twice on one line.
+                $name = $null
+                foreach ($candidate in @('GPOName', 'displayName')) {
+                    if ($item.PSObject.Properties[$candidate] -and
+                        -not [string]::IsNullOrWhiteSpace("$($item.$candidate)")) {
+                        $name = "$($item.$candidate)"
+                        break
+                    }
+                }
+
+                $dormantByGuid[$guid] = [PSCustomObject]@{
+                    GPOGUID  = "$($item.$GuidProperty)"
+                    GPOName  = $name
+                    Category = $category
+                }
+            }
         } else {
             $active.Add($item)
         }
@@ -74411,11 +74481,14 @@ function Split-GPOFindingByReach {
     # List[object] - @($list) and $list.ToArray() are not interchangeable here, and the
     # failure is a terminating error inside the function, which the calling check turns
     # into "Error during check" with no hint of where it came from.
+    # @(...Values) rather than .Values: an OrderedDictionary's value collection is not an
+    # array, and a single entry would reach the caller as a bare object whose .Count is empty.
     return [PSCustomObject]@{
         Active   = $active.ToArray()
         Inactive = $inactive.ToArray()
         Unlinked = $unlinked
         Disabled = $disabled
+        Dormant  = @($dormantByGuid.Values)
     }
 }
 
@@ -74456,12 +74529,35 @@ function Split-GPOFindingByReach {
     Whether those findings are being printed as well. Changes the line from an account of
     what is missing into an explanation of what is there.
 
+.PARAMETER Dormant
+    One entry per dormant POLICY - GPOGUID, GPOName, Category ('unlinked' or 'disabled') -
+    as Split-GPOFindingByReach returns it in its Dormant field. Each is named on its own
+    line below the summary.
+
+    Naming them is the point: a count alone tells a reader that something was held back but
+    not whether they care, and a GPO nobody can identify cannot be cleaned up either. The
+    GUID leads because it is the folder name under \\<domain>\SYSVOL\<domain>\Policies\ and
+    is fixed width, so the lines form a column; the display name follows and may be any
+    length. Both, because the name is what a reader recognises and the GUID is what they
+    need in order to go and look.
+
+    Policies, not findings: ten registry values in one unlinked GPO are one line. The
+    summary above still counts findings, which is why the two numbers can differ.
+
+    Not truncated. The list is bounded by the number of policies in the domain, and cutting
+    it off would leave a reader with only -IncludeInactive to learn the missing names - which
+    prints every held-back finding, far more output than the lines a cap saves.
+
 .OUTPUTS
-    None. Writes one Note line, and nothing at all when both counts are zero.
+    None. Writes one Note line plus one per dormant policy, and nothing at all when both
+    counts are zero.
 
 .EXAMPLE
-    Show-GPOInactiveSummary -Unlinked 2 -Disabled 1
-    [*] 3 further finding(s) hidden - 2 on unlinked policies, 1 on disabled ones
+    Show-GPOInactiveSummary -Unlinked 2 -Disabled 1 -Dormant $split.Dormant
+    [*] 3 finding(s) hidden - 2 on unlinked policies, 1 on disabled ones:
+    [*]   {02FF1399-2A08-4922-9C0E-A1EAB771699C}  unlinked  Systemhaertung Ws2022 DC
+    [*]   {11112222-3333-4444-5555-666677778888}  unlinked  Altlast Tasks
+    [*]   {6AC1786C-016F-11D2-945F-00C04FB984F9}  disabled  Kiosk Tasks
 #>
 function Show-GPOInactiveSummary {
     [CmdletBinding()]
@@ -74473,7 +74569,11 @@ function Show-GPOInactiveSummary {
         [int]$Disabled = 0,
 
         [Parameter(Mandatory=$false)]
-        [switch]$Listed
+        [switch]$Listed,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Dormant
     )
 
     $Count = $Unlinked + $Disabled
@@ -74493,7 +74593,14 @@ function Show-GPOInactiveSummary {
         return
     }
 
-    $text = "$Count further finding(s) hidden - $reason"
+    # Unlinked before disabled, matching the order the summary names them, and by name
+    # within each so that two runs against the same domain print the same thing. A policy
+    # with no name sorts under its GUID rather than to the front.
+    $rows = @(@($Dormant) | Where-Object { $_ } | Sort-Object `
+        @{Expression = { if ($_.Category -eq 'unlinked') { 0 } else { 1 } }}, `
+        @{Expression = { if ([string]::IsNullOrWhiteSpace("$($_.GPOName)")) { "$($_.GPOGUID)" } else { "$($_.GPOName)" } }})
+
+    $text = "$Count finding(s) hidden - $reason"
 
     # Invoke-adPEAS sets the context for the duration of each check, so no context means
     # the check was called on its own and the switch is reachable.
@@ -74501,7 +74608,35 @@ function Show-GPOInactiveSummary {
         $text += ' (-IncludeInactive to list)'
     }
 
-    Show-Line $text -Class Note
+    if ($rows.Count -eq 0) {
+        Show-Line $text -Class Note
+        return
+    }
+
+    Show-Line "${text}:" -Class Note
+
+    # Not capped, deliberately.
+    #
+    # It was, at ten, and the first real domain it met had twelve dormant policies: the cap
+    # saved two lines and cost the list its completeness. A truncated list of identifiers is
+    # worse than no list, because the only way left to learn the missing names is
+    # -IncludeInactive, which prints every held-back finding - thirty-four of them in that
+    # domain, to recover two names.
+    #
+    # The length is bounded by the number of policies in the domain, which is bounded by what
+    # somebody has to administer, and one line per policy is already the compression: those
+    # thirty-four findings are twelve lines.
+    foreach ($row in $rows) {
+        # Padded to the width of a braced GUID so the three fields line up. A missing value
+        # is still padded, or one short entry would shift every line after it.
+        $guid = "$($row.GPOGUID)"
+        if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
+
+        $name = "$($row.GPOName)"
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
+
+        Show-Line ('  ' + $guid.PadRight(38) + '  ' + "$($row.Category)".PadRight(8) + '  ' + $name) -Class Note
+    }
 }
 
 
@@ -94378,7 +94513,8 @@ function Get-LDAPConfiguration {
                     Show-Line "No LDAP security configuration is deployed by a policy that is linked and enabled - all $dcCount DC(s) potentially vulnerable" -Class Finding
                 }
 
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($gpoFinding in $shown) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
@@ -94757,7 +94893,8 @@ function Get-SMBSigningStatus {
                     Show-Line "No SMB Signing configuration is deployed by a policy that is linked and enabled" -Class Finding
                 }
 
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($gpoFinding in $shown) {
                     $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigning' -Force
@@ -99505,9 +99642,28 @@ function Get-AddComputerRights {
                     Show-Line "No policy that is linked and enabled configures SeMachineAccountPrivilege" -Class Note
                 }
 
+                # The dormant list in the shape Split-GPOFindingByReach produces, built by
+                # hand because this check stamps the reach verdict itself - the linkage and
+                # the status map only exist inside Check-GPOAddComputerRights. One entry per
+                # policy, and here that is also one per finding: this check reports one row
+                # per GPO to begin with.
+                #
+                # Name and displayName, not GPOGUID and GPOName: these are native GPO objects
+                # and those two are only the row LABELS that $Script:AttributeLabels puts on
+                # them for display. Reading the label names here would yield empty strings and
+                # print a list of blanks.
+                $dormantGPOs = @($inactiveGPOs | ForEach-Object {
+                    [PSCustomObject]@{
+                        GPOGUID  = "$($_.Name)"
+                        GPOName  = "$($_.displayName)"
+                        Category = if ($_._ReachUnlinked) { 'unlinked' } else { 'disabled' }
+                    }
+                })
+
                 Show-GPOInactiveSummary `
                     -Unlinked @($inactiveGPOs | Where-Object { $_._ReachUnlinked }).Count `
                     -Disabled @($inactiveGPOs | Where-Object { -not $_._ReachUnlinked }).Count `
+                    -Dormant $dormantGPOs `
                     -Listed:$IncludeInactive
 
                 # Show all GPOs that define SeMachineAccountPrivilege, sorted by precedence
@@ -99848,6 +100004,18 @@ function Get-GPOUserRightsAssignment {
       Removed - default holders the GPO drops. Usually deliberate hardening, occasionally
                 an operational foot-gun; reported as a note, never as a finding.
 
+    Only the Added direction is listed by default. adPEAS looks for a right granted to
+    somebody who should not have it, and a GPO that takes Backup Operators off
+    SeDebugPrivilege is the opposite of that: worth knowing it happened, nothing to act on.
+    An assignment that only removes holders is therefore counted in one line and not printed,
+    the same treatment as one that matches the default exactly; -IncludeDefaults lists both.
+    Nine blocks of hardening printed ahead of two real findings is how that line was reached.
+
+    A finding that does have additions still carries its RemovedFromDefault row. There the
+    removals are not a separate claim but the rest of that right's holder set, and reading
+    "svc_backup added" without seeing that Administrators was removed in the same breath
+    would describe the wrong configuration.
+
     This replaces a filter on the identity of the holder, which asked the wrong question
     and failed both ways round. Backup Operators holding SeDebugPrivilege is not a Windows
     default and is a clean path to SYSTEM - and it was suppressed, because the group looked
@@ -99886,8 +100054,10 @@ function Get-GPOUserRightsAssignment {
     PSCredential object for authentication (optional, uses current user if not specified)
 
     .PARAMETER IncludeDefaults
-    Also report the assignments that match the Windows default. Off by default: they are
-    the majority of what a domain contains and none of them is a deviation.
+    Also report the assignments that are not a deviation in the direction this check looks:
+    the ones that match the Windows default exactly, and the ones that only remove default
+    holders. Off by default - together they are the majority of what a domain contains, and
+    none of them grants anybody anything.
 
     .PARAMETER IncludePrivileged
     Kept as an alias of -IncludeDefaults, so an existing invocation keeps working. Under
@@ -100220,15 +100390,35 @@ function Get-GPOUserRightsAssignment {
                     Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
                 }
 
+                # Everything that is not a deviation in the direction this tool cares about:
+                # assignments that only take default holders away, and - with
+                # -IncludeDefaults - assignments that match the default exactly. Both carry
+                # severity Note, and both are counted here rather than printed.
+                #
+                # adPEAS looks for a right granted to somebody who should not have it. A GPO
+                # that removes Backup Operators from SeDebugPrivilege is hardening: good to
+                # know it happened, nothing to act on, and nine of those printed as full
+                # blocks bury the two that matter. The count stays because silence would be
+                # indistinguishable from a domain where no hardening was done at all.
                 $removalsOnly = @($shown | Where-Object { $_._severity -eq 'Note' })
                 if ($removalsOnly.Count -gt 0) {
-                    Show-Line "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break" -Class "Note"
+                    $text = "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break"
+                    if (-not $showDefaults) { $text += ' (-IncludeDefaults to list)' }
+                    Show-Line $text -Class "Note"
                 }
 
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
-                # Findings first, then hints, then the removals
-                $ordered = @($shown | Sort-Object @{Expression={
+                # Findings first, then hints, then the removals.
+                #
+                # The removals are only in this list with -IncludeDefaults. Filtered on
+                # _severity and not on the render class: an inactive finding is printed in the
+                # colour of a note while its own severity still says Finding, and dropping
+                # those would hide every deviation that sits on a dormant policy - which the
+                # dampening already decides on separately.
+                $listed = if ($showDefaults) { @($shown) } else { @($shown | Where-Object { $_._severity -ne 'Note' }) }
+                $ordered = @($listed | Sort-Object @{Expression={
                     switch ($_._severity) { 'Finding' { 0 } 'Hint' { 1 } default { 2 } }
                 }}, GPOName, UserRight)
                 foreach ($finding in $ordered) {
@@ -102821,7 +103011,8 @@ function Get-GPOLocalGroupMembership {
                     Show-Line "No local group assignment is made by a policy that is linked and enabled" -Class Note
                 }
 
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOLocalGroup' -Force
@@ -103448,7 +103639,8 @@ function Get-GPOScheduledTasks {
                     Show-Line "No scheduled task is distributed by a policy that is linked and enabled" -Class Note
                 }
 
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($task in $shown) {
                     # Grey whatever the severity analysis concluded: the class describes the
@@ -103931,7 +104123,8 @@ function Get-GPOScriptPaths {
                     Show-Line "No script is distributed by a policy that is linked and enabled" -Class Note
                 }
 
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOScriptPath' -Force
@@ -104357,7 +104550,8 @@ function Get-GPORegistrySettings {
                     Show-Line "No vulnerable registry setting is deployed by a policy that is linked and enabled" -Class Note
                 }
 
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                    -Dormant $split.Dormant -Listed:$IncludeInactive
 
                 foreach ($finding in $shown) {
                     # $null-guarded, and three-valued. Get-GPOLinkage returns $null when the
@@ -104644,6 +104838,17 @@ function Get-GPOPointAndPrint {
     configure it, which is not the same as the domain being insecure - and since the Windows
     default is the secure one, absence is never reported as a finding.
 
+    A configuration that exposes nothing is counted rather than printed. Two verdicts qualify:
+    driver installation limited to Administrators, which overrides every prompt setting in the
+    same GPO, and a GPO that controls driver installation at all. Both carry severity Info,
+    and printing one meant eight rows agreeing with the Exploitability line above them - a
+    hardened policy linked to seventeen OUs produced thirty lines saying the same thing, ahead
+    of the policy that was not hardened. -IncludeDefaults lists them.
+
+    The User Configuration case stays visible. Windows ignores it (KB2307161), so it is not an
+    exposure either - but somebody hardened and it does not take effect, and an ineffective
+    hardening is a different statement from a working one.
+
     Requires SMB access to \\domain\SYSVOL.
 
     .PARAMETER Domain
@@ -104654,6 +104859,14 @@ function Get-GPOPointAndPrint {
 
     .PARAMETER Credential
     PSCredential object for authentication (optional, uses current user if not specified)
+
+    .PARAMETER IncludeInactive
+    Also list findings whose policy is not linked or not enabled. Held back by default.
+
+    .PARAMETER IncludeDefaults
+    Also list the configurations that expose nothing - hardened, or controlling no driver
+    installation. Aliased as -IncludePrivileged, which is the switch Invoke-adPEAS passes, so
+    the hint naming it is reachable from a full scan.
 
     .EXAMPLE
     Get-GPOPointAndPrint
@@ -104682,7 +104895,11 @@ function Get-GPOPointAndPrint {
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory=$false)]
-        [switch]$IncludeInactive
+        [switch]$IncludeInactive,
+
+        [Parameter(Mandatory=$false)]
+        [Alias('IncludePrivileged')]
+        [switch]$IncludeDefaults
     )
 
     begin {
@@ -104841,10 +105058,32 @@ function Get-GPOPointAndPrint {
             # Counted over what is printed, including the exploitable tally: a count of
             # exploitable policies that are not listed sends a reader hunting for rows that
             # are not there.
-            $exploitable = @($shown | Where-Object { $_.Exploitability -like 'Exploitable*' })
+            # A configuration whose verdict is Info exposes nothing: either driver
+            # installation is limited to Administrators, which overrides every prompt setting
+            # in the same GPO, or the GPO controls driver installation at all. Printing it
+            # restates the Exploitability line eight more times in green, and a hardened
+            # policy linked to seventeen OUs buries the one that is not hardened under thirty
+            # lines of agreement.
+            #
+            # Severity, not the Exploitability text: the text is for a reader, the severity is
+            # the verdict, and matching on a sentence would break the moment it is reworded.
+            #
+            # 'Low' stays visible on purpose. That is the User Configuration case, which
+            # Windows ignores (KB2307161) - not an exposure, but somebody hardened and it does
+            # not take effect, and an ineffective hardening is worth a line of its own.
+            $settled = @($shown | Where-Object { $_.Severity -eq 'Info' })
+            $listed  = if ($IncludeDefaults) { @($shown) } else { @($shown | Where-Object { $_.Severity -ne 'Info' }) }
 
-            if (@($shown).Count -gt 0) {
-                Show-Line "Found $(@($shown).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+            # Counted over what is printed, for the same reason the exploitable tally is.
+            $exploitable = @($listed | Where-Object { $_.Exploitability -like 'Exploitable*' })
+
+            if (@($listed).Count -gt 0) {
+                Show-Line "Found $(@($listed).Count) GPO configuration(s) with Point and Print or printer driver settings" -Class Hint
+            } elseif ($settled.Count -gt 0) {
+                # Not the "nothing is deployed" line below: something is deployed, and it is
+                # the hardened kind. Saying nothing is deployed would be false, and saying
+                # nothing at all would read as a check that found no policies to look at.
+                Show-Line "No linked and enabled policy leaves printer driver installation open to non-administrators" -Class Secure
             } else {
                 Show-Line "No Point and Print configuration is deployed by a policy that is linked and enabled" -Class Note
             }
@@ -104853,9 +105092,15 @@ function Get-GPOPointAndPrint {
                 Show-Line "$($exploitable.Count) GPO configuration(s) let non-administrators install printer drivers without an elevation prompt" -Class Finding
             }
 
-            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled -Listed:$IncludeInactive
+            if (-not $IncludeDefaults -and $settled.Count -gt 0) {
+                Show-Line ("$($settled.Count) configuration(s) are hardened or control no driver installation " +
+                           '(-IncludeDefaults to list)') -Class Note
+            }
 
-            foreach ($object in $shown) {
+            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+                -Dormant $split.Dormant -Listed:$IncludeInactive
+
+            foreach ($object in $listed) {
                 if (@($split.Inactive) -contains $object) {
                     Show-Object $object -Class Note
                 } else {
@@ -124950,7 +125195,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.6.0+20261006-1451"
+$Script:adPEASVersion = "2.6.0+20261007-1053"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -125865,7 +126110,7 @@ try {
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScriptPaths' -Title 'GPO Script Paths' -Check { Get-GPOScriptPaths }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPORegistrySettings' -Title 'GPO Registry Settings' -Check { Get-GPORegistrySettings }
-            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPointAndPrint' -Title 'Point and Print Policies' -Check { Get-GPOPointAndPrint }
+            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPointAndPrint' -Title 'Point and Print Policies' -Check { Get-GPOPointAndPrint -IncludeDefaults:$IncludePrivileged }
         } catch {
             Write-Warning "[adPEAS] Error executing GPO Module: $_"
         }
