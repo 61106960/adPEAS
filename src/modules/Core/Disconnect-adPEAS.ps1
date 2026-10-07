@@ -200,6 +200,10 @@ function Clear-SessionState {
     # Connection references (already disposed at this point)
     $Script:LdapConnection = $null
     $Script:GCConnection = $null
+    # The negative half of the GC cache. Left standing it would survive into the next
+    # Connect-adPEAS in the same process and suppress the Global Catalog there - against a
+    # different domain, and possibly from a segment where 3268 is open.
+    $Script:GCConnectionFailed = $null
 
     # Core session state
     $Script:LDAPContext = $null

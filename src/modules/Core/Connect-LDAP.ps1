@@ -111,7 +111,12 @@ function Connect-LDAP {
         [switch]$ForceNTLM,
 
         # Suppress user-visible error messages (Show-ConnectionError) while still tracking error codes.
-        # Used by Connect-adPEAS when it knows it will auto-retry (e.g., LDAPS upgrade after SimpleBind failure).
+        # Used by Connect-adPEAS when it knows it will auto-retry (e.g., LDAPS upgrade after SimpleBind failure),
+        # and by Get-GCConnection, whose connection is auxiliary and whose failure is tolerated.
+        #
+        # It is honoured at every Show-ConnectionError in this function. It used to be checked
+        # at one of five, so a caller that asked for silence still got "Connection failed" from
+        # the DNS, port and SSL phases - the port one being the single most likely to fire.
         [Parameter(Mandatory=$false)]
         [switch]$SuppressErrorDisplay
     )
@@ -119,9 +124,22 @@ function Connect-LDAP {
     begin {
         Write-Log "[Connect-LDAP] Starting LDAP connection..."
 
-        # Reset connection state at the beginning
-        $Script:ConnectionState = $null
-        $Script:LastLDAPErrorCode = $null
+        # Reset connection state at the beginning.
+        #
+        # Not in GC mode. This function's own contract says a Global Catalog connection
+        # "returns the raw LdapConnection without modifying global state", and both of these
+        # belong to the main session. An auxiliary GC probe wiped the main connection's
+        # recorded state on entry and then overwrote it with its own outcome - Success or
+        # NetworkError - long after Connect-adPEAS had finished.
+        #
+        # The consequence was the quiet kind: the unhandled-error catch at the end of this
+        # function skips reporting when $Script:ConnectionState is already set, so a stale
+        # NetworkError left behind by a blocked port 3268 silenced the report of a later,
+        # genuine connection failure.
+        if (-not $AsGlobalCatalog) {
+            $Script:ConnectionState = $null
+            $Script:LastLDAPErrorCode = $null
+        }
 
         # SSL Certificate Validation Callback (only relevant for LDAPS)
         if ($IgnoreSSLErrors) {
@@ -215,7 +233,7 @@ function Connect-LDAP {
                 $errorType = "GenericError"
             }
 
-            $Script:ConnectionState = $errorType
+            if (-not $AsGlobalCatalog) { $Script:ConnectionState = $errorType }
             if (-not $SuppressErrorDisplay) {
                 if ($null -ne $ldapErrorCode) {
                     # For LDAP 81 after a successful Bind(), provide more specific details:
@@ -261,8 +279,10 @@ function Connect-LDAP {
                         $Domain = $CurrentDomain.Name
                         Write-Log "[Connect-LDAP] Automatically detected domain: $Domain"
                     } catch {
-                        $Script:ConnectionState = "DomainError"
-                        Show-ConnectionError -ErrorType "DomainError" -Details "Domain parameter required or system must be domain-joined" -NoThrow
+                        if (-not $AsGlobalCatalog) { $Script:ConnectionState = "DomainError" }
+                        if (-not $SuppressErrorDisplay) {
+                            Show-ConnectionError -ErrorType "DomainError" -Details "Domain parameter required or system must be domain-joined" -NoThrow
+                        }
                         return $null
                     }
                 }
@@ -309,13 +329,15 @@ function Connect-LDAP {
                     Write-Log "[Connect-LDAP] DNS resolution successful: $ResolvedIPString"
                 }
             } catch {
-                $Script:ConnectionState = "DomainError"
+                if (-not $AsGlobalCatalog) { $Script:ConnectionState = "DomainError" }
                 $Detail = if ($Server -eq $Domain) {
                     "Domain '$Domain' could not be resolved"
                 } else {
                     "Server '$Server' could not be resolved"
                 }
-                Show-ConnectionError -ErrorType "DomainError" -Details $Detail -NoThrow
+                if (-not $SuppressErrorDisplay) {
+                    Show-ConnectionError -ErrorType "DomainError" -Details $Detail -NoThrow
+                }
                 return $null
             }
 
@@ -346,9 +368,11 @@ function Connect-LDAP {
             }
 
             if (-not $ServerReachable) {
-                $Script:ConnectionState = "NetworkError"
+                if (-not $AsGlobalCatalog) { $Script:ConnectionState = "NetworkError" }
                 $PortDesc = "$TestPort ($(if ($AsGlobalCatalog) { 'GC' } else { if ($UseLDAPS) { 'LDAPS' } else { 'LDAP' } }))"
-                Show-ConnectionError -ErrorType "NetworkError" -Details "Port $PortDesc unreachable on $Server" -NoThrow
+                if (-not $SuppressErrorDisplay) {
+                    Show-ConnectionError -ErrorType "NetworkError" -Details "Port $PortDesc unreachable on $Server" -NoThrow
+                }
                 return $null
             }
 
@@ -416,8 +440,10 @@ function Connect-LDAP {
 
                 if (-not $SSLTestPassed) {
                     $errorType = if ($sslErrorInfo.Category -eq 'SSLCertificate') { "CertificateError" } else { "SSLHandshakeError" }
-                    $Script:ConnectionState = $errorType
-                    Show-ConnectionError -ErrorType $errorType -Details $sslErrorInfo.Message -NoThrow
+                    if (-not $AsGlobalCatalog) { $Script:ConnectionState = $errorType }
+                    if (-not $SuppressErrorDisplay) {
+                        Show-ConnectionError -ErrorType $errorType -Details $sslErrorInfo.Message -NoThrow
+                    }
                     return $null
                 }
             }
@@ -1075,7 +1101,7 @@ function Connect-LDAP {
             }
 
             $Script:LDAPCredential = $Credential
-            $Script:ConnectionState = "Success"
+            if (-not $AsGlobalCatalog) { $Script:ConnectionState = "Success" }
 
             # Set AuthMethod if not already set by Connect-adPEAS
             # This handles direct calls to Connect-LDAP (via Ensure-LDAPConnection)

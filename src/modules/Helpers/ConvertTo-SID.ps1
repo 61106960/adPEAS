@@ -225,7 +225,14 @@ function ConvertTo-SID {
                     # Use GC for cross-domain query
                     $gcConn = Get-GCConnection
                     if (-not $gcConn) {
+                        # Cached as unresolvable, like every other failing path in this
+                        # function. This return used to bypass the negative cache write at the
+                        # end, so the same name re-entered the branch on every occurrence -
+                        # and each time paid for the CN=Partitions lookup in
+                        # Resolve-CrossDomainIdentity above, plus a full GC target sweep.
+                        # A right holder named in three GPOs cost three of each.
                         Write-Log "[ConvertTo-SID] GC connection unavailable - cannot resolve cross-domain identity" -Level Warning
+                        $Script:NameToSIDCache[$Identity] = $null
                         return $null
                     }
 

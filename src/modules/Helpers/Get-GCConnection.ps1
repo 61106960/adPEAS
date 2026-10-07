@@ -26,6 +26,21 @@ function Get-GCConnection {
         return $Script:GCConnection
     }
 
+    # The failure is cached too, not just the success.
+    #
+    # Without this every caller retried the whole target list. A firewall blocking port 3268
+    # then cost a 2-second TCP probe per target per call and printed "[!] Connection failed:
+    # Server unreachable" once per target per call - four red lines in the middle of one check
+    # for two resolvable names, and the same again for the next check.
+    #
+    # Negative caching is only safe because the result is advisory: the callers degrade to a
+    # local lookup or report the identity as unresolved, so a GC that comes back later in the
+    # session costs a few unresolved names rather than a wrong answer.
+    if ($Script:GCConnectionFailed) {
+        Write-Log "[Get-GCConnection] GC was already found unreachable in this session - not retrying"
+        return $null
+    }
+
     # Prerequisites: main connection must exist (GC is auxiliary)
     if (-not $Script:LdapConnection -or
         -not ($Script:LDAPContext -is [hashtable]) -or
@@ -70,11 +85,16 @@ function Get-GCConnection {
     }
 
     # Build common parameters from existing session for Connect-LDAP -AsGlobalCatalog
+    # -SuppressErrorDisplay: this connection is auxiliary and its failure is tolerated, so
+    # Connect-LDAP's "[!] Connection failed" belongs in the log and not in the middle of a
+    # check's output, where it reads as the check itself having failed. The one line a reader
+    # needs is emitted below, once, and it names the consequence rather than the port.
     $ConnectParams = @{
-        Domain          = $Script:LDAPContext['Domain']
-        AsGlobalCatalog = $true
-        IgnoreSSLErrors = $true
-        TimeoutSeconds  = 5
+        Domain               = $Script:LDAPContext['Domain']
+        AsGlobalCatalog      = $true
+        IgnoreSSLErrors      = $true
+        TimeoutSeconds       = 5
+        SuppressErrorDisplay = $true
     }
     if ($Script:LDAPContext.ContainsKey('UseLDAPS') -and $Script:LDAPContext['UseLDAPS']) {
         $ConnectParams['UseLDAPS'] = $true
@@ -111,7 +131,14 @@ function Get-GCConnection {
         }
     }
 
+    # Said once per session, as a Note, and it names what the reader loses rather than the port
+    # that was shut. A blocked 3268 is usually a firewall between the tester and the DC, not an
+    # AD finding, and the only thing it changes about the result is that identities from another
+    # domain come back unresolved - which the checks then say on the row.
+    $Script:GCConnectionFailed = $true
     Write-Log "[Get-GCConnection] All GC connection attempts failed - cross-domain resolution unavailable"
+    Show-Line ("Global Catalog (port 3268) is not reachable on $($targets -join ', ') - identities from " +
+               'another domain cannot be resolved and are reported as unresolved') -Class Note
     return $null
 }
 
