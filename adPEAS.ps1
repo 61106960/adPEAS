@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-07 14:18:54
-    Version: 2.6.0+20261007-1418
+    Build: 2026-10-07 14:49:46
+    Version: 2.6.0+20261007-1449
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6420,6 +6420,14 @@ $Script:PrimaryAttributes = @{
     CredentialRoamingPermission = @(
         'sAMAccountName', 'objectSid', 'dangerousRights', 'EffectiveToday',
         'PrivilegedAccount', 'affectedOUs'
+    )
+
+    # One card per group of held-back policies (Get-GPOEffectiveness Show-GPOSuppressedGroup).
+    # Group is first so it reads as the heading of the card in the console, where an object has
+    # no title line of its own; Policies is the newline-joined "Name  {GUID}" list, rendered the
+    # same way domainControllers is.
+    GPOSuppressedGroup = @(
+        'Group', 'Reason', 'Count', 'Policies'
     )
 
     # Credential findings (GPP and SYSVOL)
@@ -23812,6 +23820,26 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Scope of these configurations"
         )
         SecureMessage = "No vulnerable GPO local group assignments found. Local administrator configurations through GPO are properly scoped and controlled."
+    }
+
+    'GPOSuppressedGroup' = @{
+        # The card for a group of policies a GPO check counted but held back: dormant policies
+        # under a dampening summary, assignments that only remove default holders, Point and
+        # Print configurations that expose nothing. One card per group, not per policy - the
+        # whole reason these are held back is that they are not worth a finding each.
+        #
+        # No TitleFormat: the title varies by group and by count, so Get-ObjectCardTitle builds
+        # it from the Group and Count fields instead of a {Name} template.
+        Module = "GPO"
+        Category = "GPO"
+        SectionTitle = "Held Back From This Check"
+        Summary = "Policies a check counted but did not report in full, because each is low-priority on its own."
+        WhyItMatters = "A full scan would otherwise bury the findings that matter under policies that reach no machine, assignments that only harden, or configurations that expose nothing. They are collected here so the count is never silently absent and every policy can still be identified by name and GUID - the GUID being the folder under \\<domain>\SYSVOL\<domain>\Policies\. None of them is an exposure by itself; they are shown so a reader can confirm that for themselves rather than take it on trust."
+        WhatWeCheck = @(
+            "Why the group was held back - not linked, disabled, hardening-only, or exposes nothing"
+            "How many findings it covers, and across how many distinct policies"
+            "Each policy by display name and GUID"
+        )
     }
 
     'GPOScheduledTask' = @{
@@ -75115,75 +75143,77 @@ function Show-GPOInactiveSummary {
         return
     }
 
+    # The headline is the entry point and stays a plain line; the policies follow as one card
+    # per reason. A card each rather than one for both, because an unlinked policy and a disabled
+    # one call for different work - cleanup versus a switch somebody threw - and the HTML report
+    # then carries two titles a reader can scan rather than one mixed list.
     Show-Line "${text}:" -Class Note
 
-    # Not capped, deliberately.
-    #
-    # It was, at ten, and the first real domain it met had twelve dormant policies: the cap
-    # saved two lines and cost the list its completeness. A truncated list of identifiers is
-    # worse than no list, because the only way left to learn the missing names is
-    # -IncludeInactive, which prints every held-back finding - thirty-four of them in that
-    # domain, to recover two names.
-    #
-    # The length is bounded by the number of policies in the domain, which is bounded by what
-    # somebody has to administer, and one line per policy is already the compression: those
-    # thirty-four findings are twelve lines.
-    # The rows themselves go through Show-GPOPolicyList, which is the one place that decides what
-    # a policy looks like in a short list. Every count-and-suppress line in every GPO check names
-    # its policies the same way because they all end up there.
-    $lastCategory = $null
-    foreach ($row in $rows) {
-        if ($grouped -and $row.Category -ne $lastCategory) {
-            $lastCategory = $row.Category
-            $label = if ($row.Category -eq 'unlinked') { 'Not linked' } else { 'Disabled' }
-            $inGroup = @($rows | Where-Object { $_.Category -eq $row.Category }).Count
-            Show-Line "${label} (${inGroup}):" -Class Note
+    # Not capped. It was, at ten, and the first real domain it met had twelve dormant policies:
+    # the cap saved two lines and cost the list its completeness, leaving -IncludeInactive - which
+    # prints every held-back finding - as the only way to recover two names. The length is bounded
+    # by what somebody has to administer, and one line per policy is already the compression.
+    foreach ($category in @('unlinked', 'disabled')) {
+        $inCategory = @($rows | Where-Object { $_.Category -eq $category })
+        if ($inCategory.Count -eq 0) { continue }
+
+        $label = if ($category -eq 'unlinked') { 'Dormant policies - not linked' } else { 'Dormant policies - disabled' }
+        $why = if ($category -eq 'unlinked') {
+            'Linked nowhere, so the settings reach no machine until the policy is linked.'
+        } else {
+            'Linked, but the link or the relevant configuration half is switched off.'
         }
 
-        # One at a time, because the group headers are interleaved. The helper sorts and
-        # deduplicates, and a single-element call is a no-op for both.
-        Show-GPOPolicyList -Policy @($row)
+        $policyWord = if ($inCategory.Count -eq 1) { 'policy' } else { 'policies' }
+        Show-GPOSuppressedGroup -Group $label -Reason $why `
+            -CountText "$($inCategory.Count) $policyWord" -Policy $inCategory
     }
 }
 
 <#
 .SYNOPSIS
-    Prints a short list of policies - display name left, GUID on column 45.
+    Emits one object card for a group of policies a check held back.
 
 .DESCRIPTION
-    The one place that decides what a Group Policy looks like when a check names it in passing
-    rather than reporting it. Every count-and-suppress line routes through here, so the dormant
-    policies under a dampening summary, the assignments that only remove default holders, and the
-    Point and Print configurations that expose nothing all read identically.
+    Hands a group of held-back policies to Show-Object as a single GPOSuppressedGroup object, so
+    the group renders as a titled block in the console and as a collapsible card - grey, sorted to
+    the end, folded by default - in the HTML report, the same machinery a finding uses.
 
-    Name left, GUID at column 45 - the AlignAt every Show-KeyValue and every rendered attribute
-    uses, so the block sits in the same grid as the object rows around it. Four of those columns
-    go to the "[*] " class prefix the renderer adds and two to the indent, leaving 39 for the
-    name. A longer name pushes its own GUID right rather than being truncated: a cut-off GPO name
-    is no longer findable under \\<domain>\SYSVOL\<domain>\Policies\, which is the whole reason
-    the GUID is there.
+    One card per group, never per policy: these are the things a check deliberately did not report
+    in full, so a card each would put back the noise the grouping removed.
 
-    Both fields, because the name is what a reader recognises and the GUID is the folder they
-    need in order to go and look.
+    The policies are deduplicated and sorted by Get-GPOPolicySummary and laid into one newline-
+    joined attribute, rendered the way domainControllers is - name left, GUID on column 45.
 
-    Deduplicated by GUID and sorted by name. Several findings commonly sit on one policy - ten
-    registry values in one GPO, four rights in one assignment - and this is a list of policies,
-    not of findings. Sorting means two runs against the same domain print the same thing instead
-    of whatever order the caller happened to collect them in.
+.PARAMETER Group
+    The heading: "Dormant policies - not linked", "Assignments that only remove default holders".
+
+.PARAMETER Reason
+    One sentence on why the group was held back.
+
+.PARAMETER CountText
+    What the title and the Count row say - "5 policies", or "10 assignment(s) on 3 GPO(s)" where
+    the finding count and the policy count differ. The caller owns it, because only the caller
+    knows what it is counting.
 
 .PARAMETER Policy
-    Objects carrying GPOName and GPOGUID. Anything else is ignored rather than printed blank.
+    The findings or policy objects, carrying GPOName and GPOGUID.
 
 .OUTPUTS
-    None. Writes one Note line per distinct policy.
-
-.EXAMPLE
-    Show-GPOPolicyList -Policy $split.Dormant
-    [*]   Altlast Tasks                          {11112222-3333-4444-5555-666677778888}
+    None. Emits one Show-Object of type GPOSuppressedGroup, or nothing when no policy resolves.
 #>
-function Show-GPOPolicyList {
+function Show-GPOSuppressedGroup {
     [CmdletBinding()]
     param(
+        [Parameter(Mandatory=$true)]
+        [string]$Group,
+
+        [Parameter(Mandatory=$true)]
+        [string]$Reason,
+
+        [Parameter(Mandatory=$true)]
+        [string]$CountText,
+
         [Parameter(Mandatory=$false)]
         [AllowNull()]
         $Policy
@@ -75192,18 +75222,27 @@ function Show-GPOPolicyList {
     $rows = @(Get-GPOPolicySummary -Finding $Policy)
     if ($rows.Count -eq 0) { return }
 
+    # Name left, GUID on column 45 - the same grid the dormant list used, built here so the
+    # policies travel as one attribute value rather than one Show-Line each. The object renderer
+    # adds the "[*] " prefix and the indent on top, so the field width is 45 minus those six.
     $nameWidth = 45 - 4 - 2
-
-    foreach ($row in $rows) {
-        # A missing value is still padded, or one short entry would shift every line after it.
-        $guid = "$($row.GPOGUID)"
-        if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
-
-        $name = "$($row.GPOName)"
-        if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
-
-        Show-Line ('  ' + $name.PadRight($nameWidth) + $guid) -Class Note
+    $lines = foreach ($row in $rows) {
+        $guid = "$($row.GPOGUID)"; if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
+        $name = "$($row.GPOName)"; if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
+        $name.PadRight($nameWidth) + $guid
     }
+
+    $card = [PSCustomObject]@{
+        Group    = $Group
+        Reason   = $Reason
+        Count    = $CountText
+        Policies = (@($lines) -join "`n")
+    }
+    $card | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOSuppressedGroup' -Force
+
+    # Note, not a finding: held-back, low-priority material. The HTML pipeline colours it grey,
+    # sorts it behind the real findings and folds it shut on this class alone.
+    Show-Object $card -Class Note
 }
 
 <#
@@ -75211,7 +75250,8 @@ function Show-GPOPolicyList {
     Reduces findings to the distinct policies they sit on.
 
 .DESCRIPTION
-    Split from Show-GPOPolicyList because the caller needs the count before the list is printed:
+    Split out because the caller needs the count before the list is printed - Show-GPOSuppressedGroup
+    needs the policies, and the check headlines need their number - so the dedup happens once here:
     a headline reads "35 finding(s) hidden on 13 GPO(s)", and the two numbers count different
     things. Asking the printer for them afterwards would mean deduplicating twice and would put
     the headline after the rows it introduces.
@@ -101036,16 +101076,21 @@ function Get-GPOUserRightsAssignment {
 
                     $text = "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break"
 
-                    # Assignments up front, policies in the list, so the unit is named whenever
+                    # Assignments up front, policies in the card, so the unit is named whenever
                     # the two numbers differ - several rights in one GPO is the normal case here.
+                    $countText = "$($removalsOnly.Count) assignment(s)"
                     if ($removalPolicies.Count -gt 0 -and $removalPolicies.Count -ne $removalsOnly.Count) {
                         $text += " on $($removalPolicies.Count) GPO(s)"
+                        $countText += " on $($removalPolicies.Count) GPO(s)"
                     }
                     if (-not $showDefaults) { $text += ' (-IncludeDefaults to list)' }
-                    if ($removalPolicies.Count -gt 0) { $text += ':' }
 
+                    # Headline is the entry point; the policies follow as one card, the same
+                    # shape the dormant groups use.
                     Show-Line $text -Class "Note"
-                    Show-GPOPolicyList -Policy $removalPolicies
+                    Show-GPOSuppressedGroup -Group 'Assignments that only remove default holders' `
+                        -Reason 'Hardening more often than not, occasionally a service about to break - never a grant.' `
+                        -CountText $countText -Policy $removalPolicies
                 }
 
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
@@ -105743,14 +105788,17 @@ function Get-GPOPointAndPrint {
 
                 # One GPO can hold a Computer and a User configuration, so the two counts differ
                 # whenever both halves are settled.
+                $countText = "$($settled.Count) configuration(s)"
                 if ($settledPolicies.Count -gt 0 -and $settledPolicies.Count -ne $settled.Count) {
                     $text += " on $($settledPolicies.Count) GPO(s)"
+                    $countText += " on $($settledPolicies.Count) GPO(s)"
                 }
                 $text += ' (-IncludeDefaults to list)'
-                if ($settledPolicies.Count -gt 0) { $text += ':' }
 
                 Show-Line $text -Class Note
-                Show-GPOPolicyList -Policy $settledPolicies
+                Show-GPOSuppressedGroup -Group 'Hardened Point and Print configurations' `
+                    -Reason 'Driver installation is limited to Administrators, or the GPO controls none - no exposure either way.' `
+                    -CountText $countText -Policy $settledPolicies
             }
 
             Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
@@ -114878,6 +114926,14 @@ function Get-ObjectCardTitle {
             $localGrp = if ($Object.TargetGroup) { $Object.TargetGroup } else { "Local Group" }
             $gpoName = if ($Object.GPOName) { " ($($Object.GPOName))" } else { "" }
             return "GPO Local Group: $localGrp$gpoName"
+        }
+        'GPOSuppressedGroup' {
+            # Group plus count: "Dormant policies: not linked (5)". The count belongs in the
+            # title because this card is collapsed by default, so the title is all a reader sees
+            # until they open it.
+            $label = if ($Object.Group) { $Object.Group } else { "Held back" }
+            if ($Object.Count) { return "$label ($($Object.Count))" }
+            return $label
         }
         'GPOScheduledTask' {
             $taskName = if ($Object.taskName) { $Object.taskName } else { "Task" }
@@ -125862,7 +125918,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.6.0+20261007-1418"
+$Script:adPEASVersion = "2.6.0+20261007-1449"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -3237,6 +3237,9 @@ $Script:PrimaryAttributes = @{
 	    'sAMAccountName', 'objectSid', 'dangerousRights', 'EffectiveToday',
 	    'PrivilegedAccount', 'affectedOUs'
 	)
+	GPOSuppressedGroup = @(
+	    'Group', 'Reason', 'Count', 'Policies'
+	)
 	GPPCredential = @(
 	    'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
 	)
@@ -18102,6 +18105,18 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Scope of these configurations"
 	    )
 	    SecureMessage = "No vulnerable GPO local group assignments found. Local administrator configurations through GPO are properly scoped and controlled."
+	}
+	'GPOSuppressedGroup' = @{
+	    Module = "GPO"
+	    Category = "GPO"
+	    SectionTitle = "Held Back From This Check"
+	    Summary = "Policies a check counted but did not report in full, because each is low-priority on its own."
+	    WhyItMatters = "A full scan would otherwise bury the findings that matter under policies that reach no machine, assignments that only harden, or configurations that expose nothing. They are collected here so the count is never silently absent and every policy can still be identified by name and GUID - the GUID being the folder under \\<domain>\SYSVOL\<domain>\Policies\. None of them is an exposure by itself; they are shown so a reader can confirm that for themselves rather than take it on trust."
+	    WhatWeCheck = @(
+	        "Why the group was held back - not linked, disabled, hardening-only, or exposes nothing"
+	        "How many findings it covers, and across how many distinct policies"
+	        "Each policy by display name and GUID"
+	    )
 	}
 	'GPOScheduledTask' = @{
 	    TitleFormat = "GPO Scheduled Task: {Name}"
@@ -46999,20 +47014,29 @@ function Show-GPOInactiveSummary {
 	    return
 	}
 	Show-Line "${text}:" -Class Note
-	$lastCategory = $null
-	foreach ($row in $rows) {
-	    if ($grouped -and $row.Category -ne $lastCategory) {
-	        $lastCategory = $row.Category
-	        $label = if ($row.Category -eq 'unlinked') { 'Not linked' } else { 'Disabled' }
-	        $inGroup = @($rows | Where-Object { $_.Category -eq $row.Category }).Count
-	        Show-Line "${label} (${inGroup}):" -Class Note
+	foreach ($category in @('unlinked', 'disabled')) {
+	    $inCategory = @($rows | Where-Object { $_.Category -eq $category })
+	    if ($inCategory.Count -eq 0) { continue }
+	    $label = if ($category -eq 'unlinked') { 'Dormant policies - not linked' } else { 'Dormant policies - disabled' }
+	    $why = if ($category -eq 'unlinked') {
+	        'Linked nowhere, so the settings reach no machine until the policy is linked.'
+	    } else {
+	        'Linked, but the link or the relevant configuration half is switched off.'
 	    }
-	    Show-GPOPolicyList -Policy @($row)
+	    $policyWord = if ($inCategory.Count -eq 1) { 'policy' } else { 'policies' }
+	    Show-GPOSuppressedGroup -Group $label -Reason $why `
+	        -CountText "$($inCategory.Count) $policyWord" -Policy $inCategory
 	}
 }
-function Show-GPOPolicyList {
+function Show-GPOSuppressedGroup {
 	[CmdletBinding()]
 	param(
+	    [Parameter(Mandatory=$true)]
+	    [string]$Group,
+	    [Parameter(Mandatory=$true)]
+	    [string]$Reason,
+	    [Parameter(Mandatory=$true)]
+	    [string]$CountText,
 	    [Parameter(Mandatory=$false)]
 	    [AllowNull()]
 	    $Policy
@@ -47020,13 +47044,19 @@ function Show-GPOPolicyList {
 	$rows = @(Get-GPOPolicySummary -Finding $Policy)
 	if ($rows.Count -eq 0) { return }
 	$nameWidth = 45 - 4 - 2
-	foreach ($row in $rows) {
-	    $guid = "$($row.GPOGUID)"
-	    if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
-	    $name = "$($row.GPOName)"
-	    if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
-	    Show-Line ('  ' + $name.PadRight($nameWidth) + $guid) -Class Note
+	$lines = foreach ($row in $rows) {
+	    $guid = "$($row.GPOGUID)"; if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
+	    $name = "$($row.GPOName)"; if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
+	    $name.PadRight($nameWidth) + $guid
 	}
+	$card = [PSCustomObject]@{
+	    Group    = $Group
+	    Reason   = $Reason
+	    Count    = $CountText
+	    Policies = (@($lines) -join "`n")
+	}
+	$card | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOSuppressedGroup' -Force
+	Show-Object $card -Class Note
 }
 function Get-GPOPolicySummary {
 	[CmdletBinding()]
@@ -62136,13 +62166,16 @@ function Get-GPOUserRightsAssignment {
 	            if ($removalsOnly.Count -gt 0) {
 	                $removalPolicies = @(Get-GPOPolicySummary -Finding $removalsOnly)
 	                $text = "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break"
+	                $countText = "$($removalsOnly.Count) assignment(s)"
 	                if ($removalPolicies.Count -gt 0 -and $removalPolicies.Count -ne $removalsOnly.Count) {
 	                    $text += " on $($removalPolicies.Count) GPO(s)"
+	                    $countText += " on $($removalPolicies.Count) GPO(s)"
 	                }
 	                if (-not $showDefaults) { $text += ' (-IncludeDefaults to list)' }
-	                if ($removalPolicies.Count -gt 0) { $text += ':' }
 	                Show-Line $text -Class "Note"
-	                Show-GPOPolicyList -Policy $removalPolicies
+	                Show-GPOSuppressedGroup -Group 'Assignments that only remove default holders' `
+	                    -Reason 'Hardening more often than not, occasionally a service about to break - never a grant.' `
+	                    -CountText $countText -Policy $removalPolicies
 	            }
 	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
 	                -Dormant $split.Dormant -Listed:$IncludeInactive
@@ -64756,13 +64789,16 @@ function Get-GPOPointAndPrint {
 	        if (-not $IncludeDefaults -and $settled.Count -gt 0) {
 	            $settledPolicies = @(Get-GPOPolicySummary -Finding $settled)
 	            $text = "$($settled.Count) configuration(s) are hardened or control no driver installation"
+	            $countText = "$($settled.Count) configuration(s)"
 	            if ($settledPolicies.Count -gt 0 -and $settledPolicies.Count -ne $settled.Count) {
 	                $text += " on $($settledPolicies.Count) GPO(s)"
+	                $countText += " on $($settledPolicies.Count) GPO(s)"
 	            }
 	            $text += ' (-IncludeDefaults to list)'
-	            if ($settledPolicies.Count -gt 0) { $text += ':' }
 	            Show-Line $text -Class Note
-	            Show-GPOPolicyList -Policy $settledPolicies
+	            Show-GPOSuppressedGroup -Group 'Hardened Point and Print configurations' `
+	                -Reason 'Driver installation is limited to Administrators, or the GPO controls none - no exposure either way.' `
+	                -CountText $countText -Policy $settledPolicies
 	        }
 	        Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
 	            -Dormant $split.Dormant -Listed:$IncludeInactive
@@ -69988,6 +70024,11 @@ function Get-ObjectCardTitle {
 	        $localGrp = if ($Object.TargetGroup) { $Object.TargetGroup } else { "Local Group" }
 	        $gpoName = if ($Object.GPOName) { " ($($Object.GPOName))" } else { "" }
 	        return "GPO Local Group: $localGrp$gpoName"
+	    }
+	    'GPOSuppressedGroup' {
+	        $label = if ($Object.Group) { $Object.Group } else { "Held back" }
+	        if ($Object.Count) { return "$label ($($Object.Count))" }
+	        return $label
 	    }
 	    'GPOScheduledTask' {
 	        $taskName = if ($Object.taskName) { $Object.taskName } else { "Task" }
@@ -79545,7 +79586,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.6.0+20261007-1418"
+$Script:adPEASVersion = "2.6.0+20261007-1449"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
