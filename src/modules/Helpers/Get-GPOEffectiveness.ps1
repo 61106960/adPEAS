@@ -646,11 +646,14 @@ function Split-GPOFindingByReach {
     line below the summary.
 
     Naming them is the point: a count alone tells a reader that something was held back but
-    not whether they care, and a GPO nobody can identify cannot be cleaned up either. The
-    GUID leads because it is the folder name under \\<domain>\SYSVOL\<domain>\Policies\ and
-    is fixed width, so the lines form a column; the display name follows and may be any
-    length. Both, because the name is what a reader recognises and the GUID is what they
-    need in order to go and look.
+    not whether they care, and a GPO nobody can identify cannot be cleaned up either. Both
+    the name and the GUID, because the name is what a reader recognises and the GUID is the
+    folder under \\<domain>\SYSVOL\<domain>\Policies\ they need in order to go and look.
+
+    Laid out as every other adPEAS row is: display name left, GUID on column 45. When both
+    reasons occur the rows are grouped under a header naming the reason and its count, and
+    the summary above drops the reason rather than stating it twice; one reason needs no
+    header, so the summary keeps the sentence and the rows follow it directly.
 
     Policies, not findings: ten registry values in one unlinked GPO are one line. The
     summary above still counts findings, which is why the two numbers can differ.
@@ -711,7 +714,20 @@ function Show-GPOInactiveSummary {
         @{Expression = { if ($_.Category -eq 'unlinked') { 0 } else { 1 } }}, `
         @{Expression = { if ([string]::IsNullOrWhiteSpace("$($_.GPOName)")) { "$($_.GPOGUID)" } else { "$($_.GPOName)" } }})
 
-    $text = "$Count finding(s) hidden - $reason"
+    # With the policies listed below, the reason belongs to the group that carries it rather
+    # than to the summary - naming both counts up here and then again in the headers says the
+    # same thing twice. One reason present means no group header is needed at all, so the
+    # summary keeps the sentence and the rows follow directly.
+    $grouped = ($rows.Count -gt 0 -and $Unlinked -gt 0 -and $Disabled -gt 0)
+    $text = if ($grouped) { "$Count finding(s) hidden" } else { "$Count finding(s) hidden - $reason" }
+
+    # The two numbers count different things - findings up here, policies in the group headers
+    # and in the rows - so when they differ the headline has to name the unit. Thirty-four
+    # findings over four policies otherwise reads as "(2)" meaning two findings. GPO(s) rather
+    # than "policies" because that is the word the rest of the output uses.
+    if ($rows.Count -gt 0 -and $rows.Count -ne $Count) {
+        $text += " on $($rows.Count) GPO(s)"
+    }
 
     # Invoke-adPEAS sets the context for the duration of each check, so no context means
     # the check was called on its own and the switch is reachable.
@@ -737,15 +753,32 @@ function Show-GPOInactiveSummary {
     # The length is bounded by the number of policies in the domain, which is bounded by what
     # somebody has to administer, and one line per policy is already the compression: those
     # thirty-four findings are twelve lines.
+    # Two fields, not three, and on the column every other adPEAS row uses: the display name
+    # left, the GUID at 45. The category used to be a third field in the middle of the line,
+    # which read as three unlabelled blocks pushed to the right; it is now the group header,
+    # where it explains the rows under it instead of repeating beside each one.
+    #
+    # 45 is the AlignAt every Show-KeyValue and every rendered attribute uses. Four of those
+    # columns go to the "[*] " class prefix and two to the indent, so the name field is 39.
+    # A longer name pushes its own GUID right rather than being truncated - the same thing
+    # every other adPEAS row does, and a cut-off GPO name is no longer findable in SYSVOL.
+    $nameWidth = 45 - 4 - 2
+
+    $lastCategory = $null
     foreach ($row in $rows) {
-        # Padded to the width of a braced GUID so the three fields line up. A missing value
-        # is still padded, or one short entry would shift every line after it.
+        if ($grouped -and $row.Category -ne $lastCategory) {
+            $lastCategory = $row.Category
+            $label = if ($row.Category -eq 'unlinked') { 'Not linked' } else { 'Disabled' }
+            $inGroup = @($rows | Where-Object { $_.Category -eq $row.Category }).Count
+            Show-Line "${label} (${inGroup}):" -Class Note
+        }
+
         $guid = "$($row.GPOGUID)"
         if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
 
         $name = "$($row.GPOName)"
         if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
 
-        Show-Line ('  ' + $guid.PadRight(38) + '  ' + "$($row.Category)".PadRight(8) + '  ' + $name) -Class Note
+        Show-Line ('  ' + $name.PadRight($nameWidth) + $guid) -Class Note
     }
 }

@@ -1003,22 +1003,32 @@ not linked or not enabled is not listed. A summary gives the count and the reaso
 each policy that was held back:
 
 ```
-[*] 3 finding(s) hidden - 2 on unlinked policies, 1 on disabled ones:
-[*]   {11112222-3333-4444-5555-666677778888}  unlinked  Altlast Tasks
-[*]   {02FF1399-2A08-4922-9C0E-A1EAB771699C}  unlinked  Systemhaertung Ws2022 DC V24.07
-[*]   {6AC1786C-016F-11D2-945F-00C04FB984F9}  disabled  Kiosk Tasks
+[*] 34 finding(s) hidden on 4 GPO(s):
+[*] Not linked (2):
+[*]   Addon AppServer-VIM V25.09             {A9420797-B784-487A-BA44-A0D972CE4527}
+[*]   Systemhaertung Ws2022 Basis V25.02     {0217CBDE-4840-4E06-B245-D91F8B4B3C19}
+[*] Disabled (2):
+[*]   Addon WSUS V1.0                        {51462F84-B01D-4104-A4E5-BA2CF3C8AACC}
+[*]   HL-MMI V25.09                          {C6372006-3F3F-4D9E-AD99-C8A99D743ABF}
 ```
 
 One line per **policy**, not per finding, so ten registry values in one unlinked GPO are one
-line - which is why the count above and the number of lines can differ. The GUID leads
-because it is fixed width, so the fields form a column, and because it is the folder name
-under `\\<domain>\SYSVOL\<domain>\Policies\`; the display name follows, because that is what
-a reader recognises. Unlinked policies come first, since an unlinked policy is a cleanup
-candidate while a disabled one is a switch somebody threw on purpose, and within a category
-the order is by name so two runs against the same domain print the same thing. The list is
-not truncated: its length is bounded by the number of policies in the domain, and cutting it
-off would leave `-IncludeInactive` as the only way to learn the missing names - which prints
-every held-back finding, far more output than a cap saves.
+line. The headline counts findings and the group headers count policies, which is why it names
+its unit whenever the two numbers differ.
+
+Laid out as every other adPEAS row is: display name left, GUID on column 45. Both, because the
+name is what a reader recognises and the GUID is the folder under
+`\\<domain>\SYSVOL\<domain>\Policies\` they need in order to go and look. A name longer than
+the column pushes its own GUID right rather than being truncated — a cut-off GPO name is no
+longer findable in SYSVOL.
+
+Unlinked policies come first, since an unlinked policy is a cleanup candidate while a disabled
+one is a switch somebody threw on purpose, and within a group the order is by name so two runs
+against the same domain print the same thing. When only one reason occurs there is no group
+header: the summary keeps the sentence and the rows follow it directly. The list is not
+truncated — its length is bounded by the number of policies in the domain, and cutting it off
+would leave `-IncludeInactive` as the only way to learn the missing names, which prints every
+held-back finding and is far more output than a cap saves.
 
 **A configuration that exposes nothing is counted, not printed.** The same reasoning in a
 second direction: adPEAS reports a right or a setting granted to somebody who should not have
