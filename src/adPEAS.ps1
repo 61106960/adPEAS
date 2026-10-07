@@ -147,6 +147,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\ConvertTo-FormattedACE.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-SecurityDescriptor.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertTo-AccessRules.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Test-LDAPSProtocolSupport.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-GCConnection.ps1"
     . "$Script:ScriptPath\modules\Helpers\Resolve-CrossDomainIdentity.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-SID.ps1"

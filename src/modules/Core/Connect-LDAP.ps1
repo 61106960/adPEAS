@@ -441,8 +441,30 @@ function Connect-LDAP {
                 if (-not $SSLTestPassed) {
                     $errorType = if ($sslErrorInfo.Category -eq 'SSLCertificate') { "CertificateError" } else { "SSLHandshakeError" }
                     if (-not $AsGlobalCatalog) { $Script:ConnectionState = $errorType }
+
+                    # The negotiation failed; ask each version on its own to find out whether it
+                    # was the version or the cipher suites. "An existing connection was forcibly
+                    # closed by the remote host" is the same sentence for both, and the two call
+                    # for different work.
+                    #
+                    # Only for a handshake failure, and only when the error is going to be shown.
+                    # A certificate the client does not trust is a different answer with its own
+                    # error type, and probing would add three connections to say nothing new.
+                    # Suppressed output means an auxiliary connection whose caller degrades
+                    # quietly - the GC - and there nobody reads the diagnosis either.
+                    $probeSummary = $null
+                    if ($errorType -eq 'SSLHandshakeError' -and -not $SuppressErrorDisplay) {
+                        $probe = Test-LDAPSProtocolSupport -Server $Server -ConnectTarget $ConnectTarget -Port $SSLPort
+                        if ($probe) { $probeSummary = $probe.Summary }
+                    }
+
                     if (-not $SuppressErrorDisplay) {
                         Show-ConnectionError -ErrorType $errorType -Details $sslErrorInfo.Message -NoThrow
+
+                        # After the hint block rather than folded into Details: the probe result
+                        # is a hint, and joining it onto the exception message would make one
+                        # unreadable line out of two statements.
+                        if ($probeSummary) { Show-Line $probeSummary -Class Hint }
                     }
                     return $null
                 }
