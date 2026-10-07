@@ -46999,7 +46999,6 @@ function Show-GPOInactiveSummary {
 	    return
 	}
 	Show-Line "${text}:" -Class Note
-	$nameWidth = 45 - 4 - 2
 	$lastCategory = $null
 	foreach ($row in $rows) {
 	    if ($grouped -and $row.Category -ne $lastCategory) {
@@ -47008,12 +47007,51 @@ function Show-GPOInactiveSummary {
 	        $inGroup = @($rows | Where-Object { $_.Category -eq $row.Category }).Count
 	        Show-Line "${label} (${inGroup}):" -Class Note
 	    }
+	    Show-GPOPolicyList -Policy @($row)
+	}
+}
+function Show-GPOPolicyList {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Policy
+	)
+	$rows = @(Get-GPOPolicySummary -Finding $Policy)
+	if ($rows.Count -eq 0) { return }
+	$nameWidth = 45 - 4 - 2
+	foreach ($row in $rows) {
 	    $guid = "$($row.GPOGUID)"
 	    if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
 	    $name = "$($row.GPOName)"
 	    if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
 	    Show-Line ('  ' + $name.PadRight($nameWidth) + $guid) -Class Note
 	}
+}
+function Get-GPOPolicySummary {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject[]])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Finding
+	)
+	$byGuid = [ordered]@{}
+	foreach ($item in @(@($Finding) | Where-Object { $_ })) {
+	    $guid = "$($item.GPOGUID)"
+	    if ([string]::IsNullOrWhiteSpace($guid)) { continue }
+	    $key = $guid.ToUpperInvariant()
+	    if ($byGuid.Contains($key)) { continue }
+	    $byGuid[$key] = [PSCustomObject]@{
+	        GPOName = "$($item.GPOName)"
+	        GPOGUID = $guid
+	    }
+	}
+	$rows = @($byGuid.Values)
+	if ($rows.Count -eq 0) { return @() }
+	return $rows | Sort-Object @{Expression = {
+	    if ([string]::IsNullOrWhiteSpace($_.GPOName)) { $_.GPOGUID } else { $_.GPOName }
+	}}
 }
 function Get-GPORelativePath {
 	[CmdletBinding()]
@@ -62096,9 +62134,15 @@ function Get-GPOUserRightsAssignment {
 	            }
 	            $removalsOnly = @($shown | Where-Object { $_._severity -eq 'Note' })
 	            if ($removalsOnly.Count -gt 0) {
+	                $removalPolicies = @(Get-GPOPolicySummary -Finding $removalsOnly)
 	                $text = "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break"
+	                if ($removalPolicies.Count -gt 0 -and $removalPolicies.Count -ne $removalsOnly.Count) {
+	                    $text += " on $($removalPolicies.Count) GPO(s)"
+	                }
 	                if (-not $showDefaults) { $text += ' (-IncludeDefaults to list)' }
+	                if ($removalPolicies.Count -gt 0) { $text += ':' }
 	                Show-Line $text -Class "Note"
+	                Show-GPOPolicyList -Policy $removalPolicies
 	            }
 	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
 	                -Dormant $split.Dormant -Listed:$IncludeInactive
@@ -64710,8 +64754,15 @@ function Get-GPOPointAndPrint {
 	            Show-Line "$($exploitable.Count) GPO configuration(s) let non-administrators install printer drivers without an elevation prompt" -Class Finding
 	        }
 	        if (-not $IncludeDefaults -and $settled.Count -gt 0) {
-	            Show-Line ("$($settled.Count) configuration(s) are hardened or control no driver installation " +
-	                       '(-IncludeDefaults to list)') -Class Note
+	            $settledPolicies = @(Get-GPOPolicySummary -Finding $settled)
+	            $text = "$($settled.Count) configuration(s) are hardened or control no driver installation"
+	            if ($settledPolicies.Count -gt 0 -and $settledPolicies.Count -ne $settled.Count) {
+	                $text += " on $($settledPolicies.Count) GPO(s)"
+	            }
+	            $text += ' (-IncludeDefaults to list)'
+	            if ($settledPolicies.Count -gt 0) { $text += ':' }
+	            Show-Line $text -Class Note
+	            Show-GPOPolicyList -Policy $settledPolicies
 	        }
 	        Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
 	            -Dormant $split.Dormant -Listed:$IncludeInactive
@@ -79494,7 +79545,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.6.0+20261007-1325"
+$Script:adPEASVersion = "2.6.0+20261007-1418"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
