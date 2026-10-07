@@ -343,13 +343,32 @@ adPEAS uses color-coded output:
 Example output:
 
 ```
-[?] Analyzing Kerberoastable Accounts
+[?] Analyzing Kerberoastable Accounts (Get-KerberoastableAccounts)
 [!] Found 3 Kerberoastable service accounts
     sAMAccountName: svc_backup
     servicePrincipalName: MSSQLSvc/db01.contoso.com:1433
     ...
 [+] Account has weak encryption (RC4)
 ```
+
+### Re-running a single check
+
+During an `Invoke-adPEAS` run every section header names the function that produced it, in
+parentheses. A full scan runs around sixty checks, so that is the quickest way to find the one
+you want to look at again:
+
+```powershell
+Get-KerberoastableAccounts
+```
+
+Every check takes `-Domain`, `-Server` and `-Credential`, and uses the existing session when
+called without them. Some take their own switches — the hints in the output name them, for
+instance `(-IncludeInactive to list)` on a GPO check or `(-IncludeDefaults to list)` where
+configurations that expose nothing were counted rather than printed.
+
+The function name is a console convenience and is deliberately absent from the HTML and text
+reports, and from the output when you call a check directly — there you already know what you
+typed.
 
 ---
 

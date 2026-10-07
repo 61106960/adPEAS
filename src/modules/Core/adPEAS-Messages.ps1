@@ -784,11 +784,32 @@ function Show-Output {
         }
 
         "SubInfo" {
-            # Sub-section header with leading newline
+            # Sub-section header with leading newline.
+            #
+            # The function that produced the section is named here, and only here: a full scan
+            # runs around sixty checks, and a reader who wants to re-run one of them by hand
+            # had no way to learn what it is called. It also completes the hints the checks
+            # already print - "(-IncludeDefaults to list)" is only actionable once you know
+            # which command takes that switch.
+            #
+            # Appended at render time rather than to $Value, so the text collected a few lines
+            # above for the HTML and plain-text reports stays clean. A PowerShell function name
+            # beside a section heading is provenance for an operator and clutter for the person
+            # the report is written for.
+            #
+            # Only in a full scan, the same condition that gates the -IncludeInactive hint:
+            # Invoke-adPEAS sets the check context around every check, so a context means the
+            # name is not already on the reader's screen from their own command line.
+            $subHeaderText = $Value
+            if ($null -ne $Script:adPEAS_CurrentCheckContext -and
+                $Script:adPEAS_CurrentCheckContext.CheckName) {
+                $subHeaderText = "$Value ($($Script:adPEAS_CurrentCheckContext.CheckName))"
+            }
+
             if ($Raw) {
-                Write-adPEASOutput -Text $Value -Class "Standard" -NoPrefix -LeadingNewline
+                Write-adPEASOutput -Text $subHeaderText -Class "Standard" -NoPrefix -LeadingNewline
             } else {
-                Write-adPEASOutput -Text $Value -Class "SubInfo" -LeadingNewline
+                Write-adPEASOutput -Text $subHeaderText -Class "SubInfo" -LeadingNewline
             }
         }
 
