@@ -423,16 +423,21 @@ function Get-GPOUserRightsAssignment {
 
                     $text = "$($removalsOnly.Count) assignment(s) only remove default holders - hardening, or a service about to break"
 
-                    # Assignments up front, policies in the list, so the unit is named whenever
+                    # Assignments up front, policies in the card, so the unit is named whenever
                     # the two numbers differ - several rights in one GPO is the normal case here.
+                    $countText = "$($removalsOnly.Count) assignment(s)"
                     if ($removalPolicies.Count -gt 0 -and $removalPolicies.Count -ne $removalsOnly.Count) {
                         $text += " on $($removalPolicies.Count) GPO(s)"
+                        $countText += " on $($removalPolicies.Count) GPO(s)"
                     }
                     if (-not $showDefaults) { $text += ' (-IncludeDefaults to list)' }
-                    if ($removalPolicies.Count -gt 0) { $text += ':' }
 
+                    # Headline is the entry point; the policies follow as one card, the same
+                    # shape the dormant groups use.
                     Show-Line $text -Class "Note"
-                    Show-GPOPolicyList -Policy $removalPolicies
+                    Show-GPOSuppressedGroup -Group 'Assignments that only remove default holders' `
+                        -Reason 'Hardening more often than not, occasionally a service about to break - never a grant.' `
+                        -CountText $countText -Policy $removalPolicies
                 }
 
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `

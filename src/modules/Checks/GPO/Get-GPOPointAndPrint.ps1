@@ -330,14 +330,17 @@ function Get-GPOPointAndPrint {
 
                 # One GPO can hold a Computer and a User configuration, so the two counts differ
                 # whenever both halves are settled.
+                $countText = "$($settled.Count) configuration(s)"
                 if ($settledPolicies.Count -gt 0 -and $settledPolicies.Count -ne $settled.Count) {
                     $text += " on $($settledPolicies.Count) GPO(s)"
+                    $countText += " on $($settledPolicies.Count) GPO(s)"
                 }
                 $text += ' (-IncludeDefaults to list)'
-                if ($settledPolicies.Count -gt 0) { $text += ':' }
 
                 Show-Line $text -Class Note
-                Show-GPOPolicyList -Policy $settledPolicies
+                Show-GPOSuppressedGroup -Group 'Hardened Point and Print configurations' `
+                    -Reason 'Driver installation is limited to Administrators, or the GPO controls none - no exposure either way.' `
+                    -CountText $countText -Policy $settledPolicies
             }
 
             Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `

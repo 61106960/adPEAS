@@ -1402,6 +1402,26 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "No vulnerable GPO local group assignments found. Local administrator configurations through GPO are properly scoped and controlled."
     }
 
+    'GPOSuppressedGroup' = @{
+        # The card for a group of policies a GPO check counted but held back: dormant policies
+        # under a dampening summary, assignments that only remove default holders, Point and
+        # Print configurations that expose nothing. One card per group, not per policy - the
+        # whole reason these are held back is that they are not worth a finding each.
+        #
+        # No TitleFormat: the title varies by group and by count, so Get-ObjectCardTitle builds
+        # it from the Group and Count fields instead of a {Name} template.
+        Module = "GPO"
+        Category = "GPO"
+        SectionTitle = "Held Back From This Check"
+        Summary = "Policies a check counted but did not report in full, because each is low-priority on its own."
+        WhyItMatters = "A full scan would otherwise bury the findings that matter under policies that reach no machine, assignments that only harden, or configurations that expose nothing. They are collected here so the count is never silently absent and every policy can still be identified by name and GUID - the GUID being the folder under \\<domain>\SYSVOL\<domain>\Policies\. None of them is an exposure by itself; they are shown so a reader can confirm that for themselves rather than take it on trust."
+        WhatWeCheck = @(
+            "Why the group was held back - not linked, disabled, hardening-only, or exposes nothing"
+            "How many findings it covers, and across how many distinct policies"
+            "Each policy by display name and GUID"
+        )
+    }
+
     'GPOScheduledTask' = @{
         TitleFormat = "GPO Scheduled Task: {Name}"
         Module = "GPO"

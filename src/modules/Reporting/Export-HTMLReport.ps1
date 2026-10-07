@@ -1262,6 +1262,14 @@ function Get-ObjectCardTitle {
             $gpoName = if ($Object.GPOName) { " ($($Object.GPOName))" } else { "" }
             return "GPO Local Group: $localGrp$gpoName"
         }
+        'GPOSuppressedGroup' {
+            # Group plus count: "Dormant policies: not linked (5)". The count belongs in the
+            # title because this card is collapsed by default, so the title is all a reader sees
+            # until they open it.
+            $label = if ($Object.Group) { $Object.Group } else { "Held back" }
+            if ($Object.Count) { return "$label ($($Object.Count))" }
+            return $label
+        }
         'GPOScheduledTask' {
             $taskName = if ($Object.taskName) { $Object.taskName } else { "Task" }
             return "Scheduled Task: $taskName"

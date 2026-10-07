@@ -392,6 +392,14 @@ $Script:PrimaryAttributes = @{
         'PrivilegedAccount', 'affectedOUs'
     )
 
+    # One card per group of held-back policies (Get-GPOEffectiveness Show-GPOSuppressedGroup).
+    # Group is first so it reads as the heading of the card in the console, where an object has
+    # no title line of its own; Policies is the newline-joined "Name  {GUID}" list, rendered the
+    # same way domainControllers is.
+    GPOSuppressedGroup = @(
+        'Group', 'Reason', 'Count', 'Policies'
+    )
+
     # Credential findings (GPP and SYSVOL)
     # FilePath stays the complete path here, rather than being split into GPOGUID plus a
     # relative SourceFile like the other GPO findings. These checks also scan NETLOGON and
