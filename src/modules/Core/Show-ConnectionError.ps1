@@ -203,9 +203,19 @@ function Show-ConnectionError {
                 if ($effectiveDetails) {
                     $detailsArray += $effectiveDetails
                 }
+                # The first hint used to read "Server may not support LDAPS on port 636", which
+                # is the one cause that has already been ruled out by the time this is printed:
+                # Connect-LDAP tests the TCP port before the handshake, and a server not
+                # listening on 636 produces a NetworkError with "Port 636 (LDAPS) unreachable".
+                # Reaching this branch means the port answered and the TLS negotiation is what
+                # failed, so the hints point there.
+                #
+                # A certificate that merely fails validation routes to CertificateError, which
+                # carries the -IgnoreSSLErrors hint; that switch does not help against a
+                # protocol or cipher mismatch, so it is deliberately not repeated here.
                 $hints = @(
-                    "Server may not support LDAPS on port 636",
-                    "Server may require specific TLS version (1.2+)",
+                    "Port 636 answered, so the TLS negotiation itself failed - not a missing LDAPS listener",
+                    "Server may require a specific TLS version, or offer no cipher suite this client accepts",
                     "Try: Remove -UseLDAPS to use unencrypted LDAP"
                 )
                 Show-Message -Type Error -Title "LDAPS failed: SSL/TLS handshake error" -Details $detailsArray -Hints $hints

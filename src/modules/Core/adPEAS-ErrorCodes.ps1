@@ -464,9 +464,6 @@ function Get-ExceptionErrorInfo {
     .PARAMETER Context
         Optional context string for the error message (e.g., "SMB", "WMI", "LDAP").
 
-    .PARAMETER IncludeOriginalMessage
-        Include the original exception message in unknown errors.
-
     .EXAMPLE
         try {
             Get-Item "\\server\share" -ErrorAction Stop
@@ -485,10 +482,12 @@ function Get-ExceptionErrorInfo {
         [System.Exception]$Exception,
 
         [Parameter(Mandatory=$false)]
-        [string]$Context = "Operation",
+        [string]$Context = "Operation"
 
-        [Parameter(Mandatory=$false)]
-        [switch]$IncludeOriginalMessage
+        # -IncludeOriginalMessage is gone. It gated whether the fallback branch carried the
+        # exception's own message, which is now unconditional - the branch is reached precisely
+        # because nothing was recognised, so that message is the only information there is. No
+        # caller ever passed the switch, which is why the HRESULT-only output went unnoticed.
     )
 
     $result = [PSCustomObject]@{
@@ -606,11 +605,25 @@ function Get-ExceptionErrorInfo {
         return $result
     }
 
-    # Fallback: Unknown error
-    if ($IncludeOriginalMessage -or -not $hresult) {
-        $result.Message = "$Context error: $($Exception.Message)"
-    } else {
+    # Fallback: nothing above recognised this exception.
+    #
+    # Which is exactly why the exception's own message has to be carried out. Without
+    # -IncludeOriginalMessage this branch used to print the HRESULT alone, and a reader got
+    # "SSL handshake error (0x80131501)" - 0x80131501 is COR_E_SYSTEM, the HRESULT of a plain
+    # System.SystemException, so it carries no diagnosis at all while looking like a protocol
+    # error code. Meanwhile the line that says WHY - "The remote certificate is invalid
+    # according to the validation procedure", "the remote party has closed the transport
+    # stream", "they do not possess a common algorithm" - sat in $Exception.Message and was
+    # dropped. That is the difference between "try without LDAPS" and "the certificate expired".
+    #
+    # The code is kept after the message rather than instead of it: an unrecognised HRESULT is
+    # still worth something to somebody searching for it, just not worth the diagnosis.
+    if ([string]::IsNullOrWhiteSpace($Exception.Message)) {
         $result.Message = "$Context error (0x{0:X8})" -f $hresult
+    } elseif ($hresult) {
+        $result.Message = "$Context error: $($Exception.Message) (0x{0:X8})" -f $hresult
+    } else {
+        $result.Message = "$Context error: $($Exception.Message)"
     }
 
     return $result

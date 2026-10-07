@@ -1060,6 +1060,32 @@ function Connect-adPEAS {
                                 return $null
                             }
 
+                            # A failed TLS handshake ends the chain here.
+                            #
+                            # Authentication happens inside the TLS session, so Kerberos, NTLM
+                            # and SimpleBind all ride on the same transport: if the handshake
+                            # failed, none of them can succeed. Without this the same
+                            # "LDAPS failed: SSL/TLS handshake error" block printed three times,
+                            # each preceded by a banner blaming the authentication method, and
+                            # each paying for another handshake attempt.
+                            #
+                            # Narrow on purpose. Only the two states that a TLS negotiation can
+                            # produce, and only when -UseLDAPS actually asked for one - the SSL
+                            # phase in Connect-LDAP runs only then, so neither state can arise
+                            # otherwise, and naming the switch keeps the guard inert for plain
+                            # LDAP. NetworkError is deliberately NOT in the list: port 88 blocked
+                            # while 389 answers is a legitimate reason to fall back, and the
+                            # Kerberos path already reports that case on its own.
+                            #
+                            # Connect-LDAP has already shown the error, so this only says why
+                            # nothing further is tried.
+                            if ($UseLDAPS -and $Script:ConnectionState -in @('SSLHandshakeError', 'CertificateError')) {
+                                Write-Log "[Connect-adPEAS] LDAPS transport failed ($Script:ConnectionState) - no authentication fallback can help"
+                                Show-Line ('LDAPS transport failed - authentication runs inside TLS, so NTLM and ' +
+                                           'SimpleBind are not attempted') -Class Note
+                                return $null
+                            }
+
                             Write-Log "[Connect-adPEAS] Kerberos PTT failed - trying NTLM impersonation fallback..."
                             Show-Line "Kerberos failed - trying NTLM impersonation" -Class Info
                         }
@@ -1091,6 +1117,18 @@ function Connect-adPEAS {
                             $Connection = Connect-LDAP @ConnParams
 
                             if (-not $Connection) {
+                                # Same guard as before the NTLM attempt, and for the same
+                                # reason. It is repeated rather than hoisted because the two
+                                # decisions are about different attempts: the first NTLM try may
+                                # be the one that reaches LDAPS at all, so the state this reads
+                                # is the one that attempt produced.
+                                if ($UseLDAPS -and $Script:ConnectionState -in @('SSLHandshakeError', 'CertificateError')) {
+                                    Write-Log "[Connect-adPEAS] LDAPS transport failed ($Script:ConnectionState) - not attempting SimpleBind"
+                                    Show-Line ('LDAPS transport failed - authentication runs inside TLS, so SimpleBind ' +
+                                               'is not attempted') -Class Note
+                                    return $null
+                                }
+
                                 Write-Log "[Connect-adPEAS] LDAP connection failed with explicit NTLM - trying SimpleBind..."
                                 Show-Line "NTLM failed - falling back to SimpleBind" -Class Hint
                                 # Fall through to SimpleBind below
