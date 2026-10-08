@@ -6,6 +6,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.7.0] - 2026-10-08
+
+### Added
+
+- **Credential Roaming check.** Detects users whose DPAPI master keys
+  (`msPKIDPAPIMasterKeys`) and private keys (`msPKIAccountCredentials`) are roamed into
+  Active Directory, whether that material is readable by every authenticated user, and
+  whether a delegated read is granted on the containers that hold it. Presence is tested
+  with light attribute reads only - the key blobs themselves are never fetched - and the
+  schema is consulted only once material has actually been found.
+
+- **Per-TLS-version LDAPS handshake diagnostics.** When an LDAPS (port 636) handshake
+  fails, adPEAS now probes each TLS version individually and classifies the result from
+  the exception chain rather than from localized message text, separating a transport that
+  was reset (a middlebox tearing the connection down) from a protocol the server declined
+  to negotiate. The report says which it was instead of simply retrying and reporting a
+  generic failure.
+
+### Changed
+
+- **Dormant Group Policies are named, not just counted.** Findings on GPOs that reach no
+  machine - unlinked, or disabled - are held back from the main results and summarized
+  separately. That held-back material is now listed one line per policy (display name on
+  the left, GUID on adPEAS's standard column), rendered as object cards, and printed
+  *before* the active findings rather than after. This is applied consistently across every
+  GPO check: LDAP configuration, SMB signing, local group membership, registry settings,
+  scheduled tasks, script paths, Point and Print, user-rights assignment and
+  add-computer rights.
+
+- **GPO findings name the policy they come from,** carrying a per-finding reach verdict and
+  resolving the effective setting per directory partition.
+
+- **Point and Print reports a count of hardened configurations** instead of printing a
+  green line for each one.
+
+- **A user-rights assignment lists only what a GPO grants,** not what it hardens; an
+  assignment that only removes default holders is held back rather than shown as a finding.
+
+- **ESC14 findings are dampened when no NTAuth issuer is published,** since the
+  misconfiguration cannot be reached without one.
+
+- **The console sub-header names the check function** it belongs to.
+
+- **Container and OU completion ranks the container that bears the typed name first.**
+
+### Fixed
+
+- **GPO linkage is now three-valued:** an *unresolved* linkage is told apart from *linked
+  nowhere*. An unresolved linkage had been read as "not linked", which silenced several
+  checks completely and could report an unlinked GPO as the effective setting.
+
+- **Machine-local and well-known SIDs are resolved locally.** Service-account authorities
+  (S-1-5-80/82/83/84/90/94/96, hashed from a name) and other well-known SIDs that carry no
+  directory object are answered without a directory or Global Catalog query, which would
+  otherwise fail or leak connection state.
+
+- **Four incorrect values in the user-rights default baseline** were corrected against the
+  documented Windows defaults.
+
+- **A failed LDAPS handshake no longer retries, misleads, or hides its reason.**
+
+- **An auxiliary Global Catalog probe no longer emits errors, retries, or leaks connection
+  state** when it fails.
+
 ## [2.6.0] - 2026-10-04
 
 ### Added
