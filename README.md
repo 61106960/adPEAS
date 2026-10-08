@@ -102,9 +102,16 @@ Import-Module .\adPEAS.ps1
 # Option 3: Read and execute in memory
 Get-Content -Raw .\adPEAS.ps1 | Invoke-Expression
 
-# Option 4: Load directly from GitHub into memory (no file on disk)
-# .TrimStart strips the UTF-8 BOM that Invoke-WebRequest leaves at the start of
-# .Content - without it Invoke-Expression cannot parse the leading comment block.
+# Option 4: Load directly from GitHub into memory (no file on disk).
+# Both variants work; on an older/hardened host that still defaults to TLS 1.0,
+# prepend once: [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# 4a: WebClient - shortest. DownloadString detects and strips the file's UTF-8 BOM
+#     itself, so nothing extra is needed. WebClient is a legacy API but works everywhere.
+Invoke-Expression (New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/61106960/adPEAS/main/adPEAS_obf.ps1')
+
+# 4b: Invoke-WebRequest - the modern cmdlet. Its .Content keeps the BOM as a leading
+#     U+FEFF that Invoke-Expression cannot parse, so TrimStart removes it first.
 Invoke-Expression ((Invoke-WebRequest -Uri "https://raw.githubusercontent.com/61106960/adPEAS/main/adPEAS_obf.ps1" -UseBasicParsing).Content.TrimStart([char]0xFEFF))
 ```
 
