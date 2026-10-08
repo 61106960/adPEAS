@@ -103,7 +103,9 @@ Import-Module .\adPEAS.ps1
 Get-Content -Raw .\adPEAS.ps1 | Invoke-Expression
 
 # Option 4: Load directly from GitHub into memory (no file on disk)
-Invoke-Expression (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/61106960/adPEAS/main/adPEAS_obf.ps1" -UseBasicParsing).Content
+# .TrimStart strips the UTF-8 BOM that Invoke-WebRequest leaves at the start of
+# .Content - without it Invoke-Expression cannot parse the leading comment block.
+Invoke-Expression ((Invoke-WebRequest -Uri "https://raw.githubusercontent.com/61106960/adPEAS/main/adPEAS_obf.ps1" -UseBasicParsing).Content.TrimStart([char]0xFEFF))
 ```
 
 ### One-Liner (v1 Compatible)
