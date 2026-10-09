@@ -262,9 +262,10 @@ function ConvertFrom-KeyCredentialLink {
             # a key (Invoke-ShadowCredentialOperation included), so equality means the
             # key has not been used since it was created.
             #
-            # Usage and Source appear only when they deviate from NGC/AD. Nearly every
-            # entry is NGC/AD, and printing that on every line would cost the width the
-            # timestamp now uses.
+            # Usage and Source are always spelled out when the blob carries them. NGC/AD is
+            # the common case, but on a domain that runs neither Windows Hello nor Entra,
+            # stating it - and letting an AzureAD source stand out against it - is exactly
+            # the triage signal the operator is after.
             $Parts = @()
 
             if ($Result.DeviceID) {
@@ -291,11 +292,11 @@ function ConvertFrom-KeyCredentialLink {
                 $Parts += "used never"
             }
 
-            if ($Result.KeyUsageText -and $Result.KeyUsageText -ne 'NGC') {
+            if ($Result.KeyUsageText) {
                 $Parts += [string]$Result.KeyUsageText
             }
 
-            if ($Result.KeySourceText -and $Result.KeySourceText -ne 'AD') {
+            if ($Result.KeySourceText) {
                 $Parts += [string]$Result.KeySourceText
             }
 

@@ -16285,15 +16285,42 @@ function Convert-RoastingHashToRenderValues {
 	    )
 	}
 }
+function Get-KeyCredentialAgeText {
+	[CmdletBinding()]
+	param([datetime]$KeyCreated, [datetime]$AccountCreated)
+	$span = $KeyCreated - $AccountCreated
+	$mins = [math]::Round($span.TotalMinutes)
+	if ($mins -lt 0) { $mins = 0 }
+	if ($mins -lt 60) { return "$mins min" }
+	$hours = [math]::Round($span.TotalHours)
+	if ($hours -lt 48) { return "$hours h" }
+	return "$([math]::Round($span.TotalDays)) days"
+}
 function Convert-KeyCredentialLinkToRenderValues {
 	[CmdletBinding()]
 	param([string]$Name, $Value, $Context)
+	$acctCreated = $null
+	if ($Context -and $Context.SourceObject -and $Context.SourceObject.whenCreated) {
+	    try { $acctCreated = [datetime]$Context.SourceObject.whenCreated } catch { $acctCreated = $null }
+	}
 	$entries = @($Value)
 	$renderValues = @()
 	foreach ($entry in $entries) {
-	    $renderValues += New-RenderValue -Display ([string]$entry) `
+	    $display = [string]$entry
+	    if ($acctCreated -and $display -match 'created (\d{4}-\d{2}-\d{2} \d{2}:\d{2})') {
+	        $keyCreated = $null
+	        try {
+	            $keyCreated = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm',
+	                [System.Globalization.CultureInfo]::InvariantCulture)
+	        } catch { $keyCreated = $null }
+	        if ($keyCreated) {
+	            $gap = Get-KeyCredentialAgeText -KeyCreated $keyCreated -AccountCreated $acctCreated
+	            $display = $display -replace '(created \d{4}-\d{2}-\d{2} \d{2}:\d{2})', "`$1 ($gap after computer)"
+	        }
+	    }
+	    $renderValues += New-RenderValue -Display $display `
 	        -Severity 'Hint' -FindingId 'SHADOW_CREDENTIALS' `
-	        -RawValue $entry
+	        -RawValue $display
 	}
 	$maxSev = Get-MaxSeverityFromValues -Values $renderValues
 	return @{
@@ -19902,10 +19929,10 @@ function ConvertFrom-KeyCredentialLink {
 	        else {
 	            $Parts += "used never"
 	        }
-	        if ($Result.KeyUsageText -and $Result.KeyUsageText -ne 'NGC') {
+	        if ($Result.KeyUsageText) {
 	            $Parts += [string]$Result.KeyUsageText
 	        }
-	        if ($Result.KeySourceText -and $Result.KeySourceText -ne 'AD') {
+	        if ($Result.KeySourceText) {
 	            $Parts += [string]$Result.KeySourceText
 	        }
 	        return $Parts -join " | "
@@ -79586,7 +79613,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0"
+$Script:adPEASVersion = "2.7.0+20261009-1045"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

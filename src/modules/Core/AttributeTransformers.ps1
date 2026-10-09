@@ -1044,16 +1044,61 @@ function Convert-RoastingHashToRenderValues {
 }
 
 # --- msDS-KeyCredentialLink Transformer ---
+
+# How long after the computer account existed the key credential appeared, as a short
+# phrase. This is the one signal that separates a legitimate join-time self-registration
+# (seconds to minutes after the account) from a planted Shadow Credential (days or weeks
+# later), and it holds even in a brand-new domain where every key reads "used never".
+function Get-KeyCredentialAgeText {
+    [CmdletBinding()]
+    param([datetime]$KeyCreated, [datetime]$AccountCreated)
+
+    $span = $KeyCreated - $AccountCreated
+    $mins = [math]::Round($span.TotalMinutes)
+    # The key time is read back at minute precision while whenCreated has seconds, so a
+    # key written the same minute can compute a few seconds negative. Clamp to zero.
+    if ($mins -lt 0) { $mins = 0 }
+    if ($mins -lt 60) { return "$mins min" }
+
+    $hours = [math]::Round($span.TotalHours)
+    if ($hours -lt 48) { return "$hours h" }
+
+    return "$([math]::Round($span.TotalDays)) days"
+}
+
 function Convert-KeyCredentialLinkToRenderValues {
     [CmdletBinding()]
     param([string]$Name, $Value, $Context)
 
+    # whenCreated of the host object, if the render context carries it. The delta is built
+    # here, not in ConvertFrom-KeyCredentialLink, because only the context knows the sibling
+    # whenCreated - the converter sees one attribute at a time. The helper's display string
+    # carries "created <yyyy-MM-dd HH:mm>"; we read that back, diff it against whenCreated,
+    # and splice the gap in right after it. Member access is case-insensitive and a JSON
+    # round-trip hands whenCreated back as a string, so [datetime] coerces either form.
+    $acctCreated = $null
+    if ($Context -and $Context.SourceObject -and $Context.SourceObject.whenCreated) {
+        try { $acctCreated = [datetime]$Context.SourceObject.whenCreated } catch { $acctCreated = $null }
+    }
+
     $entries = @($Value)
     $renderValues = @()
     foreach ($entry in $entries) {
-        $renderValues += New-RenderValue -Display ([string]$entry) `
+        $display = [string]$entry
+        if ($acctCreated -and $display -match 'created (\d{4}-\d{2}-\d{2} \d{2}:\d{2})') {
+            $keyCreated = $null
+            try {
+                $keyCreated = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm',
+                    [System.Globalization.CultureInfo]::InvariantCulture)
+            } catch { $keyCreated = $null }
+            if ($keyCreated) {
+                $gap = Get-KeyCredentialAgeText -KeyCreated $keyCreated -AccountCreated $acctCreated
+                $display = $display -replace '(created \d{4}-\d{2}-\d{2} \d{2}:\d{2})', "`$1 ($gap after computer)"
+            }
+        }
+        $renderValues += New-RenderValue -Display $display `
             -Severity 'Hint' -FindingId 'SHADOW_CREDENTIALS' `
-            -RawValue $entry
+            -RawValue $display
     }
     $maxSev = Get-MaxSeverityFromValues -Values $renderValues
     return @{
