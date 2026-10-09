@@ -1047,8 +1047,9 @@ function Convert-RoastingHashToRenderValues {
 
 # How long after the computer account existed the key credential appeared, as a short
 # phrase. This is the one signal that separates a legitimate join-time self-registration
-# (seconds to minutes after the account) from a planted Shadow Credential (days or weeks
-# later), and it holds even in a brand-new domain where every key reads "used never".
+# (seconds to minutes after the account - e.g. the device public key Credential Guard
+# provisions) from a planted Shadow Credential (days or weeks later), and it holds even in
+# a brand-new domain where the blob's own timestamps give nothing else away.
 function Get-KeyCredentialAgeText {
     [CmdletBinding()]
     param([datetime]$KeyCreated, [datetime]$AccountCreated)

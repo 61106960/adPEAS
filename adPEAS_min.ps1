@@ -19955,12 +19955,6 @@ function ConvertFrom-KeyCredentialLink {
             if ($Parts.Count -eq 0) {
                 return "KeyCredential ($($KeyCredentialBytes.Length) bytes)"
             }
-            if ($Result.KeyLastLogonTime -and $Result.KeyLastLogonTime -ne $Result.KeyCreationTime) {
-                $Parts += "used $(Format-adPEASDate $Result.KeyLastLogonTime 'yyyy-MM-dd')"
-            }
-            else {
-                $Parts += "used never"
-            }
             if ($Result.KeyUsageText) {
                 $Parts += [string]$Result.KeyUsageText
             }
@@ -82509,7 +82503,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261009-1045"
+$Script:adPEASVersion = "2.7.0+20261009-1208"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

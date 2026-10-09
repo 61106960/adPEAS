@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-09 10:45:00
-    Version: 2.7.0+20261009-1045
+    Build: 2026-10-09 12:08:25
+    Version: 2.7.0+20261009-1208
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -21448,8 +21448,9 @@ function Convert-RoastingHashToRenderValues {
 
 # How long after the computer account existed the key credential appeared, as a short
 # phrase. This is the one signal that separates a legitimate join-time self-registration
-# (seconds to minutes after the account) from a planted Shadow Credential (days or weeks
-# later), and it holds even in a brand-new domain where every key reads "used never".
+# (seconds to minutes after the account - e.g. the device public key Credential Guard
+# provisions) from a planted Shadow Credential (days or weeks later), and it holds even in
+# a brand-new domain where the blob's own timestamps give nothing else away.
 function Get-KeyCredentialAgeText {
     [CmdletBinding()]
     param([datetime]$KeyCreated, [datetime]$AccountCreated)
@@ -27100,7 +27101,7 @@ function Show-ConnectionError {
 
 .EXAMPLE
     ConvertFrom-KeyCredentialLink -KeyCredentialBytes $bytes
-    Returns: "a1b2c3d4-1111-2222-3333-444455556666 | created 2024-01-15 10:30 | used 2026-09-01"
+    Returns: "a1b2c3d4-1111-2222-3333-444455556666 | created 2024-01-15 10:30 | NGC | AD"
 
 .EXAMPLE
     ConvertFrom-KeyCredentialLink -DNWithBinary "B:880:0002000001..." -Raw
@@ -27310,23 +27311,21 @@ function ConvertFrom-KeyCredentialLink {
 
             # Build compact display string, one line per key credential:
             #
-            #   <DeviceID> | created <ts> | used <date|never> [| <usage>] [| <source>]
+            #   <DeviceID> | created <ts> [| <usage>] [| <source>]
             #
             # The DeviceID is unlabelled and never truncated - a GUID at the start of the
             # line needs no caption, and the full value is what -RemoveDeviceID takes.
             # When the blob carries no DeviceId entry the KeyID stands in, so the line
             # still names something instead of falling through to the byte count.
             #
-            # "used" is KeyApproximateLastLogonTimeStamp (entry 0x08), which the parser
-            # has always read and the display has always dropped. It is the field that
-            # separates a key in daily use from one that was written and never touched -
-            # the state a freshly planted Shadow Credential is in. Date only, no clock
-            # time: the DC updates this coarsely, so minutes would be false precision.
-            #
-            # "never" covers both the missing entry and last-logon == creation. A client
-            # writes both timestamps at registration, and so does every tool that plants
-            # a key (Invoke-ShadowCredentialOperation included), so equality means the
-            # key has not been used since it was created.
+            # No "used" field. KeyApproximateLastLogonTimeStamp (entry 0x08) is still parsed
+            # and -Raw exposes it, but it is deliberately not shown. Per MS-KPP the field is
+            # written by the provisioning server at key CREATION, and no Microsoft spec
+            # defines writing it back on each logon: a freshly provisioned key reads equal to
+            # its creation time, and an attacker authenticating with a planted key never
+            # updates it at all. "used never" therefore asserted a non-use the data cannot
+            # support. Authoritative use evidence lives on the KDC (event 4768 / PKINIT), not
+            # in the blob - see the finding tooltip.
             #
             # Usage and Source are always spelled out when the blob carries them. NGC/AD is
             # the common case, but on a domain that runs neither Windows Hello nor Entra,
@@ -27345,17 +27344,10 @@ function ConvertFrom-KeyCredentialLink {
                 $Parts += "created $(Format-adPEASDate $Result.KeyCreationTime 'yyyy-MM-dd HH:mm')"
             }
 
-            # Nothing identifying and no creation time - the blob is too sparse to
-            # describe, and an isolated "used never" would say nothing about which key.
+            # Nothing identifying and no creation time - the blob is too sparse to name a
+            # key, so fall back to the byte count.
             if ($Parts.Count -eq 0) {
                 return "KeyCredential ($($KeyCredentialBytes.Length) bytes)"
-            }
-
-            if ($Result.KeyLastLogonTime -and $Result.KeyLastLogonTime -ne $Result.KeyCreationTime) {
-                $Parts += "used $(Format-adPEASDate $Result.KeyLastLogonTime 'yyyy-MM-dd')"
-            }
-            else {
-                $Parts += "used never"
             }
 
             if ($Result.KeyUsageText) {
@@ -125988,7 +125980,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261009-1045"
+$Script:adPEASVersion = "2.7.0+20261009-1208"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
