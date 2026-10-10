@@ -249,7 +249,13 @@ function Get-GPOPointAndPrint {
             }
 
             if ($configs.Count -eq 0) {
-                Show-Line "No GPO configures Point and Print or printer driver policies - the secure Windows default applies" -Class Secure
+                # "the secure Windows default applies" is a claim about every GPO folder in
+                # SYSVOL. It only holds if all of them were actually readable.
+                if (Show-SYSVOLCoverageNote) {
+                    Show-Line "No Point and Print or printer driver policy was found in the GPO folders that could be read" -Class Note
+                } else {
+                    Show-Line "No GPO configures Point and Print or printer driver policies - the secure Windows default applies" -Class Secure
+                }
                 return
             }
 

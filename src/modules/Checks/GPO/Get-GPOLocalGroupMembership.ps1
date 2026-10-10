@@ -310,7 +310,12 @@ function Get-GPOLocalGroupMembership {
                     }
                 }
             } else {
-                Show-Line "No vulnerable GPO local group assignments found in $(@($gpos).Count) analyzed GPO(s)" -Class Secure
+                # The count says how many GPOs were looked at, not how many were readable.
+                # Without the coverage line a scan that was denied every Policies folder
+                # ends on a green "nothing found in N GPOs".
+                $groupClass = 'Secure'
+                if (Show-SYSVOLCoverageNote) { $groupClass = 'Note' }
+                Show-Line "No vulnerable GPO local group assignments found in $(@($gpos).Count) analyzed GPO(s)" -Class $groupClass
             }
 
         } catch {

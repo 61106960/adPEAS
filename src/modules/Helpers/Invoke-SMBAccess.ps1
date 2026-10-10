@@ -110,18 +110,105 @@ if (-not $Script:SYSVOLFileCache) {
     $Script:SYSVOLFileCache = $null  # $null = not yet populated
 }
 
+# Folders the enumeration below could not read, and whether SYSVOL was reachable at all.
+# Every Get-ChildItem in the cache builder runs with -ErrorAction SilentlyContinue, which
+# is right - one denied GPO folder must not abort the scan - but it used to leave no
+# trace. A caller then found zero files in a folder it was never allowed to read and
+# printed its "nothing found" line, which in several checks is a green Secure line. For an
+# audit tool that is the most expensive kind of defect: the gap is invisible.
+if (-not $Script:SYSVOLCacheSkipped) {
+    $Script:SYSVOLCacheSkipped = $null  # $null = cache not yet built
+}
+if (-not $Script:SYSVOLCacheReachable) {
+    $Script:SYSVOLCacheReachable = $null  # $null = cache not yet built
+}
+
 <#
 .SYNOPSIS
     Resets the SYSVOL file listing cache.
 .DESCRIPTION
-    Clears the cached SYSVOL file listing.
+    Clears the cached SYSVOL file listing and the coverage information that goes with it.
     Called automatically by Disconnect-adPEAS when a session ends.
 #>
 function Reset-SYSVOLFileCache {
     [CmdletBinding()]
     param()
     $Script:SYSVOLFileCache = $null
+    $Script:SYSVOLCacheSkipped = $null
+    $Script:SYSVOLCacheReachable = $null
     Write-Log "[Reset-SYSVOLFileCache] Cache cleared"
+}
+
+<#
+.SYNOPSIS
+    Reports how complete the cached SYSVOL listing is.
+.DESCRIPTION
+    Returns the coverage of the SYSVOL file cache so a check can tell "found nothing"
+    apart from "was not allowed to look". Returns $null when the cache has not been built
+    yet, in which case nothing has been read and no claim should be made either.
+.OUTPUTS
+    PSCustomObject with Reachable, FileCount, SkippedCount and SkippedPaths,
+    or $null if the cache has not been built.
+#>
+function Get-SYSVOLCacheCoverage {
+    [CmdletBinding()]
+    param()
+
+    if ($null -eq $Script:SYSVOLFileCache) { return $null }
+
+    # Filter out $null: @($null) is a one-element array in PowerShell, so an unset list
+    # would report one unreadable folder that does not exist.
+    $skipped = @($Script:SYSVOLCacheSkipped | Where-Object { $_ })
+
+    # Only an explicit $false means unreachable. $null means the cache was populated
+    # without going through the builder - a test fixture, or a direct assignment - and in
+    # that case something did put files there, so treating it as unreachable would invent
+    # a failure.
+    $reachable = -not ($Script:SYSVOLCacheReachable -eq $false)
+
+    return [PSCustomObject]@{
+        Reachable    = $reachable
+        FileCount    = @($Script:SYSVOLFileCache).Count
+        SkippedCount = $skipped.Count
+        SkippedPaths = $skipped
+    }
+}
+
+<#
+.SYNOPSIS
+    Emits a line about incomplete SYSVOL coverage, if there is any.
+.DESCRIPTION
+    Writes nothing when SYSVOL was read completely, so a caller can place it
+    unconditionally in front of its own conclusion. Returns $true when coverage was
+    incomplete, which lets a caller downgrade a "Secure" conclusion to a "Note": a green
+    line must not be printed over folders that were never read.
+.OUTPUTS
+    Boolean - $true if SYSVOL coverage is incomplete.
+#>
+function Show-SYSVOLCoverageNote {
+    [CmdletBinding()]
+    param()
+
+    $coverage = Get-SYSVOLCacheCoverage
+    if ($null -eq $coverage) { return $false }
+
+    if (-not $coverage.Reachable) {
+        Show-Line "SYSVOL was not reachable - no file-based check below could run. This is not a clean result." -Class Finding
+        return $true
+    }
+
+    if ($coverage.SkippedCount -gt 0) {
+        Show-Line "$($coverage.SkippedCount) SYSVOL folder(s) could not be read with the current rights. Anything inside them was not examined, so the result below is incomplete." -Class Finding
+        foreach ($path in ($coverage.SkippedPaths | Select-Object -First 10)) {
+            Show-Line "  not read: $path" -Class Hint
+        }
+        if ($coverage.SkippedCount -gt 10) {
+            Show-Line "  ... and $($coverage.SkippedCount - 10) more" -Class Hint
+        }
+        return $true
+    }
+
+    return $false
 }
 
 <#
@@ -179,22 +266,29 @@ function Get-CachedSYSVOLFiles {
     if ($null -eq $Script:SYSVOLFileCache) {
         Write-Log "[Get-CachedSYSVOLFiles] Building SYSVOL file cache from: $SYSVOLPath"
 
+        # Accumulates every folder the enumeration below is not allowed to read, so a
+        # caller can tell "found nothing" from "was not allowed to look".
+        $enumErrors = @()
+        $Script:SYSVOLCacheSkipped = @()
+        $Script:SYSVOLCacheReachable = $false
+
         if (-not (Test-Path $SYSVOLPath)) {
             Write-Log "[Get-CachedSYSVOLFiles] SYSVOL path not accessible: $SYSVOLPath"
             $Script:SYSVOLFileCache = @()
             return @()
         }
+        $Script:SYSVOLCacheReachable = $true
 
         # Enumerate per top-level subdirectory (typically Policies/{GUID} folders) with progress
         # This avoids a single blocking Get-ChildItem -Recurse over the entire SYSVOL tree
-        $topLevelDirs = @(Get-ChildItem -Force -Path $SYSVOLPath -Directory -ErrorAction SilentlyContinue)
+        $topLevelDirs = @(Get-ChildItem -Force -Path $SYSVOLPath -Directory -ErrorAction SilentlyContinue -ErrorVariable +enumErrors)
         $allFiles = [System.Collections.Generic.List[object]]::new()
 
         if ($topLevelDirs.Count -gt 0) {
             # Count total subdirectories for progress (Policies folder typically has one subdir per GPO)
             $subDirs = [System.Collections.Generic.List[object]]::new()
             foreach ($topDir in $topLevelDirs) {
-                $childDirs = @(Get-ChildItem -Force -Path $topDir.FullName -Directory -ErrorAction SilentlyContinue)
+                $childDirs = @(Get-ChildItem -Force -Path $topDir.FullName -Directory -ErrorAction SilentlyContinue -ErrorVariable +enumErrors)
                 if ($childDirs.Count -gt 0) {
                     foreach ($cd in $childDirs) { $subDirs.Add($cd) }
                 } else {
@@ -212,7 +306,7 @@ function Get-CachedSYSVOLFiles {
                 if ($showProgress) {
                     Show-Progress -Activity "Building SYSVOL file cache" -Current $currentDirIndex -Total $totalDirs -ObjectName $dir.Name
                 }
-                $dirFiles = @(Get-ChildItem -Force -Path $dir.FullName -Recurse -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer })
+                $dirFiles = @(Get-ChildItem -Force -Path $dir.FullName -Recurse -ErrorAction SilentlyContinue -ErrorVariable +enumErrors | Where-Object { -not $_.PSIsContainer })
                 foreach ($f in $dirFiles) { $allFiles.Add($f) }
             }
 
@@ -221,17 +315,36 @@ function Get-CachedSYSVOLFiles {
             }
 
             # Also get files directly in the top-level SYSVOL path (not in subdirectories)
-            $rootFiles = @(Get-ChildItem -Force -Path $SYSVOLPath -File -ErrorAction SilentlyContinue)
+            $rootFiles = @(Get-ChildItem -Force -Path $SYSVOLPath -File -ErrorAction SilentlyContinue -ErrorVariable +enumErrors)
             foreach ($f in $rootFiles) { $allFiles.Add($f) }
         } else {
             # No subdirectories - fall back to flat recursive scan
             $allFiles = [System.Collections.Generic.List[object]]::new(
-                @(Get-ChildItem -Force -Path $SYSVOLPath -Recurse -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer })
+                @(Get-ChildItem -Force -Path $SYSVOLPath -Recurse -ErrorAction SilentlyContinue -ErrorVariable +enumErrors | Where-Object { -not $_.PSIsContainer })
             )
         }
 
+        # Turn the suppressed enumeration errors into the list of folders that were not
+        # read. One denied folder produces one error whose TargetObject is its path; where
+        # the provider does not supply one, fall back to the message so the count is still
+        # right and the caller does not under-report.
+        $skippedPaths = [System.Collections.Generic.List[string]]::new()
+        foreach ($err in @($enumErrors)) {
+            if ($null -eq $err) { continue }
+            $path = $null
+            if ($err.TargetObject) {
+                $path = [string]$err.TargetObject
+            } elseif ($err.CategoryInfo -and $err.CategoryInfo.TargetName) {
+                $path = [string]$err.CategoryInfo.TargetName
+            } elseif ($err.Exception) {
+                $path = $err.Exception.Message
+            }
+            if ($path -and -not $skippedPaths.Contains($path)) { [void]$skippedPaths.Add($path) }
+        }
+        $Script:SYSVOLCacheSkipped = @($skippedPaths)
+
         $Script:SYSVOLFileCache = @($allFiles)
-        Write-Log "[Get-CachedSYSVOLFiles] Cached $($Script:SYSVOLFileCache.Count) files from SYSVOL"
+        Write-Log "[Get-CachedSYSVOLFiles] Cached $($Script:SYSVOLFileCache.Count) files from SYSVOL, $($Script:SYSVOLCacheSkipped.Count) folder(s) unreadable"
     }
 
     # Filter cached results locally

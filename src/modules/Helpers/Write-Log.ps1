@@ -65,8 +65,12 @@ function Write-Log {
         default   { Write-Host $Message }
     }
 
-    # File output (only if Outputfile is active AND VerboseLogging is enabled)
-    if ($Script:adPEAS_Outputfile -and $Script:adPEAS_VerboseLogging) {
+    # File output. Verbose, Debug and Info still need -VerboseLogging, but Warning and
+    # Error reach the output file whenever one is set: a scan that logged an error and
+    # said nothing about it in the report file is indistinguishable from a clean scan
+    # once the console has scrolled away.
+    $fileWorthy = $Script:adPEAS_VerboseLogging -or ($Level -eq 'Warning') -or ($Level -eq 'Error')
+    if ($Script:adPEAS_Outputfile -and $fileWorthy) {
         try {
             $timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
             "$timestamp [$Level] $Message" | Add-Content -Path $Script:adPEAS_Outputfile -ErrorAction SilentlyContinue

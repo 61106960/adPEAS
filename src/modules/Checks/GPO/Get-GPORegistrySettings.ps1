@@ -301,6 +301,9 @@ function Get-GPORegistrySettings {
                     Show-Object $finding -Class $rowClass
                 }
             } else {
+                # Names the GPO folders that could not be read, so "no vulnerable settings"
+                # is not mistaken for "all settings were examined".
+                $null = Show-SYSVOLCoverageNote
                 Show-Line "No vulnerable registry settings deployed via GPO" -Class Note
             }
 

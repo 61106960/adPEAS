@@ -533,8 +533,15 @@ $Script:FindingDefinitions = @{
         Tools = @("Rubeus", "Impacket", "PowerView")
         MITRE = "T1550.003"
         Triggers = @(
+            # Only the UAC flag means protocol transition (S4U2Self + S4U2Proxy, exploitable
+            # without the victim doing anything). The bare presence of
+            # msDS-AllowedToDelegateTo does NOT - that is plain Kerberos-only constrained
+            # delegation and belongs to CONSTRAINED_DELEGATION, which now carries that
+            # trigger. Before, the pattern-less trigger here claimed every constrained
+            # delegation and told the reader "protocol transition enabled" about accounts
+            # that had no such flag, while CONSTRAINED_DELEGATION had no triggers at all and
+            # was unreachable.
             @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_TO_AUTH_FOR_DELEGATION'; Severity = 'Finding' }
-            @{ Attribute = 'msDS-AllowedToDelegateTo'; Severity = 'Finding' }
         )
     }
 
@@ -10488,6 +10495,14 @@ foreach ($oid in $linkedOIDs) {
         )
         Tools = @("Rubeus", "Impacket")
         MITRE = "T1550.003"
+        Triggers = @(
+            # Moved here from CONSTRAINED_DELEGATION_PROTOCOL_TRANSITION. A set
+            # msDS-AllowedToDelegateTo on its own is Kerberos-only constrained delegation:
+            # real, worth reporting, but it needs an actual user authentication to the
+            # account. Protocol transition is the UAC flag, and that definition keeps it.
+            # Until this move the definition had no triggers and could never be reached.
+            @{ Attribute = 'msDS-AllowedToDelegateTo'; Severity = 'Finding' }
+        )
     }
 
     # ============================================================================
@@ -10509,7 +10524,10 @@ foreach ($oid in $linkedOIDs) {
         )
         MITRE = "M1026"
         Triggers = @(
-            @{ Attribute = 'LapsInstalled'; Pattern = '^Windows LAPS'; Severity = 'Secure' }
+            # The attribute is called LAPSVersion, not LapsInstalled - Get-LAPSConfiguration
+            # writes it per GPO with the value 'Windows LAPS' or 'LAPS Legacy'. Under the old
+            # name no module ever produced the attribute and this definition was unreachable.
+            @{ Attribute = 'LAPSVersion'; Pattern = '^Windows LAPS'; Severity = 'Secure' }
         )
     }
 
@@ -10530,7 +10548,10 @@ foreach ($oid in $linkedOIDs) {
         )
         MITRE = "M1026"
         Triggers = @(
-            @{ Attribute = 'LapsInstalled'; Pattern = '^Legacy LAPS'; Severity = 'Hint' }
+            # Two corrections: the attribute is LAPSVersion, and the value the module writes
+            # is 'LAPS Legacy', not 'Legacy LAPS' - the words were the other way round, so
+            # even under the right attribute name the pattern would not have matched.
+            @{ Attribute = 'LAPSVersion'; Pattern = '^LAPS Legacy'; Severity = 'Hint' }
         )
     }
 
@@ -10551,6 +10572,12 @@ foreach ($oid in $linkedOIDs) {
         )
         MITRE = "T1552.006"
         Triggers = @(
+            # UNREACHABLE, left as-is on purpose. No module writes 'Not installed' for the
+            # LAPS generation: Get-LAPSConfiguration builds one object per GPO that
+            # configures LAPS, so "no LAPS anywhere" has no object to hang an attribute on.
+            # Making this reachable needs a decision about where that statement belongs -
+            # most likely the domain-wide coverage block, not a per-GPO attribute - and that
+            # is a design question, not a rename. See .claude/review-2026-10-10.
             @{ Attribute = 'LapsInstalled'; Pattern = '^Not installed$'; Severity = 'Finding' }
         )
     }
@@ -11984,8 +12011,14 @@ foreach ($oid in $linkedOIDs) {
             # a policy that reaches nothing is the one line in a finding block that lowers
             # the risk. "Unknown" is the yellow one - that is missing information, not a
             # mitigating fact.
-            @{ Attribute = 'LinkedOUs'; Pattern = '^Not linked'; Severity = 'Note' }
-            @{ Attribute = 'LinkedOUs'; Pattern = '^Unknown - linkage'; Severity = 'Hint' }
+            # SeverityOnly: 'LinkedOUs' is written by twelve check modules across six
+            # categories, not just by the LAPS check. Without this the LAPS card and its
+            # text ("The LAPS settings in this GPO apply to no computer at all") attached
+            # itself to printer driver policies, SMB signing policies, LDAP configuration,
+            # scheduled tasks and user rights assignments. The colouring above is right for
+            # all of them, the finding is not.
+            @{ Attribute = 'LinkedOUs'; Pattern = '^Not linked'; Severity = 'Note'; SeverityOnly = $true }
+            @{ Attribute = 'LinkedOUs'; Pattern = '^Unknown - linkage'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -12161,6 +12194,9 @@ foreach ($findingId in $Script:FindingDefinitions.Keys) {
             Severity       = $trigger.Severity      # Optional: per-trigger severity override
             SeverityOnly   = $trigger.SeverityOnly   # If $true, Get-FindingIdForAttribute skips this
             ParentRisk     = $definition.Risk        # Parent definition risk level
+            # Needed so Get-TriggerMatch can pick the most severe match instead of the
+            # first one this list happens to hold - see the comment there.
+            BaseScore      = if ($definition.ContainsKey('BaseScore')) { [int]$definition.BaseScore } else { 0 }
         })
     }
 }
@@ -12290,6 +12326,17 @@ function Get-TriggerMatch {
     $triggers = $Script:FindingTriggerIndex[$attrNameLower]
     $resultSeverity = $null
     $resultFindingId = $null
+    $bestTrigger = $null
+
+    # Tie-break for two triggers with the same BaseScore: the more specific one wins, so a
+    # Custom predicate or a Pattern beats a bare fallback trigger on the same attribute.
+    $isMoreSpecific = {
+        param($a, $b)
+        $sa = [int][bool]$a.Custom + [int][bool]$a.Pattern
+        $sb = [int][bool]$b.Custom + [int][bool]$b.Pattern
+        if ($sa -ne $sb) { return ($sa -gt $sb) }
+        return ([string]$a.FindingId -lt [string]$b.FindingId)
+    }
 
     # Pass 1: SeverityOnly triggers (priority for severity)
     # Pass 2: Normal triggers (provide both severity fallback and FindingId)
@@ -12326,25 +12373,44 @@ function Get-TriggerMatch {
 
             if (-not $matched) { continue }
 
-            # Extract severity from matched trigger
-            if ($null -eq $resultSeverity) {
-                $resultSeverity = if ($trigger.Severity) { $trigger.Severity } else { $trigger.ParentRisk }
+            if ($isSeverityOnly) {
+                # SeverityOnly triggers only colour the row; the first match wins, and they
+                # keep priority over the severity of the finding selected below.
+                if ($null -eq $resultSeverity) {
+                    $resultSeverity = if ($trigger.Severity) { $trigger.Severity } else { $trigger.ParentRisk }
+                }
+                continue
             }
 
-            # Extract FindingId from non-SeverityOnly triggers
-            if ($null -eq $resultFindingId -and -not $isSeverityOnly) {
-                $resultFindingId = $trigger.FindingId
-            }
-
-            # If we have both, we can stop early
-            if ($null -ne $resultSeverity -and $null -ne $resultFindingId) {
-                break
+            # Among ALL matching triggers take the most severe finding by BaseScore, not the
+            # first one this list happens to hold. The index is built by iterating
+            # $Script:FindingDefinitions.Keys, an unordered hashtable, so "first" is the hash
+            # bucket order - and that differs between runtimes. Measured on the same source
+            # with the same keys, attribute 'Vulnerabilities', value "ESC2, ESC3":
+            # Windows PowerShell 5.1 answered ESC2_TEMPLATE (BaseScore 80), PowerShell 7
+            # answered ESC3_TEMPLATE (75). Same template, different card, different
+            # remediation, decided by the host the scan ran on.
+            # On a tie the MORE SPECIFIC trigger wins - one with a Custom predicate or a
+            # Pattern beats a bare fallback trigger on the same attribute. That is what
+            # makes the deliberate two-trigger pattern work: SID_HISTORY_INJECTION pairs a
+            # Custom 'is_privileged_sid' trigger (Finding) with a pattern-less one (Hint)
+            # for every other SID, both carrying the same FindingId and BaseScore. Without
+            # this rule the severity of a privileged SID in sIDHistory depended on which of
+            # the two the hashtable happened to list first.
+            # Last tie-break is the FindingId, so the answer is stable either way.
+            if ($null -eq $bestTrigger -or
+                [int]$trigger.BaseScore -gt [int]$bestTrigger.BaseScore -or
+                ([int]$trigger.BaseScore -eq [int]$bestTrigger.BaseScore -and
+                 (& $isMoreSpecific $trigger $bestTrigger))) {
+                $bestTrigger = $trigger
             }
         }
+    }
 
-        # If we have both after pass 1, skip pass 2
-        if ($null -ne $resultSeverity -and $null -ne $resultFindingId) {
-            break
+    if ($null -ne $bestTrigger) {
+        $resultFindingId = $bestTrigger.FindingId
+        if ($null -eq $resultSeverity) {
+            $resultSeverity = if ($bestTrigger.Severity) { $bestTrigger.Severity } else { $bestTrigger.ParentRisk }
         }
     }
 

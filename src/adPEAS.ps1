@@ -838,6 +838,10 @@ try {
         $Script:LDAPContext.Remove('SessionInvalid')
         Write-Log "[adPEAS] Cleared SessionInvalid flag from previous run"
     }
+
+    # Checks that threw during this run. Reset per run so a second scan in the same session
+    # does not inherit the first one's failures. Reported in the Scan Summary.
+    $Script:adPEAS_IncompleteChecks = @()
     if (-not (Ensure-LDAPConnection)) {
         # Ensure-LDAPConnection already displayed the error message and set SessionInvalid flag
         Show-Header "Scan Summary"
@@ -989,6 +993,17 @@ try {
         } catch {
             Write-Warning "[adPEAS] Check '$CheckName' failed: $_"
             Write-Log "[adPEAS] Check '$CheckName' failed: $_" -Level Error
+
+            # The warning above goes to the console only. Without the line below the HTML
+            # report, the JSON export and the text report contain nothing at all about the
+            # failure: the section is simply short or empty, and an empty section reads
+            # exactly like a clean environment. For an audit tool that is the most
+            # expensive kind of defect, because the finding does not go missing visibly.
+            # Emitted while the check context is still set, so it is filed under the right
+            # category and check.
+            Show-Line "This check did not complete - its results are incomplete or absent. Reason: $($_.Exception.Message)" -Class Hint
+            if ($null -eq $Script:adPEAS_IncompleteChecks) { $Script:adPEAS_IncompleteChecks = @() }
+            $Script:adPEAS_IncompleteChecks += $CheckName
         } finally {
             Clear-CheckContext
         }
@@ -1316,6 +1331,16 @@ try {
             Show-Line "Rebuild a report from it with: Convert-adPEASReport -InputJson '$checkpointPath' -OutputPath '$basePath'" -Class Hint
         }
     } else {
+        # Checks that threw are named here, not just warned about on the console. A reader
+        # of the report has to be able to tell "nothing found" from "not looked at".
+        if ($Script:adPEAS_IncompleteChecks -and $Script:adPEAS_IncompleteChecks.Count -gt 0) {
+            $incomplete = @($Script:adPEAS_IncompleteChecks | Select-Object -Unique)
+            Show-Line "$($incomplete.Count) check(s) did not complete - their sections are incomplete and must not be read as clean:" -Class Finding
+            foreach ($name in $incomplete) {
+                Show-Line "  $name" -Class Finding
+            }
+        }
+
         # 7. Report file notifications (after summary)
         if ($Script:adPEAS_Outputfile) {
             Show-Line "Text report saved to: $Script:adPEAS_Outputfile" -Class Hint

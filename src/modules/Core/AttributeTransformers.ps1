@@ -501,8 +501,16 @@ function Convert-OwnerToRenderValues {
     }
 
     # Non-default owner - Finding (red)
-    $findingId = Get-FindingIdForAttribute -Name 'Owner' -Value $Value
-    if (-not $findingId) { $findingId = 'NON_DEFAULT_COMPUTER_OWNERS' }
+    # The two 'Owner' triggers are Context-bound (NonDefaultOwner for computers,
+    # NonDefaultUserOwner for users). Without passing a context, Get-TriggerMatch skipped
+    # both and the hardcoded fallback below gave every USER with a non-default owner the
+    # computer card, complete with the RBCD attack path, while NON_DEFAULT_USER_OWNERS and
+    # its password-reset path were dead code.
+    $ownerContext = if ($Context.IsComputer) { 'NonDefaultOwner' } else { 'NonDefaultUserOwner' }
+    $findingId = Get-FindingIdForAttribute -Name 'Owner' -Value $Value -Context $ownerContext
+    if (-not $findingId) {
+        $findingId = if ($Context.IsComputer) { 'NON_DEFAULT_COMPUTER_OWNERS' } else { 'NON_DEFAULT_USER_OWNERS' }
+    }
     return @{
         DisplayName         = 'Owner (non-default)'
         RowType             = 'SingleValue'

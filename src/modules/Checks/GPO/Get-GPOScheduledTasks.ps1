@@ -287,6 +287,9 @@ function Get-GPOScheduledTasks {
                     Show-Object $task -Class $taskClass
                 }
             } else {
+                # The count is the number of GPOs looked at, not the number that could be
+                # read; the coverage line says which folders were skipped.
+                $null = Show-SYSVOLCoverageNote
                 Show-Line "No scheduled tasks distributed via GPO in $($gpos.Count) analyzed GPO(s)" -Class Note
             }
 

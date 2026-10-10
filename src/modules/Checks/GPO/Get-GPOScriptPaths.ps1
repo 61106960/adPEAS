@@ -251,6 +251,9 @@ function Get-GPOScriptPaths {
                     }
                 }
             } else {
+                # Logon scripts live in the GPO folders; an unreadable folder hides them
+                # without a trace unless the coverage line names it.
+                $null = Show-SYSVOLCoverageNote
                 Show-Line "No scripts distributed via GPO" -Class Note
             }
 

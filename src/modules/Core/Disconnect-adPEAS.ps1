@@ -285,6 +285,8 @@ function Clear-SessionState {
     # Findings collection (adPEAS-Messages / HTML export)
     $Script:adPEAS_FindingsCollection = $null
     $Script:adPEAS_FindingsCollectionEnabled = $false
+    # Checks that threw during the last run; named in the Scan Summary
+    $Script:adPEAS_IncompleteChecks = $null
     $Script:adPEAS_CurrentCheckContext = $null
 
     # LDAP Statistics tracking (set by Invoke-adPEAS -Statistics)

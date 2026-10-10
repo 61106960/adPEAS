@@ -4318,7 +4318,6 @@ $Script:FindingDefinitions = @{
 	    MITRE = "T1550.003"
 	    Triggers = @(
 	        @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_TO_AUTH_FOR_DELEGATION'; Severity = 'Finding' }
-	        @{ Attribute = 'msDS-AllowedToDelegateTo'; Severity = 'Finding' }
 	    )
 	}
 	'GPO_NOT_CURRENTLY_EFFECTIVE' = @{
@@ -13700,6 +13699,9 @@ foreach ($oid in $linkedOIDs) {
 	    )
 	    Tools = @("Rubeus", "Impacket")
 	    MITRE = "T1550.003"
+	    Triggers = @(
+	        @{ Attribute = 'msDS-AllowedToDelegateTo'; Severity = 'Finding' }
+	    )
 	}
 	'LAPS_INSTALLED' = @{
 	    Title = "Windows LAPS Installed"
@@ -13716,7 +13718,7 @@ foreach ($oid in $linkedOIDs) {
 	    )
 	    MITRE = "M1026"
 	    Triggers = @(
-	        @{ Attribute = 'LapsInstalled'; Pattern = '^Windows LAPS'; Severity = 'Secure' }
+	        @{ Attribute = 'LAPSVersion'; Pattern = '^Windows LAPS'; Severity = 'Secure' }
 	    )
 	}
 	'LAPS_LEGACY' = @{
@@ -13736,7 +13738,7 @@ foreach ($oid in $linkedOIDs) {
 	    )
 	    MITRE = "M1026"
 	    Triggers = @(
-	        @{ Attribute = 'LapsInstalled'; Pattern = '^Legacy LAPS'; Severity = 'Hint' }
+	        @{ Attribute = 'LAPSVersion'; Pattern = '^LAPS Legacy'; Severity = 'Hint' }
 	    )
 	}
 	'LAPS_LEGACY_ONLY' = @{
@@ -15055,8 +15057,8 @@ foreach ($oid in $linkedOIDs) {
 	    Tools = @("adPEAS")
 	    MITRE = "T1078.003"
 	    Triggers = @(
-	        @{ Attribute = 'LinkedOUs'; Pattern = '^Not linked'; Severity = 'Note' }
-	        @{ Attribute = 'LinkedOUs'; Pattern = '^Unknown - linkage'; Severity = 'Hint' }
+	        @{ Attribute = 'LinkedOUs'; Pattern = '^Not linked'; Severity = 'Note'; SeverityOnly = $true }
+	        @{ Attribute = 'LinkedOUs'; Pattern = '^Unknown - linkage'; Severity = 'Hint'; SeverityOnly = $true }
 	    )
 	}
 	'SCRIPTPATH_HARDCODED' = @{
@@ -15179,6 +15181,7 @@ foreach ($findingId in $Script:FindingDefinitions.Keys) {
 	        Severity       = $trigger.Severity
 	        SeverityOnly   = $trigger.SeverityOnly
 	        ParentRisk     = $definition.Risk
+	        BaseScore      = if ($definition.ContainsKey('BaseScore')) { [int]$definition.BaseScore } else { 0 }
 	    })
 	}
 }
@@ -15233,6 +15236,14 @@ function Get-TriggerMatch {
 	$triggers = $Script:FindingTriggerIndex[$attrNameLower]
 	$resultSeverity = $null
 	$resultFindingId = $null
+	$bestTrigger = $null
+	$isMoreSpecific = {
+	    param($a, $b)
+	    $sa = [int][bool]$a.Custom + [int][bool]$a.Pattern
+	    $sb = [int][bool]$b.Custom + [int][bool]$b.Pattern
+	    if ($sa -ne $sb) { return ($sa -gt $sb) }
+	    return ([string]$a.FindingId -lt [string]$b.FindingId)
+	}
 	foreach ($pass in @($true, $false)) {
 	    foreach ($trigger in $triggers) {
 	        $isSeverityOnly = [bool]$trigger.SeverityOnly
@@ -15258,18 +15269,24 @@ function Get-TriggerMatch {
 	            $matched = $true
 	        }
 	        if (-not $matched) { continue }
-	        if ($null -eq $resultSeverity) {
-	            $resultSeverity = if ($trigger.Severity) { $trigger.Severity } else { $trigger.ParentRisk }
+	        if ($isSeverityOnly) {
+	            if ($null -eq $resultSeverity) {
+	                $resultSeverity = if ($trigger.Severity) { $trigger.Severity } else { $trigger.ParentRisk }
+	            }
+	            continue
 	        }
-	        if ($null -eq $resultFindingId -and -not $isSeverityOnly) {
-	            $resultFindingId = $trigger.FindingId
-	        }
-	        if ($null -ne $resultSeverity -and $null -ne $resultFindingId) {
-	            break
+	        if ($null -eq $bestTrigger -or
+	            [int]$trigger.BaseScore -gt [int]$bestTrigger.BaseScore -or
+	            ([int]$trigger.BaseScore -eq [int]$bestTrigger.BaseScore -and
+	             (& $isMoreSpecific $trigger $bestTrigger))) {
+	            $bestTrigger = $trigger
 	        }
 	    }
-	    if ($null -ne $resultSeverity -and $null -ne $resultFindingId) {
-	        break
+	}
+	if ($null -ne $bestTrigger) {
+	    $resultFindingId = $bestTrigger.FindingId
+	    if ($null -eq $resultSeverity) {
+	        $resultSeverity = if ($bestTrigger.Severity) { $bestTrigger.Severity } else { $bestTrigger.ParentRisk }
 	    }
 	}
 	if ($null -eq $resultSeverity -and $null -eq $resultFindingId) {
@@ -15863,8 +15880,11 @@ function Convert-OwnerToRenderValues {
 	        )
 	    }
 	}
-	$findingId = Get-FindingIdForAttribute -Name 'Owner' -Value $Value
-	if (-not $findingId) { $findingId = 'NON_DEFAULT_COMPUTER_OWNERS' }
+	$ownerContext = if ($Context.IsComputer) { 'NonDefaultOwner' } else { 'NonDefaultUserOwner' }
+	$findingId = Get-FindingIdForAttribute -Name 'Owner' -Value $Value -Context $ownerContext
+	if (-not $findingId) {
+	    $findingId = if ($Context.IsComputer) { 'NON_DEFAULT_COMPUTER_OWNERS' } else { 'NON_DEFAULT_USER_OWNERS' }
+	}
 	return @{
 	    DisplayName         = 'Owner (non-default)'
 	    RowType             = 'SingleValue'
@@ -22009,6 +22029,7 @@ function Clear-SessionState {
 	$Script:CertificateTrustAnchor = $null
 	$Script:adPEAS_FindingsCollection = $null
 	$Script:adPEAS_FindingsCollectionEnabled = $false
+	$Script:adPEAS_IncompleteChecks = $null
 	$Script:adPEAS_CurrentCheckContext = $null
 	$Script:LDAPStatistics = $null
 	$Script:DefaultInactiveDays = $null
@@ -32776,7 +32797,8 @@ function Write-Log {
 	    'Error'   { Write-Warning $Message }
 	    default   { Write-Host $Message }
 	}
-	if ($Script:adPEAS_Outputfile -and $Script:adPEAS_VerboseLogging) {
+	$fileWorthy = $Script:adPEAS_VerboseLogging -or ($Level -eq 'Warning') -or ($Level -eq 'Error')
+	if ($Script:adPEAS_Outputfile -and $fileWorthy) {
 	    try {
 	        $timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
 	        "$timestamp [$Level] $Message" | Add-Content -Path $Script:adPEAS_Outputfile -ErrorAction SilentlyContinue
@@ -37028,10 +37050,52 @@ if (-not $Script:SMBShareAccessCache) {
 if (-not $Script:SYSVOLFileCache) {
 	$Script:SYSVOLFileCache = $null
 }
+if (-not $Script:SYSVOLCacheSkipped) {
+	$Script:SYSVOLCacheSkipped = $null
+}
+if (-not $Script:SYSVOLCacheReachable) {
+	$Script:SYSVOLCacheReachable = $null
+}
 function Reset-SYSVOLFileCache {
 	[CmdletBinding()]
 	param()
 	$Script:SYSVOLFileCache = $null
+	$Script:SYSVOLCacheSkipped = $null
+	$Script:SYSVOLCacheReachable = $null
+}
+function Get-SYSVOLCacheCoverage {
+	[CmdletBinding()]
+	param()
+	if ($null -eq $Script:SYSVOLFileCache) { return $null }
+	$skipped = @($Script:SYSVOLCacheSkipped | Where-Object { $_ })
+	$reachable = -not ($Script:SYSVOLCacheReachable -eq $false)
+	return [PSCustomObject]@{
+	    Reachable    = $reachable
+	    FileCount    = @($Script:SYSVOLFileCache).Count
+	    SkippedCount = $skipped.Count
+	    SkippedPaths = $skipped
+	}
+}
+function Show-SYSVOLCoverageNote {
+	[CmdletBinding()]
+	param()
+	$coverage = Get-SYSVOLCacheCoverage
+	if ($null -eq $coverage) { return $false }
+	if (-not $coverage.Reachable) {
+	    Show-Line "SYSVOL was not reachable - no file-based check below could run. This is not a clean result." -Class Finding
+	    return $true
+	}
+	if ($coverage.SkippedCount -gt 0) {
+	    Show-Line "$($coverage.SkippedCount) SYSVOL folder(s) could not be read with the current rights. Anything inside them was not examined, so the result below is incomplete." -Class Finding
+	    foreach ($path in ($coverage.SkippedPaths | Select-Object -First 10)) {
+	        Show-Line "  not read: $path" -Class Hint
+	    }
+	    if ($coverage.SkippedCount -gt 10) {
+	        Show-Line "  ... and $($coverage.SkippedCount - 10) more" -Class Hint
+	    }
+	    return $true
+	}
+	return $false
 }
 function Get-CachedSYSVOLFiles {
 	[CmdletBinding()]
@@ -37050,16 +37114,20 @@ function Get-CachedSYSVOLFiles {
 	    $SYSVOLPath = "\\$dcServer\SYSVOL\$domainFQDN"
 	}
 	if ($null -eq $Script:SYSVOLFileCache) {
+	    $enumErrors = @()
+	    $Script:SYSVOLCacheSkipped = @()
+	    $Script:SYSVOLCacheReachable = $false
 	    if (-not (Test-Path $SYSVOLPath)) {
 	        $Script:SYSVOLFileCache = @()
 	        return @()
 	    }
-	    $topLevelDirs = @(Get-ChildItem -Force -Path $SYSVOLPath -Directory -ErrorAction SilentlyContinue)
+	    $Script:SYSVOLCacheReachable = $true
+	    $topLevelDirs = @(Get-ChildItem -Force -Path $SYSVOLPath -Directory -ErrorAction SilentlyContinue -ErrorVariable +enumErrors)
 	    $allFiles = [System.Collections.Generic.List[object]]::new()
 	    if ($topLevelDirs.Count -gt 0) {
 	        $subDirs = [System.Collections.Generic.List[object]]::new()
 	        foreach ($topDir in $topLevelDirs) {
-	            $childDirs = @(Get-ChildItem -Force -Path $topDir.FullName -Directory -ErrorAction SilentlyContinue)
+	            $childDirs = @(Get-ChildItem -Force -Path $topDir.FullName -Directory -ErrorAction SilentlyContinue -ErrorVariable +enumErrors)
 	            if ($childDirs.Count -gt 0) {
 	                foreach ($cd in $childDirs) { $subDirs.Add($cd) }
 	            } else {
@@ -37074,19 +37142,33 @@ function Get-CachedSYSVOLFiles {
 	            if ($showProgress) {
 	                Show-Progress -Activity "Building SYSVOL file cache" -Current $currentDirIndex -Total $totalDirs -ObjectName $dir.Name
 	            }
-	            $dirFiles = @(Get-ChildItem -Force -Path $dir.FullName -Recurse -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer })
+	            $dirFiles = @(Get-ChildItem -Force -Path $dir.FullName -Recurse -ErrorAction SilentlyContinue -ErrorVariable +enumErrors | Where-Object { -not $_.PSIsContainer })
 	            foreach ($f in $dirFiles) { $allFiles.Add($f) }
 	        }
 	        if ($showProgress) {
 	            Show-Progress -Activity "Building SYSVOL file cache" -Completed
 	        }
-	        $rootFiles = @(Get-ChildItem -Force -Path $SYSVOLPath -File -ErrorAction SilentlyContinue)
+	        $rootFiles = @(Get-ChildItem -Force -Path $SYSVOLPath -File -ErrorAction SilentlyContinue -ErrorVariable +enumErrors)
 	        foreach ($f in $rootFiles) { $allFiles.Add($f) }
 	    } else {
 	        $allFiles = [System.Collections.Generic.List[object]]::new(
-	            @(Get-ChildItem -Force -Path $SYSVOLPath -Recurse -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer })
+	            @(Get-ChildItem -Force -Path $SYSVOLPath -Recurse -ErrorAction SilentlyContinue -ErrorVariable +enumErrors | Where-Object { -not $_.PSIsContainer })
 	        )
 	    }
+	    $skippedPaths = [System.Collections.Generic.List[string]]::new()
+	    foreach ($err in @($enumErrors)) {
+	        if ($null -eq $err) { continue }
+	        $path = $null
+	        if ($err.TargetObject) {
+	            $path = [string]$err.TargetObject
+	        } elseif ($err.CategoryInfo -and $err.CategoryInfo.TargetName) {
+	            $path = [string]$err.CategoryInfo.TargetName
+	        } elseif ($err.Exception) {
+	            $path = $err.Exception.Message
+	        }
+	        if ($path -and -not $skippedPaths.Contains($path)) { [void]$skippedPaths.Add($path) }
+	    }
+	    $Script:SYSVOLCacheSkipped = @($skippedPaths)
 	    $Script:SYSVOLFileCache = @($allFiles)
 	}
 	$filterArray = @($Filter)
@@ -63649,7 +63731,9 @@ function Get-GPOLocalGroupMembership {
 	                }
 	            }
 	        } else {
-	            Show-Line "No vulnerable GPO local group assignments found in $(@($gpos).Count) analyzed GPO(s)" -Class Secure
+	            $groupClass = 'Secure'
+	            if (Show-SYSVOLCoverageNote) { $groupClass = 'Note' }
+	            Show-Line "No vulnerable GPO local group assignments found in $(@($gpos).Count) analyzed GPO(s)" -Class $groupClass
 	        }
 	    } catch {
 	    }
@@ -64029,6 +64113,7 @@ function Get-GPOScheduledTasks {
 	                Show-Object $task -Class $taskClass
 	            }
 	        } else {
+	            $null = Show-SYSVOLCoverageNote
 	            Show-Line "No scheduled tasks distributed via GPO in $($gpos.Count) analyzed GPO(s)" -Class Note
 	        }
 	    } catch {
@@ -64302,6 +64387,7 @@ function Get-GPOScriptPaths {
 	                }
 	            }
 	        } else {
+	            $null = Show-SYSVOLCoverageNote
 	            Show-Line "No scripts distributed via GPO" -Class Note
 	        }
 	    } catch {
@@ -64561,6 +64647,7 @@ function Get-GPORegistrySettings {
 	                Show-Object $finding -Class $rowClass
 	            }
 	        } else {
+	            $null = Show-SYSVOLCoverageNote
 	            Show-Line "No vulnerable registry settings deployed via GPO" -Class Note
 	        }
 	    } catch {
@@ -64773,7 +64860,11 @@ function Get-GPOPointAndPrint {
 	            return
 	        }
 	        if ($configs.Count -eq 0) {
-	            Show-Line "No GPO configures Point and Print or printer driver policies - the secure Windows default applies" -Class Secure
+	            if (Show-SYSVOLCoverageNote) {
+	                Show-Line "No Point and Print or printer driver policy was found in the GPO folders that could be read" -Class Note
+	            } else {
+	                Show-Line "No GPO configures Point and Print or printer driver policies - the secure Windows default applies" -Class Secure
+	            }
 	            return
 	        }
 	        $objects = @()
@@ -68448,7 +68539,9 @@ function Get-CredentialExposure {
 	                    }
 	                }
 	                if ($gppFindingsCount -eq 0) {
-	                    Show-Line "No GPP credentials found in SYSVOL" -Class "Secure"
+	                    $gppClass = "Secure"
+	                    if (Show-SYSVOLCoverageNote) { $gppClass = "Note" }
+	                    Show-Line "No GPP credentials found in SYSVOL" -Class $gppClass
 	                }
 	                Show-SubHeader "Searching for sensitive information in SYSVOL/NETLOGON..." -ObjectType "SYSVOLCredential"
 	                if ($scriptFiles.Count -gt 0) {
@@ -68619,11 +68712,15 @@ function Get-CredentialExposure {
 	                        Show-Progress -Activity "Scanning SYSVOL for sensitive information" -Completed
 	                    }
 	                    if ($sysvolFindingsCount -eq 0) {
-	                        Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class "Secure"
+	                        $scriptClass = "Secure"
+	                        if (Show-SYSVOLCoverageNote) { $scriptClass = "Note" }
+	                        Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class $scriptClass
 	                    }
 	                }
 	                else {
-	                    Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class "Secure"
+	                    $scriptClass = "Secure"
+	                    if (Show-SYSVOLCoverageNote) { $scriptClass = "Note" }
+	                    Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class $scriptClass
 	                }
 	            }
 	        }
@@ -74978,6 +75075,81 @@ function Get-HTMLTemplate {
             return bonus;
         }
 
+        // Resolve the BASE score of a card from the finding IDs it actually carries.
+        //
+        // This replaces a substring match of the card TITLE against the finding IDs, which
+        // could never match: titles are prose ("Certificate Templates"), IDs carry
+        // underscores ("ESC1_TEMPLATE"). Every red finding therefore fell back to
+        // severityBaseScores.finding (35) and the whole per-finding BaseScore table was
+        // unreachable - DCSync (100) and ESC1 (90) scored the same as any other finding.
+        //
+        // Deliberately NOT the same selection as findBestFindingDefinition(): that one
+        // returns the card's TOPIC for the tooltip and lets an ObjectType's
+        // primaryFindingId win outright, so an incidental attribute trigger cannot
+        // relabel the card. The SCORE answers a different question - how urgent is this
+        // card - and the answer is its worst finding. So this takes the maximum over all
+        // sources instead of the first authoritative one. Badge and tooltip can therefore
+        // name different findings on the same card; that is intended.
+        function resolveCardBaseScore(meta) {
+            let bestKey = null;
+            let bestScore = 0;
+
+            const consider = (key) => {
+                if (!key || !findingBaseScores.hasOwnProperty(key)) return;
+                const score = findingBaseScores[key];
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestKey = key;
+                }
+            };
+
+            // ObjectType-level primary finding
+            if (meta.objectType && typeof checkDescriptions !== 'undefined' && checkDescriptions) {
+                consider(checkDescriptions[meta.objectType]?.primaryFindingId);
+            }
+
+            // Finding IDs attached by attribute trigger matching
+            if (Array.isArray(meta.findingIds)) {
+                meta.findingIds.forEach(consider);
+            }
+
+            // Vulnerability tags, e.g. "ESC1" -> ESC1_TEMPLATE. A template tagged
+            // "ESC1, ESC15" resolves to the higher of the two instead of whichever
+            // trigger happened to match first.
+            if (Array.isArray(meta.vulnerabilities) && meta.vulnerabilities.length > 0) {
+                for (const vulnTag of meta.vulnerabilities) {
+                    const vulnLower = String(vulnTag).toLowerCase();
+                    if (!vulnLower) continue;
+                    for (const key of Object.keys(findingBaseScores)) {
+                        const keyLower = key.toLowerCase();
+                        if (keyLower === vulnLower || keyLower.startsWith(vulnLower + '_')) {
+                            consider(key);
+                        }
+                    }
+                }
+            }
+
+            return { key: bestKey, score: bestScore };
+        }
+
+        // The DOM card carries the same signals as the JSON metadata: its ObjectType as a
+        // data attribute, and one data-finding-id per finding row inside it.
+        function buildMetaFromCard(card) {
+            let findingIds = [];
+            try {
+                findingIds = Array.from(card.querySelectorAll('[data-finding-id]'))
+                    .map(el => el.dataset.findingId)
+                    .filter(Boolean);
+            } catch (e) {
+                findingIds = [];
+            }
+            return {
+                objectType: card.dataset.objectType || null,
+                findingIds: Array.from(new Set(findingIds)),
+                vulnerabilities: []
+            };
+        }
+
         // Calculate score with full breakdown for transparency
         function calculateFindingScoreWithBreakdown(card) {
             const severity = card.dataset.severity || 'note';
@@ -75011,23 +75183,21 @@ function Get-HTMLTemplate {
                 return breakdown;
             }
 
-            // Get finding title
+            // Still needed below: getExploitabilityModifier/getSecurityModifier classify the
+            // attack type from the title.
             const title = (card.querySelector('.finding-title')?.textContent || '').toLowerCase();
 
-            // 1. Determine BASE score from finding type
+            // 1. Determine BASE score from the finding IDs on the card, not from its title
             breakdown.baseScore = severityBaseScores[severity] || 5;
 
-            for (const [pattern, score] of Object.entries(findingBaseScores)) {
-                if (title.includes(pattern.toLowerCase())) {
-                    if (score > breakdown.baseScore) {
-                        breakdown.baseScore = score;
-                        breakdown.matchedPattern = pattern;
-                    }
-                }
+            const resolved = resolveCardBaseScore(buildMetaFromCard(card));
+            if (resolved.key && resolved.score > breakdown.baseScore) {
+                breakdown.baseScore = resolved.score;
+                breakdown.matchedPattern = resolved.key;
             }
 
             // DCSync/Replication Rights are ALWAYS maximum
-            if (breakdown.matchedPattern === 'dcsync' || breakdown.matchedPattern === 'replication rights') {
+            if (breakdown.matchedPattern === 'DANGEROUS_ACL_DCSYNC') {
                 breakdown.finalScore = 100;
                 breakdown.impactReason = 'Maximum (DCSync)';
                 return breakdown;
@@ -75334,41 +75504,27 @@ function Get-HTMLTemplate {
                 return breakdown;
             }
 
-            // Get finding title
+            // Still needed below: getExploitabilityModifier/getSecurityModifier classify the
+            // attack type from the title.
             const title = (findingMeta.title || '').toLowerCase();
 
-            // 1. Determine BASE score from finding type
+            // 1. Determine BASE score from the finding IDs this card carries, not from its title
             breakdown.baseScore = severityBaseScores[severity] || 5;
 
-            for (const [pattern, score] of Object.entries(findingBaseScores)) {
-                if (title.includes(pattern.toLowerCase())) {
-                    if (score > breakdown.baseScore) {
-                        breakdown.baseScore = score;
-                        breakdown.matchedPattern = pattern;
-                    }
-                }
+            const resolvedMeta = resolveCardBaseScore(findingMeta);
+            if (resolvedMeta.key && resolvedMeta.score > breakdown.baseScore) {
+                breakdown.baseScore = resolvedMeta.score;
+                breakdown.matchedPattern = resolvedMeta.key;
             }
 
-            // 1b. Check vulnerability tags (e.g., ADCS ESC1, ESC4) against findingBaseScores
-            // When the card title (e.g., "Certificate Templates") doesn't match,
-            // but objects contain vulnerability tags, use the highest matching score
-            if (findingMeta.vulnerabilities && findingMeta.vulnerabilities.length > 0) {
-                for (const vulnTag of findingMeta.vulnerabilities) {
-                    const vulnLower = vulnTag.toLowerCase();
-                    for (const [pattern, score] of Object.entries(findingBaseScores)) {
-                        // Match "esc1" against FindingID keys like "esc1_template", "esc1_vulnerable_..."
-                        if (pattern.toLowerCase().startsWith(vulnLower + '_') || pattern.toLowerCase() === vulnLower) {
-                            if (score > breakdown.baseScore) {
-                                breakdown.baseScore = score;
-                                breakdown.matchedPattern = pattern + ' (via ' + vulnTag + ')';
-                            }
-                        }
-                    }
-                }
-            }
+            // The former step 1b - vulnerability tags against findingBaseScores - now lives
+            // in resolveCardBaseScore() together with the findingIds and the ObjectType's
+            // primaryFindingId, so both score paths resolve a card the same way. The tag
+            // route was the only one that ever reached this table; findingIds were never
+            // consulted for the base score at all.
 
             // DCSync/Replication Rights are ALWAYS maximum
-            if (breakdown.matchedPattern && (breakdown.matchedPattern.startsWith('dcsync') || breakdown.matchedPattern.startsWith('replication rights'))) {
+            if (breakdown.matchedPattern === 'DANGEROUS_ACL_DCSYNC') {
                 breakdown.finalScore = 100;
                 breakdown.impactReason = 'Maximum (DCSync)';
                 return breakdown;
@@ -79607,7 +79763,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261009-1208"
+$Script:adPEASVersion = "2.7.0+20261010-1715"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -79872,6 +80028,7 @@ try {
 	if ($Script:LDAPContext -and $Script:LDAPContext['SessionInvalid']) {
 	    $Script:LDAPContext.Remove('SessionInvalid')
 	}
+	$Script:adPEAS_IncompleteChecks = @()
 	if (-not (Ensure-LDAPConnection)) {
 	    Show-Header "Scan Summary"
 	    Show-Line "Duration: 0 seconds" -Class Hint
@@ -79951,6 +80108,9 @@ try {
 	        & $Check
 	    } catch {
 	        Write-Warning "[adPEAS] Check '$CheckName' failed: $_"
+	        Show-Line "This check did not complete - its results are incomplete or absent. Reason: $($_.Exception.Message)" -Class Hint
+	        if ($null -eq $Script:adPEAS_IncompleteChecks) { $Script:adPEAS_IncompleteChecks = @() }
+	        $Script:adPEAS_IncompleteChecks += $CheckName
 	    } finally {
 	        Clear-CheckContext
 	    }
@@ -80214,6 +80374,13 @@ try {
 	        Show-Line "Rebuild a report from it with: Convert-adPEASReport -InputJson '$checkpointPath' -OutputPath '$basePath'" -Class Hint
 	    }
 	} else {
+	    if ($Script:adPEAS_IncompleteChecks -and $Script:adPEAS_IncompleteChecks.Count -gt 0) {
+	        $incomplete = @($Script:adPEAS_IncompleteChecks | Select-Object -Unique)
+	        Show-Line "$($incomplete.Count) check(s) did not complete - their sections are incomplete and must not be read as clean:" -Class Finding
+	        foreach ($name in $incomplete) {
+	            Show-Line "  $name" -Class Finding
+	        }
+	    }
 	    if ($Script:adPEAS_Outputfile) {
 	        Show-Line "Text report saved to: $Script:adPEAS_Outputfile" -Class Hint
 	    }

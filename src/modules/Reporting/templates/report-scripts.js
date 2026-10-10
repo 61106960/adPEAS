@@ -1929,6 +1929,81 @@
             return bonus;
         }
 
+        // Resolve the BASE score of a card from the finding IDs it actually carries.
+        //
+        // This replaces a substring match of the card TITLE against the finding IDs, which
+        // could never match: titles are prose ("Certificate Templates"), IDs carry
+        // underscores ("ESC1_TEMPLATE"). Every red finding therefore fell back to
+        // severityBaseScores.finding (35) and the whole per-finding BaseScore table was
+        // unreachable - DCSync (100) and ESC1 (90) scored the same as any other finding.
+        //
+        // Deliberately NOT the same selection as findBestFindingDefinition(): that one
+        // returns the card's TOPIC for the tooltip and lets an ObjectType's
+        // primaryFindingId win outright, so an incidental attribute trigger cannot
+        // relabel the card. The SCORE answers a different question - how urgent is this
+        // card - and the answer is its worst finding. So this takes the maximum over all
+        // sources instead of the first authoritative one. Badge and tooltip can therefore
+        // name different findings on the same card; that is intended.
+        function resolveCardBaseScore(meta) {
+            let bestKey = null;
+            let bestScore = 0;
+
+            const consider = (key) => {
+                if (!key || !findingBaseScores.hasOwnProperty(key)) return;
+                const score = findingBaseScores[key];
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestKey = key;
+                }
+            };
+
+            // ObjectType-level primary finding
+            if (meta.objectType && typeof checkDescriptions !== 'undefined' && checkDescriptions) {
+                consider(checkDescriptions[meta.objectType]?.primaryFindingId);
+            }
+
+            // Finding IDs attached by attribute trigger matching
+            if (Array.isArray(meta.findingIds)) {
+                meta.findingIds.forEach(consider);
+            }
+
+            // Vulnerability tags, e.g. "ESC1" -> ESC1_TEMPLATE. A template tagged
+            // "ESC1, ESC15" resolves to the higher of the two instead of whichever
+            // trigger happened to match first.
+            if (Array.isArray(meta.vulnerabilities) && meta.vulnerabilities.length > 0) {
+                for (const vulnTag of meta.vulnerabilities) {
+                    const vulnLower = String(vulnTag).toLowerCase();
+                    if (!vulnLower) continue;
+                    for (const key of Object.keys(findingBaseScores)) {
+                        const keyLower = key.toLowerCase();
+                        if (keyLower === vulnLower || keyLower.startsWith(vulnLower + '_')) {
+                            consider(key);
+                        }
+                    }
+                }
+            }
+
+            return { key: bestKey, score: bestScore };
+        }
+
+        // The DOM card carries the same signals as the JSON metadata: its ObjectType as a
+        // data attribute, and one data-finding-id per finding row inside it.
+        function buildMetaFromCard(card) {
+            let findingIds = [];
+            try {
+                findingIds = Array.from(card.querySelectorAll('[data-finding-id]'))
+                    .map(el => el.dataset.findingId)
+                    .filter(Boolean);
+            } catch (e) {
+                findingIds = [];
+            }
+            return {
+                objectType: card.dataset.objectType || null,
+                findingIds: Array.from(new Set(findingIds)),
+                vulnerabilities: []
+            };
+        }
+
         // Calculate score with full breakdown for transparency
         function calculateFindingScoreWithBreakdown(card) {
             const severity = card.dataset.severity || 'note';
@@ -1962,23 +2037,21 @@
                 return breakdown;
             }
 
-            // Get finding title
+            // Still needed below: getExploitabilityModifier/getSecurityModifier classify the
+            // attack type from the title.
             const title = (card.querySelector('.finding-title')?.textContent || '').toLowerCase();
 
-            // 1. Determine BASE score from finding type
+            // 1. Determine BASE score from the finding IDs on the card, not from its title
             breakdown.baseScore = severityBaseScores[severity] || 5;
 
-            for (const [pattern, score] of Object.entries(findingBaseScores)) {
-                if (title.includes(pattern.toLowerCase())) {
-                    if (score > breakdown.baseScore) {
-                        breakdown.baseScore = score;
-                        breakdown.matchedPattern = pattern;
-                    }
-                }
+            const resolved = resolveCardBaseScore(buildMetaFromCard(card));
+            if (resolved.key && resolved.score > breakdown.baseScore) {
+                breakdown.baseScore = resolved.score;
+                breakdown.matchedPattern = resolved.key;
             }
 
             // DCSync/Replication Rights are ALWAYS maximum
-            if (breakdown.matchedPattern === 'dcsync' || breakdown.matchedPattern === 'replication rights') {
+            if (breakdown.matchedPattern === 'DANGEROUS_ACL_DCSYNC') {
                 breakdown.finalScore = 100;
                 breakdown.impactReason = 'Maximum (DCSync)';
                 return breakdown;
@@ -2285,41 +2358,27 @@
                 return breakdown;
             }
 
-            // Get finding title
+            // Still needed below: getExploitabilityModifier/getSecurityModifier classify the
+            // attack type from the title.
             const title = (findingMeta.title || '').toLowerCase();
 
-            // 1. Determine BASE score from finding type
+            // 1. Determine BASE score from the finding IDs this card carries, not from its title
             breakdown.baseScore = severityBaseScores[severity] || 5;
 
-            for (const [pattern, score] of Object.entries(findingBaseScores)) {
-                if (title.includes(pattern.toLowerCase())) {
-                    if (score > breakdown.baseScore) {
-                        breakdown.baseScore = score;
-                        breakdown.matchedPattern = pattern;
-                    }
-                }
+            const resolvedMeta = resolveCardBaseScore(findingMeta);
+            if (resolvedMeta.key && resolvedMeta.score > breakdown.baseScore) {
+                breakdown.baseScore = resolvedMeta.score;
+                breakdown.matchedPattern = resolvedMeta.key;
             }
 
-            // 1b. Check vulnerability tags (e.g., ADCS ESC1, ESC4) against findingBaseScores
-            // When the card title (e.g., "Certificate Templates") doesn't match,
-            // but objects contain vulnerability tags, use the highest matching score
-            if (findingMeta.vulnerabilities && findingMeta.vulnerabilities.length > 0) {
-                for (const vulnTag of findingMeta.vulnerabilities) {
-                    const vulnLower = vulnTag.toLowerCase();
-                    for (const [pattern, score] of Object.entries(findingBaseScores)) {
-                        // Match "esc1" against FindingID keys like "esc1_template", "esc1_vulnerable_..."
-                        if (pattern.toLowerCase().startsWith(vulnLower + '_') || pattern.toLowerCase() === vulnLower) {
-                            if (score > breakdown.baseScore) {
-                                breakdown.baseScore = score;
-                                breakdown.matchedPattern = pattern + ' (via ' + vulnTag + ')';
-                            }
-                        }
-                    }
-                }
-            }
+            // The former step 1b - vulnerability tags against findingBaseScores - now lives
+            // in resolveCardBaseScore() together with the findingIds and the ObjectType's
+            // primaryFindingId, so both score paths resolve a card the same way. The tag
+            // route was the only one that ever reached this table; findingIds were never
+            // consulted for the base score at all.
 
             // DCSync/Replication Rights are ALWAYS maximum
-            if (breakdown.matchedPattern && (breakdown.matchedPattern.startsWith('dcsync') || breakdown.matchedPattern.startsWith('replication rights'))) {
+            if (breakdown.matchedPattern === 'DANGEROUS_ACL_DCSYNC') {
                 breakdown.finalScore = 100;
                 breakdown.impactReason = 'Maximum (DCSync)';
                 return breakdown;

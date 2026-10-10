@@ -545,7 +545,12 @@ function Get-CredentialExposure {
                     }
 
                     if ($gppFindingsCount -eq 0) {
-                        Show-Line "No GPP credentials found in SYSVOL" -Class "Secure"
+                        # A folder the scan account may not read contributes no findings and
+                        # used to be indistinguishable from a folder with nothing in it. Say
+                        # so, and do not paint the conclusion green over it.
+                        $gppClass = "Secure"
+                        if (Show-SYSVOLCoverageNote) { $gppClass = "Note" }
+                        Show-Line "No GPP credentials found in SYSVOL" -Class $gppClass
                     }
 
                     # ===== Part 2: Sensitive Information Search (script/config files) =====
@@ -753,11 +758,17 @@ function Get-CredentialExposure {
                         }
 
                         if ($sysvolFindingsCount -eq 0) {
-                            Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class "Secure"
+                            $scriptClass = "Secure"
+                            if (Show-SYSVOLCoverageNote) { $scriptClass = "Note" }
+                            Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class $scriptClass
                         }
                     }
                     else {
-                        Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class "Secure"
+                        # No script files at all. That is only a clean result if the scan was
+                        # allowed to look everywhere.
+                        $scriptClass = "Secure"
+                        if (Show-SYSVOLCoverageNote) { $scriptClass = "Note" }
+                        Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class $scriptClass
                     }
                 }
             }
