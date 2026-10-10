@@ -382,6 +382,37 @@ function Get-LAPSConfiguration {
             $lapsGPOHasLegacy = $lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Legacy -and $lapsGPOSettings.Legacy.Count -gt 0
             $lapsGPOHasNative = $lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Native -and $lapsGPOSettings.Native.Count -gt 0
 
+            # Where Windows LAPS escrows the password it manages. BackupDirectory 2 is
+            # Active Directory, 1 is Microsoft Entra ID, 0 is disabled.
+            #
+            # The coverage figure further down is computed from AD attributes alone, and
+            # these settings were read for the GPO section above and then never consulted
+            # again. With BackupDirectory 1 the password IS managed and IS rotated - it
+            # just goes to Entra ID, so by design no msLAPS attribute appears in AD. A
+            # hybrid-joined fleet therefore read as 0 per cent coverage, with one red
+            # finding per OU saying the local administrator passwords are unmanaged, and a
+            # remediation ("deploy LAPS") that was already done.
+            $lapsEntraPolicies = @()
+            if ($lapsGPOHasNative) {
+                foreach ($nativeEntry in $lapsGPOSettings.Native.GetEnumerator()) {
+                    if ($nativeEntry.Value -isnot [hashtable]) { continue }
+                    if (-not $nativeEntry.Value.ContainsKey('BackupDirectory')) { continue }
+                    $backupTarget = 0
+                    if (-not [int]::TryParse([string]$nativeEntry.Value['BackupDirectory'], [ref]$backupTarget)) { continue }
+                    if ($backupTarget -eq 2) { continue }
+                    $lapsEntraPolicies += [PSCustomObject]@{
+                        GPOName = [string]$nativeEntry.Key
+                        Target  = if ($backupTarget -eq 1) { 'Microsoft Entra ID' } else { 'nowhere - backup is disabled' }
+                    }
+                }
+            }
+
+            $coverageCaveat = $null
+            if (@($lapsEntraPolicies).Count -gt 0) {
+                $policyList = @($lapsEntraPolicies | ForEach-Object { "$($_.GPOName) -> $($_.Target)" }) -join '; '
+                $coverageCaveat = "A Windows LAPS policy in this domain backs the password up outside Active Directory ($policyList). A computer in its scope keeps no msLAPS attribute here by design, so whether its local administrator password is managed cannot be read from Active Directory."
+            }
+
             # ===== Domain Controllers are not part of the coverage question =====
             #
             # A domain controller has no local SAM, so the built-in Administrator account
@@ -441,7 +472,12 @@ function Get-LAPSConfiguration {
                     }
                 }
 
-                Show-Line "$($allComputers.Count) computers (100%) without LAPS protection" -Class "Finding"
+                if ($coverageCaveat) {
+                    Show-Line "$($allComputers.Count) computers carry no LAPS attribute in Active Directory, and the schema here cannot hold one" -Class "Hint"
+                    Show-Line $coverageCaveat -Class "Note"
+                } else {
+                    Show-Line "$($allComputers.Count) computers (100%) without LAPS protection" -Class "Finding"
+                }
 
                 # Output each OU as structured object for proper tooltip support
                 foreach ($ouEntry in ($computersByOU.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending)) {
@@ -449,6 +485,9 @@ function Get-LAPSConfiguration {
                         ouName = $ouEntry.Key
                         computerCount = $ouEntry.Value.Count
                         lapsUnprotectedComputers = (Format-LAPSComputerList -Name $ouEntry.Value)
+                    }
+                    if ($coverageCaveat) {
+                        $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
                     }
                     $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
                     Show-Object $lapsFinding
@@ -631,7 +670,16 @@ function Get-LAPSConfiguration {
 
             # Highlight computers without LAPS
             if ($withoutLAPS -gt 0) {
-                Show-Line "$withoutLAPS computers ($withoutLAPSPercent%) without LAPS protection" -Class "Finding"
+                # "Without LAPS protection" is a claim the AD attributes cannot support
+                # when a policy escrows elsewhere. Which machines are in that policy's
+                # scope is not knowable from here, so the count stays as it is and the
+                # sentence says what it is a count OF.
+                if ($coverageCaveat) {
+                    Show-Line "$withoutLAPS of $activeCount computers ($withoutLAPSPercent%) carry no LAPS attribute in Active Directory" -Class "Hint"
+                    Show-Line $coverageCaveat -Class "Note"
+                } else {
+                    Show-Line "$withoutLAPS computers ($withoutLAPSPercent%) without LAPS protection" -Class "Finding"
+                }
 
                 # Group by OU - store computer names instead of count
                 $computersWithoutLAPSByOU = @{}
@@ -659,6 +707,12 @@ function Get-LAPSConfiguration {
                         ouName = $ouEntry.Key
                         computerCount = $ouEntry.Value.Count
                         lapsUnprotectedComputers = (Format-LAPSComputerList -Name $ouEntry.Value)
+                    }
+                    # Read by the Custom trigger on lapsUnprotectedComputers, which hands
+                    # the row to LAPS_COVERAGE_NOT_IN_AD instead of the finding that says
+                    # the passwords are not managed.
+                    if ($coverageCaveat) {
+                        $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
                     }
                     $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
                     Show-Object $lapsFinding

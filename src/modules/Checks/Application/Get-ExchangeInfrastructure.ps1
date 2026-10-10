@@ -770,18 +770,55 @@ function Get-ExchangeInfrastructure {
                             if ($connectorACL) {
                                 $descriptorRead = $true
                                 foreach ($ace in @($connectorACL.ACEs)) {
-                                    if (-not $ace.ObjectType) { continue }
-                                    $rightName = $smtpRightsByGuid[([string]$ace.ObjectType).ToLower()]
-                                    if (-not $rightName) { continue }
-
-                                    $meaning = $smtpRightMeaning[$rightName]
-                                    $grant = "$($ace.Trustee): $meaning"
-
-                                    if ($anonymousSIDs -contains $ace.TrusteeSID) {
-                                        $anonymousGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                    # An ACE with no ObjectType is not scoped to one
+                                    # extended right - it grants all of them, and that
+                                    # includes every ms-Exch-SMTP-* right the ladder below
+                                    # looks for. This loop used to skip exactly those:
+                                    # "if (-not $ace.ObjectType) { continue }". A connector
+                                    # with (A;;GA;;;S-1-1-0) in its DACL - Everyone, full
+                                    # control - was then reported as "Authenticated senders
+                                    # only" with a Secure class, under a collection line
+                                    # saying no connector grants relay or sender-spoofing
+                                    # rights to unauthenticated senders. An open relay was
+                                    # turned into a positive statement about the domain.
+                                    #
+                                    # GenericAll and a bare ExtendedRight are both read as
+                                    # the full set. RightsRaw is already expanded, so the
+                                    # unmapped generic bit (GA, which prints as 268435456)
+                                    # arrives here as GenericAll.
+                                    $grantedRights = @()
+                                    if ([string]::IsNullOrEmpty([string]$ace.ObjectType)) {
+                                        if ((@($ace.RightsRaw) -contains 'GenericAll') -or
+                                            (@($ace.RightsRaw) -contains 'ExtendedRight')) {
+                                            $grantedRights = @($smtpRightMeaning.Keys)
+                                        }
                                     }
-                                    elseif ($Script:BroadGroupSIDs -contains $ace.TrusteeSID) {
-                                        $broadGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                    else {
+                                        $scopedRight = $smtpRightsByGuid[([string]$ace.ObjectType).ToLower()]
+                                        if ($scopedRight) { $grantedRights = @($scopedRight) }
+                                    }
+
+                                    if (@($grantedRights).Count -eq 0) { continue }
+
+                                    $allRights = (@($grantedRights).Count -gt 1)
+
+                                    foreach ($rightName in $grantedRights) {
+                                        $meaning = $smtpRightMeaning[$rightName]
+                                        # Named for what the ACE actually says, so the row
+                                        # is not six separate-looking grants with no
+                                        # explanation of where they come from.
+                                        $grant = if ($allRights) {
+                                            "$($ace.Trustee): $meaning (through an unrestricted grant on the connector)"
+                                        } else {
+                                            "$($ace.Trustee): $meaning"
+                                        }
+
+                                        if ($anonymousSIDs -contains $ace.TrusteeSID) {
+                                            $anonymousGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                        }
+                                        elseif ($Script:BroadGroupSIDs -contains $ace.TrusteeSID) {
+                                            $broadGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                        }
                                     }
                                 }
                             }

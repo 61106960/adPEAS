@@ -3330,7 +3330,7 @@ $Script:PrimaryAttributes = @{
 	    'member', 'memberOf', 'description'
 	)
 	LAPSFinding = @(
-	    'ouName', 'computerCount', 'lapsUnprotectedComputers'
+	    'ouName', 'computerCount', 'lapsUnprotectedComputers', 'lapsBackupOutsideAD'
 	)
 	OperatorGroup = @(
 	    'OperatorGroup', 'OperatorGroupDN', 'Members'
@@ -13693,7 +13693,36 @@ foreach ($oid in $linkedOIDs) {
 	    Tools = @("LAPSToolkit")
 	    MITRE = "T1078.003"
 	    Triggers = @(
-	        @{ Attribute = 'lapsUnprotectedComputers'; Severity = 'Finding' }
+	        @{ Attribute = 'lapsUnprotectedComputers'; Custom = 'laps_backup_in_ad'; Severity = 'Finding' }
+	    )
+	}
+	'LAPS_COVERAGE_NOT_IN_AD' = @{
+	    Title = "LAPS Coverage Cannot Be Read From Active Directory"
+	    Risk = "Hint"
+	    BaseScore = 15
+	    Description = "A Windows LAPS policy in this domain backs the managed password up somewhere other than Active Directory. For a computer in that policy's scope, Windows LAPS still manages and rotates the local administrator password, but it escrows it to Microsoft Entra ID (BackupDirectory = 1) or nowhere at all (BackupDirectory = 0) - so no msLAPS attribute appears on the computer object, and the coverage figure this check computes from those attributes says nothing about whether the password is managed."
+	    Impact = @(
+	        "The computers listed here have no LAPS attribute in Active Directory, which is the expected state for an Entra-escrowed policy and not a finding in itself"
+	        "What cannot be confirmed from Active Directory is whether each of them is really in that policy's scope - a computer outside it has no managed password at all, and looks identical from here"
+	        "With BackupDirectory = 0 the password is not escrowed anywhere, which means nobody can retrieve it: the account is effectively locked out rather than managed"
+	    )
+	    Attack = @(
+	        "Nothing follows from this state by itself. It is reported so the coverage figure above is not read as evidence of unmanaged passwords when it is not."
+	    )
+	    Remediation = @(
+	        "Confirm in Microsoft Entra ID (Devices -> Local administrator password recovery) that the computers listed here really do have an escrowed password"
+	        "For an on-premises fleet, set BackupDirectory = 2 so the password is escrowed to Active Directory and this check can assess it"
+	        "BackupDirectory = 0 is worth correcting on its own terms: the password rotates and nobody can read it"
+	        "Where both are in use, scope the two policies so it is documented which computers are escrowed where"
+	    )
+	    References = @(
+	        @{ Title = "Windows LAPS BackupDirectory policy setting"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings" }
+	        @{ Title = "Windows LAPS with Microsoft Entra ID"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-scenarios-azure-active-directory" }
+	    )
+	    Tools = @("Get-LapsAADPassword", "Microsoft Entra admin center")
+	    MITRE = "T1078.003"
+	    Triggers = @(
+	        @{ Attribute = 'lapsBackupOutsideAD'; Severity = 'Hint' }
 	    )
 	}
 	'GPO_WIDE_IMPACT' = @{
@@ -15681,6 +15710,12 @@ function Test-CustomTrigger {
 	    $SourceObject = $null
 	)
 	switch ($CustomType) {
+	    'laps_backup_in_ad' {
+	        if (-not $SourceObject) { return $true }
+	        $lapsCaveat = $SourceObject.PSObject.Properties['lapsBackupOutsideAD']
+	        if ($lapsCaveat -and $lapsCaveat.Value) { return $false }
+	        return $true
+	    }
 	    'ra_signature_gated' {
 	        if (-not $SourceObject) { return $false }
 	        $raCount = $SourceObject.RASignatureCount
@@ -63566,6 +63601,25 @@ function Get-LAPSConfiguration {
 	        }
 	        $lapsGPOHasLegacy = $lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Legacy -and $lapsGPOSettings.Legacy.Count -gt 0
 	        $lapsGPOHasNative = $lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Native -and $lapsGPOSettings.Native.Count -gt 0
+	        $lapsEntraPolicies = @()
+	        if ($lapsGPOHasNative) {
+	            foreach ($nativeEntry in $lapsGPOSettings.Native.GetEnumerator()) {
+	                if ($nativeEntry.Value -isnot [hashtable]) { continue }
+	                if (-not $nativeEntry.Value.ContainsKey('BackupDirectory')) { continue }
+	                $backupTarget = 0
+	                if (-not [int]::TryParse([string]$nativeEntry.Value['BackupDirectory'], [ref]$backupTarget)) { continue }
+	                if ($backupTarget -eq 2) { continue }
+	                $lapsEntraPolicies += [PSCustomObject]@{
+	                    GPOName = [string]$nativeEntry.Key
+	                    Target  = if ($backupTarget -eq 1) { 'Microsoft Entra ID' } else { 'nowhere - backup is disabled' }
+	                }
+	            }
+	        }
+	        $coverageCaveat = $null
+	        if (@($lapsEntraPolicies).Count -gt 0) {
+	            $policyList = @($lapsEntraPolicies | ForEach-Object { "$($_.GPOName) -> $($_.Target)" }) -join '; '
+	            $coverageCaveat = "A Windows LAPS policy in this domain backs the password up outside Active Directory ($policyList). A computer in its scope keeps no msLAPS attribute here by design, so whether its local administrator password is managed cannot be read from Active Directory."
+	        }
 	        $domainControllerDNs = @{}
 	        $domainControllerCount = 0
 	        $domainControllerLookupFailed = $false
@@ -63602,12 +63656,20 @@ function Get-LAPSConfiguration {
 	                    $computersByOU[$ouDN] += $computerName
 	                }
 	            }
-	            Show-Line "$($allComputers.Count) computers (100%) without LAPS protection" -Class "Finding"
+	            if ($coverageCaveat) {
+	                Show-Line "$($allComputers.Count) computers carry no LAPS attribute in Active Directory, and the schema here cannot hold one" -Class "Hint"
+	                Show-Line $coverageCaveat -Class "Note"
+	            } else {
+	                Show-Line "$($allComputers.Count) computers (100%) without LAPS protection" -Class "Finding"
+	            }
 	            foreach ($ouEntry in ($computersByOU.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending)) {
 	                $lapsFinding = [PSCustomObject]@{
 	                    ouName = $ouEntry.Key
 	                    computerCount = $ouEntry.Value.Count
 	                    lapsUnprotectedComputers = (Format-LAPSComputerList -Name $ouEntry.Value)
+	                }
+	                if ($coverageCaveat) {
+	                    $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
 	                }
 	                $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
 	                Show-Object $lapsFinding
@@ -63727,7 +63789,12 @@ function Get-LAPSConfiguration {
 	            Show-Line "Every computer with LAPS rotated its password on schedule" -Class "Secure"
 	        }
 	        if ($withoutLAPS -gt 0) {
-	            Show-Line "$withoutLAPS computers ($withoutLAPSPercent%) without LAPS protection" -Class "Finding"
+	            if ($coverageCaveat) {
+	                Show-Line "$withoutLAPS of $activeCount computers ($withoutLAPSPercent%) carry no LAPS attribute in Active Directory" -Class "Hint"
+	                Show-Line $coverageCaveat -Class "Note"
+	            } else {
+	                Show-Line "$withoutLAPS computers ($withoutLAPSPercent%) without LAPS protection" -Class "Finding"
+	            }
 	            $computersWithoutLAPSByOU = @{}
 	            $totalComputers = @($computersWithoutLAPS).Count
 	            $currentIndex = 0
@@ -63750,6 +63817,9 @@ function Get-LAPSConfiguration {
 	                    ouName = $ouEntry.Key
 	                    computerCount = $ouEntry.Value.Count
 	                    lapsUnprotectedComputers = (Format-LAPSComputerList -Name $ouEntry.Value)
+	                }
+	                if ($coverageCaveat) {
+	                    $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
 	                }
 	                $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
 	                Show-Object $lapsFinding
@@ -64502,9 +64572,17 @@ function Get-GPOLocalGroupMembership {
 	begin {
 	    $Script:LocalGroupSIDs = @{
 	        'S-1-5-32-544' = 'Administrators'
-	        'S-1-5-32-555' = 'Remote Desktop Users'
-	        'S-1-5-32-580' = 'Remote Management Users'
+	        'S-1-5-32-548' = 'Account Operators'
+	        'S-1-5-32-549' = 'Server Operators'
+	        'S-1-5-32-550' = 'Print Operators'
 	        'S-1-5-32-551' = 'Backup Operators'
+	        'S-1-5-32-555' = 'Remote Desktop Users'
+	        'S-1-5-32-556' = 'Network Configuration Operators'
+	        'S-1-5-32-559' = 'Performance Log Users'
+	        'S-1-5-32-562' = 'Distributed COM Users'
+	        'S-1-5-32-574' = 'Certificate Service DCOM Access'
+	        'S-1-5-32-578' = 'Hyper-V Administrators'
+	        'S-1-5-32-580' = 'Remote Management Users'
 	        'S-1-5-32-547' = 'Power Users'
 	    }
 	    $Script:RiskySIDs = @{
@@ -64514,9 +64592,17 @@ function Get-GPOLocalGroupMembership {
 	    }
 	    $Script:GroupSeverityConfig = @{
 	        'S-1-5-32-544' = @{ Severity = "Finding"; Risk = "Domain accounts added to local Administrators" }
-	        'S-1-5-32-555' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Desktop Users" }
-	        'S-1-5-32-580' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Management Users" }
+	        'S-1-5-32-548' = @{ Severity = "Finding"; Risk = "Domain accounts added to Account Operators - on a domain controller this permits creating and modifying users, groups and computers domain-wide" }
+	        'S-1-5-32-549' = @{ Severity = "Finding"; Risk = "Domain accounts added to Server Operators - on a domain controller this permits configuring services, which run as SYSTEM" }
+	        'S-1-5-32-550' = @{ Severity = "Finding"; Risk = "Domain accounts added to Print Operators - on a domain controller this permits loading printer drivers, which is code as SYSTEM" }
 	        'S-1-5-32-551' = @{ Severity = "Hint"; Risk = "Domain accounts added to Backup Operators" }
+	        'S-1-5-32-555' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Desktop Users" }
+	        'S-1-5-32-556' = @{ Severity = "Hint"; Risk = "Domain accounts added to Network Configuration Operators - permits changing the network configuration, including which DNS server the machine asks" }
+	        'S-1-5-32-559' = @{ Severity = "Hint"; Risk = "Domain accounts added to Performance Log Users - permits configuring tracing providers, which has been a local escalation path" }
+	        'S-1-5-32-562' = @{ Severity = "Hint"; Risk = "Domain accounts added to Distributed COM Users - permits launching and activating DCOM objects remotely" }
+	        'S-1-5-32-574' = @{ Severity = "Hint"; Risk = "Domain accounts added to Certificate Service DCOM Access - permits requesting certificates from the enterprise CA over DCOM" }
+	        'S-1-5-32-578' = @{ Severity = "Hint"; Risk = "Domain accounts added to Hyper-V Administrators - full control over every virtual machine on the host, which includes its disks" }
+	        'S-1-5-32-580' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Management Users" }
 	        'S-1-5-32-547' = @{ Severity = "Note"; Risk = "Domain accounts added to Power Users" }
 	    }
 	}
@@ -64671,6 +64757,27 @@ function Get-GPOLocalGroupMembership {
 	    }
 	}
 }
+function Resolve-LocalGroupTargetName {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyString()]
+	    [AllowNull()]
+	    [string]$SID
+	)
+	$trimmed = ([string]$SID).Trim()
+	if ([string]::IsNullOrWhiteSpace($trimmed)) { return $null }
+	if ($Script:LocalGroupSIDs.ContainsKey($trimmed)) {
+	    return $Script:LocalGroupSIDs[$trimmed]
+	}
+	if ($trimmed -notmatch '^S-1-5-32-\d+$') { return $null }
+	$resolved = $null
+	try { $resolved = ConvertFrom-SID -SID $trimmed } catch { $resolved = $null }
+	if ($resolved -and $resolved -ne $trimmed) {
+	    return [string]$resolved
+	}
+	return $trimmed
+}
 function Get-GroupAssignmentSeverity {
 	param(
 	    [string]$GroupSID,
@@ -64678,7 +64785,11 @@ function Get-GroupAssignmentSeverity {
 	)
 	$config = $Script:GroupSeverityConfig[$GroupSID]
 	if (-not $config) {
-	    return @{ Severity = "Hint"; Risk = "Domain accounts added to local group" }
+	    $fallbackRisk = "Domain accounts added to local group"
+	    if (@($RiskyMembers).Count -gt 0) {
+	        $fallbackRisk = "$fallbackRisk (includes: $(@($RiskyMembers) -join ', '))"
+	    }
+	    return @{ Severity = "Hint"; Risk = $fallbackRisk }
 	}
 	$severity = $config.Severity
 	$risk = $config.Risk
@@ -64738,8 +64849,8 @@ function Parse-RestrictedGroups {
 	                $groupSID = Resolve-RestrictedGroupSID -Identity $Matches[1]
 	                $memberSIDs = $Matches[2] -split ',' |
 	                    ForEach-Object { Resolve-RestrictedGroupSID -Identity $_ }
-	                if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
-	                    $groupName = $Script:LocalGroupSIDs[$groupSID]
+	                $groupName = Resolve-LocalGroupTargetName -SID $groupSID
+	                if ($groupName) {
 	                    $memberNames = @()
 	                    $riskyMembers = @()
 	                    foreach ($memberSID in $memberSIDs) {
@@ -64800,8 +64911,8 @@ function Parse-RestrictedGroups {
 	                }
 	                foreach ($groupSID in $targetGroupSIDs) {
 	                    if ([string]::IsNullOrWhiteSpace($groupSID)) { continue }
-	                    if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
-	                        $groupName = $Script:LocalGroupSIDs[$groupSID]
+	                    $groupName = Resolve-LocalGroupTargetName -SID $groupSID
+	                    if ($groupName) {
 	                        $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
 	                        $findings += [PSCustomObject]@{
 	                            GPOName = $GPOName
@@ -64846,11 +64957,16 @@ function Parse-GPPGroups {
 	    $findings = @()
 	    $groups = $xmlContent.Groups.Group
 	    foreach ($group in $groups) {
-	        $groupSID = $group.Properties.groupSid
-	        if (-not $groupSID -or -not $Script:LocalGroupSIDs.ContainsKey($groupSID)) {
-	            continue
+	        $groupSID = [string]$group.Properties.groupSid
+	        $groupNameAttr = [string]$group.Properties.groupName
+	        if (-not $groupSID -and $groupNameAttr) {
+	            $groupSID = [string](Resolve-RestrictedGroupSID -Identity $groupNameAttr)
 	        }
-	        $canonicalGroupName = $Script:LocalGroupSIDs[$groupSID]
+	        $canonicalGroupName = Resolve-LocalGroupTargetName -SID $groupSID
+	        $targetGroupKnown = [bool]$canonicalGroupName
+	        if (-not $targetGroupKnown) {
+	            $canonicalGroupName = if ($groupNameAttr) { $groupNameAttr } elseif ($groupSID) { $groupSID } else { 'Unknown group' }
+	        }
 	        $members = @()
 	        $memberSIDs = @()
 	        $riskyMembers = @()
@@ -64899,6 +65015,9 @@ function Parse-GPPGroups {
 	        }
 	        $clearsGroup = ($deleteAllUsers -or $deleteAllGroups)
 	        if (@($members).Count -eq 0 -and @($removedMembers).Count -eq 0 -and -not $clearsGroup) {
+	            continue
+	        }
+	        if (-not $targetGroupKnown -and @($riskyMembers).Count -eq 0) {
 	            continue
 	        }
 	        $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
@@ -68087,16 +68206,32 @@ function Get-ExchangeInfrastructure {
 	                        if ($connectorACL) {
 	                            $descriptorRead = $true
 	                            foreach ($ace in @($connectorACL.ACEs)) {
-	                                if (-not $ace.ObjectType) { continue }
-	                                $rightName = $smtpRightsByGuid[([string]$ace.ObjectType).ToLower()]
-	                                if (-not $rightName) { continue }
-	                                $meaning = $smtpRightMeaning[$rightName]
-	                                $grant = "$($ace.Trustee): $meaning"
-	                                if ($anonymousSIDs -contains $ace.TrusteeSID) {
-	                                    $anonymousGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+	                                $grantedRights = @()
+	                                if ([string]::IsNullOrEmpty([string]$ace.ObjectType)) {
+	                                    if ((@($ace.RightsRaw) -contains 'GenericAll') -or
+	                                        (@($ace.RightsRaw) -contains 'ExtendedRight')) {
+	                                        $grantedRights = @($smtpRightMeaning.Keys)
+	                                    }
 	                                }
-	                                elseif ($Script:BroadGroupSIDs -contains $ace.TrusteeSID) {
-	                                    $broadGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+	                                else {
+	                                    $scopedRight = $smtpRightsByGuid[([string]$ace.ObjectType).ToLower()]
+	                                    if ($scopedRight) { $grantedRights = @($scopedRight) }
+	                                }
+	                                if (@($grantedRights).Count -eq 0) { continue }
+	                                $allRights = (@($grantedRights).Count -gt 1)
+	                                foreach ($rightName in $grantedRights) {
+	                                    $meaning = $smtpRightMeaning[$rightName]
+	                                    $grant = if ($allRights) {
+	                                        "$($ace.Trustee): $meaning (through an unrestricted grant on the connector)"
+	                                    } else {
+	                                        "$($ace.Trustee): $meaning"
+	                                    }
+	                                    if ($anonymousSIDs -contains $ace.TrusteeSID) {
+	                                        $anonymousGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+	                                    }
+	                                    elseif ($Script:BroadGroupSIDs -contains $ace.TrusteeSID) {
+	                                        $broadGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+	                                    }
 	                                }
 	                            }
 	                        }
@@ -80820,7 +80955,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261010-2246"
+$Script:adPEASVersion = "2.7.0+20261010-2312"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

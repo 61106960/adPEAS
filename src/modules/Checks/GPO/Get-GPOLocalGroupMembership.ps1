@@ -50,12 +50,31 @@ function Get-GPOLocalGroupMembership {
     begin {
         Write-Log "[Get-GPOLocalGroupMembership] Starting check"
 
-        # Well-known SIDs for local groups
+        # The local groups this check reports a membership assignment for.
+        #
+        # Five entries used to be in here, and all three parsers filter hard on the table:
+        # a Restricted Groups entry or a Group Policy Preferences item naming any other
+        # group produced no output at all. The three operator groups are the gap that
+        # matters - on a domain controller they are a direct path to the domain, and a
+        # policy linked to the Domain Controllers OU that puts a principal in Server
+        # Operators is domain compromise in one step, with nothing in the report.
+        #
+        # Server Operators: may configure services, and a service runs as SYSTEM on the DC.
+        # Account Operators: may create and modify users, groups and computers domain-wide.
+        # Print Operators: may load printer drivers, which is code as SYSTEM.
         $Script:LocalGroupSIDs = @{
             'S-1-5-32-544' = 'Administrators'
-            'S-1-5-32-555' = 'Remote Desktop Users'
-            'S-1-5-32-580' = 'Remote Management Users'
+            'S-1-5-32-548' = 'Account Operators'
+            'S-1-5-32-549' = 'Server Operators'
+            'S-1-5-32-550' = 'Print Operators'
             'S-1-5-32-551' = 'Backup Operators'
+            'S-1-5-32-555' = 'Remote Desktop Users'
+            'S-1-5-32-556' = 'Network Configuration Operators'
+            'S-1-5-32-559' = 'Performance Log Users'
+            'S-1-5-32-562' = 'Distributed COM Users'
+            'S-1-5-32-574' = 'Certificate Service DCOM Access'
+            'S-1-5-32-578' = 'Hyper-V Administrators'
+            'S-1-5-32-580' = 'Remote Management Users'
             'S-1-5-32-547' = 'Power Users'
         }
 
@@ -70,9 +89,21 @@ function Get-GPOLocalGroupMembership {
         # Finding = Critical/High issues, Hint = Medium issues, Note = Low/Info
         $Script:GroupSeverityConfig = @{
             'S-1-5-32-544' = @{ Severity = "Finding"; Risk = "Domain accounts added to local Administrators" }
-            'S-1-5-32-555' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Desktop Users" }
-            'S-1-5-32-580' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Management Users" }
+            # The three operator groups are a Finding rather than a Hint because of what
+            # they are on a domain controller, where they are domain-wide rights and not
+            # machine-local ones. This check cannot tell from a policy alone which machines
+            # it reaches, so the worse of the two readings is the one reported.
+            'S-1-5-32-548' = @{ Severity = "Finding"; Risk = "Domain accounts added to Account Operators - on a domain controller this permits creating and modifying users, groups and computers domain-wide" }
+            'S-1-5-32-549' = @{ Severity = "Finding"; Risk = "Domain accounts added to Server Operators - on a domain controller this permits configuring services, which run as SYSTEM" }
+            'S-1-5-32-550' = @{ Severity = "Finding"; Risk = "Domain accounts added to Print Operators - on a domain controller this permits loading printer drivers, which is code as SYSTEM" }
             'S-1-5-32-551' = @{ Severity = "Hint"; Risk = "Domain accounts added to Backup Operators" }
+            'S-1-5-32-555' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Desktop Users" }
+            'S-1-5-32-556' = @{ Severity = "Hint"; Risk = "Domain accounts added to Network Configuration Operators - permits changing the network configuration, including which DNS server the machine asks" }
+            'S-1-5-32-559' = @{ Severity = "Hint"; Risk = "Domain accounts added to Performance Log Users - permits configuring tracing providers, which has been a local escalation path" }
+            'S-1-5-32-562' = @{ Severity = "Hint"; Risk = "Domain accounts added to Distributed COM Users - permits launching and activating DCOM objects remotely" }
+            'S-1-5-32-574' = @{ Severity = "Hint"; Risk = "Domain accounts added to Certificate Service DCOM Access - permits requesting certificates from the enterprise CA over DCOM" }
+            'S-1-5-32-578' = @{ Severity = "Hint"; Risk = "Domain accounts added to Hyper-V Administrators - full control over every virtual machine on the host, which includes its disks" }
+            'S-1-5-32-580' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Management Users" }
             'S-1-5-32-547' = @{ Severity = "Note"; Risk = "Domain accounts added to Power Users" }
         }
     }
@@ -329,6 +360,58 @@ function Get-GPOLocalGroupMembership {
 }
 
 # Helper Function: Get severity and risk for a group assignment
+<#
+.SYNOPSIS
+    The display name of a target local group, for any BUILTIN group.
+
+.DESCRIPTION
+    All three parsers used to gate on $Script:LocalGroupSIDs.ContainsKey() and drop the
+    entry otherwise, so a group that is not in the table produced no finding and no note -
+    and the next gap in the table would be just as invisible as the operator groups were.
+
+    A BUILTIN group (S-1-5-32-*) that is not in the table is resolved through
+    ConvertFrom-SID and reported anyway; Get-GroupAssignmentSeverity gives it a Hint. An
+    unresolvable one is reported under its raw SID, which is still enough to look up.
+
+    Anything that is not a BUILTIN group returns $null and is skipped, as before: this
+    check is about local group membership, and a domain group on the left-hand side of a
+    Restricted Groups entry is a different question.
+
+.PARAMETER SID
+    The target group's SID.
+
+.OUTPUTS
+    The display name, or $null when the SID is not a BUILTIN group.
+#>
+function Resolve-LocalGroupTargetName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$SID
+    )
+
+    $trimmed = ([string]$SID).Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) { return $null }
+
+    if ($Script:LocalGroupSIDs.ContainsKey($trimmed)) {
+        return $Script:LocalGroupSIDs[$trimmed]
+    }
+
+    if ($trimmed -notmatch '^S-1-5-32-\d+$') { return $null }
+
+    $resolved = $null
+    try { $resolved = ConvertFrom-SID -SID $trimmed } catch { $resolved = $null }
+    if ($resolved -and $resolved -ne $trimmed) {
+        Write-Log "[Resolve-LocalGroupTargetName] Target group $trimmed is not in the table - reported as '$resolved'"
+        return [string]$resolved
+    }
+
+    Write-Log "[Resolve-LocalGroupTargetName] Target group $trimmed is not in the table and did not resolve to a name"
+    return $trimmed
+}
+
 function Get-GroupAssignmentSeverity {
     param(
         [string]$GroupSID,
@@ -337,7 +420,20 @@ function Get-GroupAssignmentSeverity {
 
     $config = $Script:GroupSeverityConfig[$GroupSID]
     if (-not $config) {
-        return @{ Severity = "Hint"; Risk = "Domain accounts added to local group" }
+        # A group this check has no configuration for: a BUILTIN group outside the curated
+        # table, or a custom local group that is reported because of its members. Hint,
+        # and it stays Hint even with a broad principal among them - without knowing what
+        # the group is, "Everyone was added to it" is a reason to look rather than a
+        # verdict.
+        #
+        # The members are named in the risk text all the same. This path used to return
+        # before the escalation block below, so the one line an operator reads never said
+        # why the row was there.
+        $fallbackRisk = "Domain accounts added to local group"
+        if (@($RiskyMembers).Count -gt 0) {
+            $fallbackRisk = "$fallbackRisk (includes: $(@($RiskyMembers) -join ', '))"
+        }
+        return @{ Severity = "Hint"; Risk = $fallbackRisk }
     }
 
     $severity = $config.Severity
@@ -461,8 +557,13 @@ function Parse-RestrictedGroups {
                     $memberSIDs = $Matches[2] -split ',' |
                         ForEach-Object { Resolve-RestrictedGroupSID -Identity $_ }
 
-                    if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
-                        $groupName = $Script:LocalGroupSIDs[$groupSID]
+                    # Resolve-LocalGroupTargetName rather than a lookup in the table: a
+                    # BUILTIN group that is not in the table is reported too, under its
+                    # resolved name and as a Hint. The table used to be the gate, so the
+                    # next group missing from it would be as invisible as Server Operators
+                    # was - and that one is domain compromise on a domain controller.
+                    $groupName = Resolve-LocalGroupTargetName -SID $groupSID
+                    if ($groupName) {
 
                         $memberNames = @()
                         $riskyMembers = @()
@@ -551,8 +652,8 @@ function Parse-RestrictedGroups {
                     foreach ($groupSID in $targetGroupSIDs) {
                         if ([string]::IsNullOrWhiteSpace($groupSID)) { continue }
 
-                        if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
-                            $groupName = $Script:LocalGroupSIDs[$groupSID]
+                        $groupName = Resolve-LocalGroupTargetName -SID $groupSID
+                        if ($groupName) {
 
                             $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
 
@@ -618,15 +719,30 @@ function Parse-GPPGroups {
 
         foreach ($group in $groups) {
             # Use groupSid attribute (SID-based, language-independent)
-            $groupSID = $group.Properties.groupSid
+            $groupSID = [string]$group.Properties.groupSid
+            $groupNameAttr = [string]$group.Properties.groupName
 
-            # Skip if no SID or not a target group (use centrally defined SIDs)
-            if (-not $groupSID -or -not $Script:LocalGroupSIDs.ContainsKey($groupSID)) {
-                continue
+            # A <Group> element without groupSid used to be dropped where it stood. GPMC
+            # writes the attribute for the builtins, but a Groups.xml written by hand, one
+            # produced by a migration and every custom local group do not have it - and
+            # the Restricted Groups parser has had Resolve-RestrictedGroupSID for exactly
+            # this case all along. The asymmetry meant an item adding Everyone to a group
+            # called "LocalAdmins" was never read at all.
+            if (-not $groupSID -and $groupNameAttr) {
+                $groupSID = [string](Resolve-RestrictedGroupSID -Identity $groupNameAttr)
             }
 
-            # Get canonical group name from SID
-            $canonicalGroupName = $Script:LocalGroupSIDs[$groupSID]
+            # Known BUILTIN group, resolved BUILTIN group, or something else entirely.
+            $canonicalGroupName = Resolve-LocalGroupTargetName -SID $groupSID
+            $targetGroupKnown = [bool]$canonicalGroupName
+            if (-not $targetGroupKnown) {
+                # Parsed anyway, and held to the end: an item that adds Everyone to a
+                # group this check cannot classify is still worth a line, because whether
+                # that group is privileged depends on a nesting another policy may well
+                # establish - which the old code did not even look for. Without a risky
+                # member such an item is dropped at the bottom of this loop.
+                $canonicalGroupName = if ($groupNameAttr) { $groupNameAttr } elseif ($groupSID) { $groupSID } else { 'Unknown group' }
+            }
 
             $members = @()
             $memberSIDs = @()
@@ -721,6 +837,14 @@ function Parse-GPPGroups {
             # of a Replace item disappeared.
             $clearsGroup = ($deleteAllUsers -or $deleteAllGroups)
             if (@($members).Count -eq 0 -and @($removedMembers).Count -eq 0 -and -not $clearsGroup) {
+                continue
+            }
+
+            # A group that is not a BUILTIN one is only reported when a broad principal is
+            # involved - see the note at the top of this loop. Everything else about it is
+            # unknowable from one policy.
+            if (-not $targetGroupKnown -and @($riskyMembers).Count -eq 0) {
+                Write-Log "[Parse-GPPGroups] Item for '$canonicalGroupName' names no BUILTIN group and no broad principal - not reported"
                 continue
             }
 

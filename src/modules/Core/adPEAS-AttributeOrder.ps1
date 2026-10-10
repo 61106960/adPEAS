@@ -535,7 +535,7 @@ $Script:PrimaryAttributes = @{
 
     # LAPS Finding (OU without LAPS protection)
     LAPSFinding = @(
-        'ouName', 'computerCount', 'lapsUnprotectedComputers'
+        'ouName', 'computerCount', 'lapsUnprotectedComputers', 'lapsBackupOutsideAD'
     )
 
     # Operator Group Finding (from Get-ProtectedUsersStatus)

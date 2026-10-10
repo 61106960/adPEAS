@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-10 22:46:53
-    Version: 2.7.0+20261010-2246
+    Build: 2026-10-10 23:12:13
+    Version: 2.7.0+20261010-2312
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6620,7 +6620,7 @@ $Script:PrimaryAttributes = @{
 
     # LAPS Finding (OU without LAPS protection)
     LAPSFinding = @(
-        'ouName', 'computerCount', 'lapsUnprotectedComputers'
+        'ouName', 'computerCount', 'lapsUnprotectedComputers', 'lapsBackupOutsideAD'
     )
 
     # Operator Group Finding (from Get-ProtectedUsersStatus)
@@ -18172,7 +18172,42 @@ foreach ($oid in $linkedOIDs) {
         Tools = @("LAPSToolkit")
         MITRE = "T1078.003"
         Triggers = @(
-            @{ Attribute = 'lapsUnprotectedComputers'; Severity = 'Finding' }
+            # The Custom predicate is what keeps this card off a hybrid-joined fleet. With
+            # BackupDirectory set to Microsoft Entra ID, Windows LAPS manages and rotates
+            # the password and by design writes no msLAPS attribute into Active Directory,
+            # so the absence of one is not evidence of anything. LAPS_COVERAGE_NOT_IN_AD
+            # then carries the row instead.
+            @{ Attribute = 'lapsUnprotectedComputers'; Custom = 'laps_backup_in_ad'; Severity = 'Finding' }
+        )
+    }
+
+    'LAPS_COVERAGE_NOT_IN_AD' = @{
+        Title = "LAPS Coverage Cannot Be Read From Active Directory"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "A Windows LAPS policy in this domain backs the managed password up somewhere other than Active Directory. For a computer in that policy's scope, Windows LAPS still manages and rotates the local administrator password, but it escrows it to Microsoft Entra ID (BackupDirectory = 1) or nowhere at all (BackupDirectory = 0) - so no msLAPS attribute appears on the computer object, and the coverage figure this check computes from those attributes says nothing about whether the password is managed."
+        Impact = @(
+            "The computers listed here have no LAPS attribute in Active Directory, which is the expected state for an Entra-escrowed policy and not a finding in itself"
+            "What cannot be confirmed from Active Directory is whether each of them is really in that policy's scope - a computer outside it has no managed password at all, and looks identical from here"
+            "With BackupDirectory = 0 the password is not escrowed anywhere, which means nobody can retrieve it: the account is effectively locked out rather than managed"
+        )
+        Attack = @(
+            "Nothing follows from this state by itself. It is reported so the coverage figure above is not read as evidence of unmanaged passwords when it is not."
+        )
+        Remediation = @(
+            "Confirm in Microsoft Entra ID (Devices -> Local administrator password recovery) that the computers listed here really do have an escrowed password"
+            "For an on-premises fleet, set BackupDirectory = 2 so the password is escrowed to Active Directory and this check can assess it"
+            "BackupDirectory = 0 is worth correcting on its own terms: the password rotates and nobody can read it"
+            "Where both are in use, scope the two policies so it is documented which computers are escrowed where"
+        )
+        References = @(
+            @{ Title = "Windows LAPS BackupDirectory policy setting"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings" }
+            @{ Title = "Windows LAPS with Microsoft Entra ID"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-scenarios-azure-active-directory" }
+        )
+        Tools = @("Get-LapsAADPassword", "Microsoft Entra admin center")
+        MITRE = "T1078.003"
+        Triggers = @(
+            @{ Attribute = 'lapsBackupOutsideAD'; Severity = 'Hint' }
         )
     }
 
@@ -20570,6 +20605,21 @@ function Test-CustomTrigger {
         # =====================================================================
         # Context-aware triggers (require SourceObject)
         # =====================================================================
+
+        'laps_backup_in_ad' {
+            # True - the finding applies - unless Get-LAPSConfiguration marked the row.
+            # It sets lapsBackupOutsideAD when a Windows LAPS policy escrows the password
+            # outside Active Directory, which makes a missing msLAPS attribute the
+            # expected state rather than evidence of an unmanaged password.
+            #
+            # Defaults to true: a row without the marker is the ordinary case, and a
+            # predicate that failed open the other way would silence the finding
+            # everywhere.
+            if (-not $SourceObject) { return $true }
+            $lapsCaveat = $SourceObject.PSObject.Properties['lapsBackupOutsideAD']
+            if ($lapsCaveat -and $lapsCaveat.Value) { return $false }
+            return $true
+        }
 
         'ra_signature_gated' {
             # Certificate template only: true when a required enrollment agent co-signature makes
@@ -103621,6 +103671,37 @@ function Get-LAPSConfiguration {
             $lapsGPOHasLegacy = $lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Legacy -and $lapsGPOSettings.Legacy.Count -gt 0
             $lapsGPOHasNative = $lapsGPOSettings -is [hashtable] -and $lapsGPOSettings.Native -and $lapsGPOSettings.Native.Count -gt 0
 
+            # Where Windows LAPS escrows the password it manages. BackupDirectory 2 is
+            # Active Directory, 1 is Microsoft Entra ID, 0 is disabled.
+            #
+            # The coverage figure further down is computed from AD attributes alone, and
+            # these settings were read for the GPO section above and then never consulted
+            # again. With BackupDirectory 1 the password IS managed and IS rotated - it
+            # just goes to Entra ID, so by design no msLAPS attribute appears in AD. A
+            # hybrid-joined fleet therefore read as 0 per cent coverage, with one red
+            # finding per OU saying the local administrator passwords are unmanaged, and a
+            # remediation ("deploy LAPS") that was already done.
+            $lapsEntraPolicies = @()
+            if ($lapsGPOHasNative) {
+                foreach ($nativeEntry in $lapsGPOSettings.Native.GetEnumerator()) {
+                    if ($nativeEntry.Value -isnot [hashtable]) { continue }
+                    if (-not $nativeEntry.Value.ContainsKey('BackupDirectory')) { continue }
+                    $backupTarget = 0
+                    if (-not [int]::TryParse([string]$nativeEntry.Value['BackupDirectory'], [ref]$backupTarget)) { continue }
+                    if ($backupTarget -eq 2) { continue }
+                    $lapsEntraPolicies += [PSCustomObject]@{
+                        GPOName = [string]$nativeEntry.Key
+                        Target  = if ($backupTarget -eq 1) { 'Microsoft Entra ID' } else { 'nowhere - backup is disabled' }
+                    }
+                }
+            }
+
+            $coverageCaveat = $null
+            if (@($lapsEntraPolicies).Count -gt 0) {
+                $policyList = @($lapsEntraPolicies | ForEach-Object { "$($_.GPOName) -> $($_.Target)" }) -join '; '
+                $coverageCaveat = "A Windows LAPS policy in this domain backs the password up outside Active Directory ($policyList). A computer in its scope keeps no msLAPS attribute here by design, so whether its local administrator password is managed cannot be read from Active Directory."
+            }
+
             # ===== Domain Controllers are not part of the coverage question =====
             #
             # A domain controller has no local SAM, so the built-in Administrator account
@@ -103680,7 +103761,12 @@ function Get-LAPSConfiguration {
                     }
                 }
 
-                Show-Line "$($allComputers.Count) computers (100%) without LAPS protection" -Class "Finding"
+                if ($coverageCaveat) {
+                    Show-Line "$($allComputers.Count) computers carry no LAPS attribute in Active Directory, and the schema here cannot hold one" -Class "Hint"
+                    Show-Line $coverageCaveat -Class "Note"
+                } else {
+                    Show-Line "$($allComputers.Count) computers (100%) without LAPS protection" -Class "Finding"
+                }
 
                 # Output each OU as structured object for proper tooltip support
                 foreach ($ouEntry in ($computersByOU.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending)) {
@@ -103688,6 +103774,9 @@ function Get-LAPSConfiguration {
                         ouName = $ouEntry.Key
                         computerCount = $ouEntry.Value.Count
                         lapsUnprotectedComputers = (Format-LAPSComputerList -Name $ouEntry.Value)
+                    }
+                    if ($coverageCaveat) {
+                        $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
                     }
                     $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
                     Show-Object $lapsFinding
@@ -103870,7 +103959,16 @@ function Get-LAPSConfiguration {
 
             # Highlight computers without LAPS
             if ($withoutLAPS -gt 0) {
-                Show-Line "$withoutLAPS computers ($withoutLAPSPercent%) without LAPS protection" -Class "Finding"
+                # "Without LAPS protection" is a claim the AD attributes cannot support
+                # when a policy escrows elsewhere. Which machines are in that policy's
+                # scope is not knowable from here, so the count stays as it is and the
+                # sentence says what it is a count OF.
+                if ($coverageCaveat) {
+                    Show-Line "$withoutLAPS of $activeCount computers ($withoutLAPSPercent%) carry no LAPS attribute in Active Directory" -Class "Hint"
+                    Show-Line $coverageCaveat -Class "Note"
+                } else {
+                    Show-Line "$withoutLAPS computers ($withoutLAPSPercent%) without LAPS protection" -Class "Finding"
+                }
 
                 # Group by OU - store computer names instead of count
                 $computersWithoutLAPSByOU = @{}
@@ -103898,6 +103996,12 @@ function Get-LAPSConfiguration {
                         ouName = $ouEntry.Key
                         computerCount = $ouEntry.Value.Count
                         lapsUnprotectedComputers = (Format-LAPSComputerList -Name $ouEntry.Value)
+                    }
+                    # Read by the Custom trigger on lapsUnprotectedComputers, which hands
+                    # the row to LAPS_COVERAGE_NOT_IN_AD instead of the finding that says
+                    # the passwords are not managed.
+                    if ($coverageCaveat) {
+                        $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
                     }
                     $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
                     Show-Object $lapsFinding
@@ -105419,12 +105523,31 @@ function Get-GPOLocalGroupMembership {
     begin {
         Write-Log "[Get-GPOLocalGroupMembership] Starting check"
 
-        # Well-known SIDs for local groups
+        # The local groups this check reports a membership assignment for.
+        #
+        # Five entries used to be in here, and all three parsers filter hard on the table:
+        # a Restricted Groups entry or a Group Policy Preferences item naming any other
+        # group produced no output at all. The three operator groups are the gap that
+        # matters - on a domain controller they are a direct path to the domain, and a
+        # policy linked to the Domain Controllers OU that puts a principal in Server
+        # Operators is domain compromise in one step, with nothing in the report.
+        #
+        # Server Operators: may configure services, and a service runs as SYSTEM on the DC.
+        # Account Operators: may create and modify users, groups and computers domain-wide.
+        # Print Operators: may load printer drivers, which is code as SYSTEM.
         $Script:LocalGroupSIDs = @{
             'S-1-5-32-544' = 'Administrators'
-            'S-1-5-32-555' = 'Remote Desktop Users'
-            'S-1-5-32-580' = 'Remote Management Users'
+            'S-1-5-32-548' = 'Account Operators'
+            'S-1-5-32-549' = 'Server Operators'
+            'S-1-5-32-550' = 'Print Operators'
             'S-1-5-32-551' = 'Backup Operators'
+            'S-1-5-32-555' = 'Remote Desktop Users'
+            'S-1-5-32-556' = 'Network Configuration Operators'
+            'S-1-5-32-559' = 'Performance Log Users'
+            'S-1-5-32-562' = 'Distributed COM Users'
+            'S-1-5-32-574' = 'Certificate Service DCOM Access'
+            'S-1-5-32-578' = 'Hyper-V Administrators'
+            'S-1-5-32-580' = 'Remote Management Users'
             'S-1-5-32-547' = 'Power Users'
         }
 
@@ -105439,9 +105562,21 @@ function Get-GPOLocalGroupMembership {
         # Finding = Critical/High issues, Hint = Medium issues, Note = Low/Info
         $Script:GroupSeverityConfig = @{
             'S-1-5-32-544' = @{ Severity = "Finding"; Risk = "Domain accounts added to local Administrators" }
-            'S-1-5-32-555' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Desktop Users" }
-            'S-1-5-32-580' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Management Users" }
+            # The three operator groups are a Finding rather than a Hint because of what
+            # they are on a domain controller, where they are domain-wide rights and not
+            # machine-local ones. This check cannot tell from a policy alone which machines
+            # it reaches, so the worse of the two readings is the one reported.
+            'S-1-5-32-548' = @{ Severity = "Finding"; Risk = "Domain accounts added to Account Operators - on a domain controller this permits creating and modifying users, groups and computers domain-wide" }
+            'S-1-5-32-549' = @{ Severity = "Finding"; Risk = "Domain accounts added to Server Operators - on a domain controller this permits configuring services, which run as SYSTEM" }
+            'S-1-5-32-550' = @{ Severity = "Finding"; Risk = "Domain accounts added to Print Operators - on a domain controller this permits loading printer drivers, which is code as SYSTEM" }
             'S-1-5-32-551' = @{ Severity = "Hint"; Risk = "Domain accounts added to Backup Operators" }
+            'S-1-5-32-555' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Desktop Users" }
+            'S-1-5-32-556' = @{ Severity = "Hint"; Risk = "Domain accounts added to Network Configuration Operators - permits changing the network configuration, including which DNS server the machine asks" }
+            'S-1-5-32-559' = @{ Severity = "Hint"; Risk = "Domain accounts added to Performance Log Users - permits configuring tracing providers, which has been a local escalation path" }
+            'S-1-5-32-562' = @{ Severity = "Hint"; Risk = "Domain accounts added to Distributed COM Users - permits launching and activating DCOM objects remotely" }
+            'S-1-5-32-574' = @{ Severity = "Hint"; Risk = "Domain accounts added to Certificate Service DCOM Access - permits requesting certificates from the enterprise CA over DCOM" }
+            'S-1-5-32-578' = @{ Severity = "Hint"; Risk = "Domain accounts added to Hyper-V Administrators - full control over every virtual machine on the host, which includes its disks" }
+            'S-1-5-32-580' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Management Users" }
             'S-1-5-32-547' = @{ Severity = "Note"; Risk = "Domain accounts added to Power Users" }
         }
     }
@@ -105698,6 +105833,58 @@ function Get-GPOLocalGroupMembership {
 }
 
 # Helper Function: Get severity and risk for a group assignment
+<#
+.SYNOPSIS
+    The display name of a target local group, for any BUILTIN group.
+
+.DESCRIPTION
+    All three parsers used to gate on $Script:LocalGroupSIDs.ContainsKey() and drop the
+    entry otherwise, so a group that is not in the table produced no finding and no note -
+    and the next gap in the table would be just as invisible as the operator groups were.
+
+    A BUILTIN group (S-1-5-32-*) that is not in the table is resolved through
+    ConvertFrom-SID and reported anyway; Get-GroupAssignmentSeverity gives it a Hint. An
+    unresolvable one is reported under its raw SID, which is still enough to look up.
+
+    Anything that is not a BUILTIN group returns $null and is skipped, as before: this
+    check is about local group membership, and a domain group on the left-hand side of a
+    Restricted Groups entry is a different question.
+
+.PARAMETER SID
+    The target group's SID.
+
+.OUTPUTS
+    The display name, or $null when the SID is not a BUILTIN group.
+#>
+function Resolve-LocalGroupTargetName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$SID
+    )
+
+    $trimmed = ([string]$SID).Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) { return $null }
+
+    if ($Script:LocalGroupSIDs.ContainsKey($trimmed)) {
+        return $Script:LocalGroupSIDs[$trimmed]
+    }
+
+    if ($trimmed -notmatch '^S-1-5-32-\d+$') { return $null }
+
+    $resolved = $null
+    try { $resolved = ConvertFrom-SID -SID $trimmed } catch { $resolved = $null }
+    if ($resolved -and $resolved -ne $trimmed) {
+        Write-Log "[Resolve-LocalGroupTargetName] Target group $trimmed is not in the table - reported as '$resolved'"
+        return [string]$resolved
+    }
+
+    Write-Log "[Resolve-LocalGroupTargetName] Target group $trimmed is not in the table and did not resolve to a name"
+    return $trimmed
+}
+
 function Get-GroupAssignmentSeverity {
     param(
         [string]$GroupSID,
@@ -105706,7 +105893,20 @@ function Get-GroupAssignmentSeverity {
 
     $config = $Script:GroupSeverityConfig[$GroupSID]
     if (-not $config) {
-        return @{ Severity = "Hint"; Risk = "Domain accounts added to local group" }
+        # A group this check has no configuration for: a BUILTIN group outside the curated
+        # table, or a custom local group that is reported because of its members. Hint,
+        # and it stays Hint even with a broad principal among them - without knowing what
+        # the group is, "Everyone was added to it" is a reason to look rather than a
+        # verdict.
+        #
+        # The members are named in the risk text all the same. This path used to return
+        # before the escalation block below, so the one line an operator reads never said
+        # why the row was there.
+        $fallbackRisk = "Domain accounts added to local group"
+        if (@($RiskyMembers).Count -gt 0) {
+            $fallbackRisk = "$fallbackRisk (includes: $(@($RiskyMembers) -join ', '))"
+        }
+        return @{ Severity = "Hint"; Risk = $fallbackRisk }
     }
 
     $severity = $config.Severity
@@ -105830,8 +106030,13 @@ function Parse-RestrictedGroups {
                     $memberSIDs = $Matches[2] -split ',' |
                         ForEach-Object { Resolve-RestrictedGroupSID -Identity $_ }
 
-                    if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
-                        $groupName = $Script:LocalGroupSIDs[$groupSID]
+                    # Resolve-LocalGroupTargetName rather than a lookup in the table: a
+                    # BUILTIN group that is not in the table is reported too, under its
+                    # resolved name and as a Hint. The table used to be the gate, so the
+                    # next group missing from it would be as invisible as Server Operators
+                    # was - and that one is domain compromise on a domain controller.
+                    $groupName = Resolve-LocalGroupTargetName -SID $groupSID
+                    if ($groupName) {
 
                         $memberNames = @()
                         $riskyMembers = @()
@@ -105920,8 +106125,8 @@ function Parse-RestrictedGroups {
                     foreach ($groupSID in $targetGroupSIDs) {
                         if ([string]::IsNullOrWhiteSpace($groupSID)) { continue }
 
-                        if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
-                            $groupName = $Script:LocalGroupSIDs[$groupSID]
+                        $groupName = Resolve-LocalGroupTargetName -SID $groupSID
+                        if ($groupName) {
 
                             $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
 
@@ -105987,15 +106192,30 @@ function Parse-GPPGroups {
 
         foreach ($group in $groups) {
             # Use groupSid attribute (SID-based, language-independent)
-            $groupSID = $group.Properties.groupSid
+            $groupSID = [string]$group.Properties.groupSid
+            $groupNameAttr = [string]$group.Properties.groupName
 
-            # Skip if no SID or not a target group (use centrally defined SIDs)
-            if (-not $groupSID -or -not $Script:LocalGroupSIDs.ContainsKey($groupSID)) {
-                continue
+            # A <Group> element without groupSid used to be dropped where it stood. GPMC
+            # writes the attribute for the builtins, but a Groups.xml written by hand, one
+            # produced by a migration and every custom local group do not have it - and
+            # the Restricted Groups parser has had Resolve-RestrictedGroupSID for exactly
+            # this case all along. The asymmetry meant an item adding Everyone to a group
+            # called "LocalAdmins" was never read at all.
+            if (-not $groupSID -and $groupNameAttr) {
+                $groupSID = [string](Resolve-RestrictedGroupSID -Identity $groupNameAttr)
             }
 
-            # Get canonical group name from SID
-            $canonicalGroupName = $Script:LocalGroupSIDs[$groupSID]
+            # Known BUILTIN group, resolved BUILTIN group, or something else entirely.
+            $canonicalGroupName = Resolve-LocalGroupTargetName -SID $groupSID
+            $targetGroupKnown = [bool]$canonicalGroupName
+            if (-not $targetGroupKnown) {
+                # Parsed anyway, and held to the end: an item that adds Everyone to a
+                # group this check cannot classify is still worth a line, because whether
+                # that group is privileged depends on a nesting another policy may well
+                # establish - which the old code did not even look for. Without a risky
+                # member such an item is dropped at the bottom of this loop.
+                $canonicalGroupName = if ($groupNameAttr) { $groupNameAttr } elseif ($groupSID) { $groupSID } else { 'Unknown group' }
+            }
 
             $members = @()
             $memberSIDs = @()
@@ -106090,6 +106310,14 @@ function Parse-GPPGroups {
             # of a Replace item disappeared.
             $clearsGroup = ($deleteAllUsers -or $deleteAllGroups)
             if (@($members).Count -eq 0 -and @($removedMembers).Count -eq 0 -and -not $clearsGroup) {
+                continue
+            }
+
+            # A group that is not a BUILTIN one is only reported when a broad principal is
+            # involved - see the note at the top of this loop. Everything else about it is
+            # unknowable from one policy.
+            if (-not $targetGroupKnown -and @($riskyMembers).Count -eq 0) {
+                Write-Log "[Parse-GPPGroups] Item for '$canonicalGroupName' names no BUILTIN group and no broad principal - not reported"
                 continue
             }
 
@@ -111691,18 +111919,55 @@ function Get-ExchangeInfrastructure {
                             if ($connectorACL) {
                                 $descriptorRead = $true
                                 foreach ($ace in @($connectorACL.ACEs)) {
-                                    if (-not $ace.ObjectType) { continue }
-                                    $rightName = $smtpRightsByGuid[([string]$ace.ObjectType).ToLower()]
-                                    if (-not $rightName) { continue }
-
-                                    $meaning = $smtpRightMeaning[$rightName]
-                                    $grant = "$($ace.Trustee): $meaning"
-
-                                    if ($anonymousSIDs -contains $ace.TrusteeSID) {
-                                        $anonymousGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                    # An ACE with no ObjectType is not scoped to one
+                                    # extended right - it grants all of them, and that
+                                    # includes every ms-Exch-SMTP-* right the ladder below
+                                    # looks for. This loop used to skip exactly those:
+                                    # "if (-not $ace.ObjectType) { continue }". A connector
+                                    # with (A;;GA;;;S-1-1-0) in its DACL - Everyone, full
+                                    # control - was then reported as "Authenticated senders
+                                    # only" with a Secure class, under a collection line
+                                    # saying no connector grants relay or sender-spoofing
+                                    # rights to unauthenticated senders. An open relay was
+                                    # turned into a positive statement about the domain.
+                                    #
+                                    # GenericAll and a bare ExtendedRight are both read as
+                                    # the full set. RightsRaw is already expanded, so the
+                                    # unmapped generic bit (GA, which prints as 268435456)
+                                    # arrives here as GenericAll.
+                                    $grantedRights = @()
+                                    if ([string]::IsNullOrEmpty([string]$ace.ObjectType)) {
+                                        if ((@($ace.RightsRaw) -contains 'GenericAll') -or
+                                            (@($ace.RightsRaw) -contains 'ExtendedRight')) {
+                                            $grantedRights = @($smtpRightMeaning.Keys)
+                                        }
                                     }
-                                    elseif ($Script:BroadGroupSIDs -contains $ace.TrusteeSID) {
-                                        $broadGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                    else {
+                                        $scopedRight = $smtpRightsByGuid[([string]$ace.ObjectType).ToLower()]
+                                        if ($scopedRight) { $grantedRights = @($scopedRight) }
+                                    }
+
+                                    if (@($grantedRights).Count -eq 0) { continue }
+
+                                    $allRights = (@($grantedRights).Count -gt 1)
+
+                                    foreach ($rightName in $grantedRights) {
+                                        $meaning = $smtpRightMeaning[$rightName]
+                                        # Named for what the ACE actually says, so the row
+                                        # is not six separate-looking grants with no
+                                        # explanation of where they come from.
+                                        $grant = if ($allRights) {
+                                            "$($ace.Trustee): $meaning (through an unrestricted grant on the connector)"
+                                        } else {
+                                            "$($ace.Trustee): $meaning"
+                                        }
+
+                                        if ($anonymousSIDs -contains $ace.TrusteeSID) {
+                                            $anonymousGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                        }
+                                        elseif ($Script:BroadGroupSIDs -contains $ace.TrusteeSID) {
+                                            $broadGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
+                                        }
                                     }
                                 }
                             }
@@ -128273,7 +128538,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261010-2246"
+$Script:adPEASVersion = "2.7.0+20261010-2312"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

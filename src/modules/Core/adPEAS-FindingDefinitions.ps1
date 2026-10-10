@@ -10487,7 +10487,42 @@ foreach ($oid in $linkedOIDs) {
         Tools = @("LAPSToolkit")
         MITRE = "T1078.003"
         Triggers = @(
-            @{ Attribute = 'lapsUnprotectedComputers'; Severity = 'Finding' }
+            # The Custom predicate is what keeps this card off a hybrid-joined fleet. With
+            # BackupDirectory set to Microsoft Entra ID, Windows LAPS manages and rotates
+            # the password and by design writes no msLAPS attribute into Active Directory,
+            # so the absence of one is not evidence of anything. LAPS_COVERAGE_NOT_IN_AD
+            # then carries the row instead.
+            @{ Attribute = 'lapsUnprotectedComputers'; Custom = 'laps_backup_in_ad'; Severity = 'Finding' }
+        )
+    }
+
+    'LAPS_COVERAGE_NOT_IN_AD' = @{
+        Title = "LAPS Coverage Cannot Be Read From Active Directory"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "A Windows LAPS policy in this domain backs the managed password up somewhere other than Active Directory. For a computer in that policy's scope, Windows LAPS still manages and rotates the local administrator password, but it escrows it to Microsoft Entra ID (BackupDirectory = 1) or nowhere at all (BackupDirectory = 0) - so no msLAPS attribute appears on the computer object, and the coverage figure this check computes from those attributes says nothing about whether the password is managed."
+        Impact = @(
+            "The computers listed here have no LAPS attribute in Active Directory, which is the expected state for an Entra-escrowed policy and not a finding in itself"
+            "What cannot be confirmed from Active Directory is whether each of them is really in that policy's scope - a computer outside it has no managed password at all, and looks identical from here"
+            "With BackupDirectory = 0 the password is not escrowed anywhere, which means nobody can retrieve it: the account is effectively locked out rather than managed"
+        )
+        Attack = @(
+            "Nothing follows from this state by itself. It is reported so the coverage figure above is not read as evidence of unmanaged passwords when it is not."
+        )
+        Remediation = @(
+            "Confirm in Microsoft Entra ID (Devices -> Local administrator password recovery) that the computers listed here really do have an escrowed password"
+            "For an on-premises fleet, set BackupDirectory = 2 so the password is escrowed to Active Directory and this check can assess it"
+            "BackupDirectory = 0 is worth correcting on its own terms: the password rotates and nobody can read it"
+            "Where both are in use, scope the two policies so it is documented which computers are escrowed where"
+        )
+        References = @(
+            @{ Title = "Windows LAPS BackupDirectory policy setting"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings" }
+            @{ Title = "Windows LAPS with Microsoft Entra ID"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-scenarios-azure-active-directory" }
+        )
+        Tools = @("Get-LapsAADPassword", "Microsoft Entra admin center")
+        MITRE = "T1078.003"
+        Triggers = @(
+            @{ Attribute = 'lapsBackupOutsideAD'; Severity = 'Hint' }
         )
     }
 
@@ -12885,6 +12920,21 @@ function Test-CustomTrigger {
         # =====================================================================
         # Context-aware triggers (require SourceObject)
         # =====================================================================
+
+        'laps_backup_in_ad' {
+            # True - the finding applies - unless Get-LAPSConfiguration marked the row.
+            # It sets lapsBackupOutsideAD when a Windows LAPS policy escrows the password
+            # outside Active Directory, which makes a missing msLAPS attribute the
+            # expected state rather than evidence of an unmanaged password.
+            #
+            # Defaults to true: a row without the marker is the ordinary case, and a
+            # predicate that failed open the other way would silence the finding
+            # everywhere.
+            if (-not $SourceObject) { return $true }
+            $lapsCaveat = $SourceObject.PSObject.Properties['lapsBackupOutsideAD']
+            if ($lapsCaveat -and $lapsCaveat.Value) { return $false }
+            return $true
+        }
 
         'ra_signature_gated' {
             # Certificate template only: true when a required enrollment agent co-signature makes
