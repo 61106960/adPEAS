@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-10 23:47:50
-    Version: 2.7.0+20261010-2347
+    Build: 2026-10-11 00:01:56
+    Version: 2.7.0+20261011-0001
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -23217,7 +23217,14 @@ $Script:SecurityModifiers = @{
     'SMARTCARD_REQUIRED'  = 0.15    # Password is random/unknown (cracking attacks)
     'PASSWORD_EXPIRED'    = 0.7     # Password may be changed soon
     'USE_DES_KEY_ONLY'    = 1.3     # Weak encryption - INCREASES risk
-    'NOT_DELEGATED'       = 0.3     # Delegation protection (delegation attacks)
+    # Currently unused by the report script, deliberately. It was applied to delegation
+    # findings using the UAC flags of the account the card is about - the host that
+    # performs the delegation - while NOT_DELEGATED protects THAT account's identity from
+    # being delegated by someone else, and has no effect on the delegation it carries out.
+    # The value is kept for an implementation that measures the right thing: whether the
+    # accounts worth impersonating are themselves protected from delegation, which
+    # Get-ProtectedUsersStatus already computes.
+    'NOT_DELEGATED'       = 0.3     # Delegation protection (see the note above)
 
     # Group Membership
     'PROTECTED_USERS'     = 0.2     # Protected Users group membership
@@ -122942,15 +122949,23 @@ function Get-HTMLTemplate {
             // ========================================
             // DELEGATION FLAGS (affect delegation attacks)
             // ========================================
-
-            const isDelegationAttack = ['delegation', 'rbcd', 'constrained', 'unconstrained'].some(a => findingType.includes(a));
-
-            if (isDelegationAttack) {
-                if (flags.includes('NOT_DELEGATED') || flags.includes('NotDelegated') ||
-                    flags.includes('AccountNotDelegated') || flags.includes('Sensitive')) {
-                    modifier *= securityModifiers.NOT_DELEGATED;
-                }
-            }
+            //
+            // Removed, not repaired. The flags here belong to the account the card is
+            // about - the host that PERFORMS the delegation - and NOT_DELEGATED
+            // ("Account is sensitive and cannot be delegated") protects the identity of
+            // THAT account against being delegated by someone else. It has no effect on
+            // the delegation this account carries out.
+            //
+            // So a hardened server whose computer account has the flag set, and which
+            // also has unconstrained delegation, had its delegation finding multiplied by
+            // 0.3 for a measure that does not touch the attack: the most dangerous
+            // delegation object in the domain read as a medium problem. No modifier is
+            // better than one that points the wrong way.
+            //
+            // A correct version would measure the Tier-0 coverage that
+            // Get-ProtectedUsersStatus already computes - whether the accounts worth
+            // impersonating are protected from delegation - rather than the UAC flags of
+            // the delegating host.
 
             // ========================================
             // PASSWORD FLAGS (affect credential attacks)
@@ -122973,16 +122988,24 @@ function Get-HTMLTemplate {
             return modifier;
         }
 
-        // Get account info from scoring context
-        function getAccountInfoFromCard(card) {
+        // Every account a card describes, in the order the card lists them.
+        function getCardAccountInfos(card) {
             if (!scoringContext || !scoringContext.accounts) {
-                return null;
+                return [];
             }
 
-            // Try to find account by extracting identifiers from card content
+            const found = [];
+            const seen = new Set();
+            const addAccount = function (acct) {
+                if (!acct) return;
+                const key = acct.sid || acct.dn || acct.name;
+                if (key && seen.has(key)) return;
+                if (key) seen.add(key);
+                found.push(acct);
+            };
+
             const objectDetails = card.querySelectorAll('.object-detail');
             for (const detail of objectDetails) {
-                // Look for sAMAccountName or distinguishedName in the card
                 const rows = detail.querySelectorAll('.attr-row');
                 for (const row of rows) {
                     const nameEl = row.querySelector('.attr-name');
@@ -122992,25 +123015,118 @@ function Get-HTMLTemplate {
                     const attrName = nameEl.textContent.trim().toLowerCase();
                     const attrValue = valueEl.textContent.trim();
 
-                    // Match by objectSid first (most reliable)
+                    // objectSid first, it is the only identifier that cannot collide
                     if (attrName === 'objectsid' && scoringContext.accounts[attrValue]) {
-                        return scoringContext.accounts[attrValue];
+                        addAccount(scoringContext.accounts[attrValue]);
+                        continue;
                     }
-                    // Match by DN
                     if (attrName === 'distinguishedname' && scoringContext.accounts[attrValue]) {
-                        return scoringContext.accounts[attrValue];
+                        addAccount(scoringContext.accounts[attrValue]);
+                        continue;
                     }
-                    // Match by sAMAccountName (iterate through accounts)
                     if (attrName === 'samaccountname') {
                         for (const [key, acct] of Object.entries(scoringContext.accounts)) {
                             if (acct.name && acct.name.toLowerCase() === attrValue.toLowerCase()) {
-                                return acct;
+                                addAccount(acct);
+                                break;
                             }
                         }
                     }
                 }
             }
-            return null;
+            return found;
+        }
+
+        // Get account info from scoring context.
+        //
+        // One card per check, not per object: a Kerberoastable card lists every roastable
+        // account in the domain, and this function used to return at the FIRST match and
+        // score the whole card with it. A kerberoastable Domain Admin at position 17 did
+        // not raise the card's score at all, and - the same mechanism in the other
+        // direction - a disabled account at position 1 multiplied the card by 0.1.
+        //
+        // The card is scored by the worst of its accounts now, field by field, because
+        // "worst" is not the same question for an aggravating and for a mitigating one:
+        //
+        //   adminTier / isAdmin   the highest tier any of them holds
+        //   pwdAgeDays            the oldest password
+        //   encryptionTypes       RC4-only if ANY of them is RC4-only, else the union
+        //   uacFlags              the INTERSECTION: every flag the scorer reads here is a
+        //                         mitigation (disabled, locked out, smartcard required),
+        //                         so it may only count when it holds for all of them
+        //   isProtectedUser       likewise, only when every account is protected
+        //
+        // Identity fields come from the worst-tier account, which is the one a reader
+        // would name, and keeps the correlation bonus pointing at a real account.
+        function getAccountInfoFromCard(card) {
+            const accounts = getCardAccountInfos(card);
+            if (accounts.length === 0) {
+                return null;
+            }
+            if (accounts.length === 1) {
+                return accounts[0];
+            }
+
+            const tierRank = { none: 0, tier2: 1, tier1: 2, tier0: 3 };
+            let worst = accounts[0];
+            for (const acct of accounts) {
+                if ((tierRank[acct.adminTier] || 0) > (tierRank[worst.adminTier] || 0)) {
+                    worst = acct;
+                }
+            }
+
+            const aggregated = {
+                sid: worst.sid,
+                name: worst.name,
+                dn: worst.dn,
+                isAdmin: accounts.some(a => a.isAdmin),
+                adminTier: worst.adminTier,
+                pwdLastSet: worst.pwdLastSet,
+                pwdAgeDays: null,
+                encryptionTypes: [],
+                uacFlags: [],
+                isProtectedUser: accounts.every(a => a.isProtectedUser),
+                memberOf: worst.memberOf
+            };
+
+            for (const acct of accounts) {
+                if (acct.pwdAgeDays !== null && acct.pwdAgeDays !== undefined &&
+                    (aggregated.pwdAgeDays === null || acct.pwdAgeDays > aggregated.pwdAgeDays)) {
+                    aggregated.pwdAgeDays = acct.pwdAgeDays;
+                    aggregated.pwdLastSet = acct.pwdLastSet;
+                }
+            }
+
+            // An account that permits RC4 and no AES decides the card: the cheapest ticket
+            // on it is what an attacker takes. Reporting the union instead would let one
+            // AES-only account hide every RC4-only one behind it.
+            const rc4Only = accounts.some(function (a) {
+                const t = a.encryptionTypes || [];
+                return t.includes('RC4-HMAC') && !t.includes('AES256') && !t.includes('AES128');
+            });
+            if (rc4Only) {
+                aggregated.encryptionTypes = ['RC4-HMAC'];
+            } else {
+                const union = new Set();
+                for (const acct of accounts) {
+                    for (const t of (acct.encryptionTypes || [])) { union.add(t); }
+                }
+                aggregated.encryptionTypes = Array.from(union);
+            }
+
+            // The intersection, for the reason in the note above. Built from the union
+            // rather than from the first account's list: starting there would make the
+            // result depend on the order the card happens to list its accounts in, which
+            // is the very thing this function exists to stop mattering.
+            const allFlags = new Set();
+            for (const acct of accounts) {
+                for (const flag of (acct.uacFlags || [])) { allFlags.add(flag); }
+            }
+            aggregated.uacFlags = Array.from(allFlags).filter(function (flag) {
+                return accounts.every(a => (a.uacFlags || []).includes(flag));
+            });
+
+            return aggregated;
         }
 
         // Check if account appears in multiple risky findings (correlation bonus)
@@ -129132,7 +129248,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261010-2347"
+$Script:adPEASVersion = "2.7.0+20261011-0001"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

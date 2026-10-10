@@ -130,7 +130,14 @@ $Script:SecurityModifiers = @{
     'SMARTCARD_REQUIRED'  = 0.15    # Password is random/unknown (cracking attacks)
     'PASSWORD_EXPIRED'    = 0.7     # Password may be changed soon
     'USE_DES_KEY_ONLY'    = 1.3     # Weak encryption - INCREASES risk
-    'NOT_DELEGATED'       = 0.3     # Delegation protection (delegation attacks)
+    # Currently unused by the report script, deliberately. It was applied to delegation
+    # findings using the UAC flags of the account the card is about - the host that
+    # performs the delegation - while NOT_DELEGATED protects THAT account's identity from
+    # being delegated by someone else, and has no effect on the delegation it carries out.
+    # The value is kept for an implementation that measures the right thing: whether the
+    # accounts worth impersonating are themselves protected from delegation, which
+    # Get-ProtectedUsersStatus already computes.
+    'NOT_DELEGATED'       = 0.3     # Delegation protection (see the note above)
 
     # Group Membership
     'PROTECTED_USERS'     = 0.2     # Protected Users group membership
