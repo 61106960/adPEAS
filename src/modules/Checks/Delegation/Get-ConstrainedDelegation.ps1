@@ -116,7 +116,20 @@ function Get-ConstrainedDelegation {
             # Protocol transition with no target list at all. Filtered on the server rather
             # than with Where-Object, and kept apart from the two queries above because
             # msDS-AllowedToDelegateTo is exactly what these accounts do not have.
-            $noTargetFilter = '(!(msDS-AllowedToDelegateTo=*))'
+            #
+            # A read-only domain controller fills this condition exactly, by design: its
+            # userAccountControl is WORKSTATION_TRUST_ACCOUNT + TRUSTED_TO_AUTH_FOR_DELEGATION
+            # + PARTIAL_SECRETS_ACCOUNT, and it has no msDS-AllowedToDelegateTo. So every RODC
+            # in every domain was reported as a red delegation anomaly, with the remediation
+            # "clear the flag if delegation is not in use" - which, carried out on an RODC,
+            # breaks the RODC. It also buried what this bucket exists for: an ordinary server
+            # with protocol transition and no target.
+            #
+            # The two markers are the ones Get-DomainComputer's own -DomainController switch
+            # already uses: PARTIAL_SECRETS_ACCOUNT (0x4000000) and the Read-only Domain
+            # Controllers primary group. Excluded server-side, so the count in the summary
+            # line is right as well.
+            $noTargetFilter = '(&(!(msDS-AllowedToDelegateTo=*))(!(userAccountControl:1.2.840.113556.1.4.803:=67108864))(!(primaryGroupID=521)))'
             $transitionOnlyComputers = @(Get-DomainComputer -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
             $transitionOnlyUsers = @(Get-DomainUser -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
 

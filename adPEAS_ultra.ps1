@@ -4386,6 +4386,7 @@ $Script:FindingDefinitions = @{
 	    MITRE = "T1550.003"
 	    Triggers = @(
 	        @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_TO_AUTH_FOR_DELEGATION'; Severity = 'Finding' }
+	        @{ Attribute = 'msDS-AllowedToDelegateTo'; Custom = 'is_protocol_transition_delegation'; Severity = 'Finding' }
 	    )
 	}
 	'GPO_NOT_CURRENTLY_EFFECTIVE' = @{
@@ -14151,7 +14152,7 @@ foreach ($oid in $linkedOIDs) {
 	    Tools = @("Rubeus", "Impacket")
 	    MITRE = "T1550.003"
 	    Triggers = @(
-	        @{ Attribute = 'msDS-AllowedToDelegateTo'; Severity = 'Finding' }
+	        @{ Attribute = 'msDS-AllowedToDelegateTo'; Custom = 'is_kerberos_only_delegation'; Severity = 'Finding' }
 	    )
 	}
 	'LAPS_INSTALLED' = @{
@@ -15924,6 +15925,14 @@ function Test-CustomTrigger {
 	    $SourceObject = $null
 	)
 	switch ($CustomType) {
+	    'is_protocol_transition_delegation' {
+	        return (Test-UACFlagOnObject -SourceObject $SourceObject -Value $null `
+	            -FlagName 'TRUSTED_TO_AUTH_FOR_DELEGATION' -FlagBit 0x1000000)
+	    }
+	    'is_kerberos_only_delegation' {
+	        return (-not (Test-UACFlagOnObject -SourceObject $SourceObject -Value $null `
+	            -FlagName 'TRUSTED_TO_AUTH_FOR_DELEGATION' -FlagBit 0x1000000))
+	    }
 	    'laps_backup_in_ad' {
 	        if (-not $SourceObject) { return $true }
 	        $lapsCaveat = $SourceObject.PSObject.Properties['lapsBackupOutsideAD']
@@ -61962,7 +61971,7 @@ function Get-ConstrainedDelegation {
 	        Show-SubHeader "Searching for accounts with Constrained Delegation..." -ObjectType "ConstrainedDelegation"
 	        $constrainedComputers = @(Get-DomainComputer -Constrained -Enabled -ShowOwner @PSBoundParameters)
 	        $constrainedUsers = @(Get-DomainUser -Constrained -Enabled -ShowOwner @PSBoundParameters)
-	        $noTargetFilter = '(!(msDS-AllowedToDelegateTo=*))'
+	        $noTargetFilter = '(&(!(msDS-AllowedToDelegateTo=*))(!(userAccountControl:1.2.840.113556.1.4.803:=67108864))(!(primaryGroupID=521)))'
 	        $transitionOnlyComputers = @(Get-DomainComputer -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
 	        $transitionOnlyUsers = @(Get-DomainUser -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
 	        foreach ($account in ($transitionOnlyComputers + $transitionOnlyUsers)) {
@@ -81560,7 +81569,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-0049"
+$Script:adPEASVersion = "2.7.0+20261011-0115"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 00:49:28
-    Version: 2.7.0+20261011-0049
+    Build: 2026-10-11 01:15:51
+    Version: 2.7.0+20261011-0115
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -8296,6 +8296,12 @@ $Script:FindingDefinitions = @{
             # that had no such flag, while CONSTRAINED_DELEGATION had no triggers at all and
             # was unreachable.
             @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_TO_AUTH_FOR_DELEGATION'; Severity = 'Finding' }
+
+            # The delegation targets of such an account carry this card too, not the
+            # milder one. Only the userAccountControl row used to say which of the two
+            # kinds of constrained delegation this is, and a reader looking at the
+            # services the account may impersonate users to was told the weaker story.
+            @{ Attribute = 'msDS-AllowedToDelegateTo'; Custom = 'is_protocol_transition_delegation'; Severity = 'Finding' }
         )
     }
 
@@ -18702,7 +18708,19 @@ foreach ($oid in $linkedOIDs) {
             # real, worth reporting, but it needs an actual user authentication to the
             # account. Protocol transition is the UAC flag, and that definition keeps it.
             # Until this move the definition had no triggers and could never be reached.
-            @{ Attribute = 'msDS-AllowedToDelegateTo'; Severity = 'Finding' }
+            #
+            # Gated, because the account with TRUSTED_TO_AUTH_FOR_DELEGATION is a
+            # materially different thing and has a card of its own. This trigger had no
+            # pattern and no predicate, so every delegation target row of every account
+            # got this card - including the accounts where its central claim, "when they
+            # authenticate to this account", is false: with protocol transition no
+            # authentication from the impersonated user is required at all. The reader
+            # looking at the target SPNs got the understated statement.
+            #
+            # The two predicates are each other's inverse rather than relying on which
+            # trigger is examined first: the index is built from an unordered hashtable
+            # and its order differs between Windows PowerShell 5.1 and PowerShell 7.
+            @{ Attribute = 'msDS-AllowedToDelegateTo'; Custom = 'is_kerberos_only_delegation'; Severity = 'Finding' }
         )
     }
 
@@ -20918,6 +20936,30 @@ function Test-CustomTrigger {
         # =====================================================================
         # Context-aware triggers (require SourceObject)
         # =====================================================================
+
+        # Which kind of constrained delegation this account has.
+        #
+        # TRUSTED_TO_AUTH_FOR_DELEGATION (0x1000000) is the whole difference. With it,
+        # S4U2Self returns a forwardable ticket and the account can impersonate anyone to
+        # its configured services with no request from that user at all. Without it,
+        # S4U2Proxy needs a forwardable ticket the user themselves obtained - a real
+        # authentication to this account has to happen first.
+        #
+        # One predicate per card, each the inverse of the other, so the two can never both
+        # match and the answer does not depend on which trigger the index happens to hold
+        # first. Both default to the milder reading when the flag cannot be read: claiming
+        # protocol transition on an account whose userAccountControl did not arrive would
+        # be an accusation drawn from missing data.
+
+        'is_protocol_transition_delegation' {
+            return (Test-UACFlagOnObject -SourceObject $SourceObject -Value $null `
+                -FlagName 'TRUSTED_TO_AUTH_FOR_DELEGATION' -FlagBit 0x1000000)
+        }
+
+        'is_kerberos_only_delegation' {
+            return (-not (Test-UACFlagOnObject -SourceObject $SourceObject -Value $null `
+                -FlagName 'TRUSTED_TO_AUTH_FOR_DELEGATION' -FlagBit 0x1000000))
+        }
 
         'laps_backup_in_ad' {
             # True - the finding applies - unless Get-LAPSConfiguration marked the row.
@@ -100724,7 +100766,20 @@ function Get-ConstrainedDelegation {
             # Protocol transition with no target list at all. Filtered on the server rather
             # than with Where-Object, and kept apart from the two queries above because
             # msDS-AllowedToDelegateTo is exactly what these accounts do not have.
-            $noTargetFilter = '(!(msDS-AllowedToDelegateTo=*))'
+            #
+            # A read-only domain controller fills this condition exactly, by design: its
+            # userAccountControl is WORKSTATION_TRUST_ACCOUNT + TRUSTED_TO_AUTH_FOR_DELEGATION
+            # + PARTIAL_SECRETS_ACCOUNT, and it has no msDS-AllowedToDelegateTo. So every RODC
+            # in every domain was reported as a red delegation anomaly, with the remediation
+            # "clear the flag if delegation is not in use" - which, carried out on an RODC,
+            # breaks the RODC. It also buried what this bucket exists for: an ordinary server
+            # with protocol transition and no target.
+            #
+            # The two markers are the ones Get-DomainComputer's own -DomainController switch
+            # already uses: PARTIAL_SECRETS_ACCOUNT (0x4000000) and the Read-only Domain
+            # Controllers primary group. Excluded server-side, so the count in the summary
+            # line is right as well.
+            $noTargetFilter = '(&(!(msDS-AllowedToDelegateTo=*))(!(userAccountControl:1.2.840.113556.1.4.803:=67108864))(!(primaryGroupID=521)))'
             $transitionOnlyComputers = @(Get-DomainComputer -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
             $transitionOnlyUsers = @(Get-DomainUser -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
 
@@ -129555,7 +129610,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-0049"
+$Script:adPEASVersion = "2.7.0+20261011-0115"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
