@@ -7,9 +7,18 @@ function Get-GPORegistrySettings {
     Analyzes Group Policy Objects for registry values that, when actively set, enable or
     facilitate credential theft, lateral movement, privilege escalation, or defense evasion.
 
-    Both GPO registry delivery mechanisms are parsed from SYSVOL:
+    All three GPO registry delivery mechanisms are parsed from SYSVOL:
       - Administrative Templates -> Registry.pol  (PReg binary format)
       - Group Policy Preferences -> Registry.xml  (XML format)
+      - Security Options         -> GptTmpl.inf   ([Registry Values] section)
+
+    The third one used to be missing, and for a number of entries in the table it is the
+    normal path rather than an alternative: the LAN Manager authentication level, the two
+    anonymous-enumeration restrictions, the Everyone-includes-anonymous switch, both UAC
+    switches and the two machine-password settings all have a Security Option in the GPMC,
+    and that is where an administrator sets them. A domain with "Send LM & NTLM responses"
+    configured that way produced no finding at all, under a line saying no vulnerable
+    registry settings were deployed via GPO.
 
     Matched values are defined centrally in adPEAS-RegistryKeys.ps1
     ($Script:DangerousRegistryKeys). Only POSITIVELY SET values are reported - absence of a
@@ -120,11 +129,11 @@ function Get-GPORegistrySettings {
 
                 $Script:sysvolAccessible = $true
 
-                # Single cached SYSVOL listing for both delivery mechanisms
-                $regFiles = @(Get-CachedSYSVOLFiles -Filter @("Registry.pol", "Registry.xml"))
+                # Single cached SYSVOL listing for all three delivery mechanisms
+                $regFiles = @(Get-CachedSYSVOLFiles -Filter @("Registry.pol", "Registry.xml", "GptTmpl.inf"))
 
                 if ($regFiles.Count -eq 0) {
-                    Write-Log "[Get-GPORegistrySettings] No Registry.pol/Registry.xml files found in SYSVOL"
+                    Write-Log "[Get-GPORegistrySettings] No Registry.pol/Registry.xml/GptTmpl.inf files found in SYSVOL"
                     return
                 }
 
@@ -149,6 +158,12 @@ function Get-GPORegistrySettings {
                             # Machine\Registry.pol -> HKLM, User\Registry.pol -> HKCU
                             $hive = if ($file.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
                             $records = @(Parse-PRegRecords -PolFilePath $file.FullName -Hive $hive)
+                        } elseif ($file.Name -ieq 'GptTmpl.inf') {
+                            # Security Options. The hive is per line - MACHINE\ or USER\ -
+                            # so the parser decides it, not the file location. Read through
+                            # the content cache, which holds GptTmpl.inf already.
+                            $hive = 'HKLM/HKCU'
+                            $records = @(Parse-GptTmplRegistryValues -Content (Get-CachedSYSVOLContent -Path $file.FullName))
                         } else {
                             $hive = 'HKLM/HKCU'
                             $records = @(Parse-RegistryXml -XmlFilePath $file.FullName)

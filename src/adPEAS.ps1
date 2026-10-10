@@ -187,6 +187,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Invoke-KerberosAuthFlow.ps1"
     . "$Script:ScriptPath\modules\Helpers\Parse-RegistryPol.ps1"
     . "$Script:ScriptPath\modules\Helpers\Parse-RegistryXml.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Parse-GptTmpl.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-LAPSGPOConfig.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-LAPSSchemaPresence.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-PrivilegedAccountFilter.ps1"

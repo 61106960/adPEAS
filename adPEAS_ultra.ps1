@@ -47002,6 +47002,99 @@ function Parse-RegistryXml {
 	}
 	return $records
 }
+$Script:GptTmplRegistryTypes = @{
+	1  = 'REG_SZ'
+	2  = 'REG_EXPAND_SZ'
+	3  = 'REG_BINARY'
+	4  = 'REG_DWORD'
+	7  = 'REG_MULTI_SZ'
+	11 = 'REG_QWORD'
+}
+function Get-GptTmplRegistrySection {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyString()]
+	    [AllowNull()]
+	    [string]$Content
+	)
+	if ([string]::IsNullOrEmpty($Content)) { return '' }
+	if ($Content -match '(?sm)^\[Registry Values\][^\r\n]*\r?\n(.*?)(?=^\[|\z)') {
+	    return [string]$Matches[1]
+	}
+	return ''
+}
+function Parse-GptTmplRegistryValues {
+	[CmdletBinding(DefaultParameterSetName = 'ByContent')]
+	param(
+	    [Parameter(Mandatory = $true, ParameterSetName = 'ByContent')]
+	    [AllowEmptyString()]
+	    [AllowNull()]
+	    [string]$Content,
+	    [Parameter(Mandatory = $true, ParameterSetName = 'ByPath')]
+	    [string]$InfFilePath
+	)
+	$records = @()
+	try {
+	    $text = $Content
+	    if ($PSCmdlet.ParameterSetName -eq 'ByPath') {
+	        if (-not (Test-Path -LiteralPath $InfFilePath)) { return $records }
+	        $text = [System.IO.File]::ReadAllText($InfFilePath, [System.Text.Encoding]::UTF8)
+	    }
+	    $section = Get-GptTmplRegistrySection -Content $text
+	    if ([string]::IsNullOrWhiteSpace($section)) { return $records }
+	    foreach ($rawLine in ($section -split "`r?`n")) {
+	        $line = $rawLine.Trim()
+	        if (-not $line) { continue }
+	        if ($line.StartsWith(';')) { continue }
+	        $eq = $line.IndexOf('=')
+	        if ($eq -lt 1) { continue }
+	        $fullPath = $line.Substring(0, $eq).Trim()
+	        $rhs      = $line.Substring($eq + 1).Trim()
+	        $comma = $rhs.IndexOf(',')
+	        if ($comma -lt 1) { continue }
+	        $typeCode = 0
+	        if (-not [int]::TryParse($rhs.Substring(0, $comma).Trim(), [ref]$typeCode)) { continue }
+	        $rawValue = $rhs.Substring($comma + 1)
+	        $hive = $null
+	        $path = $fullPath
+	        if ($path -imatch '^MACHINE\\(.+)$')   { $hive = 'HKLM'; $path = $Matches[1] }
+	        elseif ($path -imatch '^USER\\(.+)$')  { $hive = 'HKCU'; $path = $Matches[1] }
+	        else { continue }
+	        $lastSep = $path.LastIndexOf('\')
+	        if ($lastSep -lt 1) { continue }
+	        $key       = $path.Substring(0, $lastSep)
+	        $valueName = $path.Substring($lastSep + 1)
+	        if (-not $valueName) { continue }
+	        $typeName = if ($Script:GptTmplRegistryTypes.ContainsKey($typeCode)) {
+	            $Script:GptTmplRegistryTypes[$typeCode]
+	        } else {
+	            "REG_TYPE_$typeCode"
+	        }
+	        $valueInt = $null
+	        $valueString = $null
+	        if ($typeName -match 'DWORD|QWORD') {
+	            $parsedValue = [int64]0
+	            if ([int64]::TryParse($rawValue.Trim(), [ref]$parsedValue)) {
+	                $valueInt = $parsedValue
+	            }
+	        } else {
+	            $valueString = $rawValue.Trim().Trim('"')
+	        }
+	        $records += [PSCustomObject]@{
+	            Hive        = $hive
+	            Key         = $key
+	            ValueName   = $valueName
+	            Type        = $typeName
+	            ValueInt    = $valueInt
+	            ValueString = $valueString
+	        }
+	    }
+	} catch {
+	    $where = if ($PSCmdlet.ParameterSetName -eq 'ByPath') { $InfFilePath } else { 'the supplied content' }
+	}
+	return $records
+}
 function Get-LAPSGPOConfig {
 	[CmdletBinding()]
 	param(
@@ -59342,8 +59435,8 @@ function Get-LDAPConfiguration {
 	                    $ldapChannelBindingValue = $null
 	                    $restrictAnonymous = $null
 	                    $lsaAnonymousNameLookup = $null
-	                    if ($content -match '(?s)\[Registry Values\](.*?)(\[|$)') {
-	                        $registrySection = $Matches[1]
+	                    $registrySection = Get-GptTmplRegistrySection -Content $content
+	                    if ($registrySection) {
 	                        if ($registrySection -match 'MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters\\LDAPServerIntegrity\s*=\s*4\s*,\s*(\d+)') {
 	                            $ldapSigningValue = [int]$Matches[1]
 	                        }
@@ -59605,8 +59698,8 @@ function Get-SMBSigningStatus {
 	                }
 	                $content = Get-CachedSYSVOLContent -Path $file.FullName
 	                if ($content) {
-	                    if ($content -match '(?s)\[Registry Values\](.*?)(\[|$)') {
-	                        $registrySection = $Matches[1]
+	                    $registrySection = Get-GptTmplRegistrySection -Content $content
+	                    if ($registrySection) {
 	                        $serverRequire = $null
 	                        $serverEnable = $null
 	                        $clientRequire = $null
@@ -65424,7 +65517,7 @@ function Get-GPORegistrySettings {
 	                return
 	            }
 	            $Script:sysvolAccessible = $true
-	            $regFiles = @(Get-CachedSYSVOLFiles -Filter @("Registry.pol", "Registry.xml"))
+	            $regFiles = @(Get-CachedSYSVOLFiles -Filter @("Registry.pol", "Registry.xml", "GptTmpl.inf"))
 	            if ($regFiles.Count -eq 0) {
 	                return
 	            }
@@ -65443,6 +65536,9 @@ function Get-GPORegistrySettings {
 	                    if ($file.Name -ieq 'Registry.pol') {
 	                        $hive = if ($file.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
 	                        $records = @(Parse-PRegRecords -PolFilePath $file.FullName -Hive $hive)
+	                    } elseif ($file.Name -ieq 'GptTmpl.inf') {
+	                        $hive = 'HKLM/HKCU'
+	                        $records = @(Parse-GptTmplRegistryValues -Content (Get-CachedSYSVOLContent -Path $file.FullName))
 	                    } else {
 	                        $hive = 'HKLM/HKCU'
 	                        $records = @(Parse-RegistryXml -XmlFilePath $file.FullName)
@@ -65886,10 +65982,10 @@ function Read-PrintSecurityOption {
 	    [string]$GPOGUID
 	)
 	try {
-	    $content = Get-Content -Path $FilePath -Raw -ErrorAction Stop
+	    $content = Get-CachedSYSVOLContent -Path $FilePath
 	    if (-not $content) { return }
-	    if ($content -notmatch '(?s)\[Registry Values\](.*?)(\[|$)') { return }
-	    $registrySection = $Matches[1]
+	    $registrySection = Get-GptTmplRegistrySection -Content $content
+	    if (-not $registrySection) { return }
 	    if ($registrySection -match $Script:AddPrinterDriversGptTmplPattern) {
 	        $bucket = Get-PointAndPrintBucket -GPOGUID $GPOGUID -Hive 'HKLM'
 	        $bucket['Sources'][(Get-GPORelativePath -Path $FilePath)] = $true
@@ -80724,7 +80820,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261010-2219"
+$Script:adPEASVersion = "2.7.0+20261010-2246"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

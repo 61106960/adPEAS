@@ -291,9 +291,15 @@ function Get-LDAPConfiguration {
                         $restrictAnonymous = $null
                         $lsaAnonymousNameLookup = $null
 
-                        # Parse Registry Values section
-                        if ($content -match '(?s)\[Registry Values\](.*?)(\[|$)') {
-                            $registrySection = $Matches[1]
+                        # Parse Registry Values section.
+                        # Get-GptTmplRegistrySection ends the section at the next line
+                        # beginning with '[' rather than at the next '[' character. The
+                        # pattern here was '(?s)\[Registry Values\](.*?)(\[|$)', and the
+                        # section is sorted by key: a logon banner containing a bracket
+                        # sits under MACHINE\Software\... and truncated the section before
+                        # the three MACHINE\System\... values read below.
+                        $registrySection = Get-GptTmplRegistrySection -Content $content
+                        if ($registrySection) {
 
                             # GptTmpl.inf format: MACHINE\...\LDAPServerIntegrity=4,<value> (4 = REG_DWORD)
                             #

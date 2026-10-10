@@ -119,9 +119,15 @@ function Get-SMBSigningStatus {
 
                     $content = Get-CachedSYSVOLContent -Path $file.FullName
                     if ($content) {
-                        # Look for SMB Signing settings in [Registry Values] section
-                        if ($content -match '(?s)\[Registry Values\](.*?)(\[|$)') {
-                            $registrySection = $Matches[1]
+                        # Look for SMB Signing settings in [Registry Values] section.
+                        # Get-GptTmplRegistrySection ends the section at the next line
+                        # beginning with '[' rather than at the next '[' character. The
+                        # pattern here was '(?s)\[Registry Values\](.*?)(\[|$)', and the
+                        # section is sorted by key: a logon banner containing a bracket
+                        # sits under MACHINE\Software\... and truncated the section before
+                        # the four MACHINE\System\...\Lanman* values read below.
+                        $registrySection = Get-GptTmplRegistrySection -Content $content
+                        if ($registrySection) {
 
                             $serverRequire = $null
                             $serverEnable = $null

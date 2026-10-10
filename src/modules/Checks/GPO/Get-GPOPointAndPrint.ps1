@@ -489,11 +489,19 @@ function Read-PrintSecurityOption {
     )
 
     try {
-        $content = Get-Content -Path $FilePath -Raw -ErrorAction Stop
+        # Through the content cache, which holds GptTmpl.inf already - Get-Content fetched
+        # every one of them over SMB a second time.
+        $content = Get-CachedSYSVOLContent -Path $FilePath
         if (-not $content) { return }
 
-        if ($content -notmatch '(?s)\[Registry Values\](.*?)(\[|$)') { return }
-        $registrySection = $Matches[1]
+        # Get-GptTmplRegistrySection cuts the section at the next line that starts with
+        # '[', not at the next '[' character. The pattern here used to be
+        # '(?s)\[Registry Values\](.*?)(\[|$)', and the section is sorted by key: a logon
+        # banner reading "Access for [authorized] users only" sits under
+        # MACHINE\Software\... and truncated the section before
+        # MACHINE\System\...\AddPrinterDrivers, so the Security Option simply vanished.
+        $registrySection = Get-GptTmplRegistrySection -Content $content
+        if (-not $registrySection) { return }
 
         if ($registrySection -match $Script:AddPrinterDriversGptTmplPattern) {
             # GptTmpl.inf Security Options are always machine scope
