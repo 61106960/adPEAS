@@ -950,10 +950,14 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Accounts with SID History containing privileged SIDs"
             "Domain Admin, Enterprise Admin, and other high-value SIDs"
+            "Which domain each entry comes from - this one, another one, or no domain at all"
             "Non-privileged SID History entries (migration artifacts)"
-            "Whether SID History is legitimate or suspicious"
         )
-        SecureMessage = "No accounts with privileged SIDs in sIDHistory found. Hidden privilege escalation through SID History injection is not present in this environment."
+        # "Whether SID History is legitimate or suspicious" used to stand in the list
+        # above while the check compared the RID suffix alone, which cannot tell the two
+        # apart: a migrated administrator and an injected SID have the same RID. The line
+        # it has been replaced with is the question that actually decides it.
+        SecureMessage = "No account holds a privileged SID in sIDHistory that did not come from a source domain. Entries that did are reported separately, because a migration leaves them behind legitimately and only SID filtering on the trust decides whether they still grant anything."
         PrimaryFindingId = 'SID_HISTORY_INJECTION'
     }
 

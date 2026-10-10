@@ -3838,10 +3838,10 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
     # ============================================================================
 
     'SID_HISTORY_INJECTION' = @{
-        Title = "SID History Attribute Set"
+        Title = "Privileged SID of This Domain in SID History"
         Risk = "Finding"
         BaseScore = 80
-        Description = "This account has SID History entries. While legitimate during domain migrations, SID History can be abused to maintain persistent privileged access by injecting privileged SIDs that bypass normal access control."
+        Description = "This account carries a privileged SID of this very domain in sIDHistory. sIDHistory exists to hold the SID an account had in a *source* domain, so no migration can produce an entry from the domain the object already lives in - somebody wrote it. The account is granted everything that SID is granted, with no group membership to show it."
         Impact = @(
             "Account may have hidden privileged access through historical SIDs"
             "Access is granted based on SID History without group membership visibility"
@@ -3890,11 +3890,119 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
         Tools = @("Mimikatz", "DSInternals", "PowerView")
         MITRE = "T1134.005"
         Triggers = @(
-            # SID-based classification: Privileged SID in sIDHistory = Finding (critical)
-            @{ Attribute = 'sIDHistory'; Custom = 'is_privileged_sid'; Severity = 'Finding' }
-            # Non-privileged SID in sIDHistory = Hint (still noteworthy migration artifact)
-            @{ Attribute = 'sIDHistory'; Severity = 'Hint' }
+            # The raw attribute colours its row and names no card. Which card an entry
+            # deserves depends on where the SID comes from, and the row cannot tell: only
+            # the check compares against the domain SID. Before, a pattern-less trigger
+            # here gave every sIDHistory value this card - so a migration artifact was
+            # rendered yellow and pointed at the 80-point injection write-up, remediation
+            # included.
+            #
+            # Two triggers, each the inverse of the other, so the colour does not depend on
+            # which one the index holds first.
+            @{ Attribute = 'sIDHistory'; Custom = 'is_local_privileged_sid_history'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'sIDHistory'; Custom = 'is_not_local_privileged_sid_history'; Severity = 'Hint'; SeverityOnly = $true }
+
+            # What the check writes once it has sorted the entry by source domain. These
+            # name the card.
             @{ Attribute = 'privilegedSIDHistory'; Severity = 'Finding' }
+            @{ Attribute = 'sidHistoryNotFromSourceDomain'; Severity = 'Finding' }
+        )
+    }
+
+    'SID_HISTORY_OWN_DOMAIN' = @{
+        Title = "SID of This Domain in SID History"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "This account carries a SID of this very domain in sIDHistory. The RID is not one of the well-known privileged ones, which is why it is scored below an outright injection - but sIDHistory holds the SID an account had in a source domain, so an entry from the local domain cannot be a migration artifact. The account it points at may be unprivileged by group membership and still hold exactly the access somebody wanted: a DCSync ACE, write access to a GPO, a wide share."
+        Impact = @(
+            "The account is granted whatever the referenced local account or group is granted"
+            "Nothing in the group memberships of either object shows the relationship"
+            "An unprivileged target is not a harmless target - delegated ACEs and share permissions do not appear in any group"
+            "No migration produces this, so the entry was written deliberately"
+        )
+        Attack = @(
+            "1. Attacker gains write access to an account's sIDHistory"
+            "2. Writes the SID of a local account or group that holds a delegated right"
+            "3. The account now holds that right, with no group membership to audit"
+            "4. The access survives password resets and group clean-ups"
+        )
+        Remediation = @(
+            "Establish what the referenced SID is granted before removing anything - that is the access to review"
+            "Remove the sIDHistory entry; nothing in this domain needs it"
+            "Check who can write sIDHistory on this object"
+            "Monitor for sIDHistory modifications (Event ID 4765, 4766)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the SID History entries of this account"
+                Command = "Get-ADUser 'USERNAME' -Properties SIDHistory | Select-Object -ExpandProperty SIDHistory"
+            }
+            @{
+                Description = "Resolve the referenced SID to see what it is"
+                Command = "(New-Object System.Security.Principal.SecurityIdentifier('SID')).Translate([System.Security.Principal.NTAccount])"
+            }
+            @{
+                Description = "Remove all SID History entries from this account"
+                Command = "Get-ADUser 'USERNAME' -Properties SIDHistory | ForEach-Object { Set-ADUser `$_ -Remove @{SIDHistory=`$_.SIDHistory.Value} }"
+            }
+        )
+        References = @(
+            @{ Title = "SID History Injection - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1134/005/" }
+            @{ Title = "Unsecure SID History attribute"; Url = "https://learn.microsoft.com/en-us/defender-for-identity/security-assessment-unsecure-sid-history-attribute" }
+        )
+        Tools = @("DSInternals", "PowerView")
+        MITRE = "T1134.005"
+        Triggers = @(
+            @{ Attribute = 'sidHistoryOwnDomain'; Severity = 'Finding' }
+            @{ Attribute = 'ownDomainSIDHistory'; Severity = 'Finding' }
+        )
+    }
+
+    'SID_HISTORY_FOREIGN_PRIVILEGED' = @{
+        Title = "Privileged SID of Another Domain in SID History"
+        Risk = "Hint"
+        BaseScore = 35
+        Description = "This account carries a privileged SID of another domain in sIDHistory. That is the documented result of a domain migration: ADMT writes the source SID of every account it moves, so every migrated administrator ends up with the -512 of the domain they came from. It is also how cross-forest SID history injection presents, and the two look identical in the directory. What separates them is whether SID filtering is enforced on the trust, and whether the source domain still exists."
+        Impact = @(
+            "If SID filtering is not enforced on the trust, the SID is honoured and grants privileged access from the other domain"
+            "If the source domain has been decommissioned the entry grants nothing and is only clutter - but nothing in the directory says which it is"
+            "A reader who cannot tell a migration leftover from an injection cannot act on either"
+        )
+        Attack = @(
+            "1. Attacker controls, or compromises, a domain on the far side of a trust without SID filtering"
+            "2. Writes a privileged SID of the target domain into an account's sIDHistory"
+            "3. Authenticates across the trust; the SID is honoured and lands in the token"
+            "4. The access is indistinguishable from an ordinary migration record"
+        )
+        Remediation = @(
+            "Check whether SID filtering is enforced on the trust this SID comes from - adPEAS reports that in the Domain Trusts section"
+            "Establish whether the source domain still exists; if it does not, the entry is clutter and can go"
+            "Remove sIDHistory once the migration it belongs to is complete - it is meant to be temporary"
+            "Monitor for sIDHistory modifications (Event ID 4765, 4766)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the SID filtering state of every trust"
+                Command = "Get-ADTrust -Filter * | Select-Object Name,Direction,SIDFilteringQuarantined,SIDFilteringForestAware"
+            }
+            @{
+                Description = "Enforce SID filtering on an external trust"
+                Command = "netdom trust TRUSTINGDOMAIN /domain:TRUSTEDDOMAIN /quarantine:yes"
+            }
+            @{
+                Description = "Remove all SID History entries from this account once the migration is complete"
+                Command = "Get-ADUser 'USERNAME' -Properties SIDHistory | ForEach-Object { Set-ADUser `$_ -Remove @{SIDHistory=`$_.SIDHistory.Value} }"
+            }
+        )
+        References = @(
+            @{ Title = "SID filtering and SID history"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/forest-recovery-guide/ad-forest-recovery-cleanup" }
+            @{ Title = "SID History Injection - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1134/005/" }
+        )
+        Tools = @("DSInternals", "PowerView")
+        MITRE = "T1134.005"
+        Triggers = @(
+            @{ Attribute = 'sidHistoryForeignPrivileged'; Severity = 'Hint' }
+            @{ Attribute = 'foreignPrivilegedSIDHistory'; Severity = 'Hint' }
         )
     }
 
@@ -13223,6 +13331,77 @@ function Get-TriggerMatch {
 .OUTPUTS
     [bool]
 #>
+<#
+.SYNOPSIS
+    Whether a sIDHistory value holds a privileged SID that did not come from a source
+    domain.
+.DESCRIPTION
+    sIDHistory exists to hold the SID an account had in a *source* domain. Two kinds of
+    entry therefore cannot be migration records at all:
+
+      - a SID of the domain the object already lives in, and
+      - a SID that belongs to no domain - BUILTIN and NT AUTHORITY SIDs such as
+        S-1-5-32-548, which ADMT does not write.
+
+    Either of those together with a privileged RID is the signature of SID history
+    injection, and it is the one statement the check can make without knowing anything
+    about the environment. A privileged SID of another S-1-5-21 domain is the opposite: it
+    is what every migration of an administrator leaves behind.
+
+    The value may be a bare SID, a "NAME (SID)" display string or an object carrying a SID
+    property, so the SID is extracted rather than assumed.
+
+    Returns $false when the domain SID is unknown, which is the milder reading: the
+    comparison cannot be made, and the alternative accuses every account a migration ever
+    touched.
+.PARAMETER Value
+    The attribute value to examine.
+.OUTPUTS
+    Boolean
+#>
+function Test-IsLocalPrivilegedSIDHistory {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Value
+    )
+
+    $ownDomainSID = $null
+    if ($Script:LDAPContext -and $Script:LDAPContext.DomainSID) {
+        $ownDomainSID = [string]$Script:LDAPContext.DomainSID
+    }
+    if ([string]::IsNullOrWhiteSpace($ownDomainSID)) { return $false }
+
+    $candidate = $null
+    if ($Value -is [string]) { $candidate = $Value }
+    elseif ($null -ne $Value -and $Value.PSObject.Properties['SID']) { $candidate = [string]$Value.SID }
+    else { $candidate = [string]$Value }
+    if ([string]::IsNullOrWhiteSpace($candidate)) { return $false }
+
+    # The SID out of whatever the row carries. 'CONTOSO\jdoe (S-1-5-21-...-1105)', a bare
+    # 'S-1-5-21-...-1105' and 'S-1-5-32-548' all have to work.
+    if ($candidate -notmatch '(S-1-[0-9]+(?:-[0-9]+)+)') { return $false }
+    $sid = $Matches[1]
+
+    # From another domain, so a migration record. The trailing dash is what keeps a
+    # different domain whose SID starts with the same digits from counting as this one.
+    if (($sid -like 'S-1-5-21-*') -and ($sid -notlike "$ownDomainSID-*")) { return $false }
+
+    # Test-IsPrivileged, not a second copy of the RID list: the check that writes the
+    # finding uses it, and two different answers to "is this privileged" about the same
+    # SID is how a row ends up coloured against its own card.
+    #
+    # The $null guard is not decoration. This runs inside the render path, where it can be
+    # reached with Test-IsPrivileged replaced by a stub, and Pester evaluates test bodies
+    # under Set-StrictMode -Version Latest - which is dynamically scoped, so it reaches in
+    # here. Reading .Category off $null would then throw rather than answer.
+    $privResult = Test-IsPrivileged -Identity $sid -IncludeOperators
+    if (-not $privResult) { return $false }
+    return ($privResult.Category -in @('Privileged', 'Operator'))
+}
+
 function Test-UACFlagOnObject {
     [CmdletBinding()]
     [OutputType([bool])]
@@ -13495,6 +13674,23 @@ function Test-CustomTrigger {
             if (-not $sid) { return $false }
             $privResult = Test-IsPrivileged -Identity $sid
             return ($privResult.Category -eq 'Privileged')
+        }
+
+        # Whether an sIDHistory entry is a privileged SID that did not come from a source
+        # domain - this domain's own SID, or one that belongs to no domain at all. Two
+        # predicates, each the inverse of the other, so the two triggers that use them
+        # cannot both hold and the answer does not depend on index order.
+        #
+        # Both answer "could be a migration record" when the domain SID cannot be read,
+        # which is the milder reading: calling an entry an injection on a comparison that
+        # could not be made would accuse every migrated administrator.
+
+        'is_local_privileged_sid_history' {
+            return (Test-IsLocalPrivilegedSIDHistory -Value $Value)
+        }
+
+        'is_not_local_privileged_sid_history' {
+            return (-not (Test-IsLocalPrivilegedSIDHistory -Value $Value))
         }
 
         'is_operator_sid' {

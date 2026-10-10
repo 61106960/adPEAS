@@ -7471,10 +7471,10 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
         )
     }
     'SID_HISTORY_INJECTION' = @{
-        Title = "SID History Attribute Set"
+        Title = "Privileged SID of This Domain in SID History"
         Risk = "Finding"
         BaseScore = 80
-        Description = "This account has SID History entries. While legitimate during domain migrations, SID History can be abused to maintain persistent privileged access by injecting privileged SIDs that bypass normal access control."
+        Description = "This account carries a privileged SID of this very domain in sIDHistory. sIDHistory exists to hold the SID an account had in a *source* domain, so no migration can produce an entry from the domain the object already lives in - somebody wrote it. The account is granted everything that SID is granted, with no group membership to show it."
         Impact = @(
             "Account may have hidden privileged access through historical SIDs"
             "Access is granted based on SID History without group membership visibility"
@@ -7523,9 +7523,105 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
         Tools = @("Mimikatz", "DSInternals", "PowerView")
         MITRE = "T1134.005"
         Triggers = @(
-            @{ Attribute = 'sIDHistory'; Custom = 'is_privileged_sid'; Severity = 'Finding' }
-            @{ Attribute = 'sIDHistory'; Severity = 'Hint' }
+            @{ Attribute = 'sIDHistory'; Custom = 'is_local_privileged_sid_history'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'sIDHistory'; Custom = 'is_not_local_privileged_sid_history'; Severity = 'Hint'; SeverityOnly = $true }
             @{ Attribute = 'privilegedSIDHistory'; Severity = 'Finding' }
+            @{ Attribute = 'sidHistoryNotFromSourceDomain'; Severity = 'Finding' }
+        )
+    }
+    'SID_HISTORY_OWN_DOMAIN' = @{
+        Title = "SID of This Domain in SID History"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "This account carries a SID of this very domain in sIDHistory. The RID is not one of the well-known privileged ones, which is why it is scored below an outright injection - but sIDHistory holds the SID an account had in a source domain, so an entry from the local domain cannot be a migration artifact. The account it points at may be unprivileged by group membership and still hold exactly the access somebody wanted: a DCSync ACE, write access to a GPO, a wide share."
+        Impact = @(
+            "The account is granted whatever the referenced local account or group is granted"
+            "Nothing in the group memberships of either object shows the relationship"
+            "An unprivileged target is not a harmless target - delegated ACEs and share permissions do not appear in any group"
+            "No migration produces this, so the entry was written deliberately"
+        )
+        Attack = @(
+            "1. Attacker gains write access to an account's sIDHistory"
+            "2. Writes the SID of a local account or group that holds a delegated right"
+            "3. The account now holds that right, with no group membership to audit"
+            "4. The access survives password resets and group clean-ups"
+        )
+        Remediation = @(
+            "Establish what the referenced SID is granted before removing anything - that is the access to review"
+            "Remove the sIDHistory entry; nothing in this domain needs it"
+            "Check who can write sIDHistory on this object"
+            "Monitor for sIDHistory modifications (Event ID 4765, 4766)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the SID History entries of this account"
+                Command = "Get-ADUser 'USERNAME' -Properties SIDHistory | Select-Object -ExpandProperty SIDHistory"
+            }
+            @{
+                Description = "Resolve the referenced SID to see what it is"
+                Command = "(New-Object System.Security.Principal.SecurityIdentifier('SID')).Translate([System.Security.Principal.NTAccount])"
+            }
+            @{
+                Description = "Remove all SID History entries from this account"
+                Command = "Get-ADUser 'USERNAME' -Properties SIDHistory | ForEach-Object { Set-ADUser `$_ -Remove @{SIDHistory=`$_.SIDHistory.Value} }"
+            }
+        )
+        References = @(
+            @{ Title = "SID History Injection - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1134/005/" }
+            @{ Title = "Unsecure SID History attribute"; Url = "https://learn.microsoft.com/en-us/defender-for-identity/security-assessment-unsecure-sid-history-attribute" }
+        )
+        Tools = @("DSInternals", "PowerView")
+        MITRE = "T1134.005"
+        Triggers = @(
+            @{ Attribute = 'sidHistoryOwnDomain'; Severity = 'Finding' }
+            @{ Attribute = 'ownDomainSIDHistory'; Severity = 'Finding' }
+        )
+    }
+    'SID_HISTORY_FOREIGN_PRIVILEGED' = @{
+        Title = "Privileged SID of Another Domain in SID History"
+        Risk = "Hint"
+        BaseScore = 35
+        Description = "This account carries a privileged SID of another domain in sIDHistory. That is the documented result of a domain migration: ADMT writes the source SID of every account it moves, so every migrated administrator ends up with the -512 of the domain they came from. It is also how cross-forest SID history injection presents, and the two look identical in the directory. What separates them is whether SID filtering is enforced on the trust, and whether the source domain still exists."
+        Impact = @(
+            "If SID filtering is not enforced on the trust, the SID is honoured and grants privileged access from the other domain"
+            "If the source domain has been decommissioned the entry grants nothing and is only clutter - but nothing in the directory says which it is"
+            "A reader who cannot tell a migration leftover from an injection cannot act on either"
+        )
+        Attack = @(
+            "1. Attacker controls, or compromises, a domain on the far side of a trust without SID filtering"
+            "2. Writes a privileged SID of the target domain into an account's sIDHistory"
+            "3. Authenticates across the trust; the SID is honoured and lands in the token"
+            "4. The access is indistinguishable from an ordinary migration record"
+        )
+        Remediation = @(
+            "Check whether SID filtering is enforced on the trust this SID comes from - adPEAS reports that in the Domain Trusts section"
+            "Establish whether the source domain still exists; if it does not, the entry is clutter and can go"
+            "Remove sIDHistory once the migration it belongs to is complete - it is meant to be temporary"
+            "Monitor for sIDHistory modifications (Event ID 4765, 4766)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the SID filtering state of every trust"
+                Command = "Get-ADTrust -Filter * | Select-Object Name,Direction,SIDFilteringQuarantined,SIDFilteringForestAware"
+            }
+            @{
+                Description = "Enforce SID filtering on an external trust"
+                Command = "netdom trust TRUSTINGDOMAIN /domain:TRUSTEDDOMAIN /quarantine:yes"
+            }
+            @{
+                Description = "Remove all SID History entries from this account once the migration is complete"
+                Command = "Get-ADUser 'USERNAME' -Properties SIDHistory | ForEach-Object { Set-ADUser `$_ -Remove @{SIDHistory=`$_.SIDHistory.Value} }"
+            }
+        )
+        References = @(
+            @{ Title = "SID filtering and SID history"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/forest-recovery-guide/ad-forest-recovery-cleanup" }
+            @{ Title = "SID History Injection - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1134/005/" }
+        )
+        Tools = @("DSInternals", "PowerView")
+        MITRE = "T1134.005"
+        Triggers = @(
+            @{ Attribute = 'sidHistoryForeignPrivileged'; Severity = 'Hint' }
+            @{ Attribute = 'foreignPrivilegedSIDHistory'; Severity = 'Hint' }
         )
     }
     'GPO_DANGEROUS_PERMISSIONS' = @{
@@ -15972,6 +16068,31 @@ function Get-TriggerMatch {
         FindingId = $resultFindingId
     }
 }
+function Test-IsLocalPrivilegedSIDHistory {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Value
+    )
+    $ownDomainSID = $null
+    if ($Script:LDAPContext -and $Script:LDAPContext.DomainSID) {
+        $ownDomainSID = [string]$Script:LDAPContext.DomainSID
+    }
+    if ([string]::IsNullOrWhiteSpace($ownDomainSID)) { return $false }
+    $candidate = $null
+    if ($Value -is [string]) { $candidate = $Value }
+    elseif ($null -ne $Value -and $Value.PSObject.Properties['SID']) { $candidate = [string]$Value.SID }
+    else { $candidate = [string]$Value }
+    if ([string]::IsNullOrWhiteSpace($candidate)) { return $false }
+    if ($candidate -notmatch '(S-1-[0-9]+(?:-[0-9]+)+)') { return $false }
+    $sid = $Matches[1]
+    if (($sid -like 'S-1-5-21-*') -and ($sid -notlike "$ownDomainSID-*")) { return $false }
+    $privResult = Test-IsPrivileged -Identity $sid -IncludeOperators
+    if (-not $privResult) { return $false }
+    return ($privResult.Category -in @('Privileged', 'Operator'))
+}
 function Test-UACFlagOnObject {
     [CmdletBinding()]
     [OutputType([bool])]
@@ -16099,6 +16220,12 @@ function Test-CustomTrigger {
             if (-not $sid) { return $false }
             $privResult = Test-IsPrivileged -Identity $sid
             return ($privResult.Category -eq 'Privileged')
+        }
+        'is_local_privileged_sid_history' {
+            return (Test-IsLocalPrivilegedSIDHistory -Value $Value)
+        }
+        'is_not_local_privileged_sid_history' {
+            return (-not (Test-IsLocalPrivilegedSIDHistory -Value $Value))
         }
         'is_operator_sid' {
             $sid = if ($Value -is [string] -and $Value -match '^S-1-') { $Value }
@@ -18513,10 +18640,10 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Accounts with SID History containing privileged SIDs"
             "Domain Admin, Enterprise Admin, and other high-value SIDs"
+            "Which domain each entry comes from - this one, another one, or no domain at all"
             "Non-privileged SID History entries (migration artifacts)"
-            "Whether SID History is legitimate or suspicious"
         )
-        SecureMessage = "No accounts with privileged SIDs in sIDHistory found. Hidden privilege escalation through SID History injection is not present in this environment."
+        SecureMessage = "No account holds a privileged SID in sIDHistory that did not come from a source domain. Entries that did are reported separately, because a migration leaves them behind legitimately and only SID filtering on the trust decides whether they still grant anything."
         PrimaryFindingId = 'SID_HISTORY_INJECTION'
     }
     'AdminSDHolderACL' = @{
@@ -64162,7 +64289,14 @@ function Get-SIDHistoryInjection {
             }
             Show-SubHeader "Searching for SID History Injection (privileged SIDs in sIDHistory)..." -ObjectType "SIDHistory"
             $objectsWithSIDHistory = Get-DomainObject -LDAPFilter "(sIDHistory=*)" @connectionParams
+            $ownDomainSID = $Script:LDAPContext.DomainSID
+            if ([string]::IsNullOrWhiteSpace($ownDomainSID)) {
+                Write-Log "[Get-SIDHistoryInjection] Domain SID unknown - sIDHistory entries cannot be sorted by source domain" -Level Warning
+                $ownDomainSID = $null
+            }
             $privilegedFindings = @()
+            $ownDomainFindings = @()
+            $foreignPrivilegedFindings = @()
             $nonPrivilegedFindings = @()
             if ($objectsWithSIDHistory) {
                 Write-Log "[Get-SIDHistoryInjection] Found $(@($objectsWithSIDHistory).Count) object(s) with sIDHistory"
@@ -64173,6 +64307,8 @@ function Get-SIDHistoryInjection {
                     if ($totalObjects -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking SID history" -Current $currentIndex -Total $totalObjects -ObjectName $obj.sAMAccountName }
                     $sidHistoryRaw = @($obj.sIDHistory)
                     $privilegedSIDs = @()
+                    $ownDomainSIDs = @()
+                    $foreignPrivilegedSIDs = @()
                     $nonPrivilegedSIDs = @()
                     foreach ($sidEntry in $sidHistoryRaw) {
                         $sidString = $null
@@ -64198,9 +64334,22 @@ function Get-SIDHistoryInjection {
                             Category = $privilegeCheck.Category
                             Reason = $privilegeCheck.Reason
                         }
-                        if ($privilegeCheck.Category -in @('Privileged', 'Operator')) {
+                        $isPrivilegedRID = ($privilegeCheck.Category -in @('Privileged', 'Operator'))
+                        $isOwnDomain = $false
+                        if ($ownDomainSID) { $isOwnDomain = ($sidString -like "$ownDomainSID-*") }
+                        $isForeignDomain = $false
+                        if ($ownDomainSID) {
+                            $isForeignDomain = ($sidString -like 'S-1-5-21-*') -and (-not $isOwnDomain)
+                        }
+                        if ($isPrivilegedRID -and -not $isForeignDomain) {
                             $privilegedSIDs += $sidInfo
-                            Write-Log "[Get-SIDHistoryInjection] $($obj.sAMAccountName) has privileged SID in sIDHistory: $sidString ($resolvedName)"
+                            Write-Log "[Get-SIDHistoryInjection] $($obj.sAMAccountName) has a privileged SID that is not from a source domain in sIDHistory: $sidString ($resolvedName)"
+                        } elseif ($isPrivilegedRID) {
+                            $foreignPrivilegedSIDs += $sidInfo
+                            Write-Log "[Get-SIDHistoryInjection] $($obj.sAMAccountName) has a privileged SID of another domain in sIDHistory: $sidString ($resolvedName)"
+                        } elseif ($isOwnDomain) {
+                            $ownDomainSIDs += $sidInfo
+                            Write-Log "[Get-SIDHistoryInjection] $($obj.sAMAccountName) has a SID of this domain in sIDHistory: $sidString ($resolvedName)"
                         } else {
                             $nonPrivilegedSIDs += $sidInfo
                             Write-Log "[Get-SIDHistoryInjection] $($obj.sAMAccountName) has non-privileged SID in sIDHistory: $sidString"
@@ -64216,10 +64365,36 @@ function Get-SIDHistoryInjection {
                         }) -join ", "
                         $obj | Add-Member -NotePropertyName 'privilegedSIDHistory' -NotePropertyValue $privilegedSIDsDisplay -Force
                         $obj | Add-Member -NotePropertyName 'privilegedSIDHistoryCount' -NotePropertyValue @($privilegedSIDs).Count -Force
-                        $obj | Add-Member -NotePropertyName 'sidHistoryInjectionRisk' -NotePropertyValue "CRITICAL" -Force
+                        $obj | Add-Member -NotePropertyName 'sidHistoryNotFromSourceDomain' -NotePropertyValue (
+                            $(if ($ownDomainSID) {
+                                'This is a privileged SID that no migration can have written: it belongs either to this very domain or to no domain at all. sIDHistory holds the SID an account had in a source domain, so this entry was put there deliberately.'
+                            } else {
+                                'This is a privileged SID. The SID of this domain could not be read, so whether the entry comes from here or from a source domain is undecided - it is reported as it would have been before that comparison existed.'
+                            })
+                        ) -Force
                         $privilegedFindings += $obj
                     }
-                    if ($IncludeNonPrivileged -and @($nonPrivilegedSIDs).Count -gt 0 -and @($privilegedSIDs).Count -eq 0) {
+                    if (@($ownDomainSIDs).Count -gt 0 -and @($privilegedSIDs).Count -eq 0) {
+                        $ownDomainDisplay = ($ownDomainSIDs | ForEach-Object {
+                            if ($_.ResolvedName -ne "[Unresolved]") { "$($_.ResolvedName) ($($_.SID))" } else { $_.SID }
+                        }) -join ", "
+                        $obj | Add-Member -NotePropertyName 'ownDomainSIDHistory' -NotePropertyValue $ownDomainDisplay -Force
+                        $obj | Add-Member -NotePropertyName 'sidHistoryOwnDomain' -NotePropertyValue (
+                            'This SID belongs to this domain. sIDHistory holds the SID an account had in a source domain, so an entry from the local domain is an anomaly whatever its RID - the account it points at may be unprivileged and still hold the access an attacker wanted.'
+                        ) -Force
+                        $ownDomainFindings += $obj
+                    }
+                    if (@($foreignPrivilegedSIDs).Count -gt 0 -and @($privilegedSIDs).Count -eq 0) {
+                        $foreignPrivilegedDisplay = ($foreignPrivilegedSIDs | ForEach-Object {
+                            if ($_.ResolvedName -ne "[Unresolved]") { "$($_.ResolvedName) ($($_.SID))" } else { $_.SID }
+                        }) -join ", "
+                        $obj | Add-Member -NotePropertyName 'foreignPrivilegedSIDHistory' -NotePropertyValue $foreignPrivilegedDisplay -Force
+                        $obj | Add-Member -NotePropertyName 'sidHistoryForeignPrivileged' -NotePropertyValue (
+                            'This is a privileged SID of another domain, which is what a migration leaves behind - every account moved with ADMT from an administrative group carries one. It is also how cross-forest injection presents, so what decides between them is whether SID filtering is enforced on the trust, and whether the source domain still exists.'
+                        ) -Force
+                        $foreignPrivilegedFindings += $obj
+                    }
+                    if ($IncludeNonPrivileged -and @($nonPrivilegedSIDs).Count -gt 0 -and @($privilegedSIDs).Count -eq 0 -and @($ownDomainSIDs).Count -eq 0 -and @($foreignPrivilegedSIDs).Count -eq 0) {
                         $nonPrivilegedSIDsDisplay = ($nonPrivilegedSIDs | ForEach-Object {
                             if ($_.ResolvedName -ne "[Unresolved]") {
                                 "$($_.ResolvedName) ($($_.SID))"
@@ -64235,14 +64410,30 @@ function Get-SIDHistoryInjection {
             }
             if ($totalObjects -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking SID history" -Completed }
             if (@($privilegedFindings).Count -gt 0) {
-                Show-Line "Found $(@($privilegedFindings).Count) account(s) with PRIVILEGED SIDs in sIDHistory (SID History Injection):" -Class Finding
+                Show-Line "Found $(@($privilegedFindings).Count) account(s) whose sIDHistory holds a privileged SID that did not come from a source domain (SID History Injection):" -Class Finding
                 foreach ($finding in $privilegedFindings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
                     $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Privileged' -Force
                     Show-Object $finding
                 }
             } else {
-                Show-Line "No accounts with privileged SIDs in sIDHistory found" -Class Secure
+                Show-Line "No account holds a privileged SID in sIDHistory that did not come from a source domain" -Class Secure
+            }
+            if (@($ownDomainFindings).Count -gt 0) {
+                Show-Line "Found $(@($ownDomainFindings).Count) account(s) whose sIDHistory holds a SID of this domain (not a migration artifact):" -Class Finding
+                foreach ($finding in $ownDomainFindings) {
+                    $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
+                    $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Local SID' -Force
+                    Show-Object $finding
+                }
+            }
+            if (@($foreignPrivilegedFindings).Count -gt 0) {
+                Show-Line "Found $(@($foreignPrivilegedFindings).Count) account(s) whose sIDHistory holds a privileged SID of another domain (check SID filtering on the trust):" -Class Hint
+                foreach ($finding in $foreignPrivilegedFindings) {
+                    $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
+                    $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Migrated privileged SID' -Force
+                    Show-Object $finding
+                }
             }
             if ($IncludeNonPrivileged -and @($nonPrivilegedFindings).Count -gt 0) {
                 Show-SubHeader "Migration artifacts (non-privileged sIDHistory)..." -ObjectType "SIDHistory"
@@ -84600,7 +84791,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-0140"
+$Script:adPEASVersion = "2.7.0+20261011-0158"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
