@@ -390,10 +390,37 @@ function Get-DomainUser {
                     if ($User.'msds-groupmsamembership') {
                         $AllowedPrincipals = @()
                         try {
-                            $SD = New-Object System.DirectoryServices.ActiveDirectorySecurity
-                            $SD.SetSecurityDescriptorBinaryForm($User.'msds-groupmsamembership')
-
-                            $DACL = $SD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+                            # Two shapes arrive here. Without -Raw the value has already
+                            # been through ConvertFrom-LDAPAttribute, which turns a security
+                            # descriptor into an object carrying Owner and ACEs; with -Raw
+                            # it is still the byte[] the DC sent. Only the second was
+                            # handled, so in the normal case SetSecurityDescriptorBinaryForm
+                            # threw on a PSCustomObject, the catch below swallowed it and
+                            # the attribute kept its parsed form - which the renderer
+                            # happens to understand, so nothing showed.
+                            $DACL = $null
+                            $ShapeRecognized = $false
+                            $ParsedSD = $User.'msds-groupmsamembership'
+                            if ($ParsedSD -is [byte[]]) {
+                                $ShapeRecognized = $true
+                                $SD = New-Object System.DirectoryServices.ActiveDirectorySecurity
+                                $SD.SetSecurityDescriptorBinaryForm($ParsedSD)
+                                $DACL = $SD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+                            } elseif ($ParsedSD.PSObject.Properties['ACEs']) {
+                                # Already parsed: the ACE objects carry Type and SID, named
+                                # as ConvertFrom-SecurityDescriptor names them.
+                                $ShapeRecognized = $true
+                                foreach ($ParsedACE in @($ParsedSD.ACEs)) {
+                                    if ($ParsedACE.Type -ne 'Allow') { continue }
+                                    $PrincipalName = $ParsedACE.Name
+                                    if (-not $PrincipalName) { $PrincipalName = $ParsedACE.SID }
+                                    $AllowedPrincipals += [PSCustomObject]@{
+                                        Name = $PrincipalName
+                                        SID = $ParsedACE.SID
+                                        DisplayText = $PrincipalName
+                                    }
+                                }
+                            }
 
                             foreach ($ACE in $DACL) {
                                 if ($ACE.AccessControlType -eq 'Allow') {
@@ -415,8 +442,14 @@ function Get-DomainUser {
                                 }
                             }
 
-                            # Replace byte array with structured principal objects (includes SID for classification)
-                            $User.'msds-groupmsamembership' = $AllowedPrincipals
+                            # Replace the descriptor with structured principal objects
+                            # (includes SID for classification). Only when one of the two
+                            # shapes above was actually recognized - overwriting an
+                            # unexpected one would discard the value the renderer still
+                            # has a legacy path for.
+                            if ($ShapeRecognized) {
+                                $User.'msds-groupmsamembership' = $AllowedPrincipals
+                            }
                         } catch {
                             Write-Log "[Get-DomainUser] Error parsing msds-groupmsamembership: $_"
                         }

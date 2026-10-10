@@ -102,6 +102,7 @@ function Get-LAPSPermissions {
 
             $totalOUs = $computersByOU.Keys.Count
             $currentIndex = 0
+            $unreadOUs = @()
             foreach ($ouDN in $computersByOU.Keys) {
                 $currentIndex++
                 if ($totalOUs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS permissions" -Current $currentIndex -Total $totalOUs -ObjectName $ouDN }
@@ -111,6 +112,13 @@ function Get-LAPSPermissions {
                 try {
                     # Get-OUPermissions uses session context automatically
                     $ouPerms = Get-OUPermissions -DistinguishedName $ouDN -CheckType 'LAPS'
+
+                    # An OU whose descriptor could not be read has no findings either, and
+                    # the conclusion below used to count it as analyzed. Only an explicit
+                    # $false counts as unread - see Get-DangerousOUPermissions.
+                    if (-not $ouPerms -or $ouPerms.Read -eq $false) {
+                        $unreadOUs += $ouDN
+                    }
 
                     if ($ouPerms -and $ouPerms.Findings) {
                         $legacyReaders = @()
@@ -202,10 +210,19 @@ function Get-LAPSPermissions {
                         }
                     }
                 } catch {
+                    if ($unreadOUs -notcontains $ouDN) { $unreadOUs += $ouDN }
                     Write-Log "[Get-LAPSPermissions] Failed to query permissions for OU '$ouDN': $_"
                 }
             }
             if ($totalOUs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS permissions" -Completed }
+
+            # How many were really examined, and the class the clean conclusion deserves.
+            # Both conclusion lines below used to name the full OU count and stay Secure
+            # whatever was readable.
+            $readOUs = $totalOUs - @($unreadOUs).Count
+            $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
+            $conclusionClass = 'Secure'
+            if ($coverageIncomplete) { $conclusionClass = 'Note' }
 
             # Names the right and which LAPS generation it reads. Without the suffix a
             # delegation on the legacy attribute and one on the Windows LAPS attribute
@@ -380,15 +397,20 @@ function Get-LAPSPermissions {
 
                 # If no non-Exchange findings were displayed (and Exchange is hidden without -IncludePrivileged)
                 if ($allReaderSIDs.Keys.Count -eq 0 -and $privilegedReaderSIDs.Keys.Count -eq 0 -and (-not $IncludePrivileged -or $exchangeReaderSIDs.Keys.Count -eq 0)) {
-                    Show-Line "No non-privileged accounts with LAPS read access found in $(@($computersByOU.Keys).Count) analyzed OU(s)" -Class Secure
+                    Show-Line "No non-privileged accounts with LAPS read access found in $readOUs analyzed OU(s)" -Class $conclusionClass
                 }
 
+            } elseif ($totalOUs -gt 0 -and $readOUs -le 0) {
+                Show-Line "LAPS read permissions were not evaluated - no security descriptor could be read" -Class Note
             } else {
-                Show-Line "No non-privileged accounts with LAPS read access found in $(@($computersByOU.Keys).Count) analyzed OU(s)" -Class Secure
+                Show-Line "No non-privileged accounts with LAPS read access found in $readOUs analyzed OU(s)" -Class $conclusionClass
             }
 
         } catch {
+            # Say so on the console, not only in the log - an aborted check is otherwise
+            # indistinguishable from a domain with nothing to report.
             Write-Log "[Get-LAPSPermissions] Error: $_" -Level Error
+            Show-Line "Error during check - LAPS read permissions could not be evaluated: $_" -Class Finding
         }
     }
 

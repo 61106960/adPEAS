@@ -133,6 +133,7 @@ function Get-DangerousOUPermissions {
             $allFindings = @()
             $ouCount = 0
             $ouWithFindings = 0
+            $unreadOUs = @()
 
             # Analyze each OU
             $totalOUs = @($OUs).Count
@@ -154,6 +155,15 @@ function Get-DangerousOUPermissions {
                 if ($ExcludeInherited) { $ouParams['ExcludeInherited'] = $true }
 
                 $ouPermissions = Get-OUPermissions @ouParams
+
+                # An OU whose descriptor could not be read has no findings either, and
+                # the conclusion below used to count it as analyzed. Only an explicit
+                # $false counts as unread: a result without the property did not come
+                # through Get-OUPermissions' own return paths, and inventing a failure
+                # for it would be as wrong as the silence this replaces.
+                if (-not $ouPermissions -or $ouPermissions.Read -eq $false) {
+                    $unreadOUs += $ouDN
+                }
 
                 if (-not $ouPermissions -or -not $ouPermissions.Findings) {
                     continue
@@ -206,9 +216,21 @@ function Get-DangerousOUPermissions {
             }
             if ($totalOUs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing OU permissions" -Completed }
 
+            # How many were really examined, and the class the clean conclusion deserves.
+            # Both conclusion lines below used to name the full OU count and stay Secure
+            # whatever was readable.
+            $readOUs = $totalOUs - @($unreadOUs).Count
+            $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
+            $conclusionClass = 'Secure'
+            if ($coverageIncomplete) { $conclusionClass = 'Note' }
+
             # Display findings
             if (@($allFindings).Count -eq 0) {
-                Show-Line "No dangerous OU permissions detected in $(@($OUs).Count) analyzed OU(s)" -Class Secure
+                if ($totalOUs -gt 0 -and $readOUs -le 0) {
+                    Show-Line "OU permissions were not evaluated - no security descriptor could be read" -Class Note
+                } else {
+                    Show-Line "No dangerous OU permissions detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                }
                 return
             }
 
@@ -365,11 +387,16 @@ function Get-DangerousOUPermissions {
 
             # If no non-Exchange findings were displayed (and Exchange is hidden without -IncludePrivileged)
             if (@($nonExchangeFindings).Count -eq 0 -and (-not $IncludePrivileged -or @($exchangeFindings).Count -eq 0)) {
-                Show-Line "No dangerous OU permissions detected in $(@($OUs).Count) analyzed OU(s)" -Class Secure
+                Show-Line "No dangerous OU permissions detected in $readOUs analyzed OU(s)" -Class $conclusionClass
             }
 
         } catch {
+            # Say so on the console, not only in the log. Logging alone made an aborted
+            # check indistinguishable from a domain with nothing to report: the section
+            # simply ended, and an empty section reads as a clean one. Same wording as
+            # the catch in Get-DangerousACLs.
             Write-Log "[Get-DangerousOUPermissions] Error: $_" -Level Error
+            Show-Line "Error during check - OU permissions could not be evaluated: $_" -Class Finding
         }
     }
 

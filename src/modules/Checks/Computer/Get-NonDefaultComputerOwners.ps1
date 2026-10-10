@@ -101,12 +101,25 @@ function Get-NonDefaultComputerOwners {
             $currentIndex = 0
             $totalComputers = $computersWithOwner.Count
 
+            # Owner and OwnerSID only exist when nTSecurityDescriptor came back with an
+            # owner in it. A computer whose descriptor the caller may not read carries
+            # neither, and used to be skipped without a counter, a warning or a trace in
+            # the report - while the Secure line below claimed every computer had been
+            # looked at. Ownership of a computer object is a takeover path, so that is the
+            # most expensive place to pass an unread object off as a clean one.
+            $unreadableOwners = 0
+
             foreach ($computer in $computersWithOwner) {
                 $currentIndex++
 
                 # Progress indicator for large computer counts
                 if ($totalComputers -gt 50) {
                     Show-Progress -Activity "Checking computer owners" -Current $currentIndex -Total $totalComputers
+                }
+
+                if (-not $computer.OwnerSID) {
+                    $unreadableOwners++
+                    Write-Log "[Get-NonDefaultComputerOwners] No owner in the security descriptor of '$($computer.distinguishedName)' - not evaluated"
                 }
 
                 # Check if owner is non-default (clientside, no LDAP)
@@ -203,12 +216,26 @@ function Get-NonDefaultComputerOwners {
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultComputerOwner' -Force
                     Show-Object $computer
                 }
+            } elseif ($unreadableOwners -ge $totalComputers -and $totalComputers -gt 0) {
+                Show-Line "Computer ownership was not evaluated - no security descriptor carried an owner" -Class "Note"
+            } elseif ($unreadableOwners -gt 0) {
+                Show-Line "The computers whose owner could be read all have default owners ($unreadableOwners of $totalComputers carried no owner in their security descriptor)" -Class "Note"
             } else {
                 Show-Line "All computers have default owners" -Class "Secure"
             }
 
+            # Said next to the finding as well, not only in place of it: a scan that found
+            # three non-default owners and could not read a hundred more descriptors is
+            # not the same result as one that read all of them.
+            if ($unreadableOwners -gt 0 -and @($nonDefaultOwnerComputers).Count -gt 0) {
+                Show-Line "$unreadableOwners of $totalComputers computer object(s) carried no owner in their security descriptor and were not evaluated" -Class "Finding"
+            }
+
         } catch {
+            # Say so on the console, not only in the log - an aborted check is otherwise
+            # indistinguishable from a domain with nothing to report.
             Write-Log "[Get-NonDefaultComputerOwners] Error: $_" -Level Error
+            Show-Line "Error during check - computer ownership could not be evaluated: $_" -Class "Finding"
         }
     }
 

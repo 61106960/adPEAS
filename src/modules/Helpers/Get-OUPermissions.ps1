@@ -297,6 +297,7 @@ function Get-OUPermissions {
                 return [PSCustomObject]@{
                     OU       = $DistinguishedName
                     Findings = $filteredFindings
+                    Read     = $true
                 }
             }
 
@@ -306,16 +307,21 @@ function Get-OUPermissions {
             # -Raw returns byte[] instead of ConvertFrom-SecurityDescriptor (we need native ACE objects)
             $ouResult = @(Invoke-LDAPSearch -Filter "(objectClass=*)" -SearchBase $DistinguishedName -Scope Base -Properties 'nTSecurityDescriptor' -Raw)[0]
 
+            # Read = $false rather than $null on every failure path. A caller cannot tell
+            # "nothing found" from "nothing read" out of an empty finding list, and all
+            # three callers phrased the first one as a Secure line naming the full OU
+            # count as analyzed: a scan that was denied every descriptor in the domain
+            # read as a clean domain.
             if (-not $ouResult -or -not $ouResult.nTSecurityDescriptor) {
                 Write-Log "[Get-OUPermissions] Failed to read nTSecurityDescriptor for OU: $DistinguishedName"
-                return $null
+                return [PSCustomObject]@{ OU = $DistinguishedName; Findings = $null; Read = $false }
             }
 
             # Parse nTSecurityDescriptor into AccessRules via shared helper
             $sdParsed = ConvertTo-AccessRules -SecurityDescriptorBytes $ouResult.nTSecurityDescriptor
             if (-not $sdParsed) {
                 Write-Log "[Get-OUPermissions] Failed to parse nTSecurityDescriptor for OU: $DistinguishedName"
-                return $null
+                return [PSCustomObject]@{ OU = $DistinguishedName; Findings = $null; Read = $false }
             }
             $AccessRules = $sdParsed.AccessRules
 
@@ -1093,6 +1099,7 @@ function Get-OUPermissions {
             $result = [PSCustomObject]@{
                 OU       = $DistinguishedName
                 Findings = $Findings
+                Read     = $true
             }
 
             # Cache full-scan results for cross-module reuse
@@ -1104,7 +1111,7 @@ function Get-OUPermissions {
 
         } catch {
             Write-Log "[Get-OUPermissions] Error analyzing OU '$DistinguishedName': $_"
-            return $null
+            return [PSCustomObject]@{ OU = $DistinguishedName; Findings = $null; Read = $false }
         }
     }
 
@@ -1113,3 +1120,58 @@ function Get-OUPermissions {
     }
 }
 
+
+<#
+.SYNOPSIS
+    Emits a line about the OUs whose security descriptor could not be read, if there are
+    any.
+
+.DESCRIPTION
+    Get-OUPermissions answers with Read = $false when it could not read or parse an OU's
+    nTSecurityDescriptor. Its callers used to see only an empty finding list, which they
+    could not tell apart from an OU with nothing on it, and their conclusion named the
+    full OU count as analyzed - a scan denied every descriptor in the domain read as a
+    clean domain.
+
+    Writes nothing when every OU was read, so a caller can place it unconditionally in
+    front of its own conclusion. Returns $true when coverage was incomplete, which lets a
+    caller downgrade a "Secure" conclusion to a "Note": a green line must not be printed
+    over objects whose permissions were never seen. Same contract as
+    Show-SYSVOLCoverageNote.
+
+.PARAMETER UnreadOUs
+    Distinguished names of the OUs and containers that could not be read.
+
+.PARAMETER TotalOUs
+    How many were meant to be analyzed, for the "N of M" in the message.
+
+.OUTPUTS
+    Boolean - $true if at least one OU could not be read.
+#>
+function Show-OUPermissionsCoverageNote {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [string[]]$UnreadOUs,
+
+        [Parameter(Mandatory = $true)]
+        [int]$TotalOUs
+    )
+
+    # @($null) is a one-element array in PowerShell, so an unset list would otherwise
+    # report one unreadable OU that does not exist.
+    $unread = @($UnreadOUs | Where-Object { $_ })
+    if ($unread.Count -eq 0) { return $false }
+
+    Show-Line "The security descriptor of $($unread.Count) of $TotalOUs object(s) could not be read. Their permissions were not examined, so the result below is incomplete." -Class Finding
+    foreach ($unreadDN in ($unread | Select-Object -First 10)) {
+        Show-Line "  not read: $unreadDN" -Class Hint
+    }
+    if ($unread.Count -gt 10) {
+        Show-Line "  ... and $($unread.Count - 10) more" -Class Hint
+    }
+
+    return $true
+}

@@ -218,6 +218,7 @@ function Get-PasswordResetRights {
             }
 
             $allFindings = @()
+            $unreadOUs = @()
 
             # Analyze each OU for password reset rights
             foreach ($ouDN in $privilegedOUs.Keys) {
@@ -226,6 +227,13 @@ function Get-PasswordResetRights {
 
                 # Get-OUPermissions uses session context automatically
                 $ouPermissions = Get-OUPermissions -DistinguishedName $ouDN -CheckType 'PasswordReset'
+
+                # An OU whose descriptor could not be read has no findings either, and
+                # the conclusion below used to count it as analyzed. Only an explicit
+                # $false counts as unread - see Get-DangerousOUPermissions.
+                if (-not $ouPermissions -or $ouPermissions.Read -eq $false) {
+                    $unreadOUs += $ouDN
+                }
 
                 if (-not $ouPermissions -or -not $ouPermissions.Findings) {
                     continue
@@ -273,8 +281,21 @@ function Get-PasswordResetRights {
                 }
             }
 
+            # How many were really examined, and the class the clean conclusion deserves.
+            # Both conclusion lines below used to name the full OU count and stay Secure
+            # whatever was readable.
+            $totalOUs = @($privilegedOUs.Keys).Count
+            $readOUs = $totalOUs - @($unreadOUs).Count
+            $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
+            $conclusionClass = 'Secure'
+            if ($coverageIncomplete) { $conclusionClass = 'Note' }
+
             if (@($allFindings).Count -eq 0) {
-                Show-Line "No dangerous password reset rights detected in $($privilegedOUs.Keys.Count) analyzed OU(s)" -Class Secure
+                if ($totalOUs -gt 0 -and $readOUs -le 0) {
+                    Show-Line "Password reset rights were not evaluated - no security descriptor could be read" -Class Note
+                } else {
+                    Show-Line "No dangerous password reset rights detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                }
                 return
             }
 
@@ -416,11 +437,14 @@ function Get-PasswordResetRights {
 
             # If no non-Exchange findings were displayed (and Exchange is hidden without -IncludePrivileged)
             if (@($nonExchangeFindings).Count -eq 0 -and (-not $IncludePrivileged -or @($exchangeFindings).Count -eq 0)) {
-                Show-Line "No dangerous password reset rights detected in $($privilegedOUs.Keys.Count) analyzed OU(s)" -Class Secure
+                Show-Line "No dangerous password reset rights detected in $readOUs analyzed OU(s)" -Class $conclusionClass
             }
 
         } catch {
+            # Say so on the console, not only in the log - an aborted check is otherwise
+            # indistinguishable from a domain with nothing to report.
             Write-Log "[Get-PasswordResetRights] Error: $_" -Level Error
+            Show-Line "Error during check - password reset rights could not be evaluated: $_" -Class Finding
         }
     }
 

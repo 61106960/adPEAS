@@ -115,7 +115,13 @@ function Get-SCCMInfrastructure {
             if ($systemMgmt) {
                 Show-Line "System Management container found at: $systemManagementPath" -Class Hint
             } else {
-                Show-Line "System Management container not found (unusual if SCCM detected)" -Class Hint
+                # SCCM was detected by SPN or by group name, which this module supports
+                # deliberately. Everything the three steps below read lives inside this
+                # container, so each of them has to say that it did not read anything
+                # rather than that it found nothing: Invoke-LDAPSearch answers a missing
+                # SearchBase with an empty result and no error, and the two are
+                # indistinguishable from the caller's side.
+                Show-Line "System Management container not found (unusual if SCCM detected) - sites, management points and container permissions cannot be read" -Class Hint
             }
 
             # ===== Step 3: SCCM Sites via mSSMSSite =====
@@ -124,7 +130,10 @@ function Get-SCCMInfrastructure {
             $sccmSiteInfos = @{}  # Hashtable for cross-reference in Step 4
 
             try {
-                $sccmSiteObjects = @(Get-DomainObject -LDAPFilter "(objectClass=mSSMSSite)" -SearchBase $systemManagementPath -Properties "mSSMSSiteCode","mSSMSSourceForest","mSSMSHealthState","cn","distinguishedName" @PSBoundParameters)
+                $sccmSiteObjects = @()
+                if ($systemMgmt) {
+                    $sccmSiteObjects = @(Get-DomainObject -LDAPFilter "(objectClass=mSSMSSite)" -SearchBase $systemManagementPath -Properties "mSSMSSiteCode","mSSMSSourceForest","mSSMSHealthState","cn","distinguishedName" @PSBoundParameters)
+                }
 
                 if ($sccmSiteObjects.Count -gt 0) {
                     Show-Line "Found $($sccmSiteObjects.Count) SCCM site(s) published to Active Directory" -Class Hint
@@ -159,6 +168,8 @@ function Get-SCCMInfrastructure {
                         $siteObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMSite' -Force
                         Show-Object $siteObj
                     }
+                } elseif (-not $systemMgmt) {
+                    Show-Line "The System Management container does not exist - no site object could be read" -Class Note
                 } else {
                     Show-Line "No mSSMSSite objects found in System Management container" -Class Note
                 }
@@ -172,7 +183,10 @@ function Get-SCCMInfrastructure {
             $casDetected = $false
 
             try {
-                $mgmtPoints = @(Get-DomainObject -LDAPFilter "(objectClass=mSSMSManagementPoint)" -SearchBase $systemManagementPath -Properties "mSSMSMPName","mSSMSSiteCode","mSSMSCapabilities","cn","distinguishedName" @PSBoundParameters)
+                $mgmtPoints = @()
+                if ($systemMgmt) {
+                    $mgmtPoints = @(Get-DomainObject -LDAPFilter "(objectClass=mSSMSManagementPoint)" -SearchBase $systemManagementPath -Properties "mSSMSMPName","mSSMSSiteCode","mSSMSCapabilities","cn","distinguishedName" @PSBoundParameters)
+                }
 
                 if ($mgmtPoints.Count -gt 0) {
                     Show-Line "Found $($mgmtPoints.Count) SCCM Management Point(s)" -Class Hint
@@ -250,6 +264,8 @@ function Get-SCCMInfrastructure {
                     if ($casDetected) {
                         Show-Line "Central Administration Site (CAS) detected - multi-site SCCM hierarchy" -Class Finding -FindingId "SCCM_SITE_HIERARCHY"
                     }
+                } elseif (-not $systemMgmt) {
+                    Show-Line "The System Management container does not exist - no management point could be read" -Class Note
                 } else {
                     Show-Line "No mSSMSManagementPoint objects found in System Management container" -Class Note
                 }
@@ -316,9 +332,17 @@ function Get-SCCMInfrastructure {
 
                 # -Raw for the byte[] form of nTSecurityDescriptor: the converted object
                 # does not carry the ACEs this needs.
-                $containerRaw = @(Get-DomainObject -Identity $systemManagementPath -Properties 'nTSecurityDescriptor' -Raw @PSBoundParameters)[0]
+                $containerRaw = $null
+                if ($systemMgmt) {
+                    $containerRaw = @(Get-DomainObject -Identity $systemManagementPath -Properties 'nTSecurityDescriptor' -Raw @PSBoundParameters)[0]
+                }
 
-                if (-not $containerRaw -or -not $containerRaw.nTSecurityDescriptor) {
+                if (-not $systemMgmt) {
+                    # Named apart from the unreadable case below. Both leave the
+                    # permissions unknown, but one is a missing read right on an existing
+                    # container and the other is a container nobody created.
+                    Show-Line "The System Management container does not exist - its permissions could not be read" -Class Note
+                } elseif (-not $containerRaw -or -not $containerRaw.nTSecurityDescriptor) {
                     # Reading the security descriptor needs READ_CONTROL, which a plain
                     # domain user has on this container - but say so rather than let an
                     # unreadable ACL look like a clean one.

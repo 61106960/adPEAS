@@ -382,6 +382,11 @@ function Show-CredentialRoamingDelegation {
 
     $totalContainers = $usersByContainer.Keys.Count
     $currentIndex = 0
+
+    # A container whose security descriptor could not be read produces no finding either,
+    # and the closing Secure line named every container as examined.
+    $unreadContainers = @()
+
     foreach ($containerDN in @($usersByContainer.Keys)) {
         $currentIndex++
         if ($totalContainers -gt $Script:ProgressThreshold) {
@@ -392,9 +397,12 @@ function Show-CredentialRoamingDelegation {
             $perms = Get-OUPermissions -DistinguishedName $containerDN -CheckType 'CredentialRoaming'
         }
         catch {
+            $unreadContainers += $containerDN
             Write-Log "[Get-CredentialRoaming] Failed to read permissions for '$containerDN': $($_.Exception.Message)"
             continue
         }
+
+        if (-not $perms -or $perms.Read -eq $false) { $unreadContainers += $containerDN }
 
         if (-not $perms -or -not $perms.Findings) { continue }
 
@@ -435,6 +443,9 @@ function Show-CredentialRoamingDelegation {
         Show-Progress -Activity "Checking Credential Roaming delegations" -Completed
     }
 
+    $readContainers = $totalContainers - @($unreadContainers).Count
+    $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadContainers -TotalOUs $totalContainers
+
     if ($byPrincipal.Count -eq 0) {
         # "Nobody" and "nobody except the principals we filtered out" are different
         # statements. Printing the first when the second is true would call a forest clean on
@@ -442,9 +453,14 @@ function Show-CredentialRoamingDelegation {
         if ($suppressedPrivileged.Count -gt 0) {
             Show-Line ("No non-privileged principal holds a delegated read of the roaming attributes, but " +
                        "$($suppressedPrivileged.Count) privileged one(s) do - use -IncludePrivileged to see them") -Class Note
+        } elseif ($totalContainers -gt 0 -and $readContainers -le 0) {
+            Show-Line ("The delegations on the $totalContainers container(s) holding this material were not " +
+                       "evaluated - no security descriptor could be read") -Class Note
         } else {
-            Show-Line ("No principal holds a delegated read of the roaming attributes on the $totalContainers " +
-                       "container(s) holding this material") -Class Secure
+            $roamingClass = 'Secure'
+            if ($coverageIncomplete) { $roamingClass = 'Note' }
+            Show-Line ("No principal holds a delegated read of the roaming attributes on the $readContainers " +
+                       "container(s) holding this material") -Class $roamingClass
         }
         return
     }

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-10 17:15:33
-    Version: 2.7.0+20261010-1715
+    Build: 2026-10-10 19:42:19
+    Version: 2.7.0+20261010-1942
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -36058,10 +36058,37 @@ function Get-DomainUser {
                     if ($User.'msds-groupmsamembership') {
                         $AllowedPrincipals = @()
                         try {
-                            $SD = New-Object System.DirectoryServices.ActiveDirectorySecurity
-                            $SD.SetSecurityDescriptorBinaryForm($User.'msds-groupmsamembership')
-
-                            $DACL = $SD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+                            # Two shapes arrive here. Without -Raw the value has already
+                            # been through ConvertFrom-LDAPAttribute, which turns a security
+                            # descriptor into an object carrying Owner and ACEs; with -Raw
+                            # it is still the byte[] the DC sent. Only the second was
+                            # handled, so in the normal case SetSecurityDescriptorBinaryForm
+                            # threw on a PSCustomObject, the catch below swallowed it and
+                            # the attribute kept its parsed form - which the renderer
+                            # happens to understand, so nothing showed.
+                            $DACL = $null
+                            $ShapeRecognized = $false
+                            $ParsedSD = $User.'msds-groupmsamembership'
+                            if ($ParsedSD -is [byte[]]) {
+                                $ShapeRecognized = $true
+                                $SD = New-Object System.DirectoryServices.ActiveDirectorySecurity
+                                $SD.SetSecurityDescriptorBinaryForm($ParsedSD)
+                                $DACL = $SD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+                            } elseif ($ParsedSD.PSObject.Properties['ACEs']) {
+                                # Already parsed: the ACE objects carry Type and SID, named
+                                # as ConvertFrom-SecurityDescriptor names them.
+                                $ShapeRecognized = $true
+                                foreach ($ParsedACE in @($ParsedSD.ACEs)) {
+                                    if ($ParsedACE.Type -ne 'Allow') { continue }
+                                    $PrincipalName = $ParsedACE.Name
+                                    if (-not $PrincipalName) { $PrincipalName = $ParsedACE.SID }
+                                    $AllowedPrincipals += [PSCustomObject]@{
+                                        Name = $PrincipalName
+                                        SID = $ParsedACE.SID
+                                        DisplayText = $PrincipalName
+                                    }
+                                }
+                            }
 
                             foreach ($ACE in $DACL) {
                                 if ($ACE.AccessControlType -eq 'Allow') {
@@ -36083,8 +36110,14 @@ function Get-DomainUser {
                                 }
                             }
 
-                            # Replace byte array with structured principal objects (includes SID for classification)
-                            $User.'msds-groupmsamembership' = $AllowedPrincipals
+                            # Replace the descriptor with structured principal objects
+                            # (includes SID for classification). Only when one of the two
+                            # shapes above was actually recognized - overwriting an
+                            # unexpected one would discard the value the renderer still
+                            # has a legacy path for.
+                            if ($ShapeRecognized) {
+                                $User.'msds-groupmsamembership' = $AllowedPrincipals
+                            }
                         } catch {
                             Write-Log "[Get-DomainUser] Error parsing msds-groupmsamembership: $_"
                         }
@@ -76314,6 +76347,7 @@ function Get-OUPermissions {
                 return [PSCustomObject]@{
                     OU       = $DistinguishedName
                     Findings = $filteredFindings
+                    Read     = $true
                 }
             }
 
@@ -76323,16 +76357,21 @@ function Get-OUPermissions {
             # -Raw returns byte[] instead of ConvertFrom-SecurityDescriptor (we need native ACE objects)
             $ouResult = @(Invoke-LDAPSearch -Filter "(objectClass=*)" -SearchBase $DistinguishedName -Scope Base -Properties 'nTSecurityDescriptor' -Raw)[0]
 
+            # Read = $false rather than $null on every failure path. A caller cannot tell
+            # "nothing found" from "nothing read" out of an empty finding list, and all
+            # three callers phrased the first one as a Secure line naming the full OU
+            # count as analyzed: a scan that was denied every descriptor in the domain
+            # read as a clean domain.
             if (-not $ouResult -or -not $ouResult.nTSecurityDescriptor) {
                 Write-Log "[Get-OUPermissions] Failed to read nTSecurityDescriptor for OU: $DistinguishedName"
-                return $null
+                return [PSCustomObject]@{ OU = $DistinguishedName; Findings = $null; Read = $false }
             }
 
             # Parse nTSecurityDescriptor into AccessRules via shared helper
             $sdParsed = ConvertTo-AccessRules -SecurityDescriptorBytes $ouResult.nTSecurityDescriptor
             if (-not $sdParsed) {
                 Write-Log "[Get-OUPermissions] Failed to parse nTSecurityDescriptor for OU: $DistinguishedName"
-                return $null
+                return [PSCustomObject]@{ OU = $DistinguishedName; Findings = $null; Read = $false }
             }
             $AccessRules = $sdParsed.AccessRules
 
@@ -77110,6 +77149,7 @@ function Get-OUPermissions {
             $result = [PSCustomObject]@{
                 OU       = $DistinguishedName
                 Findings = $Findings
+                Read     = $true
             }
 
             # Cache full-scan results for cross-module reuse
@@ -77121,7 +77161,7 @@ function Get-OUPermissions {
 
         } catch {
             Write-Log "[Get-OUPermissions] Error analyzing OU '$DistinguishedName': $_"
-            return $null
+            return [PSCustomObject]@{ OU = $DistinguishedName; Findings = $null; Read = $false }
         }
     }
 
@@ -77130,6 +77170,61 @@ function Get-OUPermissions {
     }
 }
 
+
+<#
+.SYNOPSIS
+    Emits a line about the OUs whose security descriptor could not be read, if there are
+    any.
+
+.DESCRIPTION
+    Get-OUPermissions answers with Read = $false when it could not read or parse an OU's
+    nTSecurityDescriptor. Its callers used to see only an empty finding list, which they
+    could not tell apart from an OU with nothing on it, and their conclusion named the
+    full OU count as analyzed - a scan denied every descriptor in the domain read as a
+    clean domain.
+
+    Writes nothing when every OU was read, so a caller can place it unconditionally in
+    front of its own conclusion. Returns $true when coverage was incomplete, which lets a
+    caller downgrade a "Secure" conclusion to a "Note": a green line must not be printed
+    over objects whose permissions were never seen. Same contract as
+    Show-SYSVOLCoverageNote.
+
+.PARAMETER UnreadOUs
+    Distinguished names of the OUs and containers that could not be read.
+
+.PARAMETER TotalOUs
+    How many were meant to be analyzed, for the "N of M" in the message.
+
+.OUTPUTS
+    Boolean - $true if at least one OU could not be read.
+#>
+function Show-OUPermissionsCoverageNote {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [string[]]$UnreadOUs,
+
+        [Parameter(Mandatory = $true)]
+        [int]$TotalOUs
+    )
+
+    # @($null) is a one-element array in PowerShell, so an unset list would otherwise
+    # report one unreadable OU that does not exist.
+    $unread = @($UnreadOUs | Where-Object { $_ })
+    if ($unread.Count -eq 0) { return $false }
+
+    Show-Line "The security descriptor of $($unread.Count) of $TotalOUs object(s) could not be read. Their permissions were not examined, so the result below is incomplete." -Class Finding
+    foreach ($unreadDN in ($unread | Select-Object -First 10)) {
+        Show-Line "  not read: $unreadDN" -Class Hint
+    }
+    if ($unread.Count -gt 10) {
+        Show-Line "  ... and $($unread.Count - 10) more" -Class Hint
+    }
+
+    return $true
+}
 
 
 
@@ -97902,88 +97997,218 @@ function Get-ManagedServiceAccountSecurity {
 
                 $nonPrivilegedAccessFindings = @()
 
+                # msDS-GroupMSAMembership is a security descriptor, and by the time
+                # Get-DomainUser has returned it ConvertFrom-LDAPAttribute has already
+                # replaced it with a parsed object carrying Owner and ACEs. Neither of the
+                # two guards that used to stand here - [byte[]] and
+                # ResultPropertyValueCollection - could therefore ever be true: the parse
+                # branch was dead code, $passwordReaders stayed empty, and every domain was
+                # told its gMSA password access was properly restricted, no matter who
+                # could actually read the passwords.
+                #
+                # The parsed form cannot carry the verdict either. It renders the access
+                # mask as ActiveDirectoryRights names, and the SDDL generic bits have no
+                # name in that enum - an ACE written as "(A;;GA;;;<sid>)" comes out as the
+                # bare number 268435456, which no rights test can read. So the descriptors
+                # are fetched once as raw bytes for all gMSAs, the same route the
+                # AdminSDHolder check in Get-PrivilegedGroupMembers takes.
+                #
+                # Keyed by both identifiers the query asks for. If one of them did not
+                # come back, the lookup below would miss every gMSA and the check would
+                # report that it could not analyze anything - honest, but useless, and a
+                # second key costs nothing.
+                $gmsaDescriptors = @{}
+                try {
+                    foreach ($rawGMSA in @(Get-DomainUser -GMSA -Properties 'distinguishedName', 'sAMAccountName', 'msDS-GroupMSAMembership' -Raw @PSBoundParameters)) {
+                        $rawSD = $rawGMSA.'msDS-GroupMSAMembership'
+                        if (-not ($rawSD -is [byte[]]) -or $rawSD.Length -eq 0) { continue }
+
+                        foreach ($rawKey in @([string]$rawGMSA.distinguishedName, [string]$rawGMSA.sAMAccountName)) {
+                            if ($rawKey) { $gmsaDescriptors[$rawKey.ToLowerInvariant()] = $rawSD }
+                        }
+                    }
+                } catch {
+                    Write-Log "[Get-ManagedServiceAccountSecurity] Could not read the gMSA membership descriptors: $_" -Level Warning
+                }
+
+                # ----- Phase 1: who is granted password access, per gMSA -----
+                $gmsaReaderSIDs = @{}
+                $allReaderSIDs = @{}
+                $analyzedGMSAs = 0
+                $unparsedGMSAs = @()
+                $undelegatedGMSAs = @()
+
                 $totalGMSAs = @($gmsaAccounts).Count
                 $currentIndex = 0
                 foreach ($gmsa in $gmsaAccounts) {
                     $currentIndex++
                     if ($totalGMSAs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing gMSA security" -Current $currentIndex -Total $totalGMSAs -ObjectName $gmsa.sAMAccountName }
                     $gmsaName = $gmsa.sAMAccountName
-                    $groupMsaMembership = $gmsa.'msds-groupmsamembership'
+                    $sdBytes = $null
+                    foreach ($lookupKey in @([string]$gmsa.distinguishedName, [string]$gmsaName)) {
+                        if (-not $lookupKey) { continue }
+                        $lookupKey = $lookupKey.ToLowerInvariant()
+                        if ($gmsaDescriptors.ContainsKey($lookupKey)) {
+                            $sdBytes = $gmsaDescriptors[$lookupKey]
+                            break
+                        }
+                    }
 
-                    if ($groupMsaMembership) {
-                        # Parse the security descriptor to get principals with password access
-                        $passwordReaders = @()
-                        $hasBroadGroupAccess = $false
+                    if (-not $sdBytes) {
+                        # Either nobody is delegated password access or the attribute was
+                        # not readable. The two are indistinguishable from here, so both
+                        # are stated below instead of passing for the first one.
+                        $undelegatedGMSAs += $gmsaName
+                        continue
+                    }
 
-                        try {
-                            # msds-groupmsamembership is a security descriptor in binary format.
-                            #
-                            # Assigned inside the branches, NOT from the if-expression. An
-                            # assignment from an if routes the value through the output stream,
-                            # which enumerates collections: a [byte[]] came back as [Object[]],
-                            # the -is [byte[]] guard below was therefore always false, and the
-                            # whole password-access analysis never ran. Every domain was told
-                            # its gMSA password access was properly restricted, no matter who
-                            # could actually read the passwords.
-                            $sdBytes = $null
-                            if ($groupMsaMembership -is [byte[]]) {
-                                $sdBytes = $groupMsaMembership
-                            } elseif ($groupMsaMembership -is [System.DirectoryServices.ResultPropertyValueCollection]) {
-                                $sdBytes = $groupMsaMembership[0]
+                    $grantedSIDs = @()
+                    try {
+                        $gmsaSD = New-Object System.DirectoryServices.ActiveDirectorySecurity
+                        $gmsaSD.SetSecurityDescriptorBinaryForm($sdBytes)
+
+                        # GetAccessRules with SecurityIdentifier rather than .Access: .Access
+                        # asks for the rules as NTAccount, which makes the scanning host
+                        # resolve every SID and silently drops the ones it cannot - against
+                        # a domain this host is not joined to that is every domain principal.
+                        foreach ($ace in $gmsaSD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+                            if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+
+                            # Retrieving the password means reading msDS-ManagedPassword, so
+                            # ReadProperty is the right that decides - Windows writes
+                            # "(A;;RP;;;<sid>)" for
+                            # -PrincipalsAllowedToRetrieveManagedPassword. Test-ADRightsMask
+                            # expands the generic bits, so an ACE granting it through GA or
+                            # GR counts as well, while an ACE carrying ReadControl alone -
+                            # which the old code counted as a reader - entitles its holder
+                            # to nothing here.
+                            if (-not (Test-ADRightsMask -Rights $ace.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty))) { continue }
+
+                            $aceSID = [string]$ace.IdentityReference.Value
+                            if ($aceSID -and ($grantedSIDs -notcontains $aceSID)) {
+                                $grantedSIDs += $aceSID
+                                $allReaderSIDs[$aceSID] = $true
                             }
-
-                            if ($sdBytes -and $sdBytes -is [byte[]]) {
-                                $RawSD = New-Object System.Security.AccessControl.RawSecurityDescriptor($sdBytes, 0)
-
-                                foreach ($ace in $RawSD.DiscretionaryAcl) {
-                                    if ($ace.AceType -eq [System.Security.AccessControl.AceType]::AccessAllowed) {
-                                        $principalSID = $ace.SecurityIdentifier.Value
-                                        $principalName = ConvertFrom-SID -SID $principalSID
-
-                                        # Use central Test-IsPrivileged for consistent classification
-                                        $privCheck = Test-IsPrivileged -Identity $principalSID
-                                        $category = $privCheck.Category
-
-                                        # BroadGroup = Everyone, Authenticated Users, Domain Users (CRITICAL)
-                                        # Privileged = Domain Admins, Enterprise Admins, etc. (expected)
-                                        # Operator = Account Operators, Server Operators, etc. (noteworthy)
-                                        # Standard = regular accounts (potential issue)
-                                        $isPrivileged = $category -in @('Privileged', 'Operator')
-                                        $isBroadGroup = $category -eq 'BroadGroup'
-
-                                        if ($isBroadGroup) {
-                                            $hasBroadGroupAccess = $true
-                                        }
-
-                                        $passwordReaders += [PSCustomObject]@{
-                                            Principal = $principalName
-                                            SID = $principalSID
-                                            Category = $category
-                                            IsPrivileged = $isPrivileged
-                                            IsBroadGroup = $isBroadGroup
-                                        }
-                                    }
-                                }
-                            }
-                        } catch {
-                            Write-Log "[Get-ManagedServiceAccountSecurity] Failed to parse msDS-GroupMSAMembership for $gmsaName : $_"
                         }
 
-                        # Check for non-privileged principals (includes BroadGroups which are especially critical)
-                        $nonPrivReaders = @($passwordReaders | Where-Object { -not $_.IsPrivileged })
-
-                        if ($nonPrivReaders.Count -gt 0) {
-                            $nonPrivilegedAccessFindings += [PSCustomObject]@{
-                                gMSA = $gmsaName
-                                DN = $gmsa.distinguishedName
-                                NonPrivilegedReaders = $nonPrivReaders
-                                AllReaders = $passwordReaders
-                                HasBroadGroupAccess = $hasBroadGroupAccess
-                            }
-                        }
+                        $analyzedGMSAs++
+                        $gmsaReaderSIDs[$gmsaName] = $grantedSIDs
+                    } catch {
+                        $unparsedGMSAs += $gmsaName
+                        Write-Log "[Get-ManagedServiceAccountSecurity] Failed to parse msDS-GroupMSAMembership for $gmsaName : $_"
                     }
                 }
                 if ($totalGMSAs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing gMSA security" -Completed }
+
+                # ----- Phase 2: what kind of principal each reader is -----
+                #
+                # What the attribute is for is naming the hosts that run the service, so a
+                # computer account - or a group that holds only computer accounts, which is
+                # the documented way to grant them - is the intended configuration and not
+                # a finding. Calling everything outside Privileged/Operator a
+                # non-privileged reader, as this check did, would have turned every
+                # correctly configured gMSA into a finding the moment the parse above
+                # started working.
+                $hostClasses = @('computer', 'msDS-ManagedServiceAccount', 'msDS-GroupManagedServiceAccount')
+                $readerKinds = @{}
+                foreach ($readerSID in @($allReaderSIDs.Keys)) {
+                    # For a broad group, a privileged principal or an operator the
+                    # category below decides on its own, so no lookup is made for those -
+                    # it would also send a query after SIDs that are not directory objects
+                    # at all, such as S-1-5-11 or an NT SERVICE SID. Test-IsPrivileged
+                    # caches its answer, so asking it here costs phase 3 nothing.
+                    if ((Test-IsPrivileged -Identity $readerSID).Category -in @('BroadGroup', 'Privileged', 'Operator')) {
+                        $readerKinds[$readerSID] = 'DecidedByCategory'
+                        continue
+                    }
+
+                    $readerKind = 'Principal'
+                    try {
+                        $readerObject = @(Get-DomainObject -Identity $readerSID -Properties 'objectClass', 'distinguishedName' @PSBoundParameters)[0]
+                        if (-not $readerObject) {
+                            # A SID the directory does not resolve is not a host, and
+                            # treating what could not be looked up as harmless is exactly
+                            # how a check reports an unchecked state as a clean one.
+                            $readerKind = 'Unresolved'
+                        } elseif (@(@($readerObject.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -gt 0) {
+                            $readerKind = 'Host'
+                        } elseif (@($readerObject.objectClass) -icontains 'group') {
+                            # Direct members only. A nested group is reported rather than
+                            # walked: an unexpanded branch must not pass as a host. A group
+                            # with no members grants nobody anything and stays a host group.
+                            $readerKind = 'Host'
+                            $memberFilter = "(memberOf=$(Escape-LDAPFilterDN -DistinguishedName ([string]$readerObject.distinguishedName)))"
+                            foreach ($groupMember in @(Get-DomainObject -LDAPFilter $memberFilter -Properties 'objectClass' @PSBoundParameters)) {
+                                if (@(@($groupMember.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -eq 0) {
+                                    $readerKind = 'Principal'
+                                    break
+                                }
+                            }
+                        }
+                    } catch {
+                        $readerKind = 'Unresolved'
+                        Write-Log "[Get-ManagedServiceAccountSecurity] Could not classify password reader $readerSID : $_"
+                    }
+                    $readerKinds[$readerSID] = $readerKind
+                }
+
+                # ----- Phase 3: verdict per gMSA -----
+                foreach ($gmsa in $gmsaAccounts) {
+                    $gmsaName = $gmsa.sAMAccountName
+                    if (-not $gmsaReaderSIDs.ContainsKey($gmsaName)) { continue }
+
+                    $passwordReaders = @()
+                    $hasBroadGroupAccess = $false
+
+                    foreach ($readerSID in $gmsaReaderSIDs[$gmsaName]) {
+                        $principalName = ConvertFrom-SID -SID $readerSID
+                        if (-not $principalName) { $principalName = $readerSID }
+
+                        # Use central Test-IsPrivileged for consistent classification
+                        $privCheck = Test-IsPrivileged -Identity $readerSID
+                        $category = $privCheck.Category
+
+                        $readerKind = 'Unresolved'
+                        if ($readerKinds.ContainsKey($readerSID)) { $readerKind = $readerKinds[$readerSID] }
+
+                        # BroadGroup = Everyone, Authenticated Users, Domain Users - every
+                        #     account in the domain can take the password (CRITICAL)
+                        # Privileged = Domain Admins, Enterprise Admins, ... (expected,
+                        #     they can reach the password by other means anyway)
+                        # Operator = Account Operators, Server Operators, ... (expected)
+                        # Host = a computer account or a group of them (expected, this is
+                        #     what the attribute exists for)
+                        # anything else = a principal that should not hold the password: a
+                        #     user account, a group holding one, or an unresolvable SID
+                        $isBroadGroup = $category -eq 'BroadGroup'
+                        $isExpected = $false
+                        if (-not $isBroadGroup) {
+                            $isExpected = ($category -in @('Privileged', 'Operator')) -or ($readerKind -eq 'Host')
+                        }
+                        if ($isBroadGroup) { $hasBroadGroupAccess = $true }
+
+                        $passwordReaders += [PSCustomObject]@{
+                            Principal = $principalName
+                            SID = $readerSID
+                            Category = $category
+                            Kind = $readerKind
+                            IsExpected = $isExpected
+                            IsBroadGroup = $isBroadGroup
+                        }
+                    }
+
+                    $unexpectedReaders = @($passwordReaders | Where-Object { -not $_.IsExpected })
+
+                    if ($unexpectedReaders.Count -gt 0) {
+                        $nonPrivilegedAccessFindings += [PSCustomObject]@{
+                            gMSA = $gmsaName
+                            DN = $gmsa.distinguishedName
+                            NonPrivilegedReaders = $unexpectedReaders
+                            AllReaders = $passwordReaders
+                            HasBroadGroupAccess = $hasBroadGroupAccess
+                        }
+                    }
+                }
 
                 # Output non-privileged access findings
                 if (@($nonPrivilegedAccessFindings).Count -gt 0) {
@@ -98009,8 +98234,23 @@ function Get-ManagedServiceAccountSecurity {
                         }) -join ", "
                         Show-Line "Non-privileged password readers: $readerList" -Class Hint
                     }
+                } elseif ($analyzedGMSAs -eq 0) {
+                    Show-Line "gMSA password access could not be analyzed - no membership descriptor could be read" -Class Note
                 } else {
-                    Show-Line "All gMSA password access is properly restricted to privileged accounts" -Class Secure
+                    $unanalyzedCount = $totalGMSAs - $analyzedGMSAs
+                    if ($unanalyzedCount -gt 0) {
+                        Show-Line "The gMSA password access that could be analyzed is restricted to privileged accounts and service hosts ($unanalyzedCount of $totalGMSAs could not be analyzed)" -Class Note
+                    } else {
+                        Show-Line "All gMSA password access is properly restricted to privileged accounts and service hosts" -Class Secure
+                    }
+                }
+
+                # What was not analyzed, named rather than left out of the report
+                if (@($undelegatedGMSAs).Count -gt 0) {
+                    Show-Line "No password access is delegated on $(@($undelegatedGMSAs).Count) gMSA(s), or msDS-GroupMSAMembership was not readable: $(@($undelegatedGMSAs) -join ', ')" -Class Note
+                }
+                if (@($unparsedGMSAs).Count -gt 0) {
+                    Show-Line "msDS-GroupMSAMembership could not be parsed on $(@($unparsedGMSAs).Count) gMSA(s) - their password access is unknown: $(@($unparsedGMSAs) -join ', ')" -Class Note
                 }
 
                 # ===== Check 2: Attempt to read gMSA passwords =====
@@ -98100,11 +98340,32 @@ function Get-ManagedServiceAccountSecurity {
                 }
                 if ($totalGMSAs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing gMSA security" -Completed }
 
+                # msDS-ManagedPassword is a confidential attribute: a DC releases it only
+                # over an encrypted connection. adPEAS sets neither signing nor sealing on
+                # a plain LDAP bind - SecureSocketLayer is set under -UseLDAPS and for
+                # Schannel - so over port 389 the attribute does not arrive for an entitled
+                # caller either, and without an error. An empty result is then no evidence
+                # about anyone's permissions, which is what the secure line below used to
+                # claim it was.
+                $encryptedSession = $false
+                try {
+                    if ($Script:LdapConnection -and $Script:LdapConnection.SessionOptions -and $Script:LdapConnection.SessionOptions.SecureSocketLayer) {
+                        $encryptedSession = $true
+                    }
+                } catch {
+                    Write-Log "[Get-ManagedServiceAccountSecurity] Could not read the session's encryption state: $_"
+                }
+                if (-not $encryptedSession -and $Script:LDAPContext -and $Script:LDAPContext.UseLDAPS) {
+                    $encryptedSession = $true
+                }
+
                 if ($passwordsRetrieved -eq 0) {
                     # The check read msDS-ManagedPassword for every gMSA and got nothing
                     # back: a tested result, and the same kind of answer as the two lines
                     # above it, so it is rendered the same way.
-                    if ($readFailures -eq $totalGMSAs) {
+                    if (-not $encryptedSession) {
+                        Show-Line "gMSA password retrieval cannot be tested over an unencrypted connection - rerun with -UseLDAPS" -Class Note
+                    } elseif ($readFailures -eq $totalGMSAs) {
                         Show-Line "gMSA password access could not be tested - every read failed" -Class Note
                     } elseif ($readFailures -gt 0) {
                         Show-Line "Current user cannot retrieve any gMSA passwords ($readFailures of $totalGMSAs could not be tested)" -Class Secure
@@ -99560,6 +99821,7 @@ function Get-DangerousOUPermissions {
             $allFindings = @()
             $ouCount = 0
             $ouWithFindings = 0
+            $unreadOUs = @()
 
             # Analyze each OU
             $totalOUs = @($OUs).Count
@@ -99581,6 +99843,15 @@ function Get-DangerousOUPermissions {
                 if ($ExcludeInherited) { $ouParams['ExcludeInherited'] = $true }
 
                 $ouPermissions = Get-OUPermissions @ouParams
+
+                # An OU whose descriptor could not be read has no findings either, and
+                # the conclusion below used to count it as analyzed. Only an explicit
+                # $false counts as unread: a result without the property did not come
+                # through Get-OUPermissions' own return paths, and inventing a failure
+                # for it would be as wrong as the silence this replaces.
+                if (-not $ouPermissions -or $ouPermissions.Read -eq $false) {
+                    $unreadOUs += $ouDN
+                }
 
                 if (-not $ouPermissions -or -not $ouPermissions.Findings) {
                     continue
@@ -99633,9 +99904,21 @@ function Get-DangerousOUPermissions {
             }
             if ($totalOUs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing OU permissions" -Completed }
 
+            # How many were really examined, and the class the clean conclusion deserves.
+            # Both conclusion lines below used to name the full OU count and stay Secure
+            # whatever was readable.
+            $readOUs = $totalOUs - @($unreadOUs).Count
+            $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
+            $conclusionClass = 'Secure'
+            if ($coverageIncomplete) { $conclusionClass = 'Note' }
+
             # Display findings
             if (@($allFindings).Count -eq 0) {
-                Show-Line "No dangerous OU permissions detected in $(@($OUs).Count) analyzed OU(s)" -Class Secure
+                if ($totalOUs -gt 0 -and $readOUs -le 0) {
+                    Show-Line "OU permissions were not evaluated - no security descriptor could be read" -Class Note
+                } else {
+                    Show-Line "No dangerous OU permissions detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                }
                 return
             }
 
@@ -99792,11 +100075,16 @@ function Get-DangerousOUPermissions {
 
             # If no non-Exchange findings were displayed (and Exchange is hidden without -IncludePrivileged)
             if (@($nonExchangeFindings).Count -eq 0 -and (-not $IncludePrivileged -or @($exchangeFindings).Count -eq 0)) {
-                Show-Line "No dangerous OU permissions detected in $(@($OUs).Count) analyzed OU(s)" -Class Secure
+                Show-Line "No dangerous OU permissions detected in $readOUs analyzed OU(s)" -Class $conclusionClass
             }
 
         } catch {
+            # Say so on the console, not only in the log. Logging alone made an aborted
+            # check indistinguishable from a domain with nothing to report: the section
+            # simply ended, and an empty section reads as a clean one. Same wording as
+            # the catch in Get-DangerousACLs.
             Write-Log "[Get-DangerousOUPermissions] Error: $_" -Level Error
+            Show-Line "Error during check - OU permissions could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -100029,6 +100317,7 @@ function Get-PasswordResetRights {
             }
 
             $allFindings = @()
+            $unreadOUs = @()
 
             # Analyze each OU for password reset rights
             foreach ($ouDN in $privilegedOUs.Keys) {
@@ -100037,6 +100326,13 @@ function Get-PasswordResetRights {
 
                 # Get-OUPermissions uses session context automatically
                 $ouPermissions = Get-OUPermissions -DistinguishedName $ouDN -CheckType 'PasswordReset'
+
+                # An OU whose descriptor could not be read has no findings either, and
+                # the conclusion below used to count it as analyzed. Only an explicit
+                # $false counts as unread - see Get-DangerousOUPermissions.
+                if (-not $ouPermissions -or $ouPermissions.Read -eq $false) {
+                    $unreadOUs += $ouDN
+                }
 
                 if (-not $ouPermissions -or -not $ouPermissions.Findings) {
                     continue
@@ -100084,8 +100380,21 @@ function Get-PasswordResetRights {
                 }
             }
 
+            # How many were really examined, and the class the clean conclusion deserves.
+            # Both conclusion lines below used to name the full OU count and stay Secure
+            # whatever was readable.
+            $totalOUs = @($privilegedOUs.Keys).Count
+            $readOUs = $totalOUs - @($unreadOUs).Count
+            $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
+            $conclusionClass = 'Secure'
+            if ($coverageIncomplete) { $conclusionClass = 'Note' }
+
             if (@($allFindings).Count -eq 0) {
-                Show-Line "No dangerous password reset rights detected in $($privilegedOUs.Keys.Count) analyzed OU(s)" -Class Secure
+                if ($totalOUs -gt 0 -and $readOUs -le 0) {
+                    Show-Line "Password reset rights were not evaluated - no security descriptor could be read" -Class Note
+                } else {
+                    Show-Line "No dangerous password reset rights detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                }
                 return
             }
 
@@ -100227,11 +100536,14 @@ function Get-PasswordResetRights {
 
             # If no non-Exchange findings were displayed (and Exchange is hidden without -IncludePrivileged)
             if (@($nonExchangeFindings).Count -eq 0 -and (-not $IncludePrivileged -or @($exchangeFindings).Count -eq 0)) {
-                Show-Line "No dangerous password reset rights detected in $($privilegedOUs.Keys.Count) analyzed OU(s)" -Class Secure
+                Show-Line "No dangerous password reset rights detected in $readOUs analyzed OU(s)" -Class $conclusionClass
             }
 
         } catch {
+            # Say so on the console, not only in the log - an aborted check is otherwise
+            # indistinguishable from a domain with nothing to report.
             Write-Log "[Get-PasswordResetRights] Error: $_" -Level Error
+            Show-Line "Error during check - password reset rights could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -101490,6 +101802,7 @@ function Get-LAPSPermissions {
 
             $totalOUs = $computersByOU.Keys.Count
             $currentIndex = 0
+            $unreadOUs = @()
             foreach ($ouDN in $computersByOU.Keys) {
                 $currentIndex++
                 if ($totalOUs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS permissions" -Current $currentIndex -Total $totalOUs -ObjectName $ouDN }
@@ -101499,6 +101812,13 @@ function Get-LAPSPermissions {
                 try {
                     # Get-OUPermissions uses session context automatically
                     $ouPerms = Get-OUPermissions -DistinguishedName $ouDN -CheckType 'LAPS'
+
+                    # An OU whose descriptor could not be read has no findings either, and
+                    # the conclusion below used to count it as analyzed. Only an explicit
+                    # $false counts as unread - see Get-DangerousOUPermissions.
+                    if (-not $ouPerms -or $ouPerms.Read -eq $false) {
+                        $unreadOUs += $ouDN
+                    }
 
                     if ($ouPerms -and $ouPerms.Findings) {
                         $legacyReaders = @()
@@ -101590,10 +101910,19 @@ function Get-LAPSPermissions {
                         }
                     }
                 } catch {
+                    if ($unreadOUs -notcontains $ouDN) { $unreadOUs += $ouDN }
                     Write-Log "[Get-LAPSPermissions] Failed to query permissions for OU '$ouDN': $_"
                 }
             }
             if ($totalOUs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS permissions" -Completed }
+
+            # How many were really examined, and the class the clean conclusion deserves.
+            # Both conclusion lines below used to name the full OU count and stay Secure
+            # whatever was readable.
+            $readOUs = $totalOUs - @($unreadOUs).Count
+            $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
+            $conclusionClass = 'Secure'
+            if ($coverageIncomplete) { $conclusionClass = 'Note' }
 
             # Names the right and which LAPS generation it reads. Without the suffix a
             # delegation on the legacy attribute and one on the Windows LAPS attribute
@@ -101768,15 +102097,20 @@ function Get-LAPSPermissions {
 
                 # If no non-Exchange findings were displayed (and Exchange is hidden without -IncludePrivileged)
                 if ($allReaderSIDs.Keys.Count -eq 0 -and $privilegedReaderSIDs.Keys.Count -eq 0 -and (-not $IncludePrivileged -or $exchangeReaderSIDs.Keys.Count -eq 0)) {
-                    Show-Line "No non-privileged accounts with LAPS read access found in $(@($computersByOU.Keys).Count) analyzed OU(s)" -Class Secure
+                    Show-Line "No non-privileged accounts with LAPS read access found in $readOUs analyzed OU(s)" -Class $conclusionClass
                 }
 
+            } elseif ($totalOUs -gt 0 -and $readOUs -le 0) {
+                Show-Line "LAPS read permissions were not evaluated - no security descriptor could be read" -Class Note
             } else {
-                Show-Line "No non-privileged accounts with LAPS read access found in $(@($computersByOU.Keys).Count) analyzed OU(s)" -Class Secure
+                Show-Line "No non-privileged accounts with LAPS read access found in $readOUs analyzed OU(s)" -Class $conclusionClass
             }
 
         } catch {
+            # Say so on the console, not only in the log - an aborted check is otherwise
+            # indistinguishable from a domain with nothing to report.
             Write-Log "[Get-LAPSPermissions] Error: $_" -Level Error
+            Show-Line "Error during check - LAPS read permissions could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -103123,12 +103457,25 @@ function Get-NonDefaultComputerOwners {
             $currentIndex = 0
             $totalComputers = $computersWithOwner.Count
 
+            # Owner and OwnerSID only exist when nTSecurityDescriptor came back with an
+            # owner in it. A computer whose descriptor the caller may not read carries
+            # neither, and used to be skipped without a counter, a warning or a trace in
+            # the report - while the Secure line below claimed every computer had been
+            # looked at. Ownership of a computer object is a takeover path, so that is the
+            # most expensive place to pass an unread object off as a clean one.
+            $unreadableOwners = 0
+
             foreach ($computer in $computersWithOwner) {
                 $currentIndex++
 
                 # Progress indicator for large computer counts
                 if ($totalComputers -gt 50) {
                     Show-Progress -Activity "Checking computer owners" -Current $currentIndex -Total $totalComputers
+                }
+
+                if (-not $computer.OwnerSID) {
+                    $unreadableOwners++
+                    Write-Log "[Get-NonDefaultComputerOwners] No owner in the security descriptor of '$($computer.distinguishedName)' - not evaluated"
                 }
 
                 # Check if owner is non-default (clientside, no LDAP)
@@ -103225,12 +103572,26 @@ function Get-NonDefaultComputerOwners {
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultComputerOwner' -Force
                     Show-Object $computer
                 }
+            } elseif ($unreadableOwners -ge $totalComputers -and $totalComputers -gt 0) {
+                Show-Line "Computer ownership was not evaluated - no security descriptor carried an owner" -Class "Note"
+            } elseif ($unreadableOwners -gt 0) {
+                Show-Line "The computers whose owner could be read all have default owners ($unreadableOwners of $totalComputers carried no owner in their security descriptor)" -Class "Note"
             } else {
                 Show-Line "All computers have default owners" -Class "Secure"
             }
 
+            # Said next to the finding as well, not only in place of it: a scan that found
+            # three non-default owners and could not read a hundred more descriptors is
+            # not the same result as one that read all of them.
+            if ($unreadableOwners -gt 0 -and @($nonDefaultOwnerComputers).Count -gt 0) {
+                Show-Line "$unreadableOwners of $totalComputers computer object(s) carried no owner in their security descriptor and were not evaluated" -Class "Finding"
+            }
+
         } catch {
+            # Say so on the console, not only in the log - an aborted check is otherwise
+            # indistinguishable from a domain with nothing to report.
             Write-Log "[Get-NonDefaultComputerOwners] Error: $_" -Level Error
+            Show-Line "Error during check - computer ownership could not be evaluated: $_" -Class "Finding"
         }
     }
 
@@ -110588,7 +110949,13 @@ function Get-SCCMInfrastructure {
             if ($systemMgmt) {
                 Show-Line "System Management container found at: $systemManagementPath" -Class Hint
             } else {
-                Show-Line "System Management container not found (unusual if SCCM detected)" -Class Hint
+                # SCCM was detected by SPN or by group name, which this module supports
+                # deliberately. Everything the three steps below read lives inside this
+                # container, so each of them has to say that it did not read anything
+                # rather than that it found nothing: Invoke-LDAPSearch answers a missing
+                # SearchBase with an empty result and no error, and the two are
+                # indistinguishable from the caller's side.
+                Show-Line "System Management container not found (unusual if SCCM detected) - sites, management points and container permissions cannot be read" -Class Hint
             }
 
             # ===== Step 3: SCCM Sites via mSSMSSite =====
@@ -110597,7 +110964,10 @@ function Get-SCCMInfrastructure {
             $sccmSiteInfos = @{}  # Hashtable for cross-reference in Step 4
 
             try {
-                $sccmSiteObjects = @(Get-DomainObject -LDAPFilter "(objectClass=mSSMSSite)" -SearchBase $systemManagementPath -Properties "mSSMSSiteCode","mSSMSSourceForest","mSSMSHealthState","cn","distinguishedName" @PSBoundParameters)
+                $sccmSiteObjects = @()
+                if ($systemMgmt) {
+                    $sccmSiteObjects = @(Get-DomainObject -LDAPFilter "(objectClass=mSSMSSite)" -SearchBase $systemManagementPath -Properties "mSSMSSiteCode","mSSMSSourceForest","mSSMSHealthState","cn","distinguishedName" @PSBoundParameters)
+                }
 
                 if ($sccmSiteObjects.Count -gt 0) {
                     Show-Line "Found $($sccmSiteObjects.Count) SCCM site(s) published to Active Directory" -Class Hint
@@ -110632,6 +111002,8 @@ function Get-SCCMInfrastructure {
                         $siteObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMSite' -Force
                         Show-Object $siteObj
                     }
+                } elseif (-not $systemMgmt) {
+                    Show-Line "The System Management container does not exist - no site object could be read" -Class Note
                 } else {
                     Show-Line "No mSSMSSite objects found in System Management container" -Class Note
                 }
@@ -110645,7 +111017,10 @@ function Get-SCCMInfrastructure {
             $casDetected = $false
 
             try {
-                $mgmtPoints = @(Get-DomainObject -LDAPFilter "(objectClass=mSSMSManagementPoint)" -SearchBase $systemManagementPath -Properties "mSSMSMPName","mSSMSSiteCode","mSSMSCapabilities","cn","distinguishedName" @PSBoundParameters)
+                $mgmtPoints = @()
+                if ($systemMgmt) {
+                    $mgmtPoints = @(Get-DomainObject -LDAPFilter "(objectClass=mSSMSManagementPoint)" -SearchBase $systemManagementPath -Properties "mSSMSMPName","mSSMSSiteCode","mSSMSCapabilities","cn","distinguishedName" @PSBoundParameters)
+                }
 
                 if ($mgmtPoints.Count -gt 0) {
                     Show-Line "Found $($mgmtPoints.Count) SCCM Management Point(s)" -Class Hint
@@ -110723,6 +111098,8 @@ function Get-SCCMInfrastructure {
                     if ($casDetected) {
                         Show-Line "Central Administration Site (CAS) detected - multi-site SCCM hierarchy" -Class Finding -FindingId "SCCM_SITE_HIERARCHY"
                     }
+                } elseif (-not $systemMgmt) {
+                    Show-Line "The System Management container does not exist - no management point could be read" -Class Note
                 } else {
                     Show-Line "No mSSMSManagementPoint objects found in System Management container" -Class Note
                 }
@@ -110789,9 +111166,17 @@ function Get-SCCMInfrastructure {
 
                 # -Raw for the byte[] form of nTSecurityDescriptor: the converted object
                 # does not carry the ACEs this needs.
-                $containerRaw = @(Get-DomainObject -Identity $systemManagementPath -Properties 'nTSecurityDescriptor' -Raw @PSBoundParameters)[0]
+                $containerRaw = $null
+                if ($systemMgmt) {
+                    $containerRaw = @(Get-DomainObject -Identity $systemManagementPath -Properties 'nTSecurityDescriptor' -Raw @PSBoundParameters)[0]
+                }
 
-                if (-not $containerRaw -or -not $containerRaw.nTSecurityDescriptor) {
+                if (-not $systemMgmt) {
+                    # Named apart from the unreadable case below. Both leave the
+                    # permissions unknown, but one is a missing read right on an existing
+                    # container and the other is a container nobody created.
+                    Show-Line "The System Management container does not exist - its permissions could not be read" -Class Note
+                } elseif (-not $containerRaw -or -not $containerRaw.nTSecurityDescriptor) {
                     # Reading the security descriptor needs READ_CONTROL, which a plain
                     # domain user has on this container - but say so rather than let an
                     # unreadable ACL look like a clean one.
@@ -113363,6 +113748,11 @@ function Show-CredentialRoamingDelegation {
 
     $totalContainers = $usersByContainer.Keys.Count
     $currentIndex = 0
+
+    # A container whose security descriptor could not be read produces no finding either,
+    # and the closing Secure line named every container as examined.
+    $unreadContainers = @()
+
     foreach ($containerDN in @($usersByContainer.Keys)) {
         $currentIndex++
         if ($totalContainers -gt $Script:ProgressThreshold) {
@@ -113373,9 +113763,12 @@ function Show-CredentialRoamingDelegation {
             $perms = Get-OUPermissions -DistinguishedName $containerDN -CheckType 'CredentialRoaming'
         }
         catch {
+            $unreadContainers += $containerDN
             Write-Log "[Get-CredentialRoaming] Failed to read permissions for '$containerDN': $($_.Exception.Message)"
             continue
         }
+
+        if (-not $perms -or $perms.Read -eq $false) { $unreadContainers += $containerDN }
 
         if (-not $perms -or -not $perms.Findings) { continue }
 
@@ -113416,6 +113809,9 @@ function Show-CredentialRoamingDelegation {
         Show-Progress -Activity "Checking Credential Roaming delegations" -Completed
     }
 
+    $readContainers = $totalContainers - @($unreadContainers).Count
+    $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadContainers -TotalOUs $totalContainers
+
     if ($byPrincipal.Count -eq 0) {
         # "Nobody" and "nobody except the principals we filtered out" are different
         # statements. Printing the first when the second is true would call a forest clean on
@@ -113423,9 +113819,14 @@ function Show-CredentialRoamingDelegation {
         if ($suppressedPrivileged.Count -gt 0) {
             Show-Line ("No non-privileged principal holds a delegated read of the roaming attributes, but " +
                        "$($suppressedPrivileged.Count) privileged one(s) do - use -IncludePrivileged to see them") -Class Note
+        } elseif ($totalContainers -gt 0 -and $readContainers -le 0) {
+            Show-Line ("The delegations on the $totalContainers container(s) holding this material were not " +
+                       "evaluated - no security descriptor could be read") -Class Note
         } else {
-            Show-Line ("No principal holds a delegated read of the roaming attributes on the $totalContainers " +
-                       "container(s) holding this material") -Class Secure
+            $roamingClass = 'Secure'
+            if ($coverageIncomplete) { $roamingClass = 'Note' }
+            Show-Line ("No principal holds a delegated read of the roaming attributes on the $readContainers " +
+                       "container(s) holding this material") -Class $roamingClass
         }
         return
     }
@@ -126263,7 +126664,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261010-1715"
+$Script:adPEASVersion = "2.7.0+20261010-1942"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
