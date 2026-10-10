@@ -590,19 +590,54 @@ function Build-ScoringContext {
         }
 
         # Extract encryption types (for Kerberoast analysis)
-        if ($obj.'msDS-SupportedEncryptionTypes') {
-            $encTypes = $obj.'msDS-SupportedEncryptionTypes'
-            if ($encTypes) {
-                # Decode encryption type flags
-                $encValue = 0
-                if ($encTypes -is [int]) { $encValue = $encTypes }
-                elseif ($encTypes -is [string] -and $encTypes -match '^\d+$') { $encValue = [int]$encTypes }
+        #
+        # Two shapes can arrive here and the one that actually does was not handled.
+        # ConvertFrom-LDAPAttribute decodes msDS-SupportedEncryptionTypes into an array of
+        # flag names long before a check sees it - "RC4-HMAC",
+        # "AES256-CTS-HMAC-SHA1-96", or "Not configured" when the attribute is absent -
+        # while this block tested for [int] and for a numeric string. Neither matches an
+        # array, so $encValue stayed 0 for every account and encryptionTypes stayed empty.
+        # The RC4/AES factor in report-scripts.js has therefore been dead code, and the
+        # check card still says the encryption type was examined: an RC4-only service
+        # account and an AES-only one were indistinguishable in the report, although the
+        # difference is orders of magnitude of offline cracking effort.
+        #
+        # The names are normalised to the three tokens the report script compares with
+        # Array.includes - RC4-HMAC, AES128, AES256. Passing the long names through would
+        # leave hasRC4Only true for every account that supports RC4 and AES, which is the
+        # opposite of what that flag means.
+        $encRaw = $obj.'msDS-SupportedEncryptionTypes'
+        if ($null -ne $encRaw) {
+            $encNames = @()
 
-                if ($encValue -band 0x1) { $acctInfo.encryptionTypes += 'DES-CBC-CRC' }
-                if ($encValue -band 0x2) { $acctInfo.encryptionTypes += 'DES-CBC-MD5' }
-                if ($encValue -band 0x4) { $acctInfo.encryptionTypes += 'RC4-HMAC' }
-                if ($encValue -band 0x8) { $acctInfo.encryptionTypes += 'AES128' }
-                if ($encValue -band 0x10) { $acctInfo.encryptionTypes += 'AES256' }
+            foreach ($encEntry in @($encRaw)) {
+                $encText = ([string]$encEntry).Trim()
+                if (-not $encText) { continue }
+
+                # A raw numeric value, in case a caller ever hands one over undecoded.
+                $encValue = 0
+                if ([int]::TryParse($encText, [ref]$encValue)) {
+                    if ($encValue -band 0x1)  { $encNames += 'DES-CBC-CRC' }
+                    if ($encValue -band 0x2)  { $encNames += 'DES-CBC-MD5' }
+                    if ($encValue -band 0x4)  { $encNames += 'RC4-HMAC' }
+                    if ($encValue -band 0x8)  { $encNames += 'AES128' }
+                    if ($encValue -band 0x10) { $encNames += 'AES256' }
+                    if ($encValue -band 0x20) { $encNames += 'AES256' }
+                    continue
+                }
+
+                # The decoded form. Only the encryption types are carried over: bits 6 and
+                # above are Kerberos feature flags (FAST, compound identity, claims) and
+                # say nothing about how a ticket is encrypted.
+                if ($encText -like 'RC4*')            { $encNames += 'RC4-HMAC' }
+                elseif ($encText -like 'AES128*')     { $encNames += 'AES128' }
+                elseif ($encText -like 'AES256*')     { $encNames += 'AES256' }
+                elseif ($encText -like 'DES*')        { $encNames += $encText }
+                elseif ($encText -eq 'Not configured'){ $encNames += 'Not configured' }
+            }
+
+            if (@($encNames).Count -gt 0) {
+                $acctInfo.encryptionTypes = @($encNames | Select-Object -Unique)
             }
         }
 

@@ -3058,7 +3058,7 @@ $Script:PrimaryAttributes = @{
 	    'displayName',
 	    'sAMAccountName', 'userPrincipalName', 'distinguishedName', 'objectSid',
 	    'memberOf', 'privilegedGroups',
-	    'servicePrincipalName',
+	    'servicePrincipalName', 'msDS-SupportedEncryptionTypes',
 	    'unixUserPassword', 'userPassword', 'unicodePwd', 'msSFU30Password',
 	    'sambaNTPassword', 'sambaLMPassword',
 	    'ms-Mcs-AdmPwd', 'msLAPS-Password', 'msLAPS-EncryptedPassword', 'msLAPS-Account',
@@ -14283,6 +14283,118 @@ foreach ($oid in $linkedOIDs) {
 	        @{ Attribute = 'Owner'; Custom = 'is_not_default_owner'; Severity = 'Hint'; SeverityOnly = $true }
 	    )
 	}
+	'ENCRYPTION_RC4_ONLY' = @{
+	    Title = "Account Supports Only RC4 for Kerberos"
+	    Risk = "Finding"
+	    BaseScore = 45
+	    Description = "This account's msDS-SupportedEncryptionTypes permits RC4-HMAC and no AES type at all. A service ticket for it is therefore encrypted with a key derived from the account's NT hash by a single MD4 pass, which is what makes an offline attack on a captured ticket cheap: commodity hardware tries RC4 candidates orders of magnitude faster than AES256 ones, because AES256 keys go through 4096 iterations of PBKDF2-HMAC-SHA1 first."
+	    Impact = @(
+	        "A kerberoasted ticket for this account can be cracked far faster than an AES one - the same password resists AES and falls to RC4"
+	        "A long random service account password is still the real defence, but RC4 removes the margin it buys"
+	        "RC4 also keeps the account usable for an overpass-the-hash with its NT hash alone, without the AES keys"
+	    )
+	    Attack = @(
+	        "1. Request a service ticket for the account (Kerberoasting) - the encryption type of the ticket follows this attribute"
+	        "2. Extract the RC4 hash ($krb5tgs$23$...) and crack it offline at RC4 speed"
+	        "3. The recovered password is the account's, with whatever the account may reach"
+	    )
+	    Remediation = @(
+	        "Set msDS-SupportedEncryptionTypes to AES128 and AES256 only (decimal 24) on the account, after confirming every service that authenticates to it can negotiate AES"
+	        "Reset the account's password afterwards so the AES keys are actually generated - changing the attribute alone leaves the old keys in place"
+	        "Where RC4 cannot be removed yet, give the account a long random password and a managed one if possible (gMSA), which is what makes the cracking speed irrelevant"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Allow only AES on one account (24 = AES128 + AES256)"
+	            Command = 'Set-ADUser -Identity <account> -Replace @{ "msDS-SupportedEncryptionTypes" = 24 }'
+	        }
+	        @{
+	            Description = "List every enabled account with an SPN that permits RC4"
+	            Command = 'Get-ADUser -LDAPFilter "(&(servicePrincipalName=*)(!userAccountControl:1.2.840.113556.1.4.803:=2))" -Properties msDS-SupportedEncryptionTypes | Where-Object { -not $_."msDS-SupportedEncryptionTypes" -or ($_."msDS-SupportedEncryptionTypes" -band 4) }'
+	        }
+	    )
+	    References = @(
+	        @{ Title = "MS-KILE 2.2.7: Supported Encryption Types Bit Flags"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/6cfc7b50-11ed-4b4d-846d-6f08f0812919" }
+	        @{ Title = "Decrypting the Selection of Supported Kerberos Encryption Types"; Url = "https://techcommunity.microsoft.com/blog/askds/decrypting-the-selection-of-supported-kerberos-encryption-types/1628797" }
+	    )
+	    Tools = @("Rubeus", "Impacket GetUserSPNs.py", "hashcat")
+	    MITRE = "T1558.003"
+	    Triggers = @(
+	        @{ Attribute = 'msDS-SupportedEncryptionTypes'; Custom = 'enc_rc4_without_aes'; Severity = 'Finding' }
+	    )
+	}
+	'ENCRYPTION_DES_ENABLED' = @{
+	    Title = "DES Encryption Enabled for Kerberos"
+	    Risk = "Finding"
+	    BaseScore = 60
+	    Description = "This account permits a DES encryption type for Kerberos. DES has a 56-bit key, is brute-forceable outright, and has been disabled by default since Windows 7 and Windows Server 2008 R2 - an account that still allows it was configured by hand or carried over from a very old domain."
+	    Impact = @(
+	        "A DES key is recoverable by brute force regardless of how long the password is"
+	        "Enabling DES on an account usually means a legacy application dictated it, and that application is as old as the setting"
+	        "The account's tickets can be decrypted, which exposes whatever the service protects"
+	    )
+	    Attack = @(
+	        "1. Request a ticket for the account and capture it"
+	        "2. Brute-force the 56-bit DES key - a known-plaintext attack on the encrypted part, not a password guess"
+	        "3. Decrypt the ticket, or forge one with the recovered key"
+	    )
+	    Remediation = @(
+	        "Remove the DES bits from msDS-SupportedEncryptionTypes and reset the account's password"
+	        "Identify the application that required DES - it needs replacing, not accommodating"
+	        "Check the domain controllers' own policy ('Network security: Configure encryption types allowed for Kerberos') for DES as well"
+	    )
+	    References = @(
+	        @{ Title = "MS-KILE 2.2.7: Supported Encryption Types Bit Flags"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/6cfc7b50-11ed-4b4d-846d-6f08f0812919" }
+	    )
+	    Tools = @("Rubeus", "hashcat")
+	    MITRE = "T1558.003"
+	    Triggers = @(
+	        @{ Attribute = 'msDS-SupportedEncryptionTypes'; Custom = 'enc_des_enabled'; Severity = 'Finding' }
+	    )
+	}
+	'ENCRYPTION_NOT_CONFIGURED' = @{
+	    Title = "Encryption Types Not Configured on an Account With an SPN"
+	    Risk = "Hint"
+	    BaseScore = 25
+	    Description = "msDS-SupportedEncryptionTypes is not set on this account, and the account carries a service principal name. The attribute being absent does not mean AES: the KDC then falls back to what the domain allows, which on every domain that has not restricted it includes RC4-HMAC - so a service ticket for this account may still be issued with an RC4 key, and the account is as cheap to crack as one that permits RC4 explicitly."
+	    Impact = @(
+	        "The account can be roasted for an RC4 ticket even though nothing in the directory says RC4 is allowed for it"
+	        "It is the most common state of a service account, which is why it is reported as a hint rather than a finding - but it is not the same as AES-only"
+	        "What the KDC actually issues depends on the domain controllers' policy, which this attribute cannot tell you"
+	    )
+	    Attack = @(
+	        "1. Request a service ticket for the account and ask for RC4 (Rubeus does this by default with /rc4opsec)"
+	        "2. If the KDC issues it, crack the ticket at RC4 speed"
+	    )
+	    Remediation = @(
+	        "Set msDS-SupportedEncryptionTypes to 24 (AES128 + AES256) on every account with an SPN, then reset its password so the AES keys exist"
+	        "Restrict the encryption types the domain allows as well, through 'Network security: Configure encryption types allowed for Kerberos' - the account attribute only narrows what the domain already permits"
+	        "Verify with a captured ticket (klist, or Rubeus kerberoast) that AES is what the KDC now issues"
+	    )
+	    References = @(
+	        @{ Title = "Decrypting the Selection of Supported Kerberos Encryption Types"; Url = "https://techcommunity.microsoft.com/blog/askds/decrypting-the-selection-of-supported-kerberos-encryption-types/1628797" }
+	    )
+	    Tools = @("Rubeus", "klist")
+	    MITRE = "T1558.003"
+	    Triggers = @(
+	        @{ Attribute = 'msDS-SupportedEncryptionTypes'; Custom = 'enc_not_configured_with_spn'; Severity = 'Hint' }
+	    )
+	}
+	'ENCRYPTION_AES_ONLY' = @{
+	    Title = "Account Restricted to AES for Kerberos"
+	    Risk = "Secure"
+	    BaseScore = 0
+	    Description = "This account permits AES and neither RC4 nor DES. A captured service ticket for it carries an AES key, which is derived through 4096 iterations of PBKDF2-HMAC-SHA1 - the state a kerberoastable account should be in, and the reason a green row is worth showing next to the red ones."
+	    Remediation = @(
+	        "Nothing to do. Keep it this way when the account's password is reset or the service is rebuilt."
+	    )
+	    References = @(
+	        @{ Title = "MS-KILE 2.2.7: Supported Encryption Types Bit Flags"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/6cfc7b50-11ed-4b4d-846d-6f08f0812919" }
+	    )
+	    Triggers = @(
+	        @{ Attribute = 'msDS-SupportedEncryptionTypes'; Custom = 'enc_aes_only'; Severity = 'Secure' }
+	    )
+	}
 	'KERBEROASTABLE_USER_SPN' = @{
 	    Title = "User Account with SPN (Kerberoastable)"
 	    Risk = "Finding"
@@ -15752,6 +15864,25 @@ function Test-UACFlagOnObject {
 	}
 	return ($uacText -match [regex]::Escape($FlagName))
 }
+function Get-EncryptionTypeList {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    $SourceObject
+	)
+	if (-not $SourceObject) { return $null }
+	$encProp = $SourceObject.PSObject.Properties['msDS-SupportedEncryptionTypes']
+	if (-not $encProp -or $null -eq $encProp.Value) { return $null }
+	$names = @()
+	foreach ($entry in @($encProp.Value)) {
+	    $text = ([string]$entry).Trim()
+	    if (-not $text) { continue }
+	    if ($text -like 'RC4*' -or $text -like 'AES*' -or $text -like 'DES*') { $names += $text }
+	}
+	if (@($names).Count -eq 0) { return $null }
+	return [string[]]$names
+}
 function Test-CustomTrigger {
 	param(
 	    [string]$CustomType,
@@ -15765,6 +15896,28 @@ function Test-CustomTrigger {
 	        $lapsCaveat = $SourceObject.PSObject.Properties['lapsBackupOutsideAD']
 	        if ($lapsCaveat -and $lapsCaveat.Value) { return $false }
 	        return $true
+	    }
+	    'enc_rc4_without_aes' {
+	        if (([string]$Value) -notlike 'RC4*') { return $false }
+	        $encList = @(Get-EncryptionTypeList -SourceObject $SourceObject | Where-Object { $_ })
+	        if ($encList.Count -eq 0) { return $false }
+	        return (@($encList | Where-Object { $_ -like 'AES*' }).Count -eq 0)
+	    }
+	    'enc_des_enabled' {
+	        return (([string]$Value) -like 'DES*')
+	    }
+	    'enc_not_configured_with_spn' {
+	        if (([string]$Value) -ne 'Not configured') { return $false }
+	        if (-not $SourceObject) { return $false }
+	        $spnProp = $SourceObject.PSObject.Properties['servicePrincipalName']
+	        if (-not $spnProp) { return $false }
+	        return (@($spnProp.Value | Where-Object { $_ }).Count -gt 0)
+	    }
+	    'enc_aes_only' {
+	        if (([string]$Value) -notlike 'AES*') { return $false }
+	        $encList = @(Get-EncryptionTypeList -SourceObject $SourceObject | Where-Object { $_ })
+	        if ($encList.Count -eq 0) { return $false }
+	        return (@($encList | Where-Object { $_ -like 'RC4*' -or $_ -like 'DES*' }).Count -eq 0)
 	    }
 	    'ra_signature_gated' {
 	        if (-not $SourceObject) { return $false }
@@ -71113,17 +71266,30 @@ function Build-ScoringContext {
 	        } catch {
 	        }
 	    }
-	    if ($obj.'msDS-SupportedEncryptionTypes') {
-	        $encTypes = $obj.'msDS-SupportedEncryptionTypes'
-	        if ($encTypes) {
+	    $encRaw = $obj.'msDS-SupportedEncryptionTypes'
+	    if ($null -ne $encRaw) {
+	        $encNames = @()
+	        foreach ($encEntry in @($encRaw)) {
+	            $encText = ([string]$encEntry).Trim()
+	            if (-not $encText) { continue }
 	            $encValue = 0
-	            if ($encTypes -is [int]) { $encValue = $encTypes }
-	            elseif ($encTypes -is [string] -and $encTypes -match '^\d+$') { $encValue = [int]$encTypes }
-	            if ($encValue -band 0x1) { $acctInfo.encryptionTypes += 'DES-CBC-CRC' }
-	            if ($encValue -band 0x2) { $acctInfo.encryptionTypes += 'DES-CBC-MD5' }
-	            if ($encValue -band 0x4) { $acctInfo.encryptionTypes += 'RC4-HMAC' }
-	            if ($encValue -band 0x8) { $acctInfo.encryptionTypes += 'AES128' }
-	            if ($encValue -band 0x10) { $acctInfo.encryptionTypes += 'AES256' }
+	            if ([int]::TryParse($encText, [ref]$encValue)) {
+	                if ($encValue -band 0x1)  { $encNames += 'DES-CBC-CRC' }
+	                if ($encValue -band 0x2)  { $encNames += 'DES-CBC-MD5' }
+	                if ($encValue -band 0x4)  { $encNames += 'RC4-HMAC' }
+	                if ($encValue -band 0x8)  { $encNames += 'AES128' }
+	                if ($encValue -band 0x10) { $encNames += 'AES256' }
+	                if ($encValue -band 0x20) { $encNames += 'AES256' }
+	                continue
+	            }
+	            if ($encText -like 'RC4*')            { $encNames += 'RC4-HMAC' }
+	            elseif ($encText -like 'AES128*')     { $encNames += 'AES128' }
+	            elseif ($encText -like 'AES256*')     { $encNames += 'AES256' }
+	            elseif ($encText -like 'DES*')        { $encNames += $encText }
+	            elseif ($encText -eq 'Not configured'){ $encNames += 'Not configured' }
+	        }
+	        if (@($encNames).Count -gt 0) {
+	            $acctInfo.encryptionTypes = @($encNames | Select-Object -Unique)
 	        }
 	    }
 	    if ($obj.userAccountControl -and $obj.userAccountControl -is [array]) {
@@ -81153,7 +81319,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261010-2332"
+$Script:adPEASVersion = "2.7.0+20261010-2347"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

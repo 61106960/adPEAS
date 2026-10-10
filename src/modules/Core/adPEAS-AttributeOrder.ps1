@@ -35,7 +35,12 @@ $Script:PrimaryAttributes = @{
         'memberOf', 'privilegedGroups',
 
         # 3. SERVICE PRINCIPAL NAMES (Kerberoasting indicator)
-        'servicePrincipalName',
+        #
+        # The encryption type belongs beside the SPN: for an account that can be roasted
+        # it is the one property that decides what a captured ticket is worth, and it sat
+        # in no PrimaryAttributes list at all - so it landed uncoloured in the collapsed
+        # Extended block while the check description said it had been examined.
+        'servicePrincipalName', 'msDS-SupportedEncryptionTypes',
 
         # 4. CREDENTIAL EXPOSURE (passwords, LAPS)
         'unixUserPassword', 'userPassword', 'unicodePwd', 'msSFU30Password',
