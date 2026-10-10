@@ -3152,6 +3152,7 @@ $Script:PrimaryAttributes = @{
         'LinkedOUs', 'GPOStatus'
     )
     LAPSGPOConfig = @(
+        'lapsGpoNotLinked',
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'LAPSVersion', 'ManagedAccount',
         'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
         'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
@@ -13991,6 +13992,7 @@ foreach ($oid in $linkedOIDs) {
         )
     }
     'ADCS_CLIENT_AUTH_SEVERITY' = @{
+        ColourOnly = $true
         Title = "Client Authentication Enabled"
         Risk = "Hint"
         BaseScore = 15
@@ -14039,6 +14041,7 @@ foreach ($oid in $linkedOIDs) {
         )
     }
     'CERT_FLAG_SEVERITY' = @{
+        ColourOnly = $true
         Title = "Certificate Template Flags"
         Risk = "Finding"
         BaseScore = 30
@@ -14453,6 +14456,7 @@ foreach ($oid in $linkedOIDs) {
         )
     }
     'DANGEROUS_RIGHTS_CONTEXT' = @{
+        ColourOnly = $true
         Title = "Dangerous Rights (Context-Aware)"
         Risk = "Finding"
         BaseScore = 0
@@ -15646,6 +15650,7 @@ foreach ($oid in $linkedOIDs) {
         Triggers = @(
             @{ Attribute = 'LinkedOUs'; Pattern = '^Not linked'; Severity = 'Note'; SeverityOnly = $true }
             @{ Attribute = 'LinkedOUs'; Pattern = '^Unknown - linkage'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'lapsGpoNotLinked'; Severity = 'Hint' }
         )
     }
     'SCRIPTPATH_HARDCODED' = @{
@@ -17036,13 +17041,15 @@ function Convert-LinkedOUsToRenderValues {
     $items = @()
     if ($null -ne $Value) { $items = @($Value) }
     if ($items.Count -eq 0) {
+        $emptyMatch = Get-TriggerMatch -Name $Name -Value 'Not linked' `
+            -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
         return @{
             RowType             = 'SingleValue'
             OverallSeverity     = 'Standard'
             ForceAttributeClass = $false
             Values              = @(
                 New-RenderValue -Display 'Not linked' `
-                    -Severity 'Note' -RawValue $null
+                    -Severity $emptyMatch.Severity -FindingId $emptyMatch.FindingId -RawValue $null
             )
         }
     }
@@ -66344,6 +66351,11 @@ function New-LAPSGPOConfigObject {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Unknown - linkage could not be resolved' -Force
     } else {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+        if ($linkedOUs.Count -eq 0) {
+            $obj | Add-Member -NotePropertyName 'lapsGpoNotLinked' -NotePropertyValue (
+                'This GPO carries LAPS policy settings and is linked to no OU, domain or site, so the settings apply to no computer at all.'
+            ) -Force
+        }
     }
     $obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSGPOConfig' -Force
     return $obj
@@ -84463,7 +84475,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-0027"
+$Script:adPEASVersion = "2.7.0+20261011-0049"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

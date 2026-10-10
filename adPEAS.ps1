@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 00:27:33
-    Version: 2.7.0+20261011-0027
+    Build: 2026-10-11 00:49:28
+    Version: 2.7.0+20261011-0049
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6280,6 +6280,9 @@ $Script:PrimaryAttributes = @{
 
     # LAPS policy settings deployed via GPO (Get-LAPSConfiguration, Step 3)
     LAPSGPOConfig = @(
+        # The unlinked statement first: a policy that reaches no computer makes every
+        # setting below it moot, and the row carries the only card this check has for it.
+        'lapsGpoNotLinked',
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'LAPSVersion', 'ManagedAccount',
         'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
         'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
@@ -18495,6 +18498,12 @@ foreach ($oid in $linkedOIDs) {
 
     # ADCS Template - Client Authentication EKU (severity trigger)
     'ADCS_CLIENT_AUTH_SEVERITY' = @{
+        # Colour only, by design: the colour of a client-authentication template; the ESC definitions carry the reader's text.
+        # Declared rather than left to be inferred, because a definition whose only
+        # triggers are SeverityOnly can never produce a finding card - and one carrying a
+        # full write-up in that state is a text nobody can open. Test-Project checks for
+        # exactly that and skips the ones marked here.
+        ColourOnly = $true
         Title = "Client Authentication Enabled"
         Risk = "Hint"
         BaseScore = 15
@@ -18547,6 +18556,12 @@ foreach ($oid in $linkedOIDs) {
 
     # Certificate Name/Enrollment Flags (severity-only triggers for flags)
     'CERT_FLAG_SEVERITY' = @{
+        # Colour only, by design: the colour of a certificate flag; the ESC definitions carry the reader's text.
+        # Declared rather than left to be inferred, because a definition whose only
+        # triggers are SeverityOnly can never produce a finding card - and one carrying a
+        # full write-up in that state is a text nobody can open. Test-Project checks for
+        # exactly that and skips the ones marked here.
+        ColourOnly = $true
         Title = "Certificate Template Flags"
         Risk = "Finding"
         BaseScore = 30
@@ -19042,6 +19057,12 @@ foreach ($oid in $linkedOIDs) {
 
     # dangerousRights with context-override
     'DANGEROUS_RIGHTS_CONTEXT' = @{
+        # Colour only, by design: the colour of the dangerousRights family; the specific ACL definitions carry the reader's text.
+        # Declared rather than left to be inferred, because a definition whose only
+        # triggers are SeverityOnly can never produce a finding card - and one carrying a
+        # full write-up in that state is a text nobody can open. Test-Project checks for
+        # exactly that and skips the ones marked here.
+        ColourOnly = $true
         Title = "Dangerous Rights (Context-Aware)"
         Risk = "Finding"
         BaseScore = 0
@@ -20342,6 +20363,20 @@ foreach ($oid in $linkedOIDs) {
             # all of them, the finding is not.
             @{ Attribute = 'LinkedOUs'; Pattern = '^Not linked'; Severity = 'Note'; SeverityOnly = $true }
             @{ Attribute = 'LinkedOUs'; Pattern = '^Unknown - linkage'; Severity = 'Hint'; SeverityOnly = $true }
+
+            # ...and an attribute of its own, which is what makes this card reachable at
+            # all. Both triggers above are SeverityOnly - they colour the row and never
+            # produce a finding id - so the write-up below was written for a reader who
+            # could never open it: the policy that really is linked nowhere, the case this
+            # definition exists for, appeared as an unremarkable "Not linked" line with no
+            # tooltip, no card and no remediation, and was missing from the findings part
+            # of the HTML report entirely.
+            #
+            # lapsGpoNotLinked is set by Get-LAPSConfiguration and by nothing else, which
+            # is the point: LinkedOUs is written by twelve check modules across six
+            # categories, and a card saying "The LAPS settings in this GPO apply to no
+            # computer at all" cannot be attached to a printer driver policy.
+            @{ Attribute = 'lapsGpoNotLinked'; Severity = 'Hint' }
         )
     }
 
@@ -22531,13 +22566,19 @@ function Convert-LinkedOUsToRenderValues {
     if ($null -ne $Value) { $items = @($Value) }
 
     if ($items.Count -eq 0) {
+        # Through Get-TriggerMatch like every other value on this attribute, rather than
+        # with a hardcoded severity. The two paths could drift silently: the trigger on
+        # '^Not linked' says Note and so did this literal, so nothing was visibly wrong -
+        # until somebody changed one of them. One lookup, one answer.
+        $emptyMatch = Get-TriggerMatch -Name $Name -Value 'Not linked' `
+            -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
         return @{
             RowType             = 'SingleValue'
             OverallSeverity     = 'Standard'
             ForceAttributeClass = $false
             Values              = @(
                 New-RenderValue -Display 'Not linked' `
-                    -Severity 'Note' -RawValue $null
+                    -Severity $emptyMatch.Severity -FindingId $emptyMatch.FindingId -RawValue $null
             )
         }
     }
@@ -104029,6 +104070,24 @@ function New-LAPSGPOConfigObject {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Unknown - linkage could not be resolved' -Force
     } else {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+
+        # The statement, on an attribute of this check's own, for the case where the
+        # lookup succeeded and found nothing. LAPS_GPO_NOT_LINKED hangs off it.
+        #
+        # It cannot hang off LinkedOUs: twelve check modules write that attribute, and a
+        # card reading "The LAPS settings in this GPO apply to no computer at all" would
+        # attach itself to printer driver policies and SMB signing policies too - which is
+        # why both LinkedOUs triggers are SeverityOnly, and why the card was unreachable.
+        #
+        # Guarded on the lookup having worked. A failed one is the other branch above, and
+        # inferring "applies nowhere" from a query that did not answer is the mistake this
+        # whole distinction exists to avoid - its remediation ("link the GPO or delete it")
+        # can send a reader to touch a policy that was linked all along.
+        if ($linkedOUs.Count -eq 0) {
+            $obj | Add-Member -NotePropertyName 'lapsGpoNotLinked' -NotePropertyValue (
+                'This GPO carries LAPS policy settings and is linked to no OU, domain or site, so the settings apply to no computer at all.'
+            ) -Force
+        }
     }
 
     $obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSGPOConfig' -Force
@@ -129496,7 +129555,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-0027"
+$Script:adPEASVersion = "2.7.0+20261011-0049"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

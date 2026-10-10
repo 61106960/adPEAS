@@ -195,6 +195,9 @@ $Script:PrimaryAttributes = @{
 
     # LAPS policy settings deployed via GPO (Get-LAPSConfiguration, Step 3)
     LAPSGPOConfig = @(
+        # The unlinked statement first: a policy that reaches no computer makes every
+        # setting below it moot, and the row carries the only card this check has for it.
+        'lapsGpoNotLinked',
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'LAPSVersion', 'ManagedAccount',
         'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
         'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',

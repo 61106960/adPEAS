@@ -1168,13 +1168,19 @@ function Convert-LinkedOUsToRenderValues {
     if ($null -ne $Value) { $items = @($Value) }
 
     if ($items.Count -eq 0) {
+        # Through Get-TriggerMatch like every other value on this attribute, rather than
+        # with a hardcoded severity. The two paths could drift silently: the trigger on
+        # '^Not linked' says Note and so did this literal, so nothing was visibly wrong -
+        # until somebody changed one of them. One lookup, one answer.
+        $emptyMatch = Get-TriggerMatch -Name $Name -Value 'Not linked' `
+            -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
         return @{
             RowType             = 'SingleValue'
             OverallSeverity     = 'Standard'
             ForceAttributeClass = $false
             Values              = @(
                 New-RenderValue -Display 'Not linked' `
-                    -Severity 'Note' -RawValue $null
+                    -Severity $emptyMatch.Severity -FindingId $emptyMatch.FindingId -RawValue $null
             )
         }
     }

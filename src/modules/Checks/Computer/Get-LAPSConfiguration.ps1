@@ -164,6 +164,24 @@ function New-LAPSGPOConfigObject {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue 'Unknown - linkage could not be resolved' -Force
     } else {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
+
+        # The statement, on an attribute of this check's own, for the case where the
+        # lookup succeeded and found nothing. LAPS_GPO_NOT_LINKED hangs off it.
+        #
+        # It cannot hang off LinkedOUs: twelve check modules write that attribute, and a
+        # card reading "The LAPS settings in this GPO apply to no computer at all" would
+        # attach itself to printer driver policies and SMB signing policies too - which is
+        # why both LinkedOUs triggers are SeverityOnly, and why the card was unreachable.
+        #
+        # Guarded on the lookup having worked. A failed one is the other branch above, and
+        # inferring "applies nowhere" from a query that did not answer is the mistake this
+        # whole distinction exists to avoid - its remediation ("link the GPO or delete it")
+        # can send a reader to touch a policy that was linked all along.
+        if ($linkedOUs.Count -eq 0) {
+            $obj | Add-Member -NotePropertyName 'lapsGpoNotLinked' -NotePropertyValue (
+                'This GPO carries LAPS policy settings and is linked to no OU, domain or site, so the settings apply to no computer at all.'
+            ) -Force
+        }
     }
 
     $obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSGPOConfig' -Force

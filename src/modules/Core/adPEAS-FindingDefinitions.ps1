@@ -10799,6 +10799,12 @@ foreach ($oid in $linkedOIDs) {
 
     # ADCS Template - Client Authentication EKU (severity trigger)
     'ADCS_CLIENT_AUTH_SEVERITY' = @{
+        # Colour only, by design: the colour of a client-authentication template; the ESC definitions carry the reader's text.
+        # Declared rather than left to be inferred, because a definition whose only
+        # triggers are SeverityOnly can never produce a finding card - and one carrying a
+        # full write-up in that state is a text nobody can open. Test-Project checks for
+        # exactly that and skips the ones marked here.
+        ColourOnly = $true
         Title = "Client Authentication Enabled"
         Risk = "Hint"
         BaseScore = 15
@@ -10851,6 +10857,12 @@ foreach ($oid in $linkedOIDs) {
 
     # Certificate Name/Enrollment Flags (severity-only triggers for flags)
     'CERT_FLAG_SEVERITY' = @{
+        # Colour only, by design: the colour of a certificate flag; the ESC definitions carry the reader's text.
+        # Declared rather than left to be inferred, because a definition whose only
+        # triggers are SeverityOnly can never produce a finding card - and one carrying a
+        # full write-up in that state is a text nobody can open. Test-Project checks for
+        # exactly that and skips the ones marked here.
+        ColourOnly = $true
         Title = "Certificate Template Flags"
         Risk = "Finding"
         BaseScore = 30
@@ -11346,6 +11358,12 @@ foreach ($oid in $linkedOIDs) {
 
     # dangerousRights with context-override
     'DANGEROUS_RIGHTS_CONTEXT' = @{
+        # Colour only, by design: the colour of the dangerousRights family; the specific ACL definitions carry the reader's text.
+        # Declared rather than left to be inferred, because a definition whose only
+        # triggers are SeverityOnly can never produce a finding card - and one carrying a
+        # full write-up in that state is a text nobody can open. Test-Project checks for
+        # exactly that and skips the ones marked here.
+        ColourOnly = $true
         Title = "Dangerous Rights (Context-Aware)"
         Risk = "Finding"
         BaseScore = 0
@@ -12646,6 +12664,20 @@ foreach ($oid in $linkedOIDs) {
             # all of them, the finding is not.
             @{ Attribute = 'LinkedOUs'; Pattern = '^Not linked'; Severity = 'Note'; SeverityOnly = $true }
             @{ Attribute = 'LinkedOUs'; Pattern = '^Unknown - linkage'; Severity = 'Hint'; SeverityOnly = $true }
+
+            # ...and an attribute of its own, which is what makes this card reachable at
+            # all. Both triggers above are SeverityOnly - they colour the row and never
+            # produce a finding id - so the write-up below was written for a reader who
+            # could never open it: the policy that really is linked nowhere, the case this
+            # definition exists for, appeared as an unremarkable "Not linked" line with no
+            # tooltip, no card and no remediation, and was missing from the findings part
+            # of the HTML report entirely.
+            #
+            # lapsGpoNotLinked is set by Get-LAPSConfiguration and by nothing else, which
+            # is the point: LinkedOUs is written by twelve check modules across six
+            # categories, and a card saying "The LAPS settings in this GPO apply to no
+            # computer at all" cannot be attached to a printer driver policy.
+            @{ Attribute = 'lapsGpoNotLinked'; Severity = 'Hint' }
         )
     }
 
