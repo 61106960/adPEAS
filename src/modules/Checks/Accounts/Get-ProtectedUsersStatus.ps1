@@ -30,9 +30,11 @@ function Get-ProtectedUsersStatus {
 
     Protected Users Security Features:
     - No NTLM, Digest, or CredSSP authentication
-    - Kerberos pre-authentication always required (no AS-REP Roasting)
+    - No DES/RC4 encryption for Kerberos (AES only), which also means an AS-REP for a
+      member with DONT_REQ_PREAUTH comes back AES-encrypted: far slower to crack, not
+      impossible. Enforcing pre-authentication is NOT among the documented effects, and
+      claiming it here read as immunity from AS-REP roasting
     - Kerberos TGT lifetime limited to 4 hours (instead of 10)
-    - No DES/RC4 encryption for Kerberos (AES only)
     - No delegation possible (Unconstrained/Constrained/RBCD)
     - Credential caching disabled
 

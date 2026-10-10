@@ -134,8 +134,13 @@ function Get-KerberoastableAccounts {
                             $kerberoastResult = $user | Invoke-Kerberoast @connectionParams
 
                             if ($kerberoastResult -and $kerberoastResult.Success -and $kerberoastResult.Hash) {
-                                # Add hash info as attributes to the user object
-                                $hashLabel = "Hashcat (mode $($kerberoastResult.HashcatMode), $($kerberoastResult.EncryptionTypeName))"
+                                # Add hash info as attributes to the user object. Without
+                                # the guard the label read "Hashcat (mode , DES-CBC-MD5)"
+                                # for an etype the central table has no mode for.
+                                $hashLabel = "Hashcat mode not available for $($kerberoastResult.EncryptionTypeName)"
+                                if ($null -ne $kerberoastResult.HashcatMode) {
+                                    $hashLabel = "Hashcat (mode $($kerberoastResult.HashcatMode), $($kerberoastResult.EncryptionTypeName))"
+                                }
                                 $user | Add-Member -NotePropertyName 'KerberoastingHash' -NotePropertyValue $kerberoastResult.Hash -Force
                                 $user | Add-Member -NotePropertyName 'KerberoastingHashType' -NotePropertyValue $hashLabel -Force
                                 $user | Add-Member -NotePropertyName 'KerberoastEncryption' -NotePropertyValue $kerberoastResult.EncryptionType -Force

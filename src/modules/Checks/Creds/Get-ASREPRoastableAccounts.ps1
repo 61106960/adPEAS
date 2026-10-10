@@ -107,16 +107,23 @@ function Get-ASREPRoastableAccounts {
                         if ($null -eq $roastResult) { $roastResult = [PSCustomObject]@{ Success = $false; Hash = $null; Error = $null } }
 
                         if ($roastResult.Success -and $roastResult.Hash) {
-                            # Determine hashcat mode based on encryption type
-                            $hashcatMode = switch ($roastResult.EncryptionType) {
-                                23 { 18200 }  # RC4
-                                17 { 19600 }  # AES128
-                                18 { 19700 }  # AES256
-                                default { 18200 }
+                            # From the central table rather than a second copy here. This
+                            # switch read 19600 for etype 17 and 19700 for etype 18, which
+                            # are the TGS-REP modes: they cannot parse an AS-REP hash, and
+                            # the reader got "Token length exception" from the mode the
+                            # report told them to use. The default branch labelled every
+                            # unknown etype, DES included, as 18200.
+                            $hashcatMode = $null
+                            if ($null -ne $roastResult.EncryptionType -and
+                                $Script:KERBEROS_ENCRYPTION_TYPES.ContainsKey([int]$roastResult.EncryptionType)) {
+                                $hashcatMode = $Script:KERBEROS_ENCRYPTION_TYPES[[int]$roastResult.EncryptionType].HashcatModeASREP
                             }
 
                             # Add hash info as attributes to the user object
-                            $hashLabel = "Hashcat (mode $hashcatMode, $($roastResult.EncryptionTypeName))"
+                            $hashLabel = "Hashcat mode not available for $($roastResult.EncryptionTypeName) AS-REP - crack with a tool that reads this etype"
+                            if ($null -ne $hashcatMode) {
+                                $hashLabel = "Hashcat (mode $hashcatMode, $($roastResult.EncryptionTypeName))"
+                            }
                             $user | Add-Member -NotePropertyName 'ASREPRoastingHash' -NotePropertyValue $roastResult.Hash -Force
                             $user | Add-Member -NotePropertyName 'ASREPRoastingHashType' -NotePropertyValue $hashLabel -Force
                             $user | Add-Member -NotePropertyName 'ASREPRoastEncryption' -NotePropertyValue $roastResult.EncryptionType -Force

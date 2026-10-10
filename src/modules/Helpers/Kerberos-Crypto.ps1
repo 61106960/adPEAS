@@ -57,10 +57,21 @@ $Script:KERBEROS_ENCRYPTION_TYPES = @{
     1  = @{ Name = "DES-CBC-CRC"; Severity = "Critical"; Description = "Obsolete and insecure"; HashcatMode = $null }
     2  = @{ Name = "DES-CBC-MD5"; Severity = "Critical"; Description = "Obsolete and insecure"; HashcatMode = $null }
     3  = @{ Name = "DES-CBC-MD4"; Severity = "Critical"; Description = "Obsolete and insecure"; HashcatMode = $null }
-    17 = @{ Name = "AES128-CTS-HMAC-SHA1-96"; Severity = "Medium"; Description = "Moderate security"; HashcatMode = 19700 }
-    18 = @{ Name = "AES256-CTS-HMAC-SHA1-96"; Severity = "Low"; Description = "Strong encryption"; HashcatMode = 19700 }
-    23 = @{ Name = "RC4-HMAC"; Severity = "Critical"; Description = "Weak - very fast to crack"; HashcatMode = 13100 }
+    17 = @{ Name = "AES128-CTS-HMAC-SHA1-96"; Severity = "Medium"; Description = "Moderate security"; HashcatMode = 19600; HashcatModeASREP = $null }
+    18 = @{ Name = "AES256-CTS-HMAC-SHA1-96"; Severity = "Low"; Description = "Strong encryption"; HashcatMode = 19700; HashcatModeASREP = $null }
+    23 = @{ Name = "RC4-HMAC"; Severity = "Critical"; Description = "Weak - very fast to crack"; HashcatMode = 13100; HashcatModeASREP = 18200 }
 }
+
+# HashcatMode above is the TGS-REP mode, which is what a kerberoast produces: 13100 for
+# etype 23, 19600 for etype 17, 19700 for etype 18. Etype 17 carried 19700 here, so the
+# report printed "Hashcat (mode 19700, AES128-CTS-HMAC-SHA1-96)" - a contradiction in one
+# line, and the mode cannot parse the hash.
+#
+# HashcatModeASREP is a separate column because an AS-REP is a different structure and
+# needs a different mode: 18200 for etype 23. For the AES etypes there is no AS-REP mode
+# to name here, so the value stays $null and the caller says so rather than printing a
+# TGS-REP mode that cannot read the hash - which is what the AS-REP check did with its own
+# copy of this mapping.
 
 # Minimum ticket size for hash extraction
 $Script:MIN_TICKET_SIZE = 32          # Minimum bytes for valid Kerberos ticket

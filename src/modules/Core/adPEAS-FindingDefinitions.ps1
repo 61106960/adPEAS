@@ -483,7 +483,62 @@ $Script:FindingDefinitions = @{
         Tools = @("Rubeus", "Mimikatz", "SpoolSample", "PetitPotam", "Impacket")
         MITRE = "T1550.003"
         Triggers = @(
-            @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_FOR_DELEGATION'; Severity = 'Finding' }
+            # Not on a domain controller. A DC carries TRUSTED_FOR_DELEGATION by design,
+            # and this card's first remediation command - Set-ADComputer
+            # -TrustedForDelegation $false - takes a DC out of service. A DC gets
+            # UNCONSTRAINED_DELEGATION_DC below instead. The severity was already damped
+            # to Hint for a DC by UAC_SEVERITY_OVERRIDE, but a SeverityOnly trigger
+            # changes no finding id, so the DC inventory carried a red card's text in a
+            # yellow line.
+            @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_FOR_DELEGATION'; Custom = 'is_not_dc_uac'; Severity = 'Finding' }
+        )
+    }
+
+    'UNCONSTRAINED_DELEGATION_DC' = @{
+        Title = "Unconstrained Delegation on a Domain Controller"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "This domain controller has TRUSTED_FOR_DELEGATION set, which is its normal state: a DC accepts forwardable TGTs by design. It is listed because it is the target that makes coercion worth something - a relayed or coerced authentication from a privileged account lands its TGT in this machine's memory."
+        Impact = @(
+            "TGTs of authenticating users are cached on the domain controller"
+            "A coercion primitive (PrinterBug, PetitPotam, DFSCoerce) can direct a privileged account's authentication here"
+            "The flag itself is not a misconfiguration and cannot be removed without breaking the DC"
+        )
+        Attack = @(
+            "1. Attacker gains code execution on the domain controller, or relays an authentication to it"
+            "2. Extracts cached TGTs from LSASS"
+            "3. Impersonates the accounts whose tickets were cached"
+        )
+        Remediation = @(
+            "Do not clear the flag - a domain controller needs it. The controls are elsewhere"
+            "Put Tier 0 accounts in Protected Users, or set 'Account is sensitive and cannot be delegated', so their TGTs are never forwarded here"
+            "Disable the Print Spooler service on domain controllers, which removes the PrinterBug coercion primitive"
+            "Enable LDAP signing and channel binding, and EPA on the certificate enrollment endpoints, so a coerced authentication cannot be relayed"
+            "Patch and monitor the coercion primitives (PetitPotam, DFSCoerce, ShadowCoerce)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Add a privileged account to Protected Users, so its TGT is never forwarded"
+                Command = "Add-ADGroupMember -Identity 'Protected Users' -Members 'ADMIN_ACCOUNT'"
+            }
+            @{
+                Description = "Mark an account as sensitive and not delegatable"
+                Command = "Set-ADUser -Identity 'ADMIN_ACCOUNT' -AccountNotDelegated `$true"
+            }
+            @{
+                Description = "Disable the Print Spooler on a domain controller"
+                Command = "Invoke-Command -ComputerName 'DC_NAME' -ScriptBlock { Stop-Service Spooler; Set-Service Spooler -StartupType Disabled }"
+            }
+        )
+        References = @(
+            @{ Title = "Unconstrained Delegation - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/unconstrained-delegation.html" }
+            @{ Title = "PrinterBug Attack"; Url = "https://github.com/leechristensen/SpoolSample" }
+            @{ Title = "Protected Users Security Group"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group" }
+        )
+        Tools = @("Rubeus", "Mimikatz", "SpoolSample", "PetitPotam")
+        MITRE = "T1550.003"
+        Triggers = @(
+            @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_FOR_DELEGATION'; Custom = 'is_dc_uac'; Severity = 'Hint' }
         )
     }
 
@@ -947,21 +1002,30 @@ Set-ADObject -Identity $templateDN -Replace @{'msPKI-Certificate-Application-Pol
 '@
             }
             @{
-                Description = "Disable SubCA capability (CT_FLAG_IS_CA flag in msPKI-Enrollment-Flag)"
+                Description = "Unpublish the template from every CA - the way to take a SubCA template out of use"
                 Command = @'
-$templateName = "VulnerableTemplate"
+# CT_FLAG_IS_CA is bit 0x80 of the template's "flags" attribute (MS-CRTD 2.4), not of
+# msPKI-Enrollment-Flag, where 0x80 is not assigned at all. The predecessor of this
+# command cleared an undefined bit in the wrong attribute, returned no error, and left the
+# SubCA capability exactly where it was.
+#
+# Clearing the bit is also not a supported change on a V1 default template. Taking the
+# template off the CAs is, and it is what stops the enrollment:
 $configNC = (Get-ADRootDSE).configurationNamingContext
-$templateDN = "CN=$templateName,CN=Certificate Templates,CN=Public Key Services,CN=Services,$configNC"
-
-# Get current enrollment flag
-$template = Get-ADObject -Identity $templateDN -Properties msPKI-Enrollment-Flag
-$currentFlag = $template.'msPKI-Enrollment-Flag'
-
-# Remove CT_FLAG_IS_CA (0x00000080) if present
-$newFlag = $currentFlag -band (-bnot 0x00000080)
-
-# Update template
-Set-ADObject -Identity $templateDN -Replace @{'msPKI-Enrollment-Flag' = $newFlag}
+Get-ADObject -SearchBase "CN=Enrollment Services,CN=Public Key Services,CN=Services,$configNC" `
+    -LDAPFilter '(objectClass=pKIEnrollmentService)' -Properties certificateTemplates |
+    ForEach-Object {
+        Set-ADObject -Identity $_.DistinguishedName -Remove @{ certificateTemplates = 'VulnerableTemplate' }
+    }
+'@
+            }
+            @{
+                Description = "Read the flag that actually carries the SubCA capability, to confirm the state"
+                Command = @'
+$configNC = (Get-ADRootDSE).configurationNamingContext
+Get-ADObject -SearchBase "CN=Certificate Templates,CN=Public Key Services,CN=Services,$configNC" `
+    -LDAPFilter '(objectClass=pKICertificateTemplate)' -Properties flags, msPKI-Certificate-Application-Policy |
+    Select-Object Name, flags, @{n='IsCA'; e={ ($_.flags -band 0x80) -ne 0 }}
 '@
             }
             @{
@@ -2140,8 +2204,8 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "4. Uses krbtgt hash to create Golden Tickets"
         )
         Remediation = @(
-            "Remove replication rights from non-DC accounts"
-            "Only Domain Controllers should have these permissions"
+            "Check what the account is before removing anything. Replication rights are granted on purpose to directory synchronisation (Entra Connect's MSOL_* account, other sync engines) and to backup and recovery products; removing them there breaks the hybrid sign-in of the whole organisation. Treat such an account as Tier 0 instead - its rights are equivalent to a domain controller's"
+            "Remove replication rights from every other account"
             "Monitor for DCSync activity (Event ID 4662 with specific GUIDs)"
             "Use Advanced Threat Protection to detect DCSync"
         )
@@ -2245,9 +2309,9 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
         Remediation = @(
             "Remove password reset rights from non-helpdesk principals"
-            "Segregate privileged accounts into protected OUs"
+            "Segregate privileged accounts into protected OUs, and let AdminSDHolder protect the ones that belong to a protected group - that is what keeps a delegated reset away from them"
             "Use tiered administration model"
-            "Add privileged accounts to Protected Users group"
+            "Audit the reset itself: event 4724 on a domain controller names who reset whose password"
             "Monitor for password reset events (Event ID 4724)"
         )
         RemediationCommands = @(
@@ -3264,7 +3328,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Tier 0 accounts: Only use on Tier 0 systems (DCs, PAWs)"
             "Minimize the number of Tier 0 accounts"
             "Use dedicated admin accounts (not used for daily activities)"
-            "Add Tier 0 accounts to 'Protected Users' group"
+            "Add Tier 0 USER accounts to 'Protected Users'. It ends NTLM, CredSSP, Digest, RC4 and delegation for those accounts and stops their credentials being cached, so anything that depends on one of those breaks - test before rolling it out broadly"
+            "Do not put a computer account or a gMSA in 'Protected Users' - Microsoft advises against it and it has no effect there. Use 'Account is sensitive and cannot be delegated', msDS-SupportedEncryptionTypes set to AES only, and an authentication policy silo instead"
             "Implement Privileged Access Workstations (PAWs) for Tier 0 administration"
             "Enable multi-factor authentication for Tier 0 accounts"
             "Monitor for Tier violations (Tier 0 credentials on non-Tier 0 systems)"
@@ -3299,8 +3364,18 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
                 Command = "`$privilegedGroups = @('Domain Admins','Enterprise Admins','Schema Admins','Administrators','Account Operators','Server Operators','Backup Operators','Print Operators'); `$privilegedGroups | ForEach-Object { Write-Host `"Group: `$_`" -ForegroundColor Cyan; Get-ADGroupMember -Identity `$_ -Recursive -ErrorAction SilentlyContinue | Select-Object Name,SamAccountName | Format-Table -AutoSize }"
             }
             @{
-                Description = "Add Tier 0 account to Protected Users group (enforces strict security policies)"
-                Command = "Add-ADGroupMember -Identity 'Protected Users' -Members 'TIER0_ACCOUNT'"
+                Description = "Add a Tier 0 user account to Protected Users - a user account, and after checking what it depends on"
+                Command = @'
+# Protected Users ends NTLM, CredSSP, Digest, RC4 and delegation for the member and stops
+# its credentials being cached. For a user account that is the point; for a computer
+# account or a gMSA it has no effect and Microsoft advises against it, so neither belongs
+# in this group - and this finding attaches to all three kinds of member.
+Add-ADGroupMember -Identity 'Protected Users' -Members 'TIER0_USER_ACCOUNT'
+
+# For a computer account or a gMSA, use these instead:
+Set-ADAccountControl -Identity 'TIER0_COMPUTER$' -AccountNotDelegated $true
+Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryptionTypes' = 24 }  # AES128 + AES256 only
+'@
             }
         )
         Tools = @("BloodHound", "PowerView", "PingCastle")
@@ -3690,7 +3765,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Remove unnecessary write permissions from GPOs"
             "Only Domain Admins and specific GPO management groups should have write access"
             "Use GPO delegation carefully - prefer read-only access"
-            "Monitor GPO modifications (Event ID 5136)"
+            "Monitor GPO modifications (Event ID 5136) - that event covers the directory object. The attack path here is the policy content in SYSVOL, and a change to those files raises no 5136: it needs file system auditing (4663) on the SYSVOL policy folder"
             "Implement GPO change management process"
         )
         RemediationCommands = @(
@@ -3746,7 +3821,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Minimize the number of GPOs linked at domain root"
             "Ensure strict permissions on domain-wide GPOs (only Domain Admins)"
             "Use OU-level GPO linking for more granular control"
-            "Consider security filtering (WMI filters) to limit GPO scope"
+            "Narrow the scope with security filtering - and leave Domain Computers a read, which MS16-072 made a precondition for user policies"
+            "A WMI filter is a different mechanism from security filtering: it is evaluated on the client at every refresh and costs time there, and it does not take the read away from anybody"
             "Monitor GPO link changes at domain level (Event ID 5136)"
         )
         RemediationCommands = @(
@@ -3763,8 +3839,20 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
                 Command = "New-GPLink -Name 'GPO_NAME' -Target 'OU=Workstations,DC=domain,DC=com' -LinkEnabled Yes"
             }
             @{
-                Description = "Apply security filtering to limit GPO scope (only apply to specific security group)"
-                Command = "Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType Group -PermissionLevel None -Replace; Set-GPPermission -Name 'GPO_NAME' -TargetName 'DOMAIN\SpecificGroup' -TargetType Group -PermissionLevel GpoApply"
+                Description = "Apply security filtering to limit GPO scope - Domain Computers keeps read, which MS16-072 made a precondition"
+                Command = @'
+# Since MS16-072 / KB3163622 group policy is retrieved in the security context of the
+# COMPUTER account, user policies included. Removing Authenticated Users without leaving
+# a computer-side read behind stops the GPO applying to users altogether - and the outage
+# does not look like a permission problem. Microsoft's own MS16-072 guidance is this
+# extra step, so it comes first here.
+Set-GPPermission -Name 'GPO_NAME' -TargetName 'Domain Computers' -TargetType Group -PermissionLevel GpoRead
+
+# Only then narrow the scope. GpoApply on a user group alone is not enough for a user
+# policy; the computers that the users log on to need the read above.
+Set-GPPermission -Name 'GPO_NAME' -TargetName 'DOMAIN\SpecificGroup' -TargetType Group -PermissionLevel GpoApply
+Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType Group -PermissionLevel None -Replace
+'@
             }
         )
         References = @(
@@ -3802,6 +3890,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "4. Uses credentials to access systems or escalate privileges"
         )
         Remediation = @(
+            "Change the password first. Deleting the XML does not revoke it: the file is cached on every client that applied the policy (%ProgramData%\Microsoft\Group Policy\History), it is in every SYSVOL and system-state backup, and anybody who read it before the cleanup keeps it"
             "Remove all GPP files containing cpassword"
             "Use LAPS for local administrator password management"
             "Never store credentials in GPP - use secure alternatives"
@@ -4901,6 +4990,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "4. Uses valid credentials for access or privilege escalation"
         )
         Remediation = @(
+            "Change the password first. The attribute was readable by every authenticated user in the domain, usually for years; emptying the field afterwards changes nothing about who already has the value, and the old content is in every AD backup"
             "Remove all passwords from description and info fields immediately"
             "Use a proper password manager for credential storage"
             "Educate administrators about this security risk"
@@ -4958,9 +5048,9 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "5. Uses credentials for lateral movement or privilege escalation"
         )
         Remediation = @(
+            "Change the password first, before the cleanup. Deleting the XML does not revoke it: the file is cached on every client that applied the policy (%ProgramData%\Microsoft\Group Policy\History), it is in every SYSVOL and system-state backup, and anybody who read it keeps it. A retest after the deletion alone shows the finding gone and the risk unchanged"
             "Delete ALL GPP files containing cpassword attributes immediately"
             "Install KB2962486 to prevent new GPP passwords from being created"
-            "Change any passwords that were stored in GPP files"
             "Use LAPS for local administrator password management"
             "Use gMSA for service accounts instead of GPP-deployed passwords"
         )
@@ -4980,6 +5070,17 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             @{
                 Description = "Delete specific GPP XML file after backing up (use with caution - ensure GPO is no longer needed)"
                 Command = "# Backup first: Copy-Item 'PATH_TO_GPP_FILE.xml' 'PATH_TO_BACKUP_LOCATION'; Remove-Item 'PATH_TO_GPP_FILE.xml' -Force"
+            }
+            @{
+                Description = "Change the password the file carried - this is the step that revokes it"
+                Command = @'
+# A domain account:
+Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -AsSecureString)
+
+# A local account on many machines is what a GPP item usually deploys, and one shared
+# local password is the problem rather than the GPO. Hand that account to LAPS, which
+# gives every machine its own, instead of setting a new shared one.
+'@
             }
         )
         References = @(
@@ -5016,8 +5117,8 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "5. Logs into systems where AutoAdminLogon is configured"
         )
         Remediation = @(
-            "Remove AutoAdminLogon GPO settings immediately"
-            "Change the exposed password on all affected accounts"
+            "Change the exposed password first - the value stood in clear text in SYSVOL, readable by every authenticated user, and removing the policy does not revoke it"
+            "Remove the Preferences registry item from the GPO (Registry.xml, not Administrative Templates)"
             "Use Windows Autopilot or MDT for unattended deployments instead"
             "If AutoAdminLogon is required, configure it locally (not via GPO)"
             "Consider using autologon.exe from Sysinternals which encrypts credentials"
@@ -5028,12 +5129,25 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
                 Command = "Get-ChildItem -Path '\\\\domain.com\\SYSVOL\\domain.com\\Policies' -Recurse -Include Registry.xml | Select-String -Pattern 'AutoAdminLogon|DefaultUserName|DefaultPassword' | Select-Object Path,LineNumber"
             }
             @{
-                Description = "Remove AutoAdminLogon registry value from a GPO using Remove-GPRegistryValue"
-                Command = "Remove-GPRegistryValue -Name 'GPO_NAME' -Key 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\Winlogon' -ValueName 'AutoAdminLogon'"
+                Description = "Remove the preference item in GPMC - this finding comes from Registry.xml, which is Group Policy Preferences"
+                Command = @'
+# Remove-GPRegistryValue works on the registry policy path (Registry.pol, Administrative
+# Templates) and does nothing to a value deployed through the Preferences extension. This
+# finding is read out of Registry.xml, so the cmdlet was guaranteed to miss it and report
+# either an error or a success without effect.
+#
+# GPMC: the GPO > Computer Configuration (or User Configuration) > Preferences >
+#       Windows Settings > Registry > delete the item that sets AutoAdminLogon,
+#       DefaultUserName and DefaultPassword.
+#
+# A preference item with Action "Update" does not take the value back off the clients it
+# already reached, so add an item with Action "Delete" for the same three values, let it
+# apply, and remove that item afterwards as well.
+'@
             }
             @{
-                Description = "Remove all Winlogon registry settings from a GPO (AutoAdminLogon, DefaultUserName, DefaultPassword)"
-                Command = "Remove-GPRegistryValue -Name 'GPO_NAME' -Key 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\Winlogon'"
+                Description = "Find the Registry.xml items in a GPO folder, to know which GPO to open"
+                Command = "Get-ChildItem -Path '\\\\domain.com\\SYSVOL\\domain.com\\Policies' -Recurse -Include Registry.xml | Where-Object { Select-String -Path `$_.FullName -Pattern 'AutoAdminLogon' -Quiet } | Select-Object FullName"
             }
             @{
                 Description = "Disable AutoAdminLogon locally on a specific computer"
@@ -5848,8 +5962,18 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
                 Command = "(Get-Acl 'AD:\DC=domain,DC=com').Access | Where-Object {`$_.IdentityReference -match 'Exchange' -and (`$_.ObjectType -eq '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2' -or `$_.ObjectType -eq '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2')} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType -AutoSize"
             }
             @{
-                Description = "Remove DCSync rights (DS-Replication-Get-Changes) from Exchange groups"
-                Command = "`$acl = Get-Acl 'AD:\DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -match 'Exchange' -and `$_.ObjectType -eq '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\DC=domain,DC=com' -AclObject `$acl"
+                Description = "Remove DCSync rights (DS-Replication-Get-Changes) from Exchange groups - and know that Exchange setup puts them back"
+                Command = @'
+# /PrepareAD grants these rights, so the next cumulative update restores whatever this
+# removes. Removing the ACE is therefore a stopgap, not the fix: the supported answers are
+# the inherit-only flag on the ACE (documented by Microsoft for the shared permissions
+# model) and Active Directory split permissions, which removes the model altogether - the
+# command below this one.
+$acl = Get-Acl 'AD:\DC=domain,DC=com'
+$ace = $acl.Access | Where-Object { $_.IdentityReference -match 'Exchange' -and $_.ObjectType -eq '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2' }
+$ace | ForEach-Object { $acl.RemoveAccessRule($_) }
+Set-Acl -Path 'AD:\DC=domain,DC=com' -AclObject $acl
+'@
             }
             @{
                 Description = "Configure Exchange for Active Directory Split Permissions model (prevents Exchange from modifying AD security principals)"
@@ -8265,10 +8389,11 @@ foreach ($DC in $DCs) {
             "4. Gains access to accounts with populated attributes"
         )
         Remediation = @(
+            "Change the passwords first - clearing the attribute does not revoke them. Every authenticated user in the domain could read them, sambaNTPassword is a directly usable NT hash, and the values are in every AD backup"
             "Remove unused Unix password attributes"
-            "Restrict read access to these attributes via ACLs"
+            "Mark the attributes confidential (searchFlags bit 7) so they are no longer readable by every authenticated user"
             "Migrate to modern authentication (Kerberos) for Unix systems"
-            "Clear legacy password data from AD"
+            "Treat a populated userPassword as an active logon credential, not only as a leak: with the domain's plaintext policy enabled it authenticates"
         )
         RemediationCommands = @(
             @{
@@ -8284,8 +8409,24 @@ foreach ($DC in $DCs) {
                 Command = "Get-ADUser -Filter * -Properties unixUserPassword,userPassword,msSFU30Password,sambaNTPassword,sambaLMPassword | Where-Object {`$_.unixUserPassword -or `$_.userPassword -or `$_.msSFU30Password -or `$_.sambaNTPassword -or `$_.sambaLMPassword} | ForEach-Object { Set-ADUser -Identity `$_.SamAccountName -Clear unixUserPassword,userPassword,msSFU30Password,sambaNTPassword,sambaLMPassword; Write-Host `"Cleared Unix password attributes from `$(`$_.SamAccountName)`" }"
             }
             @{
-                Description = "Check ACL on confidential attributes to restrict read access (requires dsacls.exe)"
-                Command = "# Use dsacls to deny read access: dsacls 'CN=Schema,CN=Configuration,DC=domain,DC=com' /D 'NT AUTHORITY\Authenticated Users:RP;userPassword'"
+                Description = "Mark the attributes confidential, which is what takes the read away. Forest-wide and needs Schema Admin - test first, a reader with only generic read loses access"
+                Command = @'
+# The predecessor of this command denied read on CN=Schema itself, which controls access
+# to the schema objects and not to the values in the domain partition - it changed
+# nothing about who can read userPassword on a user. The mechanism for "this attribute is
+# no longer readable by everyone" is the fCONFIDENTIAL bit in searchFlags (bit 7, 128).
+$schema = (Get-ADRootDSE).schemaNamingContext
+foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sambaLMPassword') {
+    $attr = Get-ADObject -SearchBase $schema -LDAPFilter "(lDAPDisplayName=$name)" -Properties searchFlags
+    if ($attr) {
+        Set-ADObject -Identity $attr.DistinguishedName -Replace @{ searchFlags = ($attr.searchFlags -bor 128) }
+    }
+}
+'@
+            }
+            @{
+                Description = "Restrict the read on one OU instead, if the forest-wide schema change is not wanted"
+                Command = "dsacls 'OU=Unix,DC=domain,DC=com' /D 'NT AUTHORITY\Authenticated Users:RP;unixUserPassword'"
             }
         )
         References = @(
@@ -10138,7 +10279,8 @@ foreach ($oid in $linkedOIDs) {
         )
         Remediation = @(
             "Review GPO permissions and ensure strict access control"
-            "Consider reducing GPO scope using security filtering or WMI filters"
+            "Reduce the scope with security filtering, and leave Domain Computers a read: since MS16-072 a user policy is fetched in the computer account's context, so removing Authenticated Users without that read stops the GPO applying to users"
+            "A WMI filter narrows the scope differently - it runs on the client at every refresh rather than taking the read away - so the two are not interchangeable"
         )
         References = @(
             @{ Title = "Group Policy Security"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/group-policy/group-policy-overview" }
@@ -11081,6 +11223,7 @@ foreach ($oid in $linkedOIDs) {
         )
         Remediation = @(
             "Set LmCompatibilityLevel to 5 (NTLMv2 only, refuse LM and NTLM)"
+            "Level 5 refuses LM and NTLM outright, so any device that cannot do NTLMv2 stops authenticating - multifunction printers, NAS boxes, embedded systems and old Samba builds. Inventory those first and raise the level in stages, or the change is rolled back after the first ticket"
         )
         References = @(
             @{ Title = "Network security: LAN Manager authentication level"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level" }
@@ -11135,6 +11278,7 @@ foreach ($oid in $linkedOIDs) {
         )
         Remediation = @(
             "Remove LocalAccountTokenFilterPolicy or set it to 0"
+            "The value is often set deliberately by a product: RMM, backup and monitoring agents that work remotely with a local account lose their elevated token when it goes. Find out which agent needs it and give that one a domain account or a documented exception, rather than removing the value and waiting for the outage"
             "Use LAPS to ensure unique local admin passwords"
         )
         References = @(
@@ -11220,6 +11364,7 @@ foreach ($oid in $linkedOIDs) {
         )
         Remediation = @(
             "Set DisableRestrictedAdmin=1 unless a documented need exists"
+            "That also turns off mstsc /restrictedadmin and Remote Credential Guard, which exist so an administrator's credentials never reach the remote host. Where those are in use the trade is one credential protection for another, so decide per host class rather than domain-wide"
             "Monitor changes to this value as a compromise indicator"
         )
         References = @(
@@ -11328,6 +11473,8 @@ foreach ($oid in $linkedOIDs) {
         )
         Remediation = @(
             "Enable Credential Guard (LsaCfgFlags=1)"
+            "1 means 'Enabled with UEFI lock': after that it cannot be switched off by Group Policy again, only per machine with the Device Guard readiness tool and physical access. Use 2 for a pilot that has to stay reversible"
+            "It needs virtualization-based security to be on as well (EnableVirtualizationBasedSecurity=1 plus a platform security level); LsaCfgFlags alone has no effect"
         )
         References = @(
             @{ Title = "Configure Credential Guard"; Url = "https://learn.microsoft.com/en-us/windows/security/identity-protection/credential-guard/configure" }
@@ -11464,6 +11611,7 @@ foreach ($oid in $linkedOIDs) {
         )
         Remediation = @(
             "Set UserAuthentication=1 (Require NLA) via GPO"
+            "Clients without CredSSP cannot connect afterwards - thin clients, some Linux RDP clients, and anything connecting through an old gateway. Check what connects to the affected hosts before enforcing it"
             "Combine with SecurityLayer=2 (TLS) rather than relying on NLA alone"
         )
         References = @(
@@ -11610,6 +11758,7 @@ foreach ($oid in $linkedOIDs) {
             "Set RestrictDriverInstallationToAdministrators=1 (or remove the value to keep the secure default)"
             "Remove NoWarningNoElevationOnInstall=1 and set UpdatePromptSettings=0"
             "Keep 'Point and Print Restrictions' Enabled with warning and elevation prompt for install and update"
+            "Non-administrators can then no longer connect a printer whose driver is not already on the machine or deployed as a package - which is why this value is set to 0 in the first place. Deploy the printers centrally, or package the drivers, before enforcing it; otherwise the change comes back out after the first help desk call"
         )
         References = @(
             @{ Title = "A Practical Guide to PrintNightmare"; Url = "https://itm4n.github.io/printnightmare-exploitation/" }
@@ -12426,6 +12575,71 @@ function Get-TriggerMatch {
 
 <#
 .SYNOPSIS
+    Tests one userAccountControl flag on the object a trigger is evaluating.
+
+.DESCRIPTION
+    The UAC transformer renders every flag as a value of its own, so a trigger's $Value
+    holds the single flag under test and a question about a different flag has to be put
+    to the object. The attribute is read by name rather than out of the object's
+    ToString(), which used to be the implementation and made any attribute containing the
+    flag's text - a description, for instance - answer this question.
+
+    Takes both forms the attribute can have: the flag names ConvertFrom-LDAPAttribute
+    produces, and the raw number, in case the object was built without that conversion.
+
+.PARAMETER SourceObject
+    The object the trigger is evaluating, if the caller supplied one.
+
+.PARAMETER Value
+    The trigger's value, used only when the object carries no userAccountControl.
+
+.PARAMETER FlagName
+    Name of the flag, e.g. 'SERVER_TRUST_ACCOUNT'.
+
+.PARAMETER FlagBit
+    The same flag's bit, for the numeric form.
+
+.OUTPUTS
+    [bool]
+#>
+function Test-UACFlagOnObject {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $SourceObject,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Value,
+
+        [Parameter(Mandatory = $true)]
+        [string]$FlagName,
+
+        [Parameter(Mandatory = $true)]
+        [int]$FlagBit
+    )
+
+    $uac = $null
+    if ($SourceObject -and $SourceObject.PSObject.Properties['userAccountControl']) {
+        $uac = $SourceObject.userAccountControl
+    }
+    if ($null -eq $uac -or ([string]$uac).Length -eq 0) { $uac = $Value }
+
+    $uacText = ''
+    if ($uac -is [array]) { $uacText = ($uac -join ' ') } else { $uacText = [string]$uac }
+    if ([string]::IsNullOrWhiteSpace($uacText)) { return $false }
+
+    if ($uacText -match '^\s*\d+\s*$') {
+        return ((([int64]$uacText.Trim()) -band $FlagBit) -ne 0)
+    }
+
+    return ($uacText -match [regex]::Escape($FlagName))
+}
+
+<#
+.SYNOPSIS
     Evaluates custom trigger conditions.
 .DESCRIPTION
     Handles special cases that can't be expressed as simple regex patterns.
@@ -12601,10 +12815,22 @@ function Test-CustomTrigger {
         }
 
         'is_dc_uac' {
-            # Returns true if userAccountControl flags contain SERVER_TRUST_ACCOUNT (Domain Controller)
-            # SourceObject contains all UAC flags joined by space (from UAC transformer)
-            $allFlags = if ($SourceObject) { [string]$SourceObject } else { [string]$Value }
-            return ($allFlags -match 'SERVER_TRUST_ACCOUNT')
+            # True if the object's userAccountControl carries SERVER_TRUST_ACCOUNT, which
+            # is what makes it a domain controller.
+            #
+            # The flags have to come off the object rather than out of $Value: the UAC
+            # transformer renders every flag as its own value, so $Value holds only the
+            # one flag being tested. Reading the whole SourceObject as a string - which is
+            # what this did - meant any other attribute containing the text
+            # SERVER_TRUST_ACCOUNT, a description for instance, dampened the finding too.
+            return (Test-UACFlagOnObject -SourceObject $SourceObject -Value $Value -FlagName 'SERVER_TRUST_ACCOUNT' -FlagBit 0x2000)
+        }
+
+        'is_not_dc_uac' {
+            # The negation, for a finding that is a finding everywhere except on a domain
+            # controller: TRUSTED_FOR_DELEGATION is the normal state of a DC, and the
+            # remediation for unconstrained delegation would take it down.
+            return (-not (Test-UACFlagOnObject -SourceObject $SourceObject -Value $Value -FlagName 'SERVER_TRUST_ACCOUNT' -FlagBit 0x2000))
         }
 
         'is_exchange_eol' {
