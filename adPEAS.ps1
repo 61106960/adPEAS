@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-10 21:44:07
-    Version: 2.7.0+20261010-2144
+    Build: 2026-10-10 22:19:28
+    Version: 2.7.0+20261010-2219
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -496,6 +496,22 @@ $Script:PropertyGUIDs = @{
     'msDS-AllowedToDelegateTo'       = [GUID]'800d94d7-b7a1-42a1-b14d-7cae1423d07f'
     'msDS-AllowedToActOnBehalfOfOtherIdentity' = [GUID]'3f78c3e5-f79a-46bd-a0b8-9d18116ddc79'
     'gPLink'                         = [GUID]'f30e3bbe-9ff0-11d1-b603-0000f80367c1'
+    'gPOptions'                      = [GUID]'f30e3bc0-9ff0-11d1-b603-0000f80367c1'
+
+    # Group-Policy-Container attributes. A WriteProperty ACE on a GPO always names one
+    # attribute GUID; without these entries Resolve-ObjectTypeGUID answered $null for all
+    # of them, so Get-GPOPermissions could not tell the ones that hand over the policy
+    # content from the ones that do not, and reported "gPCFileSysPath can be redirected to
+    # an attacker-controlled UNC path" for a delegation that only allows gPCWQLFilter.
+    # The first four are the content: the path the clients read, the two CSE lists that
+    # decide which extensions process it, and the version that makes them re-read it.
+    # gPCWQLFilter is listed so it resolves to a name rather than falling into the
+    # "unknown GUID" branch, which stays a finding by design.
+    'gPCFileSysPath'                 = [GUID]'f30e3bc1-9ff0-11d1-b603-0000f80367c1'
+    'gPCMachineExtensionNames'       = [GUID]'32ff8ecc-783f-11d2-9916-0000f87a57d4'
+    'gPCUserExtensionNames'          = [GUID]'42a75fc6-783f-11d2-9916-0000f87a57d4'
+    'versionNumber'                  = [GUID]'bf967a76-0de6-11d0-a285-00aa003049e2'
+    'gPCWQLFilter'                   = [GUID]'7bd4c7a6-1add-4436-8c04-3999a880154c'
     'dNSHostName'                    = [GUID]'72e39547-7b18-11d1-adef-00c04fd8d5cd'  # DNS hostname attribute
 
     # gMSA (Group Managed Service Account) password attribute
@@ -6214,7 +6230,7 @@ $Script:PrimaryAttributes = @{
         # LDAP security settings
         'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'ServerSigning', 'ClientSigning',
         # Security findings
-        'DangerousPermissions', 'DangerousSettings',
+        'DangerousPermissions', 'GPOOwner', 'DangerousSettings',
         # Linkage
         'LinkedOUs', 'GPOStatus', 'AffectedComputers'
     )
@@ -9786,10 +9802,53 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Tools = @("SharpGPOAbuse", "PowerView", "ADACLScanner")
         MITRE = "T1484.001"
         Triggers = @(
-            # Get-GPOPermissions renders this attribute as "Identity (Right)" per line
-            # (e.g. "CONTOSO\helpdesk (WriteProperty)"), so the pattern matches the
-            # parenthesized right rather than the whole line.
-            @{ Attribute = 'DangerousPermissions'; Pattern = '\(WriteProperty\)'; Severity = 'Finding' }
+            # Get-GPOPermissions renders this attribute as "Identity (Rights)" per line, so
+            # the pattern looks inside the parentheses rather than at the whole line. It
+            # matches the right as a token, not as the entire parenthesized content: a row
+            # now lists every dangerous right the ACE grants rather than the first one
+            # found, and names the attribute a scoped ACE is restricted to, so
+            # "(WriteProperty)" is no longer the shape to match.
+            #
+            # The ExcludePattern hands the rows whose attribute cannot reach the policy
+            # content to DANGEROUS_ACL_GPO_WRITEPROPERTY_SCOPED instead. The Impact text
+            # below claims a redirect of gPCFileSysPath, which is simply untrue for a
+            # delegation that only allows gPCWQLFilter.
+            @{ Attribute = 'DangerousPermissions'; Pattern = '\([^)]*\bWriteProperty\b'; ExcludePattern = 'does not carry the policy content'; Severity = 'Finding' }
+        )
+    }
+
+    'DANGEROUS_ACL_GPO_WRITEPROPERTY_SCOPED' = @{
+        Title = "WriteProperty on a GPO Attribute That Does Not Carry the Policy"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A user or group has WriteProperty permission on a Group Policy Object, restricted by the ACE's ObjectType to a single attribute that does not carry the policy content. The delegation is still worth knowing about, but it is not the GPO takeover an unrestricted WriteProperty would be - the trustee cannot redirect gPCFileSysPath, cannot broaden the client-side extension lists, and cannot force a reapply."
+        Impact = @(
+            "Whatever the named attribute itself controls - for gPCWQLFilter, which WMI filter decides whether the policy applies to a machine at all"
+            "A WMI filter swap is a scoping change, not code execution: it can stop a hardening policy from applying to chosen machines, which is worth noticing but is not the same exposure"
+            "The attribute is named on the finding so it can be assessed on its own terms rather than against the worst case"
+        )
+        Attack = @(
+            "1. Read which attribute the ACE is scoped to - it is named in the finding"
+            "2. Assess what that single attribute controls on a groupPolicyContainer"
+            "3. For gPCWQLFilter: point the GPO at a WMI filter that evaluates false on the machines the attacker wants exempted from the policy"
+        )
+        Remediation = @(
+            "Decide whether the delegation is intentional - an attribute-scoped ACE is often the result of a deliberately narrow delegation and correct as it stands"
+            "Remove it if it was inherited from a container-level delegation that was never meant to reach GPOs"
+            "Monitor changes to the attribute (Event ID 5136) if the policy it scopes is a hardening one"
+        )
+        References = @(
+            @{ Title = "Group Policy Object attributes - Microsoft"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/" }
+        )
+        Tools = @("PowerView", "ADACLScanner")
+        MITRE = "T1484.001"
+        Triggers = @(
+            # The marker is written by Get-GPOPermissions, which is the only place that
+            # knows which attribute an ACE is scoped to and whether that attribute hands
+            # over the policy content. A GUID the project cannot resolve to a name is
+            # deliberately not marked: it stays with the full WriteProperty finding,
+            # because nothing rules out that it is gPCFileSysPath.
+            @{ Attribute = 'DangerousPermissions'; Pattern = '\([^)]*\bWriteProperty\b[^)]*does not carry the policy content'; Severity = 'Hint' }
         )
     }
 
@@ -9819,7 +9878,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Tools = @("PowerView", "ADACLScanner")
         MITRE = "T1485"
         Triggers = @(
-            @{ Attribute = 'DangerousPermissions'; Pattern = '\((CreateChild|DeleteChild|DeleteTree|Delete)\)'; Severity = 'Finding' }
+            @{ Attribute = 'DangerousPermissions'; Pattern = '\([^)]*\b(CreateChild|DeleteChild|DeleteTree|Delete)\b'; Severity = 'Finding' }
         )
     }
 
@@ -9847,11 +9906,60 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Triggers = @(
             # Severity here is nominal, not functional: DANGEROUS_RIGHTS_CONTEXT's blanket
             # SeverityOnly trigger on this attribute always resolves severity in Pass 1,
-            # before this definition's own trigger is ever reached, so every
-            # DangerousPermissions row - this one included - renders Finding. See that
-            # definition's comment for why (Get-GPOPermissions never sets
-            # dangerousRightsSeverity, so the Hint downgrade path can never fire for it).
-            @{ Attribute = 'DangerousPermissions'; Pattern = '\((Self|ExtendedRight)\)'; Severity = 'Finding' }
+            # before this definition's own trigger is ever reached, so every row of one
+            # block renders in the block's colour. Get-GPOPermissions does set
+            # dangerousRightsSeverity now, but with one value for the whole block - so the
+            # Hint downgrade reaches every row of a GPO whose trustees are all expected or
+            # all scoped to a harmless attribute, and no row of a GPO where one is not.
+            # What stays per row is the finding card, which comes from Pass 2.
+            @{ Attribute = 'DangerousPermissions'; Pattern = '\([^)]*\b(Self|ExtendedRight)\b'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_NON_DEFAULT_OWNER' = @{
+        Title = "Group Policy Object With a Non-Default Owner"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "The owner of this Group Policy Object is not one of the default owners (Domain Admins, Enterprise Admins, Administrators or SYSTEM). An object's owner holds READ_CONTROL and WRITE_DAC implicitly, with no ACE in the DACL to show it, so the owner can grant itself every other right on the GPO at will. For a GPO that means control over code that runs on every machine the policy is linked to."
+        Impact = @(
+            "The owner can add itself to the DACL with full control at any time, so removing its ACEs changes nothing"
+            "Ownership is not visible in the permission list a GPMC delegation tab shows - it needs the Advanced view or a DACL read"
+            "A GPO created by a delegated account keeps that account as its owner unless the creator's group is a default owner, which is how this state usually arises"
+            "An account that owns a GPO linked to the Domain Controllers OU can execute code on domain controllers"
+        )
+        Attack = @(
+            "1. Identify a GPO whose owner is an account the attacker already controls or can compromise"
+            "2. As the owner, write a new ACE granting full control - no existing permission is needed for this"
+            "3. Edit the policy content (scripts, scheduled tasks, Group Policy Preferences, registry settings)"
+            "4. The payload runs on every machine within the GPO's scope at the next refresh"
+        )
+        Remediation = @(
+            "Set the owner of every GPO to Domain Admins: in GPMC, Delegation -> Advanced -> Owner, or Set-Acl on the AD: provider path of the GPO object"
+            "Review why the current owner holds it - a delegated GPO creator keeps ownership of what it creates, so the Group Policy Creator Owners membership is the place to look"
+            "Audit ownership together with the DACL from then on, since an owner needs no ACE to regain control"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current owner of every GPO in the domain"
+                Command = 'Get-ADObject -LDAPFilter ''(objectClass=groupPolicyContainer)'' -SearchBase "CN=Policies,CN=System,$((Get-ADDomain).DistinguishedName)" | ForEach-Object { [PSCustomObject]@{ GPO = $_.Name; Owner = (Get-Acl "AD:$($_.DistinguishedName)").Owner } }'
+            }
+            @{
+                Description = "Reassign the owner of one GPO to Domain Admins"
+                Command = '$acl = Get-Acl "AD:\CN=<GUID>,CN=Policies,CN=System,DC=domain,DC=com"; $acl.SetOwner((New-Object System.Security.Principal.NTAccount("DOMAIN\Domain Admins"))); Set-Acl -Path "AD:\CN=<GUID>,CN=Policies,CN=System,DC=domain,DC=com" -AclObject $acl'
+            }
+        )
+        References = @(
+            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+            @{ Title = "Owner Rights - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-rights" }
+        )
+        Tools = @("SharpGPOAbuse", "PowerView", "ADACLScanner")
+        MITRE = "T1484.001"
+        Triggers = @(
+            # Its own attribute name rather than the generic 'Owner', which already carries
+            # NON_DEFAULT_OWNER (a Hint, SeverityOnly) for every other object type. Two
+            # definitions on one attribute would mean the higher BaseScore wins everywhere,
+            # and a non-default owner on a GPO is not the same finding as one on a user.
+            @{ Attribute = 'GPOOwner'; Severity = 'Finding' }
         )
     }
 
@@ -24336,11 +24444,13 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Summary = "Identifies Group Policy Objects with risky permissions."
         WhyItMatters = "GPO modification rights enable code execution on all computers where the GPO is applied. Attackers can deploy malware, create scheduled tasks, or modify security settings."
         WhatWeCheck = @(
-            "GPOs with write permissions for non-admins"
+            "GPOs with write permissions for non-admins, inherited delegations included, with Deny ACEs netted out"
+            "The owner of each GPO, which holds WRITE_DAC implicitly and needs no ACE at all"
+            "Which attribute an attribute-scoped write is restricted to, since only a few of them carry the policy content"
             "Which computers/users are affected by each GPO"
             "Potential impact of GPO modification"
         )
-        SecureMessage = "No dangerous GPO permissions found. Only privileged accounts have write access to Group Policy Objects."
+        SecureMessage = "No dangerous permissions and no non-default owner on the GPO directory objects. Note that the permissions of the SYSVOL folder holding the policy content are a separate question and not part of this check."
         PrimaryFindingId = 'GPO_DANGEROUS_PERMISSIONS'
     }
 
@@ -31605,6 +31715,8 @@ function Clear-SessionState {
     $Script:GroupSeverityConfig = $null
     $Script:RiskyPaths = $null
     $Script:DangerousGPOAccessRights = $null
+    $Script:CriticalGPOAttributes = $null
+    $Script:UnscopedGPORights = $null
 
     $Script:LAPSSchemaInfo = $null
     $Script:PrivilegedAccountFilterCache = $null
@@ -104457,18 +104569,51 @@ function Get-GPOPermissions {
         # matching ACE is reported with an empty label and the console line reads
         # "CONTOSO\helpdesk ()". Deleting a linked GPO is a denial of service, so those
         # rights belong in the list rather than being silently unnamed.
+        # Ordered by what the right actually gives its holder, not alphabetically. The
+        # order used to put WriteProperty ahead of WriteDacl and WriteOwner, and the loop
+        # below stopped at the first match: an ACE carrying "WriteProperty, WriteDacl,
+        # WriteOwner" was rendered as "(WriteProperty)" and the right that lets its holder
+        # grant themselves everything else appeared nowhere. All matches are collected
+        # now, so the order only decides how they are listed.
         $Script:DangerousGPOAccessRights = @(
             'GenericAll',
-            'GenericWrite',
-            'WriteProperty',
             'WriteDacl',
             'WriteOwner',
+            'GenericWrite',
+            'WriteProperty',
             'CreateChild',
             'DeleteChild',
             'DeleteTree',
             'Delete',
             'Self',
             'ExtendedRight'
+        )
+
+        # The four attributes of a groupPolicyContainer that hand over the policy content.
+        # A WriteProperty ACE restricted to one of them is as good as full control of the
+        # GPO; one restricted to any other attribute is not, and used to get the same
+        # finding card - which states that "gPCFileSysPath can be redirected to an
+        # attacker-controlled UNC path" even when the ACE only allows gPCWQLFilter.
+        $Script:CriticalGPOAttributes = @(
+            'gPCFileSysPath',
+            'gPCMachineExtensionNames',
+            'gPCUserExtensionNames',
+            'versionNumber'
+        )
+
+        # The rights an ObjectType GUID cannot narrow. ObjectType restricts the
+        # attribute-scoped bits - WriteProperty, ReadProperty, Self, ExtendedRight - and
+        # nothing else, so an ACE that also grants one of these is not limited by the
+        # attribute it names.
+        $Script:UnscopedGPORights = @(
+            'GenericAll',
+            'GenericWrite',
+            'WriteDacl',
+            'WriteOwner',
+            'CreateChild',
+            'DeleteChild',
+            'DeleteTree',
+            'Delete'
         )
     }
 
@@ -104540,6 +104685,16 @@ function Get-GPOPermissions {
             # ===== Step 4: Analyze GPO Permissions =====
             $vulnerableGPOsHash = @{}
 
+            # GPOs whose security descriptor could not be read or parsed. They used to be
+            # counted as analyzed and clean by the Secure line below, which is the one
+            # statement a failed read cannot support.
+            $unreadGPOs = @()
+
+            # GPOs with no dangerous ACE but a non-default owner. The owner holds WRITE_DAC
+            # implicitly, so it is a finding on its own and must not fall through the
+            # "no dangerous ACEs" branch unreported.
+            $ownerOnlyGPOs = @{}
+
             $totalGPOs = @($allGPOs).Count
             $currentIndex = 0
             foreach ($gpo in $allGPOs) {
@@ -104554,21 +104709,74 @@ function Get-GPOPermissions {
                 try {
                     # Use Get-ObjectACL for ACL analysis (handles credentials automatically)
                     # Get-ObjectACL returns a wrapper object with .ACEs property containing actual ACE array.
-                    # The descriptor comes from the single prefetch above where it is present,
-                    # so the same parsing and the same -DangerousOnly/-AllowOnly/-ExplicitOnly
-                    # filtering run either way - only the read is gone.
-                    $aclParams = @{ DistinguishedName = $gpoDN; DangerousOnly = $true; AllowOnly = $true; ExplicitOnly = $true }
+                    # The descriptor comes from the single prefetch above where it is
+                    # present, so the same parsing and the same -DangerousOnly filtering run
+                    # either way - only the read is gone.
+                    #
+                    # -AllowOnly and -ExplicitOnly used to be passed as well, and each of
+                    # them hid a class of finding.
+                    #
+                    # -ExplicitOnly dropped every inherited ACE, and a delegation set on
+                    # CN=Policies,CN=System is inherited by every GPO in the domain - so
+                    # the single most effective GPO delegation mistake there is, one
+                    # GenericAll for a helpdesk group at the Policies container, produced
+                    # no finding anywhere. Inheritance is carried on the finding instead,
+                    # because the remediation differs: an inherited ACE has to be removed
+                    # at the parent.
+                    #
+                    # -AllowOnly dropped the Deny ACEs, and Deny wins the access check. A
+                    # deliberately hardened delegation - Allow GenericAll for a group plus
+                    # Deny WriteDacl and WriteProperty for the same group - was reported as
+                    # full control, which is a finding the customer cannot reproduce. They
+                    # are read now and netted out per trustee below.
+                    $aclParams = @{ DistinguishedName = $gpoDN; DangerousOnly = $true }
                     if ($descriptorLookup.ContainsKey([string]$gpoDN)) {
                         $aclParams['SecurityDescriptor'] = $descriptorLookup[[string]$gpoDN]
                     }
                     $aclResult = Get-ObjectACL @aclParams @connectionParams
 
-                    if (-not $aclResult -or -not $aclResult.ACEs -or @($aclResult.ACEs).Count -eq 0) {
-                        Write-Log "[Get-GPOPermissions] No dangerous ACEs found for GPO: $gpoDisplayName"
+                    # Three states, and two of them used to share this branch under the log
+                    # line "No dangerous ACEs found": Get-ObjectACL answers $null both when
+                    # the descriptor could not be read and when it could not be parsed, and
+                    # the GPO then counted as analyzed and clean in the Secure line below.
+                    if (-not $aclResult) {
+                        Write-Log "[Get-GPOPermissions] Security descriptor of GPO '$gpoDisplayName' could not be read or parsed - its permissions are unknown" -Level Warning
+                        $unreadGPOs += $gpoDisplayName
                         continue
                     }
 
-                    $dangerousAces = @($aclResult.ACEs)
+                    # The owner holds READ_CONTROL and WRITE_DAC implicitly - it can grant
+                    # itself every right without an ACE in the DACL - so a GPO owned by an
+                    # ordinary account is under that account's control. Neither Owner nor
+                    # OwnerSID was ever read here, although Get-ObjectACL supplies both and
+                    # the project has Test-IsDefaultOwner for exactly this question.
+                    $ownerFinding = $null
+                    if ($aclResult.OwnerSID -and -not (Test-IsDefaultOwner -SID $aclResult.OwnerSID)) {
+                        $ownerFinding = [PSCustomObject]@{
+                            Owner    = if ($aclResult.Owner) { $aclResult.Owner } else { ConvertFrom-SID -SID $aclResult.OwnerSID }
+                            OwnerSID = $aclResult.OwnerSID
+                        }
+                        Write-Log "[Get-GPOPermissions] GPO '$gpoDisplayName' is owned by $($ownerFinding.Owner), which is not a default owner"
+                    }
+
+                    if (-not $aclResult.ACEs -or @($aclResult.ACEs).Count -eq 0) {
+                        Write-Log "[Get-GPOPermissions] No dangerous ACEs found for GPO: $gpoDisplayName"
+                        if ($ownerFinding) { $ownerOnlyGPOs[$gpoGUID] = @{ GPO = $gpo; Owner = $ownerFinding } }
+                        continue
+                    }
+
+                    # Deny first, so the Allow ACEs below can be netted against it. Keyed
+                    # by trustee: a Deny on one trustee says nothing about another.
+                    $deniedRights = @{}
+                    foreach ($ace in @($aclResult.ACEs)) {
+                        if ($ace.AccessControlType -ne 'Deny') { continue }
+                        $denySID = [string]$ace.TrusteeSID
+                        if (-not $denySID) { continue }
+                        if (-not $deniedRights.ContainsKey($denySID)) { $deniedRights[$denySID] = @() }
+                        $deniedRights[$denySID] += @($ace.RightsRaw)
+                    }
+
+                    $dangerousAces = @($aclResult.ACEs | Where-Object { $_.AccessControlType -eq 'Allow' })
                     Write-Log "[Get-GPOPermissions] Processing $($dangerousAces.Count) dangerous ACE(s) for GPO: $gpoDisplayName"
                     $vulnerableIdentities = @()
 
@@ -104584,12 +104792,83 @@ function Get-GPOPermissions {
                             continue
                         }
 
-                        # Determine which dangerous right matched (using RightsRaw array)
-                        $dangerousRightMatched = ""
+                        # Every dangerous right of the ACE, not the first one, and minus
+                        # what a Deny ACE takes away from the same trustee.
+                        $deniedForTrustee = @()
+                        if ($deniedRights.ContainsKey([string]$aceSID)) {
+                            $deniedForTrustee = @($deniedRights[[string]$aceSID])
+                        }
+
+                        $matchedRights = @()
                         foreach ($dangerousRight in $Script:DangerousGPOAccessRights) {
-                            if ($aceRightsRaw -contains $dangerousRight) {
-                                $dangerousRightMatched = $dangerousRight
-                                break
+                            if ($aceRightsRaw -notcontains $dangerousRight) { continue }
+                            if ($deniedForTrustee -contains $dangerousRight) {
+                                Write-Log "[Get-GPOPermissions] $aceSID holds $dangerousRight on GPO $gpoDisplayName but a Deny ACE takes it away"
+                                continue
+                            }
+                            $matchedRights += $dangerousRight
+                        }
+
+                        # -DangerousOnly also hands over an ACE whose resolved extended
+                        # right name matches DS-Replication, Force-Change-Password or
+                        # All-Extended-Rights, and ConvertTo-ADRightsList replaces the
+                        # generic "ExtendedRight" label with that name - so no entry of the
+                        # list above matched, the label stayed empty and the console read
+                        # "CONTOSO\helpdesk ()": a red line with no right named, no finding
+                        # id and therefore no remediation. The ACE's own rights are the
+                        # fallback.
+                        if (@($matchedRights).Count -eq 0 -and $aceRights) {
+                            $matchedRights = @([string]$aceRights)
+                        }
+
+                        # Nothing left after the Deny ACEs were netted out.
+                        if (@($matchedRights).Count -eq 0) { continue }
+
+                        # What the ACE is scoped to, and whether that scope still reaches
+                        # the policy content.
+                        #
+                        # An ACE on a GPO almost always names an ObjectType GUID, and
+                        # Get-ObjectACL resolves one only when it is an extended right - an
+                        # attribute GUID came back as $null, so every attribute-scoped
+                        # WriteProperty ACE looked exactly like an unrestricted one and got
+                        # the card that describes a gPCFileSysPath redirect.
+                        # Resolve-ObjectTypeGUID knows the attribute GUIDs as well, which is
+                        # what makes the distinction below possible.
+                        #
+                        # A GUID that resolves to nothing deliberately keeps the full
+                        # finding: nothing rules out that the attribute behind it is
+                        # gPCFileSysPath. It is labelled with the raw GUID so the reader can
+                        # look it up.
+                        $aceObjectType = [string]$ace.ObjectType
+                        $scopeLabel = ''
+                        $scopeReachesPolicy = $true
+
+                        # An ObjectType narrows the attribute-scoped bits only. An ACE that
+                        # also grants GenericAll or WriteDacl is not limited by the
+                        # attribute it names.
+                        $unscopedMatched = @($matchedRights | Where-Object { $Script:UnscopedGPORights -contains $_ })
+
+                        if ($aceObjectType -and @($unscopedMatched).Count -eq 0) {
+                            $resolvedScope = Resolve-ObjectTypeGUID -GUID $aceObjectType
+                            if ($resolvedScope -and $resolvedScope.Name) {
+                                $scopeLabel = [string]$resolvedScope.Name
+                                if ($resolvedScope.Type -eq 'Property' -and
+                                    $Script:CriticalGPOAttributes -notcontains $scopeLabel) {
+                                    $scopeReachesPolicy = $false
+                                }
+                            } else {
+                                $scopeLabel = $aceObjectType
+                            }
+                        }
+
+                        $dangerousRightMatched = @($matchedRights) -join ', '
+                        if ($scopeLabel) {
+                            $dangerousRightMatched = "$dangerousRightMatched : $scopeLabel"
+                            if (-not $scopeReachesPolicy) {
+                                # Read back by DANGEROUS_ACL_GPO_WRITEPROPERTY_SCOPED, which
+                                # replaces the gPCFileSysPath card with one that describes
+                                # what this attribute actually controls.
+                                $dangerousRightMatched = "$dangerousRightMatched - does not carry the policy content"
                             }
                         }
 
@@ -104628,7 +104907,15 @@ function Get-GPOPermissions {
                             Write-Log "[Get-GPOPermissions] IncludePrivileged: Including $identityName ($aceSID) with severity $severity on GPO $gpoDisplayName"
                         }
 
-                        Write-Log "[Get-GPOPermissions] FINDING: $identityName has $aceRights on GPO $gpoDisplayName"
+                        # A write that cannot reach the policy content is not the takeover
+                        # the unrestricted right would be, and the colour follows the card.
+                        # Only downgraded, never upgraded: a trustee the scope check already
+                        # called Expected or Attention keeps that verdict.
+                        if (-not $scopeReachesPolicy -and @('Expected', 'Attention') -notcontains $severity) {
+                            $severity = 'Hint'
+                        }
+
+                        Write-Log "[Get-GPOPermissions] FINDING: $identityName has $dangerousRightMatched on GPO $gpoDisplayName (inherited: $([bool]$ace.IsInherited))"
 
                         $vulnerableIdentities += [PSCustomObject]@{
                             Identity = $identityName
@@ -104636,6 +104923,7 @@ function Get-GPOPermissions {
                             Rights = $aceRights
                             DangerousRight = $dangerousRightMatched
                             Severity = $severity
+                            IsInherited = [bool]$ace.IsInherited
                         }
                     }
 
@@ -104714,9 +105002,20 @@ function Get-GPOPermissions {
                             $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                         }
 
-                        # Format vulnerable identities for display
+                        # Format vulnerable identities for display.
+                        #
+                        # Inheritance is named because the remediation differs: an inherited
+                        # ACE cannot be removed on the GPO, it has to be removed at the
+                        # container it comes from - otherwise the reader deletes it in the
+                        # GPO's delegation tab, sees it reappear, and has no idea why.
+                        # Outside the parentheses, so it stays clear of the rights the
+                        # DangerousPermissions triggers read.
                         $identityDisplay = ($vulnerableIdentities | ForEach-Object {
-                            "$($_.Identity) ($($_.DangerousRight))"
+                            $row = "$($_.Identity) ($($_.DangerousRight))"
+                            if ($_.IsInherited) {
+                                $row = "$row [inherited - remove it at the parent container]"
+                            }
+                            $row
                         }) -join "`n"
 
                         # What colour the DangerousPermissions block renders in.
@@ -104737,13 +105036,26 @@ function Get-GPOPermissions {
                         # next to it would understate it. Without -IncludePrivileged the
                         # expected ones never reach this list at all, so the aggregate is
                         # always Finding there and nothing changes.
+                        # 'Hint' is in the list because an attribute-scoped write that
+                        # cannot reach the policy content sets it above, for the same
+                        # reason: a block that holds nothing worse than that is not a
+                        # finding either.
                         $unexpectedIdentities = @($vulnerableIdentities |
-                            Where-Object { $_.Severity -notin @('Expected', 'Attention') })
+                            Where-Object { $_.Severity -notin @('Expected', 'Attention', 'Hint') })
                         $blockSeverity = if ($unexpectedIdentities.Count -eq 0) { 'Hint' } else { 'Finding' }
 
                         $enrichedGPO = $gpo.PSObject.Copy()
                         $enrichedGPO | Add-Member -NotePropertyName "DangerousPermissions" -NotePropertyValue $identityDisplay -Force
                         $enrichedGPO | Add-Member -NotePropertyName "dangerousRightsSeverity" -NotePropertyValue $blockSeverity -Force
+
+                        # GPOOwner, not Owner: the generic 'Owner' attribute carries
+                        # NON_DEFAULT_OWNER, a Hint, for every object type there is. An
+                        # owner of a GPO can grant itself full control over code that runs
+                        # on every machine the policy reaches, which is not the same
+                        # finding, and a trigger cannot tell the object types apart.
+                        if ($ownerFinding) {
+                            $enrichedGPO | Add-Member -NotePropertyName "GPOOwner" -NotePropertyValue $ownerFinding.Owner -Force
+                        }
                         $enrichedGPO | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 
                         # The object is a copy of the GPO and already carries GPOStatus from
@@ -104773,8 +105085,46 @@ function Get-GPOPermissions {
 
             $vulnerableGPOs = @($vulnerableGPOsHash.Values)
 
+            # A GPO whose DACL holds nothing dangerous but whose owner is not a default
+            # one. It fell through the "no dangerous ACEs" branch and was never reported,
+            # although an owner needs no ACE at all - it can write itself one.
+            foreach ($entry in $ownerOnlyGPOs.Values) {
+                $ownerGPO = $entry.GPO.PSObject.Copy()
+                $ownerGPO | Add-Member -NotePropertyName "GPOOwner" -NotePropertyValue $entry.Owner.Owner -Force
+                $ownerGPO | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOPermission' -Force
+
+                $ownerLinks = $null
+                if ($null -ne $gpoLinkage) {
+                    $ownerLinks = @()
+                    if ($gpoLinkage.ContainsKey($entry.GPO.Name)) { $ownerLinks = @($gpoLinkage[$entry.GPO.Name]) }
+                }
+                $ownerLinksDisplay = $ownerLinks
+                if ($null -eq $ownerLinks) {
+                    $ownerLinksDisplay = 'Unknown - linkage could not be resolved'
+                }
+                $ownerGPO | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $ownerLinksDisplay -Force
+
+                $ownerStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$entry.GPO.Name] `
+                    -Scope 'Any' -Link $ownerLinks
+                if ($ownerStatus) {
+                    $ownerGPO | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $ownerStatus -Force
+                }
+
+                $vulnerableGPOs += $ownerGPO
+            }
+
+            # Same coverage contract as the OU permission checks: the note names how many
+            # objects were not readable and lists them, and a clean conclusion drops from
+            # Secure to Note when it does not cover everything.
+            $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadGPOs -TotalOUs @($allGPOs).Count
+
             if (@($vulnerableGPOs).Count -gt 0) {
-                Show-Line "Found $(@($vulnerableGPOs).Count) GPO(s) with dangerous permissions" -Class Finding
+                $ownerOnlyCount = @($ownerOnlyGPOs.Keys).Count
+                $summary = "Found $(@($vulnerableGPOs).Count) GPO(s) with dangerous permissions or a non-default owner"
+                if ($ownerOnlyCount -gt 0) {
+                    $summary = "$summary ($ownerOnlyCount of them by ownership alone)"
+                }
+                Show-Line $summary -Class Finding
 
                 foreach ($gpo in $vulnerableGPOs) {
                     $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOPermission' -Force
@@ -104782,7 +105132,20 @@ function Get-GPOPermissions {
                 }
             }
             else {
-                Show-Line "No dangerous GPO permissions found in $(@($allGPOs).Count) analyzed GPO(s)" -Class Secure
+                # Two qualifications this line used to leave out.
+                #
+                # First, it counted every GPO as analyzed, including the ones whose
+                # descriptor could not be read - those are unknown, not clean.
+                #
+                # Second, it said "No dangerous GPO permissions", which a reader takes to
+                # cover the whole policy. A GPO has two halves: the directory object and
+                # the SYSVOL folder its content lives in, and write access to that folder
+                # is the other half of the same attack. This check reads the directory
+                # object only, so that is what the sentence may claim.
+                $readCount = @($allGPOs).Count - @($unreadGPOs).Count
+                $conclusionClass = 'Secure'
+                if ($coverageIncomplete) { $conclusionClass = 'Note' }
+                Show-Line "No dangerous permissions and no non-default owner on $readCount of $(@($allGPOs).Count) GPO directory object(s) - the permissions of the SYSVOL folder holding the policy content are not part of this check" -Class $conclusionClass
             }
 
         } catch {
@@ -127682,7 +128045,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261010-2144"
+$Script:adPEASVersion = "2.7.0+20261010-2219"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

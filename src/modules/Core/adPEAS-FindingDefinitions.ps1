@@ -2117,10 +2117,53 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Tools = @("SharpGPOAbuse", "PowerView", "ADACLScanner")
         MITRE = "T1484.001"
         Triggers = @(
-            # Get-GPOPermissions renders this attribute as "Identity (Right)" per line
-            # (e.g. "CONTOSO\helpdesk (WriteProperty)"), so the pattern matches the
-            # parenthesized right rather than the whole line.
-            @{ Attribute = 'DangerousPermissions'; Pattern = '\(WriteProperty\)'; Severity = 'Finding' }
+            # Get-GPOPermissions renders this attribute as "Identity (Rights)" per line, so
+            # the pattern looks inside the parentheses rather than at the whole line. It
+            # matches the right as a token, not as the entire parenthesized content: a row
+            # now lists every dangerous right the ACE grants rather than the first one
+            # found, and names the attribute a scoped ACE is restricted to, so
+            # "(WriteProperty)" is no longer the shape to match.
+            #
+            # The ExcludePattern hands the rows whose attribute cannot reach the policy
+            # content to DANGEROUS_ACL_GPO_WRITEPROPERTY_SCOPED instead. The Impact text
+            # below claims a redirect of gPCFileSysPath, which is simply untrue for a
+            # delegation that only allows gPCWQLFilter.
+            @{ Attribute = 'DangerousPermissions'; Pattern = '\([^)]*\bWriteProperty\b'; ExcludePattern = 'does not carry the policy content'; Severity = 'Finding' }
+        )
+    }
+
+    'DANGEROUS_ACL_GPO_WRITEPROPERTY_SCOPED' = @{
+        Title = "WriteProperty on a GPO Attribute That Does Not Carry the Policy"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A user or group has WriteProperty permission on a Group Policy Object, restricted by the ACE's ObjectType to a single attribute that does not carry the policy content. The delegation is still worth knowing about, but it is not the GPO takeover an unrestricted WriteProperty would be - the trustee cannot redirect gPCFileSysPath, cannot broaden the client-side extension lists, and cannot force a reapply."
+        Impact = @(
+            "Whatever the named attribute itself controls - for gPCWQLFilter, which WMI filter decides whether the policy applies to a machine at all"
+            "A WMI filter swap is a scoping change, not code execution: it can stop a hardening policy from applying to chosen machines, which is worth noticing but is not the same exposure"
+            "The attribute is named on the finding so it can be assessed on its own terms rather than against the worst case"
+        )
+        Attack = @(
+            "1. Read which attribute the ACE is scoped to - it is named in the finding"
+            "2. Assess what that single attribute controls on a groupPolicyContainer"
+            "3. For gPCWQLFilter: point the GPO at a WMI filter that evaluates false on the machines the attacker wants exempted from the policy"
+        )
+        Remediation = @(
+            "Decide whether the delegation is intentional - an attribute-scoped ACE is often the result of a deliberately narrow delegation and correct as it stands"
+            "Remove it if it was inherited from a container-level delegation that was never meant to reach GPOs"
+            "Monitor changes to the attribute (Event ID 5136) if the policy it scopes is a hardening one"
+        )
+        References = @(
+            @{ Title = "Group Policy Object attributes - Microsoft"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/" }
+        )
+        Tools = @("PowerView", "ADACLScanner")
+        MITRE = "T1484.001"
+        Triggers = @(
+            # The marker is written by Get-GPOPermissions, which is the only place that
+            # knows which attribute an ACE is scoped to and whether that attribute hands
+            # over the policy content. A GUID the project cannot resolve to a name is
+            # deliberately not marked: it stays with the full WriteProperty finding,
+            # because nothing rules out that it is gPCFileSysPath.
+            @{ Attribute = 'DangerousPermissions'; Pattern = '\([^)]*\bWriteProperty\b[^)]*does not carry the policy content'; Severity = 'Hint' }
         )
     }
 
@@ -2150,7 +2193,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Tools = @("PowerView", "ADACLScanner")
         MITRE = "T1485"
         Triggers = @(
-            @{ Attribute = 'DangerousPermissions'; Pattern = '\((CreateChild|DeleteChild|DeleteTree|Delete)\)'; Severity = 'Finding' }
+            @{ Attribute = 'DangerousPermissions'; Pattern = '\([^)]*\b(CreateChild|DeleteChild|DeleteTree|Delete)\b'; Severity = 'Finding' }
         )
     }
 
@@ -2178,11 +2221,60 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Triggers = @(
             # Severity here is nominal, not functional: DANGEROUS_RIGHTS_CONTEXT's blanket
             # SeverityOnly trigger on this attribute always resolves severity in Pass 1,
-            # before this definition's own trigger is ever reached, so every
-            # DangerousPermissions row - this one included - renders Finding. See that
-            # definition's comment for why (Get-GPOPermissions never sets
-            # dangerousRightsSeverity, so the Hint downgrade path can never fire for it).
-            @{ Attribute = 'DangerousPermissions'; Pattern = '\((Self|ExtendedRight)\)'; Severity = 'Finding' }
+            # before this definition's own trigger is ever reached, so every row of one
+            # block renders in the block's colour. Get-GPOPermissions does set
+            # dangerousRightsSeverity now, but with one value for the whole block - so the
+            # Hint downgrade reaches every row of a GPO whose trustees are all expected or
+            # all scoped to a harmless attribute, and no row of a GPO where one is not.
+            # What stays per row is the finding card, which comes from Pass 2.
+            @{ Attribute = 'DangerousPermissions'; Pattern = '\([^)]*\b(Self|ExtendedRight)\b'; Severity = 'Finding' }
+        )
+    }
+
+    'GPO_NON_DEFAULT_OWNER' = @{
+        Title = "Group Policy Object With a Non-Default Owner"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "The owner of this Group Policy Object is not one of the default owners (Domain Admins, Enterprise Admins, Administrators or SYSTEM). An object's owner holds READ_CONTROL and WRITE_DAC implicitly, with no ACE in the DACL to show it, so the owner can grant itself every other right on the GPO at will. For a GPO that means control over code that runs on every machine the policy is linked to."
+        Impact = @(
+            "The owner can add itself to the DACL with full control at any time, so removing its ACEs changes nothing"
+            "Ownership is not visible in the permission list a GPMC delegation tab shows - it needs the Advanced view or a DACL read"
+            "A GPO created by a delegated account keeps that account as its owner unless the creator's group is a default owner, which is how this state usually arises"
+            "An account that owns a GPO linked to the Domain Controllers OU can execute code on domain controllers"
+        )
+        Attack = @(
+            "1. Identify a GPO whose owner is an account the attacker already controls or can compromise"
+            "2. As the owner, write a new ACE granting full control - no existing permission is needed for this"
+            "3. Edit the policy content (scripts, scheduled tasks, Group Policy Preferences, registry settings)"
+            "4. The payload runs on every machine within the GPO's scope at the next refresh"
+        )
+        Remediation = @(
+            "Set the owner of every GPO to Domain Admins: in GPMC, Delegation -> Advanced -> Owner, or Set-Acl on the AD: provider path of the GPO object"
+            "Review why the current owner holds it - a delegated GPO creator keeps ownership of what it creates, so the Group Policy Creator Owners membership is the place to look"
+            "Audit ownership together with the DACL from then on, since an owner needs no ACE to regain control"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current owner of every GPO in the domain"
+                Command = 'Get-ADObject -LDAPFilter ''(objectClass=groupPolicyContainer)'' -SearchBase "CN=Policies,CN=System,$((Get-ADDomain).DistinguishedName)" | ForEach-Object { [PSCustomObject]@{ GPO = $_.Name; Owner = (Get-Acl "AD:$($_.DistinguishedName)").Owner } }'
+            }
+            @{
+                Description = "Reassign the owner of one GPO to Domain Admins"
+                Command = '$acl = Get-Acl "AD:\CN=<GUID>,CN=Policies,CN=System,DC=domain,DC=com"; $acl.SetOwner((New-Object System.Security.Principal.NTAccount("DOMAIN\Domain Admins"))); Set-Acl -Path "AD:\CN=<GUID>,CN=Policies,CN=System,DC=domain,DC=com" -AclObject $acl'
+            }
+        )
+        References = @(
+            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+            @{ Title = "Owner Rights - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-rights" }
+        )
+        Tools = @("SharpGPOAbuse", "PowerView", "ADACLScanner")
+        MITRE = "T1484.001"
+        Triggers = @(
+            # Its own attribute name rather than the generic 'Owner', which already carries
+            # NON_DEFAULT_OWNER (a Hint, SeverityOnly) for every other object type. Two
+            # definitions on one attribute would mean the higher BaseScore wins everywhere,
+            # and a non-default owner on a GPO is not the same finding as one on a user.
+            @{ Attribute = 'GPOOwner'; Severity = 'Finding' }
         )
     }
 

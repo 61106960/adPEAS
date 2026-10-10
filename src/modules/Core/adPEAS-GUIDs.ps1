@@ -143,6 +143,22 @@ $Script:PropertyGUIDs = @{
     'msDS-AllowedToDelegateTo'       = [GUID]'800d94d7-b7a1-42a1-b14d-7cae1423d07f'
     'msDS-AllowedToActOnBehalfOfOtherIdentity' = [GUID]'3f78c3e5-f79a-46bd-a0b8-9d18116ddc79'
     'gPLink'                         = [GUID]'f30e3bbe-9ff0-11d1-b603-0000f80367c1'
+    'gPOptions'                      = [GUID]'f30e3bc0-9ff0-11d1-b603-0000f80367c1'
+
+    # Group-Policy-Container attributes. A WriteProperty ACE on a GPO always names one
+    # attribute GUID; without these entries Resolve-ObjectTypeGUID answered $null for all
+    # of them, so Get-GPOPermissions could not tell the ones that hand over the policy
+    # content from the ones that do not, and reported "gPCFileSysPath can be redirected to
+    # an attacker-controlled UNC path" for a delegation that only allows gPCWQLFilter.
+    # The first four are the content: the path the clients read, the two CSE lists that
+    # decide which extensions process it, and the version that makes them re-read it.
+    # gPCWQLFilter is listed so it resolves to a name rather than falling into the
+    # "unknown GUID" branch, which stays a finding by design.
+    'gPCFileSysPath'                 = [GUID]'f30e3bc1-9ff0-11d1-b603-0000f80367c1'
+    'gPCMachineExtensionNames'       = [GUID]'32ff8ecc-783f-11d2-9916-0000f87a57d4'
+    'gPCUserExtensionNames'          = [GUID]'42a75fc6-783f-11d2-9916-0000f87a57d4'
+    'versionNumber'                  = [GUID]'bf967a76-0de6-11d0-a285-00aa003049e2'
+    'gPCWQLFilter'                   = [GUID]'7bd4c7a6-1add-4436-8c04-3999a880154c'
     'dNSHostName'                    = [GUID]'72e39547-7b18-11d1-adef-00c04fd8d5cd'  # DNS hostname attribute
 
     # gMSA (Group Managed Service Account) password attribute

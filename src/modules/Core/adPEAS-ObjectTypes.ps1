@@ -1379,11 +1379,13 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Summary = "Identifies Group Policy Objects with risky permissions."
         WhyItMatters = "GPO modification rights enable code execution on all computers where the GPO is applied. Attackers can deploy malware, create scheduled tasks, or modify security settings."
         WhatWeCheck = @(
-            "GPOs with write permissions for non-admins"
+            "GPOs with write permissions for non-admins, inherited delegations included, with Deny ACEs netted out"
+            "The owner of each GPO, which holds WRITE_DAC implicitly and needs no ACE at all"
+            "Which attribute an attribute-scoped write is restricted to, since only a few of them carry the policy content"
             "Which computers/users are affected by each GPO"
             "Potential impact of GPO modification"
         )
-        SecureMessage = "No dangerous GPO permissions found. Only privileged accounts have write access to Group Policy Objects."
+        SecureMessage = "No dangerous permissions and no non-default owner on the GPO directory objects. Note that the permissions of the SYSVOL folder holding the policy content are a separate question and not part of this check."
         PrimaryFindingId = 'GPO_DANGEROUS_PERMISSIONS'
     }
 

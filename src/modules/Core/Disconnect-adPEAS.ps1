@@ -325,6 +325,8 @@ function Clear-SessionState {
     $Script:GroupSeverityConfig = $null
     $Script:RiskyPaths = $null
     $Script:DangerousGPOAccessRights = $null
+    $Script:CriticalGPOAttributes = $null
+    $Script:UnscopedGPORights = $null
 
     $Script:LAPSSchemaInfo = $null
     $Script:PrivilegedAccountFilterCache = $null
