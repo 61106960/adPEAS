@@ -317,9 +317,15 @@ $Script:PrimaryAttributes = @{
     )
 
     # Outdated Computer object
+    #
+    # osRelease names the Windows 11 release the build identifies, which is the property
+    # that decides whether the machine still gets updates at all - without it the row said
+    # "Windows 11 Enterprise" and nothing more. osExtendedSecurityUpdates carries the ESU
+    # caveat for a machine between its general support end and the end of the paid
+    # extension.
     OutdatedComputer = @(
-        'name', 'dNSHostName', 'operatingSystem', 'operatingSystemVersion',
-        'eolDate', 'daysSinceEoL', 'lastLogonTimestamp'
+        'name', 'dNSHostName', 'operatingSystem', 'operatingSystemVersion', 'osRelease',
+        'eolDate', 'daysSinceEoL', 'osExtendedSecurityUpdates', 'lastLogonTimestamp'
     )
 
     # GPO User Rights Assignment findings ([Privilege Rights] in GptTmpl.inf)

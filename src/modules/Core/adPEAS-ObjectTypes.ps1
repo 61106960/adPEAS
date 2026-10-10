@@ -1323,12 +1323,13 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Summary = "Finds computers running an end-of-life Microsoft operating system."
         WhyItMatters = "EOL systems no longer receive security updates. They have known, unpatched vulnerabilities that attackers can exploit for initial access or lateral movement."
         WhatWeCheck = @(
-            "Windows XP, Vista, 7, 8/8.1, Server 2003/2008/2012"
+            "Windows XP, Vista, 7, 8/8.1, 10 and 11, Server 2003 through 2022"
+            "Windows 11 per release, from the build in operatingSystemVersion, with the earlier end date for Home and Pro and the later one for Enterprise and Education"
+            "The general support end separately from the end of the paid Extended Security Updates window, because a machine between the two is patched only if that extension was bought"
             "Last logon timestamp to filter active vs stale"
-            "Operating system version details"
         )
-        FilteringNote = "The subject is the Microsoft lifecycle. A member whose operatingSystem is not a Microsoft product - a Linux host, an appliance, a network printer - has no support date to run out and is not part of the figures."
-        SecureMessage = "No active computers running an end-of-life Microsoft operating system found. All systems are running supported operating systems that receive security updates."
+        FilteringNote = "The subject is the Microsoft lifecycle. A member whose operatingSystem is not a Microsoft product - a Linux host, an appliance, a network printer - has no support date to run out and is not part of the figures. A Microsoft product the table cannot place, such as a Windows 11 build it does not know, is counted and named separately: not assessable is not the same as supported."
+        SecureMessage = "No active computers running an end-of-life Microsoft operating system found. Every machine the lifecycle table could place is on a release that still receives security updates."
         PrimaryFindingId = 'OUTDATED_OS'
     }
 

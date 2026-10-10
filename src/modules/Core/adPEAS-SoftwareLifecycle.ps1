@@ -26,48 +26,112 @@
 # =============================================================================
 # WINDOWS LIFECYCLE DATA
 # =============================================================================
-# Key = Normalized OS name (as returned by Get-NormalizedOSName)
-# Value = End-of-Support date (extended support end, not mainstream)
+# Key   = Normalized OS name (as returned by Get-NormalizedOSName)
+# Value = @{ ExtendedEnd = '<yyyy-MM-dd>'; ESUEnd = '<yyyy-MM-dd>' }
 #
-# Note: Dates are when ALL support ends (including ESU where applicable)
+# TWO dates per product, and the distinction is the whole point.
+#
+# ExtendedEnd is the day Microsoft stopped shipping security updates to everyone. Past it
+# a machine is unpatched unless its owner bought Extended Security Updates, which for
+# Server 2012 R2 means an Azure Arc subscription and for Windows 7 a volume licensing
+# agreement - neither is the common case.
+#
+# ESUEnd is the day the paid extension ran out as well, and it is only present where such
+# a program existed.
+#
+# The table used to carry a single date per product, and for five products that date was
+# the ESU end. Measured against 2026-10-10, Test-IsOutdatedOS answered
+# IsOutdated = False for "Windows Server 2012 R2 Standard" - the most common real
+# end-of-life server there is - while the operatingSystem trigger in
+# adPEAS-FindingDefinitions.ps1 coloured the same computer red as "End-of-Life Operating
+# System" wherever another check rendered it. One report, two answers, and the check
+# responsible for the question was the one that said everything was fine.
+#
+# Dates are the last day of support, as Microsoft's lifecycle pages state them (those
+# pages show the following day at 06:59:59 PT, which is the same instant).
 
 $Script:WindowsLifecycle = @{
     # ===== Windows Client =====
-    'Windows XP'           = '2014-04-08'   # Extended support ended
-    'Windows Vista'        = '2017-04-11'   # Extended support ended
-    'Windows 7'            = '2023-01-10'   # ESU Year 3 ended (was 2020-01-14 without ESU)
-    'Windows 8'            = '2016-01-12'   # No extended support (upgrade to 8.1 required)
-    'Windows 8.1'          = '2023-01-10'   # Extended support ended
-    'Windows 10'           = '2025-10-14'   # End of support for non-LTSC (final SAC version)
+    'Windows XP'           = @{ ExtendedEnd = '2014-04-08' }
+    'Windows Vista'        = @{ ExtendedEnd = '2017-04-11' }
+    'Windows 7'            = @{ ExtendedEnd = '2020-01-14'; ESUEnd = '2023-01-10' }
+    'Windows 8'            = @{ ExtendedEnd = '2016-01-12' }   # no extended support, 8.1 was the upgrade
+    'Windows 8.1'          = @{ ExtendedEnd = '2023-01-10' }
 
-    # Windows 10 LTSC editions have extended support lifecycles
-    # Identified by "LTSC" in operatingSystem AND build number in operatingSystemVersion
-    'Windows 10 LTSC 2015' = '2025-10-14'   # Build 10240 (version 1507)
-    'Windows 10 LTSC 2016' = '2026-10-13'   # Build 14393 (version 1607)
-    'Windows 10 LTSC 2019' = '2029-01-09'   # Build 17763 (version 1809)
-    'Windows 10 LTSC 2021' = '2027-01-12'   # Build 19044 (version 21H2)
+    # Windows 10 has a consumer ESU year and a commercial one beyond this date.
+    # Deliberately not entered: the programs have conditions (a Microsoft account, or a
+    # volume agreement) that nothing in Active Directory records, and giving the product
+    # an ESUEnd here would move every Windows 10 machine in every domain from a finding
+    # to a hint for a year - on an assumption about the customer that adPEAS cannot check.
+    'Windows 10'           = @{ ExtendedEnd = '2025-10-14' }
+
+    # Windows 10 LTSC editions have their own, longer lifecycles.
+    # Identified by "LTSC" in operatingSystem AND the build in operatingSystemVersion.
+    'Windows 10 LTSC 2015' = @{ ExtendedEnd = '2025-10-14' }   # Build 10240 (1507)
+    'Windows 10 LTSC 2016' = @{ ExtendedEnd = '2026-10-13' }   # Build 14393 (1607)
+    'Windows 10 LTSC 2019' = @{ ExtendedEnd = '2029-01-09' }   # Build 17763 (1809)
+    'Windows 10 LTSC 2021' = @{ ExtendedEnd = '2027-01-12' }   # Build 19044 (21H2)
+
+    # ===== Windows 11 =====
+    # Per release, keyed by build through $Script:Windows11Builds below. Only the LTSC
+    # edition has a single date, because it is not on the annual channel.
+    'Windows 11 LTSC 2024' = @{ ExtendedEnd = '2029-10-09' }   # Build 26100, Enterprise LTSC
+                                                               # (IoT Enterprise LTSC 2024 runs to 2034-10-10)
 
     # ===== Windows Server =====
-    'Windows Server 2003'    = '2015-07-14'   # Extended support ended
-    'Windows Server 2008'    = '2023-01-10'   # ESU Year 3 ended (was 2020-01-14 without ESU)
-    'Windows Server 2008 R2' = '2023-01-10'   # ESU Year 3 ended (was 2020-01-14 without ESU)
-    'Windows Server 2012'    = '2026-10-13'   # ESU Year 3 ends (was 2023-10-10 without ESU)
-    'Windows Server 2012 R2' = '2026-10-13'   # ESU Year 3 ends (was 2023-10-10 without ESU)
-    'Windows Server 2016'    = '2027-01-12'   # Extended support ends
+    'Windows Server 2003'    = @{ ExtendedEnd = '2015-07-14' }
+    'Windows Server 2008'    = @{ ExtendedEnd = '2020-01-14'; ESUEnd = '2023-01-10' }
+    'Windows Server 2008 R2' = @{ ExtendedEnd = '2020-01-14'; ESUEnd = '2023-01-10' }
+    'Windows Server 2012'    = @{ ExtendedEnd = '2023-10-10'; ESUEnd = '2026-10-13' }
+    'Windows Server 2012 R2' = @{ ExtendedEnd = '2023-10-10'; ESUEnd = '2026-10-13' }
+    'Windows Server 2016'    = @{ ExtendedEnd = '2027-01-12' }
 
     # Still supported, but the end date is published and belongs in the table. A future
     # date already means "not outdated" - that is how the LTSC rows work. Leaving these
     # in a comment made a current server indistinguishable from a network printer:
     # both came back HasLifecycleData = $false.
-    'Windows Server 2019'    = '2029-01-09'   # Extended support ends
-    'Windows Server 2022'    = '2031-10-14'   # Extended support ends
+    'Windows Server 2019'    = @{ ExtendedEnd = '2029-01-09' }
+    'Windows Server 2022'    = @{ ExtendedEnd = '2031-10-14' }
 }
 
-# Products that are recognized and supported but have no single end-of-support date:
-# Windows 11 is versioned per build like the Windows 10 SAC channel, and the Windows
-# Server 2025 lifecycle was not published when this table was written. They must not be
-# given an invented date, but they must also not be reported as an unknown platform, so
-# they are carried here. Test-IsOutdatedOS treats them as known and not outdated.
+# =============================================================================
+# WINDOWS 11 RELEASES
+# =============================================================================
+# Windows 11 is versioned per release like the old Windows 10 SAC channel, and each
+# release stops receiving updates on its own date - earlier for Home and Pro than for
+# Enterprise and Education. The product was in $Script:WindowsSupportedNoEOL, which made
+# Test-IsOutdatedOS answer "known, not outdated" for every Windows 11 machine whatever
+# build it ran. A fleet sitting on 22000 or 22621 - unpatched since 2023 and 2024 - came
+# out silently clean, and operatingSystemVersion was read only in the LTSC branch.
+#
+# Keyed by build, because the build is what operatingSystemVersion carries and because
+# the numbers are not ordered: 26H1 is build 28000 while the later 26H2 is 26300. Nothing
+# here may infer "newer" from a larger number.
+#
+# Dates from Microsoft's Windows 11 release information and the two lifecycle pages,
+# stated as the last day of support.
+$Script:Windows11Builds = @{
+    22000 = @{ Release = '21H2'; ConsumerEnd = '2023-10-10'; EnterpriseEnd = '2024-10-08' }
+    22621 = @{ Release = '22H2'; ConsumerEnd = '2024-10-08'; EnterpriseEnd = '2025-10-14' }
+    22631 = @{ Release = '23H2'; ConsumerEnd = '2025-11-11'; EnterpriseEnd = '2026-11-10' }
+    26100 = @{ Release = '24H2'; ConsumerEnd = '2026-10-13'; EnterpriseEnd = '2027-10-12' }
+    26200 = @{ Release = '25H2'; ConsumerEnd = '2027-10-12'; EnterpriseEnd = '2028-10-10' }
+    26300 = @{ Release = '26H2'; ConsumerEnd = '2028-10-10'; EnterpriseEnd = '2029-10-09' }
+    28000 = @{ Release = '26H1'; ConsumerEnd = '2028-03-14'; EnterpriseEnd = '2029-03-13' }
+}
+
+# The editions that follow the longer of the two Windows 11 schedules. Anything else -
+# Home, Pro, Pro Education, Pro for Workstations, SE - follows the shorter one.
+$Script:Windows11EnterpriseEditions = @(
+    'Enterprise'
+    'Education'
+)
+
+# Products that are recognized but have no date this table can apply:
+# Windows Server 2025's lifecycle was not published when this was written, and a Windows
+# 11 machine whose build is absent from the table above cannot be placed on the annual
+# channel at all. They must not be given an invented date and must not be reported as an
+# unknown platform either, so Test-IsOutdatedOS calls them known and not assessable.
 $Script:WindowsSupportedNoEOL = @(
     'Windows 11'
     'Windows Server 2025'
@@ -194,7 +258,30 @@ function Get-NormalizedOSName {
             }
             return 'Windows 10'
         }
-        '^Windows 11'               { return 'Windows 11' }
+        '^Windows 11' {
+            # Per release, like the Windows 10 SAC channel was. The build is the only
+            # thing that identifies a release, and it used to be read in the LTSC branch
+            # only - so every Windows 11 machine normalized to the bare product name and
+            # came back "known, not outdated" whatever it was running.
+            $buildNumber = 0
+            if ($OSVersion -match '\((\d+)\)') { $buildNumber = [int]$Matches[1] }
+
+            # The LTSC edition is not on the annual channel and has a row of its own.
+            # Matched on the exact build: a future LTSC release will have another one, and
+            # treating any higher build as LTSC 2024 would give it the wrong date.
+            if ($OSName -match 'LTSC') {
+                if ($buildNumber -eq 26100) { return 'Windows 11 LTSC 2024' }
+                return 'Windows 11'
+            }
+
+            if ($Script:Windows11Builds.ContainsKey($buildNumber)) {
+                return "Windows 11 $($Script:Windows11Builds[$buildNumber].Release)"
+            }
+
+            # No build, or a build this table does not know. The bare name, which
+            # Test-IsOutdatedOS reports as not assessable rather than as supported.
+            return 'Windows 11'
+        }
 
         # Windows Server - order matters (R2 before base version)
         '^Windows Server 2003'      { return 'Windows Server 2003' }
@@ -355,26 +442,99 @@ function Test-IsOutdatedOS {
         EOLDate = $null
         DaysSinceEOL = $null
         HasLifecycleData = $false
+
+        # The three new fields, and what each is for.
+        #
+        # SupportState says which of four states the machine is in, because "outdated yes
+        # or no" cannot express the one that matters most: past the date everyone stopped
+        # getting updates, but inside a paid extension its owner may or may not have
+        # bought. A single boolean there either accuses every ESU customer or clears every
+        # unpatched server, and the table used to do the second.
+        #
+        #   Supported      - the date has not passed
+        #   ESUOnly        - past ExtendedEnd, within ESUEnd: patched only if ESU was paid for
+        #   OutOfSupport   - past everything
+        #   NotAssessable  - a recognized product this table cannot place (no build, no
+        #                    published date). Not the same as "not outdated".
+        SupportState = 'Unknown'
+        ESUEnd = $null
+        Release = $null
     }
 
-    # A recognized product whose support end date is not published yet. Known, not
-    # outdated, no date - EOLDate stays $null and the caller can tell it apart from a
+    # Windows 11 on the annual channel: the release decides the date, and which of the two
+    # dates applies depends on the edition.
+    #
+    # The condition repeats the build lookup on purpose, and it is belt and braces rather
+    # than load-bearing: Get-NormalizedOSName consults this same table and only produces a
+    # release name when the build is in it, so a build the table does not know normalizes
+    # to the bare product name and lands in the not-assessable branch below. Measured by
+    # mutation - dropping the second half of this condition fails no test, which is the
+    # point: one table, one source of truth. It stays because it keeps this function
+    # correct on its own terms rather than on the normalizer's.
+    $windows11Build = 0
+    if ($OSVersion -match '\((\d+)\)') { $windows11Build = [int]$Matches[1] }
+
+    if ($normalizedOS -like 'Windows 11 2*' -and $Script:Windows11Builds.ContainsKey($windows11Build)) {
+        $result.HasLifecycleData = $true
+        $release = $Script:Windows11Builds[$windows11Build]
+        $result.Release = $release.Release
+
+        $isEnterprise = $false
+        foreach ($edition in $Script:Windows11EnterpriseEditions) {
+            if ($OSName -like "*$edition*") { $isEnterprise = $true; break }
+        }
+
+        $endDate = if ($isEnterprise) { $release.EnterpriseEnd } else { $release.ConsumerEnd }
+        $eolDate = [DateTime]::ParseExact($endDate, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+        $result.EOLDate = $eolDate
+        $result.DaysSinceEOL = ($ReferenceDate - $eolDate).Days
+
+        if ($result.DaysSinceEOL -gt 0) {
+            $result.IsOutdated = $true
+            $result.SupportState = 'OutOfSupport'
+        } else {
+            $result.SupportState = 'Supported'
+        }
+        return $result
+    }
+
+    # A recognized product whose support end date is not published, or a Windows 11
+    # machine that reported no build at all. Known, no date - and explicitly not
+    # assessable, so a caller can tell it apart both from a supported machine and from a
     # platform the tool has never heard of.
     if ($Script:WindowsSupportedNoEOL -contains $normalizedOS) {
         $result.HasLifecycleData = $true
+        $result.SupportState = 'NotAssessable'
         return $result
     }
 
     if ($Script:WindowsLifecycle.ContainsKey($normalizedOS)) {
         $result.HasLifecycleData = $true
-        $eolDate = [DateTime]::ParseExact($Script:WindowsLifecycle[$normalizedOS], 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+        $entry = $Script:WindowsLifecycle[$normalizedOS]
+
+        $eolDate = [DateTime]::ParseExact($entry.ExtendedEnd, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
         $result.EOLDate = $eolDate
+        $result.DaysSinceEOL = ($ReferenceDate - $eolDate).Days
 
-        $daysDiff = ($ReferenceDate - $eolDate).Days
-        $result.DaysSinceEOL = $daysDiff
+        $esuDate = $null
+        if ($entry.ContainsKey('ESUEnd')) {
+            $esuDate = [DateTime]::ParseExact($entry.ESUEnd, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+            $result.ESUEnd = $esuDate
+        }
 
-        if ($daysDiff -gt 0) {
+        if ($result.DaysSinceEOL -le 0) {
+            $result.SupportState = 'Supported'
+        }
+        elseif ($esuDate -and ($ReferenceDate - $esuDate).Days -le 0) {
+            # Past the date everyone stopped getting updates, inside the paid extension.
+            # Still reported - the machine is unpatched unless somebody bought ESU - but
+            # as its own state, with the date it stopped being patched by default.
             $result.IsOutdated = $true
+            $result.SupportState = 'ESUOnly'
+        }
+        else {
+            $result.IsOutdated = $true
+            $result.SupportState = 'OutOfSupport'
         }
     }
 

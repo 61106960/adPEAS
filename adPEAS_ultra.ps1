@@ -3212,8 +3212,8 @@ $Script:PrimaryAttributes = @{
 	    'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation'
 	)
 	OutdatedComputer = @(
-	    'name', 'dNSHostName', 'operatingSystem', 'operatingSystemVersion',
-	    'eolDate', 'daysSinceEoL', 'lastLogonTimestamp'
+	    'name', 'dNSHostName', 'operatingSystem', 'operatingSystemVersion', 'osRelease',
+	    'eolDate', 'daysSinceEoL', 'osExtendedSecurityUpdates', 'lastLogonTimestamp'
 	)
 	GPOUserRights = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
@@ -9488,6 +9488,34 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    MITRE = "T1134.005"
 	    Triggers = @(
 	        @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Custom = 'is_not_within_forest_trust'; Severity = 'Finding' }
+	    )
+	}
+	'OS_EXTENDED_SECURITY_UPDATES_ONLY' = @{
+	    Title = "Operating System Past General Support, Inside the Paid ESU Window"
+	    Risk = "Hint"
+	    BaseScore = 30
+	    Description = "This machine's operating system is past the date Microsoft stopped shipping security updates to everyone, but within the window in which Extended Security Updates can be bought. Whether it is actually patched therefore depends on a purchase that Active Directory does not record: with ESU it receives critical and important fixes, without it has been unpatched since the general support end named on the row."
+	    Impact = @(
+	        "Without the extension the machine has the same exposure as any end-of-life system - known, unpatched vulnerabilities, and no fix coming"
+	        "With the extension it receives critical and important security updates only: no feature updates, no non-security fixes, and no new functionality"
+	        "ESU is not a state the directory records, so this is the one finding in the report that needs an answer from whoever administers the machine"
+	        "The window closes on the date named on the row, after which no extension is available at any price"
+	    )
+	    Attack = @(
+	        "The attacks are those of the underlying platform. For Windows Server 2012 R2 that includes every vulnerability patched since October 2023 on systems without ESU."
+	    )
+	    Remediation = @(
+	        "Establish whether Extended Security Updates were actually purchased and are being delivered - for Server 2012/2012 R2 that means an Azure Arc connection and an active subscription, for Windows 7 and Server 2008/2008 R2 a volume licensing agreement"
+	        "Plan the migration regardless: the ESU window has a hard end, named on the row, and there is nothing after it"
+	        "Where ESU is not in place, treat the machine as end-of-life today and isolate it accordingly - it has been unpatched since the general support end"
+	    )
+	    References = @(
+	        @{ Title = "Extended Security Updates FAQ"; Url = "https://learn.microsoft.com/en-us/lifecycle/faq/extended-security-updates" }
+	        @{ Title = "Microsoft Product Lifecycle"; Url = "https://learn.microsoft.com/en-us/lifecycle/products/" }
+	    )
+	    MITRE = "T1210"
+	    Triggers = @(
+	        @{ Attribute = 'osExtendedSecurityUpdates'; Severity = 'Hint' }
 	    )
 	}
 	'OUTDATED_OS' = @{
@@ -18701,12 +18729,13 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    Summary = "Finds computers running an end-of-life Microsoft operating system."
 	    WhyItMatters = "EOL systems no longer receive security updates. They have known, unpatched vulnerabilities that attackers can exploit for initial access or lateral movement."
 	    WhatWeCheck = @(
-	        "Windows XP, Vista, 7, 8/8.1, Server 2003/2008/2012"
+	        "Windows XP, Vista, 7, 8/8.1, 10 and 11, Server 2003 through 2022"
+	        "Windows 11 per release, from the build in operatingSystemVersion, with the earlier end date for Home and Pro and the later one for Enterprise and Education"
+	        "The general support end separately from the end of the paid Extended Security Updates window, because a machine between the two is patched only if that extension was bought"
 	        "Last logon timestamp to filter active vs stale"
-	        "Operating system version details"
 	    )
-	    FilteringNote = "The subject is the Microsoft lifecycle. A member whose operatingSystem is not a Microsoft product - a Linux host, an appliance, a network printer - has no support date to run out and is not part of the figures."
-	    SecureMessage = "No active computers running an end-of-life Microsoft operating system found. All systems are running supported operating systems that receive security updates."
+	    FilteringNote = "The subject is the Microsoft lifecycle. A member whose operatingSystem is not a Microsoft product - a Linux host, an appliance, a network printer - has no support date to run out and is not part of the figures. A Microsoft product the table cannot place, such as a Windows 11 build it does not know, is counted and named separately: not assessable is not the same as supported."
+	    SecureMessage = "No active computers running an end-of-life Microsoft operating system found. Every machine the lifecycle table could place is on a release that still receives security updates."
 	    PrimaryFindingId = 'OUTDATED_OS'
 	}
 	'NonDefaultComputerOwner' = @{
@@ -19082,25 +19111,39 @@ function Export-CheckDescriptionsJson {
 	}
 }
 $Script:WindowsLifecycle = @{
-	'Windows XP'           = '2014-04-08'
-	'Windows Vista'        = '2017-04-11'
-	'Windows 7'            = '2023-01-10'
-	'Windows 8'            = '2016-01-12'
-	'Windows 8.1'          = '2023-01-10'
-	'Windows 10'           = '2025-10-14'
-	'Windows 10 LTSC 2015' = '2025-10-14'
-	'Windows 10 LTSC 2016' = '2026-10-13'
-	'Windows 10 LTSC 2019' = '2029-01-09'
-	'Windows 10 LTSC 2021' = '2027-01-12'
-	'Windows Server 2003'    = '2015-07-14'
-	'Windows Server 2008'    = '2023-01-10'
-	'Windows Server 2008 R2' = '2023-01-10'
-	'Windows Server 2012'    = '2026-10-13'
-	'Windows Server 2012 R2' = '2026-10-13'
-	'Windows Server 2016'    = '2027-01-12'
-	'Windows Server 2019'    = '2029-01-09'
-	'Windows Server 2022'    = '2031-10-14'
+	'Windows XP'           = @{ ExtendedEnd = '2014-04-08' }
+	'Windows Vista'        = @{ ExtendedEnd = '2017-04-11' }
+	'Windows 7'            = @{ ExtendedEnd = '2020-01-14'; ESUEnd = '2023-01-10' }
+	'Windows 8'            = @{ ExtendedEnd = '2016-01-12' }
+	'Windows 8.1'          = @{ ExtendedEnd = '2023-01-10' }
+	'Windows 10'           = @{ ExtendedEnd = '2025-10-14' }
+	'Windows 10 LTSC 2015' = @{ ExtendedEnd = '2025-10-14' }
+	'Windows 10 LTSC 2016' = @{ ExtendedEnd = '2026-10-13' }
+	'Windows 10 LTSC 2019' = @{ ExtendedEnd = '2029-01-09' }
+	'Windows 10 LTSC 2021' = @{ ExtendedEnd = '2027-01-12' }
+	'Windows 11 LTSC 2024' = @{ ExtendedEnd = '2029-10-09' }
+	'Windows Server 2003'    = @{ ExtendedEnd = '2015-07-14' }
+	'Windows Server 2008'    = @{ ExtendedEnd = '2020-01-14'; ESUEnd = '2023-01-10' }
+	'Windows Server 2008 R2' = @{ ExtendedEnd = '2020-01-14'; ESUEnd = '2023-01-10' }
+	'Windows Server 2012'    = @{ ExtendedEnd = '2023-10-10'; ESUEnd = '2026-10-13' }
+	'Windows Server 2012 R2' = @{ ExtendedEnd = '2023-10-10'; ESUEnd = '2026-10-13' }
+	'Windows Server 2016'    = @{ ExtendedEnd = '2027-01-12' }
+	'Windows Server 2019'    = @{ ExtendedEnd = '2029-01-09' }
+	'Windows Server 2022'    = @{ ExtendedEnd = '2031-10-14' }
 }
+$Script:Windows11Builds = @{
+	22000 = @{ Release = '21H2'; ConsumerEnd = '2023-10-10'; EnterpriseEnd = '2024-10-08' }
+	22621 = @{ Release = '22H2'; ConsumerEnd = '2024-10-08'; EnterpriseEnd = '2025-10-14' }
+	22631 = @{ Release = '23H2'; ConsumerEnd = '2025-11-11'; EnterpriseEnd = '2026-11-10' }
+	26100 = @{ Release = '24H2'; ConsumerEnd = '2026-10-13'; EnterpriseEnd = '2027-10-12' }
+	26200 = @{ Release = '25H2'; ConsumerEnd = '2027-10-12'; EnterpriseEnd = '2028-10-10' }
+	26300 = @{ Release = '26H2'; ConsumerEnd = '2028-10-10'; EnterpriseEnd = '2029-10-09' }
+	28000 = @{ Release = '26H1'; ConsumerEnd = '2028-03-14'; EnterpriseEnd = '2029-03-13' }
+}
+$Script:Windows11EnterpriseEditions = @(
+	'Enterprise'
+	'Education'
+)
 $Script:WindowsSupportedNoEOL = @(
 	'Windows 11'
 	'Windows Server 2025'
@@ -19166,7 +19209,18 @@ function Get-NormalizedOSName {
 	        }
 	        return 'Windows 10'
 	    }
-	    '^Windows 11'               { return 'Windows 11' }
+	    '^Windows 11' {
+	        $buildNumber = 0
+	        if ($OSVersion -match '\((\d+)\)') { $buildNumber = [int]$Matches[1] }
+	        if ($OSName -match 'LTSC') {
+	            if ($buildNumber -eq 26100) { return 'Windows 11 LTSC 2024' }
+	            return 'Windows 11'
+	        }
+	        if ($Script:Windows11Builds.ContainsKey($buildNumber)) {
+	            return "Windows 11 $($Script:Windows11Builds[$buildNumber].Release)"
+	        }
+	        return 'Windows 11'
+	    }
 	    '^Windows Server 2003'      { return 'Windows Server 2003' }
 	    '^Windows Server 2008 R2'   { return 'Windows Server 2008 R2' }
 	    '^Windows Server 2008'      { return 'Windows Server 2008' }
@@ -19236,19 +19290,58 @@ function Test-IsOutdatedOS {
 	    EOLDate = $null
 	    DaysSinceEOL = $null
 	    HasLifecycleData = $false
+	    SupportState = 'Unknown'
+	    ESUEnd = $null
+	    Release = $null
+	}
+	$windows11Build = 0
+	if ($OSVersion -match '\((\d+)\)') { $windows11Build = [int]$Matches[1] }
+	if ($normalizedOS -like 'Windows 11 2*' -and $Script:Windows11Builds.ContainsKey($windows11Build)) {
+	    $result.HasLifecycleData = $true
+	    $release = $Script:Windows11Builds[$windows11Build]
+	    $result.Release = $release.Release
+	    $isEnterprise = $false
+	    foreach ($edition in $Script:Windows11EnterpriseEditions) {
+	        if ($OSName -like "*$edition*") { $isEnterprise = $true; break }
+	    }
+	    $endDate = if ($isEnterprise) { $release.EnterpriseEnd } else { $release.ConsumerEnd }
+	    $eolDate = [DateTime]::ParseExact($endDate, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+	    $result.EOLDate = $eolDate
+	    $result.DaysSinceEOL = ($ReferenceDate - $eolDate).Days
+	    if ($result.DaysSinceEOL -gt 0) {
+	        $result.IsOutdated = $true
+	        $result.SupportState = 'OutOfSupport'
+	    } else {
+	        $result.SupportState = 'Supported'
+	    }
+	    return $result
 	}
 	if ($Script:WindowsSupportedNoEOL -contains $normalizedOS) {
 	    $result.HasLifecycleData = $true
+	    $result.SupportState = 'NotAssessable'
 	    return $result
 	}
 	if ($Script:WindowsLifecycle.ContainsKey($normalizedOS)) {
 	    $result.HasLifecycleData = $true
-	    $eolDate = [DateTime]::ParseExact($Script:WindowsLifecycle[$normalizedOS], 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+	    $entry = $Script:WindowsLifecycle[$normalizedOS]
+	    $eolDate = [DateTime]::ParseExact($entry.ExtendedEnd, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
 	    $result.EOLDate = $eolDate
-	    $daysDiff = ($ReferenceDate - $eolDate).Days
-	    $result.DaysSinceEOL = $daysDiff
-	    if ($daysDiff -gt 0) {
+	    $result.DaysSinceEOL = ($ReferenceDate - $eolDate).Days
+	    $esuDate = $null
+	    if ($entry.ContainsKey('ESUEnd')) {
+	        $esuDate = [DateTime]::ParseExact($entry.ESUEnd, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+	        $result.ESUEnd = $esuDate
+	    }
+	    if ($result.DaysSinceEOL -le 0) {
+	        $result.SupportState = 'Supported'
+	    }
+	    elseif ($esuDate -and ($ReferenceDate - $esuDate).Days -le 0) {
 	        $result.IsOutdated = $true
+	        $result.SupportState = 'ESUOnly'
+	    }
+	    else {
+	        $result.IsOutdated = $true
+	        $result.SupportState = 'OutOfSupport'
 	    }
 	}
 	return $result
@@ -64101,6 +64194,8 @@ function Get-OutdatedComputers {
 	        $computers = @(Get-DomainComputer -Enabled -Properties $FilterProperties @connectionParams)
 	        $inactiveFilteredCount = 0
 	        $outdatedComputerDNs = @()
+	        $esuOnlyComputerDNs = @()
+	        $notAssessableCount = 0
 	        if (@($computers).Count -gt 0) {
 	            $computersWithActivity = $computers | Test-AccountActivity -IncludeDetails -InactiveDays $InactiveDays
 	            $currentIndex = 0
@@ -64116,10 +64211,18 @@ function Get-OutdatedComputers {
 	                    continue
 	                }
 	                $eolCheck = Test-IsOutdatedOS -OSName $computer.operatingSystem -OSVersion $computer.operatingSystemVersion
+	                if ($eolCheck.SupportState -eq 'NotAssessable' -and $computer.ActivityDetails.IsActive) {
+	                    $notAssessableCount++
+	                    continue
+	                }
 	                if ($eolCheck.IsOutdated) {
 	                    $isActive = $computer.ActivityDetails.IsActive
 	                    if ($isActive) {
-	                        $outdatedComputerDNs += $computer.distinguishedName
+	                        if ($eolCheck.SupportState -eq 'ESUOnly') {
+	                            $esuOnlyComputerDNs += $computer.distinguishedName
+	                        } else {
+	                            $outdatedComputerDNs += $computer.distinguishedName
+	                        }
 	                    } else {
 	                        $inactiveFilteredCount++
 	                    }
@@ -64129,10 +64232,19 @@ function Get-OutdatedComputers {
 	                Show-Progress -Activity "Checking outdated OS" -Completed
 	            }
 	        }
+	        $inactiveInfo = if ($inactiveFilteredCount -gt 0) { " ($inactiveFilteredCount inactive accounts filtered)" } else { "" }
 	        if (@($outdatedComputerDNs).Count -gt 0) {
-	            $inactiveInfo = if ($inactiveFilteredCount -gt 0) { " ($inactiveFilteredCount inactive accounts filtered)" } else { "" }
 	            Show-Line "Found $(@($outdatedComputerDNs).Count) computer(s) with an outdated Microsoft operating system:$inactiveInfo" -Class "Finding"
-	            $dnFilters = @(ConvertTo-LDAPDNFilter -DistinguishedName $outdatedComputerDNs)
+	        }
+	        if (@($esuOnlyComputerDNs).Count -gt 0) {
+	            Show-Line "$(@($esuOnlyComputerDNs).Count) computer(s) run an operating system that is past its general support end and inside a paid Extended Security Updates window - patched only if that extension was actually bought, and unpatched since the date on each row otherwise" -Class "Hint"
+	        }
+	        if ($notAssessableCount -gt 0) {
+	            Show-Line "$notAssessableCount active computer(s) run a recognized Microsoft operating system this lifecycle table cannot place - a Windows 11 build it does not know, or a product whose support end was not published when the table was written. Their support state was not assessed" -Class "Note"
+	        }
+	        $findingDNs = @($outdatedComputerDNs) + @($esuOnlyComputerDNs)
+	        if (@($findingDNs).Count -gt 0) {
+	            $dnFilters = @(ConvertTo-LDAPDNFilter -DistinguishedName $findingDNs)
 	            foreach ($dnFilter in $dnFilters) {
 	                foreach ($fullComputer in @(Get-DomainComputer -LDAPFilter $dnFilter @connectionParams)) {
 	                    $eolCheck = Test-IsOutdatedOS -OSName $fullComputer.operatingSystem -OSVersion $fullComputer.operatingSystemVersion
@@ -64140,14 +64252,22 @@ function Get-OutdatedComputers {
 	                        $eolDateStr = if ($eolCheck.EOLDate) { (Format-adPEASDate $eolCheck.EOLDate 'yyyy-MM-dd') } else { "Unknown" }
 	                        $fullComputer | Add-Member -NotePropertyName 'eolDate' -NotePropertyValue $eolDateStr -Force
 	                        $fullComputer | Add-Member -NotePropertyName 'daysSinceEoL' -NotePropertyValue $eolCheck.DaysSinceEOL -Force
+	                        if ($eolCheck.Release) {
+	                            $fullComputer | Add-Member -NotePropertyName 'osRelease' -NotePropertyValue $eolCheck.Release -Force
+	                        }
+	                        if ($eolCheck.SupportState -eq 'ESUOnly' -and $eolCheck.ESUEnd) {
+	                            $fullComputer | Add-Member -NotePropertyName 'osExtendedSecurityUpdates' -NotePropertyValue (
+	                                "General support ended on $eolDateStr. Extended Security Updates are available until $(Format-adPEASDate $eolCheck.ESUEnd 'yyyy-MM-dd'), so this machine is patched only if that extension was purchased - which Active Directory does not record. Without it, it has been unpatched since $eolDateStr."
+	                            ) -Force
+	                        }
 	                    }
 	                    $fullComputer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'OutdatedComputer' -Force
 	                    Show-Object $fullComputer
 	                }
 	            }
-	        } elseif ($inactiveFilteredCount -gt 0) {
+	        } elseif ($notAssessableCount -eq 0 -and $inactiveFilteredCount -gt 0) {
 	            Show-Line "No active computers with an outdated Microsoft operating system ($inactiveFilteredCount inactive accounts filtered)" -Class "Secure"
-	        } else {
+	        } elseif ($notAssessableCount -eq 0) {
 	            Show-Line "No computers with an outdated Microsoft operating system found" -Class "Secure"
 	        }
 	    } catch {
@@ -81428,7 +81548,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-0001"
+$Script:adPEASVersion = "2.7.0+20261011-0027"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

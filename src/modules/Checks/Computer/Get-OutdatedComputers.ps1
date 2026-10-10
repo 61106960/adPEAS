@@ -91,6 +91,21 @@ function Get-OutdatedComputers {
             $inactiveFilteredCount = 0
             $outdatedComputerDNs = @()
 
+            # Three states instead of a boolean, because the middle one cannot be
+            # expressed as one: a machine past the date everyone stopped getting updates,
+            # but inside a paid Extended Security Updates window its owner may or may not
+            # have bought. Reporting that as a plain finding accuses every ESU customer;
+            # reporting it as clean - which the lifecycle table used to do, by carrying the
+            # ESU end as the support end - hides the most common end-of-life server there
+            # is. It gets its own count and its own sentence.
+            $esuOnlyComputerDNs = @()
+
+            # A recognized product this table cannot place: a Windows 11 machine whose
+            # build is absent or unknown, or Server 2025 before its lifecycle was
+            # published. Counted and named, because "not assessable" is not "supported" -
+            # and Windows 11 used to fall into exactly this gap silently, for every build.
+            $notAssessableCount = 0
+
             if (@($computers).Count -gt 0) {
                 # Get enabled computers with activity details.
                 # -InactiveDays has to be handed on: the parameter was declared, defaulted
@@ -124,13 +139,22 @@ function Get-OutdatedComputers {
                     # counting them told the reader a number they could do nothing with.
                     $eolCheck = Test-IsOutdatedOS -OSName $computer.operatingSystem -OSVersion $computer.operatingSystemVersion
 
+                    if ($eolCheck.SupportState -eq 'NotAssessable' -and $computer.ActivityDetails.IsActive) {
+                        $notAssessableCount++
+                        continue
+                    }
+
                     if ($eolCheck.IsOutdated) {
                         # Check if computer is active
                         $isActive = $computer.ActivityDetails.IsActive
 
                         if ($isActive) {
                             # Store DN for later full fetch
-                            $outdatedComputerDNs += $computer.distinguishedName
+                            if ($eolCheck.SupportState -eq 'ESUOnly') {
+                                $esuOnlyComputerDNs += $computer.distinguishedName
+                            } else {
+                                $outdatedComputerDNs += $computer.distinguishedName
+                            }
                         } else {
                             # Count inactive outdated computers (stale accounts, not displayed)
                             $inactiveFilteredCount++
@@ -144,15 +168,27 @@ function Get-OutdatedComputers {
                 }
             }
 
-            # Step 2: Only fetch full objects for outdated computers (for Show-Object)
-            if (@($outdatedComputerDNs).Count -gt 0) {
-                $inactiveInfo = if ($inactiveFilteredCount -gt 0) { " ($inactiveFilteredCount inactive accounts filtered)" } else { "" }
-                Show-Line "Found $(@($outdatedComputerDNs).Count) computer(s) with an outdated Microsoft operating system:$inactiveInfo" -Class "Finding"
+            # Step 2: Only fetch full objects for the machines that have a finding
+            $inactiveInfo = if ($inactiveFilteredCount -gt 0) { " ($inactiveFilteredCount inactive accounts filtered)" } else { "" }
 
+            if (@($outdatedComputerDNs).Count -gt 0) {
+                Show-Line "Found $(@($outdatedComputerDNs).Count) computer(s) with an outdated Microsoft operating system:$inactiveInfo" -Class "Finding"
+            }
+
+            if (@($esuOnlyComputerDNs).Count -gt 0) {
+                Show-Line "$(@($esuOnlyComputerDNs).Count) computer(s) run an operating system that is past its general support end and inside a paid Extended Security Updates window - patched only if that extension was actually bought, and unpatched since the date on each row otherwise" -Class "Hint"
+            }
+
+            if ($notAssessableCount -gt 0) {
+                Show-Line "$notAssessableCount active computer(s) run a recognized Microsoft operating system this lifecycle table cannot place - a Windows 11 build it does not know, or a product whose support end was not published when the table was written. Their support state was not assessed" -Class "Note"
+            }
+
+            $findingDNs = @($outdatedComputerDNs) + @($esuOnlyComputerDNs)
+            if (@($findingDNs).Count -gt 0) {
                 # Read the full objects in batches. One query per finding meant a domain
                 # with three hundred end-of-life machines paid three hundred round-trips
                 # for data a handful of queries return.
-                $dnFilters = @(ConvertTo-LDAPDNFilter -DistinguishedName $outdatedComputerDNs)
+                $dnFilters = @(ConvertTo-LDAPDNFilter -DistinguishedName $findingDNs)
                 foreach ($dnFilter in $dnFilters) {
                     foreach ($fullComputer in @(Get-DomainComputer -LDAPFilter $dnFilter @connectionParams)) {
                         # Get EOL details using central lifecycle module
@@ -162,14 +198,30 @@ function Get-OutdatedComputers {
                             $eolDateStr = if ($eolCheck.EOLDate) { (Format-adPEASDate $eolCheck.EOLDate 'yyyy-MM-dd') } else { "Unknown" }
                             $fullComputer | Add-Member -NotePropertyName 'eolDate' -NotePropertyValue $eolDateStr -Force
                             $fullComputer | Add-Member -NotePropertyName 'daysSinceEoL' -NotePropertyValue $eolCheck.DaysSinceEOL -Force
+
+                            # Which Windows 11 release the build identifies. Without it the
+                            # row says "Windows 11 Enterprise" and nothing about the one
+                            # property that decides whether it still gets updates.
+                            if ($eolCheck.Release) {
+                                $fullComputer | Add-Member -NotePropertyName 'osRelease' -NotePropertyValue $eolCheck.Release -Force
+                            }
+
+                            # The ESU window gets a sentence rather than a silent downgrade:
+                            # the reader has to know that the date above is when updates
+                            # stopped by default, and what would have had to be bought.
+                            if ($eolCheck.SupportState -eq 'ESUOnly' -and $eolCheck.ESUEnd) {
+                                $fullComputer | Add-Member -NotePropertyName 'osExtendedSecurityUpdates' -NotePropertyValue (
+                                    "General support ended on $eolDateStr. Extended Security Updates are available until $(Format-adPEASDate $eolCheck.ESUEnd 'yyyy-MM-dd'), so this machine is patched only if that extension was purchased - which Active Directory does not record. Without it, it has been unpatched since $eolDateStr."
+                                ) -Force
+                            }
                         }
                         $fullComputer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'OutdatedComputer' -Force
                         Show-Object $fullComputer
                     }
                 }
-            } elseif ($inactiveFilteredCount -gt 0) {
+            } elseif ($notAssessableCount -eq 0 -and $inactiveFilteredCount -gt 0) {
                 Show-Line "No active computers with an outdated Microsoft operating system ($inactiveFilteredCount inactive accounts filtered)" -Class "Secure"
-            } else {
+            } elseif ($notAssessableCount -eq 0) {
                 Show-Line "No computers with an outdated Microsoft operating system found" -Class "Secure"
             }
 

@@ -6010,6 +6010,35 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
     # OUTDATED SYSTEMS FINDINGS
     # ============================================================================
 
+    'OS_EXTENDED_SECURITY_UPDATES_ONLY' = @{
+        Title = "Operating System Past General Support, Inside the Paid ESU Window"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "This machine's operating system is past the date Microsoft stopped shipping security updates to everyone, but within the window in which Extended Security Updates can be bought. Whether it is actually patched therefore depends on a purchase that Active Directory does not record: with ESU it receives critical and important fixes, without it has been unpatched since the general support end named on the row."
+        Impact = @(
+            "Without the extension the machine has the same exposure as any end-of-life system - known, unpatched vulnerabilities, and no fix coming"
+            "With the extension it receives critical and important security updates only: no feature updates, no non-security fixes, and no new functionality"
+            "ESU is not a state the directory records, so this is the one finding in the report that needs an answer from whoever administers the machine"
+            "The window closes on the date named on the row, after which no extension is available at any price"
+        )
+        Attack = @(
+            "The attacks are those of the underlying platform. For Windows Server 2012 R2 that includes every vulnerability patched since October 2023 on systems without ESU."
+        )
+        Remediation = @(
+            "Establish whether Extended Security Updates were actually purchased and are being delivered - for Server 2012/2012 R2 that means an Azure Arc connection and an active subscription, for Windows 7 and Server 2008/2008 R2 a volume licensing agreement"
+            "Plan the migration regardless: the ESU window has a hard end, named on the row, and there is nothing after it"
+            "Where ESU is not in place, treat the machine as end-of-life today and isolate it accordingly - it has been unpatched since the general support end"
+        )
+        References = @(
+            @{ Title = "Extended Security Updates FAQ"; Url = "https://learn.microsoft.com/en-us/lifecycle/faq/extended-security-updates" }
+            @{ Title = "Microsoft Product Lifecycle"; Url = "https://learn.microsoft.com/en-us/lifecycle/products/" }
+        )
+        MITRE = "T1210"
+        Triggers = @(
+            @{ Attribute = 'osExtendedSecurityUpdates'; Severity = 'Hint' }
+        )
+    }
+
     'OUTDATED_OS' = @{
         Title = "End-of-Life Operating System"
         Risk = "Finding"
