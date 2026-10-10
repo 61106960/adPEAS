@@ -13752,6 +13752,88 @@ foreach ($oid in $linkedOIDs) {
             @{ Attribute = 'forestFunctionalLevel'; Pattern = 'Windows (2000|2003|2008)'; Severity = 'Hint' }
         )
     }
+    'PREWIN2000_ANONYMOUS_MEMBER' = @{
+        Title = "Anonymous Logon in Pre-Windows 2000 Compatible Access"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "The Pre-Windows 2000 Compatible Access group grants its members read access to every user and group object in the domain. Anonymous Logon is a member, so that read requires no credentials: an unauthenticated client on the network can enumerate the whole directory."
+        Impact = @(
+            "The complete user, group and computer inventory can be read without an account"
+            "Service accounts, descriptions, group memberships and account flags are all exposed, which is the input for password spraying and for picking a target"
+            "Pre-authentication reconnaissance leaves no failed logon behind"
+        )
+        Attack = @(
+            "1. Attacker reaches a domain controller on the network with no credentials"
+            "2. Binds to LDAP anonymously, or opens a null SMB session"
+            "3. Enumerates users, groups and computers including descriptions and SPNs"
+            "4. Picks targets for AS-REP roasting, Kerberoasting or spraying from what the directory volunteered"
+        )
+        Remediation = @(
+            "Remove Anonymous Logon from Pre-Windows 2000 Compatible Access"
+            "The group exists for Windows NT 4.0 era clients and RAS servers; on a domain without them it should be empty"
+            "Check what depends on it first - some legacy appliances and older NAS devices bind anonymously"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the members of the group, language-independently by its well-known SID"
+                Command = "Get-ADGroup -Identity 'S-1-5-32-554' -Properties member | Select-Object -ExpandProperty member"
+            }
+            @{
+                Description = "Remove Anonymous Logon from the group"
+                Command = "Remove-ADGroupMember -Identity 'S-1-5-32-554' -Members 'CN=S-1-5-7,CN=ForeignSecurityPrincipals,DC=DOMAIN,DC=COM' -Confirm:`$false"
+            }
+        )
+        References = @(
+            @{ Title = "Pre-Windows 2000 Compatible Access"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups" }
+            @{ Title = "Anonymous LDAP enumeration"; Url = "https://www.thehacker.recipes/ad/recon/ldap" }
+        )
+        Tools = @("ldapsearch", "enum4linux", "windapsearch")
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'prewin2000AnonymousMember'; Severity = 'Finding' }
+        )
+    }
+    'PREWIN2000_BROAD_MEMBER' = @{
+        Title = "Broad Principal in Pre-Windows 2000 Compatible Access"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "The Pre-Windows 2000 Compatible Access group grants its members read access to every user and group object in the domain. A broad principal is a member - Everyone, Authenticated Users, Domain Users, Domain Computers or a comparable group - so any account in the domain, including the least privileged one and every machine account, can read the whole directory."
+        Impact = @(
+            "Any single compromised account or machine account reads the full user, group and computer inventory"
+            "Account descriptions, SPNs, group memberships and account flags are all exposed, which is the input for Kerberoasting and for choosing a target"
+            "Read access this broad defeats the point of removing read permissions elsewhere in the directory"
+        )
+        Attack = @(
+            "1. Attacker obtains any domain account, however unprivileged"
+            "2. Reads every user and group object through the permissions this group grants"
+            "3. Harvests SPNs, descriptions and group memberships"
+            "4. Picks the shortest path to a privileged account from what the directory volunteered"
+        )
+        Remediation = @(
+            "Remove the broad principal from Pre-Windows 2000 Compatible Access"
+            "The group exists for Windows NT 4.0 era clients and RAS servers; on a domain without them it should be empty"
+            "A domain installed with 'pre-Windows 2000 compatible permissions' gets this membership by default, so finding it says nothing about a mistake - it still has to be removed"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the members of the group, language-independently by its well-known SID"
+                Command = "Get-ADGroup -Identity 'S-1-5-32-554' -Properties member | Select-Object -ExpandProperty member"
+            }
+            @{
+                Description = "Remove a member from the group"
+                Command = "Remove-ADGroupMember -Identity 'S-1-5-32-554' -Members 'MEMBER_DN' -Confirm:`$false"
+            }
+        )
+        References = @(
+            @{ Title = "Pre-Windows 2000 Compatible Access"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups" }
+            @{ Title = "Active Directory recon over LDAP"; Url = "https://www.thehacker.recipes/ad/recon/ldap" }
+        )
+        Tools = @("PowerView", "BloodHound", "ldapsearch")
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'prewin2000BroadMember'; Severity = 'Finding' }
+        )
+    }
     'ANON_LDAP_READABLE_ATTRS' = @{
         Title = "Anonymous LDAP Readable Attributes"
         Risk = "Hint"
@@ -63222,37 +63304,71 @@ function Get-PrivilegedGroupMembers {
             }
             Show-SubHeader "Checking Pre-Windows 2000 Compatible Access group..." -ObjectType "PreWindows2000Access"
             $PreWin2000Findings = @()
+            $PreWin2000Unresolved = @()
+            $preWin2000Read = $false
             $PreWin2000SID = 'S-1-5-32-554'
             try {
                 $PreWin2000Group = Select-LocalDomainGroup (Get-DomainGroup -Identity $PreWin2000SID @CredParams)
+                if ($PreWin2000Group) { $preWin2000Read = $true }
                 if ($PreWin2000Group -and $PreWin2000Group.member) {
-                    $DangerousSIDs = @{
-                        'S-1-1-0' = @{ Name = 'Everyone'; Severity = 'Critical' }
-                        'S-1-5-7' = @{ Name = 'Anonymous Logon'; Severity = 'Critical' }
-                        'S-1-5-11' = @{ Name = 'Authenticated Users'; Severity = 'High' }
-                    }
-                    foreach ($MemberDN in $PreWin2000Group.member) {
-                        $MemberObj = @(Get-DomainObject -Identity $MemberDN @CredParams)[0]
-                        if ($MemberObj -and $MemberObj.objectSid) {
-                            if ($DangerousSIDs.ContainsKey($MemberObj.objectSid)) {
-                                $DangerousInfo = $DangerousSIDs[$MemberObj.objectSid]
-                                $finding = [PSCustomObject]@{
-                                    MemberName = $DangerousInfo.Name
-                                    MemberSID = $MemberObj.objectSid
-                                    Severity = $DangerousInfo.Severity
-                                }
-                                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PreWindows2000Access' -Force
-                                $PreWin2000Findings += $finding
-                                Show-Line "$($DangerousInfo.Name) is a member" -Class Hint
+                    foreach ($MemberDN in @($PreWin2000Group.member)) {
+                        if ([string]::IsNullOrWhiteSpace($MemberDN)) { continue }
+                        $MemberSID = $null
+                        if ($MemberDN -match '^CN=(S-1-[0-9-]+?)(?:,|$)') {
+                            $MemberSID = $Matches[1]
+                        }
+                        if (-not $MemberSID) {
+                            $memberParams = @{}
+                            foreach ($key in $CredParams.Keys) { $memberParams[$key] = $CredParams[$key] }
+                            if ($MemberDN -match ',(CN=Configuration,.+)$') {
+                                $memberParams['SearchBase'] = $Matches[1]
+                            }
+                            $MemberObj = @(Get-DomainObject -Identity $MemberDN @memberParams)[0]
+                            if ($MemberObj -and $MemberObj.objectSid) {
+                                $MemberSID = [string]$MemberObj.objectSid
                             }
                         }
+                        if (-not $MemberSID) {
+                            $PreWin2000Unresolved += $MemberDN
+                            Write-Log "[Get-PrivilegedGroupMembers] Pre-Windows 2000 member could not be resolved to a SID: $MemberDN" -Level Warning
+                            continue
+                        }
+                        $broadRID = Test-IsBroadGroupRID -SID $MemberSID
+                        if (-not ((Test-IsBroadGroupSID -SID $MemberSID) -or $broadRID)) { continue }
+                        $MemberName = ConvertFrom-SID -SID $MemberSID
+                        if ([string]::IsNullOrWhiteSpace($MemberName)) { $MemberName = $MemberSID }
+                        $finding = [PSCustomObject]@{
+                            Name       = $MemberName
+                            MemberName = $MemberName
+                            MemberSID  = $MemberSID
+                        }
+                        if ($MemberSID -eq 'S-1-5-7') {
+                            $finding | Add-Member -NotePropertyName 'prewin2000AnonymousMember' -NotePropertyValue (
+                                'Anonymous Logon is a member of this group, so every user and group object in the domain can be read with no credentials at all.'
+                            ) -Force
+                        } else {
+                            $finding | Add-Member -NotePropertyName 'prewin2000BroadMember' -NotePropertyValue (
+                                "$MemberName is a member of this group, so every principal it covers can read every user and group object in the domain."
+                            ) -Force
+                        }
+                        $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PreWindows2000Access' -Force
+                        $PreWin2000Findings += $finding
+                        Show-Line "$MemberName is a member" -Class Finding
+                        Show-Object $finding
                     }
                 }
-                if (@($PreWin2000Findings).Count -eq 0) {
+                if (-not $preWin2000Read) {
+                    Show-Line "Pre-Windows 2000 Compatible Access group could not be read - its membership was not assessed" -Class Finding
+                }
+                elseif (@($PreWin2000Findings).Count -eq 0 -and @($PreWin2000Unresolved).Count -eq 0) {
                     Show-Line "No dangerous members in Pre-Windows 2000 Compatible Access group" -Class Secure
+                }
+                if (@($PreWin2000Unresolved).Count -gt 0) {
+                    Show-Line "$(@($PreWin2000Unresolved).Count) member(s) of Pre-Windows 2000 Compatible Access could not be resolved to a SID and were not assessed" -Class Hint
                 }
             } catch {
                 Write-Log "[Get-PrivilegedGroupMembers] Error checking Pre-Windows 2000 Compatible Access: $_" -Level Error
+                Show-Line "Pre-Windows 2000 Compatible Access group could not be read - its membership was not assessed" -Class Finding
             }
         } catch {
             Write-Log "[Get-PrivilegedGroupMembers] Error: $_" -Level Error
@@ -84484,7 +84600,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-0115"
+$Script:adPEASVersion = "2.7.0+20261011-0140"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

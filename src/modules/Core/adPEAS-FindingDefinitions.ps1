@@ -10529,6 +10529,99 @@ foreach ($oid in $linkedOIDs) {
     }
 
     # ============================================================================
+    # PRE-WINDOWS 2000 COMPATIBLE ACCESS
+    # ============================================================================
+    #
+    # Two definitions rather than one, because the attack differs: with Anonymous Logon in
+    # the group no credentials are needed at all, with any other broad principal one valid
+    # account is. Each sits on an attribute only Get-PrivilegedGroupMembers writes, so
+    # neither can attach itself to another check's membership row.
+
+    'PREWIN2000_ANONYMOUS_MEMBER' = @{
+        Title = "Anonymous Logon in Pre-Windows 2000 Compatible Access"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "The Pre-Windows 2000 Compatible Access group grants its members read access to every user and group object in the domain. Anonymous Logon is a member, so that read requires no credentials: an unauthenticated client on the network can enumerate the whole directory."
+        Impact = @(
+            "The complete user, group and computer inventory can be read without an account"
+            "Service accounts, descriptions, group memberships and account flags are all exposed, which is the input for password spraying and for picking a target"
+            "Pre-authentication reconnaissance leaves no failed logon behind"
+        )
+        Attack = @(
+            "1. Attacker reaches a domain controller on the network with no credentials"
+            "2. Binds to LDAP anonymously, or opens a null SMB session"
+            "3. Enumerates users, groups and computers including descriptions and SPNs"
+            "4. Picks targets for AS-REP roasting, Kerberoasting or spraying from what the directory volunteered"
+        )
+        Remediation = @(
+            "Remove Anonymous Logon from Pre-Windows 2000 Compatible Access"
+            "The group exists for Windows NT 4.0 era clients and RAS servers; on a domain without them it should be empty"
+            "Check what depends on it first - some legacy appliances and older NAS devices bind anonymously"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the members of the group, language-independently by its well-known SID"
+                Command = "Get-ADGroup -Identity 'S-1-5-32-554' -Properties member | Select-Object -ExpandProperty member"
+            }
+            @{
+                Description = "Remove Anonymous Logon from the group"
+                Command = "Remove-ADGroupMember -Identity 'S-1-5-32-554' -Members 'CN=S-1-5-7,CN=ForeignSecurityPrincipals,DC=DOMAIN,DC=COM' -Confirm:`$false"
+            }
+        )
+        References = @(
+            @{ Title = "Pre-Windows 2000 Compatible Access"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups" }
+            @{ Title = "Anonymous LDAP enumeration"; Url = "https://www.thehacker.recipes/ad/recon/ldap" }
+        )
+        Tools = @("ldapsearch", "enum4linux", "windapsearch")
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'prewin2000AnonymousMember'; Severity = 'Finding' }
+        )
+    }
+
+    'PREWIN2000_BROAD_MEMBER' = @{
+        Title = "Broad Principal in Pre-Windows 2000 Compatible Access"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "The Pre-Windows 2000 Compatible Access group grants its members read access to every user and group object in the domain. A broad principal is a member - Everyone, Authenticated Users, Domain Users, Domain Computers or a comparable group - so any account in the domain, including the least privileged one and every machine account, can read the whole directory."
+        Impact = @(
+            "Any single compromised account or machine account reads the full user, group and computer inventory"
+            "Account descriptions, SPNs, group memberships and account flags are all exposed, which is the input for Kerberoasting and for choosing a target"
+            "Read access this broad defeats the point of removing read permissions elsewhere in the directory"
+        )
+        Attack = @(
+            "1. Attacker obtains any domain account, however unprivileged"
+            "2. Reads every user and group object through the permissions this group grants"
+            "3. Harvests SPNs, descriptions and group memberships"
+            "4. Picks the shortest path to a privileged account from what the directory volunteered"
+        )
+        Remediation = @(
+            "Remove the broad principal from Pre-Windows 2000 Compatible Access"
+            "The group exists for Windows NT 4.0 era clients and RAS servers; on a domain without them it should be empty"
+            "A domain installed with 'pre-Windows 2000 compatible permissions' gets this membership by default, so finding it says nothing about a mistake - it still has to be removed"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the members of the group, language-independently by its well-known SID"
+                Command = "Get-ADGroup -Identity 'S-1-5-32-554' -Properties member | Select-Object -ExpandProperty member"
+            }
+            @{
+                Description = "Remove a member from the group"
+                Command = "Remove-ADGroupMember -Identity 'S-1-5-32-554' -Members 'MEMBER_DN' -Confirm:`$false"
+            }
+        )
+        References = @(
+            @{ Title = "Pre-Windows 2000 Compatible Access"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups" }
+            @{ Title = "Active Directory recon over LDAP"; Url = "https://www.thehacker.recipes/ad/recon/ldap" }
+        )
+        Tools = @("PowerView", "BloodHound", "ldapsearch")
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'prewin2000BroadMember'; Severity = 'Finding' }
+        )
+    }
+
+    # ============================================================================
     # ANONYMOUS LDAP READABLE ATTRIBUTES
     # ============================================================================
 

@@ -1042,44 +1042,121 @@ function Get-PrivilegedGroupMembers {
             Show-SubHeader "Checking Pre-Windows 2000 Compatible Access group..." -ObjectType "PreWindows2000Access"
 
             $PreWin2000Findings = @()
+            $PreWin2000Unresolved = @()
+            $preWin2000Read = $false
             # Use Well-Known SID S-1-5-32-554 for language-independent lookup
             $PreWin2000SID = 'S-1-5-32-554'
 
             try {
                 $PreWin2000Group = Select-LocalDomainGroup (Get-DomainGroup -Identity $PreWin2000SID @CredParams)
 
+                if ($PreWin2000Group) { $preWin2000Read = $true }
+
                 if ($PreWin2000Group -and $PreWin2000Group.member) {
-                    $DangerousSIDs = @{
-                        'S-1-1-0' = @{ Name = 'Everyone'; Severity = 'Critical' }
-                        'S-1-5-7' = @{ Name = 'Anonymous Logon'; Severity = 'Critical' }
-                        'S-1-5-11' = @{ Name = 'Authenticated Users'; Severity = 'High' }
-                    }
+                    foreach ($MemberDN in @($PreWin2000Group.member)) {
+                        if ([string]::IsNullOrWhiteSpace($MemberDN)) { continue }
 
-                    foreach ($MemberDN in $PreWin2000Group.member) {
-                        $MemberObj = @(Get-DomainObject -Identity $MemberDN @CredParams)[0]
+                        # The SID out of the DN first, and only then a query. A well-known
+                        # principal added to a domain group becomes a
+                        # foreignSecurityPrincipal whose CN *is* its SID, so the lookup is
+                        # not needed at all - and the module already reads FSPs this way
+                        # where it walks the privileged groups above.
+                        $MemberSID = $null
+                        if ($MemberDN -match '^CN=(S-1-[0-9-]+?)(?:,|$)') {
+                            $MemberSID = $Matches[1]
+                        }
 
-                        if ($MemberObj -and $MemberObj.objectSid) {
-                            if ($DangerousSIDs.ContainsKey($MemberObj.objectSid)) {
-                                $DangerousInfo = $DangerousSIDs[$MemberObj.objectSid]
-                                $finding = [PSCustomObject]@{
-                                    MemberName = $DangerousInfo.Name
-                                    MemberSID = $MemberObj.objectSid
-                                    Severity = $DangerousInfo.Severity
-                                }
-                                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PreWindows2000Access' -Force
-                                $PreWin2000Findings += $finding
+                        if (-not $MemberSID) {
+                            # The other place AD keeps these: CN=WellKnown Security
+                            # Principals under the Configuration partition, where the
+                            # objects are named by their display name rather than by SID.
+                            # That is a different naming context, and a subtree search
+                            # under the domain DN does not reach it - so the search base
+                            # comes from the member's own DN. Without it the lookup
+                            # returned nothing, the member was skipped in silence, and the
+                            # check reported a clean group.
+                            $memberParams = @{}
+                            foreach ($key in $CredParams.Keys) { $memberParams[$key] = $CredParams[$key] }
+                            if ($MemberDN -match ',(CN=Configuration,.+)$') {
+                                $memberParams['SearchBase'] = $Matches[1]
+                            }
 
-                                Show-Line "$($DangerousInfo.Name) is a member" -Class Hint
+                            $MemberObj = @(Get-DomainObject -Identity $MemberDN @memberParams)[0]
+                            if ($MemberObj -and $MemberObj.objectSid) {
+                                $MemberSID = [string]$MemberObj.objectSid
                             }
                         }
+
+                        if (-not $MemberSID) {
+                            $PreWin2000Unresolved += $MemberDN
+                            Write-Log "[Get-PrivilegedGroupMembers] Pre-Windows 2000 member could not be resolved to a SID: $MemberDN" -Level Warning
+                            continue
+                        }
+
+                        # The central lists, not a private copy of three of them. The copy
+                        # knew Everyone, Anonymous Logon and Authenticated Users, so
+                        # Domain Users - the ordinary result of installing the domain with
+                        # pre-Windows 2000 compatible permissions - was reported as
+                        # "No dangerous members".
+                        $broadRID = Test-IsBroadGroupRID -SID $MemberSID
+                        if (-not ((Test-IsBroadGroupSID -SID $MemberSID) -or $broadRID)) { continue }
+
+                        $MemberName = ConvertFrom-SID -SID $MemberSID
+                        if ([string]::IsNullOrWhiteSpace($MemberName)) { $MemberName = $MemberSID }
+
+                        # Name carries the card title ({Name} in the ObjectType's
+                        # TitleFormat). Without it the title resolved to
+                        # "Pre-Windows 2000 Compatible Access: Unknown", because none of
+                        # the properties Get-ObjectTypeTitle looks for were present.
+                        $finding = [PSCustomObject]@{
+                            Name       = $MemberName
+                            MemberName = $MemberName
+                            MemberSID  = $MemberSID
+                        }
+
+                        # One of two statements, each on an attribute of its own. The
+                        # object used to carry Severity = 'Critical' or 'High', which are
+                        # not adPEAS severity classes: META_SEVERITY_PASSTHROUGH matches
+                        # only Finding, Hint, Note and Secure, so the row stayed colourless
+                        # and named no finding card for one of the classic legacy findings
+                        # there is.
+                        if ($MemberSID -eq 'S-1-5-7') {
+                            $finding | Add-Member -NotePropertyName 'prewin2000AnonymousMember' -NotePropertyValue (
+                                'Anonymous Logon is a member of this group, so every user and group object in the domain can be read with no credentials at all.'
+                            ) -Force
+                        } else {
+                            $finding | Add-Member -NotePropertyName 'prewin2000BroadMember' -NotePropertyValue (
+                                "$MemberName is a member of this group, so every principal it covers can read every user and group object in the domain."
+                            ) -Force
+                        }
+
+                        $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PreWindows2000Access' -Force
+                        $PreWin2000Findings += $finding
+
+                        Show-Line "$MemberName is a member" -Class Finding
+
+                        # The object was built, counted and never shown, so it reached
+                        # neither the console nor the HTML report: the only trace of this
+                        # finding anywhere was the single line above.
+                        Show-Object $finding
                     }
                 }
 
-                if (@($PreWin2000Findings).Count -eq 0) {
+                if (-not $preWin2000Read) {
+                    # A failed read used to fall through to the Secure message below, so a
+                    # blind check looked exactly like a clean one.
+                    Show-Line "Pre-Windows 2000 Compatible Access group could not be read - its membership was not assessed" -Class Finding
+                }
+                elseif (@($PreWin2000Findings).Count -eq 0 -and @($PreWin2000Unresolved).Count -eq 0) {
                     Show-Line "No dangerous members in Pre-Windows 2000 Compatible Access group" -Class Secure
+                }
+
+                if (@($PreWin2000Unresolved).Count -gt 0) {
+                    Show-Line "$(@($PreWin2000Unresolved).Count) member(s) of Pre-Windows 2000 Compatible Access could not be resolved to a SID and were not assessed" -Class Hint
                 }
             } catch {
                 Write-Log "[Get-PrivilegedGroupMembers] Error checking Pre-Windows 2000 Compatible Access: $_" -Level Error
+                Show-Line "Pre-Windows 2000 Compatible Access group could not be read - its membership was not assessed" -Class Finding
             }
 
         } catch {
