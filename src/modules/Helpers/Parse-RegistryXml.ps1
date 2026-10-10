@@ -88,6 +88,17 @@ function Parse-RegistryXml {
                 $valueString = $rawValue
             }
 
+            # The GPP semantics, which used to be dropped here. action is C(reate),
+            # R(eplace), U(pdate) or D(elete) and defaults to U when absent; disabled="1"
+            # on the item means Group Policy never applies it at all. Without these two a
+            # GPO that REMOVES EnableLUA - the cleanup an administrator performs after an
+            # audit - was reported as "User Account Control disabled", and a preference
+            # item switched off in the editor read as an active misconfiguration. The
+            # Registry.pol side of the same question is already handled: a value name
+            # starting with "**del." is skipped there.
+            $action = [string]$props.action
+            if ([string]::IsNullOrWhiteSpace($action)) { $action = 'U' }
+
             $records += [PSCustomObject]@{
                 Hive        = $hive
                 Key         = [string]$props.key
@@ -95,6 +106,8 @@ function Parse-RegistryXml {
                 Type        = $type
                 ValueInt    = $valueInt
                 ValueString = $valueString
+                Action      = $action.ToUpper()
+                Disabled    = ([string]$node.disabled -eq '1')
             }
         }
     } catch {

@@ -99,11 +99,36 @@ function Get-DomainPasswordPolicy {
                 try { [int]$domainPolicy.lockoutThreshold } catch { 0 }
             } else { 0 }
 
-            # lockoutDuration in minutes. 0 and the "never" sentinel both mean the account
-            # stays locked until someone unlocks it, and both end up as 0 here - the
-            # display below turns that into "Forever (manual unlock)".
-            $lockoutDurationSpan = ConvertFrom-ADInterval -Value $domainPolicy.lockoutDuration
+            # Three states, and they used to collapse into one. ConvertFrom-ADInterval
+            # answers [TimeSpan]::Zero for a configured 0 and $null for three different
+            # things - an unreadable value, an absent one, and the Int64.MinValue "never"
+            # sentinel - and the display turned every one of them into "Forever (manual
+            # unlock)", which the trigger reads as Secure. So a policy whose lockout
+            # duration nobody could read, and one where no lockout exists at all, were
+            # both reported as a hardening measure. In the second case the report carried
+            # "Account lockout disabled" in red and "lockout duration unlimited - a secure
+            # configuration" in green, one line apart.
+            #
+            # 0 and the sentinel do mean the same thing: the account stays locked until
+            # somebody unlocks it. What separates them from "not readable" is whether the
+            # attribute arrived at all, and what makes the statement a hardening measure
+            # is a lockout existing in the first place.
+            $rawLockoutDuration = $domainPolicy.lockoutDuration
+            $hasLockoutDuration = ($null -ne $rawLockoutDuration) -and
+                                  (-not [string]::IsNullOrWhiteSpace([string]$rawLockoutDuration))
+            $lockoutDurationSpan = ConvertFrom-ADInterval -Value $rawLockoutDuration
             $lockoutDuration = if ($lockoutDurationSpan) { $lockoutDurationSpan.TotalMinutes } else { 0 }
+
+            $lockoutDurationText = 'Unknown - the value could not be read'
+            if ($hasLockoutDuration) {
+                if ($lockoutDuration -gt 0) {
+                    $lockoutDurationText = "$lockoutDuration minutes"
+                } elseif ($lockoutThreshold -eq 0) {
+                    $lockoutDurationText = 'N/A - no lockout is configured'
+                } else {
+                    $lockoutDurationText = 'Forever (manual unlock)'
+                }
+            }
 
             # lockoutWindow in minutes; 0 is displayed as "N/A".
             $lockoutWindowSpan = ConvertFrom-ADInterval -Value $domainPolicy.lockOutObservationWindow
@@ -132,7 +157,7 @@ function Get-DomainPasswordPolicy {
                 passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
                 reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
                 lockoutThreshold = if ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
-                lockoutDuration = if ($lockoutDuration -eq 0) { "Forever (manual unlock)" } else { "$lockoutDuration minutes" }
+                lockoutDuration = $lockoutDurationText
                 lockoutObservationWindow = if ($lockoutWindow -gt 0) { "$lockoutWindow minutes" } else { "N/A" }
             }
 

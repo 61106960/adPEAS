@@ -3095,7 +3095,7 @@ $Script:PrimaryAttributes = @{
 	)
 	GPO = @(
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
-	    'LDAPSigning', 'ChannelBinding', 'AnonymousBinding', 'ServerSigning', 'ClientSigning',
+	    'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'ServerSigning', 'ClientSigning',
 	    'DangerousPermissions', 'DangerousSettings',
 	    'LinkedOUs', 'GPOStatus', 'AffectedComputers'
 	)
@@ -3106,7 +3106,8 @@ $Script:PrimaryAttributes = @{
 	)
 	LDAPConfigGPO = @(
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
-	    'LDAPSigning', 'ChannelBinding', 'AnonymousBinding',
+	    'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
+	    'dSHeuristics', 'anonymousLDAPAccess',
 	    'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
 	)
 	GPORegistrySetting = @(
@@ -3202,7 +3203,7 @@ $Script:PrimaryAttributes = @{
 	    'siteDomainControllers'
 	)
 	EffectiveLDAPConfig = @(
-	    'LDAPSigning', 'ChannelBinding', 'AnonymousBinding'
+	    'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation'
 	)
 	OutdatedComputer = @(
 	    'name', 'dNSHostName', 'operatingSystem', 'operatingSystemVersion',
@@ -3225,7 +3226,8 @@ $Script:PrimaryAttributes = @{
 	    'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'GPOStatus'
 	)
 	GPOLocalGroup = @(
-	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'MembersAdded',
+	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'Mode',
+	    'MembersAdded', 'MembersRemoved', 'groupEmptied',
 	    'LinkedOUs', 'GPOStatus'
 	)
 	AddComputerGPO = @(
@@ -3420,7 +3422,7 @@ function Get-ObjectTypeForOrdering {
 	if ($Object.siteName -and $Object.siteSubnets) {
 	    return 'SitesSubnets'
 	}
-	if ($Object.LDAPSigning -and $Object.ChannelBinding -and $Object.AnonymousBinding -and -not $Object.gPCFileSysPath) {
+	if ($Object.LDAPSigning -and $Object.ChannelBinding -and $Object.anonymousSamEnumeration -and -not $Object.gPCFileSysPath) {
 	    return 'EffectiveLDAPConfig'
 	}
 	if ($Object.gPCFileSysPath -or ($Object.Name -match '^\{[0-9a-fA-F-]+\}$')) {
@@ -7316,9 +7318,7 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
 	    Tools = @("ldapsearch", "windapsearch", "ldapdomaindump")
 	    MITRE = "T1087"
 	    Triggers = @(
-	        @{ Attribute = 'anonymousLDAPAccess'; Severity = 'Finding' }
-	        @{ Attribute = 'AnonymousBinding'; Pattern = '^Allowed$'; Severity = 'Finding' }
-	        @{ Attribute = 'AnonymousBinding'; Pattern = '^Not Configured$'; Severity = 'Hint' }
+	        @{ Attribute = 'anonymousLDAPAccess'; Pattern = 'ENABLED'; Severity = 'Finding' }
 	    )
 	}
 	'SID_HISTORY_INJECTION' = @{
@@ -8477,6 +8477,48 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
 	        @{ Attribute = 'DangerousPermissions'; Pattern = 'LAPS Password Read'; Severity = 'Finding' }
 	    )
 	}
+	'LAPS_READ_BLOCKED_BY_CONFIDENTIAL' = @{
+	    Title = "Read All Properties on a Computer OU, Blocked by the Confidential Flag"
+	    Risk = "Hint"
+	    BaseScore = 20
+	    Description = "A non-privileged principal may read all properties of the computer objects in this OU. That does not include the LAPS password today: the password attributes are marked confidential in the schema (searchFlags bit 7), and MS-ADTS requires READ_PROPERTY and CONTROL_ACCESS together for a confidential attribute - which is why Set-AdmPwdReadPasswordPermission writes two ACEs. The delegation becomes a password read the moment that flag is cleared, or if the principal is granted CONTROL_ACCESS anywhere on the path."
+	    Impact = @(
+	        "Every other attribute of the computer objects is readable, which is reconnaissance rather than credential access"
+	        "Clearing the confidential flag on a LAPS password attribute turns this into a read of every local administrator password in the OU"
+	        "A later ACE granting CONTROL_ACCESS to the same principal does the same thing"
+	    )
+	    Attack = @(
+	        "1. Attacker holds, or takes over, the delegated principal"
+	        "2. Reads the computer objects of the OU - every attribute except the confidential ones"
+	        "3. Waits for, or brings about, the removal of the confidential flag, then reads the passwords"
+	    )
+	    Remediation = @(
+	        "Leave the confidential flag in place - it is what makes this harmless, and it is set by the LAPS schema extension"
+	        "Remove the all-properties delegation anyway if nothing needs it: it is wider than it looks and it is one schema change away from a password read"
+	        "Verify the flag rather than assuming it: searchFlags on ms-Mcs-AdmPwd, msLAPS-Password and msLAPS-EncryptedPassword must have bit 7 set"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Read the confidential flag on the LAPS password attributes"
+	            Command = @'
+$schema = (Get-ADRootDSE).schemaNamingContext
+Get-ADObject -SearchBase $schema `
+    -LDAPFilter '(|(lDAPDisplayName=ms-Mcs-AdmPwd)(lDAPDisplayName=msLAPS-Password)(lDAPDisplayName=msLAPS-EncryptedPassword))' `
+    -Properties lDAPDisplayName, searchFlags |
+    Select-Object lDAPDisplayName, searchFlags, @{n='Confidential'; e={ ($_.searchFlags -band 128) -ne 0 }}
+'@
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Confidential attributes"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/mark-attribute-as-confidential" }
+	        @{ Title = "Windows LAPS Security"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview" }
+	    )
+	    Tools = @("LAPSToolkit", "PowerView")
+	    MITRE = "T1087.002"
+	    Triggers = @(
+	        @{ Attribute = 'dangerousRights'; Pattern = 'blocked by the confidential flag'; Severity = 'Hint' }
+	    )
+	}
 	'SMB_SIGNING_DISABLED' = @{
 	    Title = "SMB Signing Not Required"
 	    Risk = "Finding"
@@ -9281,25 +9323,44 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    )
 	}
 	'TRUST_TREAT_AS_EXTERNAL' = @{
-	    Title = "Trust Treated as External"
-	    Risk = "Secure"
-	    BaseScore = 0
-	    Description = "This trust is configured with the TREAT_AS_EXTERNAL flag, which enforces SID Filtering even on within-forest trusts. This provides additional security by restricting SID History usage across the trust boundary."
+	    Title = "Forest Trust Relaxed to External SID Filtering"
+	    Risk = "Finding"
+	    BaseScore = 70
+	    Description = "This forest trust carries TRUST_ATTRIBUTE_TREAT_AS_EXTERNAL. MS-ADTS 6.1.6.7.9 describes what that does: a cross-forest trust is treated as an external trust for the purposes of SID filtering, and cross-forest trusts are filtered more stringently than external ones - so the flag RELAXES the filtering rather than enforcing it. SID history naming any domain of the trusted forest is honoured here instead of only that forest's own namespaces."
 	    Impact = @(
-	        "SID Filtering enforced regardless of trust type"
-	        "Prevents SID History injection across this trust"
-	        "Provides external-trust-level security on forest trusts"
-	        "Reduces risk of cross-domain privilege escalation"
+	        "SID history from the trusted forest is accepted for domains it does not own"
+	        "A Domain Admin SID of this domain, injected on the other side, is honoured on this one"
+	        "Whoever controls any domain of the trusted forest can reach this domain"
+	        "The flag is set deliberately, so it is a configuration decision rather than an oversight"
+	    )
+	    Attack = @(
+	        "1. Attacker gains control of any domain in the trusted forest"
+	        "2. Writes a SID of this domain into sIDHistory of an account there"
+	        "3. Authenticates across the trust, and this domain honours the injected SID"
 	    )
 	    Remediation = @(
-	        "No action required - this is a recommended security configuration"
-	        "Verify that required cross-domain functionality is not broken"
+	        "Remove the flag unless the cross-forest SID history it allows is genuinely needed - and find out what needs it before removing it, because somebody set it for a migration"
+	        "Where a migration does need it, bound it in time: turn it off again once the SID history is no longer used"
+	        "Keep quarantine and SID filtering in place on every external and realm trust"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show the trust attributes, so the flag can be confirmed before changing anything"
+	            Command = "Get-ADTrust -Filter * | Select-Object Name, Direction, ForestTransitive, SIDFilteringForestAware, SIDFilteringQuarantined, TrustAttributes"
+	        }
+	        @{
+	            Description = "Stop honouring SID history across the trust"
+	            Command = "netdom trust THIS.DOMAIN /domain:TRUSTED.FOREST /EnableSIDHistory:no"
+	        }
 	    )
 	    References = @(
-	        @{ Title = "Trust Attributes - Microsoft"; Url = "https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646571e5720" }
+	        @{ Title = "Trust Attributes - MS-ADTS 6.1.6.7.9"; Url = "https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646571e5720" }
+	        @{ Title = "Security Considerations for Trusts"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-considerations-for-trusts" }
 	    )
+	    Tools = @("netdom", "Get-ADTrust", "mimikatz")
+	    MITRE = "T1134.005"
 	    Triggers = @(
-	        @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Severity = 'Secure' }
+	        @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Custom = 'is_not_within_forest_trust'; Severity = 'Finding' }
 	    )
 	}
 	'OUTDATED_OS' = @{
@@ -13008,7 +13069,64 @@ foreach ($oid in $linkedOIDs) {
 	    MITRE = "M1035"
 	    Triggers = @(
 	        @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^Restricted$'; Severity = 'Secure' }
-	        @{ Attribute = 'AnonymousBinding'; Pattern = '^Restricted$'; Severity = 'Secure' }
+	    )
+	}
+	'ANONYMOUS_SAM_ENUMERATION_ALLOWED' = @{
+	    Title = "Anonymous Enumeration of SAM Accounts and Shares Allowed"
+	    Risk = "Hint"
+	    BaseScore = 20
+	    Description = "A GPO sets RestrictAnonymous to 0, which is 'Network access: Do not allow anonymous enumeration of SAM accounts and shares' turned off. An unauthenticated SMB session can then list local accounts and shares of the machines the policy reaches. This is a null-session control over SMB and says nothing about LDAP - the LDAP question is dsHeuristics, which this check reads separately."
+	    Impact = @(
+	        "An unauthenticated SMB client can list local accounts and shares"
+	        "Useful for reconnaissance before an authenticated attack"
+	        "0 is also the operating system default, so an explicit 0 is often a baseline stating the default rather than a decision"
+	    )
+	    Attack = @(
+	        "1. Attacker opens a null session to a machine in scope"
+	        "2. Enumerates local accounts and shares"
+	        "3. Uses the names for password spraying or share hunting"
+	    )
+	    Remediation = @(
+	        "Set 'Network access: Do not allow anonymous enumeration of SAM accounts and shares' to Enabled"
+	        "Expect legacy clients and some NAS and print devices to depend on null sessions - check before enforcing"
+	    )
+	    References = @(
+	        @{ Title = "Network access: Do not allow anonymous enumeration of SAM accounts and shares"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-access-do-not-allow-anonymous-enumeration-of-sam-accounts-and-shares" }
+	    )
+	    Tools = @("enum4linux", "smbclient")
+	    MITRE = "T1087.001"
+	    Triggers = @(
+	        @{ Attribute = 'anonymousSamEnumeration'; Pattern = '^Allowed$'; Severity = 'Hint' }
+	        @{ Attribute = 'anonymousSamEnumeration'; Pattern = '^Restricted$'; Severity = 'Secure' }
+	    )
+	}
+	'ANONYMOUS_SID_NAME_TRANSLATION_ALLOWED' = @{
+	    Title = "Anonymous SID/Name Translation Allowed"
+	    Risk = "Hint"
+	    BaseScore = 25
+	    Description = "A GPO sets LSAAnonymousNameLookup to 1, which is 'Network access: Allow anonymous SID/Name translation' enabled. An unauthenticated client can then turn a SID into a name and back - enough to find the built-in administrator of a domain whatever it was renamed to, by asking for RID 500. This is an LSA/SMB control and says nothing about anonymous LDAP."
+	    Impact = @(
+	        "The renamed built-in administrator can be found by its RID"
+	        "Group and account names can be resolved without credentials"
+	        "Supports targeted password spraying"
+	    )
+	    Attack = @(
+	        "1. Attacker asks a domain controller to translate <domain SID>-500"
+	        "2. Receives the current name of the built-in administrator account"
+	        "3. Sprays passwords against that account"
+	    )
+	    Remediation = @(
+	        "Set 'Network access: Allow anonymous SID/Name translation' to Disabled"
+	        "The setting exists for pre-Windows 2000 compatibility; anything still needing it should be inventoried first"
+	    )
+	    References = @(
+	        @{ Title = "Network access: Allow anonymous SID/Name translation"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-access-allow-anonymous-sidname-translation" }
+	    )
+	    Tools = @("impacket-lookupsid", "rpcclient")
+	    MITRE = "T1087.002"
+	    Triggers = @(
+	        @{ Attribute = 'anonymousSidNameTranslation'; Pattern = '^Allowed$'; Severity = 'Hint' }
+	        @{ Attribute = 'anonymousSidNameTranslation'; Pattern = '^Restricted$'; Severity = 'Secure' }
 	    )
 	}
 	'SMB_SIGNING_REQUIRED' = @{
@@ -15691,6 +15809,7 @@ function Test-CustomTrigger {
 	    }
 	    'lt_12' {
 	        $strValue = [string]$Value
+	        if ($strValue -match 'Disabled') { return $true }
 	        $intValue = 0
 	        if ([int]::TryParse($strValue, [ref]$intValue)) {
 	            return ($intValue -lt 12)
@@ -46785,6 +46904,8 @@ function Parse-RegistryXml {
 	        } else {
 	            $valueString = $rawValue
 	        }
+	        $action = [string]$props.action
+	        if ([string]::IsNullOrWhiteSpace($action)) { $action = 'U' }
 	        $records += [PSCustomObject]@{
 	            Hive        = $hive
 	            Key         = [string]$props.key
@@ -46792,6 +46913,8 @@ function Parse-RegistryXml {
 	            Type        = $type
 	            ValueInt    = $valueInt
 	            ValueString = $valueString
+	            Action      = $action.ToUpper()
+	            Disabled    = ([string]$node.disabled -eq '1')
 	        }
 	    }
 	} catch {
@@ -46929,6 +47052,7 @@ function Get-LAPSSchemaPresence {
 	    if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
 	    $legacyPresent = $false
 	    $nativePresent = $false
+	    $passwordConfidential = $null
 	    $schemaDN = $Script:LDAPContext.SchemaNamingContext
 	    if ($schemaDN) {
 	        try {
@@ -46939,6 +47063,22 @@ function Get-LAPSSchemaPresence {
 	            $nativeFilter = "(&(objectClass=attributeSchema)(|(lDAPDisplayName=msLAPS-PasswordExpirationTime)(cn=msLAPS-PasswordExpirationTime)))"
 	            if (@(Get-DomainObject -LDAPFilter $nativeFilter -SearchBase $schemaDN -Properties 'cn' -ResultLimit 1 @connectionParams).Count -gt 0) {
 	                $nativePresent = $true
+	            }
+	            if ($legacyPresent -or $nativePresent) {
+	                $pwdFilter = "(&(objectClass=attributeSchema)(|(lDAPDisplayName=ms-Mcs-AdmPwd)(lDAPDisplayName=msLAPS-Password)(lDAPDisplayName=msLAPS-EncryptedPassword)))"
+	                $pwdAttrs = @(Get-DomainObject -LDAPFilter $pwdFilter -SearchBase $schemaDN -Properties 'lDAPDisplayName', 'searchFlags' @connectionParams)
+	                if (@($pwdAttrs).Count -gt 0) {
+	                    $passwordConfidential = $true
+	                    foreach ($pwdAttr in $pwdAttrs) {
+	                        $flags = 0
+	                        if ($null -ne $pwdAttr.searchFlags) {
+	                            try { $flags = [int]$pwdAttr.searchFlags } catch { $flags = 0 }
+	                        }
+	                        if (($flags -band 128) -eq 0) {
+	                            $passwordConfidential = $false
+	                        }
+	                    }
+	                }
 	            }
 	        } catch {
 	        }
@@ -46955,8 +47095,9 @@ function Get-LAPSSchemaPresence {
 	        }
 	    }
 	    $Script:LAPSSchemaInfo = @{
-	        LegacyPresent = $legacyPresent
-	        NativePresent = $nativePresent
+	        LegacyPresent        = $legacyPresent
+	        NativePresent        = $nativePresent
+	        PasswordConfidential = $passwordConfidential
 	    }
 	    return $Script:LAPSSchemaInfo
 	}
@@ -48038,6 +48179,7 @@ function Get-OUPermissions {
 	                if (($HasReadProperty -or $HasGenericAll -or $HasExtendedRight) -and $AppliesToComputers) {
 	                    $lapsIsAllProperties = $IsAllProperties
 	                    $lapsPropertyFound = $false
+	                    $lapsGrantsControlAccess = ($HasGenericAll -or $HasExtendedRight)
 	                    $legacyLAPSMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['ms-Mcs-AdmPwd'].Guid)
 	                    if ($legacyLAPSMatch) {
 	                        $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
@@ -48048,6 +48190,7 @@ function Get-OUPermissions {
 	                            SID           = $TrusteeSID
 	                            Severity      = $Severity
 	                            InheritedFrom = $InheritedFrom
+	                            GrantsControlAccess = $lapsGrantsControlAccess
 	                        }
 	                        $lapsPropertyFound = $true
 	                    }
@@ -48061,6 +48204,7 @@ function Get-OUPermissions {
 	                            SID           = $TrusteeSID
 	                            Severity      = $Severity
 	                            InheritedFrom = $InheritedFrom
+	                            GrantsControlAccess = $lapsGrantsControlAccess
 	                        }
 	                        $lapsPropertyFound = $true
 	                    }
@@ -48074,6 +48218,7 @@ function Get-OUPermissions {
 	                            SID           = $TrusteeSID
 	                            Severity      = $Severity
 	                            InheritedFrom = $InheritedFrom
+	                            GrantsControlAccess = $lapsGrantsControlAccess
 	                        }
 	                        $lapsPropertyFound = $true
 	                    }
@@ -48087,6 +48232,7 @@ function Get-OUPermissions {
 	                            SID           = $TrusteeSID
 	                            Severity      = $Severity
 	                            InheritedFrom = $InheritedFrom
+	                            GrantsControlAccess = $lapsGrantsControlAccess
 	                        }
 	                        $lapsPropertyFound = $true
 	                    }
@@ -48100,6 +48246,7 @@ function Get-OUPermissions {
 	                            SID           = $TrusteeSID
 	                            Severity      = $Severity
 	                            InheritedFrom = $InheritedFrom
+	                            GrantsControlAccess = $lapsGrantsControlAccess
 	                        }
 	                        $lapsPropertyFound = $true
 	                    }
@@ -48113,18 +48260,26 @@ function Get-OUPermissions {
 	                            SID           = $TrusteeSID
 	                            Severity      = $Severity
 	                            InheritedFrom = $InheritedFrom
+	                            GrantsControlAccess = $lapsGrantsControlAccess
 	                        }
 	                        $lapsPropertyFound = $true
 	                    }
 	                    if ($lapsIsAllProperties -and -not $lapsPropertyFound -and -not $skipAllPropertiesOnly) {
 	                        $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
+	                        $lapsAllPropsRight = 'ReadProperty (All Properties)'
+	                        if ($HasGenericAll) {
+	                            $lapsAllPropsRight = 'GenericAll (All Properties)'
+	                        } elseif ($lapsGrantsControlAccess) {
+	                            $lapsAllPropsRight = 'ReadProperty + ControlAccess (All Properties)'
+	                        }
 	                        $Findings += [PSCustomObject]@{
 	                            CheckType     = "LAPS"
-	                            Right         = "ReadProperty (All Properties - includes LAPS)"
+	                            Right         = $lapsAllPropsRight
 	                            Principal     = $TrusteeName
 	                            SID           = $TrusteeSID
 	                            Severity      = $Severity
 	                            InheritedFrom = $InheritedFrom
+	                            GrantsControlAccess = $lapsGrantsControlAccess
 	                        }
 	                    }
 	                }
@@ -58700,8 +58855,21 @@ function Get-DomainPasswordPolicy {
 	        $lockoutThreshold = if ($domainPolicy.lockoutThreshold -and $domainPolicy.lockoutThreshold -notmatch "Not set") {
 	            try { [int]$domainPolicy.lockoutThreshold } catch { 0 }
 	        } else { 0 }
-	        $lockoutDurationSpan = ConvertFrom-ADInterval -Value $domainPolicy.lockoutDuration
+	        $rawLockoutDuration = $domainPolicy.lockoutDuration
+	        $hasLockoutDuration = ($null -ne $rawLockoutDuration) -and
+	                              (-not [string]::IsNullOrWhiteSpace([string]$rawLockoutDuration))
+	        $lockoutDurationSpan = ConvertFrom-ADInterval -Value $rawLockoutDuration
 	        $lockoutDuration = if ($lockoutDurationSpan) { $lockoutDurationSpan.TotalMinutes } else { 0 }
+	        $lockoutDurationText = 'Unknown - the value could not be read'
+	        if ($hasLockoutDuration) {
+	            if ($lockoutDuration -gt 0) {
+	                $lockoutDurationText = "$lockoutDuration minutes"
+	            } elseif ($lockoutThreshold -eq 0) {
+	                $lockoutDurationText = 'N/A - no lockout is configured'
+	            } else {
+	                $lockoutDurationText = 'Forever (manual unlock)'
+	            }
+	        }
 	        $lockoutWindowSpan = ConvertFrom-ADInterval -Value $domainPolicy.lockOutObservationWindow
 	        $lockoutWindow = if ($lockoutWindowSpan) { $lockoutWindowSpan.TotalMinutes } else { 0 }
 	        $pwdPropsValue = $domainPolicy.pwdProperties
@@ -58721,7 +58889,7 @@ function Get-DomainPasswordPolicy {
 	            passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
 	            reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
 	            lockoutThreshold = if ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
-	            lockoutDuration = if ($lockoutDuration -eq 0) { "Forever (manual unlock)" } else { "$lockoutDuration minutes" }
+	            lockoutDuration = $lockoutDurationText
 	            lockoutObservationWindow = if ($lockoutWindow -gt 0) { "$lockoutWindow minutes" } else { "N/A" }
 	        }
 	        $policyWeaknesses = @()
@@ -59006,6 +59174,37 @@ function Get-LDAPConfiguration {
 	        if (-not (Ensure-LDAPConnection @connectionParams)) {
 	            return
 	        }
+	        Show-SubHeader "Checking anonymous LDAP operations (dsHeuristics)..." -ObjectType "LDAPConfigGPO"
+	        $configDN = $Script:LDAPContext.ConfigurationNamingContext
+	        if ($configDN) {
+	            $dirServiceDN = "CN=Directory Service,CN=Windows NT,CN=Services,$configDN"
+	            try {
+	                $dirService = @(Get-DomainObject -Identity $dirServiceDN -Properties 'dSHeuristics' @connectionParams)[0]
+	                $dsHeuristics = if ($dirService) { [string]$dirService.dSHeuristics } else { '' }
+	                if (-not $dirService) {
+	                    Show-Line "The Directory Service object could not be read - whether anonymous LDAP operations are allowed is unknown" -Class Note
+	                } elseif ([string]::IsNullOrWhiteSpace($dsHeuristics)) {
+	                    Show-Line "Anonymous LDAP operations are blocked - dsHeuristics is not set, which is the secure default" -Class Secure
+	                } else {
+	                    $anonChar = if ($dsHeuristics.Length -ge 7) { $dsHeuristics.Substring(6, 1) } else { '0' }
+	                    if ($anonChar -eq '2') {
+	                        Show-Line "Anonymous LDAP operations are ENABLED - dsHeuristics character 7 is 2, so an unauthenticated client can enumerate the directory" -Class Finding -FindingId 'LDAP_ANONYMOUS_BINDING_ALLOWED'
+	                    } else {
+	                        Show-Line "Anonymous LDAP operations are blocked - dsHeuristics character 7 is '$anonChar', not 2" -Class Secure
+	                    }
+	                    $heuristicsObj = [PSCustomObject]@{
+	                        dSHeuristics        = $dsHeuristics
+	                        anonymousLDAPAccess = if ($anonChar -eq '2') { 'ENABLED - Security Risk!' } else { 'Restricted' }
+	                    }
+	                    $heuristicsObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
+	                    Show-Object $heuristicsObj
+	                }
+	            } catch {
+	                Show-Line "The Directory Service object could not be read - whether anonymous LDAP operations are allowed is unknown" -Class Note
+	            }
+	        } else {
+	            Show-Line "The configuration partition is unknown - whether anonymous LDAP operations are allowed could not be checked" -Class Note
+	        }
 	        Show-SubHeader "Analyzing LDAP Signing/Channel Binding via GPO (SYSVOL)..." -ObjectType "LDAPConfigGPO"
 	        $domainFQDN = $Script:LDAPContext.Domain
 	        $dcServer = $Script:LDAPContext.Server
@@ -59103,11 +59302,13 @@ function Get-LDAPConfiguration {
 	                                default { "Unknown" }
 	                            }
 	                        } else { "Not Configured" }
-	                        $anonymousBindingStatus = "Not Configured"
+	                        $samEnumerationStatus = "Not Configured"
 	                        if ($null -ne $restrictAnonymous) {
-	                            $anonymousBindingStatus = if ($restrictAnonymous -eq 0) { "Allowed" } else { "Restricted" }
-	                        } elseif ($null -ne $lsaAnonymousNameLookup) {
-	                            $anonymousBindingStatus = if ($lsaAnonymousNameLookup -eq 1) { "Allowed" } else { "Restricted" }
+	                            $samEnumerationStatus = if ($restrictAnonymous -eq 0) { "Allowed" } else { "Restricted" }
+	                        }
+	                        $sidNameTranslationStatus = "Not Configured"
+	                        if ($null -ne $lsaAnonymousNameLookup) {
+	                            $sidNameTranslationStatus = if ($lsaAnonymousNameLookup -eq 1) { "Allowed" } else { "Restricted" }
 	                        }
 	                        $gpoLinkage = Get-GPOLinkage
 	                        $gpoNameUpper = $gpo.Name.ToUpper()
@@ -59129,7 +59330,8 @@ function Get-LDAPConfiguration {
 	                        }
 	                        $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue $signingLevel -Force
 	                        $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
-	                        $gpo | Add-Member -NotePropertyName "AnonymousBinding" -NotePropertyValue $anonymousBindingStatus -Force
+	                        $gpo | Add-Member -NotePropertyName "anonymousSamEnumeration" -NotePropertyValue $samEnumerationStatus -Force
+	                        $gpo | Add-Member -NotePropertyName "anonymousSidNameTranslation" -NotePropertyValue $sidNameTranslationStatus -Force
 	                        $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue $coversDCs -Force
 	                        $linkedOUsDisplay = $links
 	                        if ($null -eq $links) {
@@ -59169,7 +59371,8 @@ function Get-LDAPConfiguration {
 	                $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
 	                $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue "Not Configured" -Force
 	                $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
-	                $gpo | Add-Member -NotePropertyName "AnonymousBinding" -NotePropertyValue "Not Configured" -Force
+	                $gpo | Add-Member -NotePropertyName "anonymousSamEnumeration" -NotePropertyValue "Not Configured" -Force
+	                $gpo | Add-Member -NotePropertyName "anonymousSidNameTranslation" -NotePropertyValue "Not Configured" -Force
 	                $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue (
 	                    Test-GPOCoversDomainControllers -ActiveLink $activeLinks -DomainController $domainControllers) -Force
 	                $linkedOUsDisplay = $links
@@ -62767,12 +62970,17 @@ function Get-LAPSPermissions {
 	                        $principal = $finding.Principal
 	                        $sid = $finding.SID
 	                        $severity = $finding.Severity
+	                        $blankAllProperties = ($finding.Right -match 'All Properties') -and
+	                                              ($finding.GrantsControlAccess -ne $true)
+	                        $blockedByConfidentialFlag = ($blankAllProperties -and
+	                                                      ($Script:LAPSSchemaInfo.PasswordConfidential -eq $true))
 	                        if ($finding.Right -match 'ms-Mcs-AdmPwd') {
 	                            if ($sid -notin @($legacyReaders | ForEach-Object { $_.SID })) {
 	                                $legacyReaders += [PSCustomObject]@{
 	                                    Principal = $principal
 	                                    SID = $sid
 	                                    Severity = $severity
+	                                    BlockedByConfidentialFlag = $blockedByConfidentialFlag
 	                                    Generation = 'Legacy'
 	                                }
 	                            }
@@ -62783,6 +62991,7 @@ function Get-LAPSPermissions {
 	                                    Principal = $principal
 	                                    SID = $sid
 	                                    Severity = $severity
+	                                    BlockedByConfidentialFlag = $blockedByConfidentialFlag
 	                                    Generation = if ($finding.Right -match 'All Properties') {
 	                                        'Legacy and Windows LAPS'
 	                                    } else {
@@ -62837,6 +63046,9 @@ function Get-LAPSPermissions {
 	        if ($coverageIncomplete) { $conclusionClass = 'Note' }
 	        function Get-LAPSRightLabel {
 	            param($ReaderInfo)
+	            if ($ReaderInfo.AllBlockedByConfidentialFlag -eq $true) {
+	                return 'Read all properties - blocked by the confidential flag on the LAPS password attribute, live as soon as that flag is cleared'
+	            }
 	            $generations = @($ReaderInfo.Generations)
 	            if ($generations.Count -eq 0) { return 'LAPS Password Read' }
 	            return ('LAPS Password Read (' + (($generations | Sort-Object) -join ', ') + ')')
@@ -62861,7 +63073,11 @@ function Get-LAPSPermissions {
 	                            Generations = @()
 	                            IsExchangeService = $isExchange
 	                            IsPrivilegedAccount = $isPriv
+	                            AllBlockedByConfidentialFlag = $true
 	                        }
+	                    }
+	                    if ($reader.BlockedByConfidentialFlag -ne $true) {
+	                        $targetHash[$sid].AllBlockedByConfidentialFlag = $false
 	                    }
 	                    $ouEntry = "$($finding.OU) ($($finding.ComputerCount) computers)"
 	                    if ($targetHash[$sid].OUs -notcontains $ouEntry) {
@@ -62899,9 +63115,14 @@ function Get-LAPSPermissions {
 	                    $readerInfo = $allReaderSIDs[$sid]
 	                    $isWellKnownSID = $sid -match '^S-1-5-\d+$'
 	                    $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
+	                    $readerSeverity = $null
+	                    if ($readerInfo.AllBlockedByConfidentialFlag -eq $true) { $readerSeverity = 'Hint' }
 	                    if ($adObject) {
 	                        $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue (Get-LAPSRightLabel -ReaderInfo $readerInfo) -Force
 	                        $adObject | Add-Member -NotePropertyName 'affectedOUs' -NotePropertyValue $readerInfo.OUs -Force
+	                        if ($readerSeverity) {
+	                            $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $readerSeverity -Force
+	                        }
 	                        $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
 	                        Show-Object $adObject
 	                    } else {
@@ -62911,6 +63132,9 @@ function Get-LAPSPermissions {
 	                            objectSid = $sid
 	                            dangerousRights = (Get-LAPSRightLabel -ReaderInfo $readerInfo)
 	                            affectedOUs = $readerInfo.OUs
+	                        }
+	                        if ($readerSeverity) {
+	                            $fallbackObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $readerSeverity -Force
 	                        }
 	                        $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
 	                        Show-Object $fallbackObject
@@ -64225,9 +64449,10 @@ function Parse-RestrictedGroups {
 	        $lines = $groupMembershipSection -split "`n"
 	        foreach ($line in $lines) {
 	            $line = $line.Trim()
-	            if ($line -match '^\*?(.+?)__Members\s*=\s*(.+)$') {
+	            if ($line -match '^\*?(.+?)__Members\s*=\s*(.*)$') {
 	                $groupSID = Resolve-RestrictedGroupSID -Identity $Matches[1]
-	                $memberSIDs = $Matches[2] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
+	                $memberSIDs = $Matches[2] -split ',' |
+	                    ForEach-Object { Resolve-RestrictedGroupSID -Identity $_ }
 	                if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
 	                    $groupName = $Script:LocalGroupSIDs[$groupSID]
 	                    $memberNames = @()
@@ -64247,7 +64472,9 @@ function Parse-RestrictedGroups {
 	                        $memberNames += $memberName
 	                    }
 	                    $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
-	                    $findings += [PSCustomObject]@{
+	                    $membersMode = 'Members (replaces the group on every refresh)'
+	                    $emptiesGroup = (@($memberNames).Count -eq 0)
+	                    $finding = [PSCustomObject]@{
 	                        GPOName = $GPOName
 	                        GPOGUID = $GPOGUID
 	                        GPOPath = $GPOPath
@@ -64255,12 +64482,20 @@ function Parse-RestrictedGroups {
 	                        Type = "Restricted Groups"
 	                        TargetGroup = $groupName
 	                        TargetGroupSID = $groupSID
+	                        Mode = $membersMode
 	                        MembersAdded = $memberNames
 	                        MemberSIDs = $memberSIDs
 	                        RiskyMembers = $riskyMembers
 	                        Severity = $severityResult.Severity
 	                        Risk = $severityResult.Risk
 	                    }
+	                    if ($emptiesGroup) {
+	                        $finding | Add-Member -NotePropertyName 'groupEmptied' -NotePropertyValue (
+	                            "This policy empties $groupName on every machine in scope - the member list is blank, so every existing member is removed at each refresh"
+	                        ) -Force
+	                        $finding.Risk = "The policy sets $groupName to an empty list, which removes every member on every machine in scope at the next refresh - including the local administrator account and any domain group that was there."
+	                    }
+	                    $findings += $finding
 	                }
 	            }
 	            elseif ($line -match '^\*?(.+?)__Memberof\s*=\s*(.+)$') {
@@ -64291,6 +64526,7 @@ function Parse-RestrictedGroups {
 	                            Type = "Restricted Groups"
 	                            TargetGroup = $groupName
 	                            TargetGroupSID = $groupSID
+	                            Mode = 'Memberof (adds to the group)'
 	                            MembersAdded = @($memberName)
 	                            MemberSIDs = @($memberSID)
 	                            RiskyMembers = $riskyMembers
@@ -64333,11 +64569,32 @@ function Parse-GPPGroups {
 	        $members = @()
 	        $memberSIDs = @()
 	        $riskyMembers = @()
+	        $removedMembers = @()
+	        $itemAction = [string]$group.Properties.action
+	        if ([string]::IsNullOrWhiteSpace($itemAction)) { $itemAction = 'U' }
+	        $itemAction = $itemAction.ToUpper()
+	        $itemDisabled = ([string]$group.disabled -eq '1')
+	        $deleteAllUsers = ([string]$group.Properties.deleteAllUsers -eq '1')
+	        $deleteAllGroups = ([string]$group.Properties.deleteAllGroups -eq '1')
+	        if ($itemDisabled) { continue }
 	        if ($group.Properties.Members) {
 	            foreach ($member in $group.Properties.Members.Member) {
+	                if ($member.action -eq 'REMOVE') {
+	                    $removedName = [string]$member.name
+	                    if ($member.sid -and $Script:RiskySIDs.ContainsKey([string]$member.sid)) {
+	                        $removedName = $Script:RiskySIDs[[string]$member.sid]
+	                    } elseif (-not $removedName -and $member.sid) {
+	                        $removedName = ConvertFrom-SID -SID ([string]$member.sid)
+	                    }
+	                    if ($removedName) { $removedMembers += $removedName }
+	                    continue
+	                }
 	                if ($member.action -ne 'ADD') { continue }
 	                $memberName = $member.name
 	                $memberSID = $member.sid
+	                if (-not $memberSID -and $memberName) {
+	                    $memberSID = ConvertTo-SID -Identity ([string]$memberName)
+	                }
 	                if ($memberSID) {
 	                    if ($Script:RiskySIDs.ContainsKey($memberSID)) {
 	                        $memberName = $Script:RiskySIDs[$memberSID]
@@ -64355,11 +64612,12 @@ function Parse-GPPGroups {
 	                }
 	            }
 	        }
-	        if (@($members).Count -eq 0) {
+	        $clearsGroup = ($deleteAllUsers -or $deleteAllGroups)
+	        if (@($members).Count -eq 0 -and @($removedMembers).Count -eq 0 -and -not $clearsGroup) {
 	            continue
 	        }
 	        $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
-	        $findings += [PSCustomObject]@{
+	        $finding = [PSCustomObject]@{
 	            GPOName = $GPOName
 	            GPOGUID = $GPOGUID
 	            GPOPath = $GPOPath
@@ -64367,12 +64625,25 @@ function Parse-GPPGroups {
 	            Type = "Group Policy Preferences"
 	            TargetGroup = $canonicalGroupName
 	            TargetGroupSID = $groupSID
+	            Mode = "$itemAction (Create/Replace/Update/Delete)"
 	            MembersAdded = $members
 	            MemberSIDs = $memberSIDs
 	            RiskyMembers = $riskyMembers
 	            Severity = $severityResult.Severity
 	            Risk = $severityResult.Risk
 	        }
+	        if (@($removedMembers).Count -gt 0) {
+	            $finding | Add-Member -NotePropertyName 'MembersRemoved' -NotePropertyValue $removedMembers -Force
+	        }
+	        if ($clearsGroup) {
+	            $cleared = @()
+	            if ($deleteAllUsers)  { $cleared += 'all user members' }
+	            if ($deleteAllGroups) { $cleared += 'all group members' }
+	            $finding | Add-Member -NotePropertyName 'groupEmptied' -NotePropertyValue (
+	                "This item removes $($cleared -join ' and ') of $canonicalGroupName on every machine in scope before applying its own list"
+	            ) -Force
+	        }
+	        $findings += $finding
 	    }
 	    return $findings
 	} catch {
@@ -65083,6 +65354,8 @@ function Test-DangerousRegistryRecord {
 	    [Parameter(Mandatory=$true)]
 	    $Record
 	)
+	if ($Record.PSObject.Properties['Action'] -and [string]$Record.Action -eq 'D') { return $null }
+	if ($Record.PSObject.Properties['Disabled'] -and $Record.Disabled) { return $null }
 	$recKey = ($Record.Key -replace '^\\+', '').TrimEnd('\').ToLower()
 	$recValueName = [string]$Record.ValueName
 	$recHive = [string]$Record.Hive
@@ -65385,6 +65658,8 @@ function Add-PointAndPrintRecords {
 	    if ($hive -ne 'HKLM' -and $hive -ne 'HKCU') { continue }
 	    $valueName = [string]$record.ValueName
 	    if ($valueName.StartsWith('**')) { continue }
+	    if ($record.PSObject.Properties['Action'] -and [string]$record.Action -eq 'D') { continue }
+	    if ($record.PSObject.Properties['Disabled'] -and $record.Disabled) { continue }
 	    $key = ([string]$record.Key -replace '^\\+', '').TrimEnd('\')
 	    $matchedRoot = $null
 	    if ($key -ieq $Script:PointAndPrintKeyRoot -and $valueName -in $Script:PointAndPrintValues) {
@@ -80257,7 +80532,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261010-2043"
+$Script:adPEASVersion = "2.7.0+20261010-2144"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

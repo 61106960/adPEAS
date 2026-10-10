@@ -435,15 +435,31 @@ function Parse-RestrictedGroups {
             foreach ($line in $lines) {
                 $line = $line.Trim()
 
-                if ($line -match '^\*?(.+?)__Members\s*=\s*(.+)$') {
+                if ($line -match '^\*?(.+?)__Members\s*=\s*(.*)$') {
                     # Variant 1: *LOCAL_GROUP_SID__Members = *SID1, *SID2
                     # The local group is on the LEFT, members are on the RIGHT
                     #
                     # The leading * is optional because real GptTmpl.inf files also key the
                     # entry by group NAME. Requiring the * dropped those lines without a
                     # word, which was a silent detection gap on localized domains.
+                    #
+                    # (.*) rather than (.+): "*S-1-5-32-544__Members =" with nothing after
+                    # it is the authoritative instruction to EMPTY the local
+                    # administrators, and it used to match neither branch and vanish. That
+                    # is an operational risk and a sabotage mechanism, and it was the one
+                    # line in the file that said so.
                     $groupSID = Resolve-RestrictedGroupSID -Identity $Matches[1]
-                    $memberSIDs = $Matches[2] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
+
+                    # Both sides through the resolver. Only the group was, so a
+                    # name-keyed entry like "Administrators__Members = CONTOSO\Domain
+                    # Users" left the member as a literal name: $Script:RiskySIDs never
+                    # matched it, '-513$' never matched it, $riskyMembers stayed empty and
+                    # Get-GroupAssignmentSeverity did not escalate. "Domain Users in
+                    # Remote Desktop Users on every machine" came out yellow, with no
+                    # coloured member and no finding card. The Memberof branch below
+                    # resolved both sides all along.
+                    $memberSIDs = $Matches[2] -split ',' |
+                        ForEach-Object { Resolve-RestrictedGroupSID -Identity $_ }
 
                     if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
                         $groupName = $Script:LocalGroupSIDs[$groupSID]
@@ -472,7 +488,17 @@ function Parse-RestrictedGroups {
                         # Get severity from centralized configuration
                         $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
 
-                        $findings += [PSCustomObject]@{
+                        # A Members list REPLACES the group on every policy refresh, which
+                        # the report never said: the attribute was called MembersAdded and
+                        # the risk text read "added to local Administrators" for both
+                        # keywords. A list naming one group therefore removes the local
+                        # administrator account and Domain Admins from every machine in
+                        # scope, and an empty list removes everybody - operationally
+                        # relevant, and a persistence and sabotage mechanism too.
+                        $membersMode = 'Members (replaces the group on every refresh)'
+                        $emptiesGroup = (@($memberNames).Count -eq 0)
+
+                        $finding = [PSCustomObject]@{
                             GPOName = $GPOName
                             GPOGUID = $GPOGUID
                             GPOPath = $GPOPath
@@ -480,12 +506,22 @@ function Parse-RestrictedGroups {
                             Type = "Restricted Groups"
                             TargetGroup = $groupName
                             TargetGroupSID = $groupSID
+                            Mode = $membersMode
                             MembersAdded = $memberNames
                             MemberSIDs = $memberSIDs
                             RiskyMembers = $riskyMembers
                             Severity = $severityResult.Severity
                             Risk = $severityResult.Risk
                         }
+
+                        if ($emptiesGroup) {
+                            $finding | Add-Member -NotePropertyName 'groupEmptied' -NotePropertyValue (
+                                "This policy empties $groupName on every machine in scope - the member list is blank, so every existing member is removed at each refresh"
+                            ) -Force
+                            $finding.Risk = "The policy sets $groupName to an empty list, which removes every member on every machine in scope at the next refresh - including the local administrator account and any domain group that was there."
+                        }
+
+                        $findings += $finding
                     }
                 }
                 elseif ($line -match '^\*?(.+?)__Memberof\s*=\s*(.+)$') {
@@ -528,6 +564,9 @@ function Parse-RestrictedGroups {
                                 Type = "Restricted Groups"
                                 TargetGroup = $groupName
                                 TargetGroupSID = $groupSID
+                                # Memberof only adds, and that difference decides what the
+                                # policy does to the members already there.
+                                Mode = 'Memberof (adds to the group)'
                                 MembersAdded = @($memberName)
                                 MemberSIDs = @($memberSID)
                                 RiskyMembers = $riskyMembers
@@ -592,14 +631,55 @@ function Parse-GPPGroups {
             $members = @()
             $memberSIDs = @()
             $riskyMembers = @()
+            $removedMembers = @()
+
+            # The item-level semantics, which used to be dropped: action C/R/U/D on the
+            # item, and the two flags that clear the group before the members are applied.
+            # A Replace item with deleteAllUsers and deleteAllGroups empties the local
+            # administrators on every machine in scope and then adds its own list - the
+            # report showed only the addition, so the most dangerous half of the
+            # configuration ("Domain Admins is removed from the local administrators of
+            # every machine in scope") was not in it at all. That is both an operational
+            # risk and a classic persistence mechanism.
+            $itemAction = [string]$group.Properties.action
+            if ([string]::IsNullOrWhiteSpace($itemAction)) { $itemAction = 'U' }
+            $itemAction = $itemAction.ToUpper()
+
+            $itemDisabled = ([string]$group.disabled -eq '1')
+            $deleteAllUsers = ([string]$group.Properties.deleteAllUsers -eq '1')
+            $deleteAllGroups = ([string]$group.Properties.deleteAllGroups -eq '1')
+
+            # A disabled item is never applied, and a Delete item removes the group rather
+            # than configuring its membership.
+            if ($itemDisabled) { continue }
 
             if ($group.Properties.Members) {
                 foreach ($member in $group.Properties.Members.Member) {
+                    # REMOVE is the other half of the configuration and was skipped
+                    # silently. It is reported separately below.
+                    if ($member.action -eq 'REMOVE') {
+                        $removedName = [string]$member.name
+                        if ($member.sid -and $Script:RiskySIDs.ContainsKey([string]$member.sid)) {
+                            $removedName = $Script:RiskySIDs[[string]$member.sid]
+                        } elseif (-not $removedName -and $member.sid) {
+                            $removedName = ConvertFrom-SID -SID ([string]$member.sid)
+                        }
+                        if ($removedName) { $removedMembers += $removedName }
+                        continue
+                    }
+
                     # Only process ADD actions
                     if ($member.action -ne 'ADD') { continue }
 
                     $memberName = $member.name
                     $memberSID = $member.sid
+
+                    # A Member with a name but no SID used to skip the whole risk
+                    # classification, so "Domain Users" written without its SID was not
+                    # recognised as a risky principal.
+                    if (-not $memberSID -and $memberName) {
+                        $memberSID = ConvertTo-SID -Identity ([string]$memberName)
+                    }
 
                     # A risky principal is displayed under its canonical English name, not
                     # under the name this XML happens to carry. Groups.xml is written by
@@ -636,14 +716,18 @@ function Parse-GPPGroups {
                 }
             }
 
-            if (@($members).Count -eq 0) {
+            # An item that only removes members, or only clears the group, carries no
+            # MembersAdded and used to be dropped here - which is where the removal half
+            # of a Replace item disappeared.
+            $clearsGroup = ($deleteAllUsers -or $deleteAllGroups)
+            if (@($members).Count -eq 0 -and @($removedMembers).Count -eq 0 -and -not $clearsGroup) {
                 continue
             }
 
             # Get severity from centralized configuration
             $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
 
-            $findings += [PSCustomObject]@{
+            $finding = [PSCustomObject]@{
                 GPOName = $GPOName
                 GPOGUID = $GPOGUID
                 GPOPath = $GPOPath
@@ -651,12 +735,28 @@ function Parse-GPPGroups {
                 Type = "Group Policy Preferences"
                 TargetGroup = $canonicalGroupName
                 TargetGroupSID = $groupSID
+                Mode = "$itemAction (Create/Replace/Update/Delete)"
                 MembersAdded = $members
                 MemberSIDs = $memberSIDs
                 RiskyMembers = $riskyMembers
                 Severity = $severityResult.Severity
                 Risk = $severityResult.Risk
             }
+
+            if (@($removedMembers).Count -gt 0) {
+                $finding | Add-Member -NotePropertyName 'MembersRemoved' -NotePropertyValue $removedMembers -Force
+            }
+
+            if ($clearsGroup) {
+                $cleared = @()
+                if ($deleteAllUsers)  { $cleared += 'all user members' }
+                if ($deleteAllGroups) { $cleared += 'all group members' }
+                $finding | Add-Member -NotePropertyName 'groupEmptied' -NotePropertyValue (
+                    "This item removes $($cleared -join ' and ') of $canonicalGroupName on every machine in scope before applying its own list"
+                ) -Force
+            }
+
+            $findings += $finding
         }
 
         return $findings

@@ -129,6 +129,33 @@ function Get-LAPSPermissions {
                             $sid = $finding.SID
                             $severity = $finding.Severity
 
+                            # A blanket "read all properties" ACE does not reach a LAPS
+                            # password while the attribute is confidential in the schema:
+                            # MS-ADTS requires READ_PROPERTY *and* CONTROL_ACCESS for such
+                            # an attribute, which is why Set-AdmPwdReadPasswordPermission
+                            # writes two ACEs. Every one of those delegations used to be
+                            # reported as "LAPS Password Read" at finding severity, so a
+                            # helpdesk or monitoring read on a computer OU came out as
+                            # "can read every local administrator password here" - and the
+                            # customer removed a permission that grants nothing while
+                            # believing LAPS was compromised.
+                            #
+                            # Three states, not two. The right is live when the ACE carries
+                            # CONTROL_ACCESS, live as well when the attribute is NOT
+                            # confidential (then a plain read is enough), and otherwise
+                            # blocked by the flag - which is worth a hint rather than a
+                            # finding, because it becomes live the moment the flag is
+                            # cleared.
+                            # The severity stays where it is, so the row keeps its place in
+                            # the report - it is the label and the card behind it that
+                            # change. Dropping the severity instead would take the row out
+                            # of the output altogether, which is the other way to be wrong
+                            # about it.
+                            $blankAllProperties = ($finding.Right -match 'All Properties') -and
+                                                  ($finding.GrantsControlAccess -ne $true)
+                            $blockedByConfidentialFlag = ($blankAllProperties -and
+                                                          ($Script:LAPSSchemaInfo.PasswordConfidential -eq $true))
+
                             # Which generation this right reads is decided here, where the
                             # Right string is still at hand, and carried on the reader. The
                             # output used to say "LAPS Password Read" for either, and in a
@@ -143,6 +170,7 @@ function Get-LAPSPermissions {
                                         Principal = $principal
                                         SID = $sid
                                         Severity = $severity
+                                        BlockedByConfidentialFlag = $blockedByConfidentialFlag
                                         Generation = 'Legacy'
                                     }
                                 }
@@ -155,6 +183,7 @@ function Get-LAPSPermissions {
                                         Principal = $principal
                                         SID = $sid
                                         Severity = $severity
+                                        BlockedByConfidentialFlag = $blockedByConfidentialFlag
                                         # A read on every property covers whichever
                                         # attribute the machine actually carries.
                                         Generation = if ($finding.Right -match 'All Properties') {
@@ -232,6 +261,14 @@ function Get-LAPSPermissions {
             function Get-LAPSRightLabel {
                 param($ReaderInfo)
 
+                # A principal whose only right is a blanket read of all properties does
+                # not reach the password while the attribute is confidential, so the
+                # label says that instead of "LAPS Password Read" - and a different
+                # finding definition hangs off this text, a hint rather than a finding.
+                if ($ReaderInfo.AllBlockedByConfidentialFlag -eq $true) {
+                    return 'Read all properties - blocked by the confidential flag on the LAPS password attribute, live as soon as that flag is cleared'
+                }
+
                 $generations = @($ReaderInfo.Generations)
                 if ($generations.Count -eq 0) { return 'LAPS Password Read' }
                 return ('LAPS Password Read (' + (($generations | Sort-Object) -join ', ') + ')')
@@ -264,7 +301,17 @@ function Get-LAPSPermissions {
                                 Generations = @()
                                 IsExchangeService = $isExchange
                                 IsPrivilegedAccount = $isPriv
+
+                                # Starts true and is cleared by the first contribution that
+                                # does reach a password. A principal holding a blanket read
+                                # on one OU and a delegated read of the password attribute
+                                # on another has the password, and the label has to say so.
+                                AllBlockedByConfidentialFlag = $true
                             }
+                        }
+
+                        if ($reader.BlockedByConfidentialFlag -ne $true) {
+                            $targetHash[$sid].AllBlockedByConfidentialFlag = $false
                         }
                         # Only add OU if not already in the list (deduplicate)
                         $ouEntry = "$($finding.OU) ($($finding.ComputerCount) computers)"
@@ -313,9 +360,19 @@ function Get-LAPSPermissions {
                         $isWellKnownSID = $sid -match '^S-1-5-\d+$'
                         $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
 
+                        # A read the confidential flag blocks is not a password read, so the
+                        # row is a hint. Severity for the dangerousRights family is decided
+                        # by this property - the per-definition Risk is display-only - so
+                        # without it the row would be red whatever the card behind it says.
+                        $readerSeverity = $null
+                        if ($readerInfo.AllBlockedByConfidentialFlag -eq $true) { $readerSeverity = 'Hint' }
+
                         if ($adObject) {
                             $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue (Get-LAPSRightLabel -ReaderInfo $readerInfo) -Force
                             $adObject | Add-Member -NotePropertyName 'affectedOUs' -NotePropertyValue $readerInfo.OUs -Force
+                            if ($readerSeverity) {
+                                $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $readerSeverity -Force
+                            }
                             $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
                             Show-Object $adObject
                         } else {
@@ -325,6 +382,9 @@ function Get-LAPSPermissions {
                                 objectSid = $sid
                                 dangerousRights = (Get-LAPSRightLabel -ReaderInfo $readerInfo)
                                 affectedOUs = $readerInfo.OUs
+                            }
+                            if ($readerSeverity) {
+                                $fallbackObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $readerSeverity -Force
                             }
                             $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
                             Show-Object $fallbackObject

@@ -431,6 +431,14 @@ function Add-PointAndPrintRecords {
         # disabled policy as a configured one.
         if ($valueName.StartsWith('**')) { continue }
 
+        # The same statement on the Preferences side, which used to have no equivalent
+        # here: action="D" deletes the value and disabled="1" means the item is never
+        # applied at all. A GPP item that REMOVES
+        # RestrictDriverInstallationToAdministrators was read as one that sets it to 0,
+        # which is the opposite verdict.
+        if ($record.PSObject.Properties['Action'] -and [string]$record.Action -eq 'D') { continue }
+        if ($record.PSObject.Properties['Disabled'] -and $record.Disabled) { continue }
+
         $key = ([string]$record.Key -replace '^\\+', '').TrimEnd('\')
 
         $matchedRoot = $null

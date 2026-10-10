@@ -327,6 +327,17 @@ function Test-DangerousRegistryRecord {
         $Record
     )
 
+    # The GPP semantics, which this check's own design principle requires: "only
+    # POSITIVELY SET values are flagged". action="D" deletes the value and disabled="1"
+    # means Group Policy never applies the item, and both used to arrive here as ordinary
+    # configured values - so a GPO that REMOVES EnableLUA, the cleanup an administrator
+    # performs after an audit, was reported as "User Account Control disabled" with
+    # severity High, and a preference item switched off in the editor read as an active
+    # misconfiguration. Registry.pol says the same thing with a "**del." value name, and
+    # Parse-PRegRecords has always skipped those.
+    if ($Record.PSObject.Properties['Action'] -and [string]$Record.Action -eq 'D') { return $null }
+    if ($Record.PSObject.Properties['Disabled'] -and $Record.Disabled) { return $null }
+
     $recKey = ($Record.Key -replace '^\\+', '').TrimEnd('\').ToLower()
     $recValueName = [string]$Record.ValueName
     $recHive = [string]$Record.Hive

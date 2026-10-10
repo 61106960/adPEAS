@@ -78,6 +78,14 @@ function Get-LAPSSchemaPresence {
         $legacyPresent = $false
         $nativePresent = $false
 
+        # Whether the password attributes carry the confidential flag, which decides what a
+        # blanket "read all properties" delegation is worth. MS-ADTS requires READ_PROPERTY
+        # *and* CONTROL_ACCESS for a confidential attribute - which is why
+        # Set-AdmPwdReadPasswordPermission writes two ACEs - so with the flag in place a
+        # bare all-properties read does not reach the password, and without it that read is
+        # a complete grant. $null means the question could not be answered.
+        $passwordConfidential = $null
+
         # Each variant is recognised by the expiration attribute rather than by the password
         # attribute: the password is ACL-gated and a reader without rights sees nothing,
         # while the expiration time is readable to any authenticated user. Asking about the
@@ -95,6 +103,27 @@ function Get-LAPSSchemaPresence {
                 if (@(Get-DomainObject -LDAPFilter $nativeFilter -SearchBase $schemaDN -Properties 'cn' -ResultLimit 1 @connectionParams).Count -gt 0) {
                     $nativePresent = $true
                     Write-Log "[Get-LAPSSchemaPresence] Windows LAPS schema attribute found"
+                }
+
+                # searchFlags bit 7 (128) is fCONFIDENTIAL. Both password attributes are
+                # asked about together: if either is readable by a bare all-properties ACE,
+                # that ACE reaches a password.
+                if ($legacyPresent -or $nativePresent) {
+                    $pwdFilter = "(&(objectClass=attributeSchema)(|(lDAPDisplayName=ms-Mcs-AdmPwd)(lDAPDisplayName=msLAPS-Password)(lDAPDisplayName=msLAPS-EncryptedPassword)))"
+                    $pwdAttrs = @(Get-DomainObject -LDAPFilter $pwdFilter -SearchBase $schemaDN -Properties 'lDAPDisplayName', 'searchFlags' @connectionParams)
+                    if (@($pwdAttrs).Count -gt 0) {
+                        $passwordConfidential = $true
+                        foreach ($pwdAttr in $pwdAttrs) {
+                            $flags = 0
+                            if ($null -ne $pwdAttr.searchFlags) {
+                                try { $flags = [int]$pwdAttr.searchFlags } catch { $flags = 0 }
+                            }
+                            if (($flags -band 128) -eq 0) {
+                                $passwordConfidential = $false
+                                Write-Log "[Get-LAPSSchemaPresence] $($pwdAttr.lDAPDisplayName) is NOT confidential (searchFlags=$flags)"
+                            }
+                        }
+                    }
                 }
             } catch {
                 Write-Log "[Get-LAPSSchemaPresence] Schema query error: $($_.Exception.Message)"
@@ -119,8 +148,9 @@ function Get-LAPSSchemaPresence {
         }
 
         $Script:LAPSSchemaInfo = @{
-            LegacyPresent = $legacyPresent
-            NativePresent = $nativePresent
+            LegacyPresent        = $legacyPresent
+            NativePresent        = $nativePresent
+            PasswordConfidential = $passwordConfidential
         }
         return $Script:LAPSSchemaInfo
     }

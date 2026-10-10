@@ -143,7 +143,7 @@ $Script:PrimaryAttributes = @{
     GPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         # LDAP security settings
-        'LDAPSigning', 'ChannelBinding', 'AnonymousBinding', 'ServerSigning', 'ClientSigning',
+        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'ServerSigning', 'ClientSigning',
         # Security findings
         'DangerousPermissions', 'DangerousSettings',
         # Linkage
@@ -160,7 +160,8 @@ $Script:PrimaryAttributes = @{
     # LDAP Configuration GPO (only LDAP-relevant attributes, no SMB)
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
-        'LDAPSigning', 'ChannelBinding', 'AnonymousBinding',
+        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
+        'dSHeuristics', 'anonymousLDAPAccess',
         'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
 
@@ -307,7 +308,7 @@ $Script:PrimaryAttributes = @{
 
     # Effective LDAP Security Configuration
     EffectiveLDAPConfig = @(
-        'LDAPSigning', 'ChannelBinding', 'AnonymousBinding'
+        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation'
     )
 
     # Outdated Computer object
@@ -352,8 +353,15 @@ $Script:PrimaryAttributes = @{
     )
 
     # GPO Local Group Membership (custom PSCustomObject from Get-GPOLocalGroupMembership)
+    #
+    # Mode, MembersRemoved and groupEmptied say what the policy does to the members that
+    # are already in the group - a Members list replaces it, a Memberof entry only adds,
+    # and a preferences item can clear it first. All three used to be absent, so a policy
+    # that removes Domain Admins from the local administrators of every machine in scope
+    # was reported as one that adds somebody.
     GPOLocalGroup = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'MembersAdded',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'Mode',
+        'MembersAdded', 'MembersRemoved', 'groupEmptied',
         'LinkedOUs', 'GPOStatus'
     )
 
@@ -745,7 +753,7 @@ function Get-ObjectTypeForOrdering {
     }
 
     # Effective LDAP Security Configuration
-    if ($Object.LDAPSigning -and $Object.ChannelBinding -and $Object.AnonymousBinding -and -not $Object.gPCFileSysPath) {
+    if ($Object.LDAPSigning -and $Object.ChannelBinding -and $Object.anonymousSamEnumeration -and -not $Object.gPCFileSysPath) {
         return 'EffectiveLDAPConfig'
     }
 

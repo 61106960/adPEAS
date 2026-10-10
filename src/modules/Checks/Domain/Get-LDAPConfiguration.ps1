@@ -135,6 +135,53 @@ function Get-LDAPConfiguration {
                 return
             }
 
+            # ===== Anonymous LDAP operations, read where they are actually configured =====
+            #
+            # dsHeuristics on CN=Directory Service, character 7 of the first group, is
+            # fLDAPBlockAnonOps: the value 2 lets an anonymous client do more than read
+            # rootDSE, anything else leaves it blocked. This question used to be answered
+            # from two GPO settings that govern SMB null sessions instead - see the note at
+            # the GPO loop below - so the report could carry a red "Anonymous LDAP Binding
+            # Allowed" for a domain where it was blocked, and a green one for a domain
+            # where it was open.
+            Show-SubHeader "Checking anonymous LDAP operations (dsHeuristics)..." -ObjectType "LDAPConfigGPO"
+
+            $configDN = $Script:LDAPContext.ConfigurationNamingContext
+            if ($configDN) {
+                $dirServiceDN = "CN=Directory Service,CN=Windows NT,CN=Services,$configDN"
+                try {
+                    $dirService = @(Get-DomainObject -Identity $dirServiceDN -Properties 'dSHeuristics' @connectionParams)[0]
+                    $dsHeuristics = if ($dirService) { [string]$dirService.dSHeuristics } else { '' }
+
+                    if (-not $dirService) {
+                        Show-Line "The Directory Service object could not be read - whether anonymous LDAP operations are allowed is unknown" -Class Note
+                    } elseif ([string]::IsNullOrWhiteSpace($dsHeuristics)) {
+                        # An unset attribute is the default, and the default blocks
+                        # anonymous operations beyond rootDSE.
+                        Show-Line "Anonymous LDAP operations are blocked - dsHeuristics is not set, which is the secure default" -Class Secure
+                    } else {
+                        $anonChar = if ($dsHeuristics.Length -ge 7) { $dsHeuristics.Substring(6, 1) } else { '0' }
+                        if ($anonChar -eq '2') {
+                            Show-Line "Anonymous LDAP operations are ENABLED - dsHeuristics character 7 is 2, so an unauthenticated client can enumerate the directory" -Class Finding -FindingId 'LDAP_ANONYMOUS_BINDING_ALLOWED'
+                        } else {
+                            Show-Line "Anonymous LDAP operations are blocked - dsHeuristics character 7 is '$anonChar', not 2" -Class Secure
+                        }
+
+                        $heuristicsObj = [PSCustomObject]@{
+                            dSHeuristics        = $dsHeuristics
+                            anonymousLDAPAccess = if ($anonChar -eq '2') { 'ENABLED - Security Risk!' } else { 'Restricted' }
+                        }
+                        $heuristicsObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
+                        Show-Object $heuristicsObj
+                    }
+                } catch {
+                    Write-Log "[Get-LDAPConfiguration] Could not read dsHeuristics: $_" -Level Warning
+                    Show-Line "The Directory Service object could not be read - whether anonymous LDAP operations are allowed is unknown" -Class Note
+                }
+            } else {
+                Show-Line "The configuration partition is unknown - whether anonymous LDAP operations are allowed could not be checked" -Class Note
+            }
+
             Show-SubHeader "Analyzing LDAP Signing/Channel Binding via GPO (SYSVOL)..." -ObjectType "LDAPConfigGPO"
 
             $domainFQDN = $Script:LDAPContext.Domain
@@ -305,11 +352,33 @@ function Get-LDAPConfiguration {
                                 }
                             } else { "Not Configured" }
 
-                            $anonymousBindingStatus = "Not Configured"
+                            # Two settings, two statements, and neither of them is about
+                            # LDAP. RestrictAnonymous is "Network access: Do not allow
+                            # anonymous enumeration of SAM accounts and shares" and
+                            # LSAAnonymousNameLookup is "Network access: Allow anonymous
+                            # SID/Name translation" - both null-session controls over SMB.
+                            # They used to be folded into one attribute called
+                            # AnonymousBinding, which reached a definition titled
+                            # "Anonymous LDAP Binding Allowed": a GPO setting
+                            # RestrictAnonymous=0, which is the OS default and appears in
+                            # baselines, produced a red finding about an attack path it
+                            # does not open, and the Default Domain Controllers Policy's
+                            # LSAAnonymousNameLookup=0 produced a green "Unauthenticated
+                            # LDAP enumeration is blocked" - in the same report as the
+                            # result of the real anonymous bind test from
+                            # Get-DomainInformation. Two checks, one question, opposite
+                            # answers, and the wrong one was the green one.
+                            #
+                            # What actually governs anonymous LDAP is dsHeuristics, read
+                            # below at domain level.
+                            $samEnumerationStatus = "Not Configured"
                             if ($null -ne $restrictAnonymous) {
-                                $anonymousBindingStatus = if ($restrictAnonymous -eq 0) { "Allowed" } else { "Restricted" }
-                            } elseif ($null -ne $lsaAnonymousNameLookup) {
-                                $anonymousBindingStatus = if ($lsaAnonymousNameLookup -eq 1) { "Allowed" } else { "Restricted" }
+                                $samEnumerationStatus = if ($restrictAnonymous -eq 0) { "Allowed" } else { "Restricted" }
+                            }
+
+                            $sidNameTranslationStatus = "Not Configured"
+                            if ($null -ne $lsaAnonymousNameLookup) {
+                                $sidNameTranslationStatus = if ($lsaAnonymousNameLookup -eq 1) { "Allowed" } else { "Restricted" }
                             }
 
                             # Get GPO linkage
@@ -344,7 +413,8 @@ function Get-LDAPConfiguration {
                             # Enrich the native GPO object with LDAP security attributes
                             $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue $signingLevel -Force
                             $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
-                            $gpo | Add-Member -NotePropertyName "AnonymousBinding" -NotePropertyValue $anonymousBindingStatus -Force
+                            $gpo | Add-Member -NotePropertyName "anonymousSamEnumeration" -NotePropertyValue $samEnumerationStatus -Force
+                            $gpo | Add-Member -NotePropertyName "anonymousSidNameTranslation" -NotePropertyValue $sidNameTranslationStatus -Force
                             $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue $coversDCs -Force
 
                             # Where the policy applies. The full link records, disabled ones
@@ -406,7 +476,8 @@ function Get-LDAPConfiguration {
 
                     $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue "Not Configured" -Force
                     $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
-                    $gpo | Add-Member -NotePropertyName "AnonymousBinding" -NotePropertyValue "Not Configured" -Force
+                    $gpo | Add-Member -NotePropertyName "anonymousSamEnumeration" -NotePropertyValue "Not Configured" -Force
+                    $gpo | Add-Member -NotePropertyName "anonymousSidNameTranslation" -NotePropertyValue "Not Configured" -Force
                     # Same rule as the GptTmpl.inf loop: a link at or above the DC's own OU
                     # reaches it, which is where a policy hardening LDAP normally sits.
                     $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue (

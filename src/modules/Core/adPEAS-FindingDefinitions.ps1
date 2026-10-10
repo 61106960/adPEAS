@@ -3667,9 +3667,15 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
         Tools = @("ldapsearch", "windapsearch", "ldapdomaindump")
         MITRE = "T1087"
         Triggers = @(
-            @{ Attribute = 'anonymousLDAPAccess'; Severity = 'Finding' }
-            @{ Attribute = 'AnonymousBinding'; Pattern = '^Allowed$'; Severity = 'Finding' }
-            @{ Attribute = 'AnonymousBinding'; Pattern = '^Not Configured$'; Severity = 'Hint' }
+            # Pattern, not a bare attribute match. Without it this trigger claimed every
+            # value of anonymousLDAPAccess including "Restricted", which made the Secure
+            # counterpart below dead code - Get-TriggerMatch had no way to prefer it.
+            #
+            # The AnonymousBinding triggers that used to sit here are gone with the
+            # attribute: RestrictAnonymous and LSAAnonymousNameLookup are SMB null-session
+            # controls, not LDAP, and this definition's own remediation always said the
+            # LDAP answer lives in dsHeuristics. Get-LDAPConfiguration reads it now.
+            @{ Attribute = 'anonymousLDAPAccess'; Pattern = 'ENABLED'; Severity = 'Finding' }
         )
     }
 
@@ -4904,6 +4910,49 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
         )
     }
 
+    'LAPS_READ_BLOCKED_BY_CONFIDENTIAL' = @{
+        Title = "Read All Properties on a Computer OU, Blocked by the Confidential Flag"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A non-privileged principal may read all properties of the computer objects in this OU. That does not include the LAPS password today: the password attributes are marked confidential in the schema (searchFlags bit 7), and MS-ADTS requires READ_PROPERTY and CONTROL_ACCESS together for a confidential attribute - which is why Set-AdmPwdReadPasswordPermission writes two ACEs. The delegation becomes a password read the moment that flag is cleared, or if the principal is granted CONTROL_ACCESS anywhere on the path."
+        Impact = @(
+            "Every other attribute of the computer objects is readable, which is reconnaissance rather than credential access"
+            "Clearing the confidential flag on a LAPS password attribute turns this into a read of every local administrator password in the OU"
+            "A later ACE granting CONTROL_ACCESS to the same principal does the same thing"
+        )
+        Attack = @(
+            "1. Attacker holds, or takes over, the delegated principal"
+            "2. Reads the computer objects of the OU - every attribute except the confidential ones"
+            "3. Waits for, or brings about, the removal of the confidential flag, then reads the passwords"
+        )
+        Remediation = @(
+            "Leave the confidential flag in place - it is what makes this harmless, and it is set by the LAPS schema extension"
+            "Remove the all-properties delegation anyway if nothing needs it: it is wider than it looks and it is one schema change away from a password read"
+            "Verify the flag rather than assuming it: searchFlags on ms-Mcs-AdmPwd, msLAPS-Password and msLAPS-EncryptedPassword must have bit 7 set"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Read the confidential flag on the LAPS password attributes"
+                Command = @'
+$schema = (Get-ADRootDSE).schemaNamingContext
+Get-ADObject -SearchBase $schema `
+    -LDAPFilter '(|(lDAPDisplayName=ms-Mcs-AdmPwd)(lDAPDisplayName=msLAPS-Password)(lDAPDisplayName=msLAPS-EncryptedPassword))' `
+    -Properties lDAPDisplayName, searchFlags |
+    Select-Object lDAPDisplayName, searchFlags, @{n='Confidential'; e={ ($_.searchFlags -band 128) -ne 0 }}
+'@
+            }
+        )
+        References = @(
+            @{ Title = "Confidential attributes"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/mark-attribute-as-confidential" }
+            @{ Title = "Windows LAPS Security"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview" }
+        )
+        Tools = @("LAPSToolkit", "PowerView")
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'blocked by the confidential flag'; Severity = 'Hint' }
+        )
+    }
+
     # ============================================================================
     # SMB SIGNING FINDINGS
     # ============================================================================
@@ -5759,25 +5808,53 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
     }
 
     'TRUST_TREAT_AS_EXTERNAL' = @{
-        Title = "Trust Treated as External"
-        Risk = "Secure"
-        BaseScore = 0
-        Description = "This trust is configured with the TREAT_AS_EXTERNAL flag, which enforces SID Filtering even on within-forest trusts. This provides additional security by restricting SID History usage across the trust boundary."
+        Title = "Forest Trust Relaxed to External SID Filtering"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "This forest trust carries TRUST_ATTRIBUTE_TREAT_AS_EXTERNAL. MS-ADTS 6.1.6.7.9 describes what that does: a cross-forest trust is treated as an external trust for the purposes of SID filtering, and cross-forest trusts are filtered more stringently than external ones - so the flag RELAXES the filtering rather than enforcing it. SID history naming any domain of the trusted forest is honoured here instead of only that forest's own namespaces."
         Impact = @(
-            "SID Filtering enforced regardless of trust type"
-            "Prevents SID History injection across this trust"
-            "Provides external-trust-level security on forest trusts"
-            "Reduces risk of cross-domain privilege escalation"
+            "SID history from the trusted forest is accepted for domains it does not own"
+            "A Domain Admin SID of this domain, injected on the other side, is honoured on this one"
+            "Whoever controls any domain of the trusted forest can reach this domain"
+            "The flag is set deliberately, so it is a configuration decision rather than an oversight"
+        )
+        Attack = @(
+            "1. Attacker gains control of any domain in the trusted forest"
+            "2. Writes a SID of this domain into sIDHistory of an account there"
+            "3. Authenticates across the trust, and this domain honours the injected SID"
         )
         Remediation = @(
-            "No action required - this is a recommended security configuration"
-            "Verify that required cross-domain functionality is not broken"
+            "Remove the flag unless the cross-forest SID history it allows is genuinely needed - and find out what needs it before removing it, because somebody set it for a migration"
+            "Where a migration does need it, bound it in time: turn it off again once the SID history is no longer used"
+            "Keep quarantine and SID filtering in place on every external and realm trust"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the trust attributes, so the flag can be confirmed before changing anything"
+                Command = "Get-ADTrust -Filter * | Select-Object Name, Direction, ForestTransitive, SIDFilteringForestAware, SIDFilteringQuarantined, TrustAttributes"
+            }
+            @{
+                Description = "Stop honouring SID history across the trust"
+                Command = "netdom trust THIS.DOMAIN /domain:TRUSTED.FOREST /EnableSIDHistory:no"
+            }
         )
         References = @(
-            @{ Title = "Trust Attributes - Microsoft"; Url = "https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646571e5720" }
+            @{ Title = "Trust Attributes - MS-ADTS 6.1.6.7.9"; Url = "https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646571e5720" }
+            @{ Title = "Security Considerations for Trusts"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-considerations-for-trusts" }
         )
+        Tools = @("netdom", "Get-ADTrust", "mimikatz")
+        MITRE = "T1134.005"
         Triggers = @(
-            @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Severity = 'Secure' }
+            # Only outside one forest. Within a single forest the flag is meaningless -
+            # one forest is one security boundary - and a neutral line there is right.
+            #
+            # The definition used to read this flag as a hardening measure, Risk Secure
+            # and "No action required - this is a recommended security configuration",
+            # which is the opposite of what it does. The same module already knew: its
+            # own trustRisk line says "Weakened - TREAT_AS_EXTERNAL downgrades the forest
+            # trust to external filtering". Both appeared on the same trust object, the
+            # green one carrying the tooltip that closed the subject.
+            @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Custom = 'is_not_within_forest_trust'; Severity = 'Finding' }
         )
     }
 
@@ -9731,7 +9808,66 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "M1035"
         Triggers = @(
             @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^Restricted$'; Severity = 'Secure' }
-            @{ Attribute = 'AnonymousBinding'; Pattern = '^Restricted$'; Severity = 'Secure' }
+        )
+    }
+
+    'ANONYMOUS_SAM_ENUMERATION_ALLOWED' = @{
+        Title = "Anonymous Enumeration of SAM Accounts and Shares Allowed"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A GPO sets RestrictAnonymous to 0, which is 'Network access: Do not allow anonymous enumeration of SAM accounts and shares' turned off. An unauthenticated SMB session can then list local accounts and shares of the machines the policy reaches. This is a null-session control over SMB and says nothing about LDAP - the LDAP question is dsHeuristics, which this check reads separately."
+        Impact = @(
+            "An unauthenticated SMB client can list local accounts and shares"
+            "Useful for reconnaissance before an authenticated attack"
+            "0 is also the operating system default, so an explicit 0 is often a baseline stating the default rather than a decision"
+        )
+        Attack = @(
+            "1. Attacker opens a null session to a machine in scope"
+            "2. Enumerates local accounts and shares"
+            "3. Uses the names for password spraying or share hunting"
+        )
+        Remediation = @(
+            "Set 'Network access: Do not allow anonymous enumeration of SAM accounts and shares' to Enabled"
+            "Expect legacy clients and some NAS and print devices to depend on null sessions - check before enforcing"
+        )
+        References = @(
+            @{ Title = "Network access: Do not allow anonymous enumeration of SAM accounts and shares"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-access-do-not-allow-anonymous-enumeration-of-sam-accounts-and-shares" }
+        )
+        Tools = @("enum4linux", "smbclient")
+        MITRE = "T1087.001"
+        Triggers = @(
+            @{ Attribute = 'anonymousSamEnumeration'; Pattern = '^Allowed$'; Severity = 'Hint' }
+            @{ Attribute = 'anonymousSamEnumeration'; Pattern = '^Restricted$'; Severity = 'Secure' }
+        )
+    }
+
+    'ANONYMOUS_SID_NAME_TRANSLATION_ALLOWED' = @{
+        Title = "Anonymous SID/Name Translation Allowed"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A GPO sets LSAAnonymousNameLookup to 1, which is 'Network access: Allow anonymous SID/Name translation' enabled. An unauthenticated client can then turn a SID into a name and back - enough to find the built-in administrator of a domain whatever it was renamed to, by asking for RID 500. This is an LSA/SMB control and says nothing about anonymous LDAP."
+        Impact = @(
+            "The renamed built-in administrator can be found by its RID"
+            "Group and account names can be resolved without credentials"
+            "Supports targeted password spraying"
+        )
+        Attack = @(
+            "1. Attacker asks a domain controller to translate <domain SID>-500"
+            "2. Receives the current name of the built-in administrator account"
+            "3. Sprays passwords against that account"
+        )
+        Remediation = @(
+            "Set 'Network access: Allow anonymous SID/Name translation' to Disabled"
+            "The setting exists for pre-Windows 2000 compatibility; anything still needing it should be inventoried first"
+        )
+        References = @(
+            @{ Title = "Network access: Allow anonymous SID/Name translation"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-access-allow-anonymous-sidname-translation" }
+        )
+        Tools = @("impacket-lookupsid", "rpcclient")
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'anonymousSidNameTranslation'; Pattern = '^Allowed$'; Severity = 'Hint' }
+            @{ Attribute = 'anonymousSidNameTranslation'; Pattern = '^Restricted$'; Severity = 'Secure' }
         )
     }
 
@@ -12978,6 +13114,14 @@ function Test-CustomTrigger {
         'lt_12' {
             # Integer value < 12 (for password length)
             $strValue = [string]$Value
+
+            # "Disabled" is how the password policy renders a minimum length of 0, and it
+            # is the worst state the setting has. Without this line it was the only value
+            # that produced no finding at all: the row stood neutral in the report with no
+            # impact, no remediation and no score, while "7 characters" was a finding. The
+            # lt_8 predicate directly above has carried the same line for longer.
+            if ($strValue -match 'Disabled') { return $true }
+
             $intValue = 0
             if ([int]::TryParse($strValue, [ref]$intValue)) {
                 return ($intValue -lt 12)

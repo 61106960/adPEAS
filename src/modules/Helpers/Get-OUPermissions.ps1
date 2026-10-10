@@ -804,6 +804,20 @@ function Get-OUPermissions {
                         $lapsIsAllProperties = $IsAllProperties
                         $lapsPropertyFound = $false
 
+                        # Whether this ACE carries CONTROL_ACCESS, which the caller needs to
+                        # judge an all-properties read. The LAPS password attributes are
+                        # confidential in the schema, and MS-ADTS requires READ_PROPERTY
+                        # *and* CONTROL_ACCESS for such an attribute - which is why
+                        # Set-AdmPwdReadPasswordPermission writes two ACEs. A bare "read all
+                        # properties" delegation therefore does not reach the password,
+                        # while this check reported every one of them as "LAPS Password
+                        # Read" at finding severity: a helpdesk or monitoring delegation on
+                        # a computer OU came out as "can read every local administrator
+                        # password in this OU". GenericAll contains CONTROL_ACCESS, so it
+                        # defeats the flag on its own. Carried per ACE, the same way the
+                        # Credential Roaming block below does it.
+                        $lapsGrantsControlAccess = ($HasGenericAll -or $HasExtendedRight)
+
                         # Legacy LAPS (ms-Mcs-AdmPwd) - GUID: E5C0983D-B71E-4F1D-B798-9B0F5ECAEEA3
                         $legacyLAPSMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['ms-Mcs-AdmPwd'].Guid)
                         if ($legacyLAPSMatch) {
@@ -815,6 +829,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -831,6 +846,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -847,6 +863,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -863,6 +880,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -879,6 +897,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -895,6 +914,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -906,13 +926,26 @@ function Get-OUPermissions {
                         #    These groups should only be flagged if they have SPECIFIC LAPS property rights
                         if ($lapsIsAllProperties -and -not $lapsPropertyFound -and -not $skipAllPropertiesOnly) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
+
+                            # Name what the ACE carries instead of asserting that it
+                            # includes LAPS. Whether it does depends on the confidential
+                            # flag, and that is the caller's question - the text used to
+                            # answer it here with "includes LAPS".
+                            $lapsAllPropsRight = 'ReadProperty (All Properties)'
+                            if ($HasGenericAll) {
+                                $lapsAllPropsRight = 'GenericAll (All Properties)'
+                            } elseif ($lapsGrantsControlAccess) {
+                                $lapsAllPropsRight = 'ReadProperty + ControlAccess (All Properties)'
+                            }
+
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "LAPS"
-                                Right         = "ReadProperty (All Properties - includes LAPS)"
+                                Right         = $lapsAllPropsRight
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                         }
                     }

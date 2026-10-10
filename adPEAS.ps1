@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-10 20:43:30
-    Version: 2.7.0+20261010-2043
+    Build: 2026-10-10 21:44:07
+    Version: 2.7.0+20261010-2144
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6212,7 +6212,7 @@ $Script:PrimaryAttributes = @{
     GPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         # LDAP security settings
-        'LDAPSigning', 'ChannelBinding', 'AnonymousBinding', 'ServerSigning', 'ClientSigning',
+        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'ServerSigning', 'ClientSigning',
         # Security findings
         'DangerousPermissions', 'DangerousSettings',
         # Linkage
@@ -6229,7 +6229,8 @@ $Script:PrimaryAttributes = @{
     # LDAP Configuration GPO (only LDAP-relevant attributes, no SMB)
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
-        'LDAPSigning', 'ChannelBinding', 'AnonymousBinding',
+        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
+        'dSHeuristics', 'anonymousLDAPAccess',
         'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
 
@@ -6376,7 +6377,7 @@ $Script:PrimaryAttributes = @{
 
     # Effective LDAP Security Configuration
     EffectiveLDAPConfig = @(
-        'LDAPSigning', 'ChannelBinding', 'AnonymousBinding'
+        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation'
     )
 
     # Outdated Computer object
@@ -6421,8 +6422,15 @@ $Script:PrimaryAttributes = @{
     )
 
     # GPO Local Group Membership (custom PSCustomObject from Get-GPOLocalGroupMembership)
+    #
+    # Mode, MembersRemoved and groupEmptied say what the policy does to the members that
+    # are already in the group - a Members list replaces it, a Memberof entry only adds,
+    # and a preferences item can clear it first. All three used to be absent, so a policy
+    # that removes Domain Admins from the local administrators of every machine in scope
+    # was reported as one that adds somebody.
     GPOLocalGroup = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'MembersAdded',
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'Mode',
+        'MembersAdded', 'MembersRemoved', 'groupEmptied',
         'LinkedOUs', 'GPOStatus'
     )
 
@@ -6814,7 +6822,7 @@ function Get-ObjectTypeForOrdering {
     }
 
     # Effective LDAP Security Configuration
-    if ($Object.LDAPSigning -and $Object.ChannelBinding -and $Object.AnonymousBinding -and -not $Object.gPCFileSysPath) {
+    if ($Object.LDAPSigning -and $Object.ChannelBinding -and $Object.anonymousSamEnumeration -and -not $Object.gPCFileSysPath) {
         return 'EffectiveLDAPConfig'
     }
 
@@ -11328,9 +11336,15 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
         Tools = @("ldapsearch", "windapsearch", "ldapdomaindump")
         MITRE = "T1087"
         Triggers = @(
-            @{ Attribute = 'anonymousLDAPAccess'; Severity = 'Finding' }
-            @{ Attribute = 'AnonymousBinding'; Pattern = '^Allowed$'; Severity = 'Finding' }
-            @{ Attribute = 'AnonymousBinding'; Pattern = '^Not Configured$'; Severity = 'Hint' }
+            # Pattern, not a bare attribute match. Without it this trigger claimed every
+            # value of anonymousLDAPAccess including "Restricted", which made the Secure
+            # counterpart below dead code - Get-TriggerMatch had no way to prefer it.
+            #
+            # The AnonymousBinding triggers that used to sit here are gone with the
+            # attribute: RestrictAnonymous and LSAAnonymousNameLookup are SMB null-session
+            # controls, not LDAP, and this definition's own remediation always said the
+            # LDAP answer lives in dsHeuristics. Get-LDAPConfiguration reads it now.
+            @{ Attribute = 'anonymousLDAPAccess'; Pattern = 'ENABLED'; Severity = 'Finding' }
         )
     }
 
@@ -12565,6 +12579,49 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
         )
     }
 
+    'LAPS_READ_BLOCKED_BY_CONFIDENTIAL' = @{
+        Title = "Read All Properties on a Computer OU, Blocked by the Confidential Flag"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A non-privileged principal may read all properties of the computer objects in this OU. That does not include the LAPS password today: the password attributes are marked confidential in the schema (searchFlags bit 7), and MS-ADTS requires READ_PROPERTY and CONTROL_ACCESS together for a confidential attribute - which is why Set-AdmPwdReadPasswordPermission writes two ACEs. The delegation becomes a password read the moment that flag is cleared, or if the principal is granted CONTROL_ACCESS anywhere on the path."
+        Impact = @(
+            "Every other attribute of the computer objects is readable, which is reconnaissance rather than credential access"
+            "Clearing the confidential flag on a LAPS password attribute turns this into a read of every local administrator password in the OU"
+            "A later ACE granting CONTROL_ACCESS to the same principal does the same thing"
+        )
+        Attack = @(
+            "1. Attacker holds, or takes over, the delegated principal"
+            "2. Reads the computer objects of the OU - every attribute except the confidential ones"
+            "3. Waits for, or brings about, the removal of the confidential flag, then reads the passwords"
+        )
+        Remediation = @(
+            "Leave the confidential flag in place - it is what makes this harmless, and it is set by the LAPS schema extension"
+            "Remove the all-properties delegation anyway if nothing needs it: it is wider than it looks and it is one schema change away from a password read"
+            "Verify the flag rather than assuming it: searchFlags on ms-Mcs-AdmPwd, msLAPS-Password and msLAPS-EncryptedPassword must have bit 7 set"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Read the confidential flag on the LAPS password attributes"
+                Command = @'
+$schema = (Get-ADRootDSE).schemaNamingContext
+Get-ADObject -SearchBase $schema `
+    -LDAPFilter '(|(lDAPDisplayName=ms-Mcs-AdmPwd)(lDAPDisplayName=msLAPS-Password)(lDAPDisplayName=msLAPS-EncryptedPassword))' `
+    -Properties lDAPDisplayName, searchFlags |
+    Select-Object lDAPDisplayName, searchFlags, @{n='Confidential'; e={ ($_.searchFlags -band 128) -ne 0 }}
+'@
+            }
+        )
+        References = @(
+            @{ Title = "Confidential attributes"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/mark-attribute-as-confidential" }
+            @{ Title = "Windows LAPS Security"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview" }
+        )
+        Tools = @("LAPSToolkit", "PowerView")
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'blocked by the confidential flag'; Severity = 'Hint' }
+        )
+    }
+
     # ============================================================================
     # SMB SIGNING FINDINGS
     # ============================================================================
@@ -13420,25 +13477,53 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
     }
 
     'TRUST_TREAT_AS_EXTERNAL' = @{
-        Title = "Trust Treated as External"
-        Risk = "Secure"
-        BaseScore = 0
-        Description = "This trust is configured with the TREAT_AS_EXTERNAL flag, which enforces SID Filtering even on within-forest trusts. This provides additional security by restricting SID History usage across the trust boundary."
+        Title = "Forest Trust Relaxed to External SID Filtering"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "This forest trust carries TRUST_ATTRIBUTE_TREAT_AS_EXTERNAL. MS-ADTS 6.1.6.7.9 describes what that does: a cross-forest trust is treated as an external trust for the purposes of SID filtering, and cross-forest trusts are filtered more stringently than external ones - so the flag RELAXES the filtering rather than enforcing it. SID history naming any domain of the trusted forest is honoured here instead of only that forest's own namespaces."
         Impact = @(
-            "SID Filtering enforced regardless of trust type"
-            "Prevents SID History injection across this trust"
-            "Provides external-trust-level security on forest trusts"
-            "Reduces risk of cross-domain privilege escalation"
+            "SID history from the trusted forest is accepted for domains it does not own"
+            "A Domain Admin SID of this domain, injected on the other side, is honoured on this one"
+            "Whoever controls any domain of the trusted forest can reach this domain"
+            "The flag is set deliberately, so it is a configuration decision rather than an oversight"
+        )
+        Attack = @(
+            "1. Attacker gains control of any domain in the trusted forest"
+            "2. Writes a SID of this domain into sIDHistory of an account there"
+            "3. Authenticates across the trust, and this domain honours the injected SID"
         )
         Remediation = @(
-            "No action required - this is a recommended security configuration"
-            "Verify that required cross-domain functionality is not broken"
+            "Remove the flag unless the cross-forest SID history it allows is genuinely needed - and find out what needs it before removing it, because somebody set it for a migration"
+            "Where a migration does need it, bound it in time: turn it off again once the SID history is no longer used"
+            "Keep quarantine and SID filtering in place on every external and realm trust"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the trust attributes, so the flag can be confirmed before changing anything"
+                Command = "Get-ADTrust -Filter * | Select-Object Name, Direction, ForestTransitive, SIDFilteringForestAware, SIDFilteringQuarantined, TrustAttributes"
+            }
+            @{
+                Description = "Stop honouring SID history across the trust"
+                Command = "netdom trust THIS.DOMAIN /domain:TRUSTED.FOREST /EnableSIDHistory:no"
+            }
         )
         References = @(
-            @{ Title = "Trust Attributes - Microsoft"; Url = "https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646571e5720" }
+            @{ Title = "Trust Attributes - MS-ADTS 6.1.6.7.9"; Url = "https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646571e5720" }
+            @{ Title = "Security Considerations for Trusts"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-considerations-for-trusts" }
         )
+        Tools = @("netdom", "Get-ADTrust", "mimikatz")
+        MITRE = "T1134.005"
         Triggers = @(
-            @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Severity = 'Secure' }
+            # Only outside one forest. Within a single forest the flag is meaningless -
+            # one forest is one security boundary - and a neutral line there is right.
+            #
+            # The definition used to read this flag as a hardening measure, Risk Secure
+            # and "No action required - this is a recommended security configuration",
+            # which is the opposite of what it does. The same module already knew: its
+            # own trustRisk line says "Weakened - TREAT_AS_EXTERNAL downgrades the forest
+            # trust to external filtering". Both appeared on the same trust object, the
+            # green one carrying the tooltip that closed the subject.
+            @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Custom = 'is_not_within_forest_trust'; Severity = 'Finding' }
         )
     }
 
@@ -17392,7 +17477,66 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "M1035"
         Triggers = @(
             @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^Restricted$'; Severity = 'Secure' }
-            @{ Attribute = 'AnonymousBinding'; Pattern = '^Restricted$'; Severity = 'Secure' }
+        )
+    }
+
+    'ANONYMOUS_SAM_ENUMERATION_ALLOWED' = @{
+        Title = "Anonymous Enumeration of SAM Accounts and Shares Allowed"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A GPO sets RestrictAnonymous to 0, which is 'Network access: Do not allow anonymous enumeration of SAM accounts and shares' turned off. An unauthenticated SMB session can then list local accounts and shares of the machines the policy reaches. This is a null-session control over SMB and says nothing about LDAP - the LDAP question is dsHeuristics, which this check reads separately."
+        Impact = @(
+            "An unauthenticated SMB client can list local accounts and shares"
+            "Useful for reconnaissance before an authenticated attack"
+            "0 is also the operating system default, so an explicit 0 is often a baseline stating the default rather than a decision"
+        )
+        Attack = @(
+            "1. Attacker opens a null session to a machine in scope"
+            "2. Enumerates local accounts and shares"
+            "3. Uses the names for password spraying or share hunting"
+        )
+        Remediation = @(
+            "Set 'Network access: Do not allow anonymous enumeration of SAM accounts and shares' to Enabled"
+            "Expect legacy clients and some NAS and print devices to depend on null sessions - check before enforcing"
+        )
+        References = @(
+            @{ Title = "Network access: Do not allow anonymous enumeration of SAM accounts and shares"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-access-do-not-allow-anonymous-enumeration-of-sam-accounts-and-shares" }
+        )
+        Tools = @("enum4linux", "smbclient")
+        MITRE = "T1087.001"
+        Triggers = @(
+            @{ Attribute = 'anonymousSamEnumeration'; Pattern = '^Allowed$'; Severity = 'Hint' }
+            @{ Attribute = 'anonymousSamEnumeration'; Pattern = '^Restricted$'; Severity = 'Secure' }
+        )
+    }
+
+    'ANONYMOUS_SID_NAME_TRANSLATION_ALLOWED' = @{
+        Title = "Anonymous SID/Name Translation Allowed"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A GPO sets LSAAnonymousNameLookup to 1, which is 'Network access: Allow anonymous SID/Name translation' enabled. An unauthenticated client can then turn a SID into a name and back - enough to find the built-in administrator of a domain whatever it was renamed to, by asking for RID 500. This is an LSA/SMB control and says nothing about anonymous LDAP."
+        Impact = @(
+            "The renamed built-in administrator can be found by its RID"
+            "Group and account names can be resolved without credentials"
+            "Supports targeted password spraying"
+        )
+        Attack = @(
+            "1. Attacker asks a domain controller to translate <domain SID>-500"
+            "2. Receives the current name of the built-in administrator account"
+            "3. Sprays passwords against that account"
+        )
+        Remediation = @(
+            "Set 'Network access: Allow anonymous SID/Name translation' to Disabled"
+            "The setting exists for pre-Windows 2000 compatibility; anything still needing it should be inventoried first"
+        )
+        References = @(
+            @{ Title = "Network access: Allow anonymous SID/Name translation"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-access-allow-anonymous-sidname-translation" }
+        )
+        Tools = @("impacket-lookupsid", "rpcclient")
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'anonymousSidNameTranslation'; Pattern = '^Allowed$'; Severity = 'Hint' }
+            @{ Attribute = 'anonymousSidNameTranslation'; Pattern = '^Restricted$'; Severity = 'Secure' }
         )
     }
 
@@ -20639,6 +20783,14 @@ function Test-CustomTrigger {
         'lt_12' {
             # Integer value < 12 (for password length)
             $strValue = [string]$Value
+
+            # "Disabled" is how the password policy renders a minimum length of 0, and it
+            # is the worst state the setting has. Without this line it was the only value
+            # that produced no finding at all: the row stood neutral in the report with no
+            # impact, no remediation and no score, while "7 characters" was a finding. The
+            # lt_8 predicate directly above has carried the same line for longer.
+            if ($strValue -match 'Disabled') { return $true }
+
             $intValue = 0
             if ([int]::TryParse($strValue, [ref]$intValue)) {
                 return ($intValue -lt 12)
@@ -74273,6 +74425,17 @@ function Parse-RegistryXml {
                 $valueString = $rawValue
             }
 
+            # The GPP semantics, which used to be dropped here. action is C(reate),
+            # R(eplace), U(pdate) or D(elete) and defaults to U when absent; disabled="1"
+            # on the item means Group Policy never applies it at all. Without these two a
+            # GPO that REMOVES EnableLUA - the cleanup an administrator performs after an
+            # audit - was reported as "User Account Control disabled", and a preference
+            # item switched off in the editor read as an active misconfiguration. The
+            # Registry.pol side of the same question is already handled: a value name
+            # starting with "**del." is skipped there.
+            $action = [string]$props.action
+            if ([string]::IsNullOrWhiteSpace($action)) { $action = 'U' }
+
             $records += [PSCustomObject]@{
                 Hive        = $hive
                 Key         = [string]$props.key
@@ -74280,6 +74443,8 @@ function Parse-RegistryXml {
                 Type        = $type
                 ValueInt    = $valueInt
                 ValueString = $valueString
+                Action      = $action.ToUpper()
+                Disabled    = ([string]$node.disabled -eq '1')
             }
         }
     } catch {
@@ -74626,6 +74791,14 @@ function Get-LAPSSchemaPresence {
         $legacyPresent = $false
         $nativePresent = $false
 
+        # Whether the password attributes carry the confidential flag, which decides what a
+        # blanket "read all properties" delegation is worth. MS-ADTS requires READ_PROPERTY
+        # *and* CONTROL_ACCESS for a confidential attribute - which is why
+        # Set-AdmPwdReadPasswordPermission writes two ACEs - so with the flag in place a
+        # bare all-properties read does not reach the password, and without it that read is
+        # a complete grant. $null means the question could not be answered.
+        $passwordConfidential = $null
+
         # Each variant is recognised by the expiration attribute rather than by the password
         # attribute: the password is ACL-gated and a reader without rights sees nothing,
         # while the expiration time is readable to any authenticated user. Asking about the
@@ -74643,6 +74816,27 @@ function Get-LAPSSchemaPresence {
                 if (@(Get-DomainObject -LDAPFilter $nativeFilter -SearchBase $schemaDN -Properties 'cn' -ResultLimit 1 @connectionParams).Count -gt 0) {
                     $nativePresent = $true
                     Write-Log "[Get-LAPSSchemaPresence] Windows LAPS schema attribute found"
+                }
+
+                # searchFlags bit 7 (128) is fCONFIDENTIAL. Both password attributes are
+                # asked about together: if either is readable by a bare all-properties ACE,
+                # that ACE reaches a password.
+                if ($legacyPresent -or $nativePresent) {
+                    $pwdFilter = "(&(objectClass=attributeSchema)(|(lDAPDisplayName=ms-Mcs-AdmPwd)(lDAPDisplayName=msLAPS-Password)(lDAPDisplayName=msLAPS-EncryptedPassword)))"
+                    $pwdAttrs = @(Get-DomainObject -LDAPFilter $pwdFilter -SearchBase $schemaDN -Properties 'lDAPDisplayName', 'searchFlags' @connectionParams)
+                    if (@($pwdAttrs).Count -gt 0) {
+                        $passwordConfidential = $true
+                        foreach ($pwdAttr in $pwdAttrs) {
+                            $flags = 0
+                            if ($null -ne $pwdAttr.searchFlags) {
+                                try { $flags = [int]$pwdAttr.searchFlags } catch { $flags = 0 }
+                            }
+                            if (($flags -band 128) -eq 0) {
+                                $passwordConfidential = $false
+                                Write-Log "[Get-LAPSSchemaPresence] $($pwdAttr.lDAPDisplayName) is NOT confidential (searchFlags=$flags)"
+                            }
+                        }
+                    }
                 }
             } catch {
                 Write-Log "[Get-LAPSSchemaPresence] Schema query error: $($_.Exception.Message)"
@@ -74667,8 +74861,9 @@ function Get-LAPSSchemaPresence {
         }
 
         $Script:LAPSSchemaInfo = @{
-            LegacyPresent = $legacyPresent
-            NativePresent = $nativePresent
+            LegacyPresent        = $legacyPresent
+            NativePresent        = $nativePresent
+            PasswordConfidential = $passwordConfidential
         }
         return $Script:LAPSSchemaInfo
     }
@@ -77139,6 +77334,20 @@ function Get-OUPermissions {
                         $lapsIsAllProperties = $IsAllProperties
                         $lapsPropertyFound = $false
 
+                        # Whether this ACE carries CONTROL_ACCESS, which the caller needs to
+                        # judge an all-properties read. The LAPS password attributes are
+                        # confidential in the schema, and MS-ADTS requires READ_PROPERTY
+                        # *and* CONTROL_ACCESS for such an attribute - which is why
+                        # Set-AdmPwdReadPasswordPermission writes two ACEs. A bare "read all
+                        # properties" delegation therefore does not reach the password,
+                        # while this check reported every one of them as "LAPS Password
+                        # Read" at finding severity: a helpdesk or monitoring delegation on
+                        # a computer OU came out as "can read every local administrator
+                        # password in this OU". GenericAll contains CONTROL_ACCESS, so it
+                        # defeats the flag on its own. Carried per ACE, the same way the
+                        # Credential Roaming block below does it.
+                        $lapsGrantsControlAccess = ($HasGenericAll -or $HasExtendedRight)
+
                         # Legacy LAPS (ms-Mcs-AdmPwd) - GUID: E5C0983D-B71E-4F1D-B798-9B0F5ECAEEA3
                         $legacyLAPSMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['ms-Mcs-AdmPwd'].Guid)
                         if ($legacyLAPSMatch) {
@@ -77150,6 +77359,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -77166,6 +77376,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -77182,6 +77393,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -77198,6 +77410,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -77214,6 +77427,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -77230,6 +77444,7 @@ function Get-OUPermissions {
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                             $lapsPropertyFound = $true
                         }
@@ -77241,13 +77456,26 @@ function Get-OUPermissions {
                         #    These groups should only be flagged if they have SPECIFIC LAPS property rights
                         if ($lapsIsAllProperties -and -not $lapsPropertyFound -and -not $skipAllPropertiesOnly) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
+
+                            # Name what the ACE carries instead of asserting that it
+                            # includes LAPS. Whether it does depends on the confidential
+                            # flag, and that is the caller's question - the text used to
+                            # answer it here with "includes LAPS".
+                            $lapsAllPropsRight = 'ReadProperty (All Properties)'
+                            if ($HasGenericAll) {
+                                $lapsAllPropsRight = 'GenericAll (All Properties)'
+                            } elseif ($lapsGrantsControlAccess) {
+                                $lapsAllPropsRight = 'ReadProperty + ControlAccess (All Properties)'
+                            }
+
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "LAPS"
-                                Right         = "ReadProperty (All Properties - includes LAPS)"
+                                Right         = $lapsAllPropsRight
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
+                                GrantsControlAccess = $lapsGrantsControlAccess
                             }
                         }
                     }
@@ -94777,11 +95005,36 @@ function Get-DomainPasswordPolicy {
                 try { [int]$domainPolicy.lockoutThreshold } catch { 0 }
             } else { 0 }
 
-            # lockoutDuration in minutes. 0 and the "never" sentinel both mean the account
-            # stays locked until someone unlocks it, and both end up as 0 here - the
-            # display below turns that into "Forever (manual unlock)".
-            $lockoutDurationSpan = ConvertFrom-ADInterval -Value $domainPolicy.lockoutDuration
+            # Three states, and they used to collapse into one. ConvertFrom-ADInterval
+            # answers [TimeSpan]::Zero for a configured 0 and $null for three different
+            # things - an unreadable value, an absent one, and the Int64.MinValue "never"
+            # sentinel - and the display turned every one of them into "Forever (manual
+            # unlock)", which the trigger reads as Secure. So a policy whose lockout
+            # duration nobody could read, and one where no lockout exists at all, were
+            # both reported as a hardening measure. In the second case the report carried
+            # "Account lockout disabled" in red and "lockout duration unlimited - a secure
+            # configuration" in green, one line apart.
+            #
+            # 0 and the sentinel do mean the same thing: the account stays locked until
+            # somebody unlocks it. What separates them from "not readable" is whether the
+            # attribute arrived at all, and what makes the statement a hardening measure
+            # is a lockout existing in the first place.
+            $rawLockoutDuration = $domainPolicy.lockoutDuration
+            $hasLockoutDuration = ($null -ne $rawLockoutDuration) -and
+                                  (-not [string]::IsNullOrWhiteSpace([string]$rawLockoutDuration))
+            $lockoutDurationSpan = ConvertFrom-ADInterval -Value $rawLockoutDuration
             $lockoutDuration = if ($lockoutDurationSpan) { $lockoutDurationSpan.TotalMinutes } else { 0 }
+
+            $lockoutDurationText = 'Unknown - the value could not be read'
+            if ($hasLockoutDuration) {
+                if ($lockoutDuration -gt 0) {
+                    $lockoutDurationText = "$lockoutDuration minutes"
+                } elseif ($lockoutThreshold -eq 0) {
+                    $lockoutDurationText = 'N/A - no lockout is configured'
+                } else {
+                    $lockoutDurationText = 'Forever (manual unlock)'
+                }
+            }
 
             # lockoutWindow in minutes; 0 is displayed as "N/A".
             $lockoutWindowSpan = ConvertFrom-ADInterval -Value $domainPolicy.lockOutObservationWindow
@@ -94810,7 +95063,7 @@ function Get-DomainPasswordPolicy {
                 passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
                 reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
                 lockoutThreshold = if ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
-                lockoutDuration = if ($lockoutDuration -eq 0) { "Forever (manual unlock)" } else { "$lockoutDuration minutes" }
+                lockoutDuration = $lockoutDurationText
                 lockoutObservationWindow = if ($lockoutWindow -gt 0) { "$lockoutWindow minutes" } else { "N/A" }
             }
 
@@ -95376,6 +95629,53 @@ function Get-LDAPConfiguration {
                 return
             }
 
+            # ===== Anonymous LDAP operations, read where they are actually configured =====
+            #
+            # dsHeuristics on CN=Directory Service, character 7 of the first group, is
+            # fLDAPBlockAnonOps: the value 2 lets an anonymous client do more than read
+            # rootDSE, anything else leaves it blocked. This question used to be answered
+            # from two GPO settings that govern SMB null sessions instead - see the note at
+            # the GPO loop below - so the report could carry a red "Anonymous LDAP Binding
+            # Allowed" for a domain where it was blocked, and a green one for a domain
+            # where it was open.
+            Show-SubHeader "Checking anonymous LDAP operations (dsHeuristics)..." -ObjectType "LDAPConfigGPO"
+
+            $configDN = $Script:LDAPContext.ConfigurationNamingContext
+            if ($configDN) {
+                $dirServiceDN = "CN=Directory Service,CN=Windows NT,CN=Services,$configDN"
+                try {
+                    $dirService = @(Get-DomainObject -Identity $dirServiceDN -Properties 'dSHeuristics' @connectionParams)[0]
+                    $dsHeuristics = if ($dirService) { [string]$dirService.dSHeuristics } else { '' }
+
+                    if (-not $dirService) {
+                        Show-Line "The Directory Service object could not be read - whether anonymous LDAP operations are allowed is unknown" -Class Note
+                    } elseif ([string]::IsNullOrWhiteSpace($dsHeuristics)) {
+                        # An unset attribute is the default, and the default blocks
+                        # anonymous operations beyond rootDSE.
+                        Show-Line "Anonymous LDAP operations are blocked - dsHeuristics is not set, which is the secure default" -Class Secure
+                    } else {
+                        $anonChar = if ($dsHeuristics.Length -ge 7) { $dsHeuristics.Substring(6, 1) } else { '0' }
+                        if ($anonChar -eq '2') {
+                            Show-Line "Anonymous LDAP operations are ENABLED - dsHeuristics character 7 is 2, so an unauthenticated client can enumerate the directory" -Class Finding -FindingId 'LDAP_ANONYMOUS_BINDING_ALLOWED'
+                        } else {
+                            Show-Line "Anonymous LDAP operations are blocked - dsHeuristics character 7 is '$anonChar', not 2" -Class Secure
+                        }
+
+                        $heuristicsObj = [PSCustomObject]@{
+                            dSHeuristics        = $dsHeuristics
+                            anonymousLDAPAccess = if ($anonChar -eq '2') { 'ENABLED - Security Risk!' } else { 'Restricted' }
+                        }
+                        $heuristicsObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
+                        Show-Object $heuristicsObj
+                    }
+                } catch {
+                    Write-Log "[Get-LDAPConfiguration] Could not read dsHeuristics: $_" -Level Warning
+                    Show-Line "The Directory Service object could not be read - whether anonymous LDAP operations are allowed is unknown" -Class Note
+                }
+            } else {
+                Show-Line "The configuration partition is unknown - whether anonymous LDAP operations are allowed could not be checked" -Class Note
+            }
+
             Show-SubHeader "Analyzing LDAP Signing/Channel Binding via GPO (SYSVOL)..." -ObjectType "LDAPConfigGPO"
 
             $domainFQDN = $Script:LDAPContext.Domain
@@ -95546,11 +95846,33 @@ function Get-LDAPConfiguration {
                                 }
                             } else { "Not Configured" }
 
-                            $anonymousBindingStatus = "Not Configured"
+                            # Two settings, two statements, and neither of them is about
+                            # LDAP. RestrictAnonymous is "Network access: Do not allow
+                            # anonymous enumeration of SAM accounts and shares" and
+                            # LSAAnonymousNameLookup is "Network access: Allow anonymous
+                            # SID/Name translation" - both null-session controls over SMB.
+                            # They used to be folded into one attribute called
+                            # AnonymousBinding, which reached a definition titled
+                            # "Anonymous LDAP Binding Allowed": a GPO setting
+                            # RestrictAnonymous=0, which is the OS default and appears in
+                            # baselines, produced a red finding about an attack path it
+                            # does not open, and the Default Domain Controllers Policy's
+                            # LSAAnonymousNameLookup=0 produced a green "Unauthenticated
+                            # LDAP enumeration is blocked" - in the same report as the
+                            # result of the real anonymous bind test from
+                            # Get-DomainInformation. Two checks, one question, opposite
+                            # answers, and the wrong one was the green one.
+                            #
+                            # What actually governs anonymous LDAP is dsHeuristics, read
+                            # below at domain level.
+                            $samEnumerationStatus = "Not Configured"
                             if ($null -ne $restrictAnonymous) {
-                                $anonymousBindingStatus = if ($restrictAnonymous -eq 0) { "Allowed" } else { "Restricted" }
-                            } elseif ($null -ne $lsaAnonymousNameLookup) {
-                                $anonymousBindingStatus = if ($lsaAnonymousNameLookup -eq 1) { "Allowed" } else { "Restricted" }
+                                $samEnumerationStatus = if ($restrictAnonymous -eq 0) { "Allowed" } else { "Restricted" }
+                            }
+
+                            $sidNameTranslationStatus = "Not Configured"
+                            if ($null -ne $lsaAnonymousNameLookup) {
+                                $sidNameTranslationStatus = if ($lsaAnonymousNameLookup -eq 1) { "Allowed" } else { "Restricted" }
                             }
 
                             # Get GPO linkage
@@ -95585,7 +95907,8 @@ function Get-LDAPConfiguration {
                             # Enrich the native GPO object with LDAP security attributes
                             $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue $signingLevel -Force
                             $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
-                            $gpo | Add-Member -NotePropertyName "AnonymousBinding" -NotePropertyValue $anonymousBindingStatus -Force
+                            $gpo | Add-Member -NotePropertyName "anonymousSamEnumeration" -NotePropertyValue $samEnumerationStatus -Force
+                            $gpo | Add-Member -NotePropertyName "anonymousSidNameTranslation" -NotePropertyValue $sidNameTranslationStatus -Force
                             $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue $coversDCs -Force
 
                             # Where the policy applies. The full link records, disabled ones
@@ -95647,7 +95970,8 @@ function Get-LDAPConfiguration {
 
                     $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue "Not Configured" -Force
                     $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
-                    $gpo | Add-Member -NotePropertyName "AnonymousBinding" -NotePropertyValue "Not Configured" -Force
+                    $gpo | Add-Member -NotePropertyName "anonymousSamEnumeration" -NotePropertyValue "Not Configured" -Force
+                    $gpo | Add-Member -NotePropertyName "anonymousSidNameTranslation" -NotePropertyValue "Not Configured" -Force
                     # Same rule as the GptTmpl.inf loop: a link at or above the DC's own OU
                     # reaches it, which is where a policy hardening LDAP normally sits.
                     $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue (
@@ -102242,6 +102566,33 @@ function Get-LAPSPermissions {
                             $sid = $finding.SID
                             $severity = $finding.Severity
 
+                            # A blanket "read all properties" ACE does not reach a LAPS
+                            # password while the attribute is confidential in the schema:
+                            # MS-ADTS requires READ_PROPERTY *and* CONTROL_ACCESS for such
+                            # an attribute, which is why Set-AdmPwdReadPasswordPermission
+                            # writes two ACEs. Every one of those delegations used to be
+                            # reported as "LAPS Password Read" at finding severity, so a
+                            # helpdesk or monitoring read on a computer OU came out as
+                            # "can read every local administrator password here" - and the
+                            # customer removed a permission that grants nothing while
+                            # believing LAPS was compromised.
+                            #
+                            # Three states, not two. The right is live when the ACE carries
+                            # CONTROL_ACCESS, live as well when the attribute is NOT
+                            # confidential (then a plain read is enough), and otherwise
+                            # blocked by the flag - which is worth a hint rather than a
+                            # finding, because it becomes live the moment the flag is
+                            # cleared.
+                            # The severity stays where it is, so the row keeps its place in
+                            # the report - it is the label and the card behind it that
+                            # change. Dropping the severity instead would take the row out
+                            # of the output altogether, which is the other way to be wrong
+                            # about it.
+                            $blankAllProperties = ($finding.Right -match 'All Properties') -and
+                                                  ($finding.GrantsControlAccess -ne $true)
+                            $blockedByConfidentialFlag = ($blankAllProperties -and
+                                                          ($Script:LAPSSchemaInfo.PasswordConfidential -eq $true))
+
                             # Which generation this right reads is decided here, where the
                             # Right string is still at hand, and carried on the reader. The
                             # output used to say "LAPS Password Read" for either, and in a
@@ -102256,6 +102607,7 @@ function Get-LAPSPermissions {
                                         Principal = $principal
                                         SID = $sid
                                         Severity = $severity
+                                        BlockedByConfidentialFlag = $blockedByConfidentialFlag
                                         Generation = 'Legacy'
                                     }
                                 }
@@ -102268,6 +102620,7 @@ function Get-LAPSPermissions {
                                         Principal = $principal
                                         SID = $sid
                                         Severity = $severity
+                                        BlockedByConfidentialFlag = $blockedByConfidentialFlag
                                         # A read on every property covers whichever
                                         # attribute the machine actually carries.
                                         Generation = if ($finding.Right -match 'All Properties') {
@@ -102345,6 +102698,14 @@ function Get-LAPSPermissions {
             function Get-LAPSRightLabel {
                 param($ReaderInfo)
 
+                # A principal whose only right is a blanket read of all properties does
+                # not reach the password while the attribute is confidential, so the
+                # label says that instead of "LAPS Password Read" - and a different
+                # finding definition hangs off this text, a hint rather than a finding.
+                if ($ReaderInfo.AllBlockedByConfidentialFlag -eq $true) {
+                    return 'Read all properties - blocked by the confidential flag on the LAPS password attribute, live as soon as that flag is cleared'
+                }
+
                 $generations = @($ReaderInfo.Generations)
                 if ($generations.Count -eq 0) { return 'LAPS Password Read' }
                 return ('LAPS Password Read (' + (($generations | Sort-Object) -join ', ') + ')')
@@ -102377,7 +102738,17 @@ function Get-LAPSPermissions {
                                 Generations = @()
                                 IsExchangeService = $isExchange
                                 IsPrivilegedAccount = $isPriv
+
+                                # Starts true and is cleared by the first contribution that
+                                # does reach a password. A principal holding a blanket read
+                                # on one OU and a delegated read of the password attribute
+                                # on another has the password, and the label has to say so.
+                                AllBlockedByConfidentialFlag = $true
                             }
+                        }
+
+                        if ($reader.BlockedByConfidentialFlag -ne $true) {
+                            $targetHash[$sid].AllBlockedByConfidentialFlag = $false
                         }
                         # Only add OU if not already in the list (deduplicate)
                         $ouEntry = "$($finding.OU) ($($finding.ComputerCount) computers)"
@@ -102426,9 +102797,19 @@ function Get-LAPSPermissions {
                         $isWellKnownSID = $sid -match '^S-1-5-\d+$'
                         $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
 
+                        # A read the confidential flag blocks is not a password read, so the
+                        # row is a hint. Severity for the dangerousRights family is decided
+                        # by this property - the per-definition Risk is display-only - so
+                        # without it the row would be red whatever the card behind it says.
+                        $readerSeverity = $null
+                        if ($readerInfo.AllBlockedByConfidentialFlag -eq $true) { $readerSeverity = 'Hint' }
+
                         if ($adObject) {
                             $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue (Get-LAPSRightLabel -ReaderInfo $readerInfo) -Force
                             $adObject | Add-Member -NotePropertyName 'affectedOUs' -NotePropertyValue $readerInfo.OUs -Force
+                            if ($readerSeverity) {
+                                $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $readerSeverity -Force
+                            }
                             $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
                             Show-Object $adObject
                         } else {
@@ -102438,6 +102819,9 @@ function Get-LAPSPermissions {
                                 objectSid = $sid
                                 dangerousRights = (Get-LAPSRightLabel -ReaderInfo $readerInfo)
                                 affectedOUs = $readerInfo.OUs
+                            }
+                            if ($readerSeverity) {
+                                $fallbackObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $readerSeverity -Force
                             }
                             $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
                             Show-Object $fallbackObject
@@ -104852,15 +105236,31 @@ function Parse-RestrictedGroups {
             foreach ($line in $lines) {
                 $line = $line.Trim()
 
-                if ($line -match '^\*?(.+?)__Members\s*=\s*(.+)$') {
+                if ($line -match '^\*?(.+?)__Members\s*=\s*(.*)$') {
                     # Variant 1: *LOCAL_GROUP_SID__Members = *SID1, *SID2
                     # The local group is on the LEFT, members are on the RIGHT
                     #
                     # The leading * is optional because real GptTmpl.inf files also key the
                     # entry by group NAME. Requiring the * dropped those lines without a
                     # word, which was a silent detection gap on localized domains.
+                    #
+                    # (.*) rather than (.+): "*S-1-5-32-544__Members =" with nothing after
+                    # it is the authoritative instruction to EMPTY the local
+                    # administrators, and it used to match neither branch and vanish. That
+                    # is an operational risk and a sabotage mechanism, and it was the one
+                    # line in the file that said so.
                     $groupSID = Resolve-RestrictedGroupSID -Identity $Matches[1]
-                    $memberSIDs = $Matches[2] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
+
+                    # Both sides through the resolver. Only the group was, so a
+                    # name-keyed entry like "Administrators__Members = CONTOSO\Domain
+                    # Users" left the member as a literal name: $Script:RiskySIDs never
+                    # matched it, '-513$' never matched it, $riskyMembers stayed empty and
+                    # Get-GroupAssignmentSeverity did not escalate. "Domain Users in
+                    # Remote Desktop Users on every machine" came out yellow, with no
+                    # coloured member and no finding card. The Memberof branch below
+                    # resolved both sides all along.
+                    $memberSIDs = $Matches[2] -split ',' |
+                        ForEach-Object { Resolve-RestrictedGroupSID -Identity $_ }
 
                     if ($Script:LocalGroupSIDs.ContainsKey($groupSID)) {
                         $groupName = $Script:LocalGroupSIDs[$groupSID]
@@ -104889,7 +105289,17 @@ function Parse-RestrictedGroups {
                         # Get severity from centralized configuration
                         $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
 
-                        $findings += [PSCustomObject]@{
+                        # A Members list REPLACES the group on every policy refresh, which
+                        # the report never said: the attribute was called MembersAdded and
+                        # the risk text read "added to local Administrators" for both
+                        # keywords. A list naming one group therefore removes the local
+                        # administrator account and Domain Admins from every machine in
+                        # scope, and an empty list removes everybody - operationally
+                        # relevant, and a persistence and sabotage mechanism too.
+                        $membersMode = 'Members (replaces the group on every refresh)'
+                        $emptiesGroup = (@($memberNames).Count -eq 0)
+
+                        $finding = [PSCustomObject]@{
                             GPOName = $GPOName
                             GPOGUID = $GPOGUID
                             GPOPath = $GPOPath
@@ -104897,12 +105307,22 @@ function Parse-RestrictedGroups {
                             Type = "Restricted Groups"
                             TargetGroup = $groupName
                             TargetGroupSID = $groupSID
+                            Mode = $membersMode
                             MembersAdded = $memberNames
                             MemberSIDs = $memberSIDs
                             RiskyMembers = $riskyMembers
                             Severity = $severityResult.Severity
                             Risk = $severityResult.Risk
                         }
+
+                        if ($emptiesGroup) {
+                            $finding | Add-Member -NotePropertyName 'groupEmptied' -NotePropertyValue (
+                                "This policy empties $groupName on every machine in scope - the member list is blank, so every existing member is removed at each refresh"
+                            ) -Force
+                            $finding.Risk = "The policy sets $groupName to an empty list, which removes every member on every machine in scope at the next refresh - including the local administrator account and any domain group that was there."
+                        }
+
+                        $findings += $finding
                     }
                 }
                 elseif ($line -match '^\*?(.+?)__Memberof\s*=\s*(.+)$') {
@@ -104945,6 +105365,9 @@ function Parse-RestrictedGroups {
                                 Type = "Restricted Groups"
                                 TargetGroup = $groupName
                                 TargetGroupSID = $groupSID
+                                # Memberof only adds, and that difference decides what the
+                                # policy does to the members already there.
+                                Mode = 'Memberof (adds to the group)'
                                 MembersAdded = @($memberName)
                                 MemberSIDs = @($memberSID)
                                 RiskyMembers = $riskyMembers
@@ -105009,14 +105432,55 @@ function Parse-GPPGroups {
             $members = @()
             $memberSIDs = @()
             $riskyMembers = @()
+            $removedMembers = @()
+
+            # The item-level semantics, which used to be dropped: action C/R/U/D on the
+            # item, and the two flags that clear the group before the members are applied.
+            # A Replace item with deleteAllUsers and deleteAllGroups empties the local
+            # administrators on every machine in scope and then adds its own list - the
+            # report showed only the addition, so the most dangerous half of the
+            # configuration ("Domain Admins is removed from the local administrators of
+            # every machine in scope") was not in it at all. That is both an operational
+            # risk and a classic persistence mechanism.
+            $itemAction = [string]$group.Properties.action
+            if ([string]::IsNullOrWhiteSpace($itemAction)) { $itemAction = 'U' }
+            $itemAction = $itemAction.ToUpper()
+
+            $itemDisabled = ([string]$group.disabled -eq '1')
+            $deleteAllUsers = ([string]$group.Properties.deleteAllUsers -eq '1')
+            $deleteAllGroups = ([string]$group.Properties.deleteAllGroups -eq '1')
+
+            # A disabled item is never applied, and a Delete item removes the group rather
+            # than configuring its membership.
+            if ($itemDisabled) { continue }
 
             if ($group.Properties.Members) {
                 foreach ($member in $group.Properties.Members.Member) {
+                    # REMOVE is the other half of the configuration and was skipped
+                    # silently. It is reported separately below.
+                    if ($member.action -eq 'REMOVE') {
+                        $removedName = [string]$member.name
+                        if ($member.sid -and $Script:RiskySIDs.ContainsKey([string]$member.sid)) {
+                            $removedName = $Script:RiskySIDs[[string]$member.sid]
+                        } elseif (-not $removedName -and $member.sid) {
+                            $removedName = ConvertFrom-SID -SID ([string]$member.sid)
+                        }
+                        if ($removedName) { $removedMembers += $removedName }
+                        continue
+                    }
+
                     # Only process ADD actions
                     if ($member.action -ne 'ADD') { continue }
 
                     $memberName = $member.name
                     $memberSID = $member.sid
+
+                    # A Member with a name but no SID used to skip the whole risk
+                    # classification, so "Domain Users" written without its SID was not
+                    # recognised as a risky principal.
+                    if (-not $memberSID -and $memberName) {
+                        $memberSID = ConvertTo-SID -Identity ([string]$memberName)
+                    }
 
                     # A risky principal is displayed under its canonical English name, not
                     # under the name this XML happens to carry. Groups.xml is written by
@@ -105053,14 +105517,18 @@ function Parse-GPPGroups {
                 }
             }
 
-            if (@($members).Count -eq 0) {
+            # An item that only removes members, or only clears the group, carries no
+            # MembersAdded and used to be dropped here - which is where the removal half
+            # of a Replace item disappeared.
+            $clearsGroup = ($deleteAllUsers -or $deleteAllGroups)
+            if (@($members).Count -eq 0 -and @($removedMembers).Count -eq 0 -and -not $clearsGroup) {
                 continue
             }
 
             # Get severity from centralized configuration
             $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
 
-            $findings += [PSCustomObject]@{
+            $finding = [PSCustomObject]@{
                 GPOName = $GPOName
                 GPOGUID = $GPOGUID
                 GPOPath = $GPOPath
@@ -105068,12 +105536,28 @@ function Parse-GPPGroups {
                 Type = "Group Policy Preferences"
                 TargetGroup = $canonicalGroupName
                 TargetGroupSID = $groupSID
+                Mode = "$itemAction (Create/Replace/Update/Delete)"
                 MembersAdded = $members
                 MemberSIDs = $memberSIDs
                 RiskyMembers = $riskyMembers
                 Severity = $severityResult.Severity
                 Risk = $severityResult.Risk
             }
+
+            if (@($removedMembers).Count -gt 0) {
+                $finding | Add-Member -NotePropertyName 'MembersRemoved' -NotePropertyValue $removedMembers -Force
+            }
+
+            if ($clearsGroup) {
+                $cleared = @()
+                if ($deleteAllUsers)  { $cleared += 'all user members' }
+                if ($deleteAllGroups) { $cleared += 'all group members' }
+                $finding | Add-Member -NotePropertyName 'groupEmptied' -NotePropertyValue (
+                    "This item removes $($cleared -join ' and ') of $canonicalGroupName on every machine in scope before applying its own list"
+                ) -Force
+            }
+
+            $findings += $finding
         }
 
         return $findings
@@ -106359,6 +106843,17 @@ function Test-DangerousRegistryRecord {
         $Record
     )
 
+    # The GPP semantics, which this check's own design principle requires: "only
+    # POSITIVELY SET values are flagged". action="D" deletes the value and disabled="1"
+    # means Group Policy never applies the item, and both used to arrive here as ordinary
+    # configured values - so a GPO that REMOVES EnableLUA, the cleanup an administrator
+    # performs after an audit, was reported as "User Account Control disabled" with
+    # severity High, and a preference item switched off in the editor read as an active
+    # misconfiguration. Registry.pol says the same thing with a "**del." value name, and
+    # Parse-PRegRecords has always skipped those.
+    if ($Record.PSObject.Properties['Action'] -and [string]$Record.Action -eq 'D') { return $null }
+    if ($Record.PSObject.Properties['Disabled'] -and $Record.Disabled) { return $null }
+
     $recKey = ($Record.Key -replace '^\\+', '').TrimEnd('\').ToLower()
     $recValueName = [string]$Record.ValueName
     $recHive = [string]$Record.Hive
@@ -106928,6 +107423,14 @@ function Add-PointAndPrintRecords {
         # disabledValue, so treating them as configured values would report a deliberately
         # disabled policy as a configured one.
         if ($valueName.StartsWith('**')) { continue }
+
+        # The same statement on the Preferences side, which used to have no equivalent
+        # here: action="D" deletes the value and disabled="1" means the item is never
+        # applied at all. A GPP item that REMOVES
+        # RestrictDriverInstallationToAdministrators was read as one that sets it to 0,
+        # which is the opposite verdict.
+        if ($record.PSObject.Properties['Action'] -and [string]$record.Action -eq 'D') { continue }
+        if ($record.PSObject.Properties['Disabled'] -and $record.Disabled) { continue }
 
         $key = ([string]$record.Key -replace '^\\+', '').TrimEnd('\')
 
@@ -127179,7 +127682,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261010-2043"
+$Script:adPEASVersion = "2.7.0+20261010-2144"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
