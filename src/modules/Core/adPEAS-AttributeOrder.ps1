@@ -145,7 +145,7 @@ $Script:PrimaryAttributes = @{
         # LDAP security settings
         'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'ServerSigning', 'ClientSigning',
         # Security findings
-        'DangerousPermissions', 'GPOOwner', 'DangerousSettings',
+        'DangerousPermissions', 'SysvolPermissions', 'GPOOwner', 'DangerousSettings',
         # Linkage
         'LinkedOUs', 'GPOStatus', 'AffectedComputers'
     )

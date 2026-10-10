@@ -2231,6 +2231,62 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
     }
 
+    'GPO_SYSVOL_WRITABLE' = @{
+        Title = "Write Access to a GPO's Policy Folder in SYSVOL"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "A principal that is not expected to administer Group Policy can write to this policy's folder under \\<domain>\SYSVOL\<domain>\Policies\{GUID}\. That folder holds the policy's actual content - Registry.pol, GptTmpl.inf, the Scripts folder, ScheduledTasks.xml and GPT.ini - so write access there rewrites what every machine in the policy's scope applies, without any permission on the directory object and without touching Active Directory at all."
+        Impact = @(
+            "Replacing Registry.pol or GptTmpl.inf changes the settings every machine in scope applies at its next refresh"
+            "Writing into Scripts\\Startup or Scripts\\Shutdown runs code as SYSTEM on every machine in scope"
+            "A Scheduled Tasks or Group Policy Preferences file placed here is applied with the privileges the policy configures"
+            "Raising the version counter in GPT.ini makes clients treat the policy as changed and reapply it immediately, rather than waiting for the next cycle"
+            "None of this is visible in the GPO's delegation tab, which shows the directory object's permissions only"
+        )
+        Attack = @(
+            "1. Identify a policy whose SYSVOL folder is writable - the GPO's scope decides how far the payload reaches"
+            "2. Write a malicious startup script, scheduled task or Registry.pol into the folder"
+            "3. Increment the version number in GPT.ini and in the GPO's versionNumber attribute, or simply wait for the next refresh cycle"
+            "4. The payload runs on every machine the policy is linked to, at the privilege the policy's own mechanism grants - SYSTEM for a machine startup script"
+        )
+        Remediation = @(
+            "Remove the write permission from the policy folder: in Explorer, the Security tab of \\<domain>\SYSVOL\<domain>\Policies\{GUID}, or icacls on the same path"
+            "Check whether the entry is inherited - the finding says so - because an inherited one has to be removed at the parent folder or it comes straight back"
+            "Compare against the default: SYSTEM, Administrators, Domain Admins, Enterprise Admins and CREATOR OWNER hold Full Control, Authenticated Users and ENTERPRISE DOMAIN CONTROLLERS hold Read and Execute, and nothing else needs to be there"
+            "Re-run dcgpofix only as a last resort - it resets the default domain policies and discards their settings"
+            "Audit the folder together with the directory object from then on: a GPO is two halves, and a clean delegation tab says nothing about the second one"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the NTFS permissions of one policy folder"
+                Command = 'icacls "\\<domain>\SYSVOL\<domain>\Policies\{<GUID>}"'
+            }
+            @{
+                Description = "List every policy folder whose permissions differ from the Policies folder they are in"
+                Command = 'Get-ChildItem "\\<domain>\SYSVOL\<domain>\Policies" -Directory | ForEach-Object { [PSCustomObject]@{ GPO = $_.Name; Trustees = ((Get-Acl $_.FullName).Access | Where-Object { $_.FileSystemRights -match "Write|Modify|FullControl" } | ForEach-Object { $_.IdentityReference.Value }) -join ", " } }'
+            }
+            @{
+                Description = "Remove one trustee from a policy folder"
+                Command = 'icacls "\\<domain>\SYSVOL\<domain>\Policies\{<GUID>}" /remove:g "DOMAIN\<account>"'
+            }
+        )
+        References = @(
+            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+            @{ Title = "Group Policy Basics - Part 3: Files"; Url = "https://learn.microsoft.com/en-us/archive/blogs/mempson/group-policy-basics-part-3-how-clients-process-gpos" }
+            @{ Title = "MS-GPOL: Group Policy Protocol"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/" }
+        )
+        Tools = @("SharpGPOAbuse", "icacls", "PowerView")
+        MITRE = "T1484.001"
+        Triggers = @(
+            # Get-GPOPermissions renders one "Identity (Rights)" line per NTFS rule, the
+            # same shape the DACL half uses, with the inheritance note outside the
+            # parentheses. A bare trigger: every row on this attribute is a trustee that
+            # passed both expectation gates and holds a right that can rewrite the policy
+            # content, so there is nothing further to pattern-match on.
+            @{ Attribute = 'SysvolPermissions'; Severity = 'Finding' }
+        )
+    }
+
     'GPO_NON_DEFAULT_OWNER' = @{
         Title = "Group Policy Object With a Non-Default Owner"
         Risk = "Finding"

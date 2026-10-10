@@ -1382,10 +1382,11 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "GPOs with write permissions for non-admins, inherited delegations included, with Deny ACEs netted out"
             "The owner of each GPO, which holds WRITE_DAC implicitly and needs no ACE at all"
             "Which attribute an attribute-scoped write is restricted to, since only a few of them carry the policy content"
+            "The NTFS permissions of each policy folder in SYSVOL, where the policy content actually lives - write access there needs no permission on the directory object"
             "Which computers/users are affected by each GPO"
             "Potential impact of GPO modification"
         )
-        SecureMessage = "No dangerous permissions and no non-default owner on the GPO directory objects. Note that the permissions of the SYSVOL folder holding the policy content are a separate question and not part of this check."
+        SecureMessage = "No dangerous permissions and no non-default owner on the GPO directory objects, and no unexpected write access to the policy folders in SYSVOL that could be read."
         PrimaryFindingId = 'GPO_DANGEROUS_PERMISSIONS'
     }
 

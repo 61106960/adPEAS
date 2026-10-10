@@ -411,6 +411,83 @@ function Get-CachedSYSVOLContent {
 
 <#
 .SYNOPSIS
+    Returns the NTFS access rules of a directory, keyed by SID.
+
+.DESCRIPTION
+    A GPO has two halves: the directory object and the folder under
+    \\<domain>\SYSVOL\<domain>\Policies\{GUID}\ that holds its actual content. Write access
+    to that folder is enough to rewrite Registry.pol, GptTmpl.inf, the Scripts folder,
+    ScheduledTasks.xml and GPT.ini - which is code execution on every machine the policy
+    reaches, with no permission on the directory object at all. Nothing in the project read
+    it, so Get-GPOPermissions assessed one half and its Secure line spoke for both.
+
+    The rules come back identified by SID rather than by account name. A name is localized,
+    an orphaned trustee has none at all, and every identity classification in adPEAS is SID
+    based.
+
+    Three return states, which the caller has to tell apart:
+      an array  - the rules, possibly empty
+      $null     - the folder could not be read, which is not the same as "no rules"
+
+.PARAMETER Path
+    The directory to read. Must be a path Invoke-SMBAccess has made reachable.
+
+.OUTPUTS
+    [System.Security.AccessControl.FileSystemAccessRule[]] or $null.
+
+.NOTES
+    Internal helper. Lives beside the SYSVOL cache because it reaches the file system: a
+    suite that stubs this file gets a stub for this too, which is what a unit test wants.
+
+    Two runtimes, two ways to the same descriptor. Windows PowerShell 5.1 - the target -
+    has DirectoryInfo.GetAccessControl() as an instance method. PowerShell 7 moved it into
+    System.IO.FileSystemAclExtensions, so the instance call raises a MethodNotFound there
+    and the extension type is the fallback. Get-Acl would need
+    Microsoft.PowerShell.Security, which is not loadable on every host this runs on.
+#>
+function Get-DirectoryAccessRules {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    try {
+        $directoryInfo = New-Object System.IO.DirectoryInfo($Path)
+        if (-not $directoryInfo.Exists) {
+            Write-Log "[Get-DirectoryAccessRules] '$Path' does not exist or is not reachable"
+            return $null
+        }
+
+        $security = $null
+        try {
+            $security = $directoryInfo.GetAccessControl()
+        } catch {
+            $security = [System.IO.FileSystemAclExtensions]::GetAccessControl($directoryInfo)
+        }
+
+        if (-not $security) {
+            Write-Log "[Get-DirectoryAccessRules] No security descriptor returned for '$Path'"
+            return $null
+        }
+
+        # Inherited rules included: SYSVOL inheritance is where a delegation set once at
+        # the Policies folder reaches every policy below it, and that is the mistake worth
+        # finding rather than one to filter out.
+        #
+        # The unary comma is load-bearing. An empty array unrolls to nothing on the way out
+        # of a function, so a folder whose DACL holds no rule at all would arrive at the
+        # caller as $null - which is this function's way of saying "could not be read", and
+        # the opposite statement.
+        return ,@($security.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+    } catch {
+        Write-Log "[Get-DirectoryAccessRules] Could not read the NTFS permissions of '$Path': $_"
+        return $null
+    }
+}
+
+<#
+.SYNOPSIS
     Resets the SMB share access cache.
 .DESCRIPTION
     Clears the cache of failed SMB share access attempts,

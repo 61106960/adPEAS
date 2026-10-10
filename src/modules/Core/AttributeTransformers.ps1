@@ -818,14 +818,14 @@ function Convert-DangerousPermToRenderValues {
 
     # Format 1: Array of objects with Trustee/Rights properties
     if ($Value -is [array] -and $Value.Count -gt 0 -and $Value[0].PSObject.Properties['Trustee']) {
-        $summaryMatch = Get-TriggerMatch -Name 'DangerousPermissions' -Value $Value -IsComputer $Context.IsComputer -SourceObject $sourceObject
+        $summaryMatch = Get-TriggerMatch -Name $Name -Value $Value -IsComputer $Context.IsComputer -SourceObject $sourceObject
         $renderValues = @()
         # First line: summary count
         $renderValues += New-RenderValue -Display "$($Value.Count) non-privileged ACE(s)" `
             -Severity $summaryMatch.Severity -FindingId $summaryMatch.FindingId -RawValue $Value
         # Per-ACE details
         foreach ($perm in $Value) {
-            $permMatch = Get-TriggerMatch -Name 'DangerousPermissions' -Value $perm.Rights -IsComputer $Context.IsComputer -SourceObject $sourceObject
+            $permMatch = Get-TriggerMatch -Name $Name -Value $perm.Rights -IsComputer $Context.IsComputer -SourceObject $sourceObject
             $renderValues += New-RenderValue -Display "$($perm.Trustee): $($perm.Rights)" `
                 -Severity $permMatch.Severity -FindingId $permMatch.FindingId -RawValue $perm
         }
@@ -844,7 +844,7 @@ function Convert-DangerousPermToRenderValues {
         $permValues = if ($Value -match "`n") { $Value -split "`n" } else { @($Value) }
         $renderValues = @()
         foreach ($pv in $permValues) {
-            $pvMatch = Get-TriggerMatch -Name 'DangerousPermissions' -Value $pv -IsComputer $Context.IsComputer -SourceObject $sourceObject
+            $pvMatch = Get-TriggerMatch -Name $Name -Value $pv -IsComputer $Context.IsComputer -SourceObject $sourceObject
             $renderValues += New-RenderValue -Display ([string]$pv) -Severity $pvMatch.Severity -FindingId $pvMatch.FindingId -RawValue $pv
         }
         $maxSev = Get-MaxSeverityFromValues -Values $renderValues
@@ -1279,6 +1279,11 @@ $Script:AttributeTransformers['DangerousACEs']               = ${function:Conver
 $Script:AttributeTransformers['MembersAdded']               = ${function:Convert-MembersAddedToRenderValues}
 $Script:AttributeTransformers['TemplateACL']                 = ${function:Convert-TemplateACLToRenderValues}
 $Script:AttributeTransformers['DangerousPermissions']        = ${function:Convert-DangerousPermToRenderValues}
+# The NTFS half of a GPO, rendered the same way: one row per rule, each resolved against
+# its own attribute name - which is why the transformer above reads $Name instead of
+# naming one attribute. The rows here hold file system rights, so they must not reach the
+# AD-rights triggers of DangerousPermissions.
+$Script:AttributeTransformers['SysvolPermissions']           = ${function:Convert-DangerousPermToRenderValues}
 $Script:AttributeTransformers['EnrollmentPrincipals']        = ${function:Convert-EnrollPrincipalsToRenderValues}
 $Script:AttributeTransformers['ExtendedKeyUsage']            = ${function:Convert-EKUToRenderValues}
 $Script:AttributeTransformers['CertificateNameFlagDisplay']  = ${function:Convert-CertNameFlagToRenderValues}

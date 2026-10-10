@@ -90,6 +90,23 @@ function Get-GPOPermissions {
         # attribute-scoped bits - WriteProperty, ReadProperty, Self, ExtendedRight - and
         # nothing else, so an ACE that also grants one of these is not limited by the
         # attribute it names.
+        # The NTFS rights that let their holder rewrite the content of a policy folder.
+        # A mask rather than a list of names, because FileSystemRights is a flag field and
+        # the combinations that occur in practice - FullControl, Modify, Write - do not
+        # decompose into a fixed set of names.
+        #
+        # WriteAttributes and WriteExtendedAttributes are deliberately not in it: they
+        # change timestamps and metadata, not file content, and including them would put a
+        # finding on the default ACL of every policy folder in the domain.
+        $Script:SysvolWriteRights = [int](
+            [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor
+            [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+            [System.Security.AccessControl.FileSystemRights]::Delete -bor
+            [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+            [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+            [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+        )
+
         $Script:UnscopedGPORights = @(
             'GenericAll',
             'GenericWrite',
@@ -568,34 +585,187 @@ function Get-GPOPermissions {
             }
             if ($totalGPOs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking GPO permissions" -Completed }
 
+            # ===== Step 5: The other half of each policy - the SYSVOL folder =====
+            #
+            # A GPO is a directory object and a folder, and everything above reads the
+            # object. The folder under \\<domain>\SYSVOL\<domain>\Policies\{GUID}\ is where
+            # the policy's content actually lives: Registry.pol, GptTmpl.inf, the Scripts
+            # folder, ScheduledTasks.xml, GPT.ini. Write access there rewrites what every
+            # machine in scope applies, and needs no permission on the directory object at
+            # all - which is the standard outcome of somebody once setting "Everyone:
+            # Modify" on a policy folder, or rebuilding SYSVOL inheritance by hand.
+            #
+            # Script-scoped, because the scriptblock Invoke-SMBAccess invokes runs in a
+            # child scope: a plain assignment inside it would be discarded. Cleared in
+            # Clear-SessionState with everything else.
+            $Script:_gpoSysvolRows = @{}
+            $Script:_gpoSysvolUnread = @()
+            $Script:_gpoSysvolScanned = $false
+
+            Invoke-SMBAccess -Description "Reading the NTFS permissions of the GPO folders in SYSVOL" -ScriptBlock {
+                $policiesPath = "\\$($Script:LDAPContext.Server)\SYSVOL\$($Script:LDAPContext.Domain)\Policies"
+
+                if (-not (Test-Path $policiesPath)) {
+                    Write-Log "[Get-GPOPermissions] SYSVOL is not reachable at $policiesPath - the folder permissions were not examined"
+                    return
+                }
+
+                $Script:_gpoSysvolScanned = $true
+
+                $sysvolTotal = @($allGPOs).Count
+                $sysvolIndex = 0
+                foreach ($sysvolGPO in $allGPOs) {
+                    $sysvolIndex++
+                    if ($sysvolTotal -gt $Script:ProgressThreshold) {
+                        Show-Progress -Activity "Checking GPO folder permissions in SYSVOL" -Current $sysvolIndex -Total $sysvolTotal -ObjectName $sysvolGPO.displayName
+                    }
+
+                    $sysvolGUID = [string]$sysvolGPO.Name
+                    if (-not $sysvolGUID) { continue }
+
+                    # Built from the GUID rather than taken from gPCFileSysPath. That
+                    # attribute holds the domain DFS namespace path, which is a different
+                    # SMB target than the DC hostname Invoke-SMBAccess authenticated
+                    # against - a client that reaches one may not reach the other, and the
+                    # mismatch fails silently. A gPCFileSysPath pointing somewhere else
+                    # entirely is its own finding on the directory object above.
+                    $gpoFolder = Join-Path $policiesPath $sysvolGUID
+                    $rules = Get-DirectoryAccessRules -Path $gpoFolder
+
+                    # $null means the folder could not be read, which is not the same as
+                    # "nobody has write access to it".
+                    if ($null -eq $rules) {
+                        $Script:_gpoSysvolUnread += ([string]$sysvolGPO.DisplayName)
+                        continue
+                    }
+
+                    # Deny first and per trustee, the same way the DACL half does it: a
+                    # Deny rule wins the access check, so an Allow it covers grants
+                    # nothing. Masks rather than names, because FileSystemRights is a flag
+                    # field and the combinations do not all have names.
+                    $deniedMask = @{}
+                    foreach ($rule in $rules) {
+                        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Deny) { continue }
+                        $denySID = [string]$rule.IdentityReference.Value
+                        if (-not $denySID) { continue }
+                        if (-not $deniedMask.ContainsKey($denySID)) { $deniedMask[$denySID] = 0 }
+                        $deniedMask[$denySID] = $deniedMask[$denySID] -bor [int]$rule.FileSystemRights
+                    }
+
+                    $folderRows = @()
+                    foreach ($rule in $rules) {
+                        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+
+                        $ruleSID = [string]$rule.IdentityReference.Value
+                        if (-not $ruleSID) { continue }
+
+                        $effective = [int]$rule.FileSystemRights
+                        if ($deniedMask.ContainsKey($ruleSID)) {
+                            $effective = $effective -band (-bnot $deniedMask[$ruleSID])
+                        }
+
+                        $writeBits = $effective -band $Script:SysvolWriteRights
+                        if ($writeBits -eq 0) { continue }
+
+                        # The same two gates the directory half uses, so one identity is
+                        # not expected on the object and a finding on its folder.
+                        $sysvolExpected = Test-IsExpectedACLIdentity -SID $ruleSID -Context 'GPO'
+                        if ($sysvolExpected.Skip) { continue }
+
+                        $sysvolScope = Test-IsExpectedInScope -Identity $ruleSID -Scope 'GPO' -ReturnDetails
+                        if ($sysvolScope.Severity -eq 'Expected') { continue }
+                        if (-not $IncludePrivileged -and $sysvolScope.Severity -eq 'Attention') {
+                            Write-Log "[Get-GPOPermissions] Attention: $ruleSID can write the SYSVOL folder of $($sysvolGPO.DisplayName) - $($sysvolScope.Reason) - skipped (use -IncludePrivileged to include)"
+                            continue
+                        }
+
+                        $ruleIdentity = ConvertFrom-SID -SID $ruleSID
+                        if (-not $ruleIdentity) { $ruleIdentity = $ruleSID }
+
+                        # The effective rights, not the write bits of them: an admin reads
+                        # "FullControl" in Explorer, not the six flags it decomposes into.
+                        # Where a Deny took something away the name changes with it, which
+                        # is the point. Synchronize sits on every rule and says nothing.
+                        $rightsText = ([System.Security.AccessControl.FileSystemRights]$effective).ToString() -replace '(,\s*)?Synchronize', ''
+                        if (-not $rightsText) { $rightsText = "$writeBits" }
+
+                        $row = "$ruleIdentity ($rightsText)"
+                        if ($rule.IsInherited) {
+                            $row = "$row [inherited - remove it at the parent folder]"
+                        }
+                        $folderRows += $row
+                        Write-Log "[Get-GPOPermissions] FINDING: $ruleIdentity can write $gpoFolder ($rightsText)"
+                    }
+
+                    if (@($folderRows).Count -gt 0) {
+                        $Script:_gpoSysvolRows[$sysvolGUID] = @($folderRows)
+                    }
+                }
+
+                if ($sysvolTotal -gt $Script:ProgressThreshold) {
+                    Show-Progress -Activity "Checking GPO folder permissions in SYSVOL" -Completed
+                }
+            }
+
             $vulnerableGPOs = @($vulnerableGPOsHash.Values)
 
-            # A GPO whose DACL holds nothing dangerous but whose owner is not a default
-            # one. It fell through the "no dangerous ACEs" branch and was never reported,
-            # although an owner needs no ACE at all - it can write itself one.
-            foreach ($entry in $ownerOnlyGPOs.Values) {
-                $ownerGPO = $entry.GPO.PSObject.Copy()
-                $ownerGPO | Add-Member -NotePropertyName "GPOOwner" -NotePropertyValue $entry.Owner.Owner -Force
-                $ownerGPO | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOPermission' -Force
+            # The SYSVOL rows join the card the directory half already built, so one
+            # policy is one card with both halves on it rather than two cards that look
+            # like two findings.
+            foreach ($sysvolGUID in @($Script:_gpoSysvolRows.Keys)) {
+                if (-not $vulnerableGPOsHash.ContainsKey($sysvolGUID)) { continue }
+                $vulnerableGPOsHash[$sysvolGUID] | Add-Member -NotePropertyName 'SysvolPermissions' `
+                    -NotePropertyValue ((@($Script:_gpoSysvolRows[$sysvolGUID])) -join "`n") -Force
+            }
 
-                $ownerLinks = $null
+            # A policy whose DACL holds nothing dangerous but which needs a card anyway:
+            # its owner is not a default one, or its SYSVOL folder is writable, or both.
+            # Both used to fall through the "no dangerous ACEs" branch - the owner because
+            # it was never read, the folder because nothing in the project looked at it.
+            $gpoByGUID = @{}
+            foreach ($indexedGPO in $allGPOs) {
+                if ($indexedGPO.Name) { $gpoByGUID[[string]$indexedGPO.Name] = $indexedGPO }
+            }
+
+            $extraCardGUIDs = @{}
+            foreach ($extraGUID in @($ownerOnlyGPOs.Keys)) { $extraCardGUIDs[$extraGUID] = $true }
+            foreach ($extraGUID in @($Script:_gpoSysvolRows.Keys)) {
+                if (-not $vulnerableGPOsHash.ContainsKey($extraGUID)) { $extraCardGUIDs[$extraGUID] = $true }
+            }
+
+            foreach ($extraGUID in @($extraCardGUIDs.Keys)) {
+                $extraSource = $null
+                if ($ownerOnlyGPOs.ContainsKey($extraGUID)) { $extraSource = $ownerOnlyGPOs[$extraGUID].GPO }
+                elseif ($gpoByGUID.ContainsKey($extraGUID)) { $extraSource = $gpoByGUID[$extraGUID] }
+                if (-not $extraSource) { continue }
+
+                $extraCard = $extraSource.PSObject.Copy()
+
+                if ($ownerOnlyGPOs.ContainsKey($extraGUID)) {
+                    $extraCard | Add-Member -NotePropertyName "GPOOwner" -NotePropertyValue $ownerOnlyGPOs[$extraGUID].Owner.Owner -Force
+                }
+                if ($Script:_gpoSysvolRows.ContainsKey($extraGUID)) {
+                    $extraCard | Add-Member -NotePropertyName "SysvolPermissions" `
+                        -NotePropertyValue ((@($Script:_gpoSysvolRows[$extraGUID])) -join "`n") -Force
+                }
+
+                $extraLinks = $null
                 if ($null -ne $gpoLinkage) {
-                    $ownerLinks = @()
-                    if ($gpoLinkage.ContainsKey($entry.GPO.Name)) { $ownerLinks = @($gpoLinkage[$entry.GPO.Name]) }
+                    $extraLinks = @()
+                    if ($gpoLinkage.ContainsKey($extraGUID)) { $extraLinks = @($gpoLinkage[$extraGUID]) }
                 }
-                $ownerLinksDisplay = $ownerLinks
-                if ($null -eq $ownerLinks) {
-                    $ownerLinksDisplay = 'Unknown - linkage could not be resolved'
+                $extraLinksDisplay = $extraLinks
+                if ($null -eq $extraLinks) {
+                    $extraLinksDisplay = 'Unknown - linkage could not be resolved'
                 }
-                $ownerGPO | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $ownerLinksDisplay -Force
+                $extraCard | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $extraLinksDisplay -Force
 
-                $ownerStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$entry.GPO.Name] `
-                    -Scope 'Any' -Link $ownerLinks
-                if ($ownerStatus) {
-                    $ownerGPO | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $ownerStatus -Force
+                $extraStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$extraGUID] -Scope 'Any' -Link $extraLinks
+                if ($extraStatus) {
+                    $extraCard | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $extraStatus -Force
                 }
 
-                $vulnerableGPOs += $ownerGPO
+                $vulnerableGPOs += $extraCard
             }
 
             # Same coverage contract as the OU permission checks: the note names how many
@@ -603,11 +773,33 @@ function Get-GPOPermissions {
             # Secure to Note when it does not cover everything.
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadGPOs -TotalOUs @($allGPOs).Count
 
+            # The SYSVOL half has its own coverage question: a folder that could not be
+            # read says nothing about who may write it.
+            $sysvolCoverageIncomplete = $false
+            if (-not $Script:_gpoSysvolScanned) {
+                Show-Line "SYSVOL was not reachable - the NTFS permissions of the policy folders were not examined, and write access there rewrites the policy content without any permission on the directory object" -Class Finding
+                $sysvolCoverageIncomplete = $true
+            }
+            elseif (@($Script:_gpoSysvolUnread).Count -gt 0) {
+                Show-Line "The NTFS permissions of $(@($Script:_gpoSysvolUnread).Count) of $(@($allGPOs).Count) policy folder(s) in SYSVOL could not be read - who may rewrite their content is unknown" -Class Finding
+                foreach ($unreadFolder in (@($Script:_gpoSysvolUnread) | Select-Object -First 10)) {
+                    Show-Line "  not read: $unreadFolder" -Class Hint
+                }
+                if (@($Script:_gpoSysvolUnread).Count -gt 10) {
+                    Show-Line "  ... and $(@($Script:_gpoSysvolUnread).Count - 10) more" -Class Hint
+                }
+                $sysvolCoverageIncomplete = $true
+            }
+
             if (@($vulnerableGPOs).Count -gt 0) {
                 $ownerOnlyCount = @($ownerOnlyGPOs.Keys).Count
-                $summary = "Found $(@($vulnerableGPOs).Count) GPO(s) with dangerous permissions or a non-default owner"
-                if ($ownerOnlyCount -gt 0) {
-                    $summary = "$summary ($ownerOnlyCount of them by ownership alone)"
+                $sysvolCount = @($Script:_gpoSysvolRows.Keys).Count
+                $summary = "Found $(@($vulnerableGPOs).Count) GPO(s) with dangerous permissions, a writable SYSVOL folder or a non-default owner"
+                $summaryDetail = @()
+                if ($ownerOnlyCount -gt 0) { $summaryDetail += "$ownerOnlyCount of them by ownership alone" }
+                if ($sysvolCount -gt 0) { $summaryDetail += "$sysvolCount with a writable policy folder" }
+                if (@($summaryDetail).Count -gt 0) {
+                    $summary = "$summary (" + ($summaryDetail -join ', ') + ")"
                 }
                 Show-Line $summary -Class Finding
 
@@ -617,20 +809,14 @@ function Get-GPOPermissions {
                 }
             }
             else {
-                # Two qualifications this line used to leave out.
-                #
-                # First, it counted every GPO as analyzed, including the ones whose
-                # descriptor could not be read - those are unknown, not clean.
-                #
-                # Second, it said "No dangerous GPO permissions", which a reader takes to
-                # cover the whole policy. A GPO has two halves: the directory object and
-                # the SYSVOL folder its content lives in, and write access to that folder
-                # is the other half of the same attack. This check reads the directory
-                # object only, so that is what the sentence may claim.
+                # This line used to count every GPO as analyzed, unreadable descriptors
+                # included, and to say "No dangerous GPO permissions" - which a reader
+                # takes to cover the whole policy while only the directory object had been
+                # looked at. Both halves are read now, and the sentence names them.
                 $readCount = @($allGPOs).Count - @($unreadGPOs).Count
                 $conclusionClass = 'Secure'
-                if ($coverageIncomplete) { $conclusionClass = 'Note' }
-                Show-Line "No dangerous permissions and no non-default owner on $readCount of $(@($allGPOs).Count) GPO directory object(s) - the permissions of the SYSVOL folder holding the policy content are not part of this check" -Class $conclusionClass
+                if ($coverageIncomplete -or $sysvolCoverageIncomplete) { $conclusionClass = 'Note' }
+                Show-Line "No dangerous permissions and no non-default owner on $readCount of $(@($allGPOs).Count) GPO directory object(s), and no unexpected write access to their policy folders in SYSVOL" -Class $conclusionClass
             }
 
         } catch {

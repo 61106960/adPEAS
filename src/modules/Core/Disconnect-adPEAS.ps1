@@ -327,6 +327,10 @@ function Clear-SessionState {
     $Script:DangerousGPOAccessRights = $null
     $Script:CriticalGPOAttributes = $null
     $Script:UnscopedGPORights = $null
+    $Script:SysvolWriteRights = $null
+    $Script:_gpoSysvolRows = $null
+    $Script:_gpoSysvolUnread = $null
+    $Script:_gpoSysvolScanned = $null
 
     $Script:LAPSSchemaInfo = $null
     $Script:PrivilegedAccountFilterCache = $null
