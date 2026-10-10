@@ -169,12 +169,34 @@ function Get-DangerousOUPermissions {
                     continue
                 }
 
-                # Filter findings by severity
-                # Account Operators (S-1-5-32-548) excluded - they have default OU permissions by design
-                $allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Info') } else { @('Critical', 'High') }
+                # Medium belongs in this list. Get-OUPermissions rates the gPLink
+                # delegation and CreateChild on user and group as Medium, so dropping that
+                # severity meant this module's own documentation ("GPO Linking - Link
+                # malicious GPOs") and the OU_PERM_GPLINK definition described a finding
+                # the report could not contain. "Manage Group Policy links" is the second
+                # most common delegation the ADUC wizard writes, and it leads to code
+                # execution on every machine below the OU; creating an account in a
+                # privileged OU is the other half of that loss.
+                #
+                # LAPS and CredentialRoaming are Medium too, and they are taken out
+                # instead: both have a module of their own - Get-LAPSPermissions and
+                # Get-CredentialRoaming - which reports them with the context this one
+                # cannot give.
+                $allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Medium', 'Info') } else { @('Critical', 'High', 'Medium') }
+                $ownModuleCheckTypes = @('LAPS', 'CredentialRoaming')
+
+                # Account Operators hold CreateChild and DeleteChild on user, group and
+                # computer by default, inherited from the domain root. That one
+                # combination is filtered, and nothing else: the old filter dropped every
+                # finding carrying this SID, whatever the right and whether the ACE was
+                # explicit or inherited, and it did so under -IncludePrivileged as well.
+                # An explicit GenericAll, WriteDacl or Reset Password for Account
+                # Operators on a Tier-0 OU is no default, and it is an escalation path in
+                # every pentest.
                 $dangerousFindings = $ouPermissions.Findings | Where-Object {
                     $_.Severity -in $allowedSeverities -and
-                    $_.SID -ne 'S-1-5-32-548'
+                    $_.CheckType -notin $ownModuleCheckTypes -and
+                    -not ($_.SID -eq 'S-1-5-32-548' -and $_.CheckType -eq 'ObjectCreation' -and $_.InheritedFrom -like 'Domain Root*')
                 }
 
                 if ($dangerousFindings) {

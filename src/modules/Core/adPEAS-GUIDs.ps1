@@ -697,6 +697,45 @@ function Test-ADRightsMask {
 
 <#
 .SYNOPSIS
+    Renders an ACE's rights as their compact name, generic access bits included.
+
+.DESCRIPTION
+    What .ToString() on ActiveDirectoryRights does, except that it answers correctly for
+    the SDDL generic bits. Those have no named value in the enum - GENERIC_ALL is
+    0x10000000 while ActiveDirectoryRights.GenericAll is the resolved 0x000F01FF - so an
+    ACE written as "(A;;GA;;;<sid>)" rendered as the bare number 268435456 and matched
+    none of the right names a check looks for. That is the form impacket, Certipy and
+    Set-Acl -Sddl write, so the check was blind to exactly the ACE an attacker leaves
+    behind, and in two places the result was a positive verdict.
+
+    Expanding the mask first turns the same ACE into "GenericAll". ConvertTo-ADRightsList
+    answers the same question as an array of every right the mask contains, which is what
+    an ACL listing wants; this is the single compact label a check matches on and prints.
+
+.PARAMETER Rights
+    The raw ActiveDirectoryRights value (or its underlying int/long) from an ACE.
+
+.OUTPUTS
+    [string] of right names without whitespace, e.g. "GenericAll" or
+    "ReadProperty,WriteProperty". Empty for $null.
+#>
+function ConvertTo-ExpandedADRightsName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Rights
+    )
+
+    if ($null -eq $Rights) { return '' }
+
+    $mask = ConvertTo-ExpandedADRightsValue -Rights $Rights
+    return (([System.DirectoryServices.ActiveDirectoryRights]$mask).ToString() -replace '\s', '')
+}
+
+<#
+.SYNOPSIS
     Turns an ACE's ActiveDirectoryRights bitmask into the list of right names.
 
 .DESCRIPTION

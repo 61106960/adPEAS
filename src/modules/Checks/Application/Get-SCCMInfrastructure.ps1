@@ -356,7 +356,15 @@ function Get-SCCMInfrastructure {
                     foreach ($ace in $sccmACEs) {
                         if ($ace.AccessControlType -ne 'Allow') { continue }
 
-                        $aceRights = "$($ace.ActiveDirectoryRights)"
+                        # ConvertTo-ExpandedADRightsName, not the string form: the SDDL
+                        # generic bits have no named value in the enum, so an ACE written
+                        # as "(A;;GA;;;<sid>)" came out as the bare number 268435456 and
+                        # matched nothing below. The container is where a client finds its
+                        # management point, so a full-control ACE on it was reported as
+                        # "Only the site servers and the expected administrators can write
+                        # to the System Management container".
+                        $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
+
                         # Write access is the whole question: CreateChild publishes a
                         # management point, the others get there in one more step.
                         if ($aceRights -notmatch 'GenericAll|GenericWrite|WriteDacl|WriteOwner|WriteProperty|CreateChild') { continue }

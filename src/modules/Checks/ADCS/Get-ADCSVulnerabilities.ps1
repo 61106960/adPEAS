@@ -372,7 +372,11 @@ function Get-ADCSVulnerabilities {
                             if ($ace.AccessControlType -ne 'Allow') { continue }
 
                             $aceSID = $ace.IdentityReference.Value
-                            $aceRights = $ace.ActiveDirectoryRights.ToString()
+
+                            # See the ESC4 block: ToString() cannot render the SDDL
+                            # generic bits, so a GENERIC_ALL ACE on the CA's AD object
+                            # matched nothing here.
+                            $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
 
                             $hasDangerousRight = $false
                             $matchedRight = ""
@@ -821,6 +825,16 @@ function Get-ADCSVulnerabilities {
                                     AccessControlType = $ace.AccessControlType
                                     IdentityReference = $ace.IdentityReference
                                     ActiveDirectoryRights = $ace.ActiveDirectoryRights
+
+                                    # The name the filter below matches on. Carried on the
+                                    # object rather than computed in the filter so that the
+                                    # finding prints the same text the decision was made
+                                    # on. ToString() cannot render the SDDL generic bits,
+                                    # so a GENERIC_ALL ACE on a PKI container was dropped
+                                    # by the filter and the check went on to report "PKI
+                                    # container permissions are properly restricted" -
+                                    # ESC5, green, on a domain compromise path.
+                                    ExpandedRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
                                 }
                             }
                         }
@@ -828,7 +842,7 @@ function Get-ADCSVulnerabilities {
                         if ($containerACL) {
                             # Filter for dangerous permissions
                             $dangerousACEs = $containerACL | Where-Object {
-                                $_.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite' -and
+                                $_.ExpandedRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite' -and
                                 $_.AccessControlType -eq 'Allow'
                             }
 
@@ -836,7 +850,7 @@ function Get-ADCSVulnerabilities {
                                 # Analyze each ACE
                                 foreach ($ace in $dangerousACEs) {
                                     $aceSID = $ace.IdentityReference.Value
-                                    $aceRights = $ace.ActiveDirectoryRights.ToString()
+                                    $aceRights = $ace.ExpandedRights
 
                                     # Determine severity
                                     $severity = 'Finding'
@@ -1186,7 +1200,14 @@ function Get-ADCSVulnerabilities {
                             if ($ace.AccessControlType -ne 'Allow') { continue }
 
                             $aceSID = $ace.IdentityReference.Value
-                            $aceRights = $ace.ActiveDirectoryRights.ToString()
+
+                            # ConvertTo-ExpandedADRightsName, not ToString(): the SDDL
+                            # generic bits have no named value in the enum, so an ACE
+                            # written as "(A;;GA;;;<sid>)" rendered as the bare number
+                            # 268435456 and matched none of the names below. That is the
+                            # form impacket and Certipy write, so a template an attacker
+                            # had already taken over looked untouched here.
+                            $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
 
                             # Check if ACE has dangerous rights
                             $hasDangerousRight = $false

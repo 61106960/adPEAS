@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-10 19:42:19
-    Version: 2.7.0+20261010-1942
+    Build: 2026-10-10 20:19:06
+    Version: 2.7.0+20261010-2019
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -1046,6 +1046,45 @@ function Test-ADRightsMask {
     $mask = ConvertTo-ExpandedADRightsValue -Rights $Rights
     $hasMask = ([long]$Has) -band 0xFFFFFFFFL
     return ($mask -band $hasMask) -eq $hasMask
+}
+
+<#
+.SYNOPSIS
+    Renders an ACE's rights as their compact name, generic access bits included.
+
+.DESCRIPTION
+    What .ToString() on ActiveDirectoryRights does, except that it answers correctly for
+    the SDDL generic bits. Those have no named value in the enum - GENERIC_ALL is
+    0x10000000 while ActiveDirectoryRights.GenericAll is the resolved 0x000F01FF - so an
+    ACE written as "(A;;GA;;;<sid>)" rendered as the bare number 268435456 and matched
+    none of the right names a check looks for. That is the form impacket, Certipy and
+    Set-Acl -Sddl write, so the check was blind to exactly the ACE an attacker leaves
+    behind, and in two places the result was a positive verdict.
+
+    Expanding the mask first turns the same ACE into "GenericAll". ConvertTo-ADRightsList
+    answers the same question as an array of every right the mask contains, which is what
+    an ACL listing wants; this is the single compact label a check matches on and prints.
+
+.PARAMETER Rights
+    The raw ActiveDirectoryRights value (or its underlying int/long) from an ACE.
+
+.OUTPUTS
+    [string] of right names without whitespace, e.g. "GenericAll" or
+    "ReadProperty,WriteProperty". Empty for $null.
+#>
+function ConvertTo-ExpandedADRightsName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Rights
+    )
+
+    if ($null -eq $Rights) { return '' }
+
+    $mask = ConvertTo-ExpandedADRightsValue -Rights $Rights
+    return (([System.DirectoryServices.ActiveDirectoryRights]$mask).ToString() -replace '\s', '')
 }
 
 <#
@@ -49678,7 +49717,16 @@ function ConvertFrom-SecurityDescriptor {
             $PrincipalName = ConvertFrom-SID -SID $PrincipalSID
 
             $ACEType = $ACE.AccessControlType
-            $Rights = $ACE.ActiveDirectoryRights -replace '\s', ''
+
+            # Through ConvertTo-ExpandedADRightsName rather than ToString(): the SDDL
+            # generic bits have no named value in the enum, so an ACE written as
+            # "(A;;GA;;;<sid>)" came out as the bare number 268435456. Every consumer of
+            # this field matches on right names - Get-ADCSTemplate for the enrollment and
+            # the write principals of a template, Get-WeakCertificateMapping for write
+            # access to altSecurityIdentities - so all of them were blind to the one ACE
+            # form an attacker's tooling writes. The compact name is unchanged for every
+            # other mask, which is what this field's consumers and its contract expect.
+            $Rights = ConvertTo-ExpandedADRightsName -Rights $ACE.ActiveDirectoryRights
             $RightsDisplay = $Rights
 
             if ($Rights -match 'ExtendedRight') {
@@ -99435,6 +99483,24 @@ function Get-DangerousACLs {
             $dcsyncAccounts = @{}
             $dangerousRightsAccounts = @()
 
+            # Object-specific ACEs on the domain object that hand the domain over. Named
+            # by their resolved ObjectTypeName, which Get-ObjectACL supplies for both an
+            # attribute and an extended right.
+            # DS-Replication-Synchronize and DS-Replication-Manage-Topology are
+            # deliberately absent: they move replication around without reading anything
+            # out of it.
+            $criticalDomainObjectTypes = @(
+                'GP-Link',
+                'Reanimate-Tombstones',
+                'DS-Install-Replica',
+                'Migrate-SID-History',
+                'Change-Rid-Master',
+                'Change-PDC',
+                'Change-Infrastructure-Master',
+                'Change-Domain-Master',
+                'Change-Schema-Master'
+            )
+
             foreach ($ace in $aclResult.ACEs) {
                 $trusteeSID = $ace.TrusteeSID
                 $trusteeName = $ace.Trustee
@@ -99465,14 +99531,47 @@ function Get-DangerousACLs {
 
                 # ===== Check for Dangerous Generic Rights =====
                 if (-not $hasDCSync) {
-                    # Skip if ObjectType is set - this means the right only applies to a specific attribute/extended right
-                    if ($objectType -and $objectType -ne '' -and $objectType -ne '00000000-0000-0000-0000-000000000000') {
-                        Write-Log "[Get-DangerousACLs] Skipping object-specific ACE: Trustee=$trusteeName, ObjectType=$objectType"
+                    $isObjectSpecific = ($objectType -and $objectType -ne '' -and $objectType -ne '00000000-0000-0000-0000-000000000000')
+
+                    if ($isObjectSpecific) {
+                        # An object-specific ACE used to be skipped outright, which is
+                        # right for most of them and wrong for these: GP-Link is the
+                        # attribute that links a GPO to the domain object, so write access
+                        # to it is code execution on every machine in the domain, domain
+                        # controllers included, and the rest are the documented
+                        # domain-takeover extended rights on the domain object itself.
+                        if ($criticalDomainObjectTypes -contains $ace.ObjectTypeName) {
+                            # An extended-right ACE already carries the resolved name in
+                            # RightsRaw, so naming it twice would read as a repetition.
+                            $objectRight = $ace.Rights
+                            if ($ace.RightsRaw -notcontains $ace.ObjectTypeName) {
+                                $objectRight = "$($ace.Rights) ($($ace.ObjectTypeName))"
+                            }
+
+                            $dangerousRightsAccounts += [PSCustomObject]@{
+                                SID = $trusteeSID
+                                Name = $trusteeName
+                                Rights = @($objectRight)
+                            }
+                        } else {
+                            Write-Log "[Get-DangerousACLs] Skipping object-specific ACE: Trustee=$trusteeName, ObjectType=$objectType ($($ace.ObjectTypeName))"
+                        }
                         continue
                     }
 
+                    # WriteProperty is in the list and was not. GenericWrite is the mask
+                    # 0x00020028, so a plain WriteProperty ACE does not satisfy the subset
+                    # test for it and carried only 'WriteProperty' - and with no ObjectType
+                    # that ACE grants write access to every property of the domain object:
+                    # gPLink links a GPO to the whole domain, ms-DS-MachineAccountQuota and
+                    # minPwdLength are two more.
+                    #
+                    # Self deliberately stays out. The only validated write the domain
+                    # object defines is Validated-MS-DS-Behavior-Version, so the holder can
+                    # raise the domain functional level and nothing else - disruptive, but
+                    # not a takeover, and a red line for it would be the louder error.
                     $dangerousRights = @($ace.RightsRaw | Where-Object {
-                        $_ -in @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner')
+                        $_ -in @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'WriteProperty')
                     })
 
                     if (@($dangerousRights).Count -gt 0) {
@@ -99481,6 +99580,31 @@ function Get-DangerousACLs {
                             Name = $trusteeName
                             Rights = $dangerousRights
                         }
+                    }
+
+                    # 'ExtendedRight' with no ObjectType is CONTROL_ACCESS over every
+                    # extended right of the domain object, DS-Replication-Get-Changes and
+                    # -All included: that is full DCSync rather than something next to it.
+                    # The branch above matches the resolved right names and never sees this
+                    # form - Get-ObjectACL resolves no name for an empty GUID - so the
+                    # single most dangerous ACE in a domain produced no finding at all.
+                    # A GenericAll ACE carries ExtendedRight inside its mask and is
+                    # already reported above as full control, which is the stronger
+                    # statement; adding it here as well would read as two separate
+                    # backdoors for one ACE.
+                    if (($ace.RightsRaw -contains 'ExtendedRight') -and ($ace.RightsRaw -notcontains 'GenericAll')) {
+                        if (-not $dcsyncAccounts.ContainsKey($trusteeSID)) {
+                            $dcsyncAccounts[$trusteeSID] = @{
+                                SID = $trusteeSID
+                                Name = $trusteeName
+                                Rights = @()
+                            }
+                        }
+                        $dcsyncAccounts[$trusteeSID].Rights += @(
+                            'All-Extended-Rights',
+                            'DS-Replication-Get-Changes',
+                            'DS-Replication-Get-Changes-All'
+                        )
                     }
                 }
             }
@@ -99503,10 +99627,38 @@ function Get-DangerousACLs {
 
                     $canDCSync = $hasGetChanges -and $hasGetChangesAll
 
+                    # A trustee holding only one of the two replication rights used to
+                    # disappear completely: the ACE marked itself as DCSync-handled, which
+                    # took it out of the generic branch, and the output below needs the
+                    # pair. Reporting it as DCSync would be wrong - that is what the pair
+                    # is for - so it goes into the generic block, where the trustee gate
+                    # and the severity are the same as for every other right on this
+                    # object, and the text says what the holder can actually do.
+                    if (-not $canDCSync -and ($hasGetChanges -or $hasGetChangesAll -or $hasGetChangesFiltered)) {
+                        $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - inert without DS-Replication-Get-Changes, one ACE short of DCSync"
+                        if ($hasGetChanges) {
+                            # Not inert at all: this one replicates the whole directory
+                            # except the secrets, every security descriptor included.
+                            $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - replicates the directory except secrets, one right short of DCSync"
+                        }
+
+                        $dangerousRightsAccounts += [PSCustomObject]@{
+                            SID = $sid
+                            Name = $accountName
+                            Rights = @($partialText)
+                        }
+                    }
+
                     if ($canDCSync) {
                         $rightsDisplay = "DS-Replication-Get-Changes, DS-Replication-Get-Changes-All"
                         if ($hasGetChangesFiltered) {
                             $rightsDisplay += ", DS-Replication-Get-Changes-In-Filtered-Set"
+                        }
+                        if ($rights -contains 'All-Extended-Rights') {
+                            # Say where it came from. The ACE grants every extended right
+                            # at once rather than the two named ones, and the remediation
+                            # is a different one: there is a single ACE to remove.
+                            $rightsDisplay = "All Extended Rights (grants DS-Replication-Get-Changes and DS-Replication-Get-Changes-All)"
                         }
 
                         # Determine severity
@@ -99857,12 +100009,34 @@ function Get-DangerousOUPermissions {
                     continue
                 }
 
-                # Filter findings by severity
-                # Account Operators (S-1-5-32-548) excluded - they have default OU permissions by design
-                $allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Info') } else { @('Critical', 'High') }
+                # Medium belongs in this list. Get-OUPermissions rates the gPLink
+                # delegation and CreateChild on user and group as Medium, so dropping that
+                # severity meant this module's own documentation ("GPO Linking - Link
+                # malicious GPOs") and the OU_PERM_GPLINK definition described a finding
+                # the report could not contain. "Manage Group Policy links" is the second
+                # most common delegation the ADUC wizard writes, and it leads to code
+                # execution on every machine below the OU; creating an account in a
+                # privileged OU is the other half of that loss.
+                #
+                # LAPS and CredentialRoaming are Medium too, and they are taken out
+                # instead: both have a module of their own - Get-LAPSPermissions and
+                # Get-CredentialRoaming - which reports them with the context this one
+                # cannot give.
+                $allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Medium', 'Info') } else { @('Critical', 'High', 'Medium') }
+                $ownModuleCheckTypes = @('LAPS', 'CredentialRoaming')
+
+                # Account Operators hold CreateChild and DeleteChild on user, group and
+                # computer by default, inherited from the domain root. That one
+                # combination is filtered, and nothing else: the old filter dropped every
+                # finding carrying this SID, whatever the right and whether the ACE was
+                # explicit or inherited, and it did so under -IncludePrivileged as well.
+                # An explicit GenericAll, WriteDacl or Reset Password for Account
+                # Operators on a Tier-0 OU is no default, and it is an escalation path in
+                # every pentest.
                 $dangerousFindings = $ouPermissions.Findings | Where-Object {
                     $_.Severity -in $allowedSeverities -and
-                    $_.SID -ne 'S-1-5-32-548'
+                    $_.CheckType -notin $ownModuleCheckTypes -and
+                    -not ($_.SID -eq 'S-1-5-32-548' -and $_.CheckType -eq 'ObjectCreation' -and $_.InheritedFrom -like 'Domain Root*')
                 }
 
                 if ($dangerousFindings) {
@@ -106674,10 +106848,64 @@ function Get-PointAndPrintAssessment {
         }
     }
 
+    # The secondary printer values, evaluated before the two verdicts that end in Info.
+    # A GPO that set nothing but one of these fell through to the "Not applicable" return
+    # below, and the caller suppresses Info by default and counts it among the
+    # configurations that are "hardened or control no driver installation" - so three
+    # findings that have definitions of their own could not reach a report at all, and
+    # were summarised as the opposite of what they are: CopyFilesPolicy = 2 is
+    # CVE-2021-36958, RegisterSpoolerRemoteRpcEndPoint = 1 is the PrinterBug surface, and
+    # AddPrinterDrivers = 0 means literally "any user may install printer drivers".
+    $secondary = @()
+    $secondarySeverity = 'Info'
+    $severityRank = @{ 'Info' = 0; 'Low' = 1; 'Medium' = 2; 'High' = 3; 'Critical' = 4 }
+
+    $copyFiles = Get-PointAndPrintValue -Values $Values -Name 'CopyFilesPolicy'
+    if ($null -ne $copyFiles -and [int64]$copyFiles -eq 2) {
+        $secondary += 'the spooler copies arbitrary queue-specific files from the print server (CVE-2021-36958)'
+        if ($severityRank['High'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'High' }
+    }
+
+    # Inverted encoding: the policy writes 1 when Enabled and 2 when Disabled, so 1 is the
+    # state that exposes the endpoint.
+    $spoolerRpc = Get-PointAndPrintValue -Values $Values -Name 'RegisterSpoolerRemoteRpcEndPoint'
+    if ($null -ne $spoolerRpc -and [int64]$spoolerRpc -eq 1) {
+        $secondary += 'the spooler accepts remote client connections (PrinterBug/SpoolSample coercion surface)'
+        if ($severityRank['Medium'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Medium' }
+    }
+
+    $addDrivers = Get-PointAndPrintValue -Values $Values -Name 'AddPrinterDrivers'
+    if ($null -ne $addDrivers -and [int64]$addDrivers -eq 0) {
+        $secondary += 'the "Prevent users from installing printer drivers" Security Option is disabled'
+        if ($severityRank['Medium'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Medium' }
+    }
+
+    $webPnP = Get-PointAndPrintValue -Values $Values -Name 'DisableWebPnPDownload'
+    if ($null -ne $webPnP -and [int64]$webPnP -eq 0) {
+        $secondary += 'printer drivers may be downloaded over HTTP'
+        if ($severityRank['Low'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Low' }
+    }
+
+    $httpPrint = Get-PointAndPrintValue -Values $Values -Name 'DisableHTTPPrinting'
+    if ($null -ne $httpPrint -and [int64]$httpPrint -eq 0) {
+        $secondary += 'printing over HTTP is permitted'
+        if ($severityRank['Low'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Low' }
+    }
+
     # Checked before the prompt settings on purpose: an explicit 1 blocks the install, so any
     # prompt suppression in the same GPO is dead configuration rather than a latent risk. The
     # Latent verdict below is reserved for the case where the block rests on the default.
     if ($null -ne $restrictToAdmins -and [int64]$restrictToAdmins -eq 1) {
+        if (@($secondary).Count -gt 0) {
+            # Both statements hold, and the second one decides the severity: hardening the
+            # driver installation does not close the queue-specific file vector or the
+            # spooler's RPC endpoint.
+            return @{
+                Exploitability = "Hardened for driver installation, but $($secondary -join '; ')"
+                Severity       = $secondarySeverity
+            }
+        }
+
         return @{
             Exploitability = 'Hardened - driver installation is limited to Administrators, which overrides every Point and Print prompt setting'
             Severity       = 'Info'
@@ -106688,6 +106916,13 @@ function Get-PointAndPrintAssessment {
         return @{
             Exploitability = 'Latent - elevation prompts are suppressed, currently blocked by the RestrictDriverInstallationToAdministrators default'
             Severity       = 'Medium'
+        }
+    }
+
+    if (@($secondary).Count -gt 0) {
+        return @{
+            Exploitability = "No driver installation control, but $($secondary -join '; ')"
+            Severity       = $secondarySeverity
         }
     }
 
@@ -107776,7 +108011,11 @@ function Get-ADCSVulnerabilities {
                             if ($ace.AccessControlType -ne 'Allow') { continue }
 
                             $aceSID = $ace.IdentityReference.Value
-                            $aceRights = $ace.ActiveDirectoryRights.ToString()
+
+                            # See the ESC4 block: ToString() cannot render the SDDL
+                            # generic bits, so a GENERIC_ALL ACE on the CA's AD object
+                            # matched nothing here.
+                            $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
 
                             $hasDangerousRight = $false
                             $matchedRight = ""
@@ -108225,6 +108464,16 @@ function Get-ADCSVulnerabilities {
                                     AccessControlType = $ace.AccessControlType
                                     IdentityReference = $ace.IdentityReference
                                     ActiveDirectoryRights = $ace.ActiveDirectoryRights
+
+                                    # The name the filter below matches on. Carried on the
+                                    # object rather than computed in the filter so that the
+                                    # finding prints the same text the decision was made
+                                    # on. ToString() cannot render the SDDL generic bits,
+                                    # so a GENERIC_ALL ACE on a PKI container was dropped
+                                    # by the filter and the check went on to report "PKI
+                                    # container permissions are properly restricted" -
+                                    # ESC5, green, on a domain compromise path.
+                                    ExpandedRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
                                 }
                             }
                         }
@@ -108232,7 +108481,7 @@ function Get-ADCSVulnerabilities {
                         if ($containerACL) {
                             # Filter for dangerous permissions
                             $dangerousACEs = $containerACL | Where-Object {
-                                $_.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite' -and
+                                $_.ExpandedRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite' -and
                                 $_.AccessControlType -eq 'Allow'
                             }
 
@@ -108240,7 +108489,7 @@ function Get-ADCSVulnerabilities {
                                 # Analyze each ACE
                                 foreach ($ace in $dangerousACEs) {
                                     $aceSID = $ace.IdentityReference.Value
-                                    $aceRights = $ace.ActiveDirectoryRights.ToString()
+                                    $aceRights = $ace.ExpandedRights
 
                                     # Determine severity
                                     $severity = 'Finding'
@@ -108590,7 +108839,14 @@ function Get-ADCSVulnerabilities {
                             if ($ace.AccessControlType -ne 'Allow') { continue }
 
                             $aceSID = $ace.IdentityReference.Value
-                            $aceRights = $ace.ActiveDirectoryRights.ToString()
+
+                            # ConvertTo-ExpandedADRightsName, not ToString(): the SDDL
+                            # generic bits have no named value in the enum, so an ACE
+                            # written as "(A;;GA;;;<sid>)" rendered as the bare number
+                            # 268435456 and matched none of the names below. That is the
+                            # form impacket and Certipy write, so a template an attacker
+                            # had already taken over looked untouched here.
+                            $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
 
                             # Check if ACE has dangerous rights
                             $hasDangerousRight = $false
@@ -111190,7 +111446,15 @@ function Get-SCCMInfrastructure {
                     foreach ($ace in $sccmACEs) {
                         if ($ace.AccessControlType -ne 'Allow') { continue }
 
-                        $aceRights = "$($ace.ActiveDirectoryRights)"
+                        # ConvertTo-ExpandedADRightsName, not the string form: the SDDL
+                        # generic bits have no named value in the enum, so an ACE written
+                        # as "(A;;GA;;;<sid>)" came out as the bare number 268435456 and
+                        # matched nothing below. The container is where a client finds its
+                        # management point, so a full-control ACE on it was reported as
+                        # "Only the site servers and the expected administrators can write
+                        # to the System Management container".
+                        $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
+
                         # Write access is the whole question: CreateChild publishes a
                         # management point, the others get there in one more step.
                         if ($aceRights -notmatch 'GenericAll|GenericWrite|WriteDacl|WriteOwner|WriteProperty|CreateChild') { continue }
@@ -126664,7 +126928,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261010-1942"
+$Script:adPEASVersion = "2.7.0+20261010-2019"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -589,10 +589,64 @@ function Get-PointAndPrintAssessment {
         }
     }
 
+    # The secondary printer values, evaluated before the two verdicts that end in Info.
+    # A GPO that set nothing but one of these fell through to the "Not applicable" return
+    # below, and the caller suppresses Info by default and counts it among the
+    # configurations that are "hardened or control no driver installation" - so three
+    # findings that have definitions of their own could not reach a report at all, and
+    # were summarised as the opposite of what they are: CopyFilesPolicy = 2 is
+    # CVE-2021-36958, RegisterSpoolerRemoteRpcEndPoint = 1 is the PrinterBug surface, and
+    # AddPrinterDrivers = 0 means literally "any user may install printer drivers".
+    $secondary = @()
+    $secondarySeverity = 'Info'
+    $severityRank = @{ 'Info' = 0; 'Low' = 1; 'Medium' = 2; 'High' = 3; 'Critical' = 4 }
+
+    $copyFiles = Get-PointAndPrintValue -Values $Values -Name 'CopyFilesPolicy'
+    if ($null -ne $copyFiles -and [int64]$copyFiles -eq 2) {
+        $secondary += 'the spooler copies arbitrary queue-specific files from the print server (CVE-2021-36958)'
+        if ($severityRank['High'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'High' }
+    }
+
+    # Inverted encoding: the policy writes 1 when Enabled and 2 when Disabled, so 1 is the
+    # state that exposes the endpoint.
+    $spoolerRpc = Get-PointAndPrintValue -Values $Values -Name 'RegisterSpoolerRemoteRpcEndPoint'
+    if ($null -ne $spoolerRpc -and [int64]$spoolerRpc -eq 1) {
+        $secondary += 'the spooler accepts remote client connections (PrinterBug/SpoolSample coercion surface)'
+        if ($severityRank['Medium'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Medium' }
+    }
+
+    $addDrivers = Get-PointAndPrintValue -Values $Values -Name 'AddPrinterDrivers'
+    if ($null -ne $addDrivers -and [int64]$addDrivers -eq 0) {
+        $secondary += 'the "Prevent users from installing printer drivers" Security Option is disabled'
+        if ($severityRank['Medium'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Medium' }
+    }
+
+    $webPnP = Get-PointAndPrintValue -Values $Values -Name 'DisableWebPnPDownload'
+    if ($null -ne $webPnP -and [int64]$webPnP -eq 0) {
+        $secondary += 'printer drivers may be downloaded over HTTP'
+        if ($severityRank['Low'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Low' }
+    }
+
+    $httpPrint = Get-PointAndPrintValue -Values $Values -Name 'DisableHTTPPrinting'
+    if ($null -ne $httpPrint -and [int64]$httpPrint -eq 0) {
+        $secondary += 'printing over HTTP is permitted'
+        if ($severityRank['Low'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Low' }
+    }
+
     # Checked before the prompt settings on purpose: an explicit 1 blocks the install, so any
     # prompt suppression in the same GPO is dead configuration rather than a latent risk. The
     # Latent verdict below is reserved for the case where the block rests on the default.
     if ($null -ne $restrictToAdmins -and [int64]$restrictToAdmins -eq 1) {
+        if (@($secondary).Count -gt 0) {
+            # Both statements hold, and the second one decides the severity: hardening the
+            # driver installation does not close the queue-specific file vector or the
+            # spooler's RPC endpoint.
+            return @{
+                Exploitability = "Hardened for driver installation, but $($secondary -join '; ')"
+                Severity       = $secondarySeverity
+            }
+        }
+
         return @{
             Exploitability = 'Hardened - driver installation is limited to Administrators, which overrides every Point and Print prompt setting'
             Severity       = 'Info'
@@ -603,6 +657,13 @@ function Get-PointAndPrintAssessment {
         return @{
             Exploitability = 'Latent - elevation prompts are suppressed, currently blocked by the RestrictDriverInstallationToAdministrators default'
             Severity       = 'Medium'
+        }
+    }
+
+    if (@($secondary).Count -gt 0) {
+        return @{
+            Exploitability = "No driver installation control, but $($secondary -join '; ')"
+            Severity       = $secondarySeverity
         }
     }
 

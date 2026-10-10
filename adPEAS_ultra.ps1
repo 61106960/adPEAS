@@ -430,6 +430,18 @@ function Test-ADRightsMask {
 	$hasMask = ([long]$Has) -band 0xFFFFFFFFL
 	return ($mask -band $hasMask) -eq $hasMask
 }
+function ConvertTo-ExpandedADRightsName {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowNull()]
+	    $Rights
+	)
+	if ($null -eq $Rights) { return '' }
+	$mask = ConvertTo-ExpandedADRightsValue -Rights $Rights
+	return (([System.DirectoryServices.ActiveDirectoryRights]$mask).ToString() -replace '\s', '')
+}
 function ConvertTo-ADRightsList {
 	[CmdletBinding()]
 	param(
@@ -32961,7 +32973,7 @@ function ConvertFrom-SecurityDescriptor {
 	        $PrincipalSID = $ACE.IdentityReference.Value
 	        $PrincipalName = ConvertFrom-SID -SID $PrincipalSID
 	        $ACEType = $ACE.AccessControlType
-	        $Rights = $ACE.ActiveDirectoryRights -replace '\s', ''
+	        $Rights = ConvertTo-ExpandedADRightsName -Rights $ACE.ActiveDirectoryRights
 	        $RightsDisplay = $Rights
 	        if ($Rights -match 'ExtendedRight') {
 	            if ($ACE.ObjectType -ne [System.Guid]::Empty) {
@@ -61182,6 +61194,17 @@ function Get-DangerousACLs {
 	        }
 	        $dcsyncAccounts = @{}
 	        $dangerousRightsAccounts = @()
+	        $criticalDomainObjectTypes = @(
+	            'GP-Link',
+	            'Reanimate-Tombstones',
+	            'DS-Install-Replica',
+	            'Migrate-SID-History',
+	            'Change-Rid-Master',
+	            'Change-PDC',
+	            'Change-Infrastructure-Master',
+	            'Change-Domain-Master',
+	            'Change-Schema-Master'
+	        )
 	        foreach ($ace in $aclResult.ACEs) {
 	            $trusteeSID = $ace.TrusteeSID
 	            $trusteeName = $ace.Trustee
@@ -61205,11 +61228,24 @@ function Get-DangerousACLs {
 	                }
 	            }
 	            if (-not $hasDCSync) {
-	                if ($objectType -and $objectType -ne '' -and $objectType -ne '00000000-0000-0000-0000-000000000000') {
+	                $isObjectSpecific = ($objectType -and $objectType -ne '' -and $objectType -ne '00000000-0000-0000-0000-000000000000')
+	                if ($isObjectSpecific) {
+	                    if ($criticalDomainObjectTypes -contains $ace.ObjectTypeName) {
+	                        $objectRight = $ace.Rights
+	                        if ($ace.RightsRaw -notcontains $ace.ObjectTypeName) {
+	                            $objectRight = "$($ace.Rights) ($($ace.ObjectTypeName))"
+	                        }
+	                        $dangerousRightsAccounts += [PSCustomObject]@{
+	                            SID = $trusteeSID
+	                            Name = $trusteeName
+	                            Rights = @($objectRight)
+	                        }
+	                    } else {
+	                    }
 	                    continue
 	                }
 	                $dangerousRights = @($ace.RightsRaw | Where-Object {
-	                    $_ -in @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner')
+	                    $_ -in @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'WriteProperty')
 	                })
 	                if (@($dangerousRights).Count -gt 0) {
 	                    $dangerousRightsAccounts += [PSCustomObject]@{
@@ -61217,6 +61253,20 @@ function Get-DangerousACLs {
 	                        Name = $trusteeName
 	                        Rights = $dangerousRights
 	                    }
+	                }
+	                if (($ace.RightsRaw -contains 'ExtendedRight') -and ($ace.RightsRaw -notcontains 'GenericAll')) {
+	                    if (-not $dcsyncAccounts.ContainsKey($trusteeSID)) {
+	                        $dcsyncAccounts[$trusteeSID] = @{
+	                            SID = $trusteeSID
+	                            Name = $trusteeName
+	                            Rights = @()
+	                        }
+	                    }
+	                    $dcsyncAccounts[$trusteeSID].Rights += @(
+	                        'All-Extended-Rights',
+	                        'DS-Replication-Get-Changes',
+	                        'DS-Replication-Get-Changes-All'
+	                    )
 	                }
 	            }
 	        }
@@ -61231,10 +61281,24 @@ function Get-DangerousACLs {
 	                $hasGetChangesAll = $rights -contains 'DS-Replication-Get-Changes-All'
 	                $hasGetChangesFiltered = $rights -contains 'DS-Replication-Get-Changes-In-Filtered-Set'
 	                $canDCSync = $hasGetChanges -and $hasGetChangesAll
+	                if (-not $canDCSync -and ($hasGetChanges -or $hasGetChangesAll -or $hasGetChangesFiltered)) {
+	                    $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - inert without DS-Replication-Get-Changes, one ACE short of DCSync"
+	                    if ($hasGetChanges) {
+	                        $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - replicates the directory except secrets, one right short of DCSync"
+	                    }
+	                    $dangerousRightsAccounts += [PSCustomObject]@{
+	                        SID = $sid
+	                        Name = $accountName
+	                        Rights = @($partialText)
+	                    }
+	                }
 	                if ($canDCSync) {
 	                    $rightsDisplay = "DS-Replication-Get-Changes, DS-Replication-Get-Changes-All"
 	                    if ($hasGetChangesFiltered) {
 	                        $rightsDisplay += ", DS-Replication-Get-Changes-In-Filtered-Set"
+	                    }
+	                    if ($rights -contains 'All-Extended-Rights') {
+	                        $rightsDisplay = "All Extended Rights (grants DS-Replication-Get-Changes and DS-Replication-Get-Changes-All)"
 	                    }
 	                    $severity = 'Finding'
 	                    if (-not $IncludePrivileged) {
@@ -61426,10 +61490,12 @@ function Get-DangerousOUPermissions {
 	            if (-not $ouPermissions -or -not $ouPermissions.Findings) {
 	                continue
 	            }
-	            $allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Info') } else { @('Critical', 'High') }
+	            $allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Medium', 'Info') } else { @('Critical', 'High', 'Medium') }
+	            $ownModuleCheckTypes = @('LAPS', 'CredentialRoaming')
 	            $dangerousFindings = $ouPermissions.Findings | Where-Object {
 	                $_.Severity -in $allowedSeverities -and
-	                $_.SID -ne 'S-1-5-32-548'
+	                $_.CheckType -notin $ownModuleCheckTypes -and
+	                -not ($_.SID -eq 'S-1-5-32-548' -and $_.CheckType -eq 'ObjectCreation' -and $_.InheritedFrom -like 'Domain Root*')
 	            }
 	            if ($dangerousFindings) {
 	                $ouWithFindings++
@@ -65246,7 +65312,41 @@ function Get-PointAndPrintAssessment {
 	        Severity       = 'Medium'
 	    }
 	}
+	$secondary = @()
+	$secondarySeverity = 'Info'
+	$severityRank = @{ 'Info' = 0; 'Low' = 1; 'Medium' = 2; 'High' = 3; 'Critical' = 4 }
+	$copyFiles = Get-PointAndPrintValue -Values $Values -Name 'CopyFilesPolicy'
+	if ($null -ne $copyFiles -and [int64]$copyFiles -eq 2) {
+	    $secondary += 'the spooler copies arbitrary queue-specific files from the print server (CVE-2021-36958)'
+	    if ($severityRank['High'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'High' }
+	}
+	$spoolerRpc = Get-PointAndPrintValue -Values $Values -Name 'RegisterSpoolerRemoteRpcEndPoint'
+	if ($null -ne $spoolerRpc -and [int64]$spoolerRpc -eq 1) {
+	    $secondary += 'the spooler accepts remote client connections (PrinterBug/SpoolSample coercion surface)'
+	    if ($severityRank['Medium'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Medium' }
+	}
+	$addDrivers = Get-PointAndPrintValue -Values $Values -Name 'AddPrinterDrivers'
+	if ($null -ne $addDrivers -and [int64]$addDrivers -eq 0) {
+	    $secondary += 'the "Prevent users from installing printer drivers" Security Option is disabled'
+	    if ($severityRank['Medium'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Medium' }
+	}
+	$webPnP = Get-PointAndPrintValue -Values $Values -Name 'DisableWebPnPDownload'
+	if ($null -ne $webPnP -and [int64]$webPnP -eq 0) {
+	    $secondary += 'printer drivers may be downloaded over HTTP'
+	    if ($severityRank['Low'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Low' }
+	}
+	$httpPrint = Get-PointAndPrintValue -Values $Values -Name 'DisableHTTPPrinting'
+	if ($null -ne $httpPrint -and [int64]$httpPrint -eq 0) {
+	    $secondary += 'printing over HTTP is permitted'
+	    if ($severityRank['Low'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Low' }
+	}
 	if ($null -ne $restrictToAdmins -and [int64]$restrictToAdmins -eq 1) {
+	    if (@($secondary).Count -gt 0) {
+	        return @{
+	            Exploitability = "Hardened for driver installation, but $($secondary -join '; ')"
+	            Severity       = $secondarySeverity
+	        }
+	    }
 	    return @{
 	        Exploitability = 'Hardened - driver installation is limited to Administrators, which overrides every Point and Print prompt setting'
 	        Severity       = 'Info'
@@ -65256,6 +65356,12 @@ function Get-PointAndPrintAssessment {
 	    return @{
 	        Exploitability = 'Latent - elevation prompts are suppressed, currently blocked by the RestrictDriverInstallationToAdministrators default'
 	        Severity       = 'Medium'
+	    }
+	}
+	if (@($secondary).Count -gt 0) {
+	    return @{
+	        Exploitability = "No driver installation control, but $($secondary -join '; ')"
+	        Severity       = $secondarySeverity
 	    }
 	}
 	return @{
@@ -65845,7 +65951,7 @@ function Get-ADCSVulnerabilities {
 	                    foreach ($ace in $dacl) {
 	                        if ($ace.AccessControlType -ne 'Allow') { continue }
 	                        $aceSID = $ace.IdentityReference.Value
-	                        $aceRights = $ace.ActiveDirectoryRights.ToString()
+	                        $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
 	                        $hasDangerousRight = $false
 	                        $matchedRight = ""
 	                        foreach ($right in $Script:GenericDangerousRights) {
@@ -66150,18 +66256,19 @@ function Get-ADCSVulnerabilities {
 	                                AccessControlType = $ace.AccessControlType
 	                                IdentityReference = $ace.IdentityReference
 	                                ActiveDirectoryRights = $ace.ActiveDirectoryRights
+	                                ExpandedRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
 	                            }
 	                        }
 	                    }
 	                    if ($containerACL) {
 	                        $dangerousACEs = $containerACL | Where-Object {
-	                            $_.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite' -and
+	                            $_.ExpandedRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite' -and
 	                            $_.AccessControlType -eq 'Allow'
 	                        }
 	                        if ($dangerousACEs) {
 	                            foreach ($ace in $dangerousACEs) {
 	                                $aceSID = $ace.IdentityReference.Value
-	                                $aceRights = $ace.ActiveDirectoryRights.ToString()
+	                                $aceRights = $ace.ExpandedRights
 	                                $severity = 'Finding'
 	                                if (-not $IncludePrivileged) {
 	                                    $scopeResult = Test-IsExpectedInScope -Identity $aceSID -Scope 'PKIContainer' -ReturnDetails
@@ -66383,7 +66490,7 @@ function Get-ADCSVulnerabilities {
 	                    foreach ($ace in $dacl) {
 	                        if ($ace.AccessControlType -ne 'Allow') { continue }
 	                        $aceSID = $ace.IdentityReference.Value
-	                        $aceRights = $ace.ActiveDirectoryRights.ToString()
+	                        $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
 	                        $hasDangerousRight = $false
 	                        $matchedRight = ""
 	                        foreach ($right in $dangerousRights) {
@@ -67881,7 +67988,7 @@ function Get-SCCMInfrastructure {
 	                $containerFindings = @{}
 	                foreach ($ace in $sccmACEs) {
 	                    if ($ace.AccessControlType -ne 'Allow') { continue }
-	                    $aceRights = "$($ace.ActiveDirectoryRights)"
+	                    $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
 	                    if ($aceRights -notmatch 'GenericAll|GenericWrite|WriteDacl|WriteOwner|WriteProperty|CreateChild') { continue }
 	                    $aceSID = $ace.IdentityReference.Value
 	                    if ($sccmServerSIDs.ContainsKey($aceSID)) { continue }
@@ -79974,7 +80081,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261010-1942"
+$Script:adPEASVersion = "2.7.0+20261010-2019"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

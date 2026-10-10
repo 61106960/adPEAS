@@ -71,7 +71,16 @@ function ConvertFrom-SecurityDescriptor {
             $PrincipalName = ConvertFrom-SID -SID $PrincipalSID
 
             $ACEType = $ACE.AccessControlType
-            $Rights = $ACE.ActiveDirectoryRights -replace '\s', ''
+
+            # Through ConvertTo-ExpandedADRightsName rather than ToString(): the SDDL
+            # generic bits have no named value in the enum, so an ACE written as
+            # "(A;;GA;;;<sid>)" came out as the bare number 268435456. Every consumer of
+            # this field matches on right names - Get-ADCSTemplate for the enrollment and
+            # the write principals of a template, Get-WeakCertificateMapping for write
+            # access to altSecurityIdentities - so all of them were blind to the one ACE
+            # form an attacker's tooling writes. The compact name is unchanged for every
+            # other mask, which is what this field's consumers and its contract expect.
+            $Rights = ConvertTo-ExpandedADRightsName -Rights $ACE.ActiveDirectoryRights
             $RightsDisplay = $Rights
 
             if ($Rights -match 'ExtendedRight') {
