@@ -212,6 +212,21 @@ function Get-AddComputerRights {
             # ===== Step 3: Check GPO User Rights Assignment =====
             $gpoFindings = @(Check-GPOAddComputerRights -DomainFQDN $domainFQDN @connectionParams)
 
+            # Which policy actually wins, and whether it hands the privilege to
+            # ordinary users. Computed here rather than inside the GPO block below,
+            # because the quota line needs the same answer and used to assert the
+            # opposite: it said "any authenticated user can add computers" on the
+            # strength of the quota value alone. In a domain whose effective policy
+            # restricts SeMachineAccountPrivilege to Administrators, the GPO block was
+            # skipped entirely and that sentence was the only thing the report said -
+            # a false positive in exactly the environment that did the right thing.
+            #
+            # The quota is a ceiling on a privilege, not the privilege. The finding
+            # definition has said so since it was written ("This alone does not grant
+            # computer creation rights - it requires the SeMachineAccountPrivilege").
+            $effectiveGPO = @($gpoFindings | Where-Object { $_._IsEffective -eq $true })[0]
+            $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
+
             # ===== Step 4: Output findings as objects =====
 
             # Finding 1: MachineAccountQuota as object
@@ -219,7 +234,21 @@ function Get-AddComputerRights {
             if ($quotaValue -eq 0) {
                 Show-Line "ms-DS-MachineAccountQuota is 0 - computer creation restricted to explicit permissions" -Class Secure
             } else {
-                Show-Line "Found ms-DS-MachineAccountQuota configured - any authenticated user can add computers:" -Class Hint
+                # Three different statements, because three different things are true.
+                # Without a policy the documented default applies - Authenticated Users
+                # hold SeMachineAccountPrivilege on domain controllers - so the
+                # original sentence is right and now says what it rests on.
+                if ($effectiveGPO -and -not $effectiveIsDangerous) {
+                    # Accounts, not EffectiveSetting: the latter explains precedence
+                    # ("this policy wins", "overridden by X"), which is not the list of
+                    # principals the privilege went to.
+                    $restrictedTo = if (@($effectiveGPO.Accounts).Count -gt 0) { @($effectiveGPO.Accounts) -join ', ' } else { "nobody" }
+                    Show-Line "ms-DS-MachineAccountQuota is $quotaValue, but SeMachineAccountPrivilege is restricted to $restrictedTo by GPO '$($effectiveGPO.displayName)' - ordinary users cannot reach the quota" -Class Note
+                } elseif ($effectiveGPO) {
+                    Show-Line "Found ms-DS-MachineAccountQuota configured and GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege to ordinary users - any authenticated user can add computers:" -Class Hint
+                } else {
+                    Show-Line "Found ms-DS-MachineAccountQuota configured and no policy restricts SeMachineAccountPrivilege - the documented default applies, so any authenticated user can add computers:" -Class Hint
+                }
 
                 $quotaObject = [PSCustomObject]@{
                     'ms-DS-MachineAccountQuota' = $quotaValue
@@ -283,11 +312,15 @@ function Get-AddComputerRights {
 
             # Finding 3: GPO grants SeMachineAccountPrivilege - as enriched native GPO objects
             # Note: Hint (not Finding) because GPO privilege alone doesn't enable computer creation without quota
-            $dangerousGPOs = @($gpoFindings | Where-Object { $_._HasAuthenticatedUsers -or $_._HasEveryone })
-
-            if (@($dangerousGPOs).Count -gt 0) {
-                $effectiveGPO = @($gpoFindings | Where-Object { $_._IsEffective -eq $true })[0]
-                $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
+            # Every policy that defines the privilege, not only the ones that hand it
+            # to ordinary users. A policy restricting SeMachineAccountPrivilege to
+            # Administrators is the evidence that the quota is unreachable, and the
+            # customer could not cite it: the block was gated on there being a
+            # dangerous policy, so the hardened domain got no rows at all. The
+            # per-policy class below already distinguishes the two - Secure for the
+            # effective policy that restricts, Hint for one that does not - it was
+            # simply never reached.
+            if (@($gpoFindings).Count -gt 0) {
 
                 # A policy that is not linked or not enabled grants the privilege to nobody.
                 # Held back rather than dropped - see Show-GPOInactiveSummary. The verdict

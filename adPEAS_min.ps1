@@ -66132,10 +66132,19 @@ function Get-AddComputerRights {
                 }
             }
             $gpoFindings = @(Check-GPOAddComputerRights -DomainFQDN $domainFQDN @connectionParams)
+            $effectiveGPO = @($gpoFindings | Where-Object { $_._IsEffective -eq $true })[0]
+            $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
             if ($quotaValue -eq 0) {
                 Show-Line "ms-DS-MachineAccountQuota is 0 - computer creation restricted to explicit permissions" -Class Secure
             } else {
-                Show-Line "Found ms-DS-MachineAccountQuota configured - any authenticated user can add computers:" -Class Hint
+                if ($effectiveGPO -and -not $effectiveIsDangerous) {
+                    $restrictedTo = if (@($effectiveGPO.Accounts).Count -gt 0) { @($effectiveGPO.Accounts) -join ', ' } else { "nobody" }
+                    Show-Line "ms-DS-MachineAccountQuota is $quotaValue, but SeMachineAccountPrivilege is restricted to $restrictedTo by GPO '$($effectiveGPO.displayName)' - ordinary users cannot reach the quota" -Class Note
+                } elseif ($effectiveGPO) {
+                    Show-Line "Found ms-DS-MachineAccountQuota configured and GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege to ordinary users - any authenticated user can add computers:" -Class Hint
+                } else {
+                    Show-Line "Found ms-DS-MachineAccountQuota configured and no policy restricts SeMachineAccountPrivilege - the documented default applies, so any authenticated user can add computers:" -Class Hint
+                }
                 $quotaObject = [PSCustomObject]@{
                     'ms-DS-MachineAccountQuota' = $quotaValue
                 }
@@ -66179,10 +66188,7 @@ function Get-AddComputerRights {
                 }
                 $hasFindings = $true
             }
-            $dangerousGPOs = @($gpoFindings | Where-Object { $_._HasAuthenticatedUsers -or $_._HasEveryone })
-            if (@($dangerousGPOs).Count -gt 0) {
-                $effectiveGPO = @($gpoFindings | Where-Object { $_._IsEffective -eq $true })[0]
-                $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
+            if (@($gpoFindings).Count -gt 0) {
                 $inactiveGPOs = @($gpoFindings | Where-Object { $_._ReachInactive })
                 $shownGPOs    = if ($IncludeInactive) { @($gpoFindings) } else { @($gpoFindings | Where-Object { -not $_._ReachInactive }) }
                 $dormantGPOs = @($inactiveGPOs | ForEach-Object {
@@ -85223,7 +85229,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-1133"
+$Script:adPEASVersion = "2.7.0+20261011-1151"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
