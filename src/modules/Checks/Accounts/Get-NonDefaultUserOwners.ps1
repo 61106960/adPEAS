@@ -159,6 +159,35 @@ function Get-NonDefaultUserOwners {
                     # Add owner info to user object for display
                     $fullUser | Add-Member -NotePropertyName 'Owner' -NotePropertyValue $finding.Owner -Force
                     $fullUser | Add-Member -NotePropertyName 'OwnerSID' -NotePropertyValue $finding.OwnerSID -Force
+
+                    # Who created the account, and whether that is still who owns it. The
+                    # computer module next door has asked this since it was written and says
+                    # why: an account created through a delegation is owned by its creator,
+                    # which is the ordinary case, while an owner that is NOT the creator was
+                    # re-assigned by somebody with the rights to do it. Without the creator
+                    # the two look identical, and in a real domain the first drowns the
+                    # second. The attribute comes with the full object this loop already
+                    # loaded, so it costs no extra query.
+                    $creatorSID = [string]$fullUser.'mS-DS-CreatorSID'
+                    if ($creatorSID) {
+                        $creatorName = ConvertFrom-SID -SID $creatorSID
+                        if (-not $creatorName) { $creatorName = $creatorSID }
+                        $fullUser | Add-Member -NotePropertyName 'creator' -NotePropertyValue $creatorName -Force
+                        $fullUser | Add-Member -NotePropertyName 'creatorSID' -NotePropertyValue $creatorSID -Force
+
+                        if ($creatorSID -eq [string]$finding.OwnerSID) {
+                            $fullUser | Add-Member -NotePropertyName 'ownerIsCreator' -NotePropertyValue 'True - the account is owned by the principal that created it' -Force
+                        } else {
+                            $fullUser | Add-Member -NotePropertyName 'ownerIsCreator' -NotePropertyValue 'False - ownership was re-assigned after the account was created' -Force
+                            $fullUser | Add-Member -NotePropertyName 'ownershipChanged' -NotePropertyValue 'The owner is not the principal that created this account. Ownership does not change by itself: somebody with the rights to do it took control of this user object.' -Force
+                        }
+                    } else {
+                        # No mS-DS-CreatorSID: created by a member of the administrators, or
+                        # by a domain controller. Say so rather than implying the creator and
+                        # the owner match.
+                        $fullUser | Add-Member -NotePropertyName 'ownerIsCreator' -NotePropertyValue 'Unknown - the object records no creator' -Force
+                    }
+
                     $nonDefaultOwnerUsers += $fullUser
                 }
             }

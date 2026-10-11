@@ -13974,6 +13974,51 @@ foreach ($oid in $linkedOIDs) {
 	        @{ Attribute = 'lockoutDuration'; Pattern = 'Forever|Permanent|Infinite'; Severity = 'Secure' }
 	    )
 	}
+	'TIER0_NOT_IN_PROTECTED_USERS' = @{
+	    Title = "Tier-0 Account Not in Protected Users"
+	    Risk = "Finding"
+	    BaseScore = 30
+	    Description = "This account is a member of a Tier-0 group - Domain Admins, Enterprise Admins, Schema Admins or BUILTIN\Administrators - and is not in the 'Protected Users' security group. Protected Users is the only mechanism that turns off the credential formats an attacker harvests: NTLM, CredSSP, Digest and RC4 all stop working for its members, their credentials are no longer cached on the machines they log on to, and their tickets cannot be delegated. Outside the group every one of those remains available on every host the account touches. The main result of this check existed only as a line of text before this write-up; it had no description, no attack path, no remediation and no contribution to the score."
+	    Impact = @(
+	        "The account's NTLM hash is cached on every machine it logs on to and can be dumped from LSASS"
+	        "That hash is enough for pass-the-hash onto any other host that trusts it"
+	        "Its TGT can be delegated, so a compromised service can act as this account"
+	        "RC4 remains available for its service tickets, which makes them worth roasting"
+	        "A ten-hour TGT lifetime leaves a stolen ticket usable for a full working day"
+	    )
+	    Attack = @(
+	        "1. An attacker gains code execution on a server this account has logged on to"
+	        "2. Reads the cached credential or the Kerberos ticket out of LSASS"
+	        "3. Replays it against a domain controller - no password needed"
+	        "4. With a Tier-0 account that is the whole domain"
+	    )
+	    Remediation = @(
+	        "Add Tier 0 USER accounts to 'Protected Users'. It ends NTLM, CredSSP, Digest, RC4 and delegation for those accounts and stops their credentials being cached - check what depends on that first"
+	        "Do not put a computer account or a gMSA in the group: Microsoft advises against it and it has no effect there"
+	        "For a service account that cannot join the group, set 'Account is sensitive and cannot be delegated' and restrict msDS-SupportedEncryptionTypes to AES"
+	        "Use separate administrative accounts so that adding them to the group cannot break an interactive user's day-to-day work"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Add a Tier 0 user account to Protected Users - a user account, and after checking what it depends on"
+	            Command = "Add-ADGroupMember -Identity 'Protected Users' -Members 'TIER0_USER_ACCOUNT'"
+	        }
+	        @{
+	            Description = "Show who is in the group today"
+	            Command = "Get-ADGroupMember -Identity 'Protected Users'"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Protected Users Security Group"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group" }
+	        @{ Title = "Securing Privileged Access - Tier model"; Url = "https://learn.microsoft.com/en-us/security/privileged-access-workstations/privileged-access-access-model" }
+	    )
+	    Tools = @("BloodHound", "mimikatz", "Rubeus")
+	    MITRE = "T1003.001"
+	    Triggers = @(
+	        @{ Attribute = 'protectedUsersStatus'; Pattern = '^NOT PROTECTED$'; Severity = 'Finding' }
+	        @{ Attribute = 'protectedUsersStatus'; Pattern = '^Protected$'; Severity = 'Secure' }
+	    )
+	}
 	'OPERATOR_GROUP_MEMBERS' = @{
 	    Title = "Operator Group Has Active Members"
 	    Risk = "Hint"
@@ -60932,7 +60977,7 @@ function Get-PrivilegedGroupMembers {
 	                [string]$MembershipPath = "Direct Member",
 	                [object]$GroupObject = $null
 	            )
-	            if ($Visited.ContainsKey($GroupDN)) {
+	if ($Visited.ContainsKey($GroupDN)) {
 	                return @{
 	                    DirectMembers = @()
 	                    NestedGroups = @()
@@ -61065,6 +61110,8 @@ function Get-PrivilegedGroupMembers {
 	                    }
 	                }
 	            } catch {
+	            } finally {
+	                [void]$Visited.Remove($GroupDN)
 	            }
 	            return @{
 	                DirectMembers = $DirectMembers
@@ -61272,6 +61319,7 @@ function Get-PrivilegedGroupMembers {
 	        $UserCount = 0
 	        $ComputerCount = 0
 	        $gMSACount = 0
+	        $ForeignCount = 0
 	        $totalMembers = @($TotalUniqueMembers.Values).Count
 	        $currentIndex = 0
 	        foreach ($memberData in $TotalUniqueMembers.Values) {
@@ -61287,7 +61335,10 @@ function Get-PrivilegedGroupMembers {
 	            elseif ($objClass -ieq 'computer') {
 	                $ComputerCount++
 	            }
-	            elseif ($objClass -ieq 'user' -or $objClass -ieq 'foreignSecurityPrincipal') {
+	            elseif ($objClass -ieq 'foreignSecurityPrincipal') {
+	                $ForeignCount++
+	            }
+	            elseif ($objClass -ieq 'user') {
 	                $UserCount++
 	            }
 	            elseif ($samName -and $samName.EndsWith('$')) {
@@ -61366,8 +61417,37 @@ function Get-PrivilegedGroupMembers {
 	            if ($ComputerCount -gt 0) {
 	                $summaryParts += "$ComputerCount computer(s)"
 	            }
+	            if ($ForeignCount -gt 0) {
+	                $summaryParts += "$ForeignCount foreign principal(s)"
+	            }
 	            $summaryText = $summaryParts -join ", "
 	            Show-Line "Found $summaryText across $TotalGroups privileged group(s):" -Class Finding
+	        }
+	        if (@($Script:AllForeignMembers).Count -gt 0) {
+	            $foreignBySID = @{}
+	            foreach ($foreign in $Script:AllForeignMembers) {
+	                $foreignSID = [string]$foreign.SID
+	                if (-not $foreignSID) { continue }
+	                if (-not $foreignBySID.ContainsKey($foreignSID)) {
+	                    $foreignName = [string]$foreign.ResolvedName
+	                    if (-not $foreignName) { $foreignName = $foreignSID }
+	                    $foreignBySID[$foreignSID] = [PSCustomObject]@{
+	                        Name   = $foreignName
+	                        Groups = @()
+	                    }
+	                }
+	                $foreignGroup = [string]$foreign.PrivilegedGroup
+	                if ($foreignGroup -and $foreignBySID[$foreignSID].Groups -notcontains $foreignGroup) {
+	                    $foreignBySID[$foreignSID].Groups += $foreignGroup
+	                }
+	            }
+	            if ($foreignBySID.Count -gt 0) {
+	                Show-Line "$($foreignBySID.Count) of them come from a trusted domain - adPEAS cannot read the object behind the SID, so a group there is not expanded:" -Class Hint
+	                foreach ($foreignSID in ($foreignBySID.Keys | Sort-Object)) {
+	                    $entry = $foreignBySID[$foreignSID]
+	                    Show-Line "  $($entry.Name) in $(@($entry.Groups) -join ', ')" -Class Hint
+	                }
+	            }
 	        }
 	        foreach ($dn in $MemberGroupMemberships.Keys) {
 	            $MemberData = $MemberGroupMemberships[$dn]
@@ -61867,10 +61947,28 @@ function Get-InactiveAdminAccounts {
 	                $daysSinceLogon = $account.ActivityDetails.DaysSinceActivity
 	                $privilegedGroups = @()
 	                $isOrphaned = $true
+	                $primaryRID = $null
+	                if ($account.PSObject.Properties['primaryGroupID']) {
+	                    $primaryRID = [string]$account.primaryGroupID
+	                }
+	                if ($primaryRID -and $Script:LDAPContext.DomainSID) {
+	                    $primarySID = "$($Script:LDAPContext.DomainSID)-$primaryRID"
+	                    $primaryCheck = Test-IsPrivileged -Identity $primarySID -IncludeOperators
+	                    if ($primaryCheck.Category -in @('Privileged', 'Operator')) {
+	                        $primaryName = [string]$primaryCheck.MatchedGroup
+	                        if (-not $primaryName) { $primaryName = $primarySID }
+	                        $privilegedGroups += [PSCustomObject]@{
+	                            Name        = $primaryName
+	                            SID         = $primarySID
+	                            DisplayText = $primaryName
+	                        }
+	                        $isOrphaned = $false
+	                    }
+	                }
 	                if ($account.memberOf) {
 	                    foreach ($groupDN in $account.memberOf) {
 	                        $category = (Test-IsPrivileged -Identity $groupDN -IncludeOperators).Category
-	                        if ($category -eq 'Privileged') {
+	                        if ($category -in @('Privileged', 'Operator')) {
 	                            $groupName = if ($groupDN -match '^CN=([^,]+)') { $matches[1] } else { $groupDN }
 	                            $groupSID = ConvertTo-SID -Identity $groupDN
 	                            $privilegedGroups += [PSCustomObject]@{
@@ -62553,6 +62651,21 @@ function Get-NonDefaultUserOwners {
 	                }
 	                $fullUser | Add-Member -NotePropertyName 'Owner' -NotePropertyValue $finding.Owner -Force
 	                $fullUser | Add-Member -NotePropertyName 'OwnerSID' -NotePropertyValue $finding.OwnerSID -Force
+	                $creatorSID = [string]$fullUser.'mS-DS-CreatorSID'
+	                if ($creatorSID) {
+	                    $creatorName = ConvertFrom-SID -SID $creatorSID
+	                    if (-not $creatorName) { $creatorName = $creatorSID }
+	                    $fullUser | Add-Member -NotePropertyName 'creator' -NotePropertyValue $creatorName -Force
+	                    $fullUser | Add-Member -NotePropertyName 'creatorSID' -NotePropertyValue $creatorSID -Force
+	                    if ($creatorSID -eq [string]$finding.OwnerSID) {
+	                        $fullUser | Add-Member -NotePropertyName 'ownerIsCreator' -NotePropertyValue 'True - the account is owned by the principal that created it' -Force
+	                    } else {
+	                        $fullUser | Add-Member -NotePropertyName 'ownerIsCreator' -NotePropertyValue 'False - ownership was re-assigned after the account was created' -Force
+	                        $fullUser | Add-Member -NotePropertyName 'ownershipChanged' -NotePropertyValue 'The owner is not the principal that created this account. Ownership does not change by itself: somebody with the rights to do it took control of this user object.' -Force
+	                    }
+	                } else {
+	                    $fullUser | Add-Member -NotePropertyName 'ownerIsCreator' -NotePropertyValue 'Unknown - the object records no creator' -Force
+	                }
 	                $nonDefaultOwnerUsers += $fullUser
 	            }
 	        }
@@ -82486,7 +82599,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-2203"
+$Script:adPEASVersion = "2.7.0+20261011-2227"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

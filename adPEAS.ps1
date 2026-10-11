@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 22:03:04
-    Version: 2.7.0+20261011-2203
+    Build: 2026-10-11 22:27:00
+    Version: 2.7.0+20261011-2227
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -18667,6 +18667,55 @@ foreach ($oid in $linkedOIDs) {
     # ============================================================================
     # OPERATOR GROUP FINDINGS (from Get-ProtectedUsersStatus)
     # ============================================================================
+
+    'TIER0_NOT_IN_PROTECTED_USERS' = @{
+        Title = "Tier-0 Account Not in Protected Users"
+        Risk = "Finding"
+        BaseScore = 30
+        Description = "This account is a member of a Tier-0 group - Domain Admins, Enterprise Admins, Schema Admins or BUILTIN\Administrators - and is not in the 'Protected Users' security group. Protected Users is the only mechanism that turns off the credential formats an attacker harvests: NTLM, CredSSP, Digest and RC4 all stop working for its members, their credentials are no longer cached on the machines they log on to, and their tickets cannot be delegated. Outside the group every one of those remains available on every host the account touches. The main result of this check existed only as a line of text before this write-up; it had no description, no attack path, no remediation and no contribution to the score."
+        Impact = @(
+            "The account's NTLM hash is cached on every machine it logs on to and can be dumped from LSASS"
+            "That hash is enough for pass-the-hash onto any other host that trusts it"
+            "Its TGT can be delegated, so a compromised service can act as this account"
+            "RC4 remains available for its service tickets, which makes them worth roasting"
+            "A ten-hour TGT lifetime leaves a stolen ticket usable for a full working day"
+        )
+        Attack = @(
+            "1. An attacker gains code execution on a server this account has logged on to"
+            "2. Reads the cached credential or the Kerberos ticket out of LSASS"
+            "3. Replays it against a domain controller - no password needed"
+            "4. With a Tier-0 account that is the whole domain"
+        )
+        Remediation = @(
+            "Add Tier 0 USER accounts to 'Protected Users'. It ends NTLM, CredSSP, Digest, RC4 and delegation for those accounts and stops their credentials being cached - check what depends on that first"
+            "Do not put a computer account or a gMSA in the group: Microsoft advises against it and it has no effect there"
+            "For a service account that cannot join the group, set 'Account is sensitive and cannot be delegated' and restrict msDS-SupportedEncryptionTypes to AES"
+            "Use separate administrative accounts so that adding them to the group cannot break an interactive user's day-to-day work"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Add a Tier 0 user account to Protected Users - a user account, and after checking what it depends on"
+                Command = "Add-ADGroupMember -Identity 'Protected Users' -Members 'TIER0_USER_ACCOUNT'"
+            }
+            @{
+                Description = "Show who is in the group today"
+                Command = "Get-ADGroupMember -Identity 'Protected Users'"
+            }
+        )
+        References = @(
+            @{ Title = "Protected Users Security Group"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group" }
+            @{ Title = "Securing Privileged Access - Tier model"; Url = "https://learn.microsoft.com/en-us/security/privileged-access-workstations/privileged-access-access-model" }
+        )
+        Tools = @("BloodHound", "mimikatz", "Rubeus")
+        MITRE = "T1003.001"
+        Triggers = @(
+            # The attribute the check already writes on every Tier-0 account it reports.
+            # 'Protected' is the earned verdict and reads as Secure; the excluded accounts
+            # carry excludedReason instead and match neither.
+            @{ Attribute = 'protectedUsersStatus'; Pattern = '^NOT PROTECTED$'; Severity = 'Finding' }
+            @{ Attribute = 'protectedUsersStatus'; Pattern = '^Protected$'; Severity = 'Secure' }
+        )
+    }
 
     'OPERATOR_GROUP_MEMBERS' = @{
         Title = "Operator Group Has Active Members"
@@ -98908,7 +98957,15 @@ function Get-PrivilegedGroupMembers {
                 )
 
                 # Prevent infinite loops
-                if ($Visited.ContainsKey($GroupDN)) {
+                # The guard has to describe the current PATH, not everything visited so far. $Visited is
+    # a hashtable and goes into every branch by reference: if group A contains both B and C
+    # and both contain D, then D is expanded under B, and under C the entry is already there
+    # - so the second branch stops with "circular reference detected" on a group that is not
+    # a cycle at all. TotalMemberCount per group then undercounts, and the second route by
+    # which an account is a Domain Admin is missing from the display, which is the one thing
+    # the "how do I get to Domain Admin" section is for. The entry is removed again on the
+    # way out, below.
+    if ($Visited.ContainsKey($GroupDN)) {
                     Write-Log "[Get-PrivilegedGroupMembers] Circular reference detected: $GroupDN"
                     return @{
                         DirectMembers = @()
@@ -99094,6 +99151,17 @@ function Get-PrivilegedGroupMembers {
                     }
                 } catch {
                     Write-Log "[Get-PrivilegedGroupMembers] Error resolving members for $GroupDN : $_"
+                } finally {
+                    # Out of this branch again, so $Visited describes the current path rather
+                    # than everything the walk has seen. A real cycle is still caught: an
+                    # ancestor of this group is still in the table while we are below it.
+                    #
+                    # Not memoised on purpose. A group reachable by two routes is expanded
+                    # twice now, and the result cannot simply be cached per DN because
+                    # NestingLevel and MembershipPath are baked into the objects it returns -
+                    # a cache would hand the second route the first route's path, which is
+                    # the very thing this fix is about.
+                    [void]$Visited.Remove($GroupDN)
                 }
 
                 return @{
@@ -99421,6 +99489,12 @@ function Get-PrivilegedGroupMembers {
             $UserCount = 0
             $ComputerCount = 0
             $gMSACount = 0
+            # Foreign Security Principals get a count of their own. They used to be added to
+            # $UserCount, so "Found 7 user(s) across 5 privileged group(s)" could mean six
+            # users and one principal from a trusted domain - and if that principal names a
+            # group over there, its members are not enumerated either. The number the
+            # section opens with has to be a number the reader can trust.
+            $ForeignCount = 0
             $totalMembers = @($TotalUniqueMembers.Values).Count
             $currentIndex = 0
 
@@ -99447,8 +99521,17 @@ function Get-PrivilegedGroupMembers {
                     $ComputerCount++
                     Write-Log "[Get-PrivilegedGroupMembers]   -> Counted as Computer"
                 }
-                # User accounts (including foreignSecurityPrincipal)
-                elseif ($objClass -ieq 'user' -or $objClass -ieq 'foreignSecurityPrincipal') {
+                # A principal from a trusted domain or forest. Counted apart from the users:
+                # adPEAS resolves the SID to a name but cannot read the object behind it, so
+                # it does not know whether that SID names a user or a group over there - and
+                # if it is a group, the members this report should have listed are on the
+                # other side of the trust and were never enumerated.
+                elseif ($objClass -ieq 'foreignSecurityPrincipal') {
+                    $ForeignCount++
+                    Write-Log "[Get-PrivilegedGroupMembers]   -> Counted as foreign principal"
+                }
+                # User accounts
+                elseif ($objClass -ieq 'user') {
                     $UserCount++
                     Write-Log "[Get-PrivilegedGroupMembers]   -> Counted as User"
                 }
@@ -99470,7 +99553,7 @@ function Get-PrivilegedGroupMembers {
                 Show-Progress -Activity "Analyzing privileged members" -Completed
             }
 
-            Write-Log "[Get-PrivilegedGroupMembers] Count summary: Users=$UserCount, gMSAs=$gMSACount, Computers=$ComputerCount"
+            Write-Log "[Get-PrivilegedGroupMembers] Count summary: Users=$UserCount, gMSAs=$gMSACount, Computers=$ComputerCount, Foreign=$ForeignCount"
 
             Write-Log "[Get-PrivilegedGroupMembers] AllGroupData contains $TotalGroups groups:"
             foreach ($gd in $AllGroupData) {
@@ -99561,8 +99644,50 @@ function Get-PrivilegedGroupMembers {
                 if ($ComputerCount -gt 0) {
                     $summaryParts += "$ComputerCount computer(s)"
                 }
+                if ($ForeignCount -gt 0) {
+                    $summaryParts += "$ForeignCount foreign principal(s)"
+                }
                 $summaryText = $summaryParts -join ", "
                 Show-Line "Found $summaryText across $TotalGroups privileged group(s):" -Class Finding
+            }
+
+            # What those foreign principals are, said once. $Script:AllForeignMembers was
+            # filled in the recursion under the comment "Track foreign members for summary"
+            # and then read nowhere - the summary it was collected for did not exist. A SID
+            # from across a trust can name a group as easily as a user, and in that case the
+            # members this section is about are on the other side and were not enumerated.
+            # Grouped by SID, not one row per collected entry. The recursion appends to
+            # $Script:AllForeignMembers once per path it reaches the principal on, so a
+            # principal that is a member of two privileged groups - or of one group through
+            # two routes - was in there twice, and the count above it said two where
+            # $ForeignCount, which counts unique members, said one. One line per principal,
+            # naming every group it reaches.
+            if (@($Script:AllForeignMembers).Count -gt 0) {
+                $foreignBySID = @{}
+                foreach ($foreign in $Script:AllForeignMembers) {
+                    $foreignSID = [string]$foreign.SID
+                    if (-not $foreignSID) { continue }
+                    if (-not $foreignBySID.ContainsKey($foreignSID)) {
+                        $foreignName = [string]$foreign.ResolvedName
+                        if (-not $foreignName) { $foreignName = $foreignSID }
+                        $foreignBySID[$foreignSID] = [PSCustomObject]@{
+                            Name   = $foreignName
+                            Groups = @()
+                        }
+                    }
+                    $foreignGroup = [string]$foreign.PrivilegedGroup
+                    if ($foreignGroup -and $foreignBySID[$foreignSID].Groups -notcontains $foreignGroup) {
+                        $foreignBySID[$foreignSID].Groups += $foreignGroup
+                    }
+                }
+
+                if ($foreignBySID.Count -gt 0) {
+                    Show-Line "$($foreignBySID.Count) of them come from a trusted domain - adPEAS cannot read the object behind the SID, so a group there is not expanded:" -Class Hint
+                    foreach ($foreignSID in ($foreignBySID.Keys | Sort-Object)) {
+                        $entry = $foreignBySID[$foreignSID]
+                        Show-Line "  $($entry.Name) in $(@($entry.Groups) -join ', ')" -Class Hint
+                    }
+                }
             }
 
             # Output each unique member with full user object
@@ -100509,16 +100634,51 @@ function Get-InactiveAdminAccounts {
                     # Get days since logon from Test-AccountActivity
                     $daysSinceLogon = $account.ActivityDetails.DaysSinceActivity
 
-                    # Check if account is orphaned (no privileged groups)
-                    # Use SID-based detection via Test-IsPrivileged for language independence
+                    # Whether the account still holds privilege anywhere, or carries nothing
+                    # but a left-over adminCount. SID-based through Test-IsPrivileged, so the
+                    # answer does not depend on the language of the directory.
                     $privilegedGroups = @()
                     $isOrphaned = $true
+
+                    # The primary group first. primaryGroupID puts the group's RID in the
+                    # account's token and appears in no memberOf attribute, so an account
+                    # whose primary group is Domain Admins was reported as "adminCount=1 but
+                    # no privileged groups" while being a Domain Admin.
+                    #
+                    # Asked for by name: under Set-StrictMode -Version Latest, which Pester
+                    # applies, reading a property that is not on the object is an error
+                    # rather than $null, and an account without the attribute has to mean
+                    # "no primary-group privilege", not a broken check.
+                    $primaryRID = $null
+                    if ($account.PSObject.Properties['primaryGroupID']) {
+                        $primaryRID = [string]$account.primaryGroupID
+                    }
+                    if ($primaryRID -and $Script:LDAPContext.DomainSID) {
+                        $primarySID = "$($Script:LDAPContext.DomainSID)-$primaryRID"
+                        $primaryCheck = Test-IsPrivileged -Identity $primarySID -IncludeOperators
+                        if ($primaryCheck.Category -in @('Privileged', 'Operator')) {
+                            $primaryName = [string]$primaryCheck.MatchedGroup
+                            if (-not $primaryName) { $primaryName = $primarySID }
+                            $privilegedGroups += [PSCustomObject]@{
+                                Name        = $primaryName
+                                SID         = $primarySID
+                                DisplayText = $primaryName
+                            }
+                            $isOrphaned = $false
+                        }
+                    }
 
                     if ($account.memberOf) {
                         foreach ($groupDN in $account.memberOf) {
                             # Test-IsPrivileged accepts DN and resolves to SID internally
                             $category = (Test-IsPrivileged -Identity $groupDN -IncludeOperators).Category
-                            if ($category -eq 'Privileged') {
+                            # 'Operator' counts as privilege here. The candidate filter above
+                            # is built with -IncludeOperators, so an account whose only
+                            # privileged membership is Account Operators arrives in this loop
+                            # - and was then called orphaned, because Test-IsPrivileged
+                            # answers Category = 'Operator' with IsPrivileged = $false for
+                            # the four operator groups.
+                            if ($category -in @('Privileged', 'Operator')) {
                                 # Extract group name and resolve SID for proper classification
                                 $groupName = if ($groupDN -match '^CN=([^,]+)') { $matches[1] } else { $groupDN }
                                 $groupSID = ConvertTo-SID -Identity $groupDN
@@ -101869,6 +102029,35 @@ function Get-NonDefaultUserOwners {
                     # Add owner info to user object for display
                     $fullUser | Add-Member -NotePropertyName 'Owner' -NotePropertyValue $finding.Owner -Force
                     $fullUser | Add-Member -NotePropertyName 'OwnerSID' -NotePropertyValue $finding.OwnerSID -Force
+
+                    # Who created the account, and whether that is still who owns it. The
+                    # computer module next door has asked this since it was written and says
+                    # why: an account created through a delegation is owned by its creator,
+                    # which is the ordinary case, while an owner that is NOT the creator was
+                    # re-assigned by somebody with the rights to do it. Without the creator
+                    # the two look identical, and in a real domain the first drowns the
+                    # second. The attribute comes with the full object this loop already
+                    # loaded, so it costs no extra query.
+                    $creatorSID = [string]$fullUser.'mS-DS-CreatorSID'
+                    if ($creatorSID) {
+                        $creatorName = ConvertFrom-SID -SID $creatorSID
+                        if (-not $creatorName) { $creatorName = $creatorSID }
+                        $fullUser | Add-Member -NotePropertyName 'creator' -NotePropertyValue $creatorName -Force
+                        $fullUser | Add-Member -NotePropertyName 'creatorSID' -NotePropertyValue $creatorSID -Force
+
+                        if ($creatorSID -eq [string]$finding.OwnerSID) {
+                            $fullUser | Add-Member -NotePropertyName 'ownerIsCreator' -NotePropertyValue 'True - the account is owned by the principal that created it' -Force
+                        } else {
+                            $fullUser | Add-Member -NotePropertyName 'ownerIsCreator' -NotePropertyValue 'False - ownership was re-assigned after the account was created' -Force
+                            $fullUser | Add-Member -NotePropertyName 'ownershipChanged' -NotePropertyValue 'The owner is not the principal that created this account. Ownership does not change by itself: somebody with the rights to do it took control of this user object.' -Force
+                        }
+                    } else {
+                        # No mS-DS-CreatorSID: created by a member of the administrators, or
+                        # by a domain controller. Say so rather than implying the creator and
+                        # the owner match.
+                        $fullUser | Add-Member -NotePropertyName 'ownerIsCreator' -NotePropertyValue 'Unknown - the object records no creator' -Force
+                    }
+
                     $nonDefaultOwnerUsers += $fullUser
                 }
             }
@@ -131698,7 +131887,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-2203"
+$Script:adPEASVersion = "2.7.0+20261011-2227"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
