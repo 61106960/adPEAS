@@ -38578,6 +38578,50 @@ if (-not $Script:SYSVOLCacheSkipped) {
 if (-not $Script:SYSVOLCacheReachable) {
 	$Script:SYSVOLCacheReachable = $null
 }
+$Script:SYSVOLByDesignInaccessible = @(
+	'DfsrPrivate'
+)
+function Test-SYSVOLByDesignInaccessible {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyString()]
+	    [string]$Path
+	)
+	if (-not $Path) { return $false }
+	foreach ($segment in ($Path -split '[\\/]')) {
+	    if ($Script:SYSVOLByDesignInaccessible -contains $segment) { return $true }
+	}
+	return $false
+}
+function Select-SYSVOLCoverageGaps {
+	[CmdletBinding()]
+	[OutputType([string[]])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [object[]]$ErrorRecords
+	)
+	$gaps = [System.Collections.Generic.List[string]]::new()
+	foreach ($err in @($ErrorRecords)) {
+	    if ($null -eq $err) { continue }
+	    $path = $null
+	    if ($err.TargetObject) {
+	        $path = [string]$err.TargetObject
+	    } elseif ($err.CategoryInfo -and $err.CategoryInfo.TargetName) {
+	        $path = [string]$err.CategoryInfo.TargetName
+	    } elseif ($err.Exception) {
+	        $path = $err.Exception.Message
+	    }
+	    if (-not $path) { continue }
+	    if (Test-SYSVOLByDesignInaccessible -Path $path) {
+	        continue
+	    }
+	    if (-not $gaps.Contains($path)) { [void]$gaps.Add($path) }
+	}
+	return @($gaps)
+}
 function Reset-SYSVOLFileCache {
 	[CmdletBinding()]
 	param()
@@ -38677,20 +38721,7 @@ function Get-CachedSYSVOLFiles {
 	            @(Get-ChildItem -Force -Path $SYSVOLPath -Recurse -ErrorAction SilentlyContinue -ErrorVariable +enumErrors | Where-Object { -not $_.PSIsContainer })
 	        )
 	    }
-	    $skippedPaths = [System.Collections.Generic.List[string]]::new()
-	    foreach ($err in @($enumErrors)) {
-	        if ($null -eq $err) { continue }
-	        $path = $null
-	        if ($err.TargetObject) {
-	            $path = [string]$err.TargetObject
-	        } elseif ($err.CategoryInfo -and $err.CategoryInfo.TargetName) {
-	            $path = [string]$err.CategoryInfo.TargetName
-	        } elseif ($err.Exception) {
-	            $path = $err.Exception.Message
-	        }
-	        if ($path -and -not $skippedPaths.Contains($path)) { [void]$skippedPaths.Add($path) }
-	    }
-	    $Script:SYSVOLCacheSkipped = @($skippedPaths)
+	    $Script:SYSVOLCacheSkipped = @(Select-SYSVOLCoverageGaps -ErrorRecords @($enumErrors))
 	    $Script:SYSVOLFileCache = @($allFiles)
 	}
 	$filterArray = @($Filter)
@@ -82681,7 +82712,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-1731"
+$Script:adPEASVersion = "2.7.0+20261011-1802"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

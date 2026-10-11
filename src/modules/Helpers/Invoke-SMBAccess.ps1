@@ -123,6 +123,113 @@ if (-not $Script:SYSVOLCacheReachable) {
     $Script:SYSVOLCacheReachable = $null  # $null = cache not yet built
 }
 
+# Folders under SYSVOL that no domain user can read by design, and that hold no policy
+# content. They are left out of the coverage report above - not to make the output
+# tidier, but because the report would otherwise be wrong.
+#
+# What that report is for: "a folder existed that I could not read, so a credential may
+# be sitting there unseen". That statement only means something where adPEAS has NARROWER
+# rights than an attacker would. DfsrPrivate is DFS Replication's own working directory -
+# Staging, ConflictAndDeleted and Installing - restricted to SYSTEM, so nobody at domain
+# user level reads it, adPEAS and attacker alike. Counting it as a gap raised a red line
+# in every DFSR-replicated domain there is, which is all of them since 2008, and through
+# the seven callers that downgrade on it, it also meant the green "no GPP credentials in
+# SYSVOL" verdict could never be reached.
+#
+# Note what this does NOT do: nothing is excluded from the file scan. These folders were
+# never readable in the first place - that is why they appear in the error list - so the
+# only thing that changes is whether a gap gets claimed that no attacker could use
+# either. A folder that is unreadable for any other reason still counts.
+$Script:SYSVOLByDesignInaccessible = @(
+    'DfsrPrivate'
+)
+
+<#
+.SYNOPSIS
+    Tests whether an unreadable SYSVOL path is one that is inaccessible by design.
+.DESCRIPTION
+    Compares every segment of the path against $Script:SYSVOLByDesignInaccessible, not
+    just the last one: depending on where the ACL bites, the enumeration error names
+    DfsrPrivate itself or something below it such as DfsrPrivate\ConflictAndDeleted.
+
+    Segments are compared whole. A folder someone really created called
+    DfsrPrivateBackup is not exempt and still counts as a gap in coverage.
+.PARAMETER Path
+    The path the enumeration error reported.
+.OUTPUTS
+    Boolean - $true if the path is exempt from the coverage report.
+#>
+function Test-SYSVOLByDesignInaccessible {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Path
+    )
+
+    if (-not $Path) { return $false }
+    foreach ($segment in ($Path -split '[\\/]')) {
+        if ($Script:SYSVOLByDesignInaccessible -contains $segment) { return $true }
+    }
+    return $false
+}
+
+<#
+.SYNOPSIS
+    Turns suppressed enumeration errors into the list of folders that count as a gap.
+.DESCRIPTION
+    One denied folder produces one error whose TargetObject is its path. Where the
+    provider supplies no TargetObject the category target is used, and failing that the
+    exception message - so the count stays right rather than under-reporting.
+
+    Paths that are inaccessible by design are dropped here, which is the one place that
+    decision is made.
+.PARAMETER ErrorRecords
+    The records collected by -ErrorVariable during enumeration.
+.OUTPUTS
+    String[] - the distinct paths that represent real gaps in coverage.
+#>
+function Select-SYSVOLCoverageGaps {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [object[]]$ErrorRecords
+    )
+
+    $gaps = [System.Collections.Generic.List[string]]::new()
+    foreach ($err in @($ErrorRecords)) {
+        if ($null -eq $err) { continue }
+
+        $path = $null
+        if ($err.TargetObject) {
+            $path = [string]$err.TargetObject
+        } elseif ($err.CategoryInfo -and $err.CategoryInfo.TargetName) {
+            $path = [string]$err.CategoryInfo.TargetName
+        } elseif ($err.Exception) {
+            $path = $err.Exception.Message
+        }
+        if (-not $path) { continue }
+
+        if (Test-SYSVOLByDesignInaccessible -Path $path) {
+            Write-Log "[Select-SYSVOLCoverageGaps] Not counted as a coverage gap - inaccessible by design and holds no policy content: $path"
+            continue
+        }
+
+        if (-not $gaps.Contains($path)) { [void]$gaps.Add($path) }
+    }
+
+    # Emitted as items, not wrapped. The comma idiom looked safer and was not: under
+    # Set-StrictMode -Version Latest - which Pester applies to everything a test body
+    # calls - ",@($emptyList)" yields a one-element array holding an empty array, so an
+    # empty result counted as one unreadable folder. That is precisely the false gap
+    # this whole function exists to stop reporting. Callers wrap in @(), which is what
+    # Get-CachedSYSVOLFiles does.
+    return @($gaps)
+}
+
 <#
 .SYNOPSIS
     Resets the SYSVOL file listing cache.
@@ -328,20 +435,7 @@ function Get-CachedSYSVOLFiles {
         # read. One denied folder produces one error whose TargetObject is its path; where
         # the provider does not supply one, fall back to the message so the count is still
         # right and the caller does not under-report.
-        $skippedPaths = [System.Collections.Generic.List[string]]::new()
-        foreach ($err in @($enumErrors)) {
-            if ($null -eq $err) { continue }
-            $path = $null
-            if ($err.TargetObject) {
-                $path = [string]$err.TargetObject
-            } elseif ($err.CategoryInfo -and $err.CategoryInfo.TargetName) {
-                $path = [string]$err.CategoryInfo.TargetName
-            } elseif ($err.Exception) {
-                $path = $err.Exception.Message
-            }
-            if ($path -and -not $skippedPaths.Contains($path)) { [void]$skippedPaths.Add($path) }
-        }
-        $Script:SYSVOLCacheSkipped = @($skippedPaths)
+        $Script:SYSVOLCacheSkipped = @(Select-SYSVOLCoverageGaps -ErrorRecords @($enumErrors))
 
         $Script:SYSVOLFileCache = @($allFiles)
         Write-Log "[Get-CachedSYSVOLFiles] Cached $($Script:SYSVOLFileCache.Count) files from SYSVOL, $($Script:SYSVOLCacheSkipped.Count) folder(s) unreadable"
