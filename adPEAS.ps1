@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 09:34:26
-    Version: 2.7.0+20261011-0934
+    Build: 2026-10-11 10:14:33
+    Version: 2.7.0+20261011-1014
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -78346,6 +78346,33 @@ function Get-OUPermissions {
                 $AppliesToComputers = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['computer'])
                 $AppliesToGroups = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['group'])
 
+                # Inheritance scope. InheritedObjectType above says which object CLASS an
+                # ACE reaches; these two say whether it reaches this object, its children,
+                # or both. Neither was read, so an ACE that grants nothing here was
+                # reported here: a WriteProperty on 'member' with no inheritance flags
+                # applies to this OU's own 'member' attribute, and an organizationalUnit
+                # has none - AD rejects the write and adPEAS called it a group takeover.
+                #
+                # The field is InheritanceFlags, not InheritanceType: an
+                # ActiveDirectoryAccessRule has no InheritanceType, so a gate reading it
+                # would be $null -ne "None" and therefore always true - a gate that looks
+                # like one and is not. ContainerInherit -bor ObjectInherit is the same
+                # test Get-ACEInheritanceSource already makes on the parent ACE above.
+                #
+                # Suppressing here loses nothing: Get-DangerousOUPermissions enumerates
+                # every organizationalUnit plus the principal containers, and Windows
+                # clears InheritOnly on the copy it propagates, so a descendants-only ACE
+                # is reported at the descendant it actually applies to.
+                $AppliesToSelf = -not (([string]$ACE.PropagationFlags) -match 'InheritOnly')
+                $AppliesToChildren = ($ACE.InheritanceFlags -band [System.Security.AccessControl.InheritanceFlags]::ContainerInherit) -or
+                                     ($ACE.InheritanceFlags -band [System.Security.AccessControl.InheritanceFlags]::ObjectInherit)
+
+                # A right that is a takeover of the container and of its children alike is
+                # not suppressed, only located: GenericAll with InheritOnly is full control
+                # of every descendant and none of this OU, and used to read as the latter.
+                $inheritanceNote = ''
+                if (-not $AppliesToSelf) { $inheritanceNote = ' (descendants only)' }
+
                 # If WriteProperty on ALL properties, create ONE generic finding instead of 6+ individual ones
                 # This prevents duplicate findings like: userAccountControl, member, SPN, scriptPath, Delegation x2, gPLink
                 if ($HasWriteProperty -and $IsAllProperties -and ($CheckType -contains 'AccountControl' -or
@@ -78366,7 +78393,7 @@ function Get-OUPermissions {
                         $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                         $Findings += [PSCustomObject]@{
                             CheckType     = "WritePropertyAll"
-                            Right         = "WriteProperty (All Properties)$scopeInfo"
+                            Right         = "WriteProperty (All Properties)$scopeInfo$inheritanceNote"
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -78392,7 +78419,7 @@ function Get-OUPermissions {
                         $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                         $Findings += [PSCustomObject]@{
                             CheckType     = "GenericAll"
-                            Right         = "GenericAll (Full Control)$scopeInfo"
+                            Right         = "GenericAll (Full Control)$scopeInfo$inheritanceNote"
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -78416,7 +78443,7 @@ function Get-OUPermissions {
                         $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                         $Findings += [PSCustomObject]@{
                             CheckType     = "GenericWrite"
-                            Right         = "GenericWrite$scopeInfo"
+                            Right         = "GenericWrite$scopeInfo$inheritanceNote"
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -78440,7 +78467,7 @@ function Get-OUPermissions {
                         $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                         $Findings += [PSCustomObject]@{
                             CheckType     = "WriteDacl"
-                            Right         = "WriteDacl (Modify Permissions)$scopeInfo"
+                            Right         = "WriteDacl (Modify Permissions)$scopeInfo$inheritanceNote"
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -78464,7 +78491,7 @@ function Get-OUPermissions {
                         $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                         $Findings += [PSCustomObject]@{
                             CheckType     = "WriteOwner"
-                            Right         = "WriteOwner (Take Ownership)$scopeInfo"
+                            Right         = "WriteOwner (Take Ownership)$scopeInfo$inheritanceNote"
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -78478,7 +78505,7 @@ function Get-OUPermissions {
                 if ($CheckType -contains 'PasswordReset') {
                     $HasExtendedRight = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
 
-                    if ($HasExtendedRight -and $AppliesToUsers) {
+                    if ($HasExtendedRight -and $AppliesToUsers -and $AppliesToChildren) {
                         # Check for Reset Password extended right (using central GUID lookup)
                         $passwordResetGUID = Get-ExtendedRightGUID -Name 'User-Force-Change-Password'
                         if ($ACE.ObjectType -eq $passwordResetGUID -or $ACE.ObjectType -eq [GUID]::Empty) {
@@ -78500,7 +78527,7 @@ function Get-OUPermissions {
                 # userAccountControl exists on User AND Computer objects
                 # User-Account-Restrictions Property Set (4c164200-...) includes UAC and is commonly delegated
                 if ($CheckType -contains 'AccountControl') {
-                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers)) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers) -and $AppliesToChildren) {
                         # Check direct userAccountControl attribute
                         if ($ACE.ObjectType -eq $PropertyGUIDs['userAccountControl']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
@@ -78532,7 +78559,7 @@ function Get-OUPermissions {
                 # Note: GUID::Empty is handled by generic "WriteProperty (All Properties)" above
                 # member attribute exists only on Group objects
                 if ($CheckType -contains 'GroupMembership') {
-                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToGroups) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToGroups -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['member']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -78553,7 +78580,7 @@ function Get-OUPermissions {
                     # the group and nobody else: a narrower right than WriteProperty on
                     # 'member', the same escalation if the group is privileged.
                     $HasSelf = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)
-                    if ($HasSelf -and -not $IsAllProperties -and $AppliesToGroups) {
+                    if ($HasSelf -and -not $IsAllProperties -and $AppliesToGroups -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['member']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -78574,7 +78601,7 @@ function Get-OUPermissions {
                 # Validated-SPN (f3a64788-...) is commonly used for SPN delegation via Self right
                 if ($CheckType -contains 'SPNModification') {
                     # Check WriteProperty on servicePrincipalName attribute
-                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers)) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers) -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['servicePrincipalName']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -78603,7 +78630,7 @@ function Get-OUPermissions {
                     }
                     # Check Self right with Validated-SPN (validated write)
                     $HasSelf = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)
-                    if ($HasSelf -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers)) {
+                    if ($HasSelf -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers) -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $Script:ValidatedWriteGUIDs['Validated-SPN']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -78625,7 +78652,7 @@ function Get-OUPermissions {
                 # Validated-DNS-Host-Name is commonly used for delegation via Self right
                 if ($CheckType -contains 'DNSHostName') {
                     # Check WriteProperty on dNSHostName attribute
-                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToComputers) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToComputers -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['dNSHostName']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -78666,7 +78693,7 @@ function Get-OUPermissions {
                     }
                     # Check Self right with Validated-DNS-Host-Name (validated write)
                     $HasSelf = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)
-                    if ($HasSelf -and -not $IsAllProperties -and $AppliesToComputers) {
+                    if ($HasSelf -and -not $IsAllProperties -and $AppliesToComputers -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $Script:ValidatedWriteGUIDs['Validated-DNS-Host-Name']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -78685,7 +78712,7 @@ function Get-OUPermissions {
                 # Note: GUID::Empty is handled by generic "WriteProperty (All Properties)" above
                 # scriptPath exists only on User objects
                 if ($CheckType -contains 'ScriptPath') {
-                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToUsers) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToUsers -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['scriptPath']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -78704,7 +78731,7 @@ function Get-OUPermissions {
                 # Note: GUID::Empty is handled by generic "WriteProperty (All Properties)" above
                 # Delegation attributes exist on User AND Computer objects
                 if ($CheckType -contains 'Delegation') {
-                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers)) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers) -and $AppliesToChildren) {
                         # msDS-AllowedToDelegateTo (Constrained Delegation)
                         if ($ACE.ObjectType -eq $PropertyGUIDs['msDS-AllowedToDelegateTo']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
@@ -78749,7 +78776,7 @@ function Get-OUPermissions {
                     $HasGenericAll = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)
                     $HasExtendedRight = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
 
-                    if (($HasReadProperty -or $HasGenericAll -or $HasExtendedRight) -and $AppliesToComputers) {
+                    if (($HasReadProperty -or $HasGenericAll -or $HasExtendedRight) -and $AppliesToComputers -and $AppliesToChildren) {
                         # LAPS permissions on OUs can be configured in several ways:
                         # 1. Specific property read: ObjectType = LAPS-Property-GUID (most common for delegated LAPS read)
                         # 2. All properties read: ObjectType = Empty GUID (GenericAll or full ReadProperty)
@@ -78940,7 +78967,7 @@ function Get-OUPermissions {
                     # CONTROL_ACCESS-only ACE is in practice a complete grant, and gating it
                     # out would have missed exactly the delegation Microsoft's own
                     # instructions for confidential attributes produce.
-                    if (($crHasRead -or $crHasGenericAll -or $crHasControlAccess) -and $AppliesToUsers) {
+                    if (($crHasRead -or $crHasGenericAll -or $crHasControlAccess) -and $AppliesToUsers -and $AppliesToChildren) {
 
                         # GenericAll carries CONTROL_ACCESS, so it defeats the confidential
                         # flag on its own.
@@ -79025,7 +79052,7 @@ function Get-OUPermissions {
                 if ($CheckType -contains 'ObjectCreation') {
 
                     $HasCreateChild = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::CreateChild)
-                    if ($HasCreateChild) {
+                    if ($HasCreateChild -and $AppliesToSelf) {
                         # Determine what can be created based on ObjectType
                         # Empty ObjectType = "All Objects" (but may be limited by other mechanisms)
                         # Specific GUID = specific object class (User, Computer, Group, etc.)
@@ -79070,7 +79097,7 @@ function Get-OUPermissions {
                 # So InheritedObjectType must be empty (applies to the OU) or organizationalUnit
                 if ($CheckType -contains 'GPOLinking') {
                     $AppliesToOU = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['organizationalUnit'])
-                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToOU) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToOU -and $AppliesToSelf) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['gPLink']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -130364,7 +130391,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-0934"
+$Script:adPEASVersion = "2.7.0+20261011-1014"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

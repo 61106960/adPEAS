@@ -50357,6 +50357,11 @@ function Get-OUPermissions {
                 $AppliesToUsers = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['user'])
                 $AppliesToComputers = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['computer'])
                 $AppliesToGroups = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['group'])
+                $AppliesToSelf = -not (([string]$ACE.PropagationFlags) -match 'InheritOnly')
+                $AppliesToChildren = ($ACE.InheritanceFlags -band [System.Security.AccessControl.InheritanceFlags]::ContainerInherit) -or
+                                     ($ACE.InheritanceFlags -band [System.Security.AccessControl.InheritanceFlags]::ObjectInherit)
+                $inheritanceNote = ''
+                if (-not $AppliesToSelf) { $inheritanceNote = ' (descendants only)' }
                 if ($HasWriteProperty -and $IsAllProperties -and ($CheckType -contains 'AccountControl' -or
                     $CheckType -contains 'GroupMembership' -or $CheckType -contains 'SPNModification' -or
                     $CheckType -contains 'ScriptPath' -or $CheckType -contains 'Delegation' -or
@@ -50371,7 +50376,7 @@ function Get-OUPermissions {
                         $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                         $Findings += [PSCustomObject]@{
                             CheckType     = "WritePropertyAll"
-                            Right         = "WriteProperty (All Properties)$scopeInfo"
+                            Right         = "WriteProperty (All Properties)$scopeInfo$inheritanceNote"
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -50391,7 +50396,7 @@ function Get-OUPermissions {
                         $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                         $Findings += [PSCustomObject]@{
                             CheckType     = "GenericAll"
-                            Right         = "GenericAll (Full Control)$scopeInfo"
+                            Right         = "GenericAll (Full Control)$scopeInfo$inheritanceNote"
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -50411,7 +50416,7 @@ function Get-OUPermissions {
                         $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                         $Findings += [PSCustomObject]@{
                             CheckType     = "GenericWrite"
-                            Right         = "GenericWrite$scopeInfo"
+                            Right         = "GenericWrite$scopeInfo$inheritanceNote"
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -50431,7 +50436,7 @@ function Get-OUPermissions {
                         $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                         $Findings += [PSCustomObject]@{
                             CheckType     = "WriteDacl"
-                            Right         = "WriteDacl (Modify Permissions)$scopeInfo"
+                            Right         = "WriteDacl (Modify Permissions)$scopeInfo$inheritanceNote"
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -50451,7 +50456,7 @@ function Get-OUPermissions {
                         $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                         $Findings += [PSCustomObject]@{
                             CheckType     = "WriteOwner"
-                            Right         = "WriteOwner (Take Ownership)$scopeInfo"
+                            Right         = "WriteOwner (Take Ownership)$scopeInfo$inheritanceNote"
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -50461,7 +50466,7 @@ function Get-OUPermissions {
                 }
                 if ($CheckType -contains 'PasswordReset') {
                     $HasExtendedRight = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
-                    if ($HasExtendedRight -and $AppliesToUsers) {
+                    if ($HasExtendedRight -and $AppliesToUsers -and $AppliesToChildren) {
                         $passwordResetGUID = Get-ExtendedRightGUID -Name 'User-Force-Change-Password'
                         if ($ACE.ObjectType -eq $passwordResetGUID -or $ACE.ObjectType -eq [GUID]::Empty) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
@@ -50477,7 +50482,7 @@ function Get-OUPermissions {
                     }
                 }
                 if ($CheckType -contains 'AccountControl') {
-                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers)) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers) -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['userAccountControl']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                             $Findings += [PSCustomObject]@{
@@ -50503,7 +50508,7 @@ function Get-OUPermissions {
                     }
                 }
                 if ($CheckType -contains 'GroupMembership') {
-                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToGroups) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToGroups -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['member']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -50517,7 +50522,7 @@ function Get-OUPermissions {
                         }
                     }
                     $HasSelf = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)
-                    if ($HasSelf -and -not $IsAllProperties -and $AppliesToGroups) {
+                    if ($HasSelf -and -not $IsAllProperties -and $AppliesToGroups -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['member']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -50532,7 +50537,7 @@ function Get-OUPermissions {
                     }
                 }
                 if ($CheckType -contains 'SPNModification') {
-                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers)) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers) -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['servicePrincipalName']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -50557,7 +50562,7 @@ function Get-OUPermissions {
                         }
                     }
                     $HasSelf = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)
-                    if ($HasSelf -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers)) {
+                    if ($HasSelf -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers) -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $Script:ValidatedWriteGUIDs['Validated-SPN']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -50572,7 +50577,7 @@ function Get-OUPermissions {
                     }
                 }
                 if ($CheckType -contains 'DNSHostName') {
-                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToComputers) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToComputers -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['dNSHostName']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -50608,7 +50613,7 @@ function Get-OUPermissions {
                         }
                     }
                     $HasSelf = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)
-                    if ($HasSelf -and -not $IsAllProperties -and $AppliesToComputers) {
+                    if ($HasSelf -and -not $IsAllProperties -and $AppliesToComputers -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $Script:ValidatedWriteGUIDs['Validated-DNS-Host-Name']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -50623,7 +50628,7 @@ function Get-OUPermissions {
                     }
                 }
                 if ($CheckType -contains 'ScriptPath') {
-                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToUsers) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToUsers -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['scriptPath']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -50638,7 +50643,7 @@ function Get-OUPermissions {
                     }
                 }
                 if ($CheckType -contains 'Delegation') {
-                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers)) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers) -and $AppliesToChildren) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['msDS-AllowedToDelegateTo']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
@@ -50667,7 +50672,7 @@ function Get-OUPermissions {
                     $HasReadProperty = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty)
                     $HasGenericAll = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)
                     $HasExtendedRight = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
-                    if (($HasReadProperty -or $HasGenericAll -or $HasExtendedRight) -and $AppliesToComputers) {
+                    if (($HasReadProperty -or $HasGenericAll -or $HasExtendedRight) -and $AppliesToComputers -and $AppliesToChildren) {
                         $lapsIsAllProperties = $IsAllProperties
                         $lapsPropertyFound = $false
                         $lapsGrantsControlAccess = ($HasGenericAll -or $HasExtendedRight)
@@ -50779,7 +50784,7 @@ function Get-OUPermissions {
                     $crHasRead          = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty)
                     $crHasGenericAll    = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)
                     $crHasControlAccess = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
-                    if (($crHasRead -or $crHasGenericAll -or $crHasControlAccess) -and $AppliesToUsers) {
+                    if (($crHasRead -or $crHasGenericAll -or $crHasControlAccess) -and $AppliesToUsers -and $AppliesToChildren) {
                         $crControlAccess = ($crHasGenericAll -or $crHasControlAccess)
                         $crAttributes = @(
                             @{ Name = 'ms-PKI-DPAPIMasterKeys'
@@ -50835,7 +50840,7 @@ function Get-OUPermissions {
                 }
                 if ($CheckType -contains 'ObjectCreation') {
                     $HasCreateChild = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::CreateChild)
-                    if ($HasCreateChild) {
+                    if ($HasCreateChild -and $AppliesToSelf) {
                         $createTarget = if ($IsAllProperties) {
                             "All Objects"
                         } else {
@@ -50865,7 +50870,7 @@ function Get-OUPermissions {
                 }
                 if ($CheckType -contains 'GPOLinking') {
                     $AppliesToOU = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['organizationalUnit'])
-                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToOU) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToOU -and $AppliesToSelf) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['gPLink']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -84822,7 +84827,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-0934"
+$Script:adPEASVersion = "2.7.0+20261011-1014"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
