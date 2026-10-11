@@ -71,16 +71,33 @@ function Get-InactiveAdminAccounts {
             # Group Policy Creator Owners never receives adminCount - and it propagates
             # hourly, so a recent addition is not marked yet. The per-account group
             # resolution below then decides what each hit actually is.
+            # -Enabled stays, deliberately. The review asked for disabled privileged
+            # accounts to be reported here too, on the grounds that the account keeps its
+            # membership and anybody who can write its userAccountControl can turn it back
+            # on. That is true, and it is still the wrong place: disabling an account
+            # instead of leaving it live is what a well-run domain DOES with a former
+            # admin, so every one of them would arrive as a red row - a finding against
+            # good practice. The re-enable path is about who holds rights on the object,
+            # and Get-NonDefaultUserOwners covers that; it reads disabled accounts for
+            # exactly this reason and says so in its own header.
             $privilegedFilter = Get-PrivilegedAccountFilter -IncludeOperators @connectionParams
             $adminAccounts = Get-DomainUser -Enabled -LDAPFilter $privilegedFilter @connectionParams
 
             $inactiveAccounts = @()
 
             if ($adminAccounts) {
-                # Use Test-AccountActivity to filter for inactive accounts
-                # -IsInactive: accounts that haven't logged in within InactiveDays
-                # -IncludeDetails: adds ActivityDetails property with parsed timestamps
+                # Two passes, because -IsInactive and -NeverLoggedIn are different questions
+                # and the first one answers "no" to the second: Test-AccountActivity drops an
+                # account that has never logged in from -IsInactive on purpose and points at
+                # -NeverLoggedIn for it. A privileged account that was created and never used
+                # is the extreme case of inactive, not an account to leave out - and it used
+                # to be invisible here.
                 $inactiveAdmins = @($adminAccounts | Test-AccountActivity -IsInactive -InactiveDays $InactiveDays -IncludeDetails)
+                $inactiveAdmins += @($adminAccounts | Test-AccountActivity -NeverLoggedIn -IncludeDetails)
+                # One account cannot be in both passes - Test-AccountActivity decides by the
+                # same timestamp - but the array is built from two of them, so the count has
+                # to come from the joined set rather than from either pass.
+                $inactiveAdmins = @($inactiveAdmins)
                 $totalInactive = $inactiveAdmins.Count
                 $currentIndex = 0
 
@@ -157,6 +174,14 @@ function Get-InactiveAdminAccounts {
                     # privilegedGroups is only used in Get-PrivilegedGroupMembers for tier classification
                     $account | Add-Member -NotePropertyName 'daysSinceLastLogon' -NotePropertyValue $daysSinceLogon -Force
                     $account | Add-Member -NotePropertyName 'isOrphaned' -NotePropertyValue $isOrphaned -Force
+
+                    # Said rather than implied. An account that never logged on has no
+                    # "days since" to report, and a disabled one is not harmless - the
+                    # owner of its userAccountControl can re-enable it.
+                    if ($null -eq $daysSinceLogon) {
+                        $account | Add-Member -NotePropertyName 'neverLoggedOn' -NotePropertyValue 'The account has never logged on - it was created and not used' -Force
+                    }
+
 
                     $inactiveAccounts += $account
                 }

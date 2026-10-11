@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 22:48:31
-    Version: 2.7.0+20261011-2248
+    Build: 2026-10-11 23:12:08
+    Version: 2.7.0+20261011-2312
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -99956,7 +99956,33 @@ function Get-PrivilegedGroupMembers {
                         $HasWriteOwner = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner)) -and
                                          (-not $objectType -or $objectType -eq [Guid]::Empty)
 
-                        $HasDangerousPermission = $HasGenericAll -or $HasWriteDacl -or $HasWriteOwner
+                        # The rights that add a MEMBER without controlling the object, which
+                        # the three above do not cover. This is the heaviest consequence an
+                        # ACE on AdminSDHolder can have: SDProp writes this descriptor onto
+                        # every adminCount=1 object hourly, so one of these here means the
+                        # trustee may add itself to Domain Admins, Enterprise Admins, Schema
+                        # Admins and every other protected group - and keep that right,
+                        # because a right granted here is the one that survives SDProp.
+                        #
+                        # Three forms, and the ObjectType decides which is which:
+                        #   WriteProperty on the member GUID  - write the attribute directly
+                        #   WriteProperty with no ObjectType  - write every attribute
+                        #   Self on the member GUID           - the "add/remove self as
+                        #                                       member" validated write
+                        # GenericWrite with no ObjectType expands to WriteProperty over all
+                        # attributes, which includes member; Test-ADRightsMask expands the
+                        # generic bits, so it is caught by the WriteProperty test.
+                        $memberGUID = $Script:PropertyGUIDs['member']
+                        $objectTypeIsMember = ($objectType -and $memberGUID -and $objectType -eq $memberGUID)
+                        $objectTypeIsEmpty = (-not $objectType -or $objectType -eq [Guid]::Empty)
+
+                        $HasWriteMember = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteProperty)) -and
+                                          ($objectTypeIsMember -or $objectTypeIsEmpty)
+                        $HasSelfMember = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)) -and
+                                         ($objectTypeIsMember -or $objectTypeIsEmpty)
+
+                        $HasDangerousPermission = $HasGenericAll -or $HasWriteDacl -or $HasWriteOwner -or
+                                                  $HasWriteMember -or $HasSelfMember
 
                         if (-not $HasDangerousPermission) { continue }
 
@@ -99995,6 +100021,18 @@ function Get-PrivilegedGroupMembers {
                         if ($HasGenericAll) { $Permissions += "GenericAll" }
                         if ($HasWriteDacl) { $Permissions += "WriteDacl" }
                         if ($HasWriteOwner) { $Permissions += "WriteOwner" }
+                        # Named for what it does rather than for the bit, because the
+                        # consequence is the one a reader has to see: this propagates to
+                        # every protected group.
+                        #
+                        # Only when GenericAll is not already on the row. GenericAll over the
+                        # whole object expands to WriteProperty and Self as well, so listing
+                        # them beside it turns one ACE that says "full control" into five
+                        # lines that say the same thing.
+                        if (-not $HasGenericAll) {
+                            if ($HasWriteMember) { $Permissions += "WriteProperty on member - may add a member to every protected group" }
+                            if ($HasSelfMember) { $Permissions += "Self on member - may add itself to every protected group" }
+                        }
 
                         $finding = [PSCustomObject]@{
                             Name = $TrusteeName
@@ -100009,6 +100047,73 @@ function Get-PrivilegedGroupMembers {
                         $AdminSDHolderFindings += $finding
 
                         Show-Object $finding
+                    }
+
+                    # Two questions, and the loop above answers only the first.
+                    #
+                    # "What does SDProp propagate" is about the EXPLICIT Allow ACEs: those
+                    # are the descriptor that gets written onto every protected object, and
+                    # that is why the loop skips inherited and Deny.
+                    #
+                    # "Who can change AdminSDHolder itself" is a different question with a
+                    # different answer. A GenericAll inherited onto CN=AdminSDHolder from
+                    # CN=System or from the domain root is enough to rewrite the template,
+                    # and the domain root is covered by Get-DangerousACLs while CN=System is
+                    # covered by nobody. Said as its own line, because the remediation is a
+                    # different one - the ACE has to be removed at the parent.
+                    $inheritedControllers = @()
+                    $denyTrustees = @()
+                    foreach ($ACE in $AdminSDHolderRules) {
+                        $identRef = $ACE.IdentityReference
+                        $aceSID = if ($identRef -is [System.Security.Principal.SecurityIdentifier]) {
+                            $identRef.Value
+                        } else {
+                            ConvertTo-SID -Identity $identRef.Value
+                        }
+                        if (-not $aceSID) { continue }
+
+                        if ($ACE.AccessControlType -eq 'Deny') {
+                            # A Deny on AdminSDHolder is itself worth a look: it can hide the
+                            # template from the very administrators who would audit it.
+                            $denyName = ConvertFrom-SID -SID $aceSID
+                            if (-not $denyName) { $denyName = $aceSID }
+                            if ($denyTrustees -notcontains $denyName) { $denyTrustees += $denyName }
+                            continue
+                        }
+
+                        if (-not $ACE.IsInherited) { continue }
+
+                        $inheritedType = $ACE.ObjectType
+                        $inheritedEmpty = (-not $inheritedType -or $inheritedType -eq [Guid]::Empty)
+                        $controls = (
+                            (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)) -or
+                            (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteDacl)) -or
+                            (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner))
+                        ) -and $inheritedEmpty
+                        if (-not $controls) { continue }
+
+                        # The four default holders of full control on everything are not a
+                        # finding here either - same gate as above.
+                        $inheritedScope = Test-IsExpectedInScope -Identity $aceSID -Scope 'DomainRootACL' -ReturnDetails
+                        if ($inheritedScope.Severity -in @('Expected', 'Attention')) { continue }
+
+                        $inheritedName = ConvertFrom-SID -SID $aceSID
+                        if (-not $inheritedName) { $inheritedName = $aceSID }
+                        if ($inheritedControllers -notcontains $inheritedName) { $inheritedControllers += $inheritedName }
+                    }
+
+                    if (@($inheritedControllers).Count -gt 0) {
+                        Show-Line "$(@($inheritedControllers).Count) principal(s) can rewrite AdminSDHolder through an inherited ACE - remove it at the parent:" -Class Finding
+                        foreach ($controller in $inheritedControllers) {
+                            Show-Line "  $controller" -Class Finding
+                        }
+                    }
+
+                    if (@($denyTrustees).Count -gt 0) {
+                        Show-Line "$(@($denyTrustees).Count) Deny ACE trustee(s) on AdminSDHolder - a Deny here can hide the template from the people who audit it:" -Class Hint
+                        foreach ($denied in $denyTrustees) {
+                            Show-Line "  $denied" -Class Hint
+                        }
                     }
                 }
                 $adminSDHolderRead = $true
@@ -100710,16 +100815,33 @@ function Get-InactiveAdminAccounts {
             # Group Policy Creator Owners never receives adminCount - and it propagates
             # hourly, so a recent addition is not marked yet. The per-account group
             # resolution below then decides what each hit actually is.
+            # -Enabled stays, deliberately. The review asked for disabled privileged
+            # accounts to be reported here too, on the grounds that the account keeps its
+            # membership and anybody who can write its userAccountControl can turn it back
+            # on. That is true, and it is still the wrong place: disabling an account
+            # instead of leaving it live is what a well-run domain DOES with a former
+            # admin, so every one of them would arrive as a red row - a finding against
+            # good practice. The re-enable path is about who holds rights on the object,
+            # and Get-NonDefaultUserOwners covers that; it reads disabled accounts for
+            # exactly this reason and says so in its own header.
             $privilegedFilter = Get-PrivilegedAccountFilter -IncludeOperators @connectionParams
             $adminAccounts = Get-DomainUser -Enabled -LDAPFilter $privilegedFilter @connectionParams
 
             $inactiveAccounts = @()
 
             if ($adminAccounts) {
-                # Use Test-AccountActivity to filter for inactive accounts
-                # -IsInactive: accounts that haven't logged in within InactiveDays
-                # -IncludeDetails: adds ActivityDetails property with parsed timestamps
+                # Two passes, because -IsInactive and -NeverLoggedIn are different questions
+                # and the first one answers "no" to the second: Test-AccountActivity drops an
+                # account that has never logged in from -IsInactive on purpose and points at
+                # -NeverLoggedIn for it. A privileged account that was created and never used
+                # is the extreme case of inactive, not an account to leave out - and it used
+                # to be invisible here.
                 $inactiveAdmins = @($adminAccounts | Test-AccountActivity -IsInactive -InactiveDays $InactiveDays -IncludeDetails)
+                $inactiveAdmins += @($adminAccounts | Test-AccountActivity -NeverLoggedIn -IncludeDetails)
+                # One account cannot be in both passes - Test-AccountActivity decides by the
+                # same timestamp - but the array is built from two of them, so the count has
+                # to come from the joined set rather than from either pass.
+                $inactiveAdmins = @($inactiveAdmins)
                 $totalInactive = $inactiveAdmins.Count
                 $currentIndex = 0
 
@@ -100796,6 +100918,14 @@ function Get-InactiveAdminAccounts {
                     # privilegedGroups is only used in Get-PrivilegedGroupMembers for tier classification
                     $account | Add-Member -NotePropertyName 'daysSinceLastLogon' -NotePropertyValue $daysSinceLogon -Force
                     $account | Add-Member -NotePropertyName 'isOrphaned' -NotePropertyValue $isOrphaned -Force
+
+                    # Said rather than implied. An account that never logged on has no
+                    # "days since" to report, and a disabled one is not harmless - the
+                    # owner of its userAccountControl can re-enable it.
+                    if ($null -eq $daysSinceLogon) {
+                        $account | Add-Member -NotePropertyName 'neverLoggedOn' -NotePropertyValue 'The account has never logged on - it was created and not used' -Force
+                    }
+
 
                     $inactiveAccounts += $account
                 }
@@ -132044,7 +132174,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-2248"
+$Script:adPEASVersion = "2.7.0+20261011-2312"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

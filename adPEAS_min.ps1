@@ -63914,7 +63914,15 @@ function Get-PrivilegedGroupMembers {
                                         (-not $objectType -or $objectType -eq [Guid]::Empty)
                         $HasWriteOwner = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner)) -and
                                          (-not $objectType -or $objectType -eq [Guid]::Empty)
-                        $HasDangerousPermission = $HasGenericAll -or $HasWriteDacl -or $HasWriteOwner
+                        $memberGUID = $Script:PropertyGUIDs['member']
+                        $objectTypeIsMember = ($objectType -and $memberGUID -and $objectType -eq $memberGUID)
+                        $objectTypeIsEmpty = (-not $objectType -or $objectType -eq [Guid]::Empty)
+                        $HasWriteMember = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteProperty)) -and
+                                          ($objectTypeIsMember -or $objectTypeIsEmpty)
+                        $HasSelfMember = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)) -and
+                                         ($objectTypeIsMember -or $objectTypeIsEmpty)
+                        $HasDangerousPermission = $HasGenericAll -or $HasWriteDacl -or $HasWriteOwner -or
+                                                  $HasWriteMember -or $HasSelfMember
                         if (-not $HasDangerousPermission) { continue }
                         $SeenSIDs[$TrusteeSID] = $true
                         $TrusteeName = ConvertFrom-SID -SID $TrusteeSID
@@ -63939,6 +63947,10 @@ function Get-PrivilegedGroupMembers {
                         if ($HasGenericAll) { $Permissions += "GenericAll" }
                         if ($HasWriteDacl) { $Permissions += "WriteDacl" }
                         if ($HasWriteOwner) { $Permissions += "WriteOwner" }
+                        if (-not $HasGenericAll) {
+                            if ($HasWriteMember) { $Permissions += "WriteProperty on member - may add a member to every protected group" }
+                            if ($HasSelfMember) { $Permissions += "Self on member - may add itself to every protected group" }
+                        }
                         $finding = [PSCustomObject]@{
                             Name = $TrusteeName
                             Trustee = $TrusteeName
@@ -63951,6 +63963,49 @@ function Get-PrivilegedGroupMembers {
                         $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AdminSDHolderACL' -Force
                         $AdminSDHolderFindings += $finding
                         Show-Object $finding
+                    }
+                    $inheritedControllers = @()
+                    $denyTrustees = @()
+                    foreach ($ACE in $AdminSDHolderRules) {
+                        $identRef = $ACE.IdentityReference
+                        $aceSID = if ($identRef -is [System.Security.Principal.SecurityIdentifier]) {
+                            $identRef.Value
+                        } else {
+                            ConvertTo-SID -Identity $identRef.Value
+                        }
+                        if (-not $aceSID) { continue }
+                        if ($ACE.AccessControlType -eq 'Deny') {
+                            $denyName = ConvertFrom-SID -SID $aceSID
+                            if (-not $denyName) { $denyName = $aceSID }
+                            if ($denyTrustees -notcontains $denyName) { $denyTrustees += $denyName }
+                            continue
+                        }
+                        if (-not $ACE.IsInherited) { continue }
+                        $inheritedType = $ACE.ObjectType
+                        $inheritedEmpty = (-not $inheritedType -or $inheritedType -eq [Guid]::Empty)
+                        $controls = (
+                            (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)) -or
+                            (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteDacl)) -or
+                            (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner))
+                        ) -and $inheritedEmpty
+                        if (-not $controls) { continue }
+                        $inheritedScope = Test-IsExpectedInScope -Identity $aceSID -Scope 'DomainRootACL' -ReturnDetails
+                        if ($inheritedScope.Severity -in @('Expected', 'Attention')) { continue }
+                        $inheritedName = ConvertFrom-SID -SID $aceSID
+                        if (-not $inheritedName) { $inheritedName = $aceSID }
+                        if ($inheritedControllers -notcontains $inheritedName) { $inheritedControllers += $inheritedName }
+                    }
+                    if (@($inheritedControllers).Count -gt 0) {
+                        Show-Line "$(@($inheritedControllers).Count) principal(s) can rewrite AdminSDHolder through an inherited ACE - remove it at the parent:" -Class Finding
+                        foreach ($controller in $inheritedControllers) {
+                            Show-Line "  $controller" -Class Finding
+                        }
+                    }
+                    if (@($denyTrustees).Count -gt 0) {
+                        Show-Line "$(@($denyTrustees).Count) Deny ACE trustee(s) on AdminSDHolder - a Deny here can hide the template from the people who audit it:" -Class Hint
+                        foreach ($denied in $denyTrustees) {
+                            Show-Line "  $denied" -Class Hint
+                        }
                     }
                 }
                 $adminSDHolderRead = $true
@@ -64335,6 +64390,8 @@ function Get-InactiveAdminAccounts {
             $inactiveAccounts = @()
             if ($adminAccounts) {
                 $inactiveAdmins = @($adminAccounts | Test-AccountActivity -IsInactive -InactiveDays $InactiveDays -IncludeDetails)
+                $inactiveAdmins += @($adminAccounts | Test-AccountActivity -NeverLoggedIn -IncludeDetails)
+                $inactiveAdmins = @($inactiveAdmins)
                 $totalInactive = $inactiveAdmins.Count
                 $currentIndex = 0
                 foreach ($account in $inactiveAdmins) {
@@ -64380,6 +64437,9 @@ function Get-InactiveAdminAccounts {
                     }
                     $account | Add-Member -NotePropertyName 'daysSinceLastLogon' -NotePropertyValue $daysSinceLogon -Force
                     $account | Add-Member -NotePropertyName 'isOrphaned' -NotePropertyValue $isOrphaned -Force
+                    if ($null -eq $daysSinceLogon) {
+                        $account | Add-Member -NotePropertyName 'neverLoggedOn' -NotePropertyValue 'The account has never logged on - it was created and not used' -Force
+                    }
                     $inactiveAccounts += $account
                 }
             }
@@ -85631,7 +85691,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-2248"
+$Script:adPEASVersion = "2.7.0+20261011-2312"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
