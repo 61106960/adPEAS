@@ -10853,6 +10853,55 @@ foreach ($oid in $linkedOIDs) {
     # OPERATOR GROUP FINDINGS (from Get-ProtectedUsersStatus)
     # ============================================================================
 
+    'TIER0_NOT_IN_PROTECTED_USERS' = @{
+        Title = "Tier-0 Account Not in Protected Users"
+        Risk = "Finding"
+        BaseScore = 30
+        Description = "This account is a member of a Tier-0 group - Domain Admins, Enterprise Admins, Schema Admins or BUILTIN\Administrators - and is not in the 'Protected Users' security group. Protected Users is the only mechanism that turns off the credential formats an attacker harvests: NTLM, CredSSP, Digest and RC4 all stop working for its members, their credentials are no longer cached on the machines they log on to, and their tickets cannot be delegated. Outside the group every one of those remains available on every host the account touches. The main result of this check existed only as a line of text before this write-up; it had no description, no attack path, no remediation and no contribution to the score."
+        Impact = @(
+            "The account's NTLM hash is cached on every machine it logs on to and can be dumped from LSASS"
+            "That hash is enough for pass-the-hash onto any other host that trusts it"
+            "Its TGT can be delegated, so a compromised service can act as this account"
+            "RC4 remains available for its service tickets, which makes them worth roasting"
+            "A ten-hour TGT lifetime leaves a stolen ticket usable for a full working day"
+        )
+        Attack = @(
+            "1. An attacker gains code execution on a server this account has logged on to"
+            "2. Reads the cached credential or the Kerberos ticket out of LSASS"
+            "3. Replays it against a domain controller - no password needed"
+            "4. With a Tier-0 account that is the whole domain"
+        )
+        Remediation = @(
+            "Add Tier 0 USER accounts to 'Protected Users'. It ends NTLM, CredSSP, Digest, RC4 and delegation for those accounts and stops their credentials being cached - check what depends on that first"
+            "Do not put a computer account or a gMSA in the group: Microsoft advises against it and it has no effect there"
+            "For a service account that cannot join the group, set 'Account is sensitive and cannot be delegated' and restrict msDS-SupportedEncryptionTypes to AES"
+            "Use separate administrative accounts so that adding them to the group cannot break an interactive user's day-to-day work"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Add a Tier 0 user account to Protected Users - a user account, and after checking what it depends on"
+                Command = "Add-ADGroupMember -Identity 'Protected Users' -Members 'TIER0_USER_ACCOUNT'"
+            }
+            @{
+                Description = "Show who is in the group today"
+                Command = "Get-ADGroupMember -Identity 'Protected Users'"
+            }
+        )
+        References = @(
+            @{ Title = "Protected Users Security Group"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group" }
+            @{ Title = "Securing Privileged Access - Tier model"; Url = "https://learn.microsoft.com/en-us/security/privileged-access-workstations/privileged-access-access-model" }
+        )
+        Tools = @("BloodHound", "mimikatz", "Rubeus")
+        MITRE = "T1003.001"
+        Triggers = @(
+            # The attribute the check already writes on every Tier-0 account it reports.
+            # 'Protected' is the earned verdict and reads as Secure; the excluded accounts
+            # carry excludedReason instead and match neither.
+            @{ Attribute = 'protectedUsersStatus'; Pattern = '^NOT PROTECTED$'; Severity = 'Finding' }
+            @{ Attribute = 'protectedUsersStatus'; Pattern = '^Protected$'; Severity = 'Secure' }
+        )
+    }
+
     'OPERATOR_GROUP_MEMBERS' = @{
         Title = "Operator Group Has Active Members"
         Risk = "Hint"
