@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 19:27:18
-    Version: 2.7.0+20261011-1927
+    Build: 2026-10-11 19:49:54
+    Version: 2.7.0+20261011-1949
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -3363,7 +3363,11 @@ $Script:UserRightsBaseline = [ordered]@{
 
     'SeSecurityPrivilege' = @{
         Name = 'Manage auditing and security log'
-        Tier = 'Finding'
+        # Hint, not Finding. Every other right in the Finding tier hands the holder
+        # SYSTEM, the contents of NTDS.dit, kernel code or ownership of any object.
+        # This one is anti-forensics: it destroys the record of an intrusion rather
+        # than enabling one, so it does not belong beside them.
+        Tier = 'Hint'
         Why  = 'Clears the security log, which is how an intrusion stops being reconstructable.'
         Member = @('S-1-5-32-544')
         DC     = @('S-1-5-32-544')
@@ -105322,12 +105326,43 @@ function Get-GPOUserRightsAssignment {
                             }
                         }
 
+                        # Exchange grants its own servers rights on the domain controllers
+                        # at setup, and they cannot be taken away without breaking Exchange.
+                        # Get-DangerousOUPermissions already renders such a group as
+                        # Attention rather than as a finding; this is the same judgement for
+                        # the same groups.
+                        #
+                        # Only when EVERY holder beyond the default is such a group. One
+                        # ordinary account added beside Exchange is a finding on its own and
+                        # must not be covered by the exemption.
+                        $allExchange = $false
+                        if ($added.Count -gt 0) {
+                            $nonExchange = @($added | Where-Object {
+                                -not (Test-IsExchangeServiceGroup -Identity $_).IsExchangeService
+                            })
+                            $allExchange = (@($nonExchange).Count -eq 0)
+                        }
+
                         $severity = if ($added.Count -eq 0 -and $unresolved.Count -eq 0) {
                             # Only default holders removed. Hardening more often than not,
                             # and never something to raise as an exposure.
                             'Note'
                         } elseif ($anyBroad) {
+                            # Breadth first: a broad group beside Exchange is still a
+                            # configuration accident, and the wider statement wins.
                             'Finding'
+                        } elseif ($allExchange) {
+                            # 'Hint', not 'Attention'. _severity is handed straight to
+                            # Show-Object -Class, whose ValidateSet is
+                            # Finding/Hint/Note/Secure/Standard - so Attention threw and the
+                            # check's own try/catch turned that into 'Error during check',
+                            # losing every finding in the domain. Get-DangerousOUPermissions
+                            # can use the word because it keeps it in the object's own
+                            # dangerousRightsSeverity and lets the renderer map it; here the
+                            # value IS the render class. Hint is the colour Attention renders
+                            # as in either case, and the holders stay in
+                            # GrantedBeyondDefault so the reader sees who it is.
+                            'Hint'
                         } else {
                             $comparison.Tier
                         }
@@ -131884,7 +131919,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1927"
+$Script:adPEASVersion = "2.7.0+20261011-1949"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

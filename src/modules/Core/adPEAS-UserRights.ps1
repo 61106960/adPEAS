@@ -184,7 +184,11 @@ $Script:UserRightsBaseline = [ordered]@{
 
     'SeSecurityPrivilege' = @{
         Name = 'Manage auditing and security log'
-        Tier = 'Finding'
+        # Hint, not Finding. Every other right in the Finding tier hands the holder
+        # SYSTEM, the contents of NTDS.dit, kernel code or ownership of any object.
+        # This one is anti-forensics: it destroys the record of an intrusion rather
+        # than enabling one, so it does not belong beside them.
+        Tier = 'Hint'
         Why  = 'Clears the security log, which is how an intrusion stops being reconstructable.'
         Member = @('S-1-5-32-544')
         DC     = @('S-1-5-32-544')

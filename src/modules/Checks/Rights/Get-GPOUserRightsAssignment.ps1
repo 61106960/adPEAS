@@ -324,12 +324,43 @@ function Get-GPOUserRightsAssignment {
                             }
                         }
 
+                        # Exchange grants its own servers rights on the domain controllers
+                        # at setup, and they cannot be taken away without breaking Exchange.
+                        # Get-DangerousOUPermissions already renders such a group as
+                        # Attention rather than as a finding; this is the same judgement for
+                        # the same groups.
+                        #
+                        # Only when EVERY holder beyond the default is such a group. One
+                        # ordinary account added beside Exchange is a finding on its own and
+                        # must not be covered by the exemption.
+                        $allExchange = $false
+                        if ($added.Count -gt 0) {
+                            $nonExchange = @($added | Where-Object {
+                                -not (Test-IsExchangeServiceGroup -Identity $_).IsExchangeService
+                            })
+                            $allExchange = (@($nonExchange).Count -eq 0)
+                        }
+
                         $severity = if ($added.Count -eq 0 -and $unresolved.Count -eq 0) {
                             # Only default holders removed. Hardening more often than not,
                             # and never something to raise as an exposure.
                             'Note'
                         } elseif ($anyBroad) {
+                            # Breadth first: a broad group beside Exchange is still a
+                            # configuration accident, and the wider statement wins.
                             'Finding'
+                        } elseif ($allExchange) {
+                            # 'Hint', not 'Attention'. _severity is handed straight to
+                            # Show-Object -Class, whose ValidateSet is
+                            # Finding/Hint/Note/Secure/Standard - so Attention threw and the
+                            # check's own try/catch turned that into 'Error during check',
+                            # losing every finding in the domain. Get-DangerousOUPermissions
+                            # can use the word because it keeps it in the object's own
+                            # dangerousRightsSeverity and lets the renderer map it; here the
+                            # value IS the render class. Hint is the colour Attention renders
+                            # as in either case, and the holders stay in
+                            # GrantedBeyondDefault so the reader sees who it is.
+                            'Hint'
                         } else {
                             $comparison.Tier
                         }

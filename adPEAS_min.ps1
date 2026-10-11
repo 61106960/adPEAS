@@ -1449,7 +1449,7 @@ $Script:UserRightsBaseline = [ordered]@{
     }
     'SeSecurityPrivilege' = @{
         Name = 'Manage auditing and security log'
-        Tier = 'Finding'
+        Tier = 'Hint'
         Why  = 'Clears the security log, which is how an intrusion stops being reconstructable.'
         Member = @('S-1-5-32-544')
         DC     = @('S-1-5-32-544')
@@ -66980,10 +66980,19 @@ function Get-GPOUserRightsAssignment {
                                 break
                             }
                         }
+                        $allExchange = $false
+                        if ($added.Count -gt 0) {
+                            $nonExchange = @($added | Where-Object {
+                                -not (Test-IsExchangeServiceGroup -Identity $_).IsExchangeService
+                            })
+                            $allExchange = (@($nonExchange).Count -eq 0)
+                        }
                         $severity = if ($added.Count -eq 0 -and $unresolved.Count -eq 0) {
                             'Note'
                         } elseif ($anyBroad) {
                             'Finding'
+                        } elseif ($allExchange) {
+                            'Hint'
                         } else {
                             $comparison.Tier
                         }
@@ -85701,7 +85710,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-1927"
+$Script:adPEASVersion = "2.7.0+20261011-1949"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
