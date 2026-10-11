@@ -647,14 +647,26 @@ function Get-LAPSConfiguration {
             $staleCutoff = (Get-Date).AddDays(-$staleGraceDays)
             $staleLAPSComputers = @()
 
+            # An expiration attribute that is present but is not a date: 0, which is the
+            # documented way to request an immediate rotation, Int64::MaxValue, or a value
+            # LAPS never wrote. None of them says anything about the age of the password,
+            # and none is evidence of a stalled rotation - which is what reporting it as
+            # overdue would claim. Named at the end instead of dropped, because the machine
+            # counted as protected in the coverage figure above.
+            $undatedExpiry = @()
+            $lapsEraStart = [DateTime]'2015-01-01'
+
             foreach ($computer in $computersWithLAPS) {
                 # Whichever generation last wrote wins: a machine migrated from Legacy to
                 # Windows LAPS keeps the old attribute, and judging by the older of the two
                 # would report every migrated machine as stale.
                 $expiry = $null
                 $generation = $null
+                $carriesExpiryValue = $false
                 foreach ($attr in @('ms-Mcs-AdmPwdExpirationTime', 'msLAPS-PasswordExpirationTime')) {
                     $value = $computer.$attr
+                    if ($null -eq $value) { continue }
+                    $carriesExpiryValue = $true
                     if ($value -isnot [DateTime]) { continue }
                     if ($null -eq $expiry -or $value -gt $expiry) {
                         $expiry = $value
@@ -662,7 +674,20 @@ function Get-LAPSConfiguration {
                     }
                 }
 
-                if ($null -eq $expiry -or $expiry -ge $staleCutoff) { continue }
+                if ($null -eq $expiry) {
+                    if ($carriesExpiryValue) { $undatedExpiry += ($computer.sAMAccountName -replace '\$$', '') }
+                    continue
+                }
+
+                # Nothing from before LAPS existed can be a rotation deadline. A four-digit
+                # "days overdue" beside a real finding of forty days costs the whole section
+                # its credibility, and the real finding is what gets lost.
+                if ($expiry -lt $lapsEraStart) {
+                    $undatedExpiry += ($computer.sAMAccountName -replace '\$$', '')
+                    continue
+                }
+
+                if ($expiry -ge $staleCutoff) { continue }
 
                 $daysOverdue = [math]::Floor(((Get-Date) - $expiry).TotalDays)
                 $staleObject = [PSCustomObject]@{
@@ -682,8 +707,15 @@ function Get-LAPSConfiguration {
                 foreach ($staleObject in ($staleLAPSComputers | Sort-Object daysOverdue -Descending)) {
                     Show-Object $staleObject
                 }
-            } elseif ($withAnyLAPS -gt 0) {
+            } elseif ($withAnyLAPS -gt 0 -and @($undatedExpiry).Count -eq 0) {
                 Show-Line "Every computer with LAPS rotated its password on schedule" -Class "Secure"
+            } elseif ($withAnyLAPS -gt 0) {
+                # The machines named below were not assessed, so the sentence says what was.
+                Show-Line "Every computer whose LAPS expiration time is a date rotated on schedule" -Class "Secure"
+            }
+
+            if (@($undatedExpiry).Count -gt 0) {
+                Show-Line "LAPS expiration time is not a rotation date (0 = rotation requested) on: $(Format-LAPSComputerList -Name $undatedExpiry -Limit 10)" -Class "Note"
             }
 
             # Highlight computers without LAPS

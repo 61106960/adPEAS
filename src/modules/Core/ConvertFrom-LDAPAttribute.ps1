@@ -1438,8 +1438,19 @@ function ConvertFrom-LDAPAttribute {
                     # LAPS Expiration Times
                     try {
                         $ExpirationInt64 = [Int64]$PropValue[0]
-                        $ExpirationDateTime = [DateTime]::FromFileTime($ExpirationInt64)
-                        $ConvertedProperties[$PropName] = $ExpirationDateTime
+                        # 0 and Int64::MaxValue are not timestamps - the same two special
+                        # values the generic FileTime branch above passes through raw. 0 is
+                        # the documented way to force an immediate rotation, and
+                        # FromFileTime(0) is 1601-01-01, which reached Get-LAPSConfiguration
+                        # as a rotation date: a machine whose password is rotating right now
+                        # became the worst finding in the domain, "155510 days overdue".
+                        # Passed through raw, so a caller testing for [DateTime] can see
+                        # that it is not one.
+                        if ($ExpirationInt64 -eq 0 -or $ExpirationInt64 -eq 9223372036854775807) {
+                            $ConvertedProperties[$PropName] = $PropValue[0]
+                        } else {
+                            $ConvertedProperties[$PropName] = [DateTime]::FromFileTime($ExpirationInt64)
+                        }
                     } catch {
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }
