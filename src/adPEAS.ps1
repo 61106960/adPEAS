@@ -1135,7 +1135,7 @@ try {
         Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['ADCS'])"
         try {
             Invoke-CheckWithContext -Category 'ADCS' -CheckName 'Get-ADCSVulnerabilities' -Title 'ADCS Vulnerabilities' -Check { Get-ADCSVulnerabilities -IncludePrivileged:$IncludePrivileged }
-            Invoke-CheckWithContext -Category 'ADCS' -CheckName 'Get-WeakCertificateMapping' -Title 'Explicit Certificate Mappings' -Check { Get-WeakCertificateMapping }
+            Invoke-CheckWithContext -Category 'ADCS' -CheckName 'Get-WeakCertificateMapping' -Title 'Explicit Certificate Mappings' -Check { Get-WeakCertificateMapping -IncludePrivileged:$IncludePrivileged }
         } catch {
             Write-Warning "[adPEAS] Error executing ADCS Module: $_"
         }

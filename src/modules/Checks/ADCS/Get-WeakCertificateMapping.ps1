@@ -76,7 +76,13 @@ function Get-WeakCertificateMapping {
         [string]$Server,
 
         [Parameter(Mandatory = $false)]
-        [Management.Automation.PSCredential]$Credential
+        [Management.Automation.PSCredential]$Credential,
+
+        # Exchange service groups hold these rights by design. Without this switch the
+        # check printed them in every scan of every domain that runs Exchange, and the
+        # green verdict below could never be reached.
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludePrivileged
     )
 
     begin {
@@ -84,16 +90,19 @@ function Get-WeakCertificateMapping {
     }
 
     process {
-        if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
-            return
-        }
-
-        # Connection parameters for the inner Get-Domain* calls. Built explicitly rather
-        # than splatted from $PSBoundParameters, which inner scopes cannot see.
+        # Connection parameters for Ensure-LDAPConnection and for the inner Get-Domain*
+        # calls. Built explicitly rather than splatted from $PSBoundParameters: that one
+        # carries every parameter the caller passed, and Ensure-LDAPConnection accepts only
+        # these three - so adding any further parameter to this check made the splat throw
+        # on the first line of the check, in every scan, before anything ran.
         $connectionParams = @{}
         if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
         if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
         if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+
+        if (-not (Ensure-LDAPConnection @connectionParams)) {
+            return
+        }
 
         # ==================================================================
         # 1. Principals that already carry an explicit mapping
@@ -361,13 +370,25 @@ function Get-WeakCertificateMapping {
         }
 
         if (@($exchangeOnlyFindings).Count -gt 0) {
-            Show-Line "$(@($exchangeOnlyFindings).Count) further privileged principal(s) are writable by Exchange service groups only - the by-design Exchange ACL, and an escalation path through Exchange rather than a delegation" -Class Hint
-            foreach ($finding in $exchangeOnlyFindings) {
-                Show-Object $finding -Class Hint
+            # Held back by default, the way Get-DangerousACLs holds back an Exchange
+            # service group: the ACL is written by Exchange setup and cannot be removed
+            # without breaking Exchange. Not in silence though - one short line says how
+            # many there are, so a reader who has not met the switch can still learn that
+            # Exchange reaches these accounts.
+            if ($IncludePrivileged) {
+                Show-Line "$(@($exchangeOnlyFindings).Count) privileged account(s) writable only by Exchange service groups (by design):" -Class Hint
+                foreach ($finding in $exchangeOnlyFindings) {
+                    Show-Object $finding -Class Hint
+                }
+            } else {
+                Show-Line "$(@($exchangeOnlyFindings).Count) privileged account(s) writable only by Exchange service groups (by design) - use -IncludePrivileged" -Class Note
             }
         }
 
-        if (@($writableFindings).Count -eq 0 -and @($exchangeOnlyFindings).Count -eq 0) {
+        # Only the real findings decide this. The Exchange ACL is by design and holds no
+        # non-privileged principal, so counting it here meant the green verdict - which is
+        # exactly what this line claims - could never be printed in a domain with Exchange.
+        if (@($writableFindings).Count -eq 0) {
             Show-Line "No non-privileged principal can write altSecurityIdentities on a privileged account" -Class Secure
         }
     }

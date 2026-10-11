@@ -376,8 +376,17 @@ function Get-CredentialExposure {
             }
 
             # Mode 2: Domain-based SYSVOL/NETLOGON scanning
-            # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            # Ensure LDAP connection (displays error if needed). The three parameters it
+            # takes, named one by one rather than splatted from $PSBoundParameters: -Path is
+            # also a parameter of this check, and an empty string for it is falsy enough to
+            # fall past the Mode 1 branch above while still sitting in $PSBoundParameters -
+            # which made the splat throw here instead of scanning the domain.
+            $connectionParams = @{}
+            if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+            if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+            if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
