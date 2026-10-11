@@ -50558,6 +50558,36 @@ function Get-ACEInheritanceSource {
         return "Inherited"
     }
 }
+function Test-ACEFullyDenied {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] $ACE,
+        [Parameter(Mandatory = $true)] [AllowEmptyCollection()] $DenyACEs
+    )
+    $allowMask = ConvertTo-ExpandedADRightsValue -Rights $ACE.ActiveDirectoryRights
+    if (-not $allowMask) { return $false }
+    $ci = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit
+    $oi = [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $allowSelf = -not ((([string]$ACE.PropagationFlags)) -match 'InheritOnly')
+    $allowKids = ($ACE.InheritanceFlags -band $ci) -or ($ACE.InheritanceFlags -band $oi)
+    foreach ($deny in $DenyACEs) {
+        if ($deny.IdentityReference.Value -ne $ACE.IdentityReference.Value) { continue }
+        $denyObjectType = $deny.ObjectType
+        $denyCoversEveryRight = (-not $denyObjectType) -or ($denyObjectType -eq [GUID]::Empty)
+        if (-not $denyCoversEveryRight -and ($denyObjectType -ne $ACE.ObjectType)) { continue }
+        $denyClass = $deny.InheritedObjectType
+        $denyCoversEveryClass = (-not $denyClass) -or ($denyClass -eq [GUID]::Empty)
+        if (-not $denyCoversEveryClass -and ($denyClass -ne $ACE.InheritedObjectType)) { continue }
+        $denySelf = -not ((([string]$deny.PropagationFlags)) -match 'InheritOnly')
+        if ($allowSelf -and -not $denySelf) { continue }
+        $denyKids = ($deny.InheritanceFlags -band $ci) -or ($deny.InheritanceFlags -band $oi)
+        if ($allowKids -and -not $denyKids) { continue }
+        $denyMask = ConvertTo-ExpandedADRightsValue -Rights $deny.ActiveDirectoryRights
+        if (-not $denyMask) { continue }
+        if (($allowMask -band $denyMask) -eq $allowMask) { return $true }
+    }
+    return $false
+}
 function Get-OUPermissions {
     [CmdletBinding()]
     param(
@@ -50633,6 +50663,10 @@ function Get-OUPermissions {
                 return [PSCustomObject]@{ OU = $DistinguishedName; Findings = $null; Read = $false }
             }
             $AccessRules = $sdParsed.AccessRules
+            $denyACEs = @($AccessRules | Where-Object {
+                $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny
+            })
+            $neutralisedByDeny = 0
             $Findings = @()
             if ($CheckType -contains 'Ownership' -and $sdParsed.OwnerSID) {
                 if (-not (Test-IsDefaultOwner -SID $sdParsed.OwnerSID)) {
@@ -50651,6 +50685,11 @@ function Get-OUPermissions {
             }
             foreach ($ACE in $AccessRules) {
                 if ($ACE.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
+                    continue
+                }
+                if ($denyACEs.Count -gt 0 -and (Test-ACEFullyDenied -ACE $ACE -DenyACEs $denyACEs)) {
+                    Write-Log "[Get-OUPermissions] ACE neutralised by an explicit Deny for the same trustee: $($ACE.IdentityReference.Value) on $DistinguishedName"
+                    $neutralisedByDeny++
                     continue
                 }
                 if ($ExcludeInherited -and $ACE.IsInherited) {
@@ -51223,6 +51262,7 @@ function Get-OUPermissions {
                 OU       = $DistinguishedName
                 Findings = $Findings
                 Read     = $true
+                NeutralisedByDeny = $neutralisedByDeny
             }
             if ($isFullScan) {
                 $Script:OUPermissionsCache[$cacheKey] = $result
@@ -65486,6 +65526,7 @@ function Get-DangerousOUPermissions {
             $ouCount = 0
             $ouWithFindings = 0
             $unreadOUs = @()
+            $neutralisedByDeny = 0
             $totalOUs = @($OUs).Count
             $currentIndex = 0
             foreach ($ou in $OUs) {
@@ -65503,6 +65544,9 @@ function Get-DangerousOUPermissions {
                 $ouPermissions = Get-OUPermissions @ouParams
                 if (-not $ouPermissions -or $ouPermissions.Read -eq $false) {
                     $unreadOUs += $ouDN
+                }
+                if ($ouPermissions -and $ouPermissions.NeutralisedByDeny) {
+                    $neutralisedByDeny += [int]$ouPermissions.NeutralisedByDeny
                 }
                 if (-not $ouPermissions -or -not $ouPermissions.Findings) {
                     continue
@@ -65547,6 +65591,9 @@ function Get-DangerousOUPermissions {
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
             $conclusionClass = 'Secure'
             if ($coverageIncomplete) { $conclusionClass = 'Note' }
+            if ($neutralisedByDeny -gt 0) {
+                Show-Line "$neutralisedByDeny delegation(s) are cancelled by an explicit Deny ACE for the same trustee and are not reported as access" -Class Note
+            }
             if (@($allFindings).Count -eq 0) {
                 if ($totalOUs -gt 0 -and $readOUs -le 0) {
                     Show-Line "OU permissions were not evaluated - no security descriptor could be read" -Class Note
@@ -85176,7 +85223,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-1112"
+$Script:adPEASVersion = "2.7.0+20261011-1133"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

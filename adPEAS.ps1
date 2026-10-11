@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 11:12:41
-    Version: 2.7.0+20261011-1112
+    Build: 2026-10-11 11:33:45
+    Version: 2.7.0+20261011-1133
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -78484,6 +78484,77 @@ function Get-ACEInheritanceSource {
     Author: Alexander Sturz (@_61106960_)
 #>
 
+<#
+.SYNOPSIS
+    Answers whether a Deny ACE in the same DACL cancels an Allow ACE completely.
+.DESCRIPTION
+    Deny ACEs were skipped rather than counted. In the canonical DACL order a Deny
+    precedes the Allow entries and wins for the same right and the same trustee, so a
+    delegation a Deny neutralises is not access anybody has - and reporting it is the
+    finding type that loses an argument with the person who hardened the domain.
+
+    Deliberately conservative. True is returned only when ONE Deny ACE for the same
+    trustee SID covers every right bit the Allow grants, carries the same ObjectType or
+    an empty one, is limited to the same object class or to none, and reaches at least
+    as far as the Allow does. Several Deny ACEs are not unioned, and an Allow that is
+    only partly denied stays a finding: a false negative here hides real access, which
+    is worse than the false positive it would replace.
+
+    The reach test is the same ContainerInherit/ObjectInherit and InheritOnly pair the
+    caller uses for the Allow side - a Deny that does not apply where the Allow applies
+    denies nothing there.
+.PARAMETER ACE
+    The Allow ACE under test.
+.PARAMETER DenyACEs
+    The Deny ACEs of the same security descriptor.
+#>
+function Test-ACEFullyDenied {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] $ACE,
+        [Parameter(Mandatory = $true)] [AllowEmptyCollection()] $DenyACEs
+    )
+
+    # Through ConvertTo-ExpandedADRightsValue, not the raw enum: a mask written with a
+    # generic bit ("(A;;GA;;;<sid>)") has no named value, and a raw comparison would
+    # miss that a Deny covers it.
+    $allowMask = ConvertTo-ExpandedADRightsValue -Rights $ACE.ActiveDirectoryRights
+    if (-not $allowMask) { return $false }
+
+    $ci = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit
+    $oi = [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+
+    $allowSelf = -not ((([string]$ACE.PropagationFlags)) -match 'InheritOnly')
+    $allowKids = ($ACE.InheritanceFlags -band $ci) -or ($ACE.InheritanceFlags -band $oi)
+
+    foreach ($deny in $DenyACEs) {
+        if ($deny.IdentityReference.Value -ne $ACE.IdentityReference.Value) { continue }
+
+        # ObjectType limits a Deny to one attribute or one extended right. An empty
+        # GUID means all of them, which covers whatever the Allow names.
+        $denyObjectType = $deny.ObjectType
+        $denyCoversEveryRight = (-not $denyObjectType) -or ($denyObjectType -eq [GUID]::Empty)
+        if (-not $denyCoversEveryRight -and ($denyObjectType -ne $ACE.ObjectType)) { continue }
+
+        # InheritedObjectType limits it to one object class, same reasoning.
+        $denyClass = $deny.InheritedObjectType
+        $denyCoversEveryClass = (-not $denyClass) -or ($denyClass -eq [GUID]::Empty)
+        if (-not $denyCoversEveryClass -and ($denyClass -ne $ACE.InheritedObjectType)) { continue }
+
+        $denySelf = -not ((([string]$deny.PropagationFlags)) -match 'InheritOnly')
+        if ($allowSelf -and -not $denySelf) { continue }
+
+        $denyKids = ($deny.InheritanceFlags -band $ci) -or ($deny.InheritanceFlags -band $oi)
+        if ($allowKids -and -not $denyKids) { continue }
+
+        $denyMask = ConvertTo-ExpandedADRightsValue -Rights $deny.ActiveDirectoryRights
+        if (-not $denyMask) { continue }
+        if (($allowMask -band $denyMask) -eq $allowMask) { return $true }
+    }
+
+    return $false
+}
+
 function Get-OUPermissions {
     [CmdletBinding()]
     param(
@@ -78598,6 +78669,14 @@ function Get-OUPermissions {
             }
             $AccessRules = $sdParsed.AccessRules
 
+            # The Deny entries of this descriptor, for Test-ACEFullyDenied below. They
+            # were in $AccessRules all along and the loop threw them away, so a
+            # delegation that an explicit Deny cancels was reported as access.
+            $denyACEs = @($AccessRules | Where-Object {
+                $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny
+            })
+            $neutralisedByDeny = 0
+
             $Findings = @()
 
             # The owner, before the ACE loop and once per OU - it is not an ACE, which is
@@ -78640,6 +78719,17 @@ function Get-OUPermissions {
             foreach ($ACE in $AccessRules) {
                 # Skip Deny ACEs (we only care about Allow)
                 if ($ACE.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
+                    continue
+                }
+
+                # An Allow a Deny cancels completely grants nothing, so none of the
+                # checks below has anything to report about it. Tested once here
+                # rather than at each of the emit sites: the condition is a property
+                # of the ACE, not of the individual right, and only a Deny covering
+                # the whole mask qualifies.
+                if ($denyACEs.Count -gt 0 -and (Test-ACEFullyDenied -ACE $ACE -DenyACEs $denyACEs)) {
+                    Write-Log "[Get-OUPermissions] ACE neutralised by an explicit Deny for the same trustee: $($ACE.IdentityReference.Value) on $DistinguishedName"
+                    $neutralisedByDeny++
                     continue
                 }
 
@@ -79490,6 +79580,11 @@ function Get-OUPermissions {
                 OU       = $DistinguishedName
                 Findings = $Findings
                 Read     = $true
+                # How many ACEs an explicit Deny cancelled. The caller says so in its
+                # conclusion rather than leaving the reader to wonder why a delegation
+                # they know about is missing - a Deny is a fragile control, and one
+                # removed ACE brings the access back.
+                NeutralisedByDeny = $neutralisedByDeny
             }
 
             # Cache full-scan results for cross-module reuse
@@ -102627,6 +102722,11 @@ function Get-DangerousOUPermissions {
             $ouCount = 0
             $ouWithFindings = 0
             $unreadOUs = @()
+            # Delegations an explicit Deny ACE cancels. Get-OUPermissions drops them
+            # now rather than reporting access nobody has, and the total is named in
+            # the conclusion: a Deny is a fragile control, so a reader who knows the
+            # delegation exists should not have to wonder why it is missing.
+            $neutralisedByDeny = 0
 
             # Analyze each OU
             $totalOUs = @($OUs).Count
@@ -102656,6 +102756,10 @@ function Get-DangerousOUPermissions {
                 # for it would be as wrong as the silence this replaces.
                 if (-not $ouPermissions -or $ouPermissions.Read -eq $false) {
                     $unreadOUs += $ouDN
+                }
+
+                if ($ouPermissions -and $ouPermissions.NeutralisedByDeny) {
+                    $neutralisedByDeny += [int]$ouPermissions.NeutralisedByDeny
                 }
 
                 if (-not $ouPermissions -or -not $ouPermissions.Findings) {
@@ -102738,6 +102842,13 @@ function Get-DangerousOUPermissions {
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
             $conclusionClass = 'Secure'
             if ($coverageIncomplete) { $conclusionClass = 'Note' }
+
+            # Said once, before the findings, because it applies to the whole scan and
+            # not to any one OU. Note rather than Secure: the delegation is still in
+            # the DACL, and removing the Deny ACE is all it takes to make it effective.
+            if ($neutralisedByDeny -gt 0) {
+                Show-Line "$neutralisedByDeny delegation(s) are cancelled by an explicit Deny ACE for the same trustee and are not reported as access" -Class Note
+            }
 
             # Display findings
             if (@($allFindings).Count -eq 0) {
@@ -130799,7 +130910,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1112"
+$Script:adPEASVersion = "2.7.0+20261011-1133"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

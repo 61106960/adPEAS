@@ -134,6 +134,11 @@ function Get-DangerousOUPermissions {
             $ouCount = 0
             $ouWithFindings = 0
             $unreadOUs = @()
+            # Delegations an explicit Deny ACE cancels. Get-OUPermissions drops them
+            # now rather than reporting access nobody has, and the total is named in
+            # the conclusion: a Deny is a fragile control, so a reader who knows the
+            # delegation exists should not have to wonder why it is missing.
+            $neutralisedByDeny = 0
 
             # Analyze each OU
             $totalOUs = @($OUs).Count
@@ -163,6 +168,10 @@ function Get-DangerousOUPermissions {
                 # for it would be as wrong as the silence this replaces.
                 if (-not $ouPermissions -or $ouPermissions.Read -eq $false) {
                     $unreadOUs += $ouDN
+                }
+
+                if ($ouPermissions -and $ouPermissions.NeutralisedByDeny) {
+                    $neutralisedByDeny += [int]$ouPermissions.NeutralisedByDeny
                 }
 
                 if (-not $ouPermissions -or -not $ouPermissions.Findings) {
@@ -245,6 +254,13 @@ function Get-DangerousOUPermissions {
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
             $conclusionClass = 'Secure'
             if ($coverageIncomplete) { $conclusionClass = 'Note' }
+
+            # Said once, before the findings, because it applies to the whole scan and
+            # not to any one OU. Note rather than Secure: the delegation is still in
+            # the DACL, and removing the Deny ACE is all it takes to make it effective.
+            if ($neutralisedByDeny -gt 0) {
+                Show-Line "$neutralisedByDeny delegation(s) are cancelled by an explicit Deny ACE for the same trustee and are not reported as access" -Class Note
+            }
 
             # Display findings
             if (@($allFindings).Count -eq 0) {
