@@ -11218,7 +11218,12 @@ foreach ($oid in $linkedOIDs) {
         Triggers = @(
             @{ Attribute = 'OperatorGroup'; Severity = 'Hint' }
             @{ Attribute = 'MemberCount'; Custom = 'gt_0'; Severity = 'Hint' }
-            @{ Attribute = 'ProtectedCount'; Pattern = '^0$'; Severity = 'Finding' }
+            # Hint, not Finding. No operator-group member in Protected Users is the
+            # normal state of very nearly every domain, the line that prints these
+            # objects calls itself informational ("consider for Protected Users"), and
+            # this definition sets Risk = Hint - so a red row was the only one of the
+            # four statements that disagreed with the other three.
+            @{ Attribute = 'ProtectedCount'; Pattern = '^0$'; Severity = 'Hint' }
         )
     }
 

@@ -107,15 +107,60 @@ function Get-ProtectedUsersStatus {
                 return
             }
 
-            # Get Protected Users members (SIDs for comparison)
+            # Who is protected, asked the way the Tier-0 side below asks: recursively, and
+            # over every object class.
+            #
+            # Protected Users takes effect through the token, so a nested group protects its
+            # members exactly as a direct membership does - and filling the group from a role
+            # group is the usual arrangement in a larger environment. Read directly, as this
+            # used to be, such a domain measured 0 of N protected, and the check printed
+            # "Found N unprotected Tier-0 account(s) (0 of N in Protected Users, 0%)" as a
+            # red finding while every one of those accounts was in fact protected. A
+            # percentage is exactly the number a customer quotes.
+            #
+            # Get-DomainObject rather than Get-DomainUser for the same reason: a nested group
+            # is not a user, so the per-member lookup returned nothing and dropped it without
+            # a word.
             $protectedMemberSIDs = @{}
+            $protectedUsersDN = [string]$protectedUsersGroup.distinguishedName
+            if ($protectedUsersDN) {
+                # Escape-LDAPFilterDN, not a local -replace chain: a group renamed to
+                # something holding a parenthesis or an escaped comma otherwise produces a
+                # filter the server rejects, and the whole measurement with it.
+                $escapedProtectedDN = Escape-LDAPFilterDN -DistinguishedName $protectedUsersDN
+                foreach ($protectedObj in @(Get-DomainObject -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedProtectedDN)" -Properties 'objectSid', 'sAMAccountName', 'distinguishedName' @PSBoundParameters)) {
+                    if (-not $protectedObj.objectSid) { continue }
+                    $protectedName = [string]$protectedObj.sAMAccountName
+                    if (-not $protectedName) { $protectedName = [string]$protectedObj.distinguishedName }
+                    $protectedMemberSIDs[$protectedObj.objectSid] = $protectedName
+                }
+            }
+
+            # The direct members as well. The recursive filter returns them too, so this
+            # normally adds nothing; what it covers is the member object that filter cannot
+            # return, and the case where the group DN could not be read above.
             if ($protectedUsersGroup.member) {
                 foreach ($memberDN in @($protectedUsersGroup.member)) {
-                    $memberObj = @(Get-DomainUser -Identity $memberDN -Properties 'objectSid','sAMAccountName' @PSBoundParameters)[0]
-                    if ($memberObj -and $memberObj.objectSid) {
-                        $protectedMemberSIDs[$memberObj.objectSid] = $memberObj.sAMAccountName
-                    }
+                    $memberObj = @(Get-DomainObject -Identity $memberDN -Properties 'objectSid', 'sAMAccountName' @PSBoundParameters)[0]
+                    if (-not $memberObj -or -not $memberObj.objectSid) { continue }
+                    if ($protectedMemberSIDs.ContainsKey($memberObj.objectSid)) { continue }
+                    $directName = [string]$memberObj.sAMAccountName
+                    if (-not $directName) { $directName = [string]$memberDN }
+                    $protectedMemberSIDs[$memberObj.objectSid] = $directName
                 }
+            }
+
+            # And the path neither of the two sees. primaryGroupID is a membership that
+            # leaves no trace in member or memberOf, so LDAP_MATCHING_RULE_IN_CHAIN cannot
+            # find it - the same gap Get-PrivilegedGroupMembers and
+            # Get-PrivilegedAccountFilter already close for the privileged groups. Unusual
+            # for Protected Users, and it costs one query.
+            foreach ($primaryObj in @(Get-DomainObject -LDAPFilter '(primaryGroupID=525)' -Properties 'objectSid', 'sAMAccountName', 'distinguishedName' @PSBoundParameters)) {
+                if (-not $primaryObj.objectSid) { continue }
+                if ($protectedMemberSIDs.ContainsKey($primaryObj.objectSid)) { continue }
+                $primaryName = [string]$primaryObj.sAMAccountName
+                if (-not $primaryName) { $primaryName = [string]$primaryObj.distinguishedName }
+                $protectedMemberSIDs[$primaryObj.objectSid] = $primaryName
             }
 
             Write-Log "[Get-ProtectedUsersStatus] Found $($protectedMemberSIDs.Count) members in Protected Users group"
@@ -140,10 +185,25 @@ function Get-ProtectedUsersStatus {
 
                 # Get recursive members using LDAP_MATCHING_RULE_IN_CHAIN
                 $groupDN = $groupObj.distinguishedName
-                $escapedDN = $groupDN -replace '\\', '\5c' -replace '\*', '\2a' -replace '\(', '\28' -replace '\)', '\29'
+                # The central escaper rather than a local -replace chain: the two are meant
+                # to do the same thing, and only one of them is tested.
+                $escapedDN = Escape-LDAPFilterDN -DistinguishedName $groupDN
 
                 # Query all users who are (recursively) members of this group
                 $members = @(Get-DomainUser -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedDN)" @PSBoundParameters)
+
+                # And the members that filter cannot see. primaryGroupID puts the group's
+                # RID in the account's token without appearing in member or memberOf, so a
+                # Domain Admin held that way was not Tier-0 to this check and could never
+                # show up as unprotected. Only for a group in this domain: a primaryGroupID
+                # is a RID relative to the account's own domain, so a BUILTIN SID cannot be
+                # one.
+                if ($groupSID -like "$domainSID-*") {
+                    $groupRID = $groupSID.Substring($domainSID.Length + 1)
+                    if ($groupRID -match '^\d+$') {
+                        $members += @(Get-DomainObject -LDAPFilter "(primaryGroupID=$groupRID)" @PSBoundParameters)
+                    }
+                }
 
                 foreach ($member in $members) {
                     if (-not $member.objectSid) { continue }
@@ -156,8 +216,12 @@ function Get-ProtectedUsersStatus {
                         $tier0AccountGroups[$memberSID] = @()
                     }
 
-                    # Track which groups this account belongs to
-                    $tier0AccountGroups[$memberSID] += $groupName
+                    # Track which groups this account belongs to. The primaryGroupID query
+                    # above can return an account the recursive filter already returned, so
+                    # the group name must not be appended twice.
+                    if ($groupName -notin $tier0AccountGroups[$memberSID]) {
+                        $tier0AccountGroups[$memberSID] += $groupName
+                    }
                 }
 
                 # Also add direct group members (Get-DomainGroup returns member DNs).
@@ -344,7 +408,10 @@ function Get-ProtectedUsersStatus {
                 $protectedCount = 0
 
                 foreach ($memberDN in @($operatorGroup.member)) {
-                    $memberObj = @(Get-DomainUser -Identity $memberDN -Properties 'objectSid' @PSBoundParameters)[0]
+                    # Get-DomainObject, not Get-DomainUser: a nested group or a computer
+                    # account in an operator group returned nothing here, so it was never
+                    # counted as protected and the name fell back to the bare CN.
+                    $memberObj = @(Get-DomainObject -Identity $memberDN -Properties 'objectSid' @PSBoundParameters)[0]
                     if ($memberObj -and $memberObj.objectSid) {
                         if ($protectedMemberSIDs.ContainsKey($memberObj.objectSid)) {
                             $protectedCount++
