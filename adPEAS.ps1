@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 03:04:26
-    Version: 2.7.0+20261011-0304
+    Build: 2026-10-11 03:51:36
+    Version: 2.7.0+20261011-0351
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -10149,6 +10149,95 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             # definitions on one attribute would mean the higher BaseScore wins everywhere,
             # and a non-default owner on a GPO is not the same finding as one on a user.
             @{ Attribute = 'GPOOwner'; Severity = 'Finding' }
+        )
+    }
+
+    'DOMAIN_ROOT_NON_DEFAULT_OWNER' = @{
+        Title = "Non-Default Owner of the Domain Object"
+        Risk = "Finding"
+        BaseScore = 95
+        Description = "The owner of the domain object is not one of the default owners. An owner holds READ_CONTROL and WRITE_DAC implicitly, whatever the DACL says, so this principal can grant itself any permission on the domain - including the replication rights a DCSync needs. The DACL of the domain object is irrelevant to it."
+        Impact = @(
+            "The owner can write itself DS-Replication-Get-Changes and DS-Replication-Get-Changes-All and run a DCSync"
+            "It can grant itself GenericAll on the domain object and inherit that down to every object in the domain"
+            "No entry in the DACL has to exist for any of this, so an audit that reads only the DACL sees nothing"
+            "Ownership survives a DACL reset, which is what most hardening scripts do"
+        )
+        Attack = @(
+            "1. Attacker controls the principal that owns the domain object"
+            "2. Writes a DACL entry granting itself the two replication extended rights"
+            "3. Runs DCSync and takes every credential in the domain"
+            "4. Optionally restores the DACL, leaving ownership as the way back in"
+        )
+        Remediation = @(
+            "Set the owner of the domain object back to Domain Admins or Administrators"
+            "Establish how it changed: taking ownership requires WriteOwner or SeTakeOwnershipPrivilege, and both are worth auditing"
+            "Check the owner of the other Tier-0 objects at the same time - AdminSDHolder, the Domain Controllers OU, the GPOs linked to it"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current owner of the domain object"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Owner'
+            }
+            @{
+                Description = "Reassign the owner to Domain Admins"
+                Command = '$acl = Get-Acl -Path "AD:DC=DOMAIN,DC=COM"; $acl.SetOwner((New-Object System.Security.Principal.NTAccount("DOMAIN\Domain Admins"))); Set-Acl -Path "AD:DC=DOMAIN,DC=COM" -AclObject $acl'
+            }
+        )
+        References = @(
+            @{ Title = "Owner Rights - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-rights" }
+            @{ Title = "BloodHound Owns edge"; Url = "https://bloodhound.specterops.io/resources/edges/owns" }
+        )
+        Tools = @("PowerView", "BloodHound", "ADACLScanner")
+        MITRE = "T1222.001"
+        Triggers = @(
+            # An exact pattern on dangerousRights, and the wording avoids "WriteDacl" on
+            # purpose: measured, a value containing it matches DANGEROUS_ACL_WRITEDACL
+            # (score 55) and the row would carry that card instead of this one.
+            @{ Attribute = 'dangerousRights'; Pattern = '^Owner of the domain object$'; Severity = 'Finding' }
+        )
+    }
+
+    'OU_NON_DEFAULT_OWNER' = @{
+        Title = "Non-Default Owner of an OU"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "The owner of this organizational unit is not one of the default owners. An owner holds READ_CONTROL and WRITE_DAC implicitly, so this principal can grant itself any permission on the OU and have it inherited by every object inside - users, computers, groups and the GPO links."
+        Impact = @(
+            "The owner can write itself GenericAll on the OU and inherit it down to every object in it"
+            "That covers resetting the passwords of the users below, writing msDS-AllowedToActOnBehalfOfOtherIdentity on the computers, and changing the group memberships"
+            "It can also link a GPO, which is code execution on every machine below the OU"
+            "None of it requires an entry in the DACL, so reading the DACL alone shows nothing"
+        )
+        Attack = @(
+            "1. Attacker controls the principal that owns the OU"
+            "2. Grants itself GenericAll on the OU, inherited to child objects"
+            "3. Resets the password of a privileged account below, or writes RBCD on a computer there"
+            "4. This is the BloodHound Owns edge, and it is usually the shortest path left in a hardened domain"
+        )
+        Remediation = @(
+            "Set the owner back to Domain Admins or Administrators"
+            "Establish how it changed - most often the account that created the OU stayed its owner, because CREATOR OWNER is the default"
+            "Review the owners of the other OUs in the same sweep; one non-default owner usually means a delegation practice rather than an incident"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the owner of every OU in the domain"
+                Command = 'Get-ADOrganizationalUnit -Filter * | ForEach-Object { [PSCustomObject]@{ OU = $_.DistinguishedName; Owner = (Get-Acl -Path "AD:$($_.DistinguishedName)").Owner } }'
+            }
+            @{
+                Description = "Reassign the owner of one OU to Domain Admins"
+                Command = '$acl = Get-Acl -Path "AD:OU=NAME,DC=DOMAIN,DC=COM"; $acl.SetOwner((New-Object System.Security.Principal.NTAccount("DOMAIN\Domain Admins"))); Set-Acl -Path "AD:OU=NAME,DC=DOMAIN,DC=COM" -AclObject $acl'
+            }
+        )
+        References = @(
+            @{ Title = "BloodHound Owns edge"; Url = "https://bloodhound.specterops.io/resources/edges/owns" }
+            @{ Title = "Owner Rights - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-rights" }
+        )
+        Tools = @("PowerView", "BloodHound", "ADACLScanner")
+        MITRE = "T1222.001"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = '^Owner of the OU$'; Severity = 'Finding' }
         )
     }
 
@@ -77992,7 +78081,8 @@ function Get-OUPermissions {
             'LAPS',
             'CredentialRoaming',
             'ObjectCreation',
-            'GPOLinking'
+            'GPOLinking',
+            'Ownership'
         )]
         [string[]]$CheckType = @('All'),
 
@@ -78025,7 +78115,7 @@ function Get-OUPermissions {
                 'GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner',
                 'PasswordReset', 'AccountControl', 'GroupMembership',
                 'SPNModification', 'DNSHostName', 'ScriptPath', 'Delegation', 'LAPS',
-                'CredentialRoaming', 'ObjectCreation', 'GPOLinking'
+                'CredentialRoaming', 'ObjectCreation', 'GPOLinking', 'Ownership'
             )
         }
     }
@@ -78083,6 +78173,42 @@ function Get-OUPermissions {
             $AccessRules = $sdParsed.AccessRules
 
             $Findings = @()
+
+            # The owner, before the ACE loop and once per OU - it is not an ACE, which is
+            # why the loop below never saw it. $sdParsed.OwnerSID was parsed two screens
+            # above and discarded, so an OU owned by somebody who is not a default owner
+            # produced no finding at all. That is the BloodHound Owns path: the owner can
+            # write itself any ACE on the OU and have it inherited down to every object
+            # inside.
+            #
+            # Owner checks existed in the project, but only for user and computer objects
+            # (Get-NonDefaultUserOwners, Get-NonDefaultComputerOwners). OUs, containers and
+            # the domain object had none.
+            if ($CheckType -contains 'Ownership' -and $sdParsed.OwnerSID) {
+                if (-not (Test-IsDefaultOwner -SID $sdParsed.OwnerSID)) {
+                    $ownerName = ConvertFrom-SID -SID $sdParsed.OwnerSID
+                    if (-not $ownerName) { $ownerName = $sdParsed.OwnerSID }
+                    # .IsPrivileged, which is the property the per-ACE severity below asks
+                    # for. Category -eq 'Privileged' would be a second way of asking one
+                    # question, and the two do not agree: Account Operators answers
+                    # Category 'Operator' with IsPrivileged false.
+                    $ownerPrivileged = (Test-IsPrivileged -Identity $sdParsed.OwnerSID).IsPrivileged
+
+                    $Findings += [PSCustomObject]@{
+                        CheckType     = "Ownership"
+                        # Same wording decision as the domain root: a string containing
+                        # "WriteDacl" matches that pattern on dangerousRights and would
+                        # take the wrong card.
+                        Right         = "Owner of the OU"
+                        Principal     = $ownerName
+                        SID           = $sdParsed.OwnerSID
+                        # Info is this module's word for "privileged, shown only with
+                        # -IncludePrivileged", not for "harmless".
+                        Severity      = $(if ($ownerPrivileged) { "Info" } else { "Critical" })
+                        InheritedFrom = $null
+                    }
+                }
+            }
 
             # Analyze each ACE
             foreach ($ACE in $AccessRules) {
@@ -101498,6 +101624,39 @@ function Get-DangerousACLs {
 
             $dcsyncAccounts = @{}
             $dangerousRightsAccounts = @()
+
+            # The owner, which was read and then thrown away. Get-ObjectACL returns Owner
+            # and OwnerSID beside the ACEs and this check used only .ACEs, so a domain
+            # object whose owner is not Administrators, Domain Admins, Enterprise Admins or
+            # SYSTEM produced "No dangerous ACLs detected on domain root" - the most
+            # consequential silent false negative this module could have. An owner holds
+            # READ_CONTROL and WRITE_DAC implicitly and can grant itself any ACE it likes,
+            # so an empty DACL is no protection against it.
+            #
+            # Fed into $dangerousRightsAccounts rather than reported on its own, so it goes
+            # through the same scope check, SID resolution and rendering as every other
+            # finding here - including the damping for a privileged but non-default owner.
+            #
+            # No Test-IsDefaultOwner gate, deliberately. It was here, and reverting it
+            # changed no test result: measured, all four default owners - Administrators,
+            # SYSTEM, Domain Admins and Enterprise Admins - come back Expected from
+            # Test-IsExpectedInScope -Scope 'DomainRootACL' and are dropped a few lines
+            # below, while a non-default owner comes back Finding. Two ways of asking one
+            # question, and the scope check is the one the rest of this module uses.
+            if ($aclResult.OwnerSID) {
+                Write-Log "[Get-DangerousACLs] Domain object owner: $($aclResult.Owner) ($($aclResult.OwnerSID)) - the scope check below decides"
+                $dangerousRightsAccounts += [PSCustomObject]@{
+                    Name   = $(if ($aclResult.Owner) { $aclResult.Owner } else { $aclResult.OwnerSID })
+                    SID    = $aclResult.OwnerSID
+                    # Deliberately not "Owner (implicit WriteDacl)". Measured: that string
+                    # matches the WriteDacl pattern on dangerousRights, which scores 55, so
+                    # the row would have carried the DANGEROUS_ACL_WRITEDACL card instead of
+                    # an owner card - the right severity for the wrong reason, and the
+                    # remediation would have told the reader to remove an ACE that is not
+                    # there.
+                    Rights = @('Owner of the domain object')
+                }
+            }
 
             # Object-specific ACEs on the domain object that hand the domain over. Named
             # by their resolved ObjectTypeName, which Get-ObjectACL supplies for both an
@@ -130131,7 +130290,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-0304"
+$Script:adPEASVersion = "2.7.0+20261011-0351"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

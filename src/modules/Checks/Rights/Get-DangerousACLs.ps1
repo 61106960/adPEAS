@@ -88,6 +88,39 @@ function Get-DangerousACLs {
             $dcsyncAccounts = @{}
             $dangerousRightsAccounts = @()
 
+            # The owner, which was read and then thrown away. Get-ObjectACL returns Owner
+            # and OwnerSID beside the ACEs and this check used only .ACEs, so a domain
+            # object whose owner is not Administrators, Domain Admins, Enterprise Admins or
+            # SYSTEM produced "No dangerous ACLs detected on domain root" - the most
+            # consequential silent false negative this module could have. An owner holds
+            # READ_CONTROL and WRITE_DAC implicitly and can grant itself any ACE it likes,
+            # so an empty DACL is no protection against it.
+            #
+            # Fed into $dangerousRightsAccounts rather than reported on its own, so it goes
+            # through the same scope check, SID resolution and rendering as every other
+            # finding here - including the damping for a privileged but non-default owner.
+            #
+            # No Test-IsDefaultOwner gate, deliberately. It was here, and reverting it
+            # changed no test result: measured, all four default owners - Administrators,
+            # SYSTEM, Domain Admins and Enterprise Admins - come back Expected from
+            # Test-IsExpectedInScope -Scope 'DomainRootACL' and are dropped a few lines
+            # below, while a non-default owner comes back Finding. Two ways of asking one
+            # question, and the scope check is the one the rest of this module uses.
+            if ($aclResult.OwnerSID) {
+                Write-Log "[Get-DangerousACLs] Domain object owner: $($aclResult.Owner) ($($aclResult.OwnerSID)) - the scope check below decides"
+                $dangerousRightsAccounts += [PSCustomObject]@{
+                    Name   = $(if ($aclResult.Owner) { $aclResult.Owner } else { $aclResult.OwnerSID })
+                    SID    = $aclResult.OwnerSID
+                    # Deliberately not "Owner (implicit WriteDacl)". Measured: that string
+                    # matches the WriteDacl pattern on dangerousRights, which scores 55, so
+                    # the row would have carried the DANGEROUS_ACL_WRITEDACL card instead of
+                    # an owner card - the right severity for the wrong reason, and the
+                    # remediation would have told the reader to remove an ACE that is not
+                    # there.
+                    Rights = @('Owner of the domain object')
+                }
+            }
+
             # Object-specific ACEs on the domain object that hand the domain over. Named
             # by their resolved ObjectTypeName, which Get-ObjectACL supplies for both an
             # attribute and an extended right.

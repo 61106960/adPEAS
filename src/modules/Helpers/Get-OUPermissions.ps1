@@ -235,7 +235,8 @@ function Get-OUPermissions {
             'LAPS',
             'CredentialRoaming',
             'ObjectCreation',
-            'GPOLinking'
+            'GPOLinking',
+            'Ownership'
         )]
         [string[]]$CheckType = @('All'),
 
@@ -268,7 +269,7 @@ function Get-OUPermissions {
                 'GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner',
                 'PasswordReset', 'AccountControl', 'GroupMembership',
                 'SPNModification', 'DNSHostName', 'ScriptPath', 'Delegation', 'LAPS',
-                'CredentialRoaming', 'ObjectCreation', 'GPOLinking'
+                'CredentialRoaming', 'ObjectCreation', 'GPOLinking', 'Ownership'
             )
         }
     }
@@ -326,6 +327,42 @@ function Get-OUPermissions {
             $AccessRules = $sdParsed.AccessRules
 
             $Findings = @()
+
+            # The owner, before the ACE loop and once per OU - it is not an ACE, which is
+            # why the loop below never saw it. $sdParsed.OwnerSID was parsed two screens
+            # above and discarded, so an OU owned by somebody who is not a default owner
+            # produced no finding at all. That is the BloodHound Owns path: the owner can
+            # write itself any ACE on the OU and have it inherited down to every object
+            # inside.
+            #
+            # Owner checks existed in the project, but only for user and computer objects
+            # (Get-NonDefaultUserOwners, Get-NonDefaultComputerOwners). OUs, containers and
+            # the domain object had none.
+            if ($CheckType -contains 'Ownership' -and $sdParsed.OwnerSID) {
+                if (-not (Test-IsDefaultOwner -SID $sdParsed.OwnerSID)) {
+                    $ownerName = ConvertFrom-SID -SID $sdParsed.OwnerSID
+                    if (-not $ownerName) { $ownerName = $sdParsed.OwnerSID }
+                    # .IsPrivileged, which is the property the per-ACE severity below asks
+                    # for. Category -eq 'Privileged' would be a second way of asking one
+                    # question, and the two do not agree: Account Operators answers
+                    # Category 'Operator' with IsPrivileged false.
+                    $ownerPrivileged = (Test-IsPrivileged -Identity $sdParsed.OwnerSID).IsPrivileged
+
+                    $Findings += [PSCustomObject]@{
+                        CheckType     = "Ownership"
+                        # Same wording decision as the domain root: a string containing
+                        # "WriteDacl" matches that pattern on dangerousRights and would
+                        # take the wrong card.
+                        Right         = "Owner of the OU"
+                        Principal     = $ownerName
+                        SID           = $sdParsed.OwnerSID
+                        # Info is this module's word for "privileged, shown only with
+                        # -IncludePrivileged", not for "harmless".
+                        Severity      = $(if ($ownerPrivileged) { "Info" } else { "Critical" })
+                        InheritedFrom = $null
+                    }
+                }
+            }
 
             # Analyze each ACE
             foreach ($ACE in $AccessRules) {

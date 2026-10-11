@@ -2411,6 +2411,95 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
     }
 
+    'DOMAIN_ROOT_NON_DEFAULT_OWNER' = @{
+        Title = "Non-Default Owner of the Domain Object"
+        Risk = "Finding"
+        BaseScore = 95
+        Description = "The owner of the domain object is not one of the default owners. An owner holds READ_CONTROL and WRITE_DAC implicitly, whatever the DACL says, so this principal can grant itself any permission on the domain - including the replication rights a DCSync needs. The DACL of the domain object is irrelevant to it."
+        Impact = @(
+            "The owner can write itself DS-Replication-Get-Changes and DS-Replication-Get-Changes-All and run a DCSync"
+            "It can grant itself GenericAll on the domain object and inherit that down to every object in the domain"
+            "No entry in the DACL has to exist for any of this, so an audit that reads only the DACL sees nothing"
+            "Ownership survives a DACL reset, which is what most hardening scripts do"
+        )
+        Attack = @(
+            "1. Attacker controls the principal that owns the domain object"
+            "2. Writes a DACL entry granting itself the two replication extended rights"
+            "3. Runs DCSync and takes every credential in the domain"
+            "4. Optionally restores the DACL, leaving ownership as the way back in"
+        )
+        Remediation = @(
+            "Set the owner of the domain object back to Domain Admins or Administrators"
+            "Establish how it changed: taking ownership requires WriteOwner or SeTakeOwnershipPrivilege, and both are worth auditing"
+            "Check the owner of the other Tier-0 objects at the same time - AdminSDHolder, the Domain Controllers OU, the GPOs linked to it"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current owner of the domain object"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Owner'
+            }
+            @{
+                Description = "Reassign the owner to Domain Admins"
+                Command = '$acl = Get-Acl -Path "AD:DC=DOMAIN,DC=COM"; $acl.SetOwner((New-Object System.Security.Principal.NTAccount("DOMAIN\Domain Admins"))); Set-Acl -Path "AD:DC=DOMAIN,DC=COM" -AclObject $acl'
+            }
+        )
+        References = @(
+            @{ Title = "Owner Rights - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-rights" }
+            @{ Title = "BloodHound Owns edge"; Url = "https://bloodhound.specterops.io/resources/edges/owns" }
+        )
+        Tools = @("PowerView", "BloodHound", "ADACLScanner")
+        MITRE = "T1222.001"
+        Triggers = @(
+            # An exact pattern on dangerousRights, and the wording avoids "WriteDacl" on
+            # purpose: measured, a value containing it matches DANGEROUS_ACL_WRITEDACL
+            # (score 55) and the row would carry that card instead of this one.
+            @{ Attribute = 'dangerousRights'; Pattern = '^Owner of the domain object$'; Severity = 'Finding' }
+        )
+    }
+
+    'OU_NON_DEFAULT_OWNER' = @{
+        Title = "Non-Default Owner of an OU"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "The owner of this organizational unit is not one of the default owners. An owner holds READ_CONTROL and WRITE_DAC implicitly, so this principal can grant itself any permission on the OU and have it inherited by every object inside - users, computers, groups and the GPO links."
+        Impact = @(
+            "The owner can write itself GenericAll on the OU and inherit it down to every object in it"
+            "That covers resetting the passwords of the users below, writing msDS-AllowedToActOnBehalfOfOtherIdentity on the computers, and changing the group memberships"
+            "It can also link a GPO, which is code execution on every machine below the OU"
+            "None of it requires an entry in the DACL, so reading the DACL alone shows nothing"
+        )
+        Attack = @(
+            "1. Attacker controls the principal that owns the OU"
+            "2. Grants itself GenericAll on the OU, inherited to child objects"
+            "3. Resets the password of a privileged account below, or writes RBCD on a computer there"
+            "4. This is the BloodHound Owns edge, and it is usually the shortest path left in a hardened domain"
+        )
+        Remediation = @(
+            "Set the owner back to Domain Admins or Administrators"
+            "Establish how it changed - most often the account that created the OU stayed its owner, because CREATOR OWNER is the default"
+            "Review the owners of the other OUs in the same sweep; one non-default owner usually means a delegation practice rather than an incident"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the owner of every OU in the domain"
+                Command = 'Get-ADOrganizationalUnit -Filter * | ForEach-Object { [PSCustomObject]@{ OU = $_.DistinguishedName; Owner = (Get-Acl -Path "AD:$($_.DistinguishedName)").Owner } }'
+            }
+            @{
+                Description = "Reassign the owner of one OU to Domain Admins"
+                Command = '$acl = Get-Acl -Path "AD:OU=NAME,DC=DOMAIN,DC=COM"; $acl.SetOwner((New-Object System.Security.Principal.NTAccount("DOMAIN\Domain Admins"))); Set-Acl -Path "AD:OU=NAME,DC=DOMAIN,DC=COM" -AclObject $acl'
+            }
+        )
+        References = @(
+            @{ Title = "BloodHound Owns edge"; Url = "https://bloodhound.specterops.io/resources/edges/owns" }
+            @{ Title = "Owner Rights - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-rights" }
+        )
+        Tools = @("PowerView", "BloodHound", "ADACLScanner")
+        MITRE = "T1222.001"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = '^Owner of the OU$'; Severity = 'Finding' }
+        )
+    }
+
     'DANGEROUS_ACL_DCSYNC' = @{
         Title = "DCSync Rights (Replication Permissions)"
         Risk = "Finding"
