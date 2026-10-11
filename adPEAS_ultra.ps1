@@ -14416,6 +14416,42 @@ foreach ($oid in $linkedOIDs) {
 	        @{ Attribute = 'prewin2000AnonymousMember'; Severity = 'Finding' }
 	    )
 	}
+	'PREWIN2000_DEFAULT_MEMBER' = @{
+	    Title = "Authenticated Users in Pre-Windows 2000 Compatible Access"
+	    Risk = "Hint"
+	    BaseScore = 15
+	    Description = "The Pre-Windows 2000 Compatible Access group grants its members read access to every user and group object in the domain, and Authenticated Users is a member. This is how Microsoft ships the group - it is still pre-populated in new forests on Windows Server 2022 and 2025 - so it is the configuration as delivered rather than something that was changed. Worth removing, but not before checking what depends on it."
+	    Impact = @(
+	        "Any account that can authenticate may enumerate every user and group in the domain"
+	        "That includes the group memberships an attacker needs to choose a target"
+	        "The group also reads tokenGroupsGlobalAndUniversal, which Authenticated Users alone cannot"
+	    )
+	    Attack = @(
+	        "1. An attacker authenticates with any account, however unprivileged"
+	        "2. Enumerates users, groups and memberships across the domain"
+	        "3. Chooses targets from what it finds, without touching a privileged object"
+	    )
+	    Remediation = @(
+	        "Check what depends on it first: ADFS 3.0 WebForms authentication and Cisco ISE are documented to require this membership and break without it"
+	        "Remove Authenticated Users from the group once nothing needs it"
+	        "Grant the read explicitly to the accounts that turn out to need it instead"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show the current members"
+	            Command = "Get-ADGroupMember -Identity 'S-1-5-32-554'"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Security risks of Pre-Windows 2000 Compatibility Access"; Url = "https://www.semperis.com/blog/security-risks-pre-windows-2000-compatibility-windows-2022/" }
+	        @{ Title = "Pre-Windows 2000 Compatible Access and ADFS"; Url = "https://learn.microsoft.com/en-us/archive/msdn-technet-forums/e8dfacba-985f-4042-abeb-f341bf37522f" }
+	    )
+	    Tools = @("PowerView", "BloodHound")
+	    MITRE = "T1087.002"
+	    Triggers = @(
+	        @{ Attribute = 'prewin2000DefaultMember'; Severity = 'Hint' }
+	    )
+	}
 	'PREWIN2000_BROAD_MEMBER' = @{
 	    Title = "Broad Principal in Pre-Windows 2000 Compatible Access"
 	    Risk = "Finding"
@@ -61886,18 +61922,18 @@ function Get-PrivilegedGroupMembers {
 	                        MemberName = $MemberName
 	                        MemberSID  = $MemberSID
 	                    }
+	                    $memberClass = 'Finding'
 	                    if ($MemberSID -eq 'S-1-5-7') {
-	                        $finding | Add-Member -NotePropertyName 'prewin2000AnonymousMember' -NotePropertyValue (
-	                            'Anonymous Logon is a member of this group, so every user and group object in the domain can be read with no credentials at all.'
-	                        ) -Force
+	                        $finding | Add-Member -NotePropertyName 'prewin2000AnonymousMember' -NotePropertyValue $MemberName -Force
+	                    } elseif ($MemberSID -eq 'S-1-5-11') {
+	                        $finding | Add-Member -NotePropertyName 'prewin2000DefaultMember' -NotePropertyValue $MemberName -Force
+	                        $memberClass = 'Hint'
 	                    } else {
-	                        $finding | Add-Member -NotePropertyName 'prewin2000BroadMember' -NotePropertyValue (
-	                            "$MemberName is a member of this group, so every principal it covers can read every user and group object in the domain."
-	                        ) -Force
+	                        $finding | Add-Member -NotePropertyName 'prewin2000BroadMember' -NotePropertyValue $MemberName -Force
 	                    }
 	                    $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PreWindows2000Access' -Force
 	                    $PreWin2000Findings += $finding
-	                    Show-Line "$MemberName is a member" -Class Finding
+	                    Show-Line "$MemberName is a member" -Class $memberClass
 	                    Show-Object $finding
 	                }
 	            }
@@ -65377,6 +65413,7 @@ function Get-OutdatedComputers {
 	        $outdatedComputerDNs = @()
 	        $esuOnlyComputerDNs = @()
 	        $notAssessableCount = 0
+	        $notAssessableOS = @{}
 	        if (@($computers).Count -gt 0) {
 	            $computersWithActivity = $computers | Test-AccountActivity -IncludeDetails -InactiveDays $InactiveDays
 	            $currentIndex = 0
@@ -65394,6 +65431,13 @@ function Get-OutdatedComputers {
 	                $eolCheck = Test-IsOutdatedOS -OSName $computer.operatingSystem -OSVersion $computer.operatingSystemVersion
 	                if ($eolCheck.SupportState -eq 'NotAssessable' -and $computer.ActivityDetails.IsActive) {
 	                    $notAssessableCount++
+	                    $osLabel = if ($computer.operatingSystemVersion) {
+	                        "$($computer.operatingSystem) / $($computer.operatingSystemVersion)"
+	                    } else {
+	                        [string]$computer.operatingSystem
+	                    }
+	                    if (-not $notAssessableOS.ContainsKey($osLabel)) { $notAssessableOS[$osLabel] = 0 }
+	                    $notAssessableOS[$osLabel]++
 	                    continue
 	                }
 	                if ($eolCheck.IsOutdated) {
@@ -65418,10 +65462,13 @@ function Get-OutdatedComputers {
 	            Show-Line "Found $(@($outdatedComputerDNs).Count) computer(s) with an outdated Microsoft operating system:$inactiveInfo" -Class "Finding"
 	        }
 	        if (@($esuOnlyComputerDNs).Count -gt 0) {
-	            Show-Line "$(@($esuOnlyComputerDNs).Count) computer(s) run an operating system that is past its general support end and inside a paid Extended Security Updates window - patched only if that extension was actually bought, and unpatched since the date on each row otherwise" -Class "Hint"
+	            Show-Line "$(@($esuOnlyComputerDNs).Count) computer(s) are past general support and inside the paid ESU window:" -Class "Hint"
 	        }
 	        if ($notAssessableCount -gt 0) {
-	            Show-Line "$notAssessableCount active computer(s) run a recognized Microsoft operating system this lifecycle table cannot place - a Windows 11 build it does not know, or a product whose support end was not published when the table was written. Their support state was not assessed" -Class "Note"
+	            Show-Line "$notAssessableCount active computer(s) run a Microsoft operating system this lifecycle table cannot place:" -Class "Note"
+	            foreach ($osLabel in ($notAssessableOS.Keys | Sort-Object)) {
+	                Show-Line "  $osLabel - $($notAssessableOS[$osLabel]) computer(s)" -Class "Hint"
+	            }
 	        }
 	        $findingDNs = @($outdatedComputerDNs) + @($esuOnlyComputerDNs)
 	        if (@($findingDNs).Count -gt 0) {
@@ -69200,16 +69247,18 @@ function Get-WeakCertificateMapping {
 	    [Parameter(Mandatory = $false)]
 	    [string]$Server,
 	    [Parameter(Mandatory = $false)]
-	    [Management.Automation.PSCredential]$Credential
+	    [Management.Automation.PSCredential]$Credential,
+	    [Parameter(Mandatory = $false)]
+	    [switch]$IncludePrivileged
 	)
 	process {
-	    if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
-	        return
-	    }
 	    $connectionParams = @{}
 	    if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
 	    if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
 	    if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+	    if (-not (Ensure-LDAPConnection @connectionParams)) {
+	        return
+	    }
 	    Show-SubHeader "Analyzing explicit certificate mappings..." -ObjectType "WeakCertificateMapping"
 	    $candidates = @()
 	    try {
@@ -69361,12 +69410,16 @@ function Get-WeakCertificateMapping {
 	        }
 	    }
 	    if (@($exchangeOnlyFindings).Count -gt 0) {
-	        Show-Line "$(@($exchangeOnlyFindings).Count) further privileged principal(s) are writable by Exchange service groups only - the by-design Exchange ACL, and an escalation path through Exchange rather than a delegation" -Class Hint
-	        foreach ($finding in $exchangeOnlyFindings) {
-	            Show-Object $finding -Class Hint
+	        if ($IncludePrivileged) {
+	            Show-Line "$(@($exchangeOnlyFindings).Count) privileged account(s) writable only by Exchange service groups (by design):" -Class Hint
+	            foreach ($finding in $exchangeOnlyFindings) {
+	                Show-Object $finding -Class Hint
+	            }
+	        } else {
+	            Show-Line "$(@($exchangeOnlyFindings).Count) privileged account(s) writable only by Exchange service groups (by design) - use -IncludePrivileged" -Class Note
 	        }
 	    }
-	    if (@($writableFindings).Count -eq 0 -and @($exchangeOnlyFindings).Count -eq 0) {
+	    if (@($writableFindings).Count -eq 0) {
 	        Show-Line "No non-privileged principal can write altSecurityIdentities on a privileged account" -Class Secure
 	    }
 	}
@@ -71301,7 +71354,11 @@ function Get-CredentialExposure {
 	            }
 	            return
 	        }
-	        if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+	        $connectionParams = @{}
+	        if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+	        if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+	        if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+	        if (-not (Ensure-LDAPConnection @connectionParams)) {
 	            return
 	        }
 	        $dcServer = $Script:LDAPContext.Server
@@ -82777,7 +82834,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-1949"
+$Script:adPEASVersion = "2.7.0+20261011-2022"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -83235,7 +83292,7 @@ try {
 	    Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['ADCS'])"
 	    try {
 	        Invoke-CheckWithContext -Category 'ADCS' -CheckName 'Get-ADCSVulnerabilities' -Title 'ADCS Vulnerabilities' -Check { Get-ADCSVulnerabilities -IncludePrivileged:$IncludePrivileged }
-	        Invoke-CheckWithContext -Category 'ADCS' -CheckName 'Get-WeakCertificateMapping' -Title 'Explicit Certificate Mappings' -Check { Get-WeakCertificateMapping }
+	        Invoke-CheckWithContext -Category 'ADCS' -CheckName 'Get-WeakCertificateMapping' -Title 'Explicit Certificate Mappings' -Check { Get-WeakCertificateMapping -IncludePrivileged:$IncludePrivileged }
 	    } catch {
 	        Write-Warning "[adPEAS] Error executing ADCS Module: $_"
 	    }

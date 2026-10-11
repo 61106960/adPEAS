@@ -105,6 +105,12 @@ function Get-OutdatedComputers {
             # published. Counted and named, because "not assessable" is not "supported" -
             # and Windows 11 used to fall into exactly this gap silently, for every build.
             $notAssessableCount = 0
+            # Which systems, not only how many. Keyed by the OS string, so the output
+            # names the build the table is missing - that is what lets a reader look the
+            # support date up, and what says which entry has to be added here. The
+            # comment above claimed these were "counted and named"; only the count was
+            # ever kept.
+            $notAssessableOS = @{}
 
             if (@($computers).Count -gt 0) {
                 # Get enabled computers with activity details.
@@ -141,6 +147,13 @@ function Get-OutdatedComputers {
 
                     if ($eolCheck.SupportState -eq 'NotAssessable' -and $computer.ActivityDetails.IsActive) {
                         $notAssessableCount++
+                        $osLabel = if ($computer.operatingSystemVersion) {
+                            "$($computer.operatingSystem) / $($computer.operatingSystemVersion)"
+                        } else {
+                            [string]$computer.operatingSystem
+                        }
+                        if (-not $notAssessableOS.ContainsKey($osLabel)) { $notAssessableOS[$osLabel] = 0 }
+                        $notAssessableOS[$osLabel]++
                         continue
                     }
 
@@ -176,11 +189,20 @@ function Get-OutdatedComputers {
             }
 
             if (@($esuOnlyComputerDNs).Count -gt 0) {
-                Show-Line "$(@($esuOnlyComputerDNs).Count) computer(s) run an operating system that is past its general support end and inside a paid Extended Security Updates window - patched only if that extension was actually bought, and unpatched since the date on each row otherwise" -Class "Hint"
+                # The reader gets the conclusion; the card says what ESU means and that
+                # the extension may never have been bought.
+                Show-Line "$(@($esuOnlyComputerDNs).Count) computer(s) are past general support and inside the paid ESU window:" -Class "Hint"
             }
 
             if ($notAssessableCount -gt 0) {
-                Show-Line "$notAssessableCount active computer(s) run a recognized Microsoft operating system this lifecycle table cannot place - a Windows 11 build it does not know, or a product whose support end was not published when the table was written. Their support state was not assessed" -Class "Note"
+                # Ten lines above, this check explains why it skips an operating system it
+                # does not know: "counting them told the reader a number they could do
+                # nothing with". This counter did exactly that - a number, no name, no
+                # version, nothing to act on. Now it says which build is missing.
+                Show-Line "$notAssessableCount active computer(s) run a Microsoft operating system this lifecycle table cannot place:" -Class "Note"
+                foreach ($osLabel in ($notAssessableOS.Keys | Sort-Object)) {
+                    Show-Line "  $osLabel - $($notAssessableOS[$osLabel]) computer(s)" -Class "Hint"
+                }
             }
 
             $findingDNs = @($outdatedComputerDNs) + @($esuOnlyComputerDNs)

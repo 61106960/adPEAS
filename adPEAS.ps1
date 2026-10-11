@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 19:49:54
-    Version: 2.7.0+20261011-1949
+    Build: 2026-10-11 20:22:00
+    Version: 2.7.0+20261011-2022
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -19146,6 +19146,45 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "T1087.002"
         Triggers = @(
             @{ Attribute = 'prewin2000AnonymousMember'; Severity = 'Finding' }
+        )
+    }
+
+    'PREWIN2000_DEFAULT_MEMBER' = @{
+        Title = "Authenticated Users in Pre-Windows 2000 Compatible Access"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "The Pre-Windows 2000 Compatible Access group grants its members read access to every user and group object in the domain, and Authenticated Users is a member. This is how Microsoft ships the group - it is still pre-populated in new forests on Windows Server 2022 and 2025 - so it is the configuration as delivered rather than something that was changed. Worth removing, but not before checking what depends on it."
+        Impact = @(
+            "Any account that can authenticate may enumerate every user and group in the domain"
+            "That includes the group memberships an attacker needs to choose a target"
+            "The group also reads tokenGroupsGlobalAndUniversal, which Authenticated Users alone cannot"
+        )
+        Attack = @(
+            "1. An attacker authenticates with any account, however unprivileged"
+            "2. Enumerates users, groups and memberships across the domain"
+            "3. Chooses targets from what it finds, without touching a privileged object"
+        )
+        Remediation = @(
+            "Check what depends on it first: ADFS 3.0 WebForms authentication and Cisco ISE are documented to require this membership and break without it"
+            "Remove Authenticated Users from the group once nothing needs it"
+            "Grant the read explicitly to the accounts that turn out to need it instead"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current members"
+                Command = "Get-ADGroupMember -Identity 'S-1-5-32-554'"
+            }
+        )
+        References = @(
+            @{ Title = "Security risks of Pre-Windows 2000 Compatibility Access"; Url = "https://www.semperis.com/blog/security-risks-pre-windows-2000-compatibility-windows-2022/" }
+            @{ Title = "Pre-Windows 2000 Compatible Access and ADFS"; Url = "https://learn.microsoft.com/en-us/archive/msdn-technet-forums/e8dfacba-985f-4042-abeb-f341bf37522f" }
+        )
+        Tools = @("PowerView", "BloodHound")
+        MITRE = "T1087.002"
+        Triggers = @(
+            # Its own attribute, so the default case is told from a principal somebody
+            # added by hand. The check decides which attribute to write, by SID.
+            @{ Attribute = 'prewin2000DefaultMember'; Severity = 'Hint' }
         )
     }
 
@@ -100244,20 +100283,31 @@ function Get-PrivilegedGroupMembers {
                         # only Finding, Hint, Note and Secure, so the row stayed colourless
                         # and named no finding card for one of the classic legacy findings
                         # there is.
+                        # Three cases, because three different things are true. The
+                        # value is the member name: the sentence these attributes used to
+                        # carry is the card's Description word for word, so the console
+                        # was repeating the tooltip in 160 characters.
+                        $memberClass = 'Finding'
                         if ($MemberSID -eq 'S-1-5-7') {
-                            $finding | Add-Member -NotePropertyName 'prewin2000AnonymousMember' -NotePropertyValue (
-                                'Anonymous Logon is a member of this group, so every user and group object in the domain can be read with no credentials at all.'
-                            ) -Force
+                            # No credentials at all - the strongest of the three.
+                            $finding | Add-Member -NotePropertyName 'prewin2000AnonymousMember' -NotePropertyValue $MemberName -Force
+                        } elseif ($MemberSID -eq 'S-1-5-11') {
+                            # The Microsoft default: still pre-populated in new forests on
+                            # Server 2022 and 2025, and removing it breaks ADFS 3.0
+                            # WebForms and Cisco ISE among others. Hardening worth doing,
+                            # with dependencies to check first - not a finding against the
+                            # configuration as shipped.
+                            $finding | Add-Member -NotePropertyName 'prewin2000DefaultMember' -NotePropertyValue $MemberName -Force
+                            $memberClass = 'Hint'
                         } else {
-                            $finding | Add-Member -NotePropertyName 'prewin2000BroadMember' -NotePropertyValue (
-                                "$MemberName is a member of this group, so every principal it covers can read every user and group object in the domain."
-                            ) -Force
+                            # Everyone, or anyone added by hand. The legacy mode.
+                            $finding | Add-Member -NotePropertyName 'prewin2000BroadMember' -NotePropertyValue $MemberName -Force
                         }
 
                         $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PreWindows2000Access' -Force
                         $PreWin2000Findings += $finding
 
-                        Show-Line "$MemberName is a member" -Class Finding
+                        Show-Line "$MemberName is a member" -Class $memberClass
 
                         # The object was built, counted and never shown, so it reached
                         # neither the console nor the HTML report: the only trace of this
@@ -106974,6 +107024,12 @@ function Get-OutdatedComputers {
             # published. Counted and named, because "not assessable" is not "supported" -
             # and Windows 11 used to fall into exactly this gap silently, for every build.
             $notAssessableCount = 0
+            # Which systems, not only how many. Keyed by the OS string, so the output
+            # names the build the table is missing - that is what lets a reader look the
+            # support date up, and what says which entry has to be added here. The
+            # comment above claimed these were "counted and named"; only the count was
+            # ever kept.
+            $notAssessableOS = @{}
 
             if (@($computers).Count -gt 0) {
                 # Get enabled computers with activity details.
@@ -107010,6 +107066,13 @@ function Get-OutdatedComputers {
 
                     if ($eolCheck.SupportState -eq 'NotAssessable' -and $computer.ActivityDetails.IsActive) {
                         $notAssessableCount++
+                        $osLabel = if ($computer.operatingSystemVersion) {
+                            "$($computer.operatingSystem) / $($computer.operatingSystemVersion)"
+                        } else {
+                            [string]$computer.operatingSystem
+                        }
+                        if (-not $notAssessableOS.ContainsKey($osLabel)) { $notAssessableOS[$osLabel] = 0 }
+                        $notAssessableOS[$osLabel]++
                         continue
                     }
 
@@ -107045,11 +107108,20 @@ function Get-OutdatedComputers {
             }
 
             if (@($esuOnlyComputerDNs).Count -gt 0) {
-                Show-Line "$(@($esuOnlyComputerDNs).Count) computer(s) run an operating system that is past its general support end and inside a paid Extended Security Updates window - patched only if that extension was actually bought, and unpatched since the date on each row otherwise" -Class "Hint"
+                # The reader gets the conclusion; the card says what ESU means and that
+                # the extension may never have been bought.
+                Show-Line "$(@($esuOnlyComputerDNs).Count) computer(s) are past general support and inside the paid ESU window:" -Class "Hint"
             }
 
             if ($notAssessableCount -gt 0) {
-                Show-Line "$notAssessableCount active computer(s) run a recognized Microsoft operating system this lifecycle table cannot place - a Windows 11 build it does not know, or a product whose support end was not published when the table was written. Their support state was not assessed" -Class "Note"
+                # Ten lines above, this check explains why it skips an operating system it
+                # does not know: "counting them told the reader a number they could do
+                # nothing with". This counter did exactly that - a number, no name, no
+                # version, nothing to act on. Now it says which build is missing.
+                Show-Line "$notAssessableCount active computer(s) run a Microsoft operating system this lifecycle table cannot place:" -Class "Note"
+                foreach ($osLabel in ($notAssessableOS.Keys | Sort-Object)) {
+                    Show-Line "  $osLabel - $($notAssessableOS[$osLabel]) computer(s)" -Class "Hint"
+                }
             }
 
             $findingDNs = @($outdatedComputerDNs) + @($esuOnlyComputerDNs)
@@ -113968,7 +114040,13 @@ function Get-WeakCertificateMapping {
         [string]$Server,
 
         [Parameter(Mandatory = $false)]
-        [Management.Automation.PSCredential]$Credential
+        [Management.Automation.PSCredential]$Credential,
+
+        # Exchange service groups hold these rights by design. Without this switch the
+        # check printed them in every scan of every domain that runs Exchange, and the
+        # green verdict below could never be reached.
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludePrivileged
     )
 
     begin {
@@ -113976,16 +114054,19 @@ function Get-WeakCertificateMapping {
     }
 
     process {
-        if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
-            return
-        }
-
-        # Connection parameters for the inner Get-Domain* calls. Built explicitly rather
-        # than splatted from $PSBoundParameters, which inner scopes cannot see.
+        # Connection parameters for Ensure-LDAPConnection and for the inner Get-Domain*
+        # calls. Built explicitly rather than splatted from $PSBoundParameters: that one
+        # carries every parameter the caller passed, and Ensure-LDAPConnection accepts only
+        # these three - so adding any further parameter to this check made the splat throw
+        # on the first line of the check, in every scan, before anything ran.
         $connectionParams = @{}
         if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
         if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
         if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+
+        if (-not (Ensure-LDAPConnection @connectionParams)) {
+            return
+        }
 
         # ==================================================================
         # 1. Principals that already carry an explicit mapping
@@ -114253,13 +114334,25 @@ function Get-WeakCertificateMapping {
         }
 
         if (@($exchangeOnlyFindings).Count -gt 0) {
-            Show-Line "$(@($exchangeOnlyFindings).Count) further privileged principal(s) are writable by Exchange service groups only - the by-design Exchange ACL, and an escalation path through Exchange rather than a delegation" -Class Hint
-            foreach ($finding in $exchangeOnlyFindings) {
-                Show-Object $finding -Class Hint
+            # Held back by default, the way Get-DangerousACLs holds back an Exchange
+            # service group: the ACL is written by Exchange setup and cannot be removed
+            # without breaking Exchange. Not in silence though - one short line says how
+            # many there are, so a reader who has not met the switch can still learn that
+            # Exchange reaches these accounts.
+            if ($IncludePrivileged) {
+                Show-Line "$(@($exchangeOnlyFindings).Count) privileged account(s) writable only by Exchange service groups (by design):" -Class Hint
+                foreach ($finding in $exchangeOnlyFindings) {
+                    Show-Object $finding -Class Hint
+                }
+            } else {
+                Show-Line "$(@($exchangeOnlyFindings).Count) privileged account(s) writable only by Exchange service groups (by design) - use -IncludePrivileged" -Class Note
             }
         }
 
-        if (@($writableFindings).Count -eq 0 -and @($exchangeOnlyFindings).Count -eq 0) {
+        # Only the real findings decide this. The Exchange ACL is by design and holds no
+        # non-privileged principal, so counting it here meant the green verdict - which is
+        # exactly what this line claims - could never be printed in a domain with Exchange.
+        if (@($writableFindings).Count -eq 0) {
             Show-Line "No non-privileged principal can write altSecurityIdentities on a privileged account" -Class Secure
         }
     }
@@ -117593,8 +117686,17 @@ function Get-CredentialExposure {
             }
 
             # Mode 2: Domain-based SYSVOL/NETLOGON scanning
-            # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            # Ensure LDAP connection (displays error if needed). The three parameters it
+            # takes, named one by one rather than splatted from $PSBoundParameters: -Path is
+            # also a parameter of this check, and an empty string for it is falsy enough to
+            # fall past the Mode 1 branch above while still sitting in $PSBoundParameters -
+            # which made the splat throw here instead of scanning the domain.
+            $connectionParams = @{}
+            if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+            if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+            if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -131919,7 +132021,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1949"
+$Script:adPEASVersion = "2.7.0+20261011-2022"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -132808,7 +132910,7 @@ try {
         Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['ADCS'])"
         try {
             Invoke-CheckWithContext -Category 'ADCS' -CheckName 'Get-ADCSVulnerabilities' -Title 'ADCS Vulnerabilities' -Check { Get-ADCSVulnerabilities -IncludePrivileged:$IncludePrivileged }
-            Invoke-CheckWithContext -Category 'ADCS' -CheckName 'Get-WeakCertificateMapping' -Title 'Explicit Certificate Mappings' -Check { Get-WeakCertificateMapping }
+            Invoke-CheckWithContext -Category 'ADCS' -CheckName 'Get-WeakCertificateMapping' -Title 'Explicit Certificate Mappings' -Check { Get-WeakCertificateMapping -IncludePrivileged:$IncludePrivileged }
         } catch {
             Write-Warning "[adPEAS] Error executing ADCS Module: $_"
         }
