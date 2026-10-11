@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 16:02:37
-    Version: 2.7.0+20261011-1602
+    Build: 2026-10-11 16:29:06
+    Version: 2.7.0+20261011-1629
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -105329,6 +105329,23 @@ function Get-LAPSPermissions {
                         $legacyReaders = @()
                         $nativeReaders = @()
 
+                        # Whether the trustee holds CONTROL_ACCESS anywhere on this OU,
+                        # which is not the same question as whether one ACE carries it.
+                        # Set-AdmPwdReadPasswordPermission writes two ACEs - a ReadProperty
+                        # on the attribute and All Extended Rights - and they arrive here as
+                        # two findings for the same principal, only the second of which has
+                        # GrantsControlAccess. They are also sorted into different lists, and
+                        # the legacy list keeps the first entry per SID, so the attribute
+                        # finding would never have seen the other one. Judging it alone
+                        # downgrades the standard LAPS delegation - the common case, and a
+                        # real finding - to a hint.
+                        $controlAccessBySID = @{}
+                        foreach ($caFinding in $ouPerms.Findings) {
+                            if ($caFinding.GrantsControlAccess -ne $true) { continue }
+                            $caSID = [string]$caFinding.SID
+                            if ($caSID) { $controlAccessBySID[$caSID] = $true }
+                        }
+
                         foreach ($finding in $ouPerms.Findings) {
                             $principal = $finding.Principal
                             $sid = $finding.SID
@@ -105356,9 +105373,14 @@ function Get-LAPSPermissions {
                             # change. Dropping the severity instead would take the row out
                             # of the output altogether, which is the other way to be wrong
                             # about it.
-                            $blankAllProperties = ($finding.Right -match 'All Properties') -and
-                                                  ($finding.GrantsControlAccess -ne $true)
-                            $blockedByConfidentialFlag = ($blankAllProperties -and
+                            # Any read short of CONTROL_ACCESS, not just an all-properties
+                            # one. A ReadProperty ACE on the confidential attribute itself is
+                            # equally short of what MS-ADTS requires, and the ADUC checkbox
+                            # "Read ms-Mcs-AdmPwd" without "All extended rights" produces
+                            # exactly that - it was reported as a live password read.
+                            $holdsControlAccess = ($finding.GrantsControlAccess -eq $true) -or
+                                                  ($controlAccessBySID.ContainsKey([string]$finding.SID))
+                            $blockedByConfidentialFlag = ((-not $holdsControlAccess) -and
                                                           ($Script:LAPSSchemaInfo.PasswordConfidential -eq $true))
 
                             # Which generation this right reads is decided here, where the
@@ -131549,7 +131571,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1602"
+$Script:adPEASVersion = "2.7.0+20261011-1629"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

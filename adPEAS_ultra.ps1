@@ -64502,13 +64502,19 @@ function Get-LAPSPermissions {
 	                if ($ouPerms -and $ouPerms.Findings) {
 	                    $legacyReaders = @()
 	                    $nativeReaders = @()
+	                    $controlAccessBySID = @{}
+	                    foreach ($caFinding in $ouPerms.Findings) {
+	                        if ($caFinding.GrantsControlAccess -ne $true) { continue }
+	                        $caSID = [string]$caFinding.SID
+	                        if ($caSID) { $controlAccessBySID[$caSID] = $true }
+	                    }
 	                    foreach ($finding in $ouPerms.Findings) {
 	                        $principal = $finding.Principal
 	                        $sid = $finding.SID
 	                        $severity = $finding.Severity
-	                        $blankAllProperties = ($finding.Right -match 'All Properties') -and
-	                                              ($finding.GrantsControlAccess -ne $true)
-	                        $blockedByConfidentialFlag = ($blankAllProperties -and
+	                        $holdsControlAccess = ($finding.GrantsControlAccess -eq $true) -or
+	                                              ($controlAccessBySID.ContainsKey([string]$finding.SID))
+	                        $blockedByConfidentialFlag = ((-not $holdsControlAccess) -and
 	                                                      ($Script:LAPSSchemaInfo.PasswordConfidential -eq $true))
 	                        if ($finding.Right -match 'ms-Mcs-AdmPwd') {
 	                            if ($sid -notin @($legacyReaders | ForEach-Object { $_.SID })) {
@@ -82619,7 +82625,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-1602"
+$Script:adPEASVersion = "2.7.0+20261011-1629"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
