@@ -10853,6 +10853,48 @@ foreach ($oid in $linkedOIDs) {
     # OPERATOR GROUP FINDINGS (from Get-ProtectedUsersStatus)
     # ============================================================================
 
+    'PRIMARY_GROUP_IS_DC_GROUP' = @{
+        Title = "Non-Computer Account With a Domain Controller Group as Primary Group"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "This account is not a computer, and its primaryGroupID names Domain Controllers, Read-only Domain Controllers or Enterprise Read-only Domain Controllers. The primary group puts that group's RID in the account's token on every logon, so the account holds whatever access the directory and the file system grant to domain controllers - and it appears in no member attribute, so a review of group memberships does not show it. Changing primaryGroupID needs write access to the attribute and nothing else; it leaves the group's own membership untouched."
+        Impact = @(
+            "The account's token carries the Domain Controllers SID, so every ACE granted to that group applies to it"
+            "The membership is invisible to anything that reads the group's member attribute, including most review scripts"
+            "A user account in this state is not covered by the protections that apply to machine accounts"
+        )
+        Attack = @(
+            "1. An attacker obtains write access to primaryGroupID on an account it controls"
+            "2. Sets it to 516, 521 or 498 - the group's own membership does not change"
+            "3. The next logon issues a token holding the domain controller group SID"
+            "4. Everything that trusts that group now trusts this account"
+        )
+        Remediation = @(
+            "Set primaryGroupID back to 513 (Domain Users) for a user account, or 515 (Domain Computers) for a machine that is not a domain controller"
+            "Find out who could write the attribute: the change needs no group membership, so the path is an ACE on the object"
+            "Audit directory changes to primaryGroupID - it is written rarely enough that every change is worth a look"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Put a user account back in Domain Users as its primary group"
+                Command = "Set-ADUser -Identity 'ACCOUNT' -Replace @{ primaryGroupID = 513 }"
+            }
+            @{
+                Description = "List every object whose primary group is a domain controller group"
+                Command = "Get-ADObject -LDAPFilter '(|(primaryGroupID=516)(primaryGroupID=521)(primaryGroupID=498))' -Properties primaryGroupID,objectClass"
+            }
+        )
+        References = @(
+            @{ Title = "primaryGroupID attribute"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-primarygroupid" }
+            @{ Title = "Well-known SIDs"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-identifiers" }
+        )
+        Tools = @("PowerView", "BloodHound")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'primaryGroupIsDCGroup'; Severity = 'Finding' }
+        )
+    }
+
     'TIER0_NOT_IN_PROTECTED_USERS' = @{
         Title = "Tier-0 Account Not in Protected Users"
         Risk = "Finding"

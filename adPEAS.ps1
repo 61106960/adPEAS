@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 22:27:00
-    Version: 2.7.0+20261011-2227
+    Build: 2026-10-11 22:48:31
+    Version: 2.7.0+20261011-2248
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -18667,6 +18667,48 @@ foreach ($oid in $linkedOIDs) {
     # ============================================================================
     # OPERATOR GROUP FINDINGS (from Get-ProtectedUsersStatus)
     # ============================================================================
+
+    'PRIMARY_GROUP_IS_DC_GROUP' = @{
+        Title = "Non-Computer Account With a Domain Controller Group as Primary Group"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "This account is not a computer, and its primaryGroupID names Domain Controllers, Read-only Domain Controllers or Enterprise Read-only Domain Controllers. The primary group puts that group's RID in the account's token on every logon, so the account holds whatever access the directory and the file system grant to domain controllers - and it appears in no member attribute, so a review of group memberships does not show it. Changing primaryGroupID needs write access to the attribute and nothing else; it leaves the group's own membership untouched."
+        Impact = @(
+            "The account's token carries the Domain Controllers SID, so every ACE granted to that group applies to it"
+            "The membership is invisible to anything that reads the group's member attribute, including most review scripts"
+            "A user account in this state is not covered by the protections that apply to machine accounts"
+        )
+        Attack = @(
+            "1. An attacker obtains write access to primaryGroupID on an account it controls"
+            "2. Sets it to 516, 521 or 498 - the group's own membership does not change"
+            "3. The next logon issues a token holding the domain controller group SID"
+            "4. Everything that trusts that group now trusts this account"
+        )
+        Remediation = @(
+            "Set primaryGroupID back to 513 (Domain Users) for a user account, or 515 (Domain Computers) for a machine that is not a domain controller"
+            "Find out who could write the attribute: the change needs no group membership, so the path is an ACE on the object"
+            "Audit directory changes to primaryGroupID - it is written rarely enough that every change is worth a look"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Put a user account back in Domain Users as its primary group"
+                Command = "Set-ADUser -Identity 'ACCOUNT' -Replace @{ primaryGroupID = 513 }"
+            }
+            @{
+                Description = "List every object whose primary group is a domain controller group"
+                Command = "Get-ADObject -LDAPFilter '(|(primaryGroupID=516)(primaryGroupID=521)(primaryGroupID=498))' -Properties primaryGroupID,objectClass"
+            }
+        )
+        References = @(
+            @{ Title = "primaryGroupID attribute"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-primarygroupid" }
+            @{ Title = "Well-known SIDs"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-identifiers" }
+        )
+        Tools = @("PowerView", "BloodHound")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'primaryGroupIsDCGroup'; Severity = 'Finding' }
+        )
+    }
 
     'TIER0_NOT_IN_PROTECTED_USERS' = @{
         Title = "Tier-0 Account Not in Protected Users"
@@ -98893,6 +98935,24 @@ function Get-PrivilegedGroupMembers {
             '517' = 'Cert Publishers'
         }
 
+        # The three domain-controller groups, for the primaryGroupID query ONLY.
+        #
+        # -516, -521 and -498 are privileged: $Script:PrivilegedRIDSuffixes says so, and
+        # $Script:DCSyncPrivilegedRIDSuffixes names -516 and -521 explicitly. This module
+        # deliberately does not enumerate them, and that is right - every domain controller
+        # is a member of -516, so listing the members would be pages of noise.
+        #
+        # The interesting case is the other one, and nothing in adPEAS looked for it: a
+        # USER account whose primaryGroupID is 516 carries the Domain Controllers SID in its
+        # token and therefore every access a DACL grants to domain controllers. It is in no
+        # member attribute, it is not a computer, and it survives a review of group
+        # memberships untouched.
+        $Script:DCPrimaryGroupRIDs = @{
+            '516' = 'Domain Controllers'
+            '521' = 'Read-only Domain Controllers'
+            '498' = 'Enterprise Read-only Domain Controllers'
+        }
+
         # Dynamic groups (no fixed SID - resolve by name)
         $Script:DynamicPrivilegedGroups = @(
             'DnsAdmins'
@@ -99781,6 +99841,43 @@ function Get-PrivilegedGroupMembers {
             # Show group summary if no members found
             if ($TotalMembers -eq 0) {
                 Show-Line "No members found in privileged groups" -Class Note
+            }
+
+            # ===== Accounts that are not computers but hold a DC group as primary =====
+            #
+            # Its own block rather than part of the enumeration above, because the groups
+            # themselves stay out: -516 holds every domain controller and listing it would
+            # bury everything else. What is asked here is the inverse - who holds one of
+            # these as their PRIMARY group without being a computer.
+            try {
+                $dcPrimaryClauses = ($Script:DCPrimaryGroupRIDs.Keys | ForEach-Object { "(primaryGroupID=$_)" }) -join ''
+                $dcPrimaryFilter = "(|$dcPrimaryClauses)"
+                $dcPrimaryFindings = @()
+
+                foreach ($dcAccount in @(Get-DomainObject -LDAPFilter $dcPrimaryFilter -Properties 'distinguishedName', 'sAMAccountName', 'name', 'objectSid', 'objectClass', 'primaryGroupID' @CredParams)) {
+                    # A computer with primaryGroupID 516 is a domain controller doing what
+                    # domain controllers do. Only the accounts that are not computers are a
+                    # finding here - the class decides, not the name.
+                    if (@($dcAccount.objectClass) -icontains 'computer') { continue }
+
+                    $dcRID = "$($dcAccount.primaryGroupID)"
+                    if (-not $Script:DCPrimaryGroupRIDs.ContainsKey($dcRID)) { continue }
+
+                    $dcAccount | Add-Member -NotePropertyName 'primaryGroupIsDCGroup' -NotePropertyValue (
+                        "$($Script:DCPrimaryGroupRIDs[$dcRID]) (RID $dcRID)") -Force
+                    $dcAccount | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedGroupMember' -Force
+                    $dcPrimaryFindings += $dcAccount
+                }
+
+                if (@($dcPrimaryFindings).Count -gt 0) {
+                    Show-Line "$(@($dcPrimaryFindings).Count) account(s) that are not computers hold a domain controller group as their primary group:" -Class Finding
+                    foreach ($dcFinding in $dcPrimaryFindings) {
+                        Show-Object $dcFinding
+                    }
+                }
+            } catch {
+                # Coverage, not a reason to lose the rest of the check.
+                Write-Log "[Get-PrivilegedGroupMembers] Primary-group query for the DC groups failed: $($_.Exception.Message)" -Level Warning
             }
 
             # ===== STEP 5: Check AdminSDHolder ACLs =====
@@ -100816,9 +100913,17 @@ function Get-AdminPasswordNeverExpires {
             $thresholdDate = (Get-Date).AddDays(-$PasswordAgeDays)
             $thresholdFileTime = $thresholdDate.ToFileTime()
 
-            # Build LDAP filter for password age (pwdLastSet older than threshold)
-            # pwdLastSet=0 means "must change at next logon" - exclude these
-            $passwordAgeFilter = "(&(pwdLastSet>=1)(pwdLastSet<=$thresholdFileTime))"
+            # The age is a grading now, not an entry condition. The flag says the password
+            # will never rotate; the age only says how long that has already been true. A
+            # Domain Admin with DONT_EXPIRE_PASSWORD whose password was set last month is
+            # the same configuration as one set in 2017 - and demanding both in the filter
+            # made that account invisible, so this check printed "No privileged accounts
+            # with password never expires and password older than N days found" as a green
+            # verdict over a domain full of them.
+            #
+            # pwdLastSet = 0 stays out: that is "must change at next logon", which the DC
+            # honours over the flag.
+            $passwordSetFilter = '(pwdLastSet>=1)'
 
             Write-Log "[Get-AdminPasswordNeverExpires] Password age threshold: $PasswordAgeDays days (before $(Format-adPEASDate $thresholdDate 'yyyy-MM-dd'))"
 
@@ -100829,17 +100934,26 @@ function Get-AdminPasswordNeverExpires {
             # gaps used to be invisible here, and the verification below only ever removed
             # accounts, never found the missing ones.
             $privilegedFilter = Get-PrivilegedAccountFilter -IncludeOperators @connectionParams
-            $candidates = Get-DomainUser -PasswordNeverExpires -LDAPFilter "(&$privilegedFilter$passwordAgeFilter)" -ShowOwner @connectionParams
+            $candidates = Get-DomainUser -PasswordNeverExpires -LDAPFilter "(&$privilegedFilter$passwordSetFilter)" -ShowOwner @connectionParams
 
             if (-not $candidates -or @($candidates).Count -eq 0) {
-                Show-Line "No privileged accounts with password never expires and password older than $PasswordAgeDays days found" -Class Secure
+                Show-Line "No privileged account has 'password never expires' set" -Class Secure
                 return
             }
+
+            # Annotated, not filtered: without -IsActive or -IsInactive, -IncludeDetails
+            # only adds ActivityDetails and passes everything through.
+            $candidates = @($candidates | Test-AccountActivity -IncludeDetails)
 
             Write-Log "[Get-AdminPasswordNeverExpires] Found $(@($candidates).Count) candidate(s) with adminCount=1, verifying actual privilege status..."
 
             # Verify each candidate is actually privileged (not just orphaned adminCount)
             $vulnerableAccounts = @()
+            # The accounts that carry the flag but whose password is newer than the
+            # threshold, and those where a smart card makes the flag harmless. Both used to
+            # be absent from the report altogether.
+            $recentAccounts = @()
+            $smartcardAccounts = @()
             $totalCandidates = @($candidates).Count
             $currentIndex = 0
 
@@ -100860,7 +100974,30 @@ function Get-AdminPasswordNeverExpires {
                     # Add privilege information to the user object
                     $user | Add-Member -NotePropertyName 'PrivilegedGroup' -NotePropertyValue $privCheck.MatchedGroup -Force
                     $user | Add-Member -NotePropertyName 'PrivilegeCategory' -NotePropertyValue $privCheck.Category -Force
-                    $vulnerableAccounts += $user
+
+                    # Two things decide the grading on top of "is privileged": how long the
+                    # password has already stood, and whether a smart card is required to log
+                    # on at all - with SMARTCARD_REQUIRED the password is not a logon
+                    # credential, so a password that never expires is not the same exposure.
+                    #
+                    # ActivityDetails is asked for by name first. Under Set-StrictMode
+                    # -Version Latest - which Pester applies - reading a property that is not
+                    # there is an error rather than $null, and a missing annotation has to
+                    # mean "age unknown", not a broken check.
+                    $passwordDays = $null
+                    if ($user.PSObject.Properties['ActivityDetails'] -and $user.ActivityDetails) {
+                        $passwordDays = $user.ActivityDetails.DaysSincePasswordChange
+                    }
+
+                    if (@($user.userAccountControl) -contains 'SMARTCARD_REQUIRED') {
+                        $smartcardAccounts += $user
+                    }
+                    elseif ($null -ne $passwordDays -and $passwordDays -ge $PasswordAgeDays) {
+                        $vulnerableAccounts += $user
+                    }
+                    else {
+                        $recentAccounts += $user
+                    }
 
                     Write-Log "[Get-AdminPasswordNeverExpires] Verified: $($user.sAMAccountName) is $($privCheck.Category) via $($privCheck.MatchedGroup)"
                 } else {
@@ -100873,15 +101010,35 @@ function Get-AdminPasswordNeverExpires {
                 Show-Progress -Activity "Verifying privileged accounts" -Completed
             }
 
-            if ($vulnerableAccounts -and @($vulnerableAccounts).Count -gt 0) {
+            if (@($vulnerableAccounts).Count -gt 0) {
                 Show-Line "Found $(@($vulnerableAccounts).Count) privileged account(s) with password never expires (password > $PasswordAgeDays days old):" -Class Finding
 
                 foreach ($user in $vulnerableAccounts) {
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
                     Show-Object $user
                 }
-            } else {
-                Show-Line "No privileged accounts with password never expires found (filtered $(@($candidates).Count) candidate(s) with orphaned adminCount)" -Class Secure
+            }
+
+            if (@($recentAccounts).Count -gt 0) {
+                Show-Line "$(@($recentAccounts).Count) further privileged account(s) carry the flag with a password newer than $PasswordAgeDays days:" -Class Hint
+
+                foreach ($user in $recentAccounts) {
+                    $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
+                    Show-Object $user
+                }
+            }
+
+            if (@($smartcardAccounts).Count -gt 0) {
+                Show-Line "$(@($smartcardAccounts).Count) privileged account(s) carry the flag but require a smart card to log on:" -Class Hint
+
+                foreach ($user in $smartcardAccounts) {
+                    $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
+                    Show-Object $user
+                }
+            }
+
+            if (@($vulnerableAccounts).Count -eq 0 -and @($recentAccounts).Count -eq 0 -and @($smartcardAccounts).Count -eq 0) {
+                Show-Line "No privileged account has 'password never expires' set (filtered $(@($candidates).Count) candidate(s) with orphaned adminCount)" -Class Secure
             }
 
         } catch {
@@ -131887,7 +132044,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-2227"
+$Script:adPEASVersion = "2.7.0+20261011-2248"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

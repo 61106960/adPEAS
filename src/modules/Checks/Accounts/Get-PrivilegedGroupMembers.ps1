@@ -78,6 +78,24 @@ function Get-PrivilegedGroupMembers {
             '517' = 'Cert Publishers'
         }
 
+        # The three domain-controller groups, for the primaryGroupID query ONLY.
+        #
+        # -516, -521 and -498 are privileged: $Script:PrivilegedRIDSuffixes says so, and
+        # $Script:DCSyncPrivilegedRIDSuffixes names -516 and -521 explicitly. This module
+        # deliberately does not enumerate them, and that is right - every domain controller
+        # is a member of -516, so listing the members would be pages of noise.
+        #
+        # The interesting case is the other one, and nothing in adPEAS looked for it: a
+        # USER account whose primaryGroupID is 516 carries the Domain Controllers SID in its
+        # token and therefore every access a DACL grants to domain controllers. It is in no
+        # member attribute, it is not a computer, and it survives a review of group
+        # memberships untouched.
+        $Script:DCPrimaryGroupRIDs = @{
+            '516' = 'Domain Controllers'
+            '521' = 'Read-only Domain Controllers'
+            '498' = 'Enterprise Read-only Domain Controllers'
+        }
+
         # Dynamic groups (no fixed SID - resolve by name)
         $Script:DynamicPrivilegedGroups = @(
             'DnsAdmins'
@@ -966,6 +984,43 @@ function Get-PrivilegedGroupMembers {
             # Show group summary if no members found
             if ($TotalMembers -eq 0) {
                 Show-Line "No members found in privileged groups" -Class Note
+            }
+
+            # ===== Accounts that are not computers but hold a DC group as primary =====
+            #
+            # Its own block rather than part of the enumeration above, because the groups
+            # themselves stay out: -516 holds every domain controller and listing it would
+            # bury everything else. What is asked here is the inverse - who holds one of
+            # these as their PRIMARY group without being a computer.
+            try {
+                $dcPrimaryClauses = ($Script:DCPrimaryGroupRIDs.Keys | ForEach-Object { "(primaryGroupID=$_)" }) -join ''
+                $dcPrimaryFilter = "(|$dcPrimaryClauses)"
+                $dcPrimaryFindings = @()
+
+                foreach ($dcAccount in @(Get-DomainObject -LDAPFilter $dcPrimaryFilter -Properties 'distinguishedName', 'sAMAccountName', 'name', 'objectSid', 'objectClass', 'primaryGroupID' @CredParams)) {
+                    # A computer with primaryGroupID 516 is a domain controller doing what
+                    # domain controllers do. Only the accounts that are not computers are a
+                    # finding here - the class decides, not the name.
+                    if (@($dcAccount.objectClass) -icontains 'computer') { continue }
+
+                    $dcRID = "$($dcAccount.primaryGroupID)"
+                    if (-not $Script:DCPrimaryGroupRIDs.ContainsKey($dcRID)) { continue }
+
+                    $dcAccount | Add-Member -NotePropertyName 'primaryGroupIsDCGroup' -NotePropertyValue (
+                        "$($Script:DCPrimaryGroupRIDs[$dcRID]) (RID $dcRID)") -Force
+                    $dcAccount | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedGroupMember' -Force
+                    $dcPrimaryFindings += $dcAccount
+                }
+
+                if (@($dcPrimaryFindings).Count -gt 0) {
+                    Show-Line "$(@($dcPrimaryFindings).Count) account(s) that are not computers hold a domain controller group as their primary group:" -Class Finding
+                    foreach ($dcFinding in $dcPrimaryFindings) {
+                        Show-Object $dcFinding
+                    }
+                }
+            } catch {
+                # Coverage, not a reason to lose the rest of the check.
+                Write-Log "[Get-PrivilegedGroupMembers] Primary-group query for the DC groups failed: $($_.Exception.Message)" -Level Warning
             }
 
             # ===== STEP 5: Check AdminSDHolder ACLs =====
