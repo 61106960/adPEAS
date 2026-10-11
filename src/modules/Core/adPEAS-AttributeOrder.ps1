@@ -938,13 +938,26 @@ function Get-OrderedAttributes {
         if ($prop.Name -ieq 'Owner') {
             $ownerSID = $Object.OwnerSID
             if ($ownerSID) {
-                $isDefaultOwner = Test-IsDefaultOwner -SID $ownerSID
-                if ($isDefaultOwner) {
+                if (Test-IsDefaultOwner -SID $ownerSID) {
                     # Default owner - Standard severity, goes to Extended
                     $severity = 'Standard'
                 } else {
-                    # Non-default owner - Finding severity (red), will be promoted if PromoteNonStandard is set
-                    $severity = 'Finding'
+                    # Non-default owner. What this decides is placement: any answer
+                    # other than Standard promotes the row out of Extended, which is
+                    # where a takeover path belongs.
+                    #
+                    # It used to be the literal 'Finding' - a second place deciding a
+                    # fact the trigger and the card already decide, and after the
+                    # renderer was corrected to follow them it was the only statement
+                    # left saying Finding. Asking the same source costs nothing here,
+                    # because Hint promotes the row just as Finding did.
+                    $ownerContext = if ($IsComputer) { 'NonDefaultOwner' } else { 'NonDefaultUserOwner' }
+                    $ownerMatch = Get-TriggerMatch -Name 'Owner' -Value $prop.Value -Context $ownerContext
+                    $severity = if ($ownerMatch -and $ownerMatch.Severity -and $ownerMatch.Severity -ne 'Standard') {
+                        [string]$ownerMatch.Severity
+                    } else {
+                        'Hint'
+                    }
                 }
             }
         }
