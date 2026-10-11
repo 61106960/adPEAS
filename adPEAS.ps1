@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 02:48:25
-    Version: 2.7.0+20261011-0248
+    Build: 2026-10-11 03:04:26
+    Version: 2.7.0+20261011-0304
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -498,6 +498,20 @@ $Script:PropertyGUIDs = @{
     'gPLink'                         = [GUID]'f30e3bbe-9ff0-11d1-b603-0000f80367c1'
     'gPOptions'                      = [GUID]'f30e3bc0-9ff0-11d1-b603-0000f80367c1'
 
+    # Certificate-template attributes. A WriteProperty ACE naming one of these is an ESC4
+    # path on its own: each one is a single write away from a template that issues a
+    # client-authentication certificate for a subject of the attacker's choosing.
+    #
+    # Each schemaIDGUID taken from its own learn.microsoft.com/windows/win32/adschema
+    # page, "System-Id-Guid" row, rather than from memory - the Attribute-Id is given
+    # beside it so the value can be checked without opening a browser.
+    'msPKI-Certificate-Name-Flag'          = [GUID]'ea1dddc4-60ff-416e-8cc0-17cee534bce7'  # 1.2.840.113556.1.4.1432
+    'msPKI-Enrollment-Flag'                = [GUID]'d15ef7d8-f226-46db-ae79-b34e560bd12c'  # 1.2.840.113556.1.4.1430
+    'pKIExtendedKeyUsage'                  = [GUID]'18976af6-3b9e-11d2-90cc-00c04fd91ab1'  # 1.2.840.113556.1.4.1333
+    'msPKI-Certificate-Application-Policy' = [GUID]'dbd90548-aa37-4202-9966-8c537ba5ce32'  # 1.2.840.113556.1.4.1674
+    'msPKI-RA-Signature'                   = [GUID]'fe17e04b-937d-4f7e-8e0e-9292c8d5683e'  # 1.2.840.113556.1.4.1429
+    'nTSecurityDescriptor'                 = [GUID]'bf9679e3-0de6-11d0-a285-00aa003049e2'  # 1.2.840.113556.1.2.281
+
     # Group-Policy-Container attributes. A WriteProperty ACE on a GPO always names one
     # attribute GUID; without these entries Resolve-ObjectTypeGUID answered $null for all
     # of them, so Get-GPOPermissions could not tell the ones that hand over the policy
@@ -913,6 +927,34 @@ $Script:GenericDangerousRights = @(
     'GenericWrite',
     'WriteDacl',
     'WriteOwner'
+)
+
+<#
+.SYNOPSIS
+    The certificate-template attributes whose individual write is an ESC4 path.
+.DESCRIPTION
+    A WriteProperty ACE always names one attribute GUID, and the usual reading - that a
+    property-specific write is harmless next to GenericWrite - does not hold on a
+    certificate template. Each of these is one write away from a template that issues a
+    client-authentication certificate for whatever subject the requester asks for:
+
+      msPKI-Certificate-Name-Flag           set ENROLLEE_SUPPLIES_SUBJECT
+      msPKI-Enrollment-Flag                 clear PEND_ALL_REQUESTS, dropping approval
+      pKIExtendedKeyUsage                   add Client Authentication
+      msPKI-Certificate-Application-Policy  the same, on a V2 or later template
+      msPKI-RA-Signature                    set to 0, dropping the agent co-signature
+      nTSecurityDescriptor                  grant yourself Certificate-Enrollment
+
+    Keyed by the name Resolve-ObjectTypeGUID returns for the ACE's ObjectType, so the
+    comparison is against a resolved name rather than a GUID literal at the call site.
+#>
+$Script:ESC4TemplateAttributes = @(
+    'msPKI-Certificate-Name-Flag',
+    'msPKI-Enrollment-Flag',
+    'pKIExtendedKeyUsage',
+    'msPKI-Certificate-Application-Policy',
+    'msPKI-RA-Signature',
+    'nTSecurityDescriptor'
 )
 
 # ============================================================================
@@ -111385,9 +111427,19 @@ function Get-ADCSVulnerabilities {
                         }
 
                         if ($containerACL) {
-                            # Filter for dangerous permissions
+                            # Filter for dangerous permissions.
+                            #
+                            # CreateChild and WriteProperty belong here, and were missing:
+                            # they are what ESC5 is. CreateChild on the Certificate
+                            # Templates container publishes an attacker's own template;
+                            # CreateChild on Enrollment Services registers a CA;
+                            # WriteProperty on NTAuthCertificates adds a CA certificate
+                            # that the whole forest then trusts for authentication. The
+                            # four rights that were here are the generic ones, which cover
+                            # the same ground only when somebody took the broad grant
+                            # rather than the precise one.
                             $dangerousACEs = $containerACL | Where-Object {
-                                $_.ExpandedRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite' -and
+                                $_.ExpandedRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite|CreateChild|WriteProperty' -and
                                 $_.AccessControlType -eq 'Allow'
                             }
 
@@ -111790,16 +111842,31 @@ function Get-ADCSVulnerabilities {
                                 }
                             }
 
-                            # WriteProperty is only dangerous if ObjectType is empty (applies to ALL properties)
-                            # When ObjectType contains a GUID, it only grants write to a specific property (harmless for ESC4)
+                            # WriteProperty, either on every property or on one of the six
+                            # that are an ESC4 path by themselves.
+                            #
+                            # This used to end at "property-specific WriteProperty is NOT
+                            # dangerous", which is the usual reading and wrong on a
+                            # certificate template: a write to msPKI-Certificate-Name-Flag
+                            # alone sets ENROLLEE_SUPPLIES_SUBJECT, a write to
+                            # msPKI-Enrollment-Flag alone drops manager approval, and a
+                            # write to nTSecurityDescriptor alone grants the attacker
+                            # enrollment. Each is one modification away from ESC1, and each
+                            # was discarded here as harmless - a silent false negative on
+                            # the most precise form the delegation can take.
                             if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty') {
                                 $objectTypeGuid = $ace.ObjectType
                                 # Empty GUID or all-zeros means "all properties" = dangerous
                                 if ($null -eq $objectTypeGuid -or $objectTypeGuid -eq [Guid]::Empty) {
                                     $hasDangerousRight = $true
                                     $matchedRight = "WriteProperty (All)"
+                                } else {
+                                    $resolved = Resolve-ObjectTypeGUID -GUID $objectTypeGuid
+                                    if ($resolved -and $resolved.Name -in $Script:ESC4TemplateAttributes) {
+                                        $hasDangerousRight = $true
+                                        $matchedRight = "WriteProperty ($($resolved.Name))"
+                                    }
                                 }
-                                # else: property-specific WriteProperty is NOT dangerous
                             }
 
                             if (-not $hasDangerousRight) { continue }
@@ -130064,7 +130131,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-0248"
+$Script:adPEASVersion = "2.7.0+20261011-0304"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

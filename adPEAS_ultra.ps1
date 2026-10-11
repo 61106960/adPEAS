@@ -198,6 +198,12 @@ $Script:PropertyGUIDs = @{
 	'msDS-AllowedToActOnBehalfOfOtherIdentity' = [GUID]'3f78c3e5-f79a-46bd-a0b8-9d18116ddc79'
 	'gPLink'                         = [GUID]'f30e3bbe-9ff0-11d1-b603-0000f80367c1'
 	'gPOptions'                      = [GUID]'f30e3bc0-9ff0-11d1-b603-0000f80367c1'
+	'msPKI-Certificate-Name-Flag'          = [GUID]'ea1dddc4-60ff-416e-8cc0-17cee534bce7'
+	'msPKI-Enrollment-Flag'                = [GUID]'d15ef7d8-f226-46db-ae79-b34e560bd12c'
+	'pKIExtendedKeyUsage'                  = [GUID]'18976af6-3b9e-11d2-90cc-00c04fd91ab1'
+	'msPKI-Certificate-Application-Policy' = [GUID]'dbd90548-aa37-4202-9966-8c537ba5ce32'
+	'msPKI-RA-Signature'                   = [GUID]'fe17e04b-937d-4f7e-8e0e-9292c8d5683e'
+	'nTSecurityDescriptor'                 = [GUID]'bf9679e3-0de6-11d0-a285-00aa003049e2'
 	'gPCFileSysPath'                 = [GUID]'f30e3bc1-9ff0-11d1-b603-0000f80367c1'
 	'gPCMachineExtensionNames'       = [GUID]'32ff8ecc-783f-11d2-9916-0000f87a57d4'
 	'gPCUserExtensionNames'          = [GUID]'42a75fc6-783f-11d2-9916-0000f87a57d4'
@@ -380,6 +386,14 @@ $Script:GenericDangerousRights = @(
 	'GenericWrite',
 	'WriteDacl',
 	'WriteOwner'
+)
+$Script:ESC4TemplateAttributes = @(
+	'msPKI-Certificate-Name-Flag',
+	'msPKI-Enrollment-Flag',
+	'pKIExtendedKeyUsage',
+	'msPKI-Certificate-Application-Policy',
+	'msPKI-RA-Signature',
+	'nTSecurityDescriptor'
 )
 $Script:AllActiveDirectoryRights = @(
 	[System.DirectoryServices.ActiveDirectoryRights]::GenericAll,
@@ -67732,7 +67746,7 @@ function Get-ADCSVulnerabilities {
 	                    }
 	                    if ($containerACL) {
 	                        $dangerousACEs = $containerACL | Where-Object {
-	                            $_.ExpandedRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite' -and
+	                            $_.ExpandedRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite|CreateChild|WriteProperty' -and
 	                            $_.AccessControlType -eq 'Allow'
 	                        }
 	                        if ($dangerousACEs) {
@@ -67983,6 +67997,12 @@ function Get-ADCSVulnerabilities {
 	                            if ($null -eq $objectTypeGuid -or $objectTypeGuid -eq [Guid]::Empty) {
 	                                $hasDangerousRight = $true
 	                                $matchedRight = "WriteProperty (All)"
+	                            } else {
+	                                $resolved = Resolve-ObjectTypeGUID -GUID $objectTypeGuid
+	                                if ($resolved -and $resolved.Name -in $Script:ESC4TemplateAttributes) {
+	                                    $hasDangerousRight = $true
+	                                    $matchedRight = "WriteProperty ($($resolved.Name))"
+	                                }
 	                            }
 	                        }
 	                        if (-not $hasDangerousRight) { continue }
@@ -81707,7 +81727,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-0248"
+$Script:adPEASVersion = "2.7.0+20261011-0304"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

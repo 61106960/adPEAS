@@ -145,6 +145,20 @@ $Script:PropertyGUIDs = @{
     'gPLink'                         = [GUID]'f30e3bbe-9ff0-11d1-b603-0000f80367c1'
     'gPOptions'                      = [GUID]'f30e3bc0-9ff0-11d1-b603-0000f80367c1'
 
+    # Certificate-template attributes. A WriteProperty ACE naming one of these is an ESC4
+    # path on its own: each one is a single write away from a template that issues a
+    # client-authentication certificate for a subject of the attacker's choosing.
+    #
+    # Each schemaIDGUID taken from its own learn.microsoft.com/windows/win32/adschema
+    # page, "System-Id-Guid" row, rather than from memory - the Attribute-Id is given
+    # beside it so the value can be checked without opening a browser.
+    'msPKI-Certificate-Name-Flag'          = [GUID]'ea1dddc4-60ff-416e-8cc0-17cee534bce7'  # 1.2.840.113556.1.4.1432
+    'msPKI-Enrollment-Flag'                = [GUID]'d15ef7d8-f226-46db-ae79-b34e560bd12c'  # 1.2.840.113556.1.4.1430
+    'pKIExtendedKeyUsage'                  = [GUID]'18976af6-3b9e-11d2-90cc-00c04fd91ab1'  # 1.2.840.113556.1.4.1333
+    'msPKI-Certificate-Application-Policy' = [GUID]'dbd90548-aa37-4202-9966-8c537ba5ce32'  # 1.2.840.113556.1.4.1674
+    'msPKI-RA-Signature'                   = [GUID]'fe17e04b-937d-4f7e-8e0e-9292c8d5683e'  # 1.2.840.113556.1.4.1429
+    'nTSecurityDescriptor'                 = [GUID]'bf9679e3-0de6-11d0-a285-00aa003049e2'  # 1.2.840.113556.1.2.281
+
     # Group-Policy-Container attributes. A WriteProperty ACE on a GPO always names one
     # attribute GUID; without these entries Resolve-ObjectTypeGUID answered $null for all
     # of them, so Get-GPOPermissions could not tell the ones that hand over the policy
@@ -560,6 +574,34 @@ $Script:GenericDangerousRights = @(
     'GenericWrite',
     'WriteDacl',
     'WriteOwner'
+)
+
+<#
+.SYNOPSIS
+    The certificate-template attributes whose individual write is an ESC4 path.
+.DESCRIPTION
+    A WriteProperty ACE always names one attribute GUID, and the usual reading - that a
+    property-specific write is harmless next to GenericWrite - does not hold on a
+    certificate template. Each of these is one write away from a template that issues a
+    client-authentication certificate for whatever subject the requester asks for:
+
+      msPKI-Certificate-Name-Flag           set ENROLLEE_SUPPLIES_SUBJECT
+      msPKI-Enrollment-Flag                 clear PEND_ALL_REQUESTS, dropping approval
+      pKIExtendedKeyUsage                   add Client Authentication
+      msPKI-Certificate-Application-Policy  the same, on a V2 or later template
+      msPKI-RA-Signature                    set to 0, dropping the agent co-signature
+      nTSecurityDescriptor                  grant yourself Certificate-Enrollment
+
+    Keyed by the name Resolve-ObjectTypeGUID returns for the ACE's ObjectType, so the
+    comparison is against a resolved name rather than a GUID literal at the call site.
+#>
+$Script:ESC4TemplateAttributes = @(
+    'msPKI-Certificate-Name-Flag',
+    'msPKI-Enrollment-Flag',
+    'pKIExtendedKeyUsage',
+    'msPKI-Certificate-Application-Policy',
+    'msPKI-RA-Signature',
+    'nTSecurityDescriptor'
 )
 
 # ============================================================================

@@ -861,9 +861,19 @@ function Get-ADCSVulnerabilities {
                         }
 
                         if ($containerACL) {
-                            # Filter for dangerous permissions
+                            # Filter for dangerous permissions.
+                            #
+                            # CreateChild and WriteProperty belong here, and were missing:
+                            # they are what ESC5 is. CreateChild on the Certificate
+                            # Templates container publishes an attacker's own template;
+                            # CreateChild on Enrollment Services registers a CA;
+                            # WriteProperty on NTAuthCertificates adds a CA certificate
+                            # that the whole forest then trusts for authentication. The
+                            # four rights that were here are the generic ones, which cover
+                            # the same ground only when somebody took the broad grant
+                            # rather than the precise one.
                             $dangerousACEs = $containerACL | Where-Object {
-                                $_.ExpandedRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite' -and
+                                $_.ExpandedRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite|CreateChild|WriteProperty' -and
                                 $_.AccessControlType -eq 'Allow'
                             }
 
@@ -1266,16 +1276,31 @@ function Get-ADCSVulnerabilities {
                                 }
                             }
 
-                            # WriteProperty is only dangerous if ObjectType is empty (applies to ALL properties)
-                            # When ObjectType contains a GUID, it only grants write to a specific property (harmless for ESC4)
+                            # WriteProperty, either on every property or on one of the six
+                            # that are an ESC4 path by themselves.
+                            #
+                            # This used to end at "property-specific WriteProperty is NOT
+                            # dangerous", which is the usual reading and wrong on a
+                            # certificate template: a write to msPKI-Certificate-Name-Flag
+                            # alone sets ENROLLEE_SUPPLIES_SUBJECT, a write to
+                            # msPKI-Enrollment-Flag alone drops manager approval, and a
+                            # write to nTSecurityDescriptor alone grants the attacker
+                            # enrollment. Each is one modification away from ESC1, and each
+                            # was discarded here as harmless - a silent false negative on
+                            # the most precise form the delegation can take.
                             if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty') {
                                 $objectTypeGuid = $ace.ObjectType
                                 # Empty GUID or all-zeros means "all properties" = dangerous
                                 if ($null -eq $objectTypeGuid -or $objectTypeGuid -eq [Guid]::Empty) {
                                     $hasDangerousRight = $true
                                     $matchedRight = "WriteProperty (All)"
+                                } else {
+                                    $resolved = Resolve-ObjectTypeGUID -GUID $objectTypeGuid
+                                    if ($resolved -and $resolved.Name -in $Script:ESC4TemplateAttributes) {
+                                        $hasDangerousRight = $true
+                                        $matchedRight = "WriteProperty ($($resolved.Name))"
+                                    }
                                 }
-                                # else: property-specific WriteProperty is NOT dangerous
                             }
 
                             if (-not $hasDangerousRight) { continue }
