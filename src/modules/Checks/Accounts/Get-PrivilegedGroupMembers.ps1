@@ -1099,7 +1099,33 @@ function Get-PrivilegedGroupMembers {
                         $HasWriteOwner = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner)) -and
                                          (-not $objectType -or $objectType -eq [Guid]::Empty)
 
-                        $HasDangerousPermission = $HasGenericAll -or $HasWriteDacl -or $HasWriteOwner
+                        # The rights that add a MEMBER without controlling the object, which
+                        # the three above do not cover. This is the heaviest consequence an
+                        # ACE on AdminSDHolder can have: SDProp writes this descriptor onto
+                        # every adminCount=1 object hourly, so one of these here means the
+                        # trustee may add itself to Domain Admins, Enterprise Admins, Schema
+                        # Admins and every other protected group - and keep that right,
+                        # because a right granted here is the one that survives SDProp.
+                        #
+                        # Three forms, and the ObjectType decides which is which:
+                        #   WriteProperty on the member GUID  - write the attribute directly
+                        #   WriteProperty with no ObjectType  - write every attribute
+                        #   Self on the member GUID           - the "add/remove self as
+                        #                                       member" validated write
+                        # GenericWrite with no ObjectType expands to WriteProperty over all
+                        # attributes, which includes member; Test-ADRightsMask expands the
+                        # generic bits, so it is caught by the WriteProperty test.
+                        $memberGUID = $Script:PropertyGUIDs['member']
+                        $objectTypeIsMember = ($objectType -and $memberGUID -and $objectType -eq $memberGUID)
+                        $objectTypeIsEmpty = (-not $objectType -or $objectType -eq [Guid]::Empty)
+
+                        $HasWriteMember = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteProperty)) -and
+                                          ($objectTypeIsMember -or $objectTypeIsEmpty)
+                        $HasSelfMember = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)) -and
+                                         ($objectTypeIsMember -or $objectTypeIsEmpty)
+
+                        $HasDangerousPermission = $HasGenericAll -or $HasWriteDacl -or $HasWriteOwner -or
+                                                  $HasWriteMember -or $HasSelfMember
 
                         if (-not $HasDangerousPermission) { continue }
 
@@ -1138,6 +1164,18 @@ function Get-PrivilegedGroupMembers {
                         if ($HasGenericAll) { $Permissions += "GenericAll" }
                         if ($HasWriteDacl) { $Permissions += "WriteDacl" }
                         if ($HasWriteOwner) { $Permissions += "WriteOwner" }
+                        # Named for what it does rather than for the bit, because the
+                        # consequence is the one a reader has to see: this propagates to
+                        # every protected group.
+                        #
+                        # Only when GenericAll is not already on the row. GenericAll over the
+                        # whole object expands to WriteProperty and Self as well, so listing
+                        # them beside it turns one ACE that says "full control" into five
+                        # lines that say the same thing.
+                        if (-not $HasGenericAll) {
+                            if ($HasWriteMember) { $Permissions += "WriteProperty on member - may add a member to every protected group" }
+                            if ($HasSelfMember) { $Permissions += "Self on member - may add itself to every protected group" }
+                        }
 
                         $finding = [PSCustomObject]@{
                             Name = $TrusteeName
@@ -1152,6 +1190,73 @@ function Get-PrivilegedGroupMembers {
                         $AdminSDHolderFindings += $finding
 
                         Show-Object $finding
+                    }
+
+                    # Two questions, and the loop above answers only the first.
+                    #
+                    # "What does SDProp propagate" is about the EXPLICIT Allow ACEs: those
+                    # are the descriptor that gets written onto every protected object, and
+                    # that is why the loop skips inherited and Deny.
+                    #
+                    # "Who can change AdminSDHolder itself" is a different question with a
+                    # different answer. A GenericAll inherited onto CN=AdminSDHolder from
+                    # CN=System or from the domain root is enough to rewrite the template,
+                    # and the domain root is covered by Get-DangerousACLs while CN=System is
+                    # covered by nobody. Said as its own line, because the remediation is a
+                    # different one - the ACE has to be removed at the parent.
+                    $inheritedControllers = @()
+                    $denyTrustees = @()
+                    foreach ($ACE in $AdminSDHolderRules) {
+                        $identRef = $ACE.IdentityReference
+                        $aceSID = if ($identRef -is [System.Security.Principal.SecurityIdentifier]) {
+                            $identRef.Value
+                        } else {
+                            ConvertTo-SID -Identity $identRef.Value
+                        }
+                        if (-not $aceSID) { continue }
+
+                        if ($ACE.AccessControlType -eq 'Deny') {
+                            # A Deny on AdminSDHolder is itself worth a look: it can hide the
+                            # template from the very administrators who would audit it.
+                            $denyName = ConvertFrom-SID -SID $aceSID
+                            if (-not $denyName) { $denyName = $aceSID }
+                            if ($denyTrustees -notcontains $denyName) { $denyTrustees += $denyName }
+                            continue
+                        }
+
+                        if (-not $ACE.IsInherited) { continue }
+
+                        $inheritedType = $ACE.ObjectType
+                        $inheritedEmpty = (-not $inheritedType -or $inheritedType -eq [Guid]::Empty)
+                        $controls = (
+                            (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)) -or
+                            (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteDacl)) -or
+                            (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner))
+                        ) -and $inheritedEmpty
+                        if (-not $controls) { continue }
+
+                        # The four default holders of full control on everything are not a
+                        # finding here either - same gate as above.
+                        $inheritedScope = Test-IsExpectedInScope -Identity $aceSID -Scope 'DomainRootACL' -ReturnDetails
+                        if ($inheritedScope.Severity -in @('Expected', 'Attention')) { continue }
+
+                        $inheritedName = ConvertFrom-SID -SID $aceSID
+                        if (-not $inheritedName) { $inheritedName = $aceSID }
+                        if ($inheritedControllers -notcontains $inheritedName) { $inheritedControllers += $inheritedName }
+                    }
+
+                    if (@($inheritedControllers).Count -gt 0) {
+                        Show-Line "$(@($inheritedControllers).Count) principal(s) can rewrite AdminSDHolder through an inherited ACE - remove it at the parent:" -Class Finding
+                        foreach ($controller in $inheritedControllers) {
+                            Show-Line "  $controller" -Class Finding
+                        }
+                    }
+
+                    if (@($denyTrustees).Count -gt 0) {
+                        Show-Line "$(@($denyTrustees).Count) Deny ACE trustee(s) on AdminSDHolder - a Deny here can hide the template from the people who audit it:" -Class Hint
+                        foreach ($denied in $denyTrustees) {
+                            Show-Line "  $denied" -Class Hint
+                        }
                     }
                 }
                 $adminSDHolderRead = $true
