@@ -10997,51 +10997,6 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        @{ Attribute = 'ms-DS-MachineAccountQuota'; Custom = 'gt_0'; Severity = 'Hint' }
 	    )
 	}
-	'PRE_WIN2K_COMPATIBLE_ACCESS' = @{
-	    Title = "Pre-Windows 2000 Compatible Access Group Has Members"
-	    Risk = "Finding"
-	    BaseScore = 35
-	    Description = "The Pre-Windows 2000 Compatible Access group contains 'Authenticated Users' or other broad groups. This grants excessive read access to the domain, exposing sensitive information."
-	    Impact = @(
-	        "All authenticated users can read sensitive AD attributes"
-	        "Password hashes may be readable in certain configurations"
-	        "Enables reconnaissance and enumeration"
-	        "Legacy compatibility setting with security implications"
-	    )
-	    Attack = @(
-	        "1. Attacker authenticates with any domain account"
-	        "2. Reads attributes normally protected by ACLs"
-	        "3. Gathers information for further attacks"
-	    )
-	    Remediation = @(
-	        "Remove 'Authenticated Users' from Pre-Windows 2000 Compatible Access"
-	        "Add only explicitly required accounts"
-	        "Test application compatibility before removal"
-	        "Modern applications should not require this group"
-	    )
-	    RemediationCommands = @(
-	        @{
-	            Description = "View current members of Pre-Windows 2000 Compatible Access group"
-	            Command = "Get-ADGroupMember -Identity 'Pre-Windows 2000 Compatible Access' | Select-Object Name,SamAccountName,ObjectClass"
-	        }
-	        @{
-	            Description = "Remove Authenticated Users from Pre-Windows 2000 Compatible Access group"
-	            Command = "Remove-ADGroupMember -Identity 'Pre-Windows 2000 Compatible Access' -Members 'Authenticated Users' -Confirm:`$false"
-	        }
-	        @{
-	            Description = "Remove Everyone from Pre-Windows 2000 Compatible Access group (if present)"
-	            Command = "Remove-ADGroupMember -Identity 'Pre-Windows 2000 Compatible Access' -Members 'Everyone' -Confirm:`$false"
-	        }
-	    )
-	    References = @(
-	        @{ Title = "Pre-Windows 2000 Compatible Access"; Url = "https://docs.microsoft.com/en-us/windows/security/identity-protection/access-control/active-directory-security-groups" }
-	    )
-	    Tools = @("PowerView", "ldapsearch")
-	    MITRE = "T1087.002"
-	    Triggers = @(
-	        @{ Attribute = 'preWin2kCompatibleAccess'; Pattern = 'Authenticated Users|Everyone|S-1-1-0|S-1-5-11'; Severity = 'Finding' }
-	    )
-	}
 	'INACTIVE_PRIVILEGED_ACCOUNT' = @{
 	    Title = "Inactive Privileged Account"
 	    Risk = "Finding"
@@ -11223,220 +11178,6 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        @{ Attribute = 'pwdLastSet'; Custom = 'pwdAge_365_1825'; Severity = 'Hint' }
 	    )
 	}
-	'PRINT_SPOOLER_ENABLED_DC' = @{
-	    Title = "Print Spooler Enabled on Domain Controller"
-	    Risk = "Finding"
-	    BaseScore = 45
-	    Description = "The Print Spooler service is running on a Domain Controller. This service can be abused to coerce authentication from the DC, enabling NTLM relay attacks or credential capture."
-	    Impact = @(
-	        "Enables PrinterBug/SpoolSample attack against Domain Controllers"
-	        "DC can be forced to authenticate to attacker-controlled server"
-	        "Combined with unconstrained delegation leads to DC compromise"
-	        "NTLM relay to LDAP/ADCS enables privilege escalation"
-	    )
-	    Attack = @(
-	        "1. Attacker sets up listener on compromised server"
-	        "2. Triggers PrinterBug/SpoolSample against DC"
-	        "3. DC authenticates to attacker with machine account"
-	        "4. Credential captured or relayed for privilege escalation"
-	    )
-	    Remediation = @(
-	        "Disable Print Spooler service on all Domain Controllers"
-	        "Use GPO to prevent service from starting"
-	        "Block RPC traffic to port 445 from untrusted networks"
-	        "Add DC machine accounts to Protected Users group"
-	    )
-	    RemediationCommands = @(
-	        @{
-	            Description = "Stop and disable Print Spooler service on Domain Controller"
-	            Command = "Invoke-Command -ComputerName 'DC_NAME' -ScriptBlock { Stop-Service -Name Spooler -Force; Set-Service -Name Spooler -StartupType Disabled }"
-	        }
-	        @{
-	            Description = "Disable Print Spooler via Group Policy on Domain Controllers OU"
-	            Command = "# In Group Policy Management: Create/Edit GPO linked to Domain Controllers OU > Computer Configuration > Policies > Windows Settings > Security Settings > System Services > Print Spooler > Startup Mode: Disabled"
-	        }
-	        @{
-	            Description = "Check Print Spooler status on all Domain Controllers"
-	            Command = "Get-ADDomainController -Filter * | ForEach-Object { Invoke-Command -ComputerName `$_.HostName -ScriptBlock { [PSCustomObject]@{DC=`$env:COMPUTERNAME; SpoolerStatus=(Get-Service Spooler).Status; StartType=(Get-Service Spooler).StartType} } }"
-	        }
-	        @{
-	            Description = "Verify Print Spooler is disabled on local Domain Controller"
-	            Command = "Get-Service Spooler | Select-Object Name,Status,StartType"
-	        }
-	    )
-	    References = @(
-	        @{ Title = "SpoolSample Attack"; Url = "https://github.com/leechristensen/SpoolSample" }
-	        @{ Title = "Printer Bug - MITRE"; Url = "https://attack.mitre.org/techniques/T1557/001/" }
-	        @{ Title = "Disable Print Spooler on DCs - Microsoft"; Url = "https://learn.microsoft.com/en-us/defender-for-identity/security-posture-assessments/identity-infrastructure" }
-	    )
-	    Tools = @("SpoolSample", "PrinterBug.py", "Rubeus", "ntlmrelayx")
-	    MITRE = "T1557.001"
-	    Triggers = @(
-	        @{ Attribute = 'SpoolerStatus'; Severity = 'Finding' }
-	        @{ Attribute = 'printSpoolerEnabled'; Severity = 'Finding' }
-	    )
-	}
-	'WEBDAV_COERCION_POSSIBLE' = @{
-	    Title = "WebDAV Client Enabled (Coercion Vector)"
-	    Risk = "Finding"
-	    BaseScore = 40
-	    Description = "The WebDAV client service (WebClient) is running, which can be abused to coerce NTLM authentication. This is particularly dangerous for workstations where users may click malicious links."
-	    Impact = @(
-	        "Enables authentication coercion via WebDAV requests"
-	        "Can be triggered by clicking links or opening Office documents"
-	        "NTLM authentication can be relayed to LDAP/SMB/ADCS"
-	        "No admin rights required to trigger the coercion"
-	    )
-	    Attack = @(
-	        "1. Attacker sends malicious link/document to victim"
-	        "2. Victim's WebDAV client authenticates to attacker's server"
-	        "3. NTLM credentials captured or relayed"
-	        "4. Attacker gains access as the victim user"
-	    )
-	    Remediation = @(
-	        "Disable WebClient service on servers and sensitive workstations"
-	        "Block outbound WebDAV traffic at the firewall"
-	        "Enable EPA (Extended Protection for Authentication)"
-	        "Require SMB signing and LDAP signing"
-	    )
-	    References = @(
-	        @{ Title = "WebDAV Coercion"; Url = "https://www.thehacker.recipes/ad/movement/mitm-and-coerced-authentications/webclient" }
-	        @{ Title = "WebClient Service - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/sc-config" }
-	    )
-	    RemediationCommands = @(
-	        @{
-	            Description = "Check WebClient service status on local machine"
-	            Command = "Get-Service -Name WebClient -ErrorAction SilentlyContinue | Select-Object Name,Status,StartType,DisplayName | Format-List"
-	        }
-	        @{
-	            Description = "Disable WebClient service on local machine"
-	            Command = "Stop-Service -Name WebClient -Force -ErrorAction SilentlyContinue; Set-Service -Name WebClient -StartupType Disabled"
-	        }
-	        @{
-	            Description = "Disable WebClient service via Group Policy (GPO)"
-	            Command = "# Create GPO: Computer Configuration -> Policies -> Windows Settings -> Security Settings -> System Services -> WebClient -> Set to Disabled"
-	        }
-	        @{
-	            Description = "Check WebClient service status on all domain computers (requires PS Remoting)"
-	            Command = "Get-ADComputer -Filter * | ForEach-Object { Invoke-Command -ComputerName `$_.Name -ScriptBlock { Get-Service -Name WebClient | Select-Object Name,Status,StartType } -ErrorAction SilentlyContinue } | Format-Table PSComputerName,Name,Status,StartType -AutoSize"
-	        }
-	        @{
-	            Description = "Disable WebClient service on all domain computers via scheduled task (GPO Immediate Task)"
-	            Command = "# Create GPO: Computer Configuration -> Preferences -> Control Panel Settings -> Scheduled Tasks -> New Scheduled Task (At least Windows 7) -> Action: sc.exe config WebClient start=disabled && sc.exe stop WebClient"
-	        }
-	    )
-	    Tools = @("PetitPotam", "Coercer", "ntlmrelayx")
-	    MITRE = "T1187"
-	    Triggers = @(
-	        @{ Attribute = 'WebDAVEnabled'; Severity = 'Finding' }
-	        @{ Attribute = 'webClientStatus'; Severity = 'Finding' }
-	    )
-	}
-	'DNS_ZONE_TRANSFER_ALLOWED' = @{
-	    Title = "DNS Zone Transfer Allowed"
-	    Risk = "Hint"
-	    BaseScore = 30
-	    Description = "DNS zone transfers (AXFR) are permitted, allowing anyone to obtain a complete copy of the DNS zone. This reveals internal hostnames, IP addresses, and network topology."
-	    Impact = @(
-	        "Complete network reconnaissance without authentication"
-	        "Reveals all internal hostnames and IP addresses"
-	        "Exposes service locations and naming conventions"
-	        "Helps attackers map internal network structure"
-	    )
-	    Attack = @(
-	        "1. Attacker requests zone transfer from DNS server"
-	        "2. Obtains complete list of all DNS records"
-	        "3. Maps internal network topology"
-	        "4. Identifies high-value targets for further attacks"
-	    )
-	    Remediation = @(
-	        "Restrict zone transfers to authorized DNS servers only"
-	        "Configure 'Allow zone transfers: Only to servers listed on the Name Servers tab'"
-	        "Use DNS sec to protect zone data integrity"
-	        "Monitor for unauthorized zone transfer attempts"
-	    )
-	    RemediationCommands = @(
-	        @{
-	            Description = "Restrict zone transfers to only name servers listed in NS records"
-	            Command = "Set-DnsServerPrimaryZone -Name 'domain.com' -SecureSecondaries TransferToNameServer"
-	        }
-	        @{
-	            Description = "Disable zone transfers completely (if no secondary DNS servers)"
-	            Command = "Set-DnsServerPrimaryZone -Name 'domain.com' -SecureSecondaries NoTransfer"
-	        }
-	        @{
-	            Description = "Allow zone transfers only to specific IP addresses"
-	            Command = "Set-DnsServerPrimaryZone -Name 'domain.com' -SecureSecondaries TransferToSecureServers -SecondaryServers '192.168.1.10','192.168.1.11'"
-	        }
-	        @{
-	            Description = "View current zone transfer settings"
-	            Command = "Get-DnsServerZone -Name 'domain.com' | Select-Object ZoneName,SecureSecondaries,SecondaryServers"
-	        }
-	    )
-	    References = @(
-	        @{ Title = "Set-DnsServerPrimaryZone cmdlet"; Url = "https://learn.microsoft.com/en-us/powershell/module/dnsserver/set-dnsserverprimaryzone" }
-	        @{ Title = "DNS Zone Transfer Security"; Url = "https://learn.microsoft.com/en-us/windows-server/networking/dns/manage-dns-zones" }
-	    )
-	    Tools = @("dig", "nslookup", "dnsrecon", "fierce")
-	    MITRE = "T1590.002"
-	    Triggers = @(
-	        @{ Attribute = 'zoneTransfer'; Severity = 'Hint' }
-	        @{ Attribute = 'allowZoneTransfer'; Severity = 'Hint' }
-	    )
-	}
-	'ADIDNS_WILDCARD_RECORD' = @{
-	    Title = "ADIDNS Wildcard Record Exists"
-	    Risk = "Finding"
-	    BaseScore = 35
-	    Description = "A wildcard (*) DNS record exists in the Active Directory-Integrated DNS zone. This can be abused to redirect traffic for non-existent hostnames to attacker-controlled systems."
-	    Impact = @(
-	        "All unresolved DNS queries within the zone resolve to wildcard target"
-	        "Enables man-in-the-middle attacks"
-	        "Can capture NTLM authentication from systems looking up typos"
-	        "Useful for credential harvesting at scale"
-	    )
-	    Attack = @(
-	        "1. Attacker registers wildcard record pointing to their IP"
-	        "2. Victim systems with typos in hostnames resolve to attacker"
-	        "3. Attacker captures or relays authentication attempts"
-	        "4. Can also be used for WPAD attacks"
-	    )
-	    Remediation = @(
-	        "Remove unauthorized wildcard records"
-	        "Restrict who can create DNS records in AD"
-	        "Monitor for wildcard record creation"
-	        "Use DNSSEC where possible"
-	    )
-	    RemediationCommands = @(
-	        @{
-	            Description = "Find all wildcard DNS records in AD-Integrated zones"
-	            Command = "Get-DnsServerResourceRecord -ZoneName 'domain.com' | Where-Object {`$_.HostName -eq '*'} | Select-Object HostName,RecordType,RecordData"
-	        }
-	        @{
-	            Description = "Remove a wildcard DNS record"
-	            Command = "Remove-DnsServerResourceRecord -ZoneName 'domain.com' -Name '*' -RRType A -Force"
-	        }
-	        @{
-	            Description = "View ACL on DNS zone to identify who can create records"
-	            Command = "(Get-Acl 'AD:\DC=domain.com,CN=MicrosoftDNS,DC=DomainDnsZones,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'CreateChild'} | Format-Table IdentityReference,ActiveDirectoryRights -AutoSize"
-	        }
-	        @{
-	            Description = "Remove DNS record create permissions for Authenticated Users"
-	            Command = "# Use Active Directory Sites and Services > Show Service Node (View menu) > navigate to DC=DomainDnsZones > zone object > Properties > Security > remove CreateChild for Authenticated Users"
-	        }
-	    )
-	    References = @(
-	        @{ Title = "ADIDNS Attacks"; Url = "https://www.netspi.com/blog/technical/network-penetration-testing/exploiting-adidns/" }
-	        @{ Title = "Remove-DnsServerResourceRecord cmdlet"; Url = "https://learn.microsoft.com/en-us/powershell/module/dnsserver/remove-dnsserverresourcerecord" }
-	        @{ Title = "AD-Integrated DNS Zones - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/networking/dns/zone-types#active-directory-integrated-zones" }
-	    )
-	    Tools = @("PowerMad", "Inveigh", "dnstool.py")
-	    MITRE = "T1557.001"
-	    Triggers = @(
-	        @{ Attribute = 'wildcardRecord'; Severity = 'Finding' }
-	        @{ Attribute = 'adidnsWildcard'; Severity = 'Finding' }
-	    )
-	}
 	'NTLM_NOT_RESTRICTED' = @{
 	    Title = "NTLM Authentication Not Restricted"
 	    Risk = "Finding"
@@ -11487,7 +11228,6 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    MITRE = "T1557.001"
 	    Triggers = @(
 	        @{ Attribute = 'NTLMEnabled'; Severity = 'Finding' }
-	        @{ Attribute = 'ntlmRestriction'; Severity = 'Finding' }
 	    )
 	}
 	'WEAK_PASSWORD_POLICY' = @{
@@ -12080,7 +11820,6 @@ foreach ($DC in $DCs) {
 	    MITRE = "T1072"
 	    Triggers = @(
 	        @{ Attribute = 'SCCMServer'; Severity = 'Finding' }
-	        @{ Attribute = 'sccmSiteServer'; Severity = 'Finding' }
 	    )
 	}
 	'SCCM_SYSTEM_MANAGEMENT_ACL' = @{
@@ -12325,64 +12064,6 @@ foreach ($DC in $DCs) {
 	    Triggers = @(
 	        @{ Attribute = 'entraConnectServer'; Severity = 'Hint' }
 	        @{ Attribute = 'entraM365Tenant'; Severity = 'Hint' }
-	    )
-	}
-	'SEAMLESS_SSO_ENABLED' = @{
-	    Title = "Azure AD Seamless SSO Enabled"
-	    Risk = "Finding"
-	    BaseScore = 35
-	    Description = "Azure AD Seamless SSO is enabled, which uses a computer account (AZUREADSSOACC) with a static Kerberos key. If this key is compromised, attackers can forge cloud authentication tickets."
-	    Impact = @(
-	        "AZUREADSSOACC computer account key enables Silver Tickets"
-	        "Forged tickets grant access to Azure AD resources"
-	        "Key remains valid until manually rotated"
-	        "Enables persistence across on-prem and cloud"
-	    )
-	    Attack = @(
-	        "1. Attacker extracts AZUREADSSOACC password hash"
-	        "2. Forges Kerberos ticket for Azure AD authentication"
-	        "3. Accesses Azure AD resources as any user"
-	        "4. Can maintain access even after password changes"
-	    )
-	    Remediation = @(
-	        "Rotate AZUREADSSOACC key every 30 days"
-	        "Use automated key rotation scripts"
-	        "Monitor AZUREADSSOACC for suspicious access"
-	        "Consider PHS or PTA as alternatives"
-	    )
-	    RemediationCommands = @(
-	        @{
-	            Description = "Manually rotate AZUREADSSOACC Kerberos decryption key (run on Entra Connect server)"
-	            Command = "Import-Module 'C:\Program Files\Microsoft Azure Active Directory Connect\AzureADSSO.psd1'; `$creds = Get-Credential; Update-AzureADSSOForest -OnPremCredentials `$creds"
-	        }
-	        @{
-	            Description = "View current AZUREADSSOACC account properties"
-	            Command = "Get-ADComputer -Filter {Name -like 'AZUREADSSOACC*'} -Properties PasswordLastSet,whenCreated,ServicePrincipalName | Select-Object Name,PasswordLastSet,whenCreated,@{Name='DaysSincePasswordChange';Expression={(New-TimeSpan -Start `$_.PasswordLastSet -End (Get-Date)).Days}},ServicePrincipalName"
-	        }
-	        @{
-	            Description = "Check last password change for AZUREADSSOACC (should be within 30 days)"
-	            Command = "Get-ADComputer 'AZUREADSSOACC$' -Properties PasswordLastSet | Select-Object Name,PasswordLastSet,@{Name='DaysOld';Expression={(New-TimeSpan -Start `$_.PasswordLastSet -End (Get-Date)).Days}}"
-	        }
-	        @{
-	            Description = "Monitor AZUREADSSOACC for suspicious authentication activity"
-	            Command = "Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4768,4769; StartTime=(Get-Date).AddDays(-7)} | Where-Object {`$_.Message -match 'AZUREADSSOACC'} | Select-Object TimeCreated,Id,Message | Format-List"
-	        }
-	        @{
-	            Description = "Automate AZUREADSSOACC key rotation using scheduled task (create task)"
-	            Command = "# Create scheduled task on Entra Connect server: schtasks /create /tn 'Rotate AZUREADSSOACC Key' /tr 'powershell.exe -File C:\Scripts\Rotate-AzureADSSOKey.ps1' /sc monthly /mo 1 /ru SYSTEM"
-	        }
-	    )
-	    References = @(
-	        @{ Title = "Seamless SSO Security"; Url = "https://docs.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-sso-faq#what-are-the-security-implications-of-seamless-sso" }
-	        @{ Title = "Silver Ticket to Azure AD"; Url = "https://dirkjanm.io/abusing-azure-ad-sso-with-the-primary-refresh-token/" }
-	        @{ Title = "Rotate the Azure AD Seamless SSO Kerberos Key"; Url = "https://www.insentragroup.com/us/insights/geek-speak/cloud-and-modern-data-center/rotating-the-azure-ad-seamless-sso-kerberos-key-manually-part-1-of-2/" }
-	        @{ Title = "Roll Over Kerberos Decryption Key"; Url = "https://www.cloudcoffee.ch/microsoft-azure/azure-ad-roll-over-kerberos-decryption-key/" }
-	    )
-	    Tools = @("Impacket", "Mimikatz", "AADInternals")
-	    MITRE = "T1558.002"
-	    Triggers = @(
-	        @{ Attribute = 'AZUREADSSOACC'; Severity = 'Finding' }
-	        @{ Attribute = 'seamlessSSOEnabled'; Severity = 'Finding' }
 	    )
 	}
 	'ADFS_DKM_CONTAINER' = @{
@@ -12765,7 +12446,6 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
 	    MITRE = "T1053.005"
 	    Triggers = @(
 	        @{ Attribute = 'scheduledTasks'; Severity = 'Finding' }
-	        @{ Attribute = 'taskPath'; Severity = 'Finding' }
 	    )
 	}
 	'GPO_TASK_UNQUOTED_PATH' = @{
@@ -13631,7 +13311,6 @@ foreach ($oid in $linkedOIDs) {
 	    Tools = @("Certify", "ADACLScanner", "BloodHound")
 	    MITRE = "T1649"
 	    Triggers = @(
-	        @{ Attribute = 'CAPermissions'; Severity = 'Finding' }
 	        @{ Attribute = 'DangerousACEs'; Severity = 'Finding' }
 	    )
 	}
@@ -14590,29 +14269,6 @@ foreach ($oid in $linkedOIDs) {
 	        @{ Attribute = 'affectedComputerCount'; Custom = 'affected_computers_gt_0'; Severity = 'Hint' }
 	    )
 	}
-	'LAPS_AUTHORIZATION' = @{
-	    Title = "LAPS Password Read Authorization"
-	    Risk = "Hint"
-	    BaseScore = 20
-	    Description = "This shows which principals are authorized to read LAPS passwords for computers in this scope. LAPS password read access should be limited to designated administrators following the tiered administration model."
-	    Impact = @(
-	        "Authorized principals can retrieve local admin passwords"
-	        "If overly broad, enables lateral movement for compromised accounts"
-	    )
-	    Remediation = @(
-	        "Review LAPS read permissions following tiered administration"
-	        "Only Tier 0/1 admins should read DC/server LAPS passwords"
-	    )
-	    References = @(
-	        @{ Title = "Windows LAPS"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-overview" }
-	    )
-	    Tools = @("LAPSToolkit")
-	    MITRE = "T1552.006"
-	    Triggers = @(
-	        @{ Attribute = 'msLAPS-AuthorizedGroup'; Severity = 'Hint' }
-	        @{ Attribute = 'msLAPS-AuthorizedSID'; Severity = 'Hint' }
-	    )
-	}
 	'GMSA_MEMBERSHIP_INFO' = @{
 	    Title = "gMSA Membership Information"
 	    Risk = "Hint"
@@ -14954,26 +14610,6 @@ foreach ($oid in $linkedOIDs) {
 	        @{ Attribute = 'LAPSVersion'; Pattern = '^LAPS Legacy'; Severity = 'Hint' }
 	    )
 	}
-	'LAPS_LEGACY_ONLY' = @{
-	    Title = "Only Legacy LAPS Available"
-	    Risk = "Finding"
-	    BaseScore = 30
-	    Description = "Only legacy LAPS is available and Windows LAPS is not installed. Legacy LAPS stores passwords unencrypted in Active Directory."
-	    Impact = @(
-	        "Passwords stored in plaintext in AD attributes"
-	        "No password encryption or enhanced auditing available"
-	    )
-	    Remediation = @(
-	        "Deploy Windows LAPS alongside or replacing legacy LAPS"
-	    )
-	    References = @(
-	        @{ Title = "Windows LAPS"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-overview" }
-	    )
-	    MITRE = "T1552.006"
-	    Triggers = @(
-	        @{ Attribute = 'LapsInstalled'; Pattern = '^Not installed$'; Severity = 'Finding' }
-	    )
-	}
 	'META_SEVERITY_PASSTHROUGH' = @{
 	    Title = "Severity Indicator"
 	    Risk = "Finding"
@@ -14998,17 +14634,6 @@ foreach ($oid in $linkedOIDs) {
 	        @{ Attribute = 'status'; Pattern = '^Secure$'; Severity = 'Secure'; SeverityOnly = $true }
 	        @{ Attribute = 'status'; Pattern = '(?i)^EXPIRED$'; Severity = 'Finding'; SeverityOnly = $true }
 	        @{ Attribute = 'status'; Pattern = '(?i)not yet valid'; Severity = 'Hint'; SeverityOnly = $true }
-	    )
-	}
-	'META_SECURE_INDICATOR' = @{
-	    Title = "Secure Configuration Indicator"
-	    Risk = "Finding"
-	    BaseScore = 0
-	    Description = "Boolean attribute indicating whether a configuration is secure."
-	    Triggers = @(
-	        @{ Attribute = 'isSecure'; Pattern = '^True$'; Severity = 'Secure'; SeverityOnly = $true }
-	        @{ Attribute = 'isSecure'; Pattern = '^False$'; Severity = 'Finding'; SeverityOnly = $true }
-	        @{ Attribute = 'isSecure'; Severity = 'Finding'; SeverityOnly = $true }
 	    )
 	}
 	'META_DEFAULT_INDICATOR' = @{
@@ -82861,7 +82486,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-2058"
+$Script:adPEASVersion = "2.7.0+20261011-2203"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
