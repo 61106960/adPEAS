@@ -2857,6 +2857,101 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             @{ Attribute = 'dangerousRights'; Pattern = 'inert without DS-Replication-Get-Changes'; Severity = 'Hint' }
         )
     }
+    'DANGEROUS_ACL_DCSYNC_BROAD' = @{
+        Title = "DCSync Rights Held by a Broad Group"
+        Risk = "Finding"
+        BaseScore = 100
+        Description = "The replication rights that make a DCSync possible are granted to a broad group - Everyone, Authenticated Users, Domain Users or one of their kin - rather than to a named principal. Every member of that group can extract every credential in the domain, which in these groups means every account that can authenticate at all."
+        Impact = @(
+            "Any account that can authenticate can run a DCSync and take every password hash in the domain"
+            "That includes krbtgt, so it also means a Golden Ticket and persistence that survives every password reset but one"
+            "No account has to be compromised first - a single ordinary user is enough"
+            "The group's membership cannot be audited down: these groups are populated by the directory itself"
+        )
+        Attack = @(
+            "1. Attacker authenticates as any domain user, however unprivileged"
+            "2. Finds the replication rights granted to a group that account is already in"
+            "3. Runs DCSync against a domain controller and collects every hash, krbtgt included"
+            "4. Forges a Golden Ticket, which no password reset short of krbtgt twice will remove"
+        )
+        Remediation = @(
+            "Remove the ACE naming the broad group from the domain object - this is not a delegation to narrow, it is one to delete"
+            "Establish how it was added: a replication right granted to Authenticated Users is not a default and not an accident of inheritance"
+            "Assume the domain's credentials are compromised and plan accordingly, including krbtgt twice"
+            "Audit for the same pattern on the other naming contexts, since whatever granted it there may have granted it elsewhere"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the replication rights granted to broad groups on the domain object"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.IdentityReference -match "Everyone|Authenticated Users|Domain Users|Users$" -and $_.ObjectType -in @("1131f6aa-9c07-11d1-f79f-00c04fc2dcd2","1131f6ad-9c07-11d1-f79f-00c04fc2dcd2") } | Format-Table IdentityReference,ObjectType,AccessControlType -AutoSize'
+            }
+            @{
+                Description = "Remove the ACE for a named broad group"
+                Command = '$acl = Get-Acl -Path "AD:DC=DOMAIN,DC=COM"; $ace = $acl.Access | Where-Object { $_.IdentityReference -eq "NT AUTHORITY\Authenticated Users" -and $_.ObjectType -eq "1131f6ad-9c07-11d1-f79f-00c04fc2dcd2" }; $ace | ForEach-Object { $acl.RemoveAccessRule($_) }; Set-Acl -Path "AD:DC=DOMAIN,DC=COM" -AclObject $acl'
+            }
+        )
+        References = @(
+            @{ Title = "DCSync - BloodHound"; Url = "https://bloodhound.specterops.io/resources/edges/dc-sync" }
+            @{ Title = "DS-Replication-Get-Changes-All - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-ds-replication-get-changes-all" }
+        )
+        Tools = @("Mimikatz", "Impacket secretsdump", "BloodHound")
+        MITRE = "T1003.006"
+        Triggers = @(
+            # Same BaseScore as DANGEROUS_ACL_DCSYNC, which is the highest in the project -
+            # there is nothing worse to rank this above, and inventing a score beyond the
+            # ceiling to express it would say more about the scale than about the finding.
+            # The card is what separates the two, and the pair's trigger gives this wording
+            # up through its ExcludePattern.
+            @{ Attribute = 'dangerousRights'; Pattern = 'DCSync|DS-Replication-Get-Changes'; ExcludePattern = 'short of DCSync'; Severity = 'Finding' }
+        )
+    }
+
+    'DANGEROUS_ACL_BROAD_GROUP' = @{
+        Title = "Dangerous Rights on the Domain Object Held by a Broad Group"
+        Risk = "Finding"
+        BaseScore = 90
+        Description = "A right that hands over control of the domain object is granted to a broad group - Everyone, Authenticated Users, Domain Users or one of their kin - rather than to a named principal. Whatever the right allows, every account that can authenticate can do it."
+        Impact = @(
+            "Any authenticated account can exercise the right, so there is no principal to contain"
+            "Write access to the DACL or the owner lets any of them grant themselves the rest, replication rights included"
+            "A GPO linked at the domain root by any user is code execution on every machine, domain controllers included"
+            "The group cannot be emptied: these groups are populated by the directory, so the ACE is the only thing to remove"
+        )
+        Attack = @(
+            "1. Attacker authenticates as any domain user"
+            "2. Exercises the right directly, since the group granting it already includes that account"
+            "3. Where the right is WriteDacl or WriteOwner, writes itself whatever else it needs"
+            "4. Takes the domain from there"
+        )
+        Remediation = @(
+            "Remove the ACE naming the broad group - this is not a delegation to narrow but one to delete"
+            "Establish how it was added, and check whether the same hand granted it elsewhere"
+            "Compare the domain object's DACL against a freshly promoted domain's, since none of this is a default"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the ACEs on the domain object that name a broad group"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.IdentityReference -match "Everyone|Authenticated Users|Domain Users|INTERACTIVE|Pre-Windows 2000" } | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize'
+            }
+            @{
+                Description = "Remove one such ACE after identifying it"
+                Command = '$acl = Get-Acl -Path "AD:DC=DOMAIN,DC=COM"; $ace = $acl.Access | Where-Object { $_.IdentityReference -eq "NT AUTHORITY\Authenticated Users" -and $_.ActiveDirectoryRights -match "WriteDacl|GenericAll" }; $ace | ForEach-Object { $acl.RemoveAccessRule($_) }; Set-Acl -Path "AD:DC=DOMAIN,DC=COM" -AclObject $acl'
+            }
+        )
+        References = @(
+            @{ Title = "Owner Rights - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-rights" }
+            @{ Title = "AD DS security best practices - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/best-practices-for-securing-active-directory" }
+        )
+        Tools = @("PowerView", "BloodHound", "ADACLScanner")
+        MITRE = "T1222.001"
+        Triggers = @(
+            # Above every card for the same rights held by a named principal - GenericAll on
+            # the domain object scores 60, the single critical attributes 45 to 54 - and below
+            # the non-default owner (95) and DCSync (100), both of which are the stronger
+            # statement about the same object even when the holder is one account.
+            @{ Attribute = 'dangerousRights'; Pattern = 'granted to a broad group'; Severity = 'Finding' }
+        )
+    }
     'DANGEROUS_ACL_DCSYNC' = @{
         Title = "DCSync Rights (Replication Permissions)"
         Risk = "Finding"
@@ -2904,7 +2999,10 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             # contains DS-Replication-Get-Changes - so it matched here, at score 100,
             # and the row opened the full DCSync write-up. ExcludePattern is checked
             # before Pattern, so the two partial cards below get their own rows.
-            @{ Attribute = 'dangerousRights'; Pattern = 'DS-Replication-Get-Changes|Replicating Directory Changes|DCSync'; ExcludePattern = 'short of DCSync'; Severity = 'Finding' }
+            # Two wordings this card gives up, both of which contain its own words: a
+            # partial grant, which is not DCSync at all, and a grant to a broad group,
+            # which is DCSync for everybody and has a remediation of its own.
+            @{ Attribute = 'dangerousRights'; Pattern = 'DS-Replication-Get-Changes|Replicating Directory Changes|DCSync'; ExcludePattern = 'short of DCSync|granted to a broad group'; Severity = 'Finding' }
             @{ Attribute = 'DangerousPermissions'; Pattern = 'DS-Replication-Get-Changes|Replicating Directory Changes|DCSync'; Severity = 'Finding' }
         )
     }

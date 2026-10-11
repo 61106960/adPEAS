@@ -255,6 +255,21 @@ function Get-DangerousACLs {
             $dcsyncFindings = @()
             $dangerousRightsFindings = @()
 
+            # A broad group holding a right on the domain object is not a delegation,
+            # it is a configuration accident - the wording Get-GPOUserRightsAssignment
+            # uses for the same distinction. Both are findings and the class cannot say
+            # which is worse: Test-IsExpectedInScope answers Expected, Attention or
+            # Finding, and this family renders the class name, so Finding is already the
+            # top of the scale. What can carry it is the card, which the reported right
+            # selects - so the right says it, and a card of its own gives the case the
+            # write-up and the rank it deserves.
+            $broadGroupNote = ' - granted to a broad group, so every member holds it'
+            function Test-TrusteeIsBroad {
+                param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$SID)
+                if (-not $SID) { return $false }
+                return ((Test-IsBroadGroupSID -SID $SID) -or [bool](Test-IsBroadGroupRID -SID $SID))
+            }
+
             # Process DCSync accounts
             if ($dcsyncAccounts.Count -gt 0) {
                 foreach ($sid in $dcsyncAccounts.Keys) {
@@ -301,6 +316,16 @@ function Get-DangerousACLs {
                             # at once rather than the two named ones, and the remediation
                             # is a different one: there is a single ACE to remove.
                             $rightsDisplay = "All Extended Rights (grants DS-Replication-Get-Changes and DS-Replication-Get-Changes-All)"
+                        }
+
+                        # "Every authenticated user can replicate the directory" and "a
+                        # backup service account can" are one finding today. The score
+                        # cannot separate them - DCSync already holds the highest
+                        # BaseScore in the project - but the card can, and its
+                        # remediation differs: one ACE to remove versus a group whose
+                        # membership is everybody.
+                        if (Test-TrusteeIsBroad -SID $sid) {
+                            $rightsDisplay += $broadGroupNote
                         }
 
                         # Determine severity
@@ -353,6 +378,10 @@ function Get-DangerousACLs {
 
                     $allRights = $allRights | Select-Object -Unique
                     $rightsDisplay = $allRights -join ', '
+
+                    if (Test-TrusteeIsBroad -SID $sid) {
+                        $rightsDisplay += $broadGroupNote
+                    }
 
                     # Determine severity
                     $severity = 'Finding'
