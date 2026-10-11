@@ -324,7 +324,7 @@ function Get-ManagedServiceAccountSecurity {
                 } else {
                     $unanalyzedCount = $totalGMSAs - $analyzedGMSAs
                     if ($unanalyzedCount -gt 0) {
-                        Show-Line "The gMSA password access that could be analyzed is restricted to privileged accounts and service hosts ($unanalyzedCount of $totalGMSAs could not be analyzed)" -Class Note
+                        Show-Line "gMSA password access is restricted to privileged accounts and service hosts ($unanalyzedCount of $totalGMSAs not analyzed)" -Class Note
                     } else {
                         Show-Line "All gMSA password access is properly restricted to privileged accounts and service hosts" -Class Secure
                     }

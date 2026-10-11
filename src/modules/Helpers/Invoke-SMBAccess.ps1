@@ -305,7 +305,7 @@ function Show-SYSVOLCoverageNote {
     }
 
     if ($coverage.SkippedCount -gt 0) {
-        Show-Line "$($coverage.SkippedCount) SYSVOL folder(s) could not be read with the current rights. Anything inside them was not examined, so the result below is incomplete." -Class Finding
+        Show-Line "$($coverage.SkippedCount) SYSVOL folder(s) could not be read - the result below is incomplete" -Class Finding
         foreach ($path in ($coverage.SkippedPaths | Select-Object -First 10)) {
             Show-Line "  not read: $path" -Class Hint
         }

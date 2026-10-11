@@ -121,7 +121,7 @@ function Get-SCCMInfrastructure {
                 # rather than that it found nothing: Invoke-LDAPSearch answers a missing
                 # SearchBase with an empty result and no error, and the two are
                 # indistinguishable from the caller's side.
-                Show-Line "System Management container not found (unusual if SCCM detected) - sites, management points and container permissions cannot be read" -Class Hint
+                Show-Line "System Management container not found - sites, management points and its permissions were not read" -Class Hint
             }
 
             # ===== Step 3: SCCM Sites via mSSMSSite =====

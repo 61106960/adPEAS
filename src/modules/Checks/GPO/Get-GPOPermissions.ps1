@@ -804,7 +804,9 @@ function Get-GPOPermissions {
             # read says nothing about who may write it.
             $sysvolCoverageIncomplete = $false
             if (-not $Script:_gpoSysvolScanned) {
-                Show-Line "SYSVOL was not reachable - the NTFS permissions of the policy folders were not examined, and write access there rewrites the policy content without any permission on the directory object" -Class Finding
+                # What write access in SYSVOL buys an attacker is on the card. The console
+                # says what was not examined.
+                Show-Line "SYSVOL was not reachable - the NTFS permissions of the policy folders were not examined" -Class Finding
                 $sysvolCoverageIncomplete = $true
             }
             elseif (@($Script:_gpoSysvolUnread).Count -gt 0) {
@@ -843,7 +845,7 @@ function Get-GPOPermissions {
                 $readCount = @($allGPOs).Count - @($unreadGPOs).Count
                 $conclusionClass = 'Secure'
                 if ($coverageIncomplete -or $sysvolCoverageIncomplete) { $conclusionClass = 'Note' }
-                Show-Line "No dangerous permissions and no non-default owner on $readCount of $(@($allGPOs).Count) GPO directory object(s), and no unexpected write access to their policy folders in SYSVOL" -Class $conclusionClass
+                Show-Line "No dangerous permissions, no non-default owner and no unexpected SYSVOL write access on $readCount of $(@($allGPOs).Count) GPO(s)" -Class $conclusionClass
             }
 
         } catch {

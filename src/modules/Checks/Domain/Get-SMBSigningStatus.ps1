@@ -251,7 +251,7 @@ function Get-SMBSigningStatus {
                 if ((Test-SysvolAccessible) -eq $false) {
                     Show-Line "Skipped - SYSVOL not accessible" -Class Hint
                 } else {
-                    Show-Line "SYSVOL access failed - cannot analyze GPO configuration for SMB Signing - SMB access failed (authentication/network issue)" -Class Finding
+                    Show-Line "SYSVOL access failed - the GPO configuration for SMB Signing was not analyzed" -Class Finding
                 }
                 return
             }

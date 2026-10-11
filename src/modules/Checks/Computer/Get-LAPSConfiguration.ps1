@@ -619,7 +619,7 @@ function Get-LAPSConfiguration {
             # and is not any more - it is a Windows LAPS policy setting rather than a
             # coverage figure, and it belongs to the GPO section above if anywhere.
             if ($domainControllerLookupFailed) {
-                Show-Line "Domain Controllers could not be enumerated - they are counted as ordinary computers below, which will understate LAPS coverage" -Class "Note"
+                Show-Line "Domain Controllers could not be enumerated - counted as ordinary computers, so LAPS coverage is understated" -Class "Note"
             }
 
             # Build LAPS breakdown

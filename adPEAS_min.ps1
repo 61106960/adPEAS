@@ -20858,7 +20858,7 @@ function Get-adPEASHelp {
         Show-Line "Connect-adPEAS -Domain 'contoso.com' -Credential (Get-Credential)"
         Show-Line "Invoke-adPEAS"
         Show-EmptyLine
-        Show-Line "On domain-joined machines, Kerberos authentication with -Password/-NTHash/-AES*Key/-Certificate replace Kerberos tickets." -Class Note
+        Show-Line "On domain-joined machines, -Password/-NTHash/-AES*Key/-Certificate replace your Kerberos tickets." -Class Note
         Show-Line "Use Connect-adPEAS with -ForceNTLM or -ForceSimpleBind to avoid this."
         Show-EmptyLine
         Show-Line "More help:" -Class Hint
@@ -39919,7 +39919,7 @@ function Show-SYSVOLCoverageNote {
         return $true
     }
     if ($coverage.SkippedCount -gt 0) {
-        Show-Line "$($coverage.SkippedCount) SYSVOL folder(s) could not be read with the current rights. Anything inside them was not examined, so the result below is incomplete." -Class Finding
+        Show-Line "$($coverage.SkippedCount) SYSVOL folder(s) could not be read - the result below is incomplete" -Class Finding
         foreach ($path in ($coverage.SkippedPaths | Select-Object -First 10)) {
             Show-Line "  not read: $path" -Class Hint
         }
@@ -51675,7 +51675,7 @@ function Show-OUPermissionsCoverageNote {
     )
     $unread = @($UnreadOUs | Where-Object { $_ })
     if ($unread.Count -eq 0) { return $false }
-    Show-Line "The security descriptor of $($unread.Count) of $TotalOUs object(s) could not be read. Their permissions were not examined, so the result below is incomplete." -Class Finding
+    Show-Line "The security descriptor of $($unread.Count) of $TotalOUs object(s) could not be read - the result below is incomplete" -Class Finding
     foreach ($unreadDN in ($unread | Select-Object -First 10)) {
         Show-Line "  not read: $unreadDN" -Class Hint
     }
@@ -62950,7 +62950,7 @@ function Get-LDAPConfiguration {
                     } else {
                         $anonChar = if ($dsHeuristics.Length -ge 7) { $dsHeuristics.Substring(6, 1) } else { '0' }
                         if ($anonChar -eq '2') {
-                            Show-Line "Anonymous LDAP operations are ENABLED - dsHeuristics character 7 is 2, so an unauthenticated client can enumerate the directory" -Class Finding -FindingId 'LDAP_ANONYMOUS_BINDING_ALLOWED'
+                            Show-Line "Anonymous LDAP operations are ENABLED - dsHeuristics character 7 is 2" -Class Finding -FindingId 'LDAP_ANONYMOUS_BINDING_ALLOWED'
                         } else {
                             Show-Line "Anonymous LDAP operations are blocked - dsHeuristics character 7 is '$anonChar', not 2" -Class Secure
                         }
@@ -63162,7 +63162,7 @@ function Get-LDAPConfiguration {
                 if ((Test-SysvolAccessible) -eq $false) {
                     Show-Line "Skipped - SYSVOL not accessible" -Class Hint
                 } else {
-                    Show-Line "SYSVOL access failed - cannot analyze GPO configuration for LDAP Security - SMB access failed (authentication/network issue)" -Class Finding
+                    Show-Line "SYSVOL access failed - the GPO configuration for LDAP Security was not analyzed" -Class Finding
                 }
                 return
             }
@@ -63386,7 +63386,7 @@ function Get-SMBSigningStatus {
                 if ((Test-SysvolAccessible) -eq $false) {
                     Show-Line "Skipped - SYSVOL not accessible" -Class Hint
                 } else {
-                    Show-Line "SYSVOL access failed - cannot analyze GPO configuration for SMB Signing - SMB access failed (authentication/network issue)" -Class Finding
+                    Show-Line "SYSVOL access failed - the GPO configuration for SMB Signing was not analyzed" -Class Finding
                 }
                 return
             }
@@ -64890,7 +64890,7 @@ function Get-ManagedServiceAccountSecurity {
                 } else {
                     $unanalyzedCount = $totalGMSAs - $analyzedGMSAs
                     if ($unanalyzedCount -gt 0) {
-                        Show-Line "The gMSA password access that could be analyzed is restricted to privileged accounts and service hosts ($unanalyzedCount of $totalGMSAs could not be analyzed)" -Class Note
+                        Show-Line "gMSA password access is restricted to privileged accounts and service hosts ($unanalyzedCount of $totalGMSAs not analyzed)" -Class Note
                     } else {
                         Show-Line "All gMSA password access is properly restricted to privileged accounts and service hosts" -Class Secure
                     }
@@ -65170,7 +65170,7 @@ function Get-SIDHistoryInjection {
             }
             if ($totalObjects -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking SID history" -Completed }
             if (@($privilegedFindings).Count -gt 0) {
-                Show-Line "Found $(@($privilegedFindings).Count) account(s) whose sIDHistory holds a privileged SID that did not come from a source domain (SID History Injection):" -Class Finding
+                Show-Line "Found $(@($privilegedFindings).Count) account(s) with a privileged SID in sIDHistory that no source domain explains:" -Class Finding
                 foreach ($finding in $privilegedFindings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
                     $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Privileged' -Force
@@ -67805,7 +67805,7 @@ function Get-LAPSConfiguration {
             $excludedInfo = if ($excluded.Count -gt 0) { " (" + ($excluded -join ', ') + ")" } else { "" }
             Show-Line "Found $activeCount active computers$excludedInfo" -Class "Hint"
             if ($domainControllerLookupFailed) {
-                Show-Line "Domain Controllers could not be enumerated - they are counted as ordinary computers below, which will understate LAPS coverage" -Class "Note"
+                Show-Line "Domain Controllers could not be enumerated - counted as ordinary computers, so LAPS coverage is understated" -Class "Note"
             }
             if ($withAnyLAPS -gt 0) {
                 $lapsBreakdown = @()
@@ -68797,7 +68797,7 @@ function Get-GPOPermissions {
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadGPOs -TotalOUs @($allGPOs).Count
             $sysvolCoverageIncomplete = $false
             if (-not $Script:_gpoSysvolScanned) {
-                Show-Line "SYSVOL was not reachable - the NTFS permissions of the policy folders were not examined, and write access there rewrites the policy content without any permission on the directory object" -Class Finding
+                Show-Line "SYSVOL was not reachable - the NTFS permissions of the policy folders were not examined" -Class Finding
                 $sysvolCoverageIncomplete = $true
             }
             elseif (@($Script:_gpoSysvolUnread).Count -gt 0) {
@@ -68830,7 +68830,7 @@ function Get-GPOPermissions {
                 $readCount = @($allGPOs).Count - @($unreadGPOs).Count
                 $conclusionClass = 'Secure'
                 if ($coverageIncomplete -or $sysvolCoverageIncomplete) { $conclusionClass = 'Note' }
-                Show-Line "No dangerous permissions and no non-default owner on $readCount of $(@($allGPOs).Count) GPO directory object(s), and no unexpected write access to their policy folders in SYSVOL" -Class $conclusionClass
+                Show-Line "No dangerous permissions, no non-default owner and no unexpected SYSVOL write access on $readCount of $(@($allGPOs).Count) GPO(s)" -Class $conclusionClass
             }
         } catch {
             Write-Log "[Get-GPOPermissions] Error: $_" -Level Error
@@ -72825,7 +72825,7 @@ function Get-ExchangeInfrastructure {
                 Write-Log "[Get-ExchangeInfrastructure] Microsoft Exchange Protected Groups OU not present: $_"
             }
             if (@($modelGroups).Count -eq 0) {
-                Show-Line "Neither Exchange Windows Permissions nor Exchange Trusted Subsystem exists in this domain - the permissions model cannot be determined from here" -Class Note
+                Show-Line "Neither Exchange Windows Permissions nor Exchange Trusted Subsystem exists - the permissions model is unknown" -Class Note
             }
             else {
                 $domainACEs = @()
@@ -73211,7 +73211,7 @@ function Get-SCCMInfrastructure {
             if ($systemMgmt) {
                 Show-Line "System Management container found at: $systemManagementPath" -Class Hint
             } else {
-                Show-Line "System Management container not found (unusual if SCCM detected) - sites, management points and container permissions cannot be read" -Class Hint
+                Show-Line "System Management container not found - sites, management points and its permissions were not read" -Class Hint
             }
             Show-SubHeader "Enumerating SCCM sites from AD schema objects..." -ObjectType "SCCMSite"
             $sccmSiteInfos = @{}
@@ -74493,7 +74493,7 @@ function Get-CredentialExposure {
                 if ((Test-SysvolAccessible) -eq $false) {
                     Show-Line "Skipped - SYSVOL not accessible" -Class "Hint"
                 } else {
-                    Show-Line "SYSVOL access failed - cannot search for credentials - SMB access failed (authentication/network issue)" -Class "Finding"
+                    Show-Line "SYSVOL access failed - credentials were not searched for" -Class "Finding"
                 }
             }
         } catch {
@@ -85767,7 +85767,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-2022"
+$Script:adPEASVersion = "2.7.0+20261011-2039"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

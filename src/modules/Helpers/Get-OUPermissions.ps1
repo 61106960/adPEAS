@@ -1431,7 +1431,7 @@ function Show-OUPermissionsCoverageNote {
     $unread = @($UnreadOUs | Where-Object { $_ })
     if ($unread.Count -eq 0) { return $false }
 
-    Show-Line "The security descriptor of $($unread.Count) of $TotalOUs object(s) could not be read. Their permissions were not examined, so the result below is incomplete." -Class Finding
+    Show-Line "The security descriptor of $($unread.Count) of $TotalOUs object(s) could not be read - the result below is incomplete" -Class Finding
     foreach ($unreadDN in ($unread | Select-Object -First 10)) {
         Show-Line "  not read: $unreadDN" -Class Hint
     }

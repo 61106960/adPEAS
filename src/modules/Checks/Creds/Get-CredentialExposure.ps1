@@ -790,7 +790,7 @@ function Get-CredentialExposure {
                 if ((Test-SysvolAccessible) -eq $false) {
                     Show-Line "Skipped - SYSVOL not accessible" -Class "Hint"
                 } else {
-                    Show-Line "SYSVOL access failed - cannot search for credentials - SMB access failed (authentication/network issue)" -Class "Finding"
+                    Show-Line "SYSVOL access failed - credentials were not searched for" -Class "Finding"
                 }
             }
 

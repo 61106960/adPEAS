@@ -1546,7 +1546,7 @@ function Get-adPEASHelp {
         Show-EmptyLine
 
         # PTT Note (for domain-joined machines with alternate credentials)
-        Show-Line "On domain-joined machines, Kerberos authentication with -Password/-NTHash/-AES*Key/-Certificate replace Kerberos tickets." -Class Note
+        Show-Line "On domain-joined machines, -Password/-NTHash/-AES*Key/-Certificate replace your Kerberos tickets." -Class Note
         Show-Line "Use Connect-adPEAS with -ForceNTLM or -ForceSimpleBind to avoid this."
         Show-EmptyLine
 

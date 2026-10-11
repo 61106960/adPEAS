@@ -978,7 +978,7 @@ function Get-ExchangeInfrastructure {
             if (@($modelGroups).Count -eq 0) {
                 # Not the same as "no ACE". Exchange prepares each domain separately, and a
                 # domain that was never prepared has no groups here to compare against.
-                Show-Line "Neither Exchange Windows Permissions nor Exchange Trusted Subsystem exists in this domain - the permissions model cannot be determined from here" -Class Note
+                Show-Line "Neither Exchange Windows Permissions nor Exchange Trusted Subsystem exists - the permissions model is unknown" -Class Note
             }
             else {
                 $domainACEs = @()

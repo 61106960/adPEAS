@@ -162,7 +162,8 @@ function Get-LDAPConfiguration {
                     } else {
                         $anonChar = if ($dsHeuristics.Length -ge 7) { $dsHeuristics.Substring(6, 1) } else { '0' }
                         if ($anonChar -eq '2') {
-                            Show-Line "Anonymous LDAP operations are ENABLED - dsHeuristics character 7 is 2, so an unauthenticated client can enumerate the directory" -Class Finding -FindingId 'LDAP_ANONYMOUS_BINDING_ALLOWED'
+                            # What an unauthenticated client can then do is the card's job.
+                            Show-Line "Anonymous LDAP operations are ENABLED - dsHeuristics character 7 is 2" -Class Finding -FindingId 'LDAP_ANONYMOUS_BINDING_ALLOWED'
                         } else {
                             Show-Line "Anonymous LDAP operations are blocked - dsHeuristics character 7 is '$anonChar', not 2" -Class Secure
                         }
@@ -516,7 +517,7 @@ function Get-LDAPConfiguration {
                 if ((Test-SysvolAccessible) -eq $false) {
                     Show-Line "Skipped - SYSVOL not accessible" -Class Hint
                 } else {
-                    Show-Line "SYSVOL access failed - cannot analyze GPO configuration for LDAP Security - SMB access failed (authentication/network issue)" -Class Finding
+                    Show-Line "SYSVOL access failed - the GPO configuration for LDAP Security was not analyzed" -Class Finding
                 }
                 return
             }

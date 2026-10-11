@@ -258,7 +258,7 @@ function Get-SIDHistoryInjection {
 
             # Output results
             if (@($privilegedFindings).Count -gt 0) {
-                Show-Line "Found $(@($privilegedFindings).Count) account(s) whose sIDHistory holds a privileged SID that did not come from a source domain (SID History Injection):" -Class Finding
+                Show-Line "Found $(@($privilegedFindings).Count) account(s) with a privileged SID in sIDHistory that no source domain explains:" -Class Finding
 
                 foreach ($finding in $privilegedFindings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
