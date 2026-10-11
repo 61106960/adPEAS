@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 12:29:13
-    Version: 2.7.0+20261011-1229
+    Build: 2026-10-11 12:53:03
+    Version: 2.7.0+20261011-1253
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -103230,6 +103230,14 @@ function Get-PasswordResetRights {
 
             $domainSID = $Script:LDAPContext.DomainSID
             $privilegedOUs = @{}  # Hashtable to deduplicate OUs
+            # Privileged accounts whose own ACL has inheritance switched off. A
+            # delegation at their OU does not reach them, so they must not pull the OU
+            # into scope and must not be named as reachable - but the reader is told how
+            # many there were, because a smaller scope needs its reason.
+            #
+            # Declared here rather than beside $allFindings: that runs after the loop
+            # that increments this, so the count was reset to zero before it was read.
+            $protectedTargets = 0
 
             Show-SubHeader "Analyzing password reset rights on OUs with privileged users..." -ObjectType "PasswordResetRight"
 
@@ -103302,13 +103310,73 @@ function Get-PasswordResetRights {
                     $escapedGroupDN = Escape-LDAPFilterDN -DistinguishedName $groupDN
 
                     # Get ALL members recursively using LDAP_MATCHING_RULE_IN_CHAIN (OID 1.2.840.113556.1.4.1941)
-                    # This finds users who are members directly OR through nested group membership
-                    $members = Get-DomainUser -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedGroupDN)" @connectionParams
+                    # This finds users who are members directly OR through nested group membership.
+                    #
+                    # Disabled members are filtered out server-side. Without that filter the
+                    # built-in Administrator account, which is disabled in many domains, and
+                    # every retired admin account counted towards the scope and pulled their
+                    # container - usually CN=Users - into it. Every default delegation there
+                    # then became a finding justified by "contains privileged users", while
+                    # the only administrator found had been disabled for years. Somebody who
+                    # wants every OU regardless has -IncludeAllOUs.
+                    #
+                    # nTSecurityDescriptor and -Raw: the descriptor is needed per member for
+                    # the inheritance test below, it is not loaded unless it is asked for,
+                    # and without -Raw it arrives as a structured object rather than the
+                    # bytes ConvertTo-AccessRules takes. Same shape as
+                    # Get-WeakCertificateMapping uses for the same reason.
+                    $memberFilter = "(&(memberOf:1.2.840.113556.1.4.1941:=$escapedGroupDN)" +
+                                    "(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+                    $members = Get-DomainUser -LDAPFilter $memberFilter `
+                        -Properties 'distinguishedName', 'sAMAccountName', 'nTSecurityDescriptor' -Raw @connectionParams
 
                     if ($members) {
                         foreach ($member in $members) {
                             $memberDN = $member.distinguishedName
                             $memberName = $member.sAMAccountName
+
+                            # These are the accounts SDProp protects: AdminSDHolder
+                            # overwrites their ACL hourly and switches inheritance off while
+                            # doing it, so a delegation at their OU never reaches them. The
+                            # check derived its OUs from exactly these accounts and then
+                            # named them in targetablePrivilegedUsers as reachable.
+                            #
+                            # Measured rather than inferred from adminCount: that flag is
+                            # set when an account joins a protected group and is not
+                            # cleared when it leaves, and the inheritance block can be
+                            # switched back on by hand - the project says so itself in
+                            # Get-WeakCertificateMapping. AreAccessRulesProtected is the
+                            # state that decides it.
+                            #
+                            # A descriptor that cannot be read leaves the account in scope.
+                            # Unreadable is not protected, and assuming otherwise is how a
+                            # check ends up reporting "secure" about something it never saw.
+                            # PSObject.Properties rather than a direct reference: a
+                            # caller that asked for other attributes hands over an object
+                            # without this one, and under Set-StrictMode -Version Latest
+                            # naming a property that is not there throws - which the
+                            # try/catch around this whole check would swallow, taking the
+                            # analysis down silently.
+                            $memberDescriptorBytes = $null
+                            if ($member.PSObject.Properties['nTSecurityDescriptor']) {
+                                $memberDescriptorBytes = $member.nTSecurityDescriptor
+                            }
+
+                            if ($memberDescriptorBytes) {
+                                $memberSD = $null
+                                try {
+                                    $memberSD = ConvertTo-AccessRules -SecurityDescriptorBytes $memberDescriptorBytes
+                                } catch {
+                                    Write-Log "[Get-PasswordResetRights] Could not read the descriptor of '$memberDN': $_"
+                                }
+
+                                if ($memberSD -and $memberSD.SecurityDescriptor -and
+                                    $memberSD.SecurityDescriptor.AreAccessRulesProtected) {
+                                    Write-Log "[Get-PasswordResetRights] Inheritance is disabled on '$memberDN' - an OU delegation does not reach it"
+                                    $protectedTargets++
+                                    continue
+                                }
+                            }
 
                             # Extract parent OU/Container from member DN.
                             # The separator is the first comma that is NOT escaped: a common
@@ -103342,6 +103410,9 @@ function Get-PasswordResetRights {
 
             if ($privilegedOUs.Keys.Count -eq 0) {
                 Write-Log "[Get-PasswordResetRights] No OUs with privileged users found"
+                if ($protectedTargets -gt 0) {
+                    Show-Line "$protectedTargets privileged account(s) have inheritance disabled - a delegation on their OU does not reach them" -Class Secure
+                }
                 Show-Line "No OUs with privileged users found to analyze" -Class Note
                 return
             }
@@ -103415,6 +103486,12 @@ function Get-PasswordResetRights {
             # whatever was readable.
             $totalOUs = @($privilegedOUs.Keys).Count
             $readOUs = $totalOUs - @($unreadOUs).Count
+
+            # Secure, and said once for the whole scan: it is the reason the scope is
+            # smaller than the list of privileged accounts, and it is a control working.
+            if ($protectedTargets -gt 0) {
+                Show-Line "$protectedTargets privileged account(s) have inheritance disabled - a delegation on their OU does not reach them" -Class Secure
+            }
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
             $conclusionClass = 'Secure'
             if ($coverageIncomplete) { $conclusionClass = 'Note' }
@@ -131073,7 +131150,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1229"
+$Script:adPEASVersion = "2.7.0+20261011-1253"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

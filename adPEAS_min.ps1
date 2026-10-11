@@ -65836,6 +65836,7 @@ function Get-PasswordResetRights {
             }
             $domainSID = $Script:LDAPContext.DomainSID
             $privilegedOUs = @{}
+            $protectedTargets = 0
             Show-SubHeader "Analyzing password reset rights on OUs with privileged users..." -ObjectType "PasswordResetRight"
             if ($IncludeAllOUs) {
                 $allOUs = @(Get-DomainObject -LDAPFilter "(objectClass=organizationalUnit)" @connectionParams) +
@@ -65884,11 +65885,32 @@ function Get-PasswordResetRights {
                     }
                     $groupDN = $group.distinguishedName
                     $escapedGroupDN = Escape-LDAPFilterDN -DistinguishedName $groupDN
-                    $members = Get-DomainUser -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedGroupDN)" @connectionParams
+                    $memberFilter = "(&(memberOf:1.2.840.113556.1.4.1941:=$escapedGroupDN)" +
+                                    "(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+                    $members = Get-DomainUser -LDAPFilter $memberFilter `
+                        -Properties 'distinguishedName', 'sAMAccountName', 'nTSecurityDescriptor' -Raw @connectionParams
                     if ($members) {
                         foreach ($member in $members) {
                             $memberDN = $member.distinguishedName
                             $memberName = $member.sAMAccountName
+                            $memberDescriptorBytes = $null
+                            if ($member.PSObject.Properties['nTSecurityDescriptor']) {
+                                $memberDescriptorBytes = $member.nTSecurityDescriptor
+                            }
+                            if ($memberDescriptorBytes) {
+                                $memberSD = $null
+                                try {
+                                    $memberSD = ConvertTo-AccessRules -SecurityDescriptorBytes $memberDescriptorBytes
+                                } catch {
+                                    Write-Log "[Get-PasswordResetRights] Could not read the descriptor of '$memberDN': $_"
+                                }
+                                if ($memberSD -and $memberSD.SecurityDescriptor -and
+                                    $memberSD.SecurityDescriptor.AreAccessRulesProtected) {
+                                    Write-Log "[Get-PasswordResetRights] Inheritance is disabled on '$memberDN' - an OU delegation does not reach it"
+                                    $protectedTargets++
+                                    continue
+                                }
+                            }
                             if ($memberDN -match '^CN=(?:[^,\\]|\\.)*,(.+)$') {
                                 $parentDN = $Matches[1]
                                 if (-not $privilegedOUs.ContainsKey($parentDN)) {
@@ -65909,6 +65931,9 @@ function Get-PasswordResetRights {
             }
             if ($privilegedOUs.Keys.Count -eq 0) {
                 Write-Log "[Get-PasswordResetRights] No OUs with privileged users found"
+                if ($protectedTargets -gt 0) {
+                    Show-Line "$protectedTargets privileged account(s) have inheritance disabled - a delegation on their OU does not reach them" -Class Secure
+                }
                 Show-Line "No OUs with privileged users found to analyze" -Class Note
                 return
             }
@@ -65956,6 +65981,9 @@ function Get-PasswordResetRights {
             }
             $totalOUs = @($privilegedOUs.Keys).Count
             $readOUs = $totalOUs - @($unreadOUs).Count
+            if ($protectedTargets -gt 0) {
+                Show-Line "$protectedTargets privileged account(s) have inheritance disabled - a delegation on their OU does not reach them" -Class Secure
+            }
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
             $conclusionClass = 'Secure'
             if ($coverageIncomplete) { $conclusionClass = 'Note' }
@@ -85307,7 +85335,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-1229"
+$Script:adPEASVersion = "2.7.0+20261011-1253"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
