@@ -77,19 +77,45 @@ function Get-LAPSPermissions {
                 return
             }
 
-            # Get all enabled computers and group by OU (only properties needed for filtering and grouping)
-            # -Enabled filters server-side, Test-AccountActivity -IsActive uses $Script:DefaultInactiveDays
-            $allComputers = @(Get-DomainComputer -Enabled -Properties "distinguishedName","lastLogonTimestamp" @connectionParams | Test-AccountActivity -IsActive)
+            # Every enabled computer, and the activity measured per OU rather than used
+            # to build the scope. The scope used to be the output of
+            # Test-AccountActivity -IsActive, which drops a machine that has not logged
+            # on within $Script:DefaultInactiveDays and drops one that never logged on
+            # outright - so an OU whose machines are all dormant or pre-staged was never
+            # analysed at all.
+            #
+            # That is the wrong way round for LAPS specifically. The password rotates
+            # when the machine checks in, so a dormant machine is precisely the one
+            # whose stored password is still the current local administrator password. A
+            # staging or imaging OU, where machines are created in advance and have
+            # never logged on, is the most convenient route to a golden image, and it
+            # was invisible.
+            #
+            # The reason this filter was added - a decommissioned computer would invent
+            # an OU nobody has to clean up any more - is already served by -Enabled,
+            # which filters server-side: a decommissioned machine is a disabled one. On
+            # top of -Enabled, the activity test removes exactly the enabled-but-quiet
+            # machines, which are the interesting ones here. Activity now shapes the
+            # text instead of the scope, so a reader can still tell a live OU from a
+            # graveyard.
+            $allComputers = @(Get-DomainComputer -Enabled -Properties "distinguishedName","lastLogonTimestamp" @connectionParams)
+            $activeDNs = @{}
+            foreach ($active in @($allComputers | Test-AccountActivity -IsActive)) {
+                if ($active.distinguishedName) { $activeDNs[[string]$active.distinguishedName] = $true }
+            }
 
             $computersByOU = @{}
+            $activeByOU = @{}
             foreach ($computer in $allComputers) {
                 $dn = $computer.distinguishedName
                 if ($dn -match '^CN=[^,]+,(.+)$') {
                     $ouDN = $Matches[1]
                     if (-not $computersByOU.ContainsKey($ouDN)) {
                         $computersByOU[$ouDN] = 0
+                        $activeByOU[$ouDN] = 0
                     }
                     $computersByOU[$ouDN]++
+                    if ($activeDNs.ContainsKey([string]$dn)) { $activeByOU[$ouDN]++ }
                 }
             }
 
@@ -107,7 +133,8 @@ function Get-LAPSPermissions {
                 $currentIndex++
                 if ($totalOUs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS permissions" -Current $currentIndex -Total $totalOUs -ObjectName $ouDN }
                 $computerCount = $computersByOU[$ouDN]
-                Write-Log "[Get-LAPSPermissions] Analyzing OU: $ouDN ($computerCount computers)"
+                $activeCount = $activeByOU[$ouDN]
+                Write-Log "[Get-LAPSPermissions] Analyzing OU: $ouDN ($computerCount computers, $activeCount active)"
 
                 try {
                     # Get-OUPermissions uses session context automatically
@@ -225,6 +252,7 @@ function Get-LAPSPermissions {
                             $filteredFindings += [PSCustomObject]@{
                                 OU = $ouDN
                                 ComputerCount = $computerCount
+                                ActiveComputerCount = $activeCount
                                 MatchedReaders = $matchedReaders
                                 LegacyReaders = $legacyReaders
                                 NativeReaders = $nativeReaders
@@ -234,6 +262,7 @@ function Get-LAPSPermissions {
                         $ouPermissionsResults += [PSCustomObject]@{
                             OU = $ouDN
                             ComputerCount = $computerCount
+                            ActiveComputerCount = $activeCount
                             LegacyReaders = $legacyReaders
                             NativeReaders = $nativeReaders
                         }
@@ -314,7 +343,16 @@ function Get-LAPSPermissions {
                             $targetHash[$sid].AllBlockedByConfidentialFlag = $false
                         }
                         # Only add OU if not already in the list (deduplicate)
-                        $ouEntry = "$($finding.OU) ($($finding.ComputerCount) computers)"
+                        # The active count is named only when it differs. Saying
+                        # "3 computers, 3 active" on every line would add a word and no
+                        # information; saying "12 computers, 3 active" tells the reader
+                        # nine machines hold a password LAPS has not rotated since they
+                        # went quiet - which is the password that still works on them.
+                        $ouEntry = if ($null -ne $finding.ActiveComputerCount -and $finding.ActiveComputerCount -ne $finding.ComputerCount) {
+                            "$($finding.OU) ($($finding.ComputerCount) computers, $($finding.ActiveComputerCount) active)"
+                        } else {
+                            "$($finding.OU) ($($finding.ComputerCount) computers)"
+                        }
                         if ($targetHash[$sid].OUs -notcontains $ouEntry) {
                             $targetHash[$sid].OUs += $ouEntry
                         }

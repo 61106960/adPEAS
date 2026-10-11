@@ -64250,16 +64250,23 @@ function Get-LAPSPermissions {
 	            Show-Line "No LAPS schema found" -Class Note
 	            return
 	        }
-	        $allComputers = @(Get-DomainComputer -Enabled -Properties "distinguishedName","lastLogonTimestamp" @connectionParams | Test-AccountActivity -IsActive)
+	        $allComputers = @(Get-DomainComputer -Enabled -Properties "distinguishedName","lastLogonTimestamp" @connectionParams)
+	        $activeDNs = @{}
+	        foreach ($active in @($allComputers | Test-AccountActivity -IsActive)) {
+	            if ($active.distinguishedName) { $activeDNs[[string]$active.distinguishedName] = $true }
+	        }
 	        $computersByOU = @{}
+	        $activeByOU = @{}
 	        foreach ($computer in $allComputers) {
 	            $dn = $computer.distinguishedName
 	            if ($dn -match '^CN=[^,]+,(.+)$') {
 	                $ouDN = $Matches[1]
 	                if (-not $computersByOU.ContainsKey($ouDN)) {
 	                    $computersByOU[$ouDN] = 0
+	                    $activeByOU[$ouDN] = 0
 	                }
 	                $computersByOU[$ouDN]++
+	                if ($activeDNs.ContainsKey([string]$dn)) { $activeByOU[$ouDN]++ }
 	            }
 	        }
 	        $ouPermissionsResults = @()
@@ -64272,6 +64279,7 @@ function Get-LAPSPermissions {
 	            $currentIndex++
 	            if ($totalOUs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS permissions" -Current $currentIndex -Total $totalOUs -ObjectName $ouDN }
 	            $computerCount = $computersByOU[$ouDN]
+	            $activeCount = $activeByOU[$ouDN]
 	            try {
 	                $ouPerms = Get-OUPermissions -DistinguishedName $ouDN -CheckType 'LAPS'
 	                if (-not $ouPerms -or $ouPerms.Read -eq $false) {
@@ -64337,6 +64345,7 @@ function Get-LAPSPermissions {
 	                        $filteredFindings += [PSCustomObject]@{
 	                            OU = $ouDN
 	                            ComputerCount = $computerCount
+	                            ActiveComputerCount = $activeCount
 	                            MatchedReaders = $matchedReaders
 	                            LegacyReaders = $legacyReaders
 	                            NativeReaders = $nativeReaders
@@ -64345,6 +64354,7 @@ function Get-LAPSPermissions {
 	                    $ouPermissionsResults += [PSCustomObject]@{
 	                        OU = $ouDN
 	                        ComputerCount = $computerCount
+	                        ActiveComputerCount = $activeCount
 	                        LegacyReaders = $legacyReaders
 	                        NativeReaders = $nativeReaders
 	                    }
@@ -64393,7 +64403,11 @@ function Get-LAPSPermissions {
 	                    if ($reader.BlockedByConfidentialFlag -ne $true) {
 	                        $targetHash[$sid].AllBlockedByConfidentialFlag = $false
 	                    }
-	                    $ouEntry = "$($finding.OU) ($($finding.ComputerCount) computers)"
+	                    $ouEntry = if ($null -ne $finding.ActiveComputerCount -and $finding.ActiveComputerCount -ne $finding.ComputerCount) {
+	                        "$($finding.OU) ($($finding.ComputerCount) computers, $($finding.ActiveComputerCount) active)"
+	                    } else {
+	                        "$($finding.OU) ($($finding.ComputerCount) computers)"
+	                    }
 	                    if ($targetHash[$sid].OUs -notcontains $ouEntry) {
 	                        $targetHash[$sid].OUs += $ouEntry
 	                    }
@@ -82370,7 +82384,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-1211"
+$Script:adPEASVersion = "2.7.0+20261011-1229"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
