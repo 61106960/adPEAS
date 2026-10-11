@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 03:51:36
-    Version: 2.7.0+20261011-0351
+    Build: 2026-10-11 09:34:26
+    Version: 2.7.0+20261011-0934
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -10544,6 +10544,59 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         MITRE = "T1098.002"
         Triggers = @(
             @{ Attribute = 'dangerousRights'; Pattern = 'WriteProperty \(member\)'; Severity = 'Finding' }
+        )
+    }
+
+    'OU_PERM_SELF_MEMBERSHIP' = @{
+        Title = "Self-Membership Rights on OU"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A principal holds the Self right scoped to the Self-Membership validated write on groups in this OU. AD reuses the schemaIDGUID of the 'member' attribute as the rightsGUID of that validated write, so only the ACE type distinguishes the two: WriteProperty adds arbitrary members, Self adds the trustee itself and nobody else. The right is narrower, the escalation is the same - if a privileged group sits in this OU, the trustee can join it."
+        Impact = @(
+            "The trustee can add its own account to any group in the OU"
+            "If Domain Admins or another privileged group is in the OU, instant privilege escalation"
+            "Requires no additional account to be compromised first - the trustee escalates itself"
+            "Often delegated for self-service distribution lists and then inherited by security groups"
+        )
+        Attack = @(
+            "1. Attacker enumerates groups in the target OU and their privileges"
+            "2. Adds its own account to the privileged group using the Self-Membership write"
+            "3. Obtains a new Kerberos ticket to pick up the added group SID"
+            "4. Gains all privileges of the group, then removes itself again"
+        )
+        Remediation = @(
+            "Segregate privileged groups into protected OUs that carry no self-service delegation"
+            "Scope self-service membership delegation to distribution groups, never to security groups"
+            "Use AdminSDHolder to protect privileged groups"
+            "Monitor group membership changes (Event ID 4728, 4732, 4756)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "View current ACL on OU to identify principals with the Self right on the member attribute"
+                Command = "(Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'Self' -and `$_.ObjectType -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+            }
+            @{
+                Description = "Remove the Self-Membership permission from a specific principal"
+                Command = "`$acl = Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'Self' -and `$_.ObjectType -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+            }
+            @{
+                Description = "Identify privileged groups in the OU that the right can be used against"
+                Command = "Get-ADGroup -Filter * -SearchBase 'OU=TARGET_OU,DC=domain,DC=com' -Properties AdminCount,Member | Where-Object {`$_.AdminCount -eq 1 -or `$_.Name -match 'Admin|Operator'} | Select-Object Name,DistinguishedName"
+            }
+            @{
+                Description = "Enable auditing for group membership changes (Event IDs 4728, 4732, 4756)"
+                Command = "# Configure via Group Policy: Computer Configuration > Policies > Windows Settings > Security Settings > Advanced Audit Policy > Account Management > Audit Security Group Management = Success, Failure"
+            }
+        )
+        References = @(
+            @{ Title = "AddSelf - BloodHound"; Url = "https://bloodhound.specterops.io/resources/edges/add-self" }
+            @{ Title = "Validated Writes in AD"; Url = "https://docs.microsoft.com/en-us/windows/win32/adschema/validated-writes" }
+            @{ Title = "Self-Membership - MS-ADTS Control Access Rights"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/1522b774-6464-41a3-87a5-1e5633c3fbbb" }
+        )
+        Tools = @("BloodHound", "PowerView")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'Self \(Self-Membership\)'; Severity = 'Finding' }
         )
     }
 
@@ -78492,6 +78545,27 @@ function Get-OUPermissions {
                             }
                         }
                     }
+
+                    # Check the Self right carrying the Self-Membership validated write.
+                    # AD reuses the schemaIDGUID of 'member' as the rightsGUID of that
+                    # validated write, so the GUID alone does not say which of the two an
+                    # ACE grants - the ACE type does. Self lets the trustee add itself to
+                    # the group and nobody else: a narrower right than WriteProperty on
+                    # 'member', the same escalation if the group is privileged.
+                    $HasSelf = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)
+                    if ($HasSelf -and -not $IsAllProperties -and $AppliesToGroups) {
+                        if ($ACE.ObjectType -eq $PropertyGUIDs['member']) {
+                            $Severity = if ($IsPrivileged) { "Info" } else { "High" }
+                            $Findings += [PSCustomObject]@{
+                                CheckType     = "GroupMembership"
+                                Right         = "Self (Self-Membership)"
+                                Principal     = $TrusteeName
+                                SID           = $TrusteeSID
+                                Severity      = $Severity
+                                InheritedFrom = $InheritedFrom
+                            }
+                        }
+                    }
                 }
 
                 # Check 5: SPN Modification (servicePrincipalName or Validated-SPN)
@@ -130290,7 +130364,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-0351"
+$Script:adPEASVersion = "2.7.0+20261011-0934"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

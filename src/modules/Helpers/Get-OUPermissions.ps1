@@ -646,6 +646,27 @@ function Get-OUPermissions {
                             }
                         }
                     }
+
+                    # Check the Self right carrying the Self-Membership validated write.
+                    # AD reuses the schemaIDGUID of 'member' as the rightsGUID of that
+                    # validated write, so the GUID alone does not say which of the two an
+                    # ACE grants - the ACE type does. Self lets the trustee add itself to
+                    # the group and nobody else: a narrower right than WriteProperty on
+                    # 'member', the same escalation if the group is privileged.
+                    $HasSelf = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)
+                    if ($HasSelf -and -not $IsAllProperties -and $AppliesToGroups) {
+                        if ($ACE.ObjectType -eq $PropertyGUIDs['member']) {
+                            $Severity = if ($IsPrivileged) { "Info" } else { "High" }
+                            $Findings += [PSCustomObject]@{
+                                CheckType     = "GroupMembership"
+                                Right         = "Self (Self-Membership)"
+                                Principal     = $TrusteeName
+                                SID           = $TrusteeSID
+                                Severity      = $Severity
+                                InheritedFrom = $InheritedFrom
+                            }
+                        }
+                    }
                 }
 
                 # Check 5: SPN Modification (servicePrincipalName or Validated-SPN)
