@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 18:02:48
-    Version: 2.7.0+20261011-1802
+    Build: 2026-10-11 18:40:30
+    Version: 2.7.0+20261011-1840
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -102906,7 +102906,13 @@ function Get-DangerousACLs {
             # top of the scale. What can carry it is the card, which the reported right
             # selects - so the right says it, and a card of its own gives the case the
             # write-up and the rank it deserves.
-            $broadGroupNote = ' - granted to a broad group, so every member holds it'
+            # No comma in this text, and none in any text appended to a right.
+            # Convert-DangerousRightsToRenderValues splits dangerousRights on ',\s*' so
+            # that each right gets its own tooltip, so a comma inside an explanation is
+            # read as "next right" - it breaks the line in the console and, worse, leaves
+            # any ExcludePattern in the discarded tail, which hands the row a stronger
+            # card than it earned.
+            $broadGroupNote = ' - granted to a broad group so every member holds it'
             # Test-IsBroadTrustee (adPEAS-SIDs.ps1) asks both lists. The local copy that
             # used to stand here did the same, and three other places still wrote the
             # pair out by hand - one of them with only the SID half.
@@ -102937,11 +102943,11 @@ function Get-DangerousACLs {
                     # and the severity are the same as for every other right on this
                     # object, and the text says what the holder can actually do.
                     if (-not $canDCSync -and ($hasGetChanges -or $hasGetChangesAll -or $hasGetChangesFiltered)) {
-                        $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - inert without DS-Replication-Get-Changes, one ACE short of DCSync"
+                        $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - inert without DS-Replication-Get-Changes and one ACE short of DCSync"
                         if ($hasGetChanges) {
                             # Not inert at all: this one replicates the whole directory
                             # except the secrets, every security descriptor included.
-                            $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - replicates the directory except secrets, one right short of DCSync"
+                            $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - replicates the directory except secrets but is one right short of DCSync"
                         }
 
                         $dangerousRightsAccounts += [PSCustomObject]@{
@@ -104431,11 +104437,11 @@ function Get-AddComputerRights {
                     # ("this policy wins", "overridden by X"), which is not the list of
                     # principals the privilege went to.
                     $restrictedTo = if (@($effectiveGPO.Accounts).Count -gt 0) { @($effectiveGPO.Accounts) -join ', ' } else { "nobody" }
-                    Show-Line "ms-DS-MachineAccountQuota is $quotaValue, but SeMachineAccountPrivilege is restricted to $restrictedTo by GPO '$($effectiveGPO.displayName)' - ordinary users cannot reach the quota" -Class Note
+                    Show-Line "SeMachineAccountPrivilege is restricted to $restrictedTo by GPO '$($effectiveGPO.displayName)'" -Class Note
                 } elseif ($effectiveGPO) {
-                    Show-Line "Found ms-DS-MachineAccountQuota configured and GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege to ordinary users - any authenticated user can add computers:" -Class Hint
+                    Show-Line "Any authenticated user can add computers - GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege:" -Class Hint
                 } else {
-                    Show-Line "Found ms-DS-MachineAccountQuota configured and no policy restricts SeMachineAccountPrivilege - the documented default applies, so any authenticated user can add computers:" -Class Hint
+                    Show-Line "Any authenticated user can add computers - no policy restricts SeMachineAccountPrivilege:" -Class Hint
                 }
 
                 $quotaObject = [PSCustomObject]@{
@@ -104480,7 +104486,7 @@ function Get-AddComputerRights {
                     # have brought a write-up about the domain with it.
                     $rightsText = "CreateChild (Computer) in the computer container"
                     if (Test-IsBroadTrustee -SID $account.SID) {
-                        $rightsText += ' - granted to a broad group, so every member holds it'
+                        $rightsText += ' - granted to a broad group so every member holds it'
                     }
 
                     if ($adObject) {
@@ -105729,7 +105735,7 @@ function Get-LAPSPermissions {
                 $encryptedOnly = ($generations.Count -eq 1) -and
                                  ($generations -contains 'Windows LAPS (encrypted)')
                 if ($encryptedOnly) {
-                    return 'LAPS Password Read (Windows LAPS, encrypted) - needs the authorized decryptor named in ADPasswordEncryptionPrincipal to open the blob'
+                    return 'LAPS Password Read (Windows LAPS - encrypted) - needs the authorized decryptor named in ADPasswordEncryptionPrincipal to open the blob'
                 }
 
                 return ('LAPS Password Read (' + (($generations | Sort-Object) -join ', ') + ')')
@@ -131769,7 +131775,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1802"
+$Script:adPEASVersion = "2.7.0+20261011-1840"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

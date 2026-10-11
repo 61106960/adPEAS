@@ -65625,7 +65625,7 @@ function Get-DangerousACLs {
             }
             $dcsyncFindings = @()
             $dangerousRightsFindings = @()
-            $broadGroupNote = ' - granted to a broad group, so every member holds it'
+            $broadGroupNote = ' - granted to a broad group so every member holds it'
             function Test-TrusteeIsBroad {
                 param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$SID)
                 return [bool](Test-IsBroadTrustee -SID $SID)
@@ -65640,9 +65640,9 @@ function Get-DangerousACLs {
                     $hasGetChangesFiltered = $rights -contains 'DS-Replication-Get-Changes-In-Filtered-Set'
                     $canDCSync = $hasGetChanges -and $hasGetChangesAll
                     if (-not $canDCSync -and ($hasGetChanges -or $hasGetChangesAll -or $hasGetChangesFiltered)) {
-                        $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - inert without DS-Replication-Get-Changes, one ACE short of DCSync"
+                        $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - inert without DS-Replication-Get-Changes and one ACE short of DCSync"
                         if ($hasGetChanges) {
-                            $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - replicates the directory except secrets, one right short of DCSync"
+                            $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - replicates the directory except secrets but is one right short of DCSync"
                         }
                         $dangerousRightsAccounts += [PSCustomObject]@{
                             SID = $sid
@@ -66507,11 +66507,11 @@ function Get-AddComputerRights {
             } else {
                 if ($effectiveGPO -and -not $effectiveIsDangerous) {
                     $restrictedTo = if (@($effectiveGPO.Accounts).Count -gt 0) { @($effectiveGPO.Accounts) -join ', ' } else { "nobody" }
-                    Show-Line "ms-DS-MachineAccountQuota is $quotaValue, but SeMachineAccountPrivilege is restricted to $restrictedTo by GPO '$($effectiveGPO.displayName)' - ordinary users cannot reach the quota" -Class Note
+                    Show-Line "SeMachineAccountPrivilege is restricted to $restrictedTo by GPO '$($effectiveGPO.displayName)'" -Class Note
                 } elseif ($effectiveGPO) {
-                    Show-Line "Found ms-DS-MachineAccountQuota configured and GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege to ordinary users - any authenticated user can add computers:" -Class Hint
+                    Show-Line "Any authenticated user can add computers - GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege:" -Class Hint
                 } else {
-                    Show-Line "Found ms-DS-MachineAccountQuota configured and no policy restricts SeMachineAccountPrivilege - the documented default applies, so any authenticated user can add computers:" -Class Hint
+                    Show-Line "Any authenticated user can add computers - no policy restricts SeMachineAccountPrivilege:" -Class Hint
                 }
                 $quotaObject = [PSCustomObject]@{
                     'ms-DS-MachineAccountQuota' = $quotaValue
@@ -66533,7 +66533,7 @@ function Get-AddComputerRights {
                     }
                     $rightsText = "CreateChild (Computer) in the computer container"
                     if (Test-IsBroadTrustee -SID $account.SID) {
-                        $rightsText += ' - granted to a broad group, so every member holds it'
+                        $rightsText += ' - granted to a broad group so every member holds it'
                     }
                     if ($adObject) {
                         $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue $rightsText -Force
@@ -67199,7 +67199,7 @@ function Get-LAPSPermissions {
                 $encryptedOnly = ($generations.Count -eq 1) -and
                                  ($generations -contains 'Windows LAPS (encrypted)')
                 if ($encryptedOnly) {
-                    return 'LAPS Password Read (Windows LAPS, encrypted) - needs the authorized decryptor named in ADPasswordEncryptionPrincipal to open the blob'
+                    return 'LAPS Password Read (Windows LAPS - encrypted) - needs the authorized decryptor named in ADPasswordEncryptionPrincipal to open the blob'
                 }
                 return ('LAPS Password Read (' + (($generations | Sort-Object) -join ', ') + ')')
             }
@@ -85643,7 +85643,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-1802"
+$Script:adPEASVersion = "2.7.0+20261011-1840"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

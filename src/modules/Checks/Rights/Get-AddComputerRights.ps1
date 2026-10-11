@@ -290,11 +290,11 @@ function Get-AddComputerRights {
                     # ("this policy wins", "overridden by X"), which is not the list of
                     # principals the privilege went to.
                     $restrictedTo = if (@($effectiveGPO.Accounts).Count -gt 0) { @($effectiveGPO.Accounts) -join ', ' } else { "nobody" }
-                    Show-Line "ms-DS-MachineAccountQuota is $quotaValue, but SeMachineAccountPrivilege is restricted to $restrictedTo by GPO '$($effectiveGPO.displayName)' - ordinary users cannot reach the quota" -Class Note
+                    Show-Line "SeMachineAccountPrivilege is restricted to $restrictedTo by GPO '$($effectiveGPO.displayName)'" -Class Note
                 } elseif ($effectiveGPO) {
-                    Show-Line "Found ms-DS-MachineAccountQuota configured and GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege to ordinary users - any authenticated user can add computers:" -Class Hint
+                    Show-Line "Any authenticated user can add computers - GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege:" -Class Hint
                 } else {
-                    Show-Line "Found ms-DS-MachineAccountQuota configured and no policy restricts SeMachineAccountPrivilege - the documented default applies, so any authenticated user can add computers:" -Class Hint
+                    Show-Line "Any authenticated user can add computers - no policy restricts SeMachineAccountPrivilege:" -Class Hint
                 }
 
                 $quotaObject = [PSCustomObject]@{
@@ -339,7 +339,7 @@ function Get-AddComputerRights {
                     # have brought a write-up about the domain with it.
                     $rightsText = "CreateChild (Computer) in the computer container"
                     if (Test-IsBroadTrustee -SID $account.SID) {
-                        $rightsText += ' - granted to a broad group, so every member holds it'
+                        $rightsText += ' - granted to a broad group so every member holds it'
                     }
 
                     if ($adObject) {
