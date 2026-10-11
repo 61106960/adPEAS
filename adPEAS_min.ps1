@@ -1107,9 +1107,12 @@ $Script:SecurityScopes = @{
             'S-1-5-9'
         )
         ExpectedRIDSuffixes = @(
-            '-516',
-            '-521'
+            '-516'
         )
+        DefaultRightHolders = @{
+            '-498' = @('DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-In-Filtered-Set')
+            '-521' = @('DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-In-Filtered-Set')
+        }
         AttentionBroadGroups = @()
     }
     'DomainRootACL' = @{
@@ -36906,7 +36909,10 @@ function Test-IsExpectedInScope {
         )]
         [string]$Scope,
         [Parameter(Mandatory=$false)]
-        [switch]$ReturnDetails
+        [switch]$ReturnDetails,
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [string[]]$Rights
     )
     process {
         $scopeDef = $Script:SecurityScopes[$Scope]
@@ -36954,6 +36960,35 @@ function Test-IsExpectedInScope {
         }
         if (-not $name -and $sid) {
             $name = ConvertFrom-SID -SID $sid
+        }
+        if ($sid -and $Rights -and $scopeDef.DefaultRightHolders) {
+            $holderKey = $null
+            if ($scopeDef.DefaultRightHolders.ContainsKey($sid)) {
+                $holderKey = $sid
+            } else {
+                $holderRID = Get-SIDRIDSuffix -SID $sid
+                if ($holderRID -and $scopeDef.DefaultRightHolders.ContainsKey($holderRID)) {
+                    $holderKey = $holderRID
+                }
+            }
+            if ($holderKey) {
+                $defaultRights = @($scopeDef.DefaultRightHolders[$holderKey])
+                $beyond = @(@($Rights) | Where-Object { $_ -and ($defaultRights -notcontains $_) })
+                if (@($beyond).Count -eq 0) {
+                    Write-Log "[Test-IsExpectedInScope] $sid holds only its default rights in scope '$Scope'"
+                    if ($ReturnDetails) {
+                        return [PSCustomObject]@{
+                            Severity = 'Expected'
+                            Reason = "Holds only the rights it has by default in scope '$Scope'"
+                            Identity = $Identity
+                            Scope = $Scope
+                            MatchedSID = $sid
+                        }
+                    }
+                    return 'Expected'
+                }
+                Write-Log "[Test-IsExpectedInScope] $sid holds $($beyond -join ', ') beyond its defaults in scope '$Scope'"
+            }
         }
         if ($sid -and $scopeDef.ExpectedSIDs -and $sid -in $scopeDef.ExpectedSIDs) {
             if ($ReturnDetails) {
@@ -65648,6 +65683,8 @@ function Get-DangerousACLs {
                             SID = $sid
                             Name = $accountName
                             Rights = @($partialText)
+                            Scope = 'DCSync'
+                            RawRights = @($rights | Select-Object -Unique)
                         }
                     }
                     if ($canDCSync) {
@@ -65693,17 +65730,22 @@ function Get-DangerousACLs {
                     $sid = $group.Name
                     $accountName = $group.Group[0].Name
                     $allRights = @()
+                    $allRawRights = @()
+                    $itemScope = 'DomainRootACL'
                     foreach ($item in $group.Group) {
                         $allRights += $item.Rights
+                        if ($item.PSObject.Properties['RawRights']) { $allRawRights += @($item.RawRights) }
+                        if ($item.PSObject.Properties['Scope'] -and $item.Scope) { $itemScope = $item.Scope }
                     }
                     $allRights = $allRights | Select-Object -Unique
+                    $allRawRights = @($allRawRights | Select-Object -Unique)
                     $rightsDisplay = $allRights -join ', '
                     if (Test-TrusteeIsBroad -SID $sid) {
                         $rightsDisplay += $broadGroupNote
                     }
                     $severity = 'Finding'
                     if (-not $IncludePrivileged) {
-                        $scopeResult = Test-IsExpectedInScope -Identity $sid -Scope 'DomainRootACL' -ReturnDetails
+                        $scopeResult = Test-IsExpectedInScope -Identity $sid -Scope $itemScope -Rights $allRawRights -ReturnDetails
                         if ($scopeResult.Severity -eq 'Expected') {
                             Write-Log "[Get-DangerousACLs] Dangerous rights (expected): $accountName - $rightsDisplay - $($scopeResult.Reason)"
                             continue
@@ -65714,7 +65756,7 @@ function Get-DangerousACLs {
                         }
                         $severity = $scopeResult.Severity
                     } else {
-                        $scopeResult = Test-IsExpectedInScope -Identity $sid -Scope 'DomainRootACL' -ReturnDetails
+                        $scopeResult = Test-IsExpectedInScope -Identity $sid -Scope $itemScope -Rights $allRawRights -ReturnDetails
                         $severity = $scopeResult.Severity
                         Write-Log "[Get-DangerousACLs] IncludePrivileged: Including $accountName ($sid) with severity $severity"
                     }
@@ -85643,7 +85685,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-1840"
+$Script:adPEASVersion = "2.7.0+20261011-1901"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

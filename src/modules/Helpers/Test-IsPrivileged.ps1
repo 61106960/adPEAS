@@ -1294,7 +1294,14 @@ function Test-IsExpectedInScope {
         [string]$Scope,
 
         [Parameter(Mandatory=$false)]
-        [switch]$ReturnDetails
+        [switch]$ReturnDetails,
+
+        # The rights the finding is actually about. Supplied, a scope can hold an
+        # identity to the rights it has by default instead of waving it through on its
+        # SID - see DefaultRightHolders in $Script:SecurityScopes.
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [string[]]$Rights
     )
 
     process {
@@ -1350,6 +1357,41 @@ function Test-IsExpectedInScope {
         # Resolve name from SID if not already known
         if (-not $name -and $sid) {
             $name = ConvertFrom-SID -SID $sid
+        }
+
+        # ===== Check Default Right Holders (right-aware) =====
+        # Only when the caller said which rights it is asking about, and only when every
+        # one of them is a default for this identity. Holding anything beyond them is not
+        # covered by the entry and drops through to the checks below.
+        if ($sid -and $Rights -and $scopeDef.DefaultRightHolders) {
+            $holderKey = $null
+            if ($scopeDef.DefaultRightHolders.ContainsKey($sid)) {
+                $holderKey = $sid
+            } else {
+                $holderRID = Get-SIDRIDSuffix -SID $sid
+                if ($holderRID -and $scopeDef.DefaultRightHolders.ContainsKey($holderRID)) {
+                    $holderKey = $holderRID
+                }
+            }
+
+            if ($holderKey) {
+                $defaultRights = @($scopeDef.DefaultRightHolders[$holderKey])
+                $beyond = @(@($Rights) | Where-Object { $_ -and ($defaultRights -notcontains $_) })
+                if (@($beyond).Count -eq 0) {
+                    Write-Log "[Test-IsExpectedInScope] $sid holds only its default rights in scope '$Scope'"
+                    if ($ReturnDetails) {
+                        return [PSCustomObject]@{
+                            Severity = 'Expected'
+                            Reason = "Holds only the rights it has by default in scope '$Scope'"
+                            Identity = $Identity
+                            Scope = $Scope
+                            MatchedSID = $sid
+                        }
+                    }
+                    return 'Expected'
+                }
+                Write-Log "[Test-IsExpectedInScope] $sid holds $($beyond -join ', ') beyond its defaults in scope '$Scope'"
+            }
         }
 
         # ===== Check Static Expected SIDs =====

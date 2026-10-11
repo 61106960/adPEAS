@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 18:40:30
-    Version: 2.7.0+20261011-1840
+    Build: 2026-10-11 19:01:36
+    Version: 2.7.0+20261011-1901
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -2767,9 +2767,19 @@ $Script:SecurityScopes = @{
             'S-1-5-9'         # Enterprise Domain Controllers
         )
         ExpectedRIDSuffixes = @(
-            '-516',   # Domain Controllers
-            '-521'    # Read-only Domain Controllers
+            '-516'    # Domain Controllers
         )
+        # Read-only domain controllers, by the rights they hold by default and not by
+        # SID alone. An RODC needs DS-Replication-Get-Changes on every naming context it
+        # replicates, or it fails with error 8453 - that one is expected.
+        # DS-Replication-Get-Changes-All is not: Microsoft documents it as a
+        # misconfiguration on these groups, because it replicates passwords to the RODC
+        # as if it were a writable domain controller. Blanket-expected, as -521 was,
+        # that grant was accepted without a word.
+        DefaultRightHolders = @{
+            '-498' = @('DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-In-Filtered-Set')
+            '-521' = @('DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-In-Filtered-Set')
+        }
         AttentionBroadGroups = @()    # No broad groups allowed
     }
 
@@ -54814,7 +54824,14 @@ function Test-IsExpectedInScope {
         [string]$Scope,
 
         [Parameter(Mandatory=$false)]
-        [switch]$ReturnDetails
+        [switch]$ReturnDetails,
+
+        # The rights the finding is actually about. Supplied, a scope can hold an
+        # identity to the rights it has by default instead of waving it through on its
+        # SID - see DefaultRightHolders in $Script:SecurityScopes.
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [string[]]$Rights
     )
 
     process {
@@ -54870,6 +54887,41 @@ function Test-IsExpectedInScope {
         # Resolve name from SID if not already known
         if (-not $name -and $sid) {
             $name = ConvertFrom-SID -SID $sid
+        }
+
+        # ===== Check Default Right Holders (right-aware) =====
+        # Only when the caller said which rights it is asking about, and only when every
+        # one of them is a default for this identity. Holding anything beyond them is not
+        # covered by the entry and drops through to the checks below.
+        if ($sid -and $Rights -and $scopeDef.DefaultRightHolders) {
+            $holderKey = $null
+            if ($scopeDef.DefaultRightHolders.ContainsKey($sid)) {
+                $holderKey = $sid
+            } else {
+                $holderRID = Get-SIDRIDSuffix -SID $sid
+                if ($holderRID -and $scopeDef.DefaultRightHolders.ContainsKey($holderRID)) {
+                    $holderKey = $holderRID
+                }
+            }
+
+            if ($holderKey) {
+                $defaultRights = @($scopeDef.DefaultRightHolders[$holderKey])
+                $beyond = @(@($Rights) | Where-Object { $_ -and ($defaultRights -notcontains $_) })
+                if (@($beyond).Count -eq 0) {
+                    Write-Log "[Test-IsExpectedInScope] $sid holds only its default rights in scope '$Scope'"
+                    if ($ReturnDetails) {
+                        return [PSCustomObject]@{
+                            Severity = 'Expected'
+                            Reason = "Holds only the rights it has by default in scope '$Scope'"
+                            Identity = $Identity
+                            Scope = $Scope
+                            MatchedSID = $sid
+                        }
+                    }
+                    return 'Expected'
+                }
+                Write-Log "[Test-IsExpectedInScope] $sid holds $($beyond -join ', ') beyond its defaults in scope '$Scope'"
+            }
         }
 
         # ===== Check Static Expected SIDs =====
@@ -102954,6 +103006,13 @@ function Get-DangerousACLs {
                             SID = $sid
                             Name = $accountName
                             Rights = @($partialText)
+                            # The replication scope, not the domain-root one: this is
+                            # still a question about replication rights, and only that
+                            # scope knows who holds them by default.
+                            Scope = 'DCSync'
+                            # The right names behind the sentence above, so the scope can
+                            # hold the trustee to the rights it has by default.
+                            RawRights = @($rights | Select-Object -Unique)
                         }
                     }
 
@@ -103023,11 +103082,16 @@ function Get-DangerousACLs {
                     $accountName = $group.Group[0].Name
                     $allRights = @()
 
+                    $allRawRights = @()
+                    $itemScope = 'DomainRootACL'
                     foreach ($item in $group.Group) {
                         $allRights += $item.Rights
+                        if ($item.PSObject.Properties['RawRights']) { $allRawRights += @($item.RawRights) }
+                        if ($item.PSObject.Properties['Scope'] -and $item.Scope) { $itemScope = $item.Scope }
                     }
 
                     $allRights = $allRights | Select-Object -Unique
+                    $allRawRights = @($allRawRights | Select-Object -Unique)
                     $rightsDisplay = $allRights -join ', '
 
                     if (Test-TrusteeIsBroad -SID $sid) {
@@ -103039,7 +103103,7 @@ function Get-DangerousACLs {
 
                     if (-not $IncludePrivileged) {
                         # Use scope-based check for Domain Root ACL rights
-                        $scopeResult = Test-IsExpectedInScope -Identity $sid -Scope 'DomainRootACL' -ReturnDetails
+                        $scopeResult = Test-IsExpectedInScope -Identity $sid -Scope $itemScope -Rights $allRawRights -ReturnDetails
 
                         if ($scopeResult.Severity -eq 'Expected') {
                             Write-Log "[Get-DangerousACLs] Dangerous rights (expected): $accountName - $rightsDisplay - $($scopeResult.Reason)"
@@ -103054,7 +103118,7 @@ function Get-DangerousACLs {
                         $severity = $scopeResult.Severity
                     } else {
                         # -IncludePrivileged: Show ALL accounts, but mark privileged ones for yellow display
-                        $scopeResult = Test-IsExpectedInScope -Identity $sid -Scope 'DomainRootACL' -ReturnDetails
+                        $scopeResult = Test-IsExpectedInScope -Identity $sid -Scope $itemScope -Rights $allRawRights -ReturnDetails
                         $severity = $scopeResult.Severity
                         Write-Log "[Get-DangerousACLs] IncludePrivileged: Including $accountName ($sid) with severity $severity"
                     }
@@ -131775,7 +131839,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1840"
+$Script:adPEASVersion = "2.7.0+20261011-1901"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

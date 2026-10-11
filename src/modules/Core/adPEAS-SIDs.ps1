@@ -663,9 +663,19 @@ $Script:SecurityScopes = @{
             'S-1-5-9'         # Enterprise Domain Controllers
         )
         ExpectedRIDSuffixes = @(
-            '-516',   # Domain Controllers
-            '-521'    # Read-only Domain Controllers
+            '-516'    # Domain Controllers
         )
+        # Read-only domain controllers, by the rights they hold by default and not by
+        # SID alone. An RODC needs DS-Replication-Get-Changes on every naming context it
+        # replicates, or it fails with error 8453 - that one is expected.
+        # DS-Replication-Get-Changes-All is not: Microsoft documents it as a
+        # misconfiguration on these groups, because it replicates passwords to the RODC
+        # as if it were a writable domain controller. Blanket-expected, as -521 was,
+        # that grant was accepted without a word.
+        DefaultRightHolders = @{
+            '-498' = @('DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-In-Filtered-Set')
+            '-521' = @('DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-In-Filtered-Set')
+        }
         AttentionBroadGroups = @()    # No broad groups allowed
     }
 
