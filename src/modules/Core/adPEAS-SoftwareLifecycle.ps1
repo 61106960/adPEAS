@@ -65,10 +65,12 @@ $Script:WindowsLifecycle = @{
     # to a hint for a year - on an assumption about the customer that adPEAS cannot check.
     'Windows 10'           = @{ ExtendedEnd = '2025-10-14' }
 
-    # Windows 10 LTSC editions have their own, longer lifecycles.
-    # Identified by "LTSC" in operatingSystem AND the build in operatingSystemVersion.
-    'Windows 10 LTSC 2015' = @{ ExtendedEnd = '2025-10-14' }   # Build 10240 (1507)
-    'Windows 10 LTSC 2016' = @{ ExtendedEnd = '2026-10-13' }   # Build 14393 (1607)
+    # The Windows 10 long-term servicing editions have their own, longer lifecycles.
+    # Identified by "LTSB" or "LTSC" in operatingSystem AND the build in
+    # operatingSystemVersion. The first two are named LTSB here because that is what their
+    # operatingSystem string says - the channel was renamed to LTSC with the 2019 release.
+    'Windows 10 LTSB 2015' = @{ ExtendedEnd = '2025-10-14' }   # Build 10240 (1507)
+    'Windows 10 LTSB 2016' = @{ ExtendedEnd = '2026-10-13' }   # Build 14393 (1607)
     'Windows 10 LTSC 2019' = @{ ExtendedEnd = '2029-01-09' }   # Build 17763 (1809)
     'Windows 10 LTSC 2021' = @{ ExtendedEnd = '2027-01-12' }   # Build 19044 (21H2)
 
@@ -239,9 +241,15 @@ function Get-NormalizedOSName {
         '^Windows 8\.1'             { return 'Windows 8.1' }
         '^Windows 8[^.]'            { return 'Windows 8' }
         '^Windows 10' {
-            # Check for LTSC editions (have much longer support than SAC)
-            if ($OSName -match 'LTSC') {
-                # Map build number to LTSC release year
+            # Long-term servicing editions, which have much longer support than SAC.
+            # LTSB as well as LTSC: the two oldest releases shipped as LTSB and that is
+            # what they write into operatingSystem - "Windows 10 Enterprise 2016 LTSB".
+            # Matching 'LTSC' alone sent both of them to the generic Windows 10 row, which
+            # ended on 2025-10-14, so every 2016 LTSB machine was reported as out of
+            # support while Microsoft supports it until 2026-10-13. Microsoft renamed the
+            # channel to LTSC with the 2019 release; the build decides either way.
+            if ($OSName -match 'LTS[BC]') {
+                # Map build number to the release
                 $buildNumber = 0
                 if ($OSVersion -match '\((\d+)\)') {
                     $buildNumber = [int]$Matches[1]
@@ -250,11 +258,11 @@ function Get-NormalizedOSName {
                 if ($buildNumber -ge 17763 -and $buildNumber -lt 19044) { return 'Windows 10 LTSC 2019' }
                 # LTSC 2021: Build 19044 (version 21H2) - EOL 2027-01-12
                 if ($buildNumber -ge 19044) { return 'Windows 10 LTSC 2021' }
-                # LTSC 2016: Build 14393 (version 1607) - EOL 2026-10-13
-                if ($buildNumber -ge 14393 -and $buildNumber -lt 17763) { return 'Windows 10 LTSC 2016' }
-                # LTSC 2015: Build 10240 (version 1507) - EOL 2025-10-14
-                if ($buildNumber -ge 10240 -and $buildNumber -lt 14393) { return 'Windows 10 LTSC 2015' }
-                # Unknown LTSC build - fall through to generic Windows 10
+                # LTSB 2016: Build 14393 (version 1607) - EOL 2026-10-13
+                if ($buildNumber -ge 14393 -and $buildNumber -lt 17763) { return 'Windows 10 LTSB 2016' }
+                # LTSB 2015: Build 10240 (version 1507) - EOL 2025-10-14
+                if ($buildNumber -ge 10240 -and $buildNumber -lt 14393) { return 'Windows 10 LTSB 2015' }
+                # Unknown build - fall through to generic Windows 10
             }
             return 'Windows 10'
         }
