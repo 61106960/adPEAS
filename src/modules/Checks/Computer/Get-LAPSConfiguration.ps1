@@ -140,13 +140,43 @@ function New-LAPSGPOConfigObject {
         $obj | Add-Member -NotePropertyName 'DsrmPasswordBackup' -NotePropertyValue $dsrmText -Force
     }
 
-    if ($isNative -and $Metadata.ContainsKey('PasswordExpirationProtectionEnabled')) {
-        $expText = if ([int]$Metadata['PasswordExpirationProtectionEnabled'] -eq 0) {
+    # Windows LAPS calls it PasswordExpirationProtectionEnabled, Legacy LAPS
+    # PwdExpirationProtectionEnabled. Same setting, same consequence, and the row was
+    # gated on the native generation - so a legacy policy that turns it off said nothing.
+    $expirationField = if ($isNative) { 'PasswordExpirationProtectionEnabled' } else { 'PwdExpirationProtectionEnabled' }
+    if ($Metadata.ContainsKey($expirationField)) {
+        $expText = if ([int]$Metadata[$expirationField] -eq 0) {
             'Disabled - password max-age is not enforced'
         } else {
             'Enabled'
         }
         $obj | Add-Member -NotePropertyName 'ExpirationProtection' -NotePropertyValue $expText -Force
+    }
+
+    # The central switch of Legacy LAPS. 0 is LAPS switched off by policy while the schema
+    # and the computer attributes stay in place - every password the clients last wrote
+    # remains in the directory and stops rotating, and nothing else in the report says so.
+    if (-not $isNative -and $Metadata.ContainsKey('AdmPwdEnabled')) {
+        $stateText = if ([int]$Metadata['AdmPwdEnabled'] -eq 0) {
+            'Disabled - LAPS is switched off by this policy, and passwords already stored stop rotating'
+        } else {
+            'Enabled'
+        }
+        $obj | Add-Member -NotePropertyName 'lapsPolicyState' -NotePropertyValue $stateText -Force
+    }
+
+    # Windows LAPS can reset the password after the session that used it: 0 none,
+    # 1 reset, 3 reset and log the account off, 5 reset and reboot. With 0 a password
+    # that was used once stays valid until the rotation interval runs out.
+    if ($isNative -and $Metadata.ContainsKey('PostAuthenticationActions')) {
+        $postAuthText = switch ([int]$Metadata['PostAuthenticationActions']) {
+            0       { 'Disabled - the password is not reset after the session that used it' }
+            1       { 'Reset the password' }
+            3       { 'Reset the password and log off the managed account' }
+            5       { 'Reset the password and reboot' }
+            default { "Unknown ($($Metadata['PostAuthenticationActions']))" }
+        }
+        $obj | Add-Member -NotePropertyName 'PostAuthActions' -NotePropertyValue $postAuthText -Force
     }
 
     # GPO links - without these it is not visible where the settings actually apply.

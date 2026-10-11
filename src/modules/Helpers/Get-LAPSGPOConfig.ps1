@@ -161,7 +161,19 @@ function Get-LAPSGPOConfig {
 }
 
 # Legacy LAPS fields tracked from Software\Policies\Microsoft Services\AdmPwd
-$Script:LAPSLegacyMetadataFields = @('AdminAccountName', 'PasswordComplexity', 'PasswordLength', 'PasswordAgeDays')
+#
+# AdmPwdEnabled is the central switch of the whole product - the policy called "Enable
+# local admin password management". Without it in this list two things were invisible: a
+# GPO that sets only the switch and leaves every other value at its default, which is an
+# ordinary minimal configuration, left nothing behind for Get-LAPSMetadataFromPol to keep,
+# so $result.Legacy stayed $null and the report said LAPS was not managed by GPO at all;
+# and AdmPwdEnabled = 0, LAPS switched OFF by policy while the schema and the attributes
+# are in place, which is the most dangerous state Legacy LAPS has and appeared nowhere.
+#
+# PwdExpirationProtectionEnabled is the legacy name of the setting the native branch
+# already reports as ExpirationProtection.
+$Script:LAPSLegacyMetadataFields = @('AdminAccountName', 'PasswordComplexity', 'PasswordLength', 'PasswordAgeDays',
+    'AdmPwdEnabled', 'PwdExpirationProtectionEnabled')
 
 # Windows LAPS fields tracked from Software\Microsoft\Windows\CurrentVersion\Policies\LAPS
 # Reference: https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings
@@ -169,6 +181,8 @@ $Script:LAPSNativeMetadataFields = @(
     'AdministratorAccountName', 'PasswordComplexity', 'PasswordLength', 'PassphraseLength',
     'PasswordAgeDays', 'BackupDirectory', 'ADPasswordEncryptionEnabled',
     'ADPasswordEncryptionPrincipal', 'PasswordExpirationProtectionEnabled',
+    # 0 means the password that was just used stays valid until the next rotation
+    'PostAuthenticationActions',
     # The only LAPS setting that reaches a domain controller at all: a DC has no local SAM,
     # so what Windows LAPS can manage there is the DSRM account, and only when this is on
     'BackupDsrmPassword'

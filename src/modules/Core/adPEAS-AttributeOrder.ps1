@@ -198,10 +198,13 @@ $Script:PrimaryAttributes = @{
         # The unlinked statement first: a policy that reaches no computer makes every
         # setting below it moot, and the row carries the only card this check has for it.
         'lapsGpoNotLinked',
+        # Second for the same reason the unlinked statement is first: a policy that turns
+        # LAPS off makes every value below it moot.
+        'lapsPolicyState',
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'LAPSVersion', 'ManagedAccount',
         'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
         'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
-        'ExpirationProtection',
+        'ExpirationProtection', 'PostAuthActions',
         'LinkedOUs', 'GPOStatus'
     )
 
