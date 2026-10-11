@@ -4897,6 +4897,7 @@ Set-Acl -Path "AD:\$templateDN" -AclObject $acl
 	    Triggers = @(
 	        @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC2'; Severity = 'Finding' }
 	        @{ Attribute = 'AnyPurpose'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
+	        @{ Attribute = 'IsCA'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
 	        @{ Attribute = 'ExtendedKeyUsage'; Pattern = '2\.5\.29\.37\.0|Any Purpose'; Severity = 'Finding'; SeverityOnly = $true }
 	        @{ Attribute = 'ExtendedKeyUsage'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1|Certificate Request Agent'; Severity = 'Finding'; SeverityOnly = $true }
 	    )
@@ -67262,6 +67263,7 @@ function Get-ADCSTemplate {
 	            CertificateNameFlagDisplay = $coreTemplate.'msPKI-Certificate-Name-Flag'
 	            EnrollmentFlagDisplay = $coreTemplate.'msPKI-Enrollment-Flag'
 	            PrivateKeyFlagDisplay = $coreTemplate.'msPKI-Private-Key-Flag'
+	            TemplateFlags = if ($coreTemplate.flags) { [int]$coreTemplate.flags } else { 0 }
 	            RASignatureCount = if ($coreTemplate.'msPKI-RA-Signature') {
 	                [int]$coreTemplate.'msPKI-RA-Signature'
 	            } else { 0 }
@@ -67306,6 +67308,9 @@ function Get-ADCSTemplate {
 	        )
 	        $template | Add-Member -NotePropertyName 'AnyPurpose' -NotePropertyValue (
 	            (Test-EKUPresent -Eku $allEKUs -Oid '2.5.29.37.0') -or ($allEKUs.Count -eq 0)
+	        )
+	        $template | Add-Member -NotePropertyName 'IsCA' -NotePropertyValue (
+	            ($template.TemplateFlags -band 0x80) -ne 0
 	        )
 	        $template | Add-Member -NotePropertyName 'EnrollmentAgent' -NotePropertyValue (
 	            Test-EKUPresent -Eku $allEKUs -Oid '1.3.6.1.4.1.311.20.2.1'
@@ -68099,9 +68104,11 @@ function Get-ADCSVulnerabilities {
 	                    Reference = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc1"
 	                }
 	            }
-	            if ($template.AnyPurpose -and -not $allEnrollmentPrivileged) {
+	            if (($template.AnyPurpose -or $template.IsCA) -and -not $allEnrollmentPrivileged) {
 	                $isDangerous = $false
-	                if ($template.SchemaVersion -eq 1) {
+	                if ($template.IsCA) {
+	                    $isDangerous = $true
+	                } elseif ($template.SchemaVersion -eq 1) {
 	                    $isDangerous = [bool]$template.ClientAuthentication
 	                } else {
 	                    $isDangerous = $true
@@ -68109,10 +68116,18 @@ function Get-ADCSVulnerabilities {
 	                if ($isDangerous) {
 	                    $templateVulns += [PSCustomObject]@{
 	                        ESC = "ESC2"
-	                        Title = "Any Purpose EKU"
+	                        Title = $(if ($template.IsCA) { "SubCA Template (CT_FLAG_IS_CA)" } else { "Any Purpose EKU" })
 	                        Severity = "High"
-	                        Description = "Template can be used for any purpose including client authentication. Can be abused for privilege escalation."
-	                        Remediation = "Specify explicit EKUs instead of 'Any Purpose' (OID 2.5.29.37.0)."
+	                        Description = $(if ($template.IsCA) {
+	                            "Template issues CA certificates (CT_FLAG_IS_CA): the holder can sign certificates for any principal in the forest."
+	                        } else {
+	                            "Template can be used for any purpose including client authentication. Can be abused for privilege escalation."
+	                        })
+	                        Remediation = $(if ($template.IsCA) {
+	                            "Unpublish the template from every CA - clearing CT_FLAG_IS_CA is not a supported change on a V1 default template."
+	                        } else {
+	                            "Specify explicit EKUs instead of 'Any Purpose' (OID 2.5.29.37.0)."
+	                        })
 	                        Reference = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc2"
 	                    }
 	                }
@@ -81905,7 +81920,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-1014"
+$Script:adPEASVersion = "2.7.0+20261011-1033"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

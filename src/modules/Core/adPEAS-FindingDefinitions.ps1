@@ -1139,6 +1139,11 @@ Set-Acl -Path "AD:\$templateDN" -AclObject $acl
             # enrollment rights and no manager approval. Vulnerabilities carries the
             # verdict once the check has established both.
             @{ Attribute = 'AnyPurpose'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
+            # The other half of the same finding, and colour-only for the same reason:
+            # CT_FLAG_IS_CA makes the issued certificate a CA certificate, but ESC2 still
+            # needs enrollment rights before it is a finding. The card is named by the
+            # Vulnerabilities trigger above, which is why this one may be severity-only.
+            @{ Attribute = 'IsCA'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
             # ExtendedKeyUsage: Any Purpose OID or Certificate Request Agent OID = Finding
             @{ Attribute = 'ExtendedKeyUsage'; Pattern = '2\.5\.29\.37\.0|Any Purpose'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'ExtendedKeyUsage'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1|Certificate Request Agent'; Severity = 'Finding'; SeverityOnly = $true }

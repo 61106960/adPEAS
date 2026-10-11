@@ -193,6 +193,11 @@ function Get-ADCSTemplate {
                 EnrollmentFlagDisplay = $coreTemplate.'msPKI-Enrollment-Flag'
                 PrivateKeyFlagDisplay = $coreTemplate.'msPKI-Private-Key-Flag'
 
+                # The plain "flags" attribute. ConvertFrom-LDAPAttribute has an arm for
+                # each msPKI-*-Flag and none for this one, so it arrives as the raw LDAP
+                # value - the same idiom Get-CertificateAuthority and Get-DomainGPO use.
+                TemplateFlags = if ($coreTemplate.flags) { [int]$coreTemplate.flags } else { 0 }
+
                 # Signatures required (from Core)
                 RASignatureCount = if ($coreTemplate.'msPKI-RA-Signature') {
                     [int]$coreTemplate.'msPKI-RA-Signature'
@@ -268,6 +273,17 @@ function Get-ADCSTemplate {
             # AnyPurpose EKU
             $template | Add-Member -NotePropertyName 'AnyPurpose' -NotePropertyValue (
                 (Test-EKUPresent -Eku $allEKUs -Oid '2.5.29.37.0') -or ($allEKUs.Count -eq 0)
+            )
+
+            # IsCA (CT_FLAG_IS_CA, bit 0x80 of "flags" - MS-CRTD 2.4)
+            # A certificate issued from a template carrying this flag is a CA
+            # certificate: its holder signs certificates for anybody. ESC2's write-up has
+            # named this case since it was written - the title says "Any Purpose or SubCA
+            # Certificate Template", one of its remediation commands reads this exact
+            # bit, and the CertificateTemplate ObjectType lists it under WhatWeCheck
+            # - and nothing anywhere evaluated it.
+            $template | Add-Member -NotePropertyName 'IsCA' -NotePropertyValue (
+                ($template.TemplateFlags -band 0x80) -ne 0
             )
 
             # EnrollmentAgent (Certificate Request Agent EKU)

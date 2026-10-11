@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 10:14:33
-    Version: 2.7.0+20261011-1014
+    Build: 2026-10-11 10:33:58
+    Version: 2.7.0+20261011-1033
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -8880,6 +8880,11 @@ Set-Acl -Path "AD:\$templateDN" -AclObject $acl
             # enrollment rights and no manager approval. Vulnerabilities carries the
             # verdict once the check has established both.
             @{ Attribute = 'AnyPurpose'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
+            # The other half of the same finding, and colour-only for the same reason:
+            # CT_FLAG_IS_CA makes the issued certificate a CA certificate, but ESC2 still
+            # needs enrollment rights before it is a finding. The card is named by the
+            # Vulnerabilities trigger above, which is why this one may be severity-only.
+            @{ Attribute = 'IsCA'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
             # ExtendedKeyUsage: Any Purpose OID or Certificate Request Agent OID = Finding
             @{ Attribute = 'ExtendedKeyUsage'; Pattern = '2\.5\.29\.37\.0|Any Purpose'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'ExtendedKeyUsage'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1|Certificate Request Agent'; Severity = 'Finding'; SeverityOnly = $true }
@@ -110582,6 +110587,11 @@ function Get-ADCSTemplate {
                 EnrollmentFlagDisplay = $coreTemplate.'msPKI-Enrollment-Flag'
                 PrivateKeyFlagDisplay = $coreTemplate.'msPKI-Private-Key-Flag'
 
+                # The plain "flags" attribute. ConvertFrom-LDAPAttribute has an arm for
+                # each msPKI-*-Flag and none for this one, so it arrives as the raw LDAP
+                # value - the same idiom Get-CertificateAuthority and Get-DomainGPO use.
+                TemplateFlags = if ($coreTemplate.flags) { [int]$coreTemplate.flags } else { 0 }
+
                 # Signatures required (from Core)
                 RASignatureCount = if ($coreTemplate.'msPKI-RA-Signature') {
                     [int]$coreTemplate.'msPKI-RA-Signature'
@@ -110657,6 +110667,17 @@ function Get-ADCSTemplate {
             # AnyPurpose EKU
             $template | Add-Member -NotePropertyName 'AnyPurpose' -NotePropertyValue (
                 (Test-EKUPresent -Eku $allEKUs -Oid '2.5.29.37.0') -or ($allEKUs.Count -eq 0)
+            )
+
+            # IsCA (CT_FLAG_IS_CA, bit 0x80 of "flags" - MS-CRTD 2.4)
+            # A certificate issued from a template carrying this flag is a CA
+            # certificate: its holder signs certificates for anybody. ESC2's write-up has
+            # named this case since it was written - the title says "Any Purpose or SubCA
+            # Certificate Template", one of its remediation commands reads this exact
+            # bit, and the CertificateTemplate ObjectType lists it under WhatWeCheck
+            # - and nothing anywhere evaluated it.
+            $template | Add-Member -NotePropertyName 'IsCA' -NotePropertyValue (
+                ($template.TemplateFlags -band 0x80) -ne 0
             )
 
             # EnrollmentAgent (Certificate Request Agent EKU)
@@ -110836,7 +110857,7 @@ function Get-ADCSVulnerabilities {
     - PKI Trust Infrastructure: Root CAs, NTAuth Store, AIA CAs
     - CA Certificate Security: Weak algorithms, short keys, expired certificates
     - ESC1: Client Authentication + Enrollee-Supplied Subject
-    - ESC2: Any Purpose EKU
+    - ESC2: Any Purpose EKU, or the SubCA flag (CT_FLAG_IS_CA)
     - ESC3: Certificate Request Agent EKU (condition 1) and on-behalf-of target templates (condition 2)
     - ESC4: Dangerous Template Permissions
     - ESC5: Vulnerable PKI Container Permissions
@@ -111975,15 +111996,22 @@ function Get-ADCSVulnerabilities {
                     }
                 }
 
-                # ===== ESC2: Any Purpose EKU =====
+                # ===== ESC2: Any Purpose EKU or SubCA (CT_FLAG_IS_CA) =====
                 # Only flag if non-privileged users can enroll
-                if ($template.AnyPurpose -and -not $allEnrollmentPrivileged) {
+                if (($template.AnyPurpose -or $template.IsCA) -and -not $allEnrollmentPrivileged) {
                     # Check if it's the dangerous variant (schema v1 needs client auth to matter)
                     # A required RA co-signature no longer suppresses the finding here: it is a
                     # barrier, not a fix, and is accounted for centrally by the ra_signature_gated
                     # trigger so that ESC1/2/3/9/13/15 all treat it the same way.
                     $isDangerous = $false
-                    if ($template.SchemaVersion -eq 1) {
+                    if ($template.IsCA) {
+                        # CT_FLAG_IS_CA does not depend on an EKU at all: the certificate
+                        # issued from the template signs other certificates, so neither the
+                        # schema version nor the client-authentication EKU is relevant.
+                        # Gating this on ClientAuthentication the way the Any Purpose branch
+                        # has to would drop every V1 SubCA template, which is most of them.
+                        $isDangerous = $true
+                    } elseif ($template.SchemaVersion -eq 1) {
                         $isDangerous = [bool]$template.ClientAuthentication
                     } else {
                         $isDangerous = $true
@@ -111992,10 +112020,18 @@ function Get-ADCSVulnerabilities {
                     if ($isDangerous) {
                         $templateVulns += [PSCustomObject]@{
                             ESC = "ESC2"
-                            Title = "Any Purpose EKU"
+                            Title = $(if ($template.IsCA) { "SubCA Template (CT_FLAG_IS_CA)" } else { "Any Purpose EKU" })
                             Severity = "High"
-                            Description = "Template can be used for any purpose including client authentication. Can be abused for privilege escalation."
-                            Remediation = "Specify explicit EKUs instead of 'Any Purpose' (OID 2.5.29.37.0)."
+                            Description = $(if ($template.IsCA) {
+                                "Template issues CA certificates (CT_FLAG_IS_CA): the holder can sign certificates for any principal in the forest."
+                            } else {
+                                "Template can be used for any purpose including client authentication. Can be abused for privilege escalation."
+                            })
+                            Remediation = $(if ($template.IsCA) {
+                                "Unpublish the template from every CA - clearing CT_FLAG_IS_CA is not a supported change on a V1 default template."
+                            } else {
+                                "Specify explicit EKUs instead of 'Any Purpose' (OID 2.5.29.37.0)."
+                            })
                             Reference = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc2"
                         }
                     }
@@ -130391,7 +130427,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1014"
+$Script:adPEASVersion = "2.7.0+20261011-1033"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
