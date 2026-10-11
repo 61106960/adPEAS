@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 10:55:55
-    Version: 2.7.0+20261011-1055
+    Build: 2026-10-11 11:12:41
+    Version: 2.7.0+20261011-1112
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -10522,11 +10522,98 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
     }
 
+    'DANGEROUS_ACL_REPLICATION_NO_SECRETS' = @{
+        Title = "Replication Rights Without Secrets (One Right Short of DCSync)"
+        Risk = "Finding"
+        BaseScore = 49
+        Description = "A principal holds DS-Replication-Get-Changes on the domain but not DS-Replication-Get-Changes-All. That is not DCSync: the secret attributes stay out of reach. It is still a replication of the entire directory - every non-secret attribute of every object, and every security descriptor with it - and the missing half is a single ACE on the same object."
+        Impact = @(
+            "Replicates every non-secret attribute of every object in the domain, in one legitimate-looking operation"
+            "That includes every security descriptor, which is the whole delegation model handed over for offline analysis"
+            "Also the attributes that carry credentials without being secrets - descriptions holding passwords, userPassword, unixUserPassword, LAPS attributes where the confidential flag is not set"
+            "The second half is one ACE away: a principal that can write the DACL of the domain object, or that is trusted to manage replication, completes it"
+        )
+        Attack = @(
+            "1. Attacker controls a principal holding only DS-Replication-Get-Changes"
+            "2. Replicates the naming context and takes every non-secret attribute and descriptor"
+            "3. Analyses the descriptors offline for a path to the second replication right"
+            "4. Adds DS-Replication-Get-Changes-All, or finds a principal that already has it, and runs a full DCSync"
+        )
+        Remediation = @(
+            "Remove the right unless the principal is a domain controller or a replication service that genuinely needs it"
+            "Treat a partial grant as the same class of exposure as the pair - the difference is one ACE, not one tier"
+            "Audit who can write the DACL of the domain object, since that is the shortest route to the missing half"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every principal holding either replication right on the domain object"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ObjectType -in @("1131f6aa-9c07-11d1-f79f-00c04fc2dcd2","1131f6ad-9c07-11d1-f79f-00c04fc2dcd2") } | Format-Table IdentityReference,ObjectType,AccessControlType -AutoSize'
+            }
+            @{
+                Description = "Remove the replication right from a specific principal"
+                Command = '$acl = Get-Acl -Path "AD:DC=DOMAIN,DC=COM"; $ace = $acl.Access | Where-Object { $_.IdentityReference -eq "DOMAIN\USER" -and $_.ObjectType -eq "1131f6aa-9c07-11d1-f79f-00c04fc2dcd2" }; $ace | ForEach-Object { $acl.RemoveAccessRule($_) }; Set-Acl -Path "AD:DC=DOMAIN,DC=COM" -AclObject $acl'
+            }
+        )
+        References = @(
+            @{ Title = "DS-Replication-Get-Changes - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-ds-replication-get-changes" }
+            @{ Title = "DCSync - BloodHound"; Url = "https://bloodhound.specterops.io/resources/edges/dc-sync" }
+        )
+        Tools = @("PowerView", "BloodHound", "Mimikatz")
+        MITRE = "T1003.006"
+        Triggers = @(
+            # Measured before this definition existed: the partial text contains
+            # "DS-Replication-Get-Changes", so it matched DANGEROUS_ACL_DCSYNC at score 100
+            # and the row opened the full DCSync write-up - credential theft the holder
+            # cannot perform, with a remediation for rights it does not have. BaseScore
+            # cannot settle it, because a partial card would have to outrank the pair; the
+            # pair's trigger carries an ExcludePattern for this wording instead.
+            @{ Attribute = 'dangerousRights'; Pattern = 'replicates the directory except secrets'; Severity = 'Finding' }
+        )
+    }
+
+    'DANGEROUS_ACL_REPLICATION_INERT_HALF' = @{
+        Title = "Replication Right Inert Without Its Partner"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A principal holds DS-Replication-Get-Changes-All, or the filtered-set variant, without DS-Replication-Get-Changes. On its own that grants nothing: DRSGetNCChanges needs Get-Changes to replicate at all, and Get-Changes-All only widens what a replication may include. It is reported because the missing half is one ACE on the same object, and because a grant nobody meant to make is worth seeing before somebody completes it."
+        Impact = @(
+            "No access on its own - the right cannot be exercised without DS-Replication-Get-Changes"
+            "Adding the missing right is a single ACE on the domain object, and it turns this into full DCSync"
+            "A partial grant is usually the remains of a migration or a monitoring tool, so nobody is watching it"
+            "It will not appear in a DCSync audit, because the pair is what such an audit looks for"
+        )
+        Attack = @(
+            "1. Attacker finds a principal holding only DS-Replication-Get-Changes-All"
+            "2. Looks for a way to add DS-Replication-Get-Changes to the same principal, or to reach a principal that has it"
+            "3. Completes the pair with one ACE"
+            "4. Runs a full DCSync"
+        )
+        Remediation = @(
+            "Remove the right - a principal that cannot use it does not need it"
+            "Establish where it came from, because the same process may have granted the other half elsewhere"
+            "Do not treat it as harmless on the grounds that it is inert today"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the principals holding Get-Changes-All or the filtered-set right"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ObjectType -in @("1131f6ad-9c07-11d1-f79f-00c04fc2dcd2","89e95b76-444d-4c62-991a-0facbeda640c") } | Format-Table IdentityReference,ObjectType,AccessControlType -AutoSize'
+            }
+        )
+        References = @(
+            @{ Title = "DS-Replication-Get-Changes-All - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-ds-replication-get-changes-all" }
+            @{ Title = "IDL_DRSGetNCChanges - MS-DRSR"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-drsr/b63730ac-614c-431c-9d57-8d8f8d37a4bd" }
+        )
+        Tools = @("PowerView", "BloodHound")
+        MITRE = "T1003.006"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'inert without DS-Replication-Get-Changes'; Severity = 'Hint' }
+        )
+    }
     'DANGEROUS_ACL_DCSYNC' = @{
         Title = "DCSync Rights (Replication Permissions)"
         Risk = "Finding"
         BaseScore = 100
-        Description = "A non-standard principal has 'Replicating Directory Changes' and/or 'Replicating Directory Changes All' permissions on the domain. These permissions allow performing DCSync attacks to extract all domain credentials."
+        Description = "A non-standard principal has both 'Replicating Directory Changes' and 'Replicating Directory Changes All' permissions on the domain. DRSGetNCChanges needs the pair: Get-Changes to replicate at all, Get-Changes-All to include the secret attributes. These permissions allow performing DCSync attacks to extract all domain credentials."
         Impact = @(
             "Can extract password hashes for ALL domain accounts"
             "Includes the krbtgt hash for Golden Ticket attacks"
@@ -10564,7 +10651,12 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Tools = @("Mimikatz", "Impacket", "DSInternals")
         MITRE = "T1003.006"
         Triggers = @(
-            @{ Attribute = 'dangerousRights'; Pattern = 'DS-Replication-Get-Changes|Replicating Directory Changes|DCSync'; Severity = 'Finding' }
+            # A trustee holding only one of the two replication rights is reported by
+            # Get-DangerousACLs with a text that says so, and that text necessarily
+            # contains DS-Replication-Get-Changes - so it matched here, at score 100,
+            # and the row opened the full DCSync write-up. ExcludePattern is checked
+            # before Pattern, so the two partial cards below get their own rows.
+            @{ Attribute = 'dangerousRights'; Pattern = 'DS-Replication-Get-Changes|Replicating Directory Changes|DCSync'; ExcludePattern = 'short of DCSync'; Severity = 'Finding' }
             @{ Attribute = 'DangerousPermissions'; Pattern = 'DS-Replication-Get-Changes|Replicating Directory Changes|DCSync'; Severity = 'Finding' }
         )
     }
@@ -130707,7 +130799,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1055"
+$Script:adPEASVersion = "2.7.0+20261011-1112"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
