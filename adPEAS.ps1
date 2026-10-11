@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 12:53:03
-    Version: 2.7.0+20261011-1253
+    Build: 2026-10-11 13:18:08
+    Version: 2.7.0+20261011-1318
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -13409,6 +13409,53 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
         )
     }
 
+    'LAPS_ENCRYPTED_READ_NO_DECRYPTOR' = @{
+        Title = "Read Access to the Encrypted LAPS Password"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A principal can read msLAPS-EncryptedPassword on computers in this OU, and nothing else that carries the password. What that right returns is a blob: Windows LAPS encrypts the password for the principal named in ADPasswordEncryptionPrincipal, and only that principal can open it through NCryptUnprotectSecret. A read of the attribute alone is therefore not a password read - which is the whole point of the encrypted generation."
+        Impact = @(
+            "The blob cannot be opened without being the configured decryptor, so this is not a password read today"
+            "It becomes one the moment the principal is added to the decryptor group, which is a group membership rather than an ACL change"
+            "The delegation is still wrong: no account needs to read an attribute it cannot use"
+            "Reported as a hint and not as a finding, because telling the reader otherwise teaches them the encryption buys nothing"
+        )
+        Attack = @(
+            "1. Attacker controls a principal that can read msLAPS-EncryptedPassword"
+            "2. Collects the blobs, which is quiet and needs no further right"
+            "3. Looks for a path into the group named in ADPasswordEncryptionPrincipal, by default Domain Admins"
+            "4. Opens every blob collected earlier as soon as that path exists"
+        )
+        Remediation = @(
+            "Remove the read right - a principal that cannot decrypt has no use for the attribute"
+            "Confirm who ADPasswordEncryptionPrincipal names, and keep that group as small as the password itself deserves"
+            "Prefer this generation over the legacy plaintext attribute: a read right on ms-Mcs-AdmPwd is the password"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who can read the encrypted LAPS password on an OU"
+                Command = '(Get-Acl -Path "AD:OU=TARGET_OU,DC=DOMAIN,DC=COM").Access | Where-Object { $_.ObjectType -eq "0bf205b5-8bcb-4943-8413-52e492d7cf63" } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize'
+            }
+            @{
+                Description = "Read the configured decryptor from the LAPS policy"
+                Command = 'Get-ADObject -LDAPFilter "(objectClass=groupPolicyContainer)" -Properties displayName | ForEach-Object { $_.displayName }  # then inspect ADPasswordEncryptionPrincipal in the Windows LAPS policy'
+            }
+        )
+        References = @(
+            @{ Title = "Windows LAPS password encryption - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview" }
+            @{ Title = "NCryptUnprotectSecret - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/api/ncryptprotect/nf-ncryptprotect-ncryptunprotectsecret" }
+        )
+        Tools = @("LAPSToolkit", "PowerView")
+        MITRE = "T1552.001"
+        Triggers = @(
+            # LAPS_PASSWORD_READ_ACCESS matches the words "LAPS Password Read", which this
+            # text necessarily contains, and it scores 45 against this one's 25 - so that
+            # card would have claimed the row and described a password read the holder
+            # cannot perform. Its trigger carries an ExcludePattern for this wording
+            # instead, the same way the DCSync card gives up the partial replication grant.
+            @{ Attribute = 'dangerousRights'; Pattern = 'needs the authorized decryptor'; Severity = 'Hint' }
+        )
+    }
     'LAPS_PASSWORD_READ_ACCESS' = @{
         Title = "LAPS Password Read Permissions"
         Risk = "Finding"
@@ -13459,7 +13506,12 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
         Tools = @("LAPSToolkit", "PowerView", "Get-LapsADPassword")
         MITRE = "T1552.004"
         Triggers = @(
-            @{ Attribute = 'dangerousRights'; Pattern = 'LAPS Password Read'; Severity = 'Finding' }
+            # The encrypted attribute read alone is reported with a wording that
+            # contains these words and is not a password read: the blob needs the
+            # decryptor from the policy. ExcludePattern is checked before Pattern, so
+            # LAPS_ENCRYPTED_READ_NO_DECRYPTOR gets that row - the same way the DCSync
+            # card gives up a partial replication grant.
+            @{ Attribute = 'dangerousRights'; Pattern = 'LAPS Password Read'; ExcludePattern = 'needs the authorized decryptor'; Severity = 'Finding' }
             @{ Attribute = 'DangerousPermissions'; Pattern = 'LAPS Password Read'; Severity = 'Finding' }
         )
     }
@@ -105045,20 +105097,41 @@ function Get-LAPSPermissions {
                             # Match Windows LAPS (msLAPS-*) - includes EncryptedPassword, EncryptedPasswordHistory, Password, etc.
                             # Also match "All Properties" which covers all LAPS types
                             elseif ($finding.Right -match 'msLAPS-' -or $finding.Right -match 'All Properties') {
-                                if ($sid -notin @($nativeReaders | ForEach-Object { $_.SID })) {
+                                # The encrypted attribute is kept apart from the
+                                # plaintext one. Reading msLAPS-EncryptedPassword
+                                # returns a blob that only the principal named in
+                                # ADPasswordEncryptionPrincipal can open through
+                                # NCryptUnprotectSecret, so it is not a password read -
+                                # and reporting it as one teaches the reader that the
+                                # encrypted generation buys nothing.
+                                $thisGeneration = if ($finding.Right -match 'All Properties') {
+                                    # A read on every property covers whichever
+                                    # attribute the machine actually carries.
+                                    'Legacy and Windows LAPS'
+                                } elseif ($finding.Right -match 'msLAPS-Encrypted') {
+                                    'Windows LAPS (encrypted)'
+                                } else {
+                                    'Windows LAPS'
+                                }
+
+                                $existingNative = @($nativeReaders | Where-Object { $_.SID -eq $sid })[0]
+                                if (-not $existingNative) {
                                     $nativeReaders += [PSCustomObject]@{
                                         Principal = $principal
                                         SID = $sid
                                         Severity = $severity
                                         BlockedByConfidentialFlag = $blockedByConfidentialFlag
-                                        # A read on every property covers whichever
-                                        # attribute the machine actually carries.
-                                        Generation = if ($finding.Right -match 'All Properties') {
-                                            'Legacy and Windows LAPS'
-                                        } else {
-                                            'Windows LAPS'
-                                        }
+                                        Generation = $thisGeneration
                                     }
+                                } elseif ($existingNative.Generation -eq 'Windows LAPS (encrypted)' -and
+                                          $thisGeneration -ne 'Windows LAPS (encrypted)') {
+                                    # A plaintext or all-properties read outranks a blob
+                                    # read: the same principal gets the password without
+                                    # the decryptor. Upgrading in place rather than adding
+                                    # a second entry keeps one row per principal, which is
+                                    # what this check reports - and stops the order the
+                                    # findings happen to arrive in deciding the verdict.
+                                    $existingNative.Generation = $thisGeneration
                                 }
                             }
                         }
@@ -105140,6 +105213,19 @@ function Get-LAPSPermissions {
 
                 $generations = @($ReaderInfo.Generations)
                 if ($generations.Count -eq 0) { return 'LAPS Password Read' }
+
+                # Only the encrypted attribute, and nothing else that carries the
+                # password: the right returns a blob rather than a password, so the
+                # label says so and a hint hangs off this wording instead of the
+                # password-read finding. Same shape as the confidential-flag case
+                # above. If the principal also reads a plaintext attribute the
+                # generation list holds that too, and this branch is not taken.
+                $encryptedOnly = ($generations.Count -eq 1) -and
+                                 ($generations -contains 'Windows LAPS (encrypted)')
+                if ($encryptedOnly) {
+                    return 'LAPS Password Read (Windows LAPS, encrypted) - needs the authorized decryptor named in ADPasswordEncryptionPrincipal to open the blob'
+                }
+
                 return ('LAPS Password Read (' + (($generations | Sort-Object) -join ', ') + ')')
             }
 
@@ -131150,7 +131236,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1253"
+$Script:adPEASVersion = "2.7.0+20261011-1318"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

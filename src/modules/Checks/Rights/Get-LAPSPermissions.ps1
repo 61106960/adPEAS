@@ -205,20 +205,41 @@ function Get-LAPSPermissions {
                             # Match Windows LAPS (msLAPS-*) - includes EncryptedPassword, EncryptedPasswordHistory, Password, etc.
                             # Also match "All Properties" which covers all LAPS types
                             elseif ($finding.Right -match 'msLAPS-' -or $finding.Right -match 'All Properties') {
-                                if ($sid -notin @($nativeReaders | ForEach-Object { $_.SID })) {
+                                # The encrypted attribute is kept apart from the
+                                # plaintext one. Reading msLAPS-EncryptedPassword
+                                # returns a blob that only the principal named in
+                                # ADPasswordEncryptionPrincipal can open through
+                                # NCryptUnprotectSecret, so it is not a password read -
+                                # and reporting it as one teaches the reader that the
+                                # encrypted generation buys nothing.
+                                $thisGeneration = if ($finding.Right -match 'All Properties') {
+                                    # A read on every property covers whichever
+                                    # attribute the machine actually carries.
+                                    'Legacy and Windows LAPS'
+                                } elseif ($finding.Right -match 'msLAPS-Encrypted') {
+                                    'Windows LAPS (encrypted)'
+                                } else {
+                                    'Windows LAPS'
+                                }
+
+                                $existingNative = @($nativeReaders | Where-Object { $_.SID -eq $sid })[0]
+                                if (-not $existingNative) {
                                     $nativeReaders += [PSCustomObject]@{
                                         Principal = $principal
                                         SID = $sid
                                         Severity = $severity
                                         BlockedByConfidentialFlag = $blockedByConfidentialFlag
-                                        # A read on every property covers whichever
-                                        # attribute the machine actually carries.
-                                        Generation = if ($finding.Right -match 'All Properties') {
-                                            'Legacy and Windows LAPS'
-                                        } else {
-                                            'Windows LAPS'
-                                        }
+                                        Generation = $thisGeneration
                                     }
+                                } elseif ($existingNative.Generation -eq 'Windows LAPS (encrypted)' -and
+                                          $thisGeneration -ne 'Windows LAPS (encrypted)') {
+                                    # A plaintext or all-properties read outranks a blob
+                                    # read: the same principal gets the password without
+                                    # the decryptor. Upgrading in place rather than adding
+                                    # a second entry keeps one row per principal, which is
+                                    # what this check reports - and stops the order the
+                                    # findings happen to arrive in deciding the verdict.
+                                    $existingNative.Generation = $thisGeneration
                                 }
                             }
                         }
@@ -300,6 +321,19 @@ function Get-LAPSPermissions {
 
                 $generations = @($ReaderInfo.Generations)
                 if ($generations.Count -eq 0) { return 'LAPS Password Read' }
+
+                # Only the encrypted attribute, and nothing else that carries the
+                # password: the right returns a blob rather than a password, so the
+                # label says so and a hint hangs off this wording instead of the
+                # password-read finding. Same shape as the confidential-flag case
+                # above. If the principal also reads a plaintext attribute the
+                # generation list holds that too, and this branch is not taken.
+                $encryptedOnly = ($generations.Count -eq 1) -and
+                                 ($generations -contains 'Windows LAPS (encrypted)')
+                if ($encryptedOnly) {
+                    return 'LAPS Password Read (Windows LAPS, encrypted) - needs the authorized decryptor named in ADPasswordEncryptionPrincipal to open the blob'
+                }
+
                 return ('LAPS Password Read (' + (($generations | Sort-Object) -join ', ') + ')')
             }
 
