@@ -500,24 +500,48 @@ function Convert-OwnerToRenderValues {
         }
     }
 
-    # Non-default owner - Finding (red)
+    # Non-default owner.
+    #
     # The two 'Owner' triggers are Context-bound (NonDefaultOwner for computers,
     # NonDefaultUserOwner for users). Without passing a context, Get-TriggerMatch skipped
     # both and the hardcoded fallback below gave every USER with a non-default owner the
     # computer card, complete with the RBCD attack path, while NON_DEFAULT_USER_OWNERS and
     # its password-reset path were dead code.
+    #
+    # The severity used to be the literal 'Finding' while every other statement about this
+    # row said Hint: both context-bound triggers carry Severity = 'Hint', the SeverityOnly
+    # trigger of NON_DEFAULT_OWNER does too, and NON_DEFAULT_COMPUTER_OWNERS and
+    # NON_DEFAULT_USER_OWNERS are both Risk = "Hint". Four statements, two meanings - and
+    # the red row was the one a reader saw. One question now answers both halves, so the
+    # row renders in the class its own definition assigns it.
     $ownerContext = if ($Context.IsComputer) { 'NonDefaultOwner' } else { 'NonDefaultUserOwner' }
-    $findingId = Get-FindingIdForAttribute -Name 'Owner' -Value $Value -Context $ownerContext
+    $ownerMatch = Get-TriggerMatch -Name 'Owner' -Value $Value -Context $ownerContext
+    $findingId = $null
+    $ownerSeverity = $null
+    if ($ownerMatch) {
+        $findingId = $ownerMatch.FindingId
+        if ($ownerMatch.Severity -and $ownerMatch.Severity -ne 'Standard') {
+            $ownerSeverity = [string]$ownerMatch.Severity
+        }
+    }
     if (-not $findingId) {
         $findingId = if ($Context.IsComputer) { 'NON_DEFAULT_COMPUTER_OWNERS' } else { 'NON_DEFAULT_USER_OWNERS' }
+    }
+    if (-not $ownerSeverity) {
+        # No trigger matched at all - then the card that carries the row decides, rather
+        # than a class chosen here. Hint only if even that is unreadable.
+        $ownerSeverity = 'Hint'
+        if ($Script:FindingDefinitions.ContainsKey($findingId) -and $Script:FindingDefinitions[$findingId].Risk) {
+            $ownerSeverity = [string]$Script:FindingDefinitions[$findingId].Risk
+        }
     }
     return @{
         DisplayName         = 'Owner (non-default)'
         RowType             = 'SingleValue'
-        OverallSeverity     = 'Finding'
+        OverallSeverity     = $ownerSeverity
         ForceAttributeClass = $true
         Values              = @(
-            New-RenderValue -Display ([string]$Value) -Severity 'Finding' -FindingId $findingId -RawValue $Value
+            New-RenderValue -Display ([string]$Value) -Severity $ownerSeverity -FindingId $findingId -RawValue $Value
         )
     }
 }

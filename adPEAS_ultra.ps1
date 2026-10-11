@@ -7708,6 +7708,9 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
 	    MITRE = "T1078"
 	    Triggers = @(
 	        @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Severity = 'Finding' }
+	        @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^EMPTY'; Severity = 'Finding' }
+	        @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^PRIVILEGED'; Severity = 'Finding' }
+	        @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Exempt'; Severity = 'Hint' }
 	    )
 	}
 	'INTERDOMAIN_TRUST_ACCOUNT' = @{
@@ -14355,6 +14358,86 @@ foreach ($oid in $linkedOIDs) {
 	        @{ Attribute = 'affectedComputerCount'; Custom = 'affected_computers_gt_0'; Severity = 'Hint' }
 	    )
 	}
+	'GMSA_ROTATION_INTERVAL_LONG' = @{
+	    Title = "gMSA Password Rotates Rarely"
+	    Risk = "Hint"
+	    BaseScore = 20
+	    Description = "This group managed service account rotates its password less often than every 90 days. The point of a gMSA is that the password is long, random and changed by the directory without anybody holding it - a long interval gives that up gradually, because a password recovered once stays valid until the next rotation. The interval is therefore the upper bound on how long a single theft keeps paying. Microsoft's default is 30 days. The value cannot be changed afterwards: msDS-ManagedPasswordInterval is set when the account is created and is read-only from then on, so a different interval means creating the account again."
+	    Impact = @(
+	        "A password read from the directory stays valid until the next rotation"
+	        "The interval is the upper bound on the useful life of one theft"
+	        "An interval far above the default is usually unintentional - it was typed once at creation"
+	    )
+	    Attack = @(
+	        "1. Attacker retrieves msDS-ManagedPassword for the gMSA (see the password access findings)"
+	        "2. Derives the Kerberos keys from the blob and authenticates as the service"
+	        "3. Keeps doing so until the interval expires - with 365 days, for up to a year"
+	    )
+	    Remediation = @(
+	        "Create the account again with the default interval; msDS-ManagedPasswordInterval cannot be changed on an existing gMSA"
+	        "Check who may retrieve the password while the long interval stands - those principals are the exposure"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show the rotation interval of every gMSA in the domain"
+	            Command = "Get-ADServiceAccount -Filter * -Properties msDS-ManagedPasswordInterval | Select-Object Name,msDS-ManagedPasswordInterval"
+	        }
+	        @{
+	            Description = "Create a replacement with the default 30-day interval"
+	            Command = "New-ADServiceAccount -Name 'GMSA_NAME' -DNSHostName 'GMSA_NAME.contoso.com' -ManagedPasswordIntervalInDays 30"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Group Managed Service Accounts Overview"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/group-managed-service-accounts/group-managed-service-accounts-overview" }
+	        @{ Title = "msDS-ManagedPasswordInterval"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-msds-managedpasswordinterval" }
+	    )
+	    Tools = @("PowerShell", "GMSAPasswordReader")
+	    Triggers = @(
+	        @{ Attribute = 'msDS-ManagedPasswordInterval'; Custom = 'gmsa_interval_gt_90'; Severity = 'Hint' }
+	    )
+	}
+	'GMSA_MEMBERSHIP_OWNER' = @{
+	    Title = "gMSA Password Access Descriptor Owned by a Non-Privileged Principal"
+	    Risk = "Finding"
+	    BaseScore = 60
+	    Description = "msDS-GroupMSAMembership is a security descriptor, and who may retrieve this gMSA's password is the DACL inside it. The owner of a security descriptor may rewrite that DACL whether or not the DACL grants it anything - so this principal can add itself as a password reader and then read msDS-ManagedPassword. It does not appear among the readers today, which is why an analysis that looks only at the ACEs reports the account as properly restricted."
+	    Impact = @(
+	        "The owner can grant itself password retrieval and remove the entry afterwards"
+	        "It holds that right without appearing in any list of password readers"
+	        "The gMSA's Kerberos keys follow from the password blob, so this is full control of the service identity"
+	        "Where the gMSA is privileged, this is a path into that privilege"
+	    )
+	    Attack = @(
+	        "1. Attacker controls the owner of msDS-GroupMSAMembership"
+	        "2. Rewrites the descriptor to grant itself ReadProperty"
+	        "3. Reads msDS-ManagedPassword and derives the account's Kerberos keys"
+	        "4. Authenticates as the gMSA, then restores the descriptor"
+	    )
+	    Remediation = @(
+	        "Set the owner of msDS-GroupMSAMembership back to Domain Admins or SYSTEM"
+	        "Review who holds WriteOwner on the gMSA object itself - that right leads back here"
+	        "Treat whoever created the account as a holder of its password until the owner is corrected"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show the owner of the password access descriptor of every gMSA"
+	            Command = "Get-ADServiceAccount -Filter * -Properties msDS-GroupMSAMembership | ForEach-Object { `$sd = New-Object System.DirectoryServices.ActiveDirectorySecurity; `$sd.SetSecurityDescriptorBinaryForm(`$_.'msDS-GroupMSAMembership'); [PSCustomObject]@{ Name = `$_.Name; Owner = `$sd.GetOwner([System.Security.Principal.NTAccount]) } }"
+	        }
+	        @{
+	            Description = "Rewrite the descriptor with the intended readers, which also resets its owner"
+	            Command = "Set-ADServiceAccount -Identity 'GMSA_NAME' -PrincipalsAllowedToRetrieveManagedPassword 'GMSA_HOSTS'"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "msDS-GroupMSAMembership"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-msds-groupmsamembership" }
+	        @{ Title = "Group Managed Service Accounts Overview"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/group-managed-service-accounts/group-managed-service-accounts-overview" }
+	        @{ Title = "Owner Rights on an Object - MS-ADTS"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/d2435927-0999-4c62-8c6d-13ba31a52e1a" }
+	    )
+	    Tools = @("PowerShell", "GMSAPasswordReader", "PowerView")
+	    Triggers = @(
+	        @{ Attribute = 'gmsaMembershipOwner'; Severity = 'Finding' }
+	    )
+	}
 	'GMSA_MEMBERSHIP_INFO' = @{
 	    Title = "gMSA Membership Information"
 	    Risk = "Hint"
@@ -16666,6 +16749,13 @@ function Test-CustomTrigger {
 	        }
 	        return $false
 	    }
+	    'gmsa_interval_gt_90' {
+	        $intervalDays = 0
+	        if ([int]::TryParse([string]$Value, [ref]$intervalDays)) {
+	            return ($intervalDays -gt 90)
+	        }
+	        return $false
+	    }
 	    'gt_0' {
 	        $intValue = 0
 	        if ([int]::TryParse([string]$Value, [ref]$intValue)) {
@@ -17049,17 +17139,31 @@ function Convert-OwnerToRenderValues {
 	    }
 	}
 	$ownerContext = if ($Context.IsComputer) { 'NonDefaultOwner' } else { 'NonDefaultUserOwner' }
-	$findingId = Get-FindingIdForAttribute -Name 'Owner' -Value $Value -Context $ownerContext
+	$ownerMatch = Get-TriggerMatch -Name 'Owner' -Value $Value -Context $ownerContext
+	$findingId = $null
+	$ownerSeverity = $null
+	if ($ownerMatch) {
+	    $findingId = $ownerMatch.FindingId
+	    if ($ownerMatch.Severity -and $ownerMatch.Severity -ne 'Standard') {
+	        $ownerSeverity = [string]$ownerMatch.Severity
+	    }
+	}
 	if (-not $findingId) {
 	    $findingId = if ($Context.IsComputer) { 'NON_DEFAULT_COMPUTER_OWNERS' } else { 'NON_DEFAULT_USER_OWNERS' }
+	}
+	if (-not $ownerSeverity) {
+	    $ownerSeverity = 'Hint'
+	    if ($Script:FindingDefinitions.ContainsKey($findingId) -and $Script:FindingDefinitions[$findingId].Risk) {
+	        $ownerSeverity = [string]$Script:FindingDefinitions[$findingId].Risk
+	    }
 	}
 	return @{
 	    DisplayName         = 'Owner (non-default)'
 	    RowType             = 'SingleValue'
-	    OverallSeverity     = 'Finding'
+	    OverallSeverity     = $ownerSeverity
 	    ForceAttributeClass = $true
 	    Values              = @(
-	        New-RenderValue -Display ([string]$Value) -Severity 'Finding' -FindingId $findingId -RawValue $Value
+	        New-RenderValue -Display ([string]$Value) -Severity $ownerSeverity -FindingId $findingId -RawValue $Value
 	    )
 	}
 }
@@ -18816,6 +18920,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "msDS-GroupMSAMembership (who can retrieve passwords)"
 	        "Whether password access follows least privilege"
 	        "Non-privileged principals with password access"
+	        "The owner of that descriptor, who may rewrite the DACL inside it"
+	        "msDS-ManagedPasswordInterval (how long a stolen password stays valid)"
+	        "accountExpires (when the account stops authenticating)"
 	    )
 	    SecureMessage = "All gMSA password access is properly restricted to privileged accounts. No non-privileged principals can retrieve gMSA passwords."
 	    PrimaryFindingId = 'GMSA_PASSWORD_READABLE'
@@ -19642,8 +19749,8 @@ $Script:WindowsLifecycle = @{
 	'Windows 8'            = @{ ExtendedEnd = '2016-01-12' }
 	'Windows 8.1'          = @{ ExtendedEnd = '2023-01-10' }
 	'Windows 10'           = @{ ExtendedEnd = '2025-10-14' }
-	'Windows 10 LTSC 2015' = @{ ExtendedEnd = '2025-10-14' }
-	'Windows 10 LTSC 2016' = @{ ExtendedEnd = '2026-10-13' }
+	'Windows 10 LTSB 2015' = @{ ExtendedEnd = '2025-10-14' }
+	'Windows 10 LTSB 2016' = @{ ExtendedEnd = '2026-10-13' }
 	'Windows 10 LTSC 2019' = @{ ExtendedEnd = '2029-01-09' }
 	'Windows 10 LTSC 2021' = @{ ExtendedEnd = '2027-01-12' }
 	'Windows 11 LTSC 2024' = @{ ExtendedEnd = '2029-10-09' }
@@ -19722,15 +19829,15 @@ function Get-NormalizedOSName {
 	    '^Windows 8\.1'             { return 'Windows 8.1' }
 	    '^Windows 8[^.]'            { return 'Windows 8' }
 	    '^Windows 10' {
-	        if ($OSName -match 'LTSC') {
+	        if ($OSName -match 'LTS[BC]') {
 	            $buildNumber = 0
 	            if ($OSVersion -match '\((\d+)\)') {
 	                $buildNumber = [int]$Matches[1]
 	            }
 	            if ($buildNumber -ge 17763 -and $buildNumber -lt 19044) { return 'Windows 10 LTSC 2019' }
 	            if ($buildNumber -ge 19044) { return 'Windows 10 LTSC 2021' }
-	            if ($buildNumber -ge 14393 -and $buildNumber -lt 17763) { return 'Windows 10 LTSC 2016' }
-	            if ($buildNumber -ge 10240 -and $buildNumber -lt 14393) { return 'Windows 10 LTSC 2015' }
+	            if ($buildNumber -ge 14393 -and $buildNumber -lt 17763) { return 'Windows 10 LTSB 2016' }
+	            if ($buildNumber -ge 10240 -and $buildNumber -lt 14393) { return 'Windows 10 LTSB 2015' }
 	        }
 	        return 'Windows 10'
 	    }
@@ -24376,8 +24483,11 @@ function ConvertFrom-LDAPAttribute {
 	            } elseif ($PropNameLower -eq 'ms-mcs-admpwdexpirationtime' -or $PropNameLower -eq 'mslaps-passwordexpirationtime') {
 	                try {
 	                    $ExpirationInt64 = [Int64]$PropValue[0]
-	                    $ExpirationDateTime = [DateTime]::FromFileTime($ExpirationInt64)
-	                    $ConvertedProperties[$PropName] = $ExpirationDateTime
+	                    if ($ExpirationInt64 -eq 0 -or $ExpirationInt64 -eq 9223372036854775807) {
+	                        $ConvertedProperties[$PropName] = $PropValue[0]
+	                    } else {
+	                        $ConvertedProperties[$PropName] = [DateTime]::FromFileTime($ExpirationInt64)
+	                    }
 	                } catch {
 	                    $ConvertedProperties[$PropName] = $PropValue[0]
 	                }
@@ -62296,6 +62406,7 @@ function Get-ManagedServiceAccountSecurity {
 	        if ($gmsaAccounts.Count -gt 0) {
 	            $nonPrivilegedAccessFindings = @()
 	            $gmsaDescriptors = @{}
+	            $gmsaDescriptorOwners = @{}
 	            try {
 	                foreach ($rawGMSA in @(Get-DomainUser -GMSA -Properties 'distinguishedName', 'sAMAccountName', 'msDS-GroupMSAMembership' -Raw @PSBoundParameters)) {
 	                    $rawSD = $rawGMSA.'msDS-GroupMSAMembership'
@@ -62342,6 +62453,11 @@ function Get-ManagedServiceAccountSecurity {
 	                            $grantedSIDs += $aceSID
 	                            $allReaderSIDs[$aceSID] = $true
 	                        }
+	                    }
+	                    try {
+	                        $sdOwner = $gmsaSD.GetOwner([System.Security.Principal.SecurityIdentifier])
+	                        if ($sdOwner) { $gmsaDescriptorOwners[$gmsaName] = [string]$sdOwner.Value }
+	                    } catch {
 	                    }
 	                    $analyzedGMSAs++
 	                    $gmsaReaderSIDs[$gmsaName] = $grantedSIDs
@@ -62417,6 +62533,20 @@ function Get-ManagedServiceAccountSecurity {
 	                    }
 	                }
 	            }
+	            $descriptorOwnerFindings = @()
+	            $reportedGMSANames = @($nonPrivilegedAccessFindings | ForEach-Object { $_.gMSA })
+	            foreach ($ownedGMSA in @($gmsaDescriptorOwners.Keys)) {
+	                $ownerSID = $gmsaDescriptorOwners[$ownedGMSA]
+	                if (Test-IsDefaultOwner -SID $ownerSID) { continue }
+	                if ((Test-IsPrivileged -Identity $ownerSID -IncludeOperators).IsPrivileged) { continue }
+	                $ownedObject = @($gmsaAccounts | Where-Object { $_.sAMAccountName -eq $ownedGMSA })[0]
+	                if (-not $ownedObject) { continue }
+	                $ownerName = ConvertFrom-SID -SID $ownerSID
+	                if (-not $ownerName) { $ownerName = $ownerSID }
+	                $ownedObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'gMSA' -Force
+	                $ownedObject | Add-Member -NotePropertyName 'gmsaMembershipOwner' -NotePropertyValue "$ownerName ($ownerSID) - may rewrite who retrieves the password" -Force
+	                $descriptorOwnerFindings += [PSCustomObject]@{ gMSA = $ownedGMSA; Owner = $ownerName; Object = $ownedObject }
+	            }
 	            if (@($nonPrivilegedAccessFindings).Count -gt 0) {
 	                $broadGroupCount = @($nonPrivilegedAccessFindings | Where-Object { $_.HasBroadGroupAccess }).Count
 	                $broadGroupInfo = if ($broadGroupCount -gt 0) { " ($broadGroupCount with broad group access - CRITICAL)" } else { "" }
@@ -62448,6 +62578,36 @@ function Get-ManagedServiceAccountSecurity {
 	            }
 	            if (@($unparsedGMSAs).Count -gt 0) {
 	                Show-Line "msDS-GroupMSAMembership could not be parsed on $(@($unparsedGMSAs).Count) gMSA(s) - their password access is unknown: $(@($unparsedGMSAs) -join ', ')" -Class Note
+	            }
+	            if (@($descriptorOwnerFindings).Count -gt 0) {
+	                $ownerList = @($descriptorOwnerFindings | ForEach-Object { "$($_.gMSA) ($($_.Owner))" }) -join ', '
+	                Show-Line "msDS-GroupMSAMembership is owned by a principal that is not privileged: $ownerList" -Class Finding -FindingId 'GMSA_MEMBERSHIP_OWNER'
+	                foreach ($ownerFinding in $descriptorOwnerFindings) {
+	                    if ($reportedGMSANames -contains $ownerFinding.gMSA) { continue }
+	                    Show-Object $ownerFinding.Object
+	                }
+	            }
+	            $longIntervals = @()
+	            $expiringGMSAs = @()
+	            foreach ($gmsa in $gmsaAccounts) {
+	                $intervalDays = 0
+	                if ([int]::TryParse([string]$gmsa.'msDS-ManagedPasswordInterval', [ref]$intervalDays) -and $intervalDays -gt 90) {
+	                    $longIntervals += "$($gmsa.sAMAccountName) ($intervalDays days)"
+	                }
+	                $expiresValue = [long]0
+	                if ([long]::TryParse([string]$gmsa.accountExpires, [ref]$expiresValue) -and
+	                    $expiresValue -gt 0 -and $expiresValue -ne 9223372036854775807) {
+	                    $expiryText = 'unreadable'
+	                    try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTimeUtc($expiresValue)) 'yyyy-MM-dd' } catch {
+	                    }
+	                    $expiringGMSAs += "$($gmsa.sAMAccountName) ($expiryText)"
+	                }
+	            }
+	            if (@($longIntervals).Count -gt 0) {
+	                Show-Line "gMSA(s) rotating their password less often than every 90 days: $(@($longIntervals) -join ', ')" -Class Hint -FindingId 'GMSA_ROTATION_INTERVAL_LONG'
+	            }
+	            if (@($expiringGMSAs).Count -gt 0) {
+	                Show-Line "gMSA(s) with an expiry date - the account stops authenticating when it passes: $(@($expiringGMSAs) -join ', ')" -Class Note
 	            }
 	            Show-SubHeader "Checking gMSA password access for current user..." -ObjectType "gMSAPassword"
 	            $passwordsRetrieved = 0
@@ -62865,15 +63025,54 @@ function Get-PasswordNotRequired {
 	        $accounts = Get-DomainUser -Enabled -PasswordNotRequired -ShowOwner @PSBoundParameters
 	        if ($accounts -and @($accounts).Count -gt 0) {
 	            $totalAccounts = @($accounts).Count
-	            Show-Line "Found $totalAccounts enabled account(s) with 'Password Not Required' flag (PASSWD_NOTREQD)" -Class Hint
+	            $annotated = @($accounts | Test-AccountActivity -IncludeDetails)
+	            $emptyPassword = @()
+	            $privilegedAccounts = @()
+	            $trustAccounts = @()
+	            $ordinaryAccounts = @()
 	            $currentIndex = 0
-	            foreach ($user in $accounts) {
+	            foreach ($user in $annotated) {
 	                $currentIndex++
 	                if ($totalAccounts -gt $Script:ProgressThreshold) { Show-Progress -Activity "Processing accounts without password requirement" -Current $currentIndex -Total $totalAccounts -ObjectName $user.sAMAccountName }
+	                if (@($user.userAccountControl) -contains 'INTERDOMAIN_TRUST_ACCOUNT') {
+	                    $trustAccounts += $user
+	                    continue
+	                }
 	                $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNotRequired' -Force
-	                Show-Object $user
+	                $neverSet = $false
+	                if ($user.PSObject.Properties['ActivityDetails'] -and $user.ActivityDetails) {
+	                    $neverSet = [bool]$user.ActivityDetails.PasswordNeverSet
+	                }
+	                $privCheck = Test-IsPrivileged -Identity $user -IncludeOperators
+	                if ($neverSet) {
+	                    $verdict = 'EMPTY - no password has ever been set'
+	                    if ($privCheck.IsPrivileged) { $verdict = $verdict + ', and the account is privileged' }
+	                    $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue $verdict -Force
+	                    $emptyPassword += $user
+	                } elseif ($privCheck.IsPrivileged) {
+	                    $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue "PRIVILEGED ($($privCheck.Category)) - exempt from the password policy" -Force
+	                    $privilegedAccounts += $user
+	                } else {
+	                    $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'Exempt from the password policy' -Force
+	                    $ordinaryAccounts += $user
+	                }
 	            }
 	            if ($totalAccounts -gt $Script:ProgressThreshold) { Show-Progress -Activity "Processing accounts without password requirement" -Completed }
+	            if (@($emptyPassword).Count -gt 0) {
+	                Show-Line "$(@($emptyPassword).Count) account(s) carry the flag and have never had a password set" -Class Finding
+	                foreach ($user in $emptyPassword) { Show-Object $user }
+	            }
+	            if (@($privilegedAccounts).Count -gt 0) {
+	                Show-Line "$(@($privilegedAccounts).Count) privileged account(s) are exempt from the password policy" -Class Finding
+	                foreach ($user in $privilegedAccounts) { Show-Object $user }
+	            }
+	            if (@($ordinaryAccounts).Count -gt 0) {
+	                Show-Line "$(@($ordinaryAccounts).Count) further enabled account(s) carry the 'Password Not Required' flag" -Class Hint
+	                foreach ($user in $ordinaryAccounts) { Show-Object $user }
+	            }
+	            if (@($trustAccounts).Count -gt 0) {
+	                Show-Line "Trust account(s) carrying the flag by design, not assessed: $(($trustAccounts | ForEach-Object { $_.sAMAccountName }) -join ', ')" -Class Note
+	            }
 	        } else {
 	            Show-Line "No enabled accounts with 'Password Not Required' flag found" -Class Secure
 	        }
@@ -65222,18 +65421,31 @@ function Get-LAPSConfiguration {
 	        $staleGraceDays = 30
 	        $staleCutoff = (Get-Date).AddDays(-$staleGraceDays)
 	        $staleLAPSComputers = @()
+	        $undatedExpiry = @()
+	        $lapsEraStart = [DateTime]'2015-01-01'
 	        foreach ($computer in $computersWithLAPS) {
 	            $expiry = $null
 	            $generation = $null
+	            $carriesExpiryValue = $false
 	            foreach ($attr in @('ms-Mcs-AdmPwdExpirationTime', 'msLAPS-PasswordExpirationTime')) {
 	                $value = $computer.$attr
+	                if ($null -eq $value) { continue }
+	                $carriesExpiryValue = $true
 	                if ($value -isnot [DateTime]) { continue }
 	                if ($null -eq $expiry -or $value -gt $expiry) {
 	                    $expiry = $value
 	                    $generation = if ($attr -eq 'ms-Mcs-AdmPwdExpirationTime') { 'LAPS Legacy' } else { 'Windows LAPS' }
 	                }
 	            }
-	            if ($null -eq $expiry -or $expiry -ge $staleCutoff) { continue }
+	            if ($null -eq $expiry) {
+	                if ($carriesExpiryValue) { $undatedExpiry += ($computer.sAMAccountName -replace '\$$', '') }
+	                continue
+	            }
+	            if ($expiry -lt $lapsEraStart) {
+	                $undatedExpiry += ($computer.sAMAccountName -replace '\$$', '')
+	                continue
+	            }
+	            if ($expiry -ge $staleCutoff) { continue }
 	            $daysOverdue = [math]::Floor(((Get-Date) - $expiry).TotalDays)
 	            $staleObject = [PSCustomObject]@{
 	                Name              = ($computer.sAMAccountName -replace '\$$', '')
@@ -65251,8 +65463,13 @@ function Get-LAPSConfiguration {
 	            foreach ($staleObject in ($staleLAPSComputers | Sort-Object daysOverdue -Descending)) {
 	                Show-Object $staleObject
 	            }
-	        } elseif ($withAnyLAPS -gt 0) {
+	        } elseif ($withAnyLAPS -gt 0 -and @($undatedExpiry).Count -eq 0) {
 	            Show-Line "Every computer with LAPS rotated its password on schedule" -Class "Secure"
+	        } elseif ($withAnyLAPS -gt 0) {
+	            Show-Line "Every computer whose LAPS expiration time is a date rotated on schedule" -Class "Secure"
+	        }
+	        if (@($undatedExpiry).Count -gt 0) {
+	            Show-Line "LAPS expiration time is not a rotation date (0 = rotation requested) on: $(Format-LAPSComputerList -Name $undatedExpiry -Limit 10)" -Class "Note"
 	        }
 	        if ($withoutLAPS -gt 0) {
 	            if ($coverageCaveat) {
@@ -82756,7 +82973,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-2312"
+$Script:adPEASVersion = "2.7.0+20261012-0012"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
