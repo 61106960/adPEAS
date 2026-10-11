@@ -35370,6 +35370,18 @@ function ConvertTo-AccessRules {
         OwnerSID           = $OwnerSID
     }
 }
+function Test-ACEAppliesToSelf {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $ACE
+    )
+    if ($null -eq $ACE) { return $false }
+    if (-not $ACE.PSObject.Properties['PropagationFlags']) { return $true }
+    return -not (([string]$ACE.PropagationFlags) -match 'InheritOnly')
+}
 function Test-LDAPSProtocolSupport {
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
@@ -65444,6 +65456,10 @@ function Get-DangerousACLs {
                     Write-Log "[Get-DangerousACLs] Skipping child-only ACE: Trustee=$trusteeName, InheritedType=$inheritedObjectType"
                     continue
                 }
+                if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+                    Write-Log "[Get-DangerousACLs] Skipping descendants-only ACE: Trustee=$trusteeName, PropagationFlags=$($ace.PropagationFlags)"
+                    continue
+                }
                 $hasDCSync = $false
                 foreach ($right in $ace.RightsRaw) {
                     if ($right -match 'DS-Replication-Get-Changes') {
@@ -66318,6 +66334,10 @@ function Get-AddComputerRights {
                         continue
                     }
                     if ($seenSIDs.ContainsKey($trusteeSID)) { continue }
+                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+                        Write-Log "[Get-AddComputerRights] Skipping descendants-only ACE: $($ace.Trustee) ($trusteeSID), PropagationFlags=$($ace.PropagationFlags)"
+                        continue
+                    }
                     $hasCreateChild = $false
                     if ($ace.RightsRaw -contains 'GenericAll') {
                         $hasCreateChild = $true
@@ -68233,6 +68253,7 @@ function Get-GPOPermissions {
                     $deniedRights = @{}
                     foreach ($ace in @($aclResult.ACEs)) {
                         if ($ace.AccessControlType -ne 'Deny') { continue }
+                        if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
                         $denySID = [string]$ace.TrusteeSID
                         if (-not $denySID) { continue }
                         if (-not $deniedRights.ContainsKey($denySID)) { $deniedRights[$denySID] = @() }
@@ -68249,6 +68270,10 @@ function Get-GPOPermissions {
                             Write-Log "[Get-GPOPermissions] Skipping ACE with empty SID on GPO $gpoDisplayName (ACE object type: $($ace.GetType().FullName))"
                             continue
                         }
+                        if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+                            Write-Log "[Get-GPOPermissions] Skipping descendants-only ACE on GPO $gpoDisplayName : $($ace.Trustee), PropagationFlags=$($ace.PropagationFlags)"
+                            continue
+                        }
                         $deniedForTrustee = @()
                         if ($deniedRights.ContainsKey([string]$aceSID)) {
                             $deniedForTrustee = @($deniedRights[[string]$aceSID])
@@ -68263,7 +68288,12 @@ function Get-GPOPermissions {
                             $matchedRights += $dangerousRight
                         }
                         if (@($matchedRights).Count -eq 0 -and $aceRights) {
-                            $matchedRights = @([string]$aceRights)
+                            $remainingRaw = @(@($aceRightsRaw) | Where-Object { $deniedForTrustee -notcontains $_ })
+                            if (@($aceRightsRaw).Count -eq 0) {
+                                $matchedRights = @([string]$aceRights)
+                            } elseif (@($remainingRaw).Count -gt 0) {
+                                $matchedRights = @(($remainingRaw -join ', '))
+                            }
                         }
                         if (@($matchedRights).Count -eq 0) { continue }
                         $aceObjectType = [string]$ace.ObjectType
@@ -85486,7 +85516,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-1413"
+$Script:adPEASVersion = "2.7.0+20261011-1456"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

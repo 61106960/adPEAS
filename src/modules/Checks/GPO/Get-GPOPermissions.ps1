@@ -272,6 +272,10 @@ function Get-GPOPermissions {
                     $deniedRights = @{}
                     foreach ($ace in @($aclResult.ACEs)) {
                         if ($ace.AccessControlType -ne 'Deny') { continue }
+                        # A Deny that reaches only the descendants takes nothing away from
+                        # the trustee's rights on the GPO object, so it must not net out an
+                        # Allow that does apply to it.
+                        if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
                         $denySID = [string]$ace.TrusteeSID
                         if (-not $denySID) { continue }
                         if (-not $deniedRights.ContainsKey($denySID)) { $deniedRights[$denySID] = @() }
@@ -291,6 +295,16 @@ function Get-GPOPermissions {
                         # Skip ACEs with empty SID (can occur with orphaned/deleted principals)
                         if ([string]::IsNullOrEmpty($aceSID)) {
                             Write-Log "[Get-GPOPermissions] Skipping ACE with empty SID on GPO $gpoDisplayName (ACE object type: $($ace.GetType().FullName))"
+                            continue
+                        }
+
+                        # A groupPolicyContainer has children - CN=Machine and CN=User - so an
+                        # InheritOnly ACE on it is possible and grants nothing on the GPO
+                        # itself. Reported as GPO control it was a false positive: the policy
+                        # settings live in SYSVOL and the link lives on the OU, so a right over
+                        # those two sub-containers is not a path to modifying the GPO.
+                        if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+                            Write-Log "[Get-GPOPermissions] Skipping descendants-only ACE on GPO $gpoDisplayName : $($ace.Trustee), PropagationFlags=$($ace.PropagationFlags)"
                             continue
                         }
 
@@ -319,8 +333,21 @@ function Get-GPOPermissions {
                         # "CONTOSO\helpdesk ()": a red line with no right named, no finding
                         # id and therefore no remediation. The ACE's own rights are the
                         # fallback.
+                        #
+                        # Minus whatever a Deny takes away, though. Without that
+                        # subtraction this line undid the netting above: when the Deny
+                        # covered every dangerous right the ACE granted, $matchedRights was
+                        # empty for that reason and the ACE's full right string came
+                        # straight back, so the Deny had no effect on the report at all.
                         if (@($matchedRights).Count -eq 0 -and $aceRights) {
-                            $matchedRights = @([string]$aceRights)
+                            $remainingRaw = @(@($aceRightsRaw) | Where-Object { $deniedForTrustee -notcontains $_ })
+                            if (@($aceRightsRaw).Count -eq 0) {
+                                # No decomposed rights to subtract from - nothing was denied
+                                # either, so the string stands as it did.
+                                $matchedRights = @([string]$aceRights)
+                            } elseif (@($remainingRaw).Count -gt 0) {
+                                $matchedRights = @(($remainingRaw -join ', '))
+                            }
                         }
 
                         # Nothing left after the Deny ACEs were netted out.

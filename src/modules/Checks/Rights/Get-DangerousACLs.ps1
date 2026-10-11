@@ -155,6 +155,23 @@ function Get-DangerousACLs {
                     continue
                 }
 
+                # The other half of the same question, and the half the skip above cannot
+                # answer. "Delegate full control over all descendant objects" at the domain
+                # root writes an ACE with ContainerInherit, ObjectInherit and InheritOnly and
+                # an EMPTY InheritedObjectType - measured - so it arrived here looking exactly
+                # like an ACE on the domain object itself and was reported as GenericAll on the
+                # domain root. The trustee cannot touch the domain object with it: no DCSync,
+                # no DACL rewrite, no GPO link at domain level.
+                #
+                # Dropping it loses nothing. Such an ACE propagates to every OU below and the
+                # inherited copy arrives there with InheritOnly cleared - measured - so
+                # Get-DangerousOUPermissions reports it on the OUs where it does apply, with
+                # Get-ACEInheritanceSource naming the domain root as its source.
+                if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+                    Write-Log "[Get-DangerousACLs] Skipping descendants-only ACE: Trustee=$trusteeName, PropagationFlags=$($ace.PropagationFlags)"
+                    continue
+                }
+
                 # ===== Check for DCSync Rights =====
                 $hasDCSync = $false
                 foreach ($right in $ace.RightsRaw) {

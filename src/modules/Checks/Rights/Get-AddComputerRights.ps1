@@ -147,6 +147,17 @@ function Get-AddComputerRights {
 
                     if ($seenSIDs.ContainsKey($trusteeSID)) { continue }
 
+                    # An InheritOnly ACE is not part of the effective permissions of the
+                    # container that carries it, so it grants no right to create an object IN
+                    # CN=Computers - only in a descendant container of it, of which there are
+                    # normally none. Reported as "may add computers to the domain" it was a
+                    # false positive, and the ACE carries an empty InheritedObjectType so
+                    # nothing else here caught it.
+                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+                        Write-Log "[Get-AddComputerRights] Skipping descendants-only ACE: $($ace.Trustee) ($trusteeSID), PropagationFlags=$($ace.PropagationFlags)"
+                        continue
+                    }
+
                     # Check if this ACE grants CreateChild for Computer objects
                     $hasCreateChild = $false
                     if ($ace.RightsRaw -contains 'GenericAll') {

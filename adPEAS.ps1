@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 14:13:18
-    Version: 2.7.0+20261011-1413
+    Build: 2026-10-11 14:56:30
+    Version: 2.7.0+20261011-1456
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -51947,6 +51947,69 @@ function ConvertTo-AccessRules {
 
 
 
+# ----- Test-ACEAppliesToSelf.ps1 -----
+
+<#
+.SYNOPSIS
+    Tests whether an ACE grants its rights on the object that carries it.
+
+.DESCRIPTION
+    An ACE marked INHERIT_ONLY_ACE is not part of the effective permissions of the object
+    whose DACL holds it. It exists only to be inherited downwards, so a right it grants
+    says nothing about what may be done to that object.
+
+    The delegation wizard produces such an ACE for "only the following objects in this
+    object" and for "all descendant objects", and only the first of those carries an
+    InheritedObjectType. An ACE created for "all descendant objects" therefore looks
+    exactly like one that applies to the object itself unless PropagationFlags is read.
+
+    Measured on the three forms the wizard writes - ContainerInherit+InheritOnly,
+    ObjectInherit+InheritOnly and both+InheritOnly - every one arrives with an empty
+    InheritedObjectType and PropagationFlags 'InheritOnly'. NoPropagateInherit, which is
+    "this object and its immediate children", does not set InheritOnly and must keep its
+    finding.
+
+    Takes the ACE shape Get-ObjectACL and ConvertTo-FormattedACE return, where
+    PropagationFlags is the string form of the flags enum. For a raw
+    ActiveDirectoryAccessRule the same test reads the enum directly - see
+    Get-OUPermissions, which needs the companion question (does it reach the children?)
+    as well and computes both from the rule itself.
+
+.PARAMETER ACE
+    An ACE object carrying a PropagationFlags property.
+
+.OUTPUTS
+    [bool] True if the ACE applies to the object that carries it.
+
+.EXAMPLE
+    foreach ($ace in $aclResult.ACEs) {
+        if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+    }
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Test-ACEAppliesToSelf {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $ACE
+    )
+
+    if ($null -eq $ACE) { return $false }
+
+    # A missing property is not an InheritOnly ACE. Returning $false here would drop every
+    # ACE from a caller that supplies a different shape, which is the silent-clean failure
+    # this check exists to prevent.
+    if (-not $ACE.PSObject.Properties['PropagationFlags']) { return $true }
+
+    return -not (([string]$ACE.PropagationFlags) -match 'InheritOnly')
+}
+
+
+
 # ----- Test-LDAPSProtocolSupport.ps1 -----
 
 function Test-LDAPSProtocolSupport {
@@ -102509,6 +102572,23 @@ function Get-DangerousACLs {
                     continue
                 }
 
+                # The other half of the same question, and the half the skip above cannot
+                # answer. "Delegate full control over all descendant objects" at the domain
+                # root writes an ACE with ContainerInherit, ObjectInherit and InheritOnly and
+                # an EMPTY InheritedObjectType - measured - so it arrived here looking exactly
+                # like an ACE on the domain object itself and was reported as GenericAll on the
+                # domain root. The trustee cannot touch the domain object with it: no DCSync,
+                # no DACL rewrite, no GPO link at domain level.
+                #
+                # Dropping it loses nothing. Such an ACE propagates to every OU below and the
+                # inherited copy arrives there with InheritOnly cleared - measured - so
+                # Get-DangerousOUPermissions reports it on the OUs where it does apply, with
+                # Get-ACEInheritanceSource naming the domain root as its source.
+                if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+                    Write-Log "[Get-DangerousACLs] Skipping descendants-only ACE: Trustee=$trusteeName, PropagationFlags=$($ace.PropagationFlags)"
+                    continue
+                }
+
                 # ===== Check for DCSync Rights =====
                 $hasDCSync = $false
                 foreach ($right in $ace.RightsRaw) {
@@ -103996,6 +104076,17 @@ function Get-AddComputerRights {
                     }
 
                     if ($seenSIDs.ContainsKey($trusteeSID)) { continue }
+
+                    # An InheritOnly ACE is not part of the effective permissions of the
+                    # container that carries it, so it grants no right to create an object IN
+                    # CN=Computers - only in a descendant container of it, of which there are
+                    # normally none. Reported as "may add computers to the domain" it was a
+                    # false positive, and the ACE carries an empty InheritedObjectType so
+                    # nothing else here caught it.
+                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+                        Write-Log "[Get-AddComputerRights] Skipping descendants-only ACE: $($ace.Trustee) ($trusteeSID), PropagationFlags=$($ace.PropagationFlags)"
+                        continue
+                    }
 
                     # Check if this ACE grants CreateChild for Computer objects
                     $hasCreateChild = $false
@@ -107459,6 +107550,10 @@ function Get-GPOPermissions {
                     $deniedRights = @{}
                     foreach ($ace in @($aclResult.ACEs)) {
                         if ($ace.AccessControlType -ne 'Deny') { continue }
+                        # A Deny that reaches only the descendants takes nothing away from
+                        # the trustee's rights on the GPO object, so it must not net out an
+                        # Allow that does apply to it.
+                        if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
                         $denySID = [string]$ace.TrusteeSID
                         if (-not $denySID) { continue }
                         if (-not $deniedRights.ContainsKey($denySID)) { $deniedRights[$denySID] = @() }
@@ -107478,6 +107573,16 @@ function Get-GPOPermissions {
                         # Skip ACEs with empty SID (can occur with orphaned/deleted principals)
                         if ([string]::IsNullOrEmpty($aceSID)) {
                             Write-Log "[Get-GPOPermissions] Skipping ACE with empty SID on GPO $gpoDisplayName (ACE object type: $($ace.GetType().FullName))"
+                            continue
+                        }
+
+                        # A groupPolicyContainer has children - CN=Machine and CN=User - so an
+                        # InheritOnly ACE on it is possible and grants nothing on the GPO
+                        # itself. Reported as GPO control it was a false positive: the policy
+                        # settings live in SYSVOL and the link lives on the OU, so a right over
+                        # those two sub-containers is not a path to modifying the GPO.
+                        if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+                            Write-Log "[Get-GPOPermissions] Skipping descendants-only ACE on GPO $gpoDisplayName : $($ace.Trustee), PropagationFlags=$($ace.PropagationFlags)"
                             continue
                         }
 
@@ -107506,8 +107611,21 @@ function Get-GPOPermissions {
                         # "CONTOSO\helpdesk ()": a red line with no right named, no finding
                         # id and therefore no remediation. The ACE's own rights are the
                         # fallback.
+                        #
+                        # Minus whatever a Deny takes away, though. Without that
+                        # subtraction this line undid the netting above: when the Deny
+                        # covered every dangerous right the ACE granted, $matchedRights was
+                        # empty for that reason and the ACE's full right string came
+                        # straight back, so the Deny had no effect on the report at all.
                         if (@($matchedRights).Count -eq 0 -and $aceRights) {
-                            $matchedRights = @([string]$aceRights)
+                            $remainingRaw = @(@($aceRightsRaw) | Where-Object { $deniedForTrustee -notcontains $_ })
+                            if (@($aceRightsRaw).Count -eq 0) {
+                                # No decomposed rights to subtract from - nothing was denied
+                                # either, so the string stands as it did.
+                                $matchedRights = @([string]$aceRights)
+                            } elseif (@($remainingRaw).Count -gt 0) {
+                                $matchedRights = @(($remainingRaw -join ', '))
+                            }
                         }
 
                         # Nothing left after the Deny ACEs were netted out.
@@ -131369,7 +131487,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1413"
+$Script:adPEASVersion = "2.7.0+20261011-1456"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
