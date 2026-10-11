@@ -581,6 +581,34 @@ function Test-IsBroadGroupRID {
 
 <#
 .SYNOPSIS
+    Tests if a SID belongs to a group that holds most of the domain.
+.DESCRIPTION
+    Both halves, because the two lists split by SID shape and not by meaning:
+    $Script:BroadGroupSIDs holds the well-known SIDs (Everyone, Authenticated Users,
+    BUILTIN\Users and so on) while $Script:BroadGroupRIDSuffixes holds the domain-relative
+    ones (-513 Domain Users, -514 Domain Guests, -515 Domain Computers). A caller that
+    asks only Test-IsBroadGroupSID therefore misses Domain Users - the group most likely
+    to appear in a real finding - and has done so twice in this project already.
+.PARAMETER SID
+    The Security Identifier to check.
+.OUTPUTS
+    Boolean - $true if the SID names a broad group by either list.
+#>
+function Test-IsBroadTrustee {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$SID
+    )
+
+    if (-not $SID) { return $false }
+    return ((Test-IsBroadGroupSID -SID $SID) -or [bool](Test-IsBroadGroupRID -SID $SID))
+}
+
+<#
+.SYNOPSIS
     Tests if a SID is a well-known service / builtin-support identity that is an expected
     default holder of user rights (see $Script:WellKnownServiceSIDs).
 .PARAMETER SID

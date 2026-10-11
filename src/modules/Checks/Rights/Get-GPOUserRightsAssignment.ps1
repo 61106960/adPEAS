@@ -318,7 +318,7 @@ function Get-GPOUserRightsAssignment {
                         # a configuration accident, and it outranks the right's own tier.
                         $anyBroad = $false
                         foreach ($sid in $added) {
-                            if ((Test-IsBroadGroupSID -SID $sid) -or [bool](Test-IsBroadGroupRID -SID $sid)) {
+                            if (Test-IsBroadTrustee -SID $sid) {
                                 $anyBroad = $true
                                 break
                             }

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 16:29:06
-    Version: 2.7.0+20261011-1629
+    Build: 2026-10-11 16:56:39
+    Version: 2.7.0+20261011-1656
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -2681,6 +2681,34 @@ function Test-IsBroadGroupRID {
     }
 
     return $null
+}
+
+<#
+.SYNOPSIS
+    Tests if a SID belongs to a group that holds most of the domain.
+.DESCRIPTION
+    Both halves, because the two lists split by SID shape and not by meaning:
+    $Script:BroadGroupSIDs holds the well-known SIDs (Everyone, Authenticated Users,
+    BUILTIN\Users and so on) while $Script:BroadGroupRIDSuffixes holds the domain-relative
+    ones (-513 Domain Users, -514 Domain Guests, -515 Domain Computers). A caller that
+    asks only Test-IsBroadGroupSID therefore misses Domain Users - the group most likely
+    to appear in a real finding - and has done so twice in this project already.
+.PARAMETER SID
+    The Security Identifier to check.
+.OUTPUTS
+    Boolean - $true if the SID names a broad group by either list.
+#>
+function Test-IsBroadTrustee {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$SID
+    )
+
+    if (-not $SID) { return $false }
+    return ((Test-IsBroadGroupSID -SID $SID) -or [bool](Test-IsBroadGroupRID -SID $SID))
 }
 
 <#
@@ -22068,13 +22096,22 @@ function Test-CustomTrigger {
         }
 
         'is_broad_group_sid' {
-            # Returns true if the SID is a broad group (Everyone, Authenticated Users, Domain Users)
+            # Returns true if the SID is a broad group (Everyone, Authenticated Users,
+            # BUILTIN\Users, Domain Users, Domain Guests, Domain Computers).
+            #
+            # Through Test-IsBroadTrustee, which asks both lists. This used to call
+            # Test-IsBroadGroupSID alone, and that one only knows the well-known SIDs -
+            # Domain Users is a domain-relative RID and lives in the other list. So a
+            # certificate template enrollable by Domain Users, which is the commonest
+            # ADCS misconfiguration there is and the precondition for ESC1, resolved to
+            # no finding id at all, and so did a gMSA whose password Domain Computers may
+            # retrieve. The comment above already claimed Domain Users was covered.
             $sid = if ($Value -is [string] -and $Value -match '^S-1-') { $Value }
                    elseif ($Value -is [PSCustomObject] -and $Value.PSObject.Properties['SID']) { $Value.SID }
                    else { [string]$Value }
             if (-not $sid) { return $false }
-            if (Get-Command -Name 'Test-IsBroadGroupSID' -ErrorAction SilentlyContinue) {
-                return (Test-IsBroadGroupSID -SID $sid)
+            if (Get-Command -Name 'Test-IsBroadTrustee' -ErrorAction SilentlyContinue) {
+                return (Test-IsBroadTrustee -SID $sid)
             }
             # Fallback: check common broad group SID patterns
             $privResult = Test-IsPrivileged -Identity $sid
@@ -99955,8 +99992,7 @@ function Get-PrivilegedGroupMembers {
                         # Domain Users - the ordinary result of installing the domain with
                         # pre-Windows 2000 compatible permissions - was reported as
                         # "No dangerous members".
-                        $broadRID = Test-IsBroadGroupRID -SID $MemberSID
-                        if (-not ((Test-IsBroadGroupSID -SID $MemberSID) -or $broadRID)) { continue }
+                        if (-not (Test-IsBroadTrustee -SID $MemberSID)) { continue }
 
                         $MemberName = ConvertFrom-SID -SID $MemberSID
                         if ([string]::IsNullOrWhiteSpace($MemberName)) { $MemberName = $MemberSID }
@@ -102723,10 +102759,12 @@ function Get-DangerousACLs {
             # selects - so the right says it, and a card of its own gives the case the
             # write-up and the rank it deserves.
             $broadGroupNote = ' - granted to a broad group, so every member holds it'
+            # Test-IsBroadTrustee (adPEAS-SIDs.ps1) asks both lists. The local copy that
+            # used to stand here did the same, and three other places still wrote the
+            # pair out by hand - one of them with only the SID half.
             function Test-TrusteeIsBroad {
                 param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$SID)
-                if (-not $SID) { return $false }
-                return ((Test-IsBroadGroupSID -SID $SID) -or [bool](Test-IsBroadGroupRID -SID $SID))
+                return [bool](Test-IsBroadTrustee -SID $SID)
             }
 
             # Process DCSync accounts
@@ -105003,7 +105041,7 @@ function Get-GPOUserRightsAssignment {
                         # a configuration accident, and it outranks the right's own tier.
                         $anyBroad = $false
                         foreach ($sid in $added) {
-                            if ((Test-IsBroadGroupSID -SID $sid) -or [bool](Test-IsBroadGroupRID -SID $sid)) {
+                            if (Test-IsBroadTrustee -SID $sid) {
                                 $anyBroad = $true
                                 break
                             }
@@ -131571,7 +131609,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1629"
+$Script:adPEASVersion = "2.7.0+20261011-1656"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

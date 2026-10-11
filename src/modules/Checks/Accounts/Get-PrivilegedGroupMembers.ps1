@@ -1098,8 +1098,7 @@ function Get-PrivilegedGroupMembers {
                         # Domain Users - the ordinary result of installing the domain with
                         # pre-Windows 2000 compatible permissions - was reported as
                         # "No dangerous members".
-                        $broadRID = Test-IsBroadGroupRID -SID $MemberSID
-                        if (-not ((Test-IsBroadGroupSID -SID $MemberSID) -or $broadRID)) { continue }
+                        if (-not (Test-IsBroadTrustee -SID $MemberSID)) { continue }
 
                         $MemberName = ConvertFrom-SID -SID $MemberSID
                         if ([string]::IsNullOrWhiteSpace($MemberName)) { $MemberName = $MemberSID }

@@ -281,10 +281,12 @@ function Get-DangerousACLs {
             # selects - so the right says it, and a card of its own gives the case the
             # write-up and the rank it deserves.
             $broadGroupNote = ' - granted to a broad group, so every member holds it'
+            # Test-IsBroadTrustee (adPEAS-SIDs.ps1) asks both lists. The local copy that
+            # used to stand here did the same, and three other places still wrote the
+            # pair out by hand - one of them with only the SID half.
             function Test-TrusteeIsBroad {
                 param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$SID)
-                if (-not $SID) { return $false }
-                return ((Test-IsBroadGroupSID -SID $SID) -or [bool](Test-IsBroadGroupRID -SID $SID))
+                return [bool](Test-IsBroadTrustee -SID $SID)
             }
 
             # Process DCSync accounts

@@ -14312,13 +14312,22 @@ function Test-CustomTrigger {
         }
 
         'is_broad_group_sid' {
-            # Returns true if the SID is a broad group (Everyone, Authenticated Users, Domain Users)
+            # Returns true if the SID is a broad group (Everyone, Authenticated Users,
+            # BUILTIN\Users, Domain Users, Domain Guests, Domain Computers).
+            #
+            # Through Test-IsBroadTrustee, which asks both lists. This used to call
+            # Test-IsBroadGroupSID alone, and that one only knows the well-known SIDs -
+            # Domain Users is a domain-relative RID and lives in the other list. So a
+            # certificate template enrollable by Domain Users, which is the commonest
+            # ADCS misconfiguration there is and the precondition for ESC1, resolved to
+            # no finding id at all, and so did a gMSA whose password Domain Computers may
+            # retrieve. The comment above already claimed Domain Users was covered.
             $sid = if ($Value -is [string] -and $Value -match '^S-1-') { $Value }
                    elseif ($Value -is [PSCustomObject] -and $Value.PSObject.Properties['SID']) { $Value.SID }
                    else { [string]$Value }
             if (-not $sid) { return $false }
-            if (Get-Command -Name 'Test-IsBroadGroupSID' -ErrorAction SilentlyContinue) {
-                return (Test-IsBroadGroupSID -SID $sid)
+            if (Get-Command -Name 'Test-IsBroadTrustee' -ErrorAction SilentlyContinue) {
+                return (Test-IsBroadTrustee -SID $sid)
             }
             # Fallback: check common broad group SID patterns
             $privResult = Test-IsPrivileged -Identity $sid

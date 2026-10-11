@@ -1078,6 +1078,17 @@ function Test-IsBroadGroupRID {
 	}
 	return $null
 }
+function Test-IsBroadTrustee {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyString()]
+	    [string]$SID
+	)
+	if (-not $SID) { return $false }
+	return ((Test-IsBroadGroupSID -SID $SID) -or [bool](Test-IsBroadGroupRID -SID $SID))
+}
 function Test-IsWellKnownServiceSID {
 	[CmdletBinding()]
 	param(
@@ -16711,8 +16722,8 @@ function Test-CustomTrigger {
 	               elseif ($Value -is [PSCustomObject] -and $Value.PSObject.Properties['SID']) { $Value.SID }
 	               else { [string]$Value }
 	        if (-not $sid) { return $false }
-	        if (Get-Command -Name 'Test-IsBroadGroupSID' -ErrorAction SilentlyContinue) {
-	            return (Test-IsBroadGroupSID -SID $sid)
+	        if (Get-Command -Name 'Test-IsBroadTrustee' -ErrorAction SilentlyContinue) {
+	            return (Test-IsBroadTrustee -SID $sid)
 	        }
 	        $privResult = Test-IsPrivileged -Identity $sid
 	        return ($privResult.Category -eq 'BroadGroup')
@@ -61754,8 +61765,7 @@ function Get-PrivilegedGroupMembers {
 	                        $PreWin2000Unresolved += $MemberDN
 	                        continue
 	                    }
-	                    $broadRID = Test-IsBroadGroupRID -SID $MemberSID
-	                    if (-not ((Test-IsBroadGroupSID -SID $MemberSID) -or $broadRID)) { continue }
+	                    if (-not (Test-IsBroadTrustee -SID $MemberSID)) { continue }
 	                    $MemberName = ConvertFrom-SID -SID $MemberSID
 	                    if ([string]::IsNullOrWhiteSpace($MemberName)) { $MemberName = $MemberSID }
 	                    $finding = [PSCustomObject]@{
@@ -63112,8 +63122,7 @@ function Get-DangerousACLs {
 	        $broadGroupNote = ' - granted to a broad group, so every member holds it'
 	        function Test-TrusteeIsBroad {
 	            param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$SID)
-	            if (-not $SID) { return $false }
-	            return ((Test-IsBroadGroupSID -SID $SID) -or [bool](Test-IsBroadGroupRID -SID $SID))
+	            return [bool](Test-IsBroadTrustee -SID $SID)
 	        }
 	        if ($dcsyncAccounts.Count -gt 0) {
 	            foreach ($sid in $dcsyncAccounts.Keys) {
@@ -64334,7 +64343,7 @@ function Get-GPOUserRightsAssignment {
 	                    $removedNames = @($removed | ForEach-Object { ConvertFrom-SID -SID $_ })
 	                    $anyBroad = $false
 	                    foreach ($sid in $added) {
-	                        if ((Test-IsBroadGroupSID -SID $sid) -or [bool](Test-IsBroadGroupRID -SID $sid)) {
+	                        if (Test-IsBroadTrustee -SID $sid) {
 	                            $anyBroad = $true
 	                            break
 	                        }
@@ -82625,7 +82634,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-1629"
+$Script:adPEASVersion = "2.7.0+20261011-1656"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
