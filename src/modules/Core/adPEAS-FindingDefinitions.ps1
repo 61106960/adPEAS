@@ -972,6 +972,57 @@ Remove-CATemplate -Name "VulnerableTemplate" -Force
         )
     }
 
+    'ESC_ENROLLMENT_RIGHTS_UNREAD' = @{
+        Title = "Enrollment Rights of This Template Could Not Be Read"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "Every ESC finding on a certificate template rests on an unprivileged principal being able to enroll for it. For this template that could not be established: no Certificate-Enrollment ACE was readable. The template's own settings - the subject flag, the EKUs, the schema version - are read from the object and hold regardless; what is missing is who could use them."
+        Impact = @(
+            "The ESC findings reported for this template cannot be confirmed as exploitable, and cannot be ruled out either"
+            "A template that withdraws Read-Control from Authenticated Users arrives without a security descriptor, so the hardening itself produces this state"
+            "An enrollment ACE written as GENERIC_ALL reads the same way, and that is the form impacket and Certipy write"
+        )
+        Attack = @(
+            "1. Nothing here is an attack by itself - this is a gap in what the scan could see"
+            "2. The value of knowing it: an attacker who already owns the template can produce exactly this state by writing a GENERIC_ALL ACE"
+            "3. A hardened template produces it too, which is why it is a hint rather than a finding"
+        )
+        Remediation = @(
+            "Read the template's security descriptor with an account that holds Read-Control on it, and re-run the scan"
+            "Check the descriptor by hand for an ACE written with the generic access bits rather than named rights"
+            "If Read-Control was withdrawn deliberately, nothing needs doing - but the ESC verdicts for this template stay undecided until somebody can read it"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the template's DACL in SDDL, where a generic-bit ACE is visible as GA"
+                Command = "(Get-Acl -Path `"AD:CN=TEMPLATENAME,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=DOMAIN,DC=COM`").Sddl"
+            }
+            @{
+                Description = "List who holds Certificate-Enrollment on the template"
+                Command = "(Get-Acl -Path `"AD:CN=TEMPLATENAME,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=DOMAIN,DC=COM`").Access | Where-Object { `$_.ObjectType -eq '0e10c968-78fb-11d2-90d4-00c04f79dc55' }"
+            }
+        )
+        References = @(
+            @{ Title = "Certified Pre-Owned"; Url = "https://posts.specterops.io/certified-pre-owned-d95910965cd2" }
+            @{ Title = "Certificate Templates - MS-CRTD"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-crtd/" }
+        )
+        Tools = @("Certipy", "Certify", "PowerView")
+        MITRE = "T1649"
+        Triggers = @(
+            # The card, on the attribute Get-ADCSVulnerabilities writes when the state is
+            # Unknown. Nothing else writes it.
+            @{ Attribute = 'escEnrollmentRightsUnread'; Severity = 'Hint' }
+
+            # And the damping, which reaches every ESC row rather than only this one: the
+            # trigger index is keyed by attribute, so a severity-only trigger on
+            # Vulnerabilities is consulted for whatever value that attribute carries. The
+            # ESC card and its remediation stay; the colour says the verdict is undecided.
+            # This is the mechanism ra_signature_gated and manager_approval_gated already
+            # use for the two barriers.
+            @{ Attribute = 'Vulnerabilities'; Custom = 'esc_enrollment_rights_unread'; Severity = 'Hint'; SeverityOnly = $true }
+        )
+    }
+
     'ESC2_TEMPLATE' = @{
         Title = "ESC2 - Any Purpose or SubCA Certificate Template"
         Risk = "Finding"
@@ -13402,6 +13453,21 @@ function Test-CustomTrigger {
             $encList = @(Get-EncryptionTypeList -SourceObject $SourceObject | Where-Object { $_ })
             if ($encList.Count -eq 0) { return $false }
             return (@($encList | Where-Object { $_ -like 'RC4*' -or $_ -like 'DES*' }).Count -eq 0)
+        }
+
+        'esc_enrollment_rights_unread' {
+            # Certificate template only: true when Get-ADCSVulnerabilities could not read
+            # who may enroll, which is what its 'Unknown' enrollment state writes onto the
+            # object. Used SeverityOnly, so it damps the colour of every ESC row on that
+            # template without touching the finding card or its remediation.
+            #
+            # Defaults to false with no source object, which is the undamped reading: a
+            # row that cannot say the rights were unread must not be treated as if they
+            # were.
+            if (-not $SourceObject) { return $false }
+            $caveat = $SourceObject.PSObject.Properties['escEnrollmentRightsUnread']
+            if ($caveat -and $caveat.Value) { return $true }
+            return $false
         }
 
         'ra_signature_gated' {

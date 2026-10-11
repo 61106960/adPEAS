@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 02:30:25
-    Version: 2.7.0+20261011-0230
+    Build: 2026-10-11 02:48:25
+    Version: 2.7.0+20261011-0248
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -8668,6 +8668,57 @@ Remove-CATemplate -Name "VulnerableTemplate" -Force
             # the triggers stay. The verdict belongs to the check that applied the gates.
             @{ Attribute = 'CertificateNameFlagDisplay'; Pattern = 'ENROLLEE_SUPPLIES_SUBJECT'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'EnrolleeSuppliesSubject'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
+        )
+    }
+
+    'ESC_ENROLLMENT_RIGHTS_UNREAD' = @{
+        Title = "Enrollment Rights of This Template Could Not Be Read"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "Every ESC finding on a certificate template rests on an unprivileged principal being able to enroll for it. For this template that could not be established: no Certificate-Enrollment ACE was readable. The template's own settings - the subject flag, the EKUs, the schema version - are read from the object and hold regardless; what is missing is who could use them."
+        Impact = @(
+            "The ESC findings reported for this template cannot be confirmed as exploitable, and cannot be ruled out either"
+            "A template that withdraws Read-Control from Authenticated Users arrives without a security descriptor, so the hardening itself produces this state"
+            "An enrollment ACE written as GENERIC_ALL reads the same way, and that is the form impacket and Certipy write"
+        )
+        Attack = @(
+            "1. Nothing here is an attack by itself - this is a gap in what the scan could see"
+            "2. The value of knowing it: an attacker who already owns the template can produce exactly this state by writing a GENERIC_ALL ACE"
+            "3. A hardened template produces it too, which is why it is a hint rather than a finding"
+        )
+        Remediation = @(
+            "Read the template's security descriptor with an account that holds Read-Control on it, and re-run the scan"
+            "Check the descriptor by hand for an ACE written with the generic access bits rather than named rights"
+            "If Read-Control was withdrawn deliberately, nothing needs doing - but the ESC verdicts for this template stay undecided until somebody can read it"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the template's DACL in SDDL, where a generic-bit ACE is visible as GA"
+                Command = "(Get-Acl -Path `"AD:CN=TEMPLATENAME,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=DOMAIN,DC=COM`").Sddl"
+            }
+            @{
+                Description = "List who holds Certificate-Enrollment on the template"
+                Command = "(Get-Acl -Path `"AD:CN=TEMPLATENAME,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=DOMAIN,DC=COM`").Access | Where-Object { `$_.ObjectType -eq '0e10c968-78fb-11d2-90d4-00c04f79dc55' }"
+            }
+        )
+        References = @(
+            @{ Title = "Certified Pre-Owned"; Url = "https://posts.specterops.io/certified-pre-owned-d95910965cd2" }
+            @{ Title = "Certificate Templates - MS-CRTD"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-crtd/" }
+        )
+        Tools = @("Certipy", "Certify", "PowerView")
+        MITRE = "T1649"
+        Triggers = @(
+            # The card, on the attribute Get-ADCSVulnerabilities writes when the state is
+            # Unknown. Nothing else writes it.
+            @{ Attribute = 'escEnrollmentRightsUnread'; Severity = 'Hint' }
+
+            # And the damping, which reaches every ESC row rather than only this one: the
+            # trigger index is keyed by attribute, so a severity-only trigger on
+            # Vulnerabilities is consulted for whatever value that attribute carries. The
+            # ESC card and its remediation stay; the colour says the verdict is undecided.
+            # This is the mechanism ra_signature_gated and manager_approval_gated already
+            # use for the two barriers.
+            @{ Attribute = 'Vulnerabilities'; Custom = 'esc_enrollment_rights_unread'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -21101,6 +21152,21 @@ function Test-CustomTrigger {
             $encList = @(Get-EncryptionTypeList -SourceObject $SourceObject | Where-Object { $_ })
             if ($encList.Count -eq 0) { return $false }
             return (@($encList | Where-Object { $_ -like 'RC4*' -or $_ -like 'DES*' }).Count -eq 0)
+        }
+
+        'esc_enrollment_rights_unread' {
+            # Certificate template only: true when Get-ADCSVulnerabilities could not read
+            # who may enroll, which is what its 'Unknown' enrollment state writes onto the
+            # object. Used SeverityOnly, so it damps the colour of every ESC row on that
+            # template without touching the finding card or its remediation.
+            #
+            # Defaults to false with no source object, which is the undamped reading: a
+            # row that cannot say the rights were unread must not be treated as if they
+            # were.
+            if (-not $SourceObject) { return $false }
+            $caveat = $SourceObject.PSObject.Properties['escEnrollmentRightsUnread']
+            if ($caveat -and $caveat.Value) { return $true }
+            return $false
         }
 
         'ra_signature_gated' {
@@ -110368,6 +110434,15 @@ function Get-ADCSTemplate {
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipals' -NotePropertyValue $enrollmentPrincipals
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipalSIDs' -NotePropertyValue $enrollmentPrincipalSIDs
 
+            # Whether the security descriptor was there to read, which is a different
+            # statement from "no principal holds Certificate-Enrollment". A template that
+            # withdraws Read-Control from Authenticated Users arrives without
+            # nTSecurityDescriptor, the SD conversion can fail, and in both cases the
+            # enrollment list comes out empty - the same shape as a template that really
+            # grants enrollment to nobody. Get-ADCSVulnerabilities needs to tell them
+            # apart: one is an unknown, the other is a template nobody can enroll from.
+            $template | Add-Member -NotePropertyName 'EnrollmentRightsRead' -NotePropertyValue (@($sdACEs).Count -gt 0)
+
             # Parse write/modify permissions from Security Descriptor (for informational display)
             # These rights allow modifying the template itself (relevant for ESC4 context)
             $templateACL = @()
@@ -110516,20 +110591,41 @@ function Get-ADCSVulnerabilities {
     )
 
     begin {
-        # Helper function: Check if ALL enrollment principals are truly privileged
+        # Helper function: which principals can enroll, as one of four states.
         # Uses central Test-IsPrivileged function from adPEAS-SIDs.ps1
         # "Truly privileged" = Category 'Privileged' (NOT Operator, NOT BroadGroup)
         # Uses SIDs when available (more reliable), falls back to names
-        function Test-AllEnrollmentPrivileged {
+        #
+        # This used to return a boolean, and $false - "not all privileged", which opens
+        # every enrollment-driven ESC condition below - was also the answer for an empty
+        # principal list, under the comment "no enrollment principals = everyone can
+        # enroll". That reading is backwards: without a Certificate-Enrollment ACE nobody
+        # can enroll. There are three ways into an empty list - a hardened template that
+        # withdraws Read-Control so nTSecurityDescriptor never arrives, an enrollment ACE
+        # written as GENERIC_ALL, and a failed SD conversion - and each of them made the
+        # template report ESC1 at 90 points, ESC2, ESC3, ESC9, ESC13 and ESC15, with no
+        # EnrollmentPrincipals row to say who could exploit any of it. The template
+        # somebody had deliberately sealed was the one that came out worst.
+        #
+        # The enumeration path next to it had it right all along: $hasNonPrivilegedEnrollment
+        # requires Count -gt 0.
+        #
+        #   'Privileged'    - every principal that can enroll is truly privileged; the
+        #                     enrollment-driven ESCs are not reachable
+        #   'NonPrivileged' - at least one is not, which is the finding
+        #   'NotEnrollable' - the descriptor was read and grants enrollment to nobody
+        #   'Unknown'       - the descriptor could not be read, so this cannot be decided
+        function Get-EnrollmentPrivilegeState {
             param(
                 [string[]]$EnrollmentPrincipalSIDs,
                 [string[]]$EnrollmentPrincipals,
+                [bool]$EnrollmentRightsRead = $true,
                 [hashtable]$CredParams = @{}
             )
 
             if (-not $EnrollmentPrincipals -or @($EnrollmentPrincipals).Count -eq 0) {
-                # No enrollment principals = everyone can enroll = NOT privileged
-                return $false
+                if ($EnrollmentRightsRead) { return 'NotEnrollable' }
+                return 'Unknown'
             }
 
             # Check each principal - use SID if available at same index, otherwise use name
@@ -110544,7 +110640,7 @@ function Get-ADCSVulnerabilities {
                 # Use SID if available (more reliable), otherwise use name
                 $identity = if ($principalSID) { $principalSID } else { $principalName }
 
-                Write-Log "[Test-AllEnrollmentPrivileged] Checking: $principalName (SID: $principalSID, using: $identity)"
+                Write-Log "[Get-EnrollmentPrivilegeState] Checking: $principalName (SID: $principalSID, using: $identity)"
 
                 # Use central Test-IsPrivileged function
                 $result = Test-IsPrivileged -Identity $identity
@@ -110552,16 +110648,16 @@ function Get-ADCSVulnerabilities {
                 # Only Category 'Privileged' counts as truly privileged
                 # Operators, BroadGroups, Standard, and Unknown are NOT privileged for enrollment purposes
                 if ($result.Category -ne 'Privileged') {
-                    Write-Log "[Test-AllEnrollmentPrivileged] Found non-privileged: $principalName (Category: $($result.Category), Reason: $($result.Reason))"
-                    return $false
+                    Write-Log "[Get-EnrollmentPrivilegeState] Found non-privileged: $principalName (Category: $($result.Category), Reason: $($result.Reason))"
+                    return 'NonPrivileged'
                 }
 
-                Write-Log "[Test-AllEnrollmentPrivileged] Privileged: $principalName (Category: $($result.Category))"
+                Write-Log "[Get-EnrollmentPrivilegeState] Privileged: $principalName (Category: $($result.Category))"
             }
 
             # All principals are truly privileged
-            Write-Log "[Test-AllEnrollmentPrivileged] All enrollment principals are truly privileged"
-            return $true
+            Write-Log "[Get-EnrollmentPrivilegeState] All enrollment principals are truly privileged"
+            return 'Privileged'
         }
     }
 
@@ -111469,15 +111565,22 @@ function Get-ADCSVulnerabilities {
             # ESC3 needs both halves of the chain and they can appear in any order in the result
             # set, so the answer must be known before the first template is judged.
             # The cache is keyed by DistinguishedName and reused in the main loop, so
-            # Test-AllEnrollmentPrivileged still runs exactly once per template.
-            $enrollPrivilegedCache = @{}
+            # Get-EnrollmentPrivilegeState still runs exactly once per template.
+            $enrollStateCache = @{}
             $agentTemplateNames = @()
             foreach ($preTemplate in $templates) {
                 $preKey = [string]$preTemplate.DistinguishedName
-                $prePrivileged = Test-AllEnrollmentPrivileged -EnrollmentPrincipalSIDs $preTemplate.EnrollmentPrincipalSIDs -EnrollmentPrincipals $preTemplate.EnrollmentPrincipals -CredParams $CredParams
-                $enrollPrivilegedCache[$preKey] = $prePrivileged
+                $preRightsRead = $true
+                if ($null -ne $preTemplate.PSObject.Properties['EnrollmentRightsRead']) {
+                    $preRightsRead = [bool]$preTemplate.EnrollmentRightsRead
+                }
+                $preState = Get-EnrollmentPrivilegeState -EnrollmentPrincipalSIDs $preTemplate.EnrollmentPrincipalSIDs -EnrollmentPrincipals $preTemplate.EnrollmentPrincipals -EnrollmentRightsRead $preRightsRead -CredParams $CredParams
+                $enrollStateCache[$preKey] = $preState
 
-                if ($preTemplate.EnrollmentAgent -and -not $prePrivileged) {
+                # The ESC3 chain needs a template that really does hand enrollment agent
+                # certificates to someone unprivileged. 'Unknown' is not that, and
+                # 'NotEnrollable' is the opposite of it.
+                if ($preTemplate.EnrollmentAgent -and $preState -eq 'NonPrivileged') {
                     $agentTemplateNames += $preTemplate.Name
                 }
             }
@@ -111520,9 +111623,25 @@ function Get-ADCSVulnerabilities {
                 # Pre-check: Are ALL enrollment principals truly privileged?
                 # If yes, ESC1/2/3/9/15 are NOT real vulnerabilities (only admins can enroll)
                 # ESC4 (template permissions) is still checked regardless
-                $allEnrollmentPrivileged = $enrollPrivilegedCache[[string]$template.DistinguishedName]
-                if ($allEnrollmentPrivileged) {
+                $enrollmentState = $enrollStateCache[[string]$template.DistinguishedName]
+
+                # The gate the ESC conditions below read. Two of the four states close it:
+                # nobody unprivileged can enroll, either because every principal that can
+                # is privileged or because no principal holds the right at all.
+                #
+                # 'Unknown' deliberately does NOT close it. The rights could not be read,
+                # and suppressing the finding on that basis would be the same mistake in
+                # the other direction - reporting what was never checked as clean. It is
+                # reported, damped, and says in so many words that the rights are unread.
+                $allEnrollmentPrivileged = ($enrollmentState -eq 'Privileged' -or $enrollmentState -eq 'NotEnrollable')
+                $enrollmentRightsUnknown = ($enrollmentState -eq 'Unknown')
+
+                if ($enrollmentState -eq 'Privileged') {
                     Write-Log "[Get-ADCSVulnerabilities] Template '$($template.Name)': All enrollment principals are truly privileged - skipping ESC1/2/3/9/15"
+                } elseif ($enrollmentState -eq 'NotEnrollable') {
+                    Write-Log "[Get-ADCSVulnerabilities] Template '$($template.Name)': no principal holds Certificate-Enrollment - skipping ESC1/2/3/9/15"
+                } elseif ($enrollmentRightsUnknown) {
+                    Write-Log "[Get-ADCSVulnerabilities] Template '$($template.Name)': enrollment rights could not be read - ESC1/2/3/9/15 cannot be decided" -Level Warning
                 }
 
                 # Registration Authority barrier: a template that demands co-signatures cannot be
@@ -111837,7 +111956,10 @@ function Get-ADCSVulnerabilities {
                 # 1. It has ESC vulnerabilities (Critical/High findings), OR
                 # 2. It has non-privileged enrollment (interesting for enumeration, like v1)
                 $hasVulnerabilities = @($templateVulns).Count -gt 0
-                $hasNonPrivilegedEnrollment = -not $allEnrollmentPrivileged -and @($template.EnrollmentPrincipals).Count -gt 0
+                # This one was right before the state existed: it demands an actual
+                # principal rather than inferring one from an empty list. Phrased against
+                # the state now, so the two paths cannot drift apart again.
+                $hasNonPrivilegedEnrollment = ($enrollmentState -eq 'NonPrivileged') -and @($template.EnrollmentPrincipals).Count -gt 0
 
                 if ($hasVulnerabilities -or $hasNonPrivilegedEnrollment) {
                     if ($hasVulnerabilities) {
@@ -111850,6 +111972,17 @@ function Get-ADCSVulnerabilities {
 
                         # Enrich template with vulnerability info for Show-Object
                         $template | Add-Member -NotePropertyName 'Vulnerabilities' -NotePropertyValue $allESCs -Force
+
+                        # Said out loud rather than left to be inferred from a missing
+                        # EnrollmentPrincipals row. Every ESC below rests on somebody
+                        # unprivileged being able to enroll, and here that could not be
+                        # established - so the finding stands, with its own reason for
+                        # standing, and the predicate on this attribute damps the colour.
+                        if ($enrollmentRightsUnknown) {
+                            $template | Add-Member -NotePropertyName 'escEnrollmentRightsUnread' -NotePropertyValue (
+                                'The enrollment rights of this template could not be read, so whether an unprivileged principal can enroll is undecided. A template that withdraws Read-Control arrives without a security descriptor, and an enrollment ACE written as GENERIC_ALL reads the same way. The conditions below are the template''s own settings and hold regardless; what is missing is who could use them.'
+                            ) -Force
+                        }
                         if ($esc4Vuln -and $esc4Vuln.DangerousACEs) {
                             $template | Add-Member -NotePropertyName 'DangerousACEs' -NotePropertyValue $esc4Vuln.DangerousACEs -Force
                         }
@@ -129931,7 +130064,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-0230"
+$Script:adPEASVersion = "2.7.0+20261011-0248"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

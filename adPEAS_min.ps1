@@ -4750,6 +4750,47 @@ Remove-CATemplate -Name "VulnerableTemplate" -Force
             @{ Attribute = 'EnrolleeSuppliesSubject'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
         )
     }
+    'ESC_ENROLLMENT_RIGHTS_UNREAD' = @{
+        Title = "Enrollment Rights of This Template Could Not Be Read"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "Every ESC finding on a certificate template rests on an unprivileged principal being able to enroll for it. For this template that could not be established: no Certificate-Enrollment ACE was readable. The template's own settings - the subject flag, the EKUs, the schema version - are read from the object and hold regardless; what is missing is who could use them."
+        Impact = @(
+            "The ESC findings reported for this template cannot be confirmed as exploitable, and cannot be ruled out either"
+            "A template that withdraws Read-Control from Authenticated Users arrives without a security descriptor, so the hardening itself produces this state"
+            "An enrollment ACE written as GENERIC_ALL reads the same way, and that is the form impacket and Certipy write"
+        )
+        Attack = @(
+            "1. Nothing here is an attack by itself - this is a gap in what the scan could see"
+            "2. The value of knowing it: an attacker who already owns the template can produce exactly this state by writing a GENERIC_ALL ACE"
+            "3. A hardened template produces it too, which is why it is a hint rather than a finding"
+        )
+        Remediation = @(
+            "Read the template's security descriptor with an account that holds Read-Control on it, and re-run the scan"
+            "Check the descriptor by hand for an ACE written with the generic access bits rather than named rights"
+            "If Read-Control was withdrawn deliberately, nothing needs doing - but the ESC verdicts for this template stay undecided until somebody can read it"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the template's DACL in SDDL, where a generic-bit ACE is visible as GA"
+                Command = "(Get-Acl -Path `"AD:CN=TEMPLATENAME,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=DOMAIN,DC=COM`").Sddl"
+            }
+            @{
+                Description = "List who holds Certificate-Enrollment on the template"
+                Command = "(Get-Acl -Path `"AD:CN=TEMPLATENAME,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=DOMAIN,DC=COM`").Access | Where-Object { `$_.ObjectType -eq '0e10c968-78fb-11d2-90d4-00c04f79dc55' }"
+            }
+        )
+        References = @(
+            @{ Title = "Certified Pre-Owned"; Url = "https://posts.specterops.io/certified-pre-owned-d95910965cd2" }
+            @{ Title = "Certificate Templates - MS-CRTD"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-crtd/" }
+        )
+        Tools = @("Certipy", "Certify", "PowerView")
+        MITRE = "T1649"
+        Triggers = @(
+            @{ Attribute = 'escEnrollmentRightsUnread'; Severity = 'Hint' }
+            @{ Attribute = 'Vulnerabilities'; Custom = 'esc_enrollment_rights_unread'; Severity = 'Hint'; SeverityOnly = $true }
+        )
+    }
     'ESC2_TEMPLATE' = @{
         Title = "ESC2 - Any Purpose or SubCA Certificate Template"
         Risk = "Finding"
@@ -15952,6 +15993,12 @@ function Test-CustomTrigger {
             $encList = @(Get-EncryptionTypeList -SourceObject $SourceObject | Where-Object { $_ })
             if ($encList.Count -eq 0) { return $false }
             return (@($encList | Where-Object { $_ -like 'RC4*' -or $_ -like 'DES*' }).Count -eq 0)
+        }
+        'esc_enrollment_rights_unread' {
+            if (-not $SourceObject) { return $false }
+            $caveat = $SourceObject.PSObject.Properties['escEnrollmentRightsUnread']
+            if ($caveat -and $caveat.Value) { return $true }
+            return $false
         }
         'ra_signature_gated' {
             if (-not $SourceObject) { return $false }
@@ -69741,6 +69788,7 @@ function Get-ADCSTemplate {
             }
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipals' -NotePropertyValue $enrollmentPrincipals
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipalSIDs' -NotePropertyValue $enrollmentPrincipalSIDs
+            $template | Add-Member -NotePropertyName 'EnrollmentRightsRead' -NotePropertyValue (@($sdACEs).Count -gt 0)
             $templateACL = @()
             $writeRights = @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner')
             if (@($sdACEs).Count -gt 0) {
@@ -69810,14 +69858,16 @@ function Get-ADCSVulnerabilities {
         [switch]$IncludePrivileged
     )
     begin {
-        function Test-AllEnrollmentPrivileged {
+        function Get-EnrollmentPrivilegeState {
             param(
                 [string[]]$EnrollmentPrincipalSIDs,
                 [string[]]$EnrollmentPrincipals,
+                [bool]$EnrollmentRightsRead = $true,
                 [hashtable]$CredParams = @{}
             )
             if (-not $EnrollmentPrincipals -or @($EnrollmentPrincipals).Count -eq 0) {
-                return $false
+                if ($EnrollmentRightsRead) { return 'NotEnrollable' }
+                return 'Unknown'
             }
             for ($i = 0; $i -lt $EnrollmentPrincipals.Count; $i++) {
                 $principalName = $EnrollmentPrincipals[$i]
@@ -69827,16 +69877,16 @@ function Get-ADCSVulnerabilities {
                     $null
                 }
                 $identity = if ($principalSID) { $principalSID } else { $principalName }
-                Write-Log "[Test-AllEnrollmentPrivileged] Checking: $principalName (SID: $principalSID, using: $identity)"
+                Write-Log "[Get-EnrollmentPrivilegeState] Checking: $principalName (SID: $principalSID, using: $identity)"
                 $result = Test-IsPrivileged -Identity $identity
                 if ($result.Category -ne 'Privileged') {
-                    Write-Log "[Test-AllEnrollmentPrivileged] Found non-privileged: $principalName (Category: $($result.Category), Reason: $($result.Reason))"
-                    return $false
+                    Write-Log "[Get-EnrollmentPrivilegeState] Found non-privileged: $principalName (Category: $($result.Category), Reason: $($result.Reason))"
+                    return 'NonPrivileged'
                 }
-                Write-Log "[Test-AllEnrollmentPrivileged] Privileged: $principalName (Category: $($result.Category))"
+                Write-Log "[Get-EnrollmentPrivilegeState] Privileged: $principalName (Category: $($result.Category))"
             }
-            Write-Log "[Test-AllEnrollmentPrivileged] All enrollment principals are truly privileged"
-            return $true
+            Write-Log "[Get-EnrollmentPrivilegeState] All enrollment principals are truly privileged"
+            return 'Privileged'
         }
     }
     process {
@@ -70470,13 +70520,17 @@ function Get-ADCSVulnerabilities {
             catch {
                 Write-Log "[Get-ADCSVulnerabilities] ESC13: Error loading issuance policy cache: $_" -Level Warning
             }
-            $enrollPrivilegedCache = @{}
+            $enrollStateCache = @{}
             $agentTemplateNames = @()
             foreach ($preTemplate in $templates) {
                 $preKey = [string]$preTemplate.DistinguishedName
-                $prePrivileged = Test-AllEnrollmentPrivileged -EnrollmentPrincipalSIDs $preTemplate.EnrollmentPrincipalSIDs -EnrollmentPrincipals $preTemplate.EnrollmentPrincipals -CredParams $CredParams
-                $enrollPrivilegedCache[$preKey] = $prePrivileged
-                if ($preTemplate.EnrollmentAgent -and -not $prePrivileged) {
+                $preRightsRead = $true
+                if ($null -ne $preTemplate.PSObject.Properties['EnrollmentRightsRead']) {
+                    $preRightsRead = [bool]$preTemplate.EnrollmentRightsRead
+                }
+                $preState = Get-EnrollmentPrivilegeState -EnrollmentPrincipalSIDs $preTemplate.EnrollmentPrincipalSIDs -EnrollmentPrincipals $preTemplate.EnrollmentPrincipals -EnrollmentRightsRead $preRightsRead -CredParams $CredParams
+                $enrollStateCache[$preKey] = $preState
+                if ($preTemplate.EnrollmentAgent -and $preState -eq 'NonPrivileged') {
                     $agentTemplateNames += $preTemplate.Name
                 }
             }
@@ -70504,9 +70558,15 @@ function Get-ADCSVulnerabilities {
                 $currentIndex++
                 if ($totalTemplates -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing templates for vulnerabilities" -Current $currentIndex -Total $totalTemplates -ObjectName $template.DisplayName }
                 $templateVulns = @()
-                $allEnrollmentPrivileged = $enrollPrivilegedCache[[string]$template.DistinguishedName]
-                if ($allEnrollmentPrivileged) {
+                $enrollmentState = $enrollStateCache[[string]$template.DistinguishedName]
+                $allEnrollmentPrivileged = ($enrollmentState -eq 'Privileged' -or $enrollmentState -eq 'NotEnrollable')
+                $enrollmentRightsUnknown = ($enrollmentState -eq 'Unknown')
+                if ($enrollmentState -eq 'Privileged') {
                     Write-Log "[Get-ADCSVulnerabilities] Template '$($template.Name)': All enrollment principals are truly privileged - skipping ESC1/2/3/9/15"
+                } elseif ($enrollmentState -eq 'NotEnrollable') {
+                    Write-Log "[Get-ADCSVulnerabilities] Template '$($template.Name)': no principal holds Certificate-Enrollment - skipping ESC1/2/3/9/15"
+                } elseif ($enrollmentRightsUnknown) {
+                    Write-Log "[Get-ADCSVulnerabilities] Template '$($template.Name)': enrollment rights could not be read - ESC1/2/3/9/15 cannot be decided" -Level Warning
                 }
                 $requiresRASignature = $template.RASignatureCount -ge 1
                 if ($template.EnrolleeSuppliesSubject -and $template.ClientAuthentication -and -not $allEnrollmentPrivileged) {
@@ -70698,7 +70758,7 @@ function Get-ADCSVulnerabilities {
                     $template | Add-Member -NotePropertyName 'EnrollmentAgentChainReachable' -NotePropertyValue (@($agentTemplateNames).Count -gt 0) -Force
                 }
                 $hasVulnerabilities = @($templateVulns).Count -gt 0
-                $hasNonPrivilegedEnrollment = -not $allEnrollmentPrivileged -and @($template.EnrollmentPrincipals).Count -gt 0
+                $hasNonPrivilegedEnrollment = ($enrollmentState -eq 'NonPrivileged') -and @($template.EnrollmentPrincipals).Count -gt 0
                 if ($hasVulnerabilities -or $hasNonPrivilegedEnrollment) {
                     if ($hasVulnerabilities) {
                         $totalVulnerabilities++
@@ -70706,6 +70766,11 @@ function Get-ADCSVulnerabilities {
                         $allESCs = ($escList | Sort-Object -Unique) -join ", "
                         $esc4Vuln = $templateVulns | Where-Object { $_.ESC -eq "ESC4" } | Select-Object -First 1
                         $template | Add-Member -NotePropertyName 'Vulnerabilities' -NotePropertyValue $allESCs -Force
+                        if ($enrollmentRightsUnknown) {
+                            $template | Add-Member -NotePropertyName 'escEnrollmentRightsUnread' -NotePropertyValue (
+                                'The enrollment rights of this template could not be read, so whether an unprivileged principal can enroll is undecided. A template that withdraws Read-Control arrives without a security descriptor, and an enrollment ACE written as GENERIC_ALL reads the same way. The conditions below are the template''s own settings and hold regardless; what is missing is who could use them.'
+                            ) -Force
+                        }
                         if ($esc4Vuln -and $esc4Vuln.DangerousACEs) {
                             $template | Add-Member -NotePropertyName 'DangerousACEs' -NotePropertyValue $esc4Vuln.DangerousACEs -Force
                         }
@@ -84563,7 +84628,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-0230"
+$Script:adPEASVersion = "2.7.0+20261011-0248"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

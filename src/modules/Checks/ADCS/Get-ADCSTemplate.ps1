@@ -347,6 +347,15 @@ function Get-ADCSTemplate {
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipals' -NotePropertyValue $enrollmentPrincipals
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipalSIDs' -NotePropertyValue $enrollmentPrincipalSIDs
 
+            # Whether the security descriptor was there to read, which is a different
+            # statement from "no principal holds Certificate-Enrollment". A template that
+            # withdraws Read-Control from Authenticated Users arrives without
+            # nTSecurityDescriptor, the SD conversion can fail, and in both cases the
+            # enrollment list comes out empty - the same shape as a template that really
+            # grants enrollment to nobody. Get-ADCSVulnerabilities needs to tell them
+            # apart: one is an unknown, the other is a template nobody can enroll from.
+            $template | Add-Member -NotePropertyName 'EnrollmentRightsRead' -NotePropertyValue (@($sdACEs).Count -gt 0)
+
             # Parse write/modify permissions from Security Descriptor (for informational display)
             # These rights allow modifying the template itself (relevant for ESC4 context)
             $templateACL = @()
