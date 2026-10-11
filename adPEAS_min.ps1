@@ -158,6 +158,7 @@ $Script:ExtendedRightsGUIDs = @{
     '72e39547-7b18-11d1-adef-00c04fd8d5cd' = 'DNS-Host-Name-Attributes'
     'f30e3bbe-9ff0-11d1-b603-0000f80367c1' = 'GP-Link'
     'f30e3bbf-9ff0-11d1-b603-0000f80367c1' = 'GP-Options'
+    'd064fb68-1480-11d3-91c1-0000f87a57d4' = 'ms-DS-MachineAccountQuota'
     '9923a32a-3607-11d2-b9be-0000f87a36b2' = 'DS-Install-Replica'
     '69ae6200-7f46-11d2-b9ad-00c04f79f805' = 'DS-Check-Stale-Phantoms'
     '2f16c4a5-b98e-432c-952a-cb388ba33f2e' = 'DS-Execute-Intentions-Script'
@@ -6085,6 +6086,258 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         MITRE = "T1484.001"
         Triggers = @(
             @{ Attribute = 'GPOOwner'; Severity = 'Finding' }
+        )
+    }
+    'DOMAIN_ROOT_GPLINK_WRITE' = @{
+        Title = "Write Access to the GPO Link of the Domain Object"
+        Risk = "Finding"
+        BaseScore = 53
+        Description = "A principal can write gPLink or gPOptions on the domain object. gPLink is the attribute that links a Group Policy Object to the domain itself, so whoever writes it chooses which policy applies to every machine in the domain, domain controllers included. gPOptions decides whether inheritance is blocked, which is enough to disable a policy that is holding a setting down."
+        Impact = @(
+            "A GPO linked at the domain root applies to every computer and user in the domain, domain controllers included"
+            "Startup and logon scripts, scheduled immediate tasks and software installation in such a GPO are code execution everywhere"
+            "The attacker does not need write access to any existing GPO - creating one and linking it here is enough"
+            "Blocking inheritance through gPOptions silently disables a hardening policy without changing the policy itself"
+        )
+        Attack = @(
+            "1. Attacker creates a GPO, which by default any authenticated user with Group Policy Creator Owners can do"
+            "2. Puts an immediate scheduled task or a startup script into it"
+            "3. Writes the GPO's path into gPLink on the domain object"
+            "4. Waits for the refresh interval, or triggers it, and has code running on every machine"
+        )
+        Remediation = @(
+            "Remove write access to gPLink and gPOptions on the domain object from every non-Tier-0 principal"
+            "Audit the current links at the domain root - a policy linked there should be deliberate and few"
+            "Watch directory service changes on the domain object for gPLink (Event ID 5136)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which principals hold write access to gPLink on the domain object"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ActiveDirectoryRights -match "WriteProperty" -and $_.ObjectType -eq "f30e3bbe-9ff0-11d1-b603-0000f80367c1" } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize'
+            }
+            @{
+                Description = "List the GPOs currently linked at the domain root"
+                Command = 'Get-ADObject -Identity "DC=DOMAIN,DC=COM" -Properties gPLink | Select-Object -ExpandProperty gPLink'
+            }
+        )
+        References = @(
+            @{ Title = "GP-Link attribute - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-gplink" }
+            @{ Title = "BloodHound WriteGPLink edge"; Url = "https://bloodhound.specterops.io/resources/edges/write-gp-link" }
+        )
+        Tools = @("PowerView", "BloodHound", "SharpGPOAbuse")
+        MITRE = "T1484.001"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'GP-Link|GP-Options'; Severity = 'Finding' }
+        )
+    }
+    'DOMAIN_ROOT_SID_HISTORY_WRITE' = @{
+        Title = "Migrate-SID-History on the Domain Object"
+        Risk = "Finding"
+        BaseScore = 52
+        Description = "A principal holds the Migrate-SID-History extended right on the domain object. That right exists so a migration tool can write sIDHistory on an account it creates, and sIDHistory is honoured at logon exactly like primary group membership: a privileged SID written there grants the privilege without the account appearing in any group."
+        Impact = @(
+            "A SID written into sIDHistory is added to the logon token, so the account holds the privilege of a group it is not a member of"
+            "Group membership reports and most audits read member and memberOf, neither of which shows this"
+            "The target account can be an ordinary user the attacker already controls"
+            "Removing the account from privileged groups does not remove the privilege"
+        )
+        Attack = @(
+            "1. Attacker holds Migrate-SID-History on the domain object"
+            "2. Creates or picks an account it controls"
+            "3. Writes the SID of Domain Admins, or of the Administrator account, into its sIDHistory"
+            "4. Logs on and holds that privilege, with no group membership to find"
+        )
+        Remediation = @(
+            "Remove the Migrate-SID-History right from every principal that is not an active migration service account"
+            "Audit sIDHistory across the domain for privileged SIDs of this domain - a local privileged SID there is never a migration artefact"
+            "Remove the right again once a migration has finished, rather than leaving it in place"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which principals hold Migrate-SID-History on the domain object"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ObjectType -eq "ba33815a-4f93-4c76-87f3-57574bff8109" } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize'
+            }
+            @{
+                Description = "Find accounts carrying any sIDHistory at all, as the starting point for a review"
+                Command = 'Get-ADObject -LDAPFilter "(sIDHistory=*)" -Properties sIDHistory | Select-Object Name,DistinguishedName,sIDHistory'
+            }
+        )
+        References = @(
+            @{ Title = "Migrate-SID-History - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-migrate-sid-history" }
+            @{ Title = "sIDHistory in attacks - Microsoft"; Url = "https://learn.microsoft.com/en-us/defender-for-identity/security-assessment-unsecure-sid-history-attributes" }
+        )
+        Tools = @("PowerView", "BloodHound", "Mimikatz")
+        MITRE = "T1134.005"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'Migrate-SID-History'; Severity = 'Finding' }
+        )
+    }
+    'DOMAIN_ROOT_REPLICA_INSTALL' = @{
+        Title = "DS-Install-Replica on the Domain Object"
+        Risk = "Finding"
+        BaseScore = 54
+        Description = "A principal holds the DS-Install-Replica extended right on the domain object - 'Add/remove replica in domain'. It is the right a server needs to be promoted into a replica of the directory, and a replica holds the whole naming context, every secret in it included."
+        Impact = @(
+            "A machine the attacker controls can be brought up as a replica and receive the entire directory"
+            "That includes the credential material a DCSync would otherwise have to be granted separately"
+            "The replication traffic is legitimate, so it does not look like an export"
+            "Removing a rogue replica afterwards does not undo what it already received"
+        )
+        Attack = @(
+            "1. Attacker holds DS-Install-Replica on the domain object"
+            "2. Promotes a machine it controls into a replica of the domain"
+            "3. Receives the naming context including secrets, with no DCSync right needed"
+            "4. Demotes it again, leaving an ordinary-looking replication event behind"
+        )
+        Remediation = @(
+            "Remove the right from every principal that is not a domain controller or a Tier-0 administrator"
+            "Compare the list of domain controllers against the expected one"
+            "Alert on new objects in the Domain Controllers OU and on new nTDSDSA objects in the configuration partition"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which principals hold DS-Install-Replica on the domain object"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ObjectType -eq "9923a32a-3607-11d2-b9be-0000f87a36b2" } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize'
+            }
+            @{
+                Description = "List the nTDSDSA objects, which is what a promoted replica actually creates"
+                Command = '$configNC = (Get-ADRootDSE).configurationNamingContext; Get-ADObject -SearchBase $configNC -LDAPFilter "(objectClass=nTDSDSA)" | Select-Object DistinguishedName'
+            }
+        )
+        References = @(
+            @{ Title = "DS-Install-Replica - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-ds-install-replica" }
+            @{ Title = "AD DS Permissions Reference - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory" }
+        )
+        Tools = @("PowerView", "ADACLScanner")
+        MITRE = "T1207"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'DS-Install-Replica'; Severity = 'Finding' }
+        )
+    }
+    'DOMAIN_ROOT_REANIMATE_TOMBSTONES' = @{
+        Title = "Reanimate-Tombstones on the Domain Object"
+        Risk = "Finding"
+        BaseScore = 51
+        Description = "A principal holds the Reanimate-Tombstones extended right on the domain object. It allows a deleted object to be brought back directly, bypassing the Active Directory Recycle Bin and the restore tooling around it. A reanimated account comes back with its SID, and therefore with every permission that was granted to that SID."
+        Impact = @(
+            "A deleted privileged account can be restored with its original SID, and every ACE naming that SID applies again"
+            "If the attacker knows or can reset the password of the restored account, it is an immediate route back in"
+            "Reanimation keeps the SID, so it also restores access granted on other systems that trust that SID"
+            "It bypasses the approval process that a documented restore normally goes through"
+        )
+        Attack = @(
+            "1. Attacker holds Reanimate-Tombstones on the domain object"
+            "2. Finds a deleted account that held privilege, which the deleted-objects container still lists"
+            "3. Reanimates it, recovering the SID and the ACEs that name it"
+            "4. Resets its password and uses it"
+        )
+        Remediation = @(
+            "Remove the right from every principal that is not a Tier-0 administrator"
+            "Audit the deleted objects container for previously privileged accounts"
+            "Alert on reanimation - it is an object modification on a deleted object, not a creation"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which principals hold Reanimate-Tombstones on the domain object"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ObjectType -eq "45ec5156-db7e-47bb-b53f-dbeb2d03c40f" } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize'
+            }
+            @{
+                Description = "List the deleted objects that could be reanimated"
+                Command = 'Get-ADObject -IncludeDeletedObjects -LDAPFilter "(isDeleted=TRUE)" -Properties lastKnownParent | Select-Object Name,DistinguishedName,lastKnownParent'
+            }
+        )
+        References = @(
+            @{ Title = "Reanimate-Tombstones - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-reanimate-tombstones" }
+            @{ Title = "AD Recycle Bin - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/get-started/adac/introduction-to-active-directory-administrative-center-enhancements--level-100-" }
+        )
+        Tools = @("PowerView", "ADACLScanner")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'Reanimate-Tombstones'; Severity = 'Finding' }
+        )
+    }
+    'DOMAIN_ROOT_MAQ_WRITE' = @{
+        Title = "Write Access to ms-DS-MachineAccountQuota"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A principal can write ms-DS-MachineAccountQuota on the domain object. The attribute decides how many computer accounts any authenticated user may create, and a computer account under an attacker's control is the missing piece of resource-based constrained delegation and of several certificate and shadow-credential attacks. Raising the quota from zero undoes the single most effective mitigation against those."
+        Impact = @(
+            "Raising the quota hands every authenticated user a computer account they fully control"
+            "A controlled computer account is what RBCD needs as the delegation source"
+            "The same account carries a machine certificate and a key credential, which opens the certificate and shadow-credential paths"
+            "A quota of zero is the documented mitigation, and this write access reverses it without touching any other setting"
+        )
+        Attack = @(
+            "1. Attacker can write ms-DS-MachineAccountQuota on the domain object"
+            "2. Raises it from 0 to a non-zero value"
+            "3. Creates a computer account and holds its credentials"
+            "4. Uses it as the delegation source for RBCD against a target it has write access to"
+        )
+        Remediation = @(
+            "Remove write access to the attribute from every non-Tier-0 principal"
+            "Set the quota to 0 and delegate computer creation explicitly where it is needed"
+            "Alert on changes to the attribute (Event ID 5136 on the domain object)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which principals can write ms-DS-MachineAccountQuota on the domain object"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ActiveDirectoryRights -match "WriteProperty" -and $_.ObjectType -eq "d064fb68-1480-11d3-91c1-0000f87a57d4" } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize'
+            }
+            @{
+                Description = "Read the current quota and set it to 0"
+                Command = 'Get-ADObject -Identity "DC=DOMAIN,DC=COM" -Properties ms-DS-MachineAccountQuota; Set-ADDomain -Identity "DOMAIN.COM" -Replace @{ "ms-DS-MachineAccountQuota" = 0 }'
+            }
+        )
+        References = @(
+            @{ Title = "ms-DS-MachineAccountQuota - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-ms-ds-machineaccountquota" }
+            @{ Title = "Resource-Based Constrained Delegation abuse"; Url = "https://learn.microsoft.com/en-us/windows-server/security/kerberos/kerberos-constrained-delegation-overview" }
+        )
+        Tools = @("PowerView", "BloodHound", "Rubeus")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'ms-DS-MachineAccountQuota'; Severity = 'Finding' }
+        )
+    }
+    'DOMAIN_ROOT_FSMO_TRANSFER' = @{
+        Title = "FSMO Role Transfer Rights on the Domain Object"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A principal holds one of the Change-*-Master extended rights on the domain object - the rights that transfer an FSMO role (RID master, PDC emulator, infrastructure master, domain naming master, schema master). These are operational rather than directly escalating, but the role holders are single points of failure: moving the RID master or the PDC emulator onto a machine the attacker controls, or onto one that is about to go offline, breaks account creation and authentication domain-wide."
+        Impact = @(
+            "Transferring the RID master stops new security principals from being created once the current RID pool is exhausted"
+            "Transferring the PDC emulator moves the authoritative time source and the urgent-replication target for password changes"
+            "A role moved onto an attacker-controlled or soon-to-be-decommissioned DC is a denial of service that is slow to diagnose"
+            "The schema master is the only object that can extend the schema, which is a forest-wide change"
+        )
+        Attack = @(
+            "1. Attacker holds a Change-*-Master right on the domain object"
+            "2. Transfers the role to a domain controller of its choosing"
+            "3. Account creation, authentication or time synchronisation degrades domain-wide"
+            "4. The cause looks like a replication fault rather than an action"
+        )
+        Remediation = @(
+            "Remove the Change-*-Master rights from every principal that is not a Tier-0 administrator"
+            "Record where each FSMO role is held and alert on a change"
+            "Transfer roles through the documented process rather than by granting the right"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show where the FSMO roles are held today"
+                Command = 'Get-ADDomain | Select-Object RIDMaster,PDCEmulator,InfrastructureMaster; Get-ADForest | Select-Object SchemaMaster,DomainNamingMaster'
+            }
+            @{
+                Description = "Show which principals hold a role-transfer right on the domain object"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ActiveDirectoryRights -match "ExtendedRight" } | Format-Table IdentityReference,ObjectType,AccessControlType -AutoSize'
+            }
+        )
+        References = @(
+            @{ Title = "FSMO roles - Microsoft"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/fsmo-roles" }
+            @{ Title = "Change-Rid-Master - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-change-rid-master" }
+        )
+        Tools = @("PowerView", "ADACLScanner")
+        MITRE = "T1489"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'Change-Rid-Master|Change-PDC|Change-Infrastructure-Master|Change-Domain-Master|Change-Schema-Master'; Severity = 'Finding' }
         )
     }
     'DOMAIN_ROOT_NON_DEFAULT_OWNER' = @{
@@ -64868,7 +65121,8 @@ function Get-DangerousACLs {
                 'Change-PDC',
                 'Change-Infrastructure-Master',
                 'Change-Domain-Master',
-                'Change-Schema-Master'
+                'Change-Schema-Master',
+                'ms-DS-MachineAccountQuota'
             )
             foreach ($ace in $aclResult.ACEs) {
                 $trusteeSID = $ace.TrusteeSID
@@ -84842,7 +85096,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-1033"
+$Script:adPEASVersion = "2.7.0+20261011-1055"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

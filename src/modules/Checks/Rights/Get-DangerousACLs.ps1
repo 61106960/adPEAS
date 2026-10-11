@@ -136,7 +136,11 @@ function Get-DangerousACLs {
                 'Change-PDC',
                 'Change-Infrastructure-Master',
                 'Change-Domain-Master',
-                'Change-Schema-Master'
+                'Change-Schema-Master',
+                # Raising the quota hands every authenticated user a computer account
+                # they control, which is the delegation source RBCD needs. No other
+                # check asks who may write it - Get-AddComputerRights reads the value.
+                'ms-DS-MachineAccountQuota'
             )
 
             foreach ($ace in $aclResult.ACEs) {

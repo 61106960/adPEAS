@@ -64,6 +64,17 @@ $Script:ExtendedRightsGUIDs = @{
     'f30e3bbe-9ff0-11d1-b603-0000f80367c1' = 'GP-Link'
     'f30e3bbf-9ff0-11d1-b603-0000f80367c1' = 'GP-Options'
 
+    # === Domain Object Attributes ===
+    # Also not an extended right. It is here for the same reason GP-Link above is:
+    # Get-ObjectACL names an ACE ObjectType through Get-ExtendedRightName only, so an
+    # attribute whose write access has to be reportable needs its GUID in this table.
+    # Without it the name resolves to $null and Get-DangerousACLs discards the ACE as
+    # object-specific - which is what happened to every WriteProperty ACE scoped to
+    # ms-DS-MachineAccountQuota on the domain object.
+    # Attribute-Id 1.2.840.113556.1.4.1411 (MS-ADA2); how many computer accounts a
+    # principal may create, and a controlled computer account is what RBCD needs.
+    'd064fb68-1480-11d3-91c1-0000f87a57d4' = 'ms-DS-MachineAccountQuota'
+
     # === Computer Related ===
     # No entry for RBCD here, deliberately. There is no such extended right:
     # msDS-AllowedToActOnBehalfOfOtherIdentity is an attribute, and write access to it is
