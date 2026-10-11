@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 00:12:08
-    Version: 2.7.0+20261012-0012
+    Build: 2026-10-12 00:36:41
+    Version: 2.7.0+20261012-0036
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6399,10 +6399,13 @@ $Script:PrimaryAttributes = @{
         # The unlinked statement first: a policy that reaches no computer makes every
         # setting below it moot, and the row carries the only card this check has for it.
         'lapsGpoNotLinked',
+        # Second for the same reason the unlinked statement is first: a policy that turns
+        # LAPS off makes every value below it moot.
+        'lapsPolicyState',
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'LAPSVersion', 'ManagedAccount',
         'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
         'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
-        'ExpirationProtection',
+        'ExpirationProtection', 'PostAuthActions',
         'LinkedOUs', 'GPOStatus'
     )
 
@@ -19117,6 +19120,167 @@ foreach ($oid in $linkedOIDs) {
     # META / STATUS ATTRIBUTES
     # ============================================================================
 
+    'LAPS_GPO_PASSWORD_LENGTH' = @{
+        Title = "LAPS Password Shorter Than the Default"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "This LAPS policy sets a password length below 14 characters, which is the product default and the value Microsoft's own administrative template ships with. LAPS passwords are never typed by a person and never remembered, so there is no reason to shorten one: the only effect is that the hash of the local administrator account becomes cheaper to crack once it has been captured from a machine. The value was read from the GPO and reported by adPEAS before this write-up existed, with nothing said about it either way."
+        Impact = @(
+            "A shorter random password is proportionally cheaper to crack offline"
+            "The local administrator hash is what gets captured, and it is what gets cracked"
+            "Nobody types a LAPS password, so the shorter value buys nothing"
+        )
+        Attack = @(
+            "1. Attacker dumps the local SAM or captures the NTLM hash of the local administrator"
+            "2. Cracks it offline - the shorter the password, the sooner that finishes"
+            "3. Uses the password or its hash on every machine where the policy produced the same length"
+        )
+        Remediation = @(
+            "Set the password length back to 14 or higher in the LAPS policy"
+            "Windows LAPS supports passphrases, which are longer again for the same operational cost"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Windows LAPS: the policy value that sets the length"
+                Command = "# Computer Configuration\Administrative Templates\System\LAPS\Password Settings -> Password Length"
+            }
+            @{
+                Description = "Read the configured length from a client"
+                Command = "Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\LAPS' -Name PasswordLength"
+            }
+        )
+        References = @(
+            @{ Title = "LAPS Password Policy Settings"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings" }
+        )
+        Tools = @("hashcat", "Get-LAPSDiagnostics")
+        Triggers = @(
+            @{ Attribute = 'PasswordLength'; Custom = 'laps_pwd_length_lt_14'; Severity = 'Hint' }
+        )
+    }
+
+    'LAPS_GPO_PASSWORD_AGE' = @{
+        Title = "LAPS Rotation Interval Above the Default"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "This LAPS policy rotates the local administrator password less often than every 30 days, which is the product default. The interval is the upper bound on how long a password that was captured once keeps working: with 365 days - the maximum LAPS accepts - a password read off one machine stays valid on that machine for up to a year. Above three months this is reported as a finding, between the default and three months as a hint, because that range is still a deliberate operational choice rather than a lapse."
+        Impact = @(
+            "A captured local administrator password stays valid until the next rotation"
+            "The interval is the upper bound on the useful life of one capture"
+            "Lateral movement with a cracked or dumped password has that long to run"
+        )
+        Attack = @(
+            "1. Attacker reads or cracks the local administrator password of one machine"
+            "2. Uses it until LAPS rotates it - which the policy decides"
+            "3. Where the same interval applies domain-wide, that window is domain-wide too"
+        )
+        Remediation = @(
+            "Set the rotation interval back to 30 days or fewer"
+            "Windows LAPS can reset the password after each use (PostAuthenticationActions), which makes the interval nearly irrelevant"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Windows LAPS: the policy value that sets the interval"
+                Command = "# Computer Configuration\Administrative Templates\System\LAPS\Password Settings -> Password Age (Days)"
+            }
+            @{
+                Description = "Read the configured interval from a client"
+                Command = "Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\LAPS' -Name PasswordAgeDays"
+            }
+        )
+        References = @(
+            @{ Title = "LAPS Password Policy Settings"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings" }
+            @{ Title = "LAPS Post-Authentication Actions"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview#post-authentication-actions" }
+        )
+        Tools = @("Get-LAPSDiagnostics")
+        Triggers = @(
+            # Two triggers, one card, mutually exclusive predicates - the same shape
+            # SID_HISTORY_INJECTION uses. Overlapping ones would pick their winner by
+            # hashtable order.
+            @{ Attribute = 'PasswordAgeDays'; Custom = 'laps_pwd_age_gt_90'; Severity = 'Finding' }
+            @{ Attribute = 'PasswordAgeDays'; Custom = 'laps_pwd_age_31_90'; Severity = 'Hint' }
+        )
+    }
+
+    'LAPS_GPO_DISABLED' = @{
+        Title = "LAPS Switched Off by Group Policy"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "A Group Policy sets AdmPwdEnabled = 0, the central switch of Legacy LAPS - the policy called 'Enable local admin password management'. Where the schema extension and the computer attributes are in place, this is the most misleading state LAPS has: every password the clients wrote before the switch was turned off is still in the directory, still valid on the machine, and no longer rotating. The coverage figure counts those machines as protected, because the attribute is there."
+        Impact = @(
+            "Local administrator passwords stop rotating and keep the value they last had"
+            "Those values remain readable in the directory for whoever is delegated the attribute"
+            "The expiration attribute keeps its last date, so the machines look managed"
+            "A password captured from one machine stays valid indefinitely"
+        )
+        Attack = @(
+            "1. Attacker reads ms-Mcs-AdmPwdExpirationTime and sees a date that never moves"
+            "2. Obtains the password of one machine - from the directory or from the machine itself"
+            "3. It keeps working, because nothing is going to change it"
+        )
+        Remediation = @(
+            "Set 'Enable local admin password management' back to Enabled, or remove the policy if LAPS was replaced"
+            "After re-enabling, force a rotation so the passwords that stood still are replaced"
+            "If LAPS was deliberately retired, remove the delegated read permissions on the attributes as well - the stored passwords outlive the policy"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "The policy value behind this finding"
+                Command = "# Computer Configuration\Administrative Templates\LAPS -> Enable local admin password management"
+            }
+            @{
+                Description = "Force a rotation on one machine after re-enabling (Legacy LAPS)"
+                Command = "Reset-AdmPwdPassword -ComputerName 'COMPUTER_NAME'"
+            }
+            @{
+                Description = "Find the machines whose expiration time stopped moving"
+                Command = "Get-ADComputer -Filter * -Properties ms-Mcs-AdmPwdExpirationTime | Where-Object { `$_.'ms-Mcs-AdmPwdExpirationTime' } | Select-Object Name,@{n='Expires';e={[DateTime]::FromFileTime(`$_.'ms-Mcs-AdmPwdExpirationTime')}}"
+            }
+        )
+        References = @(
+            @{ Title = "Legacy LAPS Operations Guide"; Url = "https://learn.microsoft.com/en-us/previous-versions/mt227395(v=msdn.10)" }
+            @{ Title = "Windows LAPS Policy Settings"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings" }
+        )
+        Tools = @("Get-AdmPwdPassword", "PowerView")
+        Triggers = @(
+            @{ Attribute = 'lapsPolicyState'; Pattern = '^Disabled'; Severity = 'Finding' }
+            @{ Attribute = 'lapsPolicyState'; Pattern = '^Enabled$'; Severity = 'Secure'; SeverityOnly = $true }
+        )
+    }
+
+    'LAPS_GPO_NO_POST_AUTH_RESET' = @{
+        Title = "Windows LAPS Does Not Reset the Password After Use"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A Group Policy sets PostAuthenticationActions = 0. Windows LAPS can reset the managed password once the session that used it ends - optionally logging the account off or rebooting as well - which turns a retrieved password into a single-use credential. With 0 the password a technician, a script or an attacker retrieved today stays valid until the rotation interval runs out."
+        Impact = @(
+            "A password that was retrieved once keeps working until the next scheduled rotation"
+            "The rotation interval, not the use of the password, decides the exposure window"
+            "Nothing in the directory records that the password was used"
+        )
+        Remediation = @(
+            "Set the post-authentication action to reset the password, which is the Windows LAPS default behaviour"
+            "Where a reset alone is not enough, the logoff and reboot variants end the session that used it"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "The policy value behind this finding"
+                Command = "# Computer Configuration\Administrative Templates\System\LAPS -> Post-authentication actions"
+            }
+            @{
+                Description = "Read the configured action from a client"
+                Command = "Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\LAPS' -Name PostAuthenticationActions"
+            }
+        )
+        References = @(
+            @{ Title = "LAPS Post-Authentication Actions"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview#post-authentication-actions" }
+        )
+        Tools = @("Get-LAPSDiagnostics")
+        Triggers = @(
+            @{ Attribute = 'PostAuthActions'; Pattern = '^Disabled'; Severity = 'Hint' }
+            @{ Attribute = 'PostAuthActions'; Pattern = '^Reset'; Severity = 'Secure'; SeverityOnly = $true }
+        )
+    }
+
     'GMSA_ROTATION_INTERVAL_LONG' = @{
         Title = "gMSA Password Rotates Rarely"
         Risk = "Hint"
@@ -22225,6 +22389,36 @@ function Test-CustomTrigger {
             if ($pwdDate) {
                 $pwdAge = ((Get-Date) - $pwdDate).Days
                 return ($pwdAge -gt 365 -and $pwdAge -le 1825)
+            }
+            return $false
+        }
+        'laps_pwd_length_lt_14' {
+            # The LAPS password length a GPO sets, in characters. 14 is the product default
+            # and what Microsoft's own template ships; below that the policy is weaker than
+            # an untouched installation. 0 is not a length - it reads as "not set".
+            $lengthValue = 0
+            if ([int]::TryParse([string]$Value, [ref]$lengthValue)) {
+                return ($lengthValue -gt 0 -and $lengthValue -lt 14)
+            }
+            return $false
+        }
+        'laps_pwd_age_31_90' {
+            # Rotation interval in days, above the 30-day default but still within three
+            # months. Mutually exclusive with laps_pwd_age_gt_90 on purpose: two triggers on
+            # one attribute that can both match a value pick their winner by hashtable
+            # enumeration order, which differs between PowerShell hosts.
+            $ageValue = 0
+            if ([int]::TryParse([string]$Value, [ref]$ageValue)) {
+                return ($ageValue -gt 30 -and $ageValue -le 90)
+            }
+            return $false
+        }
+        'laps_pwd_age_gt_90' {
+            # A local administrator password that stands for more than three months. The
+            # maximum LAPS accepts is 365.
+            $ageValue = 0
+            if ([int]::TryParse([string]$Value, [ref]$ageValue)) {
+                return ($ageValue -gt 90)
             }
             return $false
         }
@@ -76795,7 +76989,19 @@ function Get-LAPSGPOConfig {
 }
 
 # Legacy LAPS fields tracked from Software\Policies\Microsoft Services\AdmPwd
-$Script:LAPSLegacyMetadataFields = @('AdminAccountName', 'PasswordComplexity', 'PasswordLength', 'PasswordAgeDays')
+#
+# AdmPwdEnabled is the central switch of the whole product - the policy called "Enable
+# local admin password management". Without it in this list two things were invisible: a
+# GPO that sets only the switch and leaves every other value at its default, which is an
+# ordinary minimal configuration, left nothing behind for Get-LAPSMetadataFromPol to keep,
+# so $result.Legacy stayed $null and the report said LAPS was not managed by GPO at all;
+# and AdmPwdEnabled = 0, LAPS switched OFF by policy while the schema and the attributes
+# are in place, which is the most dangerous state Legacy LAPS has and appeared nowhere.
+#
+# PwdExpirationProtectionEnabled is the legacy name of the setting the native branch
+# already reports as ExpirationProtection.
+$Script:LAPSLegacyMetadataFields = @('AdminAccountName', 'PasswordComplexity', 'PasswordLength', 'PasswordAgeDays',
+    'AdmPwdEnabled', 'PwdExpirationProtectionEnabled')
 
 # Windows LAPS fields tracked from Software\Microsoft\Windows\CurrentVersion\Policies\LAPS
 # Reference: https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-management-policy-settings
@@ -76803,6 +77009,8 @@ $Script:LAPSNativeMetadataFields = @(
     'AdministratorAccountName', 'PasswordComplexity', 'PasswordLength', 'PassphraseLength',
     'PasswordAgeDays', 'BackupDirectory', 'ADPasswordEncryptionEnabled',
     'ADPasswordEncryptionPrincipal', 'PasswordExpirationProtectionEnabled',
+    # 0 means the password that was just used stays valid until the next rotation
+    'PostAuthenticationActions',
     # The only LAPS setting that reaches a domain controller at all: a DC has no local SAM,
     # so what Windows LAPS can manage there is the DSRM account, and only when this is on
     'BackupDsrmPassword'
@@ -106679,7 +106887,11 @@ function New-LAPSGPOConfigObject {
 
         [Parameter(Mandatory=$false)]
         [AllowNull()]
-        [hashtable]$GPOLinkage
+        [hashtable]$GPOLinkage,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [hashtable]$GPOStatusMap
     )
 
     $isNative = ($Generation -eq 'Windows LAPS')
@@ -106763,13 +106975,43 @@ function New-LAPSGPOConfigObject {
         $obj | Add-Member -NotePropertyName 'DsrmPasswordBackup' -NotePropertyValue $dsrmText -Force
     }
 
-    if ($isNative -and $Metadata.ContainsKey('PasswordExpirationProtectionEnabled')) {
-        $expText = if ([int]$Metadata['PasswordExpirationProtectionEnabled'] -eq 0) {
+    # Windows LAPS calls it PasswordExpirationProtectionEnabled, Legacy LAPS
+    # PwdExpirationProtectionEnabled. Same setting, same consequence, and the row was
+    # gated on the native generation - so a legacy policy that turns it off said nothing.
+    $expirationField = if ($isNative) { 'PasswordExpirationProtectionEnabled' } else { 'PwdExpirationProtectionEnabled' }
+    if ($Metadata.ContainsKey($expirationField)) {
+        $expText = if ([int]$Metadata[$expirationField] -eq 0) {
             'Disabled - password max-age is not enforced'
         } else {
             'Enabled'
         }
         $obj | Add-Member -NotePropertyName 'ExpirationProtection' -NotePropertyValue $expText -Force
+    }
+
+    # The central switch of Legacy LAPS. 0 is LAPS switched off by policy while the schema
+    # and the computer attributes stay in place - every password the clients last wrote
+    # remains in the directory and stops rotating, and nothing else in the report says so.
+    if (-not $isNative -and $Metadata.ContainsKey('AdmPwdEnabled')) {
+        $stateText = if ([int]$Metadata['AdmPwdEnabled'] -eq 0) {
+            'Disabled - LAPS is switched off by this policy, and passwords already stored stop rotating'
+        } else {
+            'Enabled'
+        }
+        $obj | Add-Member -NotePropertyName 'lapsPolicyState' -NotePropertyValue $stateText -Force
+    }
+
+    # Windows LAPS can reset the password after the session that used it: 0 none,
+    # 1 reset, 3 reset and log the account off, 5 reset and reboot. With 0 a password
+    # that was used once stays valid until the rotation interval runs out.
+    if ($isNative -and $Metadata.ContainsKey('PostAuthenticationActions')) {
+        $postAuthText = switch ([int]$Metadata['PostAuthenticationActions']) {
+            0       { 'Disabled - the password is not reset after the session that used it' }
+            1       { 'Reset the password' }
+            3       { 'Reset the password and log off the managed account' }
+            5       { 'Reset the password and reboot' }
+            default { "Unknown ($($Metadata['PostAuthenticationActions']))" }
+        }
+        $obj | Add-Member -NotePropertyName 'PostAuthActions' -NotePropertyValue $postAuthText -Force
     }
 
     # GPO links - without these it is not visible where the settings actually apply.
@@ -106805,6 +107047,20 @@ function New-LAPSGPOConfigObject {
                 'This GPO carries LAPS policy settings and is linked to no OU, domain or site, so the settings apply to no computer at all.'
             ) -Force
         }
+    }
+
+    # The other half of "does this policy reach a machine". LAPS is a computer policy, so
+    # a GPO whose computer configuration is switched off carries every setting above into
+    # the report while delivering none of them - and the links can be perfectly healthy
+    # while that is true. flags was never read here; Get-DomainGPO decodes it, and
+    # Get-GPOEffectiveStatus answers $null when the policy does apply, so the row exists
+    # only when there is something to say. GPO_NOT_CURRENTLY_EFFECTIVE hangs off it.
+    $gpoStatus = Get-GPOEffectiveStatus `
+        -StatusEntry $(if ($GPOStatusMap -and $gpoGuid) { $GPOStatusMap[$gpoGuid] } else { $null }) `
+        -Scope 'Machine' `
+        -Link $(if ($null -eq $GPOLinkage) { $null } else { $linkedOUs })
+    if ($gpoStatus) {
+        $obj | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
     }
 
     $obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSGPOConfig' -Force
@@ -106845,19 +107101,30 @@ function Get-LAPSGPOConfigObjects {
         Write-Log "[Get-LAPSGPOConfigObjects] Failed to resolve GPO linkage: $_"
     }
 
+    # Read once for the whole batch, like the linkage above it. An empty map is the
+    # honest answer to a failed lookup: Get-GPOEffectiveStatus then says nothing rather
+    # than reporting a policy as ineffective on the strength of a query that did not
+    # answer - the same distinction the linkage block makes.
+    $gpoStatusMap = @{}
+    try {
+        $gpoStatusMap = Get-GPOStatusMap -GPO (Get-DomainGPO)
+    } catch {
+        Write-Log "[Get-LAPSGPOConfigObjects] Failed to read the GPO status: $_"
+    }
+
     $objects = @()
 
     if ($LAPSGPOSettings.Native) {
         foreach ($gpoName in ($LAPSGPOSettings.Native.Keys | Sort-Object)) {
             $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Native[$gpoName] `
-                -Generation 'Windows LAPS' -GPOLinkage $gpoLinkage
+                -Generation 'Windows LAPS' -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
         }
     }
 
     if ($LAPSGPOSettings.Legacy) {
         foreach ($gpoName in ($LAPSGPOSettings.Legacy.Keys | Sort-Object)) {
             $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Legacy[$gpoName] `
-                -Generation 'LAPS Legacy' -GPOLinkage $gpoLinkage
+                -Generation 'LAPS Legacy' -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
         }
     }
 
@@ -106952,6 +107219,12 @@ function Get-LAPSConfiguration {
     .PARAMETER Credential
     PSCredential object for authentication (optional, uses current user if not specified)
 
+    .PARAMETER OPSEC
+    Skips the check. It is the loudest one in the Computer module: every enabled computer,
+    a second query for the LAPS-carrying ones, the domain controllers, and a full SYSVOL
+    walk over every Registry.pol. Its two siblings already abstain under -OPSEC and say so
+    in the report; this one ran at full volume without a line.
+
     .EXAMPLE
     Get-LAPSConfiguration
 
@@ -106975,7 +107248,10 @@ function Get-LAPSConfiguration {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$OPSEC
     )
 
     begin {
@@ -106993,8 +107269,27 @@ function Get-LAPSConfiguration {
 
     process {
         try {
+            # Built explicitly rather than splatting $PSBoundParameters: that carries
+            # every bound parameter, and neither Ensure-LDAPConnection nor
+            # Get-LAPSSchemaPresence nor Get-DomainComputer has a parameter named OPSEC.
+            # The binding error would land in this function's own try/catch and the check
+            # would report nothing at all - silently, which is how it was found elsewhere.
+            $connectionParams = @{}
+            if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+            if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+            if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
+                return
+            }
+
+            # The loudest check in the module: every enabled computer, a second query for
+            # the ones carrying LAPS, the domain controllers, and a SYSVOL walk over every
+            # Registry.pol. Its two siblings abstain under -OPSEC and say so; this one ran
+            # at full volume without a word.
+            if ($OPSEC) {
+                Show-Line "OPSEC mode: Skipping LAPS configuration check (would query every computer and walk SYSVOL)" -Class "Hint"
                 return
             }
 
@@ -107003,7 +107298,7 @@ function Get-LAPSConfiguration {
 
             # One definition of "does this domain run LAPS", shared with
             # Get-LAPSCredentialAccess and Get-LAPSPermissions and cached for the session.
-            $lapsSchema = Get-LAPSSchemaPresence @PSBoundParameters
+            $lapsSchema = Get-LAPSSchemaPresence @connectionParams
             $lapsLegacySchemaPresent = $lapsSchema.LegacyPresent
             $windowsLAPSSchemaPresent = $lapsSchema.NativePresent
 
@@ -107072,7 +107367,7 @@ function Get-LAPSConfiguration {
             $domainControllerCount = 0
             $domainControllerLookupFailed = $false
             try {
-                foreach ($dc in @(Get-DomainComputer -DomainController -Properties 'distinguishedName' @PSBoundParameters)) {
+                foreach ($dc in @(Get-DomainComputer -DomainController -Properties 'distinguishedName' @connectionParams)) {
                     if (-not $dc.distinguishedName) { continue }
                     $domainControllerDNs["$($dc.distinguishedName)".ToLowerInvariant()] = $true
                 }
@@ -107095,7 +107390,7 @@ function Get-LAPSConfiguration {
                 }
 
                 # Get active computers grouped by OU (uses $Script:DefaultInactiveDays)
-                $allComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @PSBoundParameters |
+                $allComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @connectionParams |
                     Test-AccountActivity -IsActive |
                     Where-Object { -not $domainControllerDNs.ContainsKey("$($_.distinguishedName)".ToLowerInvariant()) })
 
@@ -107174,14 +107469,14 @@ function Get-LAPSConfiguration {
             Show-SubHeader "Analyzing LAPS deployment coverage..." -ObjectType "LAPSConfiguration"
 
             # Query 1: All enabled computers (for statistics), domain controllers removed
-            $allEnabledComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @PSBoundParameters |
+            $allEnabledComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @connectionParams |
                 Where-Object { -not $domainControllerDNs.ContainsKey("$($_.distinguishedName)".ToLowerInvariant()) })
 
             # Query 2: Active computers (enabled + recent logon) - uses $Script:DefaultInactiveDays
             $activeComputers = @($allEnabledComputers | Test-AccountActivity -IsActive)
 
             # Query 3: Computers WITH LAPS (LDAP-side filter) - much faster than client-side attribute check
-            $computersWithLAPSRaw = @(Get-DomainComputer -Enabled -LAPS -Properties $ComputerProperties @PSBoundParameters |
+            $computersWithLAPSRaw = @(Get-DomainComputer -Enabled -LAPS -Properties $ComputerProperties @connectionParams |
                 Where-Object { -not $domainControllerDNs.ContainsKey("$($_.distinguishedName)".ToLowerInvariant()) })
             $computersWithLAPS = @($computersWithLAPSRaw | Test-AccountActivity -IsActive)
 
@@ -132523,7 +132818,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0012"
+$Script:adPEASVersion = "2.7.0+20261012-0036"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -133469,7 +133764,7 @@ try {
         try {
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-InfrastructureServers' -Title 'Infrastructure Servers' -Check { Get-InfrastructureServers }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-NonDefaultComputerOwners' -Title 'Non-Default Computer Owners' -Check { Get-NonDefaultComputerOwners -OPSEC:$OPSEC }
-            Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-LAPSConfiguration' -Title 'LAPS Configuration' -Check { Get-LAPSConfiguration }
+            Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-LAPSConfiguration' -Title 'LAPS Configuration' -Check { Get-LAPSConfiguration -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-OutdatedComputers' -Title 'Outdated Computers' -Check { Get-OutdatedComputers -OPSEC:$OPSEC }
         } catch {
             Write-Warning "[adPEAS] Error executing Computer Module: $_"

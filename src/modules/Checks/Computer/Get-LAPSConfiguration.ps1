@@ -388,6 +388,12 @@ function Get-LAPSConfiguration {
     .PARAMETER Credential
     PSCredential object for authentication (optional, uses current user if not specified)
 
+    .PARAMETER OPSEC
+    Skips the check. It is the loudest one in the Computer module: every enabled computer,
+    a second query for the LAPS-carrying ones, the domain controllers, and a full SYSVOL
+    walk over every Registry.pol. Its two siblings already abstain under -OPSEC and say so
+    in the report; this one ran at full volume without a line.
+
     .EXAMPLE
     Get-LAPSConfiguration
 
@@ -411,7 +417,10 @@ function Get-LAPSConfiguration {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$OPSEC
     )
 
     begin {
@@ -429,8 +438,27 @@ function Get-LAPSConfiguration {
 
     process {
         try {
+            # Built explicitly rather than splatting $PSBoundParameters: that carries
+            # every bound parameter, and neither Ensure-LDAPConnection nor
+            # Get-LAPSSchemaPresence nor Get-DomainComputer has a parameter named OPSEC.
+            # The binding error would land in this function's own try/catch and the check
+            # would report nothing at all - silently, which is how it was found elsewhere.
+            $connectionParams = @{}
+            if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+            if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+            if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
+                return
+            }
+
+            # The loudest check in the module: every enabled computer, a second query for
+            # the ones carrying LAPS, the domain controllers, and a SYSVOL walk over every
+            # Registry.pol. Its two siblings abstain under -OPSEC and say so; this one ran
+            # at full volume without a word.
+            if ($OPSEC) {
+                Show-Line "OPSEC mode: Skipping LAPS configuration check (would query every computer and walk SYSVOL)" -Class "Hint"
                 return
             }
 
@@ -439,7 +467,7 @@ function Get-LAPSConfiguration {
 
             # One definition of "does this domain run LAPS", shared with
             # Get-LAPSCredentialAccess and Get-LAPSPermissions and cached for the session.
-            $lapsSchema = Get-LAPSSchemaPresence @PSBoundParameters
+            $lapsSchema = Get-LAPSSchemaPresence @connectionParams
             $lapsLegacySchemaPresent = $lapsSchema.LegacyPresent
             $windowsLAPSSchemaPresent = $lapsSchema.NativePresent
 
@@ -508,7 +536,7 @@ function Get-LAPSConfiguration {
             $domainControllerCount = 0
             $domainControllerLookupFailed = $false
             try {
-                foreach ($dc in @(Get-DomainComputer -DomainController -Properties 'distinguishedName' @PSBoundParameters)) {
+                foreach ($dc in @(Get-DomainComputer -DomainController -Properties 'distinguishedName' @connectionParams)) {
                     if (-not $dc.distinguishedName) { continue }
                     $domainControllerDNs["$($dc.distinguishedName)".ToLowerInvariant()] = $true
                 }
@@ -531,7 +559,7 @@ function Get-LAPSConfiguration {
                 }
 
                 # Get active computers grouped by OU (uses $Script:DefaultInactiveDays)
-                $allComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @PSBoundParameters |
+                $allComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @connectionParams |
                     Test-AccountActivity -IsActive |
                     Where-Object { -not $domainControllerDNs.ContainsKey("$($_.distinguishedName)".ToLowerInvariant()) })
 
@@ -610,14 +638,14 @@ function Get-LAPSConfiguration {
             Show-SubHeader "Analyzing LAPS deployment coverage..." -ObjectType "LAPSConfiguration"
 
             # Query 1: All enabled computers (for statistics), domain controllers removed
-            $allEnabledComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @PSBoundParameters |
+            $allEnabledComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @connectionParams |
                 Where-Object { -not $domainControllerDNs.ContainsKey("$($_.distinguishedName)".ToLowerInvariant()) })
 
             # Query 2: Active computers (enabled + recent logon) - uses $Script:DefaultInactiveDays
             $activeComputers = @($allEnabledComputers | Test-AccountActivity -IsActive)
 
             # Query 3: Computers WITH LAPS (LDAP-side filter) - much faster than client-side attribute check
-            $computersWithLAPSRaw = @(Get-DomainComputer -Enabled -LAPS -Properties $ComputerProperties @PSBoundParameters |
+            $computersWithLAPSRaw = @(Get-DomainComputer -Enabled -LAPS -Properties $ComputerProperties @connectionParams |
                 Where-Object { -not $domainControllerDNs.ContainsKey("$($_.distinguishedName)".ToLowerInvariant()) })
             $computersWithLAPS = @($computersWithLAPSRaw | Test-AccountActivity -IsActive)
 

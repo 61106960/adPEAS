@@ -1192,7 +1192,7 @@ try {
         try {
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-InfrastructureServers' -Title 'Infrastructure Servers' -Check { Get-InfrastructureServers }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-NonDefaultComputerOwners' -Title 'Non-Default Computer Owners' -Check { Get-NonDefaultComputerOwners -OPSEC:$OPSEC }
-            Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-LAPSConfiguration' -Title 'LAPS Configuration' -Check { Get-LAPSConfiguration }
+            Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-LAPSConfiguration' -Title 'LAPS Configuration' -Check { Get-LAPSConfiguration -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-OutdatedComputers' -Title 'Outdated Computers' -Check { Get-OutdatedComputers -OPSEC:$OPSEC }
         } catch {
             Write-Warning "[adPEAS] Error executing Computer Module: $_"
