@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 00:36:41
-    Version: 2.7.0+20261012-0036
+    Build: 2026-10-12 01:01:52
+    Version: 2.7.0+20261012-0101
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -76941,25 +76941,35 @@ function Get-LAPSGPOConfig {
                             try {
                                 $Metadata = Get-LAPSMetadataFromPol -PolFilePath $polFile.FullName
 
-                                # Carry the GUID so callers can resolve GPO links (Get-GPOLinkage),
-                                # and the file it was read from so a reader can open it. Both
-                                # results are keyed by GPO display name, so a GPO carrying LAPS
-                                # settings in both its Machine and its User half keeps the last
-                                # file seen - the GUID is identical either way, the path is not.
+                                # Keyed by GUID, with the display name carried alongside.
+                                #
+                                # Display names are not unique on groupPolicyContainer - a GPO
+                                # restored into another domain, or a template copied twice,
+                                # produces two policies called the same thing - and the key
+                                # decided which one survived. The second one silently replaced
+                                # the first, so one policy's LAPS settings vanished from the
+                                # report entirely. The GUID is also the folder under SYSVOL, so
+                                # it is the identifier a reader can act on.
+                                #
+                                # A GPO carrying LAPS settings in both its Machine and its User
+                                # half still keeps the last file seen: the GUID is identical
+                                # either way, the path is not.
                                 $sourceFile = Get-GPORelativePath -Path $polFile.FullName
                                 $gpoPath = $gpoGuidToPath[$gpoGuid]
                                 if ($Metadata.Legacy) {
                                     $Metadata.Legacy['GPOGUID'] = $gpoGuid
+                                    $Metadata.Legacy['GPOName'] = $gpoName
                                     $Metadata.Legacy['GPOPath'] = $gpoPath
                                     $Metadata.Legacy['SourceFile'] = $sourceFile
-                                    $Script:lapsGPOResults.Legacy[$gpoName] = $Metadata.Legacy
+                                    $Script:lapsGPOResults.Legacy[$gpoGuid] = $Metadata.Legacy
                                     Write-Log "[Get-LAPSGPOConfig] Found Legacy LAPS settings in GPO '$gpoName': $($Metadata.Legacy.Keys -join ', ')"
                                 }
                                 if ($Metadata.Native) {
                                     $Metadata.Native['GPOGUID'] = $gpoGuid
+                                    $Metadata.Native['GPOName'] = $gpoName
                                     $Metadata.Native['GPOPath'] = $gpoPath
                                     $Metadata.Native['SourceFile'] = $sourceFile
-                                    $Script:lapsGPOResults.Native[$gpoName] = $Metadata.Native
+                                    $Script:lapsGPOResults.Native[$gpoGuid] = $Metadata.Native
                                     Write-Log "[Get-LAPSGPOConfig] Found Windows LAPS settings in GPO '$gpoName': $($Metadata.Native.Keys -join ', ')"
                                 }
                             } catch {
@@ -107114,17 +107124,27 @@ function Get-LAPSGPOConfigObjects {
 
     $objects = @()
 
-    if ($LAPSGPOSettings.Native) {
-        foreach ($gpoName in ($LAPSGPOSettings.Native.Keys | Sort-Object)) {
-            $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Native[$gpoName] `
-                -Generation 'Windows LAPS' -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
-        }
-    }
+    # The tables are keyed by GPO GUID, because display names are not unique and the key
+    # used to decide which of two same-named policies survived. The name a reader sees
+    # comes out of the metadata; the key is the fallback for a record that has none, and
+    # the sort is still by name so the report reads in the same order as before.
+    foreach ($generation in @('Windows LAPS', 'LAPS Legacy')) {
+        $table = if ($generation -eq 'Windows LAPS') { $LAPSGPOSettings.Native } else { $LAPSGPOSettings.Legacy }
+        if (-not $table) { continue }
 
-    if ($LAPSGPOSettings.Legacy) {
-        foreach ($gpoName in ($LAPSGPOSettings.Legacy.Keys | Sort-Object)) {
-            $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Legacy[$gpoName] `
-                -Generation 'LAPS Legacy' -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
+        $keys = @($table.Keys | Sort-Object -Property @{ Expression = {
+            if ($table[$_].ContainsKey('GPOName') -and $table[$_]['GPOName']) { [string]$table[$_]['GPOName'] } else { [string]$_ }
+        } }, @{ Expression = { [string]$_ } })
+
+        foreach ($gpoKey in $keys) {
+            $metadata = $table[$gpoKey]
+            $displayName = if ($metadata.ContainsKey('GPOName') -and $metadata['GPOName']) {
+                [string]$metadata['GPOName']
+            } else {
+                [string]$gpoKey
+            }
+            $objects += New-LAPSGPOConfigObject -GPOName $displayName -Metadata $metadata `
+                -Generation $generation -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
         }
     }
 
@@ -107336,8 +107356,15 @@ function Get-LAPSConfiguration {
                     $backupTarget = 0
                     if (-not [int]::TryParse([string]$nativeEntry.Value['BackupDirectory'], [ref]$backupTarget)) { continue }
                     if ($backupTarget -eq 2) { continue }
+                    # The table is keyed by GPO GUID, so the display name travels in the
+                    # record. Reading the key here would put a GUID in the sentence.
+                    $entryName = if ($nativeEntry.Value.ContainsKey('GPOName') -and $nativeEntry.Value['GPOName']) {
+                        [string]$nativeEntry.Value['GPOName']
+                    } else {
+                        [string]$nativeEntry.Key
+                    }
                     $lapsEntraPolicies += [PSCustomObject]@{
-                        GPOName = [string]$nativeEntry.Key
+                        GPOName = $entryName
                         Target  = if ($backupTarget -eq 1) { 'Microsoft Entra ID' } else { 'nowhere - backup is disabled' }
                     }
                 }
@@ -107977,6 +108004,131 @@ function Get-OutdatedComputers {
 
 # ----- Get-InfrastructureServers.ps1 -----
 
+<#
+.SYNOPSIS
+    Reports the non-computer accounts that carry one of a service's SPNs.
+
+.DESCRIPTION
+    An SPN sits on the identity the service authenticates as. Where SQL Server, SCCM or
+    SCOM runs under a domain service account - routine in a managed environment, and the
+    precondition for Kerberos against the service rather than an exception - the SPN is on
+    a user or gMSA object, and a query over computer objects sees none of it. The inventory
+    a reader bases their attack surface on then understates it, without saying so.
+
+    The host part of the SPN is what names the target system, so it is reported with the
+    account: the account is the credential, the host is what runs there.
+
+    objectCategory, not objectClass: a gMSA carries 'computer' among its object classes, so
+    (!(objectClass=computer)) would exclude the very accounts this is looking for.
+    objectCategory names the most specific class, which is what tells the two apart.
+
+.PARAMETER ServiceName
+    How the service is called in the report, e.g. 'MSSQL'.
+
+.PARAMETER SPNFilter
+    The same LDAP filter clause the computer query uses, e.g. "(servicePrincipalName=MSSQLSvc/*)".
+
+.PARAMETER SPNPrefix
+    The SPN prefixes whose host part is worth printing, e.g. @('MSSQLSvc/').
+
+.PARAMETER ConnectionParams
+    Domain/Server/Credential, as the caller received them.
+
+.NOTES
+    Internal helper function
+#>
+function Show-SPNServiceAccounts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ServiceName,
+
+        [Parameter(Mandatory=$true)]
+        [string]$SPNFilter,
+
+        [Parameter(Mandatory=$true)]
+        [string[]]$SPNPrefix,
+
+        [Parameter(Mandatory=$false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    $accounts = @()
+    try {
+        $accounts = @(Get-DomainObject -LDAPFilter "(&$SPNFilter(!(objectCategory=computer)))" `
+            -Properties 'sAMAccountName', 'servicePrincipalName', 'objectClass' @ConnectionParams)
+    } catch {
+        Write-Log "[Get-InfrastructureServers] $ServiceName service account lookup failed: $_" -Level Error
+        Show-Line "$ServiceName service accounts could not be read - result unknown, not empty" -Class "Note"
+        return
+    }
+
+    if (@($accounts).Count -eq 0) { return }
+
+    $described = @()
+    foreach ($account in $accounts) {
+        $hostNames = @()
+        foreach ($spn in @($account.servicePrincipalName)) {
+            foreach ($prefix in $SPNPrefix) {
+                if ("$spn" -like "$prefix*") {
+                    # MSSQLSvc/host.contoso.com:1433 and MSSQLSvc/host:INSTANCE both end the
+                    # host at the first colon; SMS and CCM SPNs carry no port.
+                    $hostPart = ("$spn".Substring($prefix.Length) -split '[:/]')[0]
+                    if ($hostPart -and ($hostNames -notcontains $hostPart)) { $hostNames += $hostPart }
+                }
+            }
+        }
+
+        $label = "$($account.sAMAccountName)"
+        if (@($hostNames).Count -gt 0) { $label = $label + ' (' + (@($hostNames) -join ', ') + ')' }
+        $described += $label
+    }
+
+    Show-Line "$ServiceName also runs under $(@($described).Count) domain account(s), host from the SPN: $(@($described) -join '; ')" -Class "Hint"
+}
+
+<#
+.SYNOPSIS
+    Names the computer accounts of a service that show no recent activity.
+
+.DESCRIPTION
+    Test-AccountActivity -IsEnabled filters disabled accounts, not idle ones. A machine
+    that was decommissioned without being disabled keeps its SPN, so it was reported as a
+    live server of that kind - the other error direction of the same inventory, and a
+    reader cannot tell which rows are real.
+
+    A Note rather than a finding: an idle account is not a weakness, and the count stays
+    separate from the inventory line above it so neither number is diluted.
+
+.PARAMETER ServiceName
+    How the service is called in the report, e.g. 'MSSQL'.
+
+.PARAMETER Server
+    The objects the inventory reported, annotated by Test-AccountActivity -IncludeDetails.
+
+.NOTES
+    Internal helper function
+#>
+function Show-SPNIdleServers {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ServiceName,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        $Server
+    )
+
+    $idle = @(@($Server) | Where-Object {
+        $_ -and $_.PSObject.Properties['ActivityDetails'] -and $_.ActivityDetails -and (-not $_.ActivityDetails.IsActive)
+    })
+    if (@($idle).Count -eq 0) { return }
+
+    $names = @($idle | ForEach-Object { "$($_.sAMAccountName)" -replace '\$$', '' })
+    Show-Line "$(@($idle).Count) of the $ServiceName computer account(s) show no recent logon - possibly decommissioned: $(@($names) -join ', ')" -Class "Note"
+}
 function Get-InfrastructureServers {
     <#
     .SYNOPSIS
@@ -107993,6 +108145,16 @@ function Get-InfrastructureServers {
     - MSSQL Servers (MSSQLSvc/)
     - SCCM/ConfigMgr (SMS*, CCM*)
     - SCOM (MSOMHSvc/, MSOMSdkSvc/)
+
+    For the three SPN-based kinds the service accounts are reported too. An SPN sits on
+    the identity the service authenticates as, so where SQL Server, SCCM or SCOM runs
+    under a domain account - routine, and the precondition for Kerberos against the
+    service - the SPN is on a user or gMSA object and a computer query sees none of it.
+    The host part of the SPN names the system it runs on.
+
+    The other error direction is named as well: a machine that was decommissioned
+    without being disabled keeps its SPN and was reported as a live server of that kind.
+    Those accounts are listed separately as showing no recent logon.
     - AD FS (the DKM container under CN=ADFS,CN=Microsoft,CN=Program Data, plus adfssrv/)
     - Entra ID Connect (MSOL_/ADSync/AAD_ accounts, azureadconnect SPN)
 
@@ -108131,7 +108293,7 @@ function Get-InfrastructureServers {
         Show-SubHeader "Searching for MSSQL Servers..." -ObjectType "MSSQLServer"
 
         try {
-            $mssqlServers = @(Get-DomainComputer -LDAPFilter "(servicePrincipalName=MSSQLSvc/*)" @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            $mssqlServers = @(Get-DomainComputer -LDAPFilter "(servicePrincipalName=MSSQLSvc/*)" @PSBoundParameters | Test-AccountActivity -IsEnabled -IncludeDetails)
 
             if ($mssqlServers.Count -gt 0) {
                 Show-Line "Found $($mssqlServers.Count) MSSQL Server(s):" -Class "Hint"
@@ -108139,9 +108301,16 @@ function Get-InfrastructureServers {
                     $sql | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MSSQLServer' -Force
                     $sql | Show-Object
                 }
+
+                Show-SPNIdleServers -ServiceName 'MSSQL' -Server $mssqlServers
             } else {
                 Show-Line "No MSSQL Servers found via SPN" -Class "Note"
             }
+
+            # The identity the service authenticates as may be a domain account rather
+            # than the machine, and then the SPN is not on a computer object at all.
+            Show-SPNServiceAccounts -ServiceName 'MSSQL' -SPNFilter "(servicePrincipalName=MSSQLSvc/*)" `
+                -SPNPrefix @('MSSQLSvc/') -ConnectionParams $PSBoundParameters
         } catch {
             Write-Log "[Get-InfrastructureServers] MSSQL Server enumeration failed: $_" -Level Error
             Show-Line "MSSQL Server enumeration failed - result unknown, not empty" -Class "Note"
@@ -108152,7 +108321,7 @@ function Get-InfrastructureServers {
 
         try {
             # SCCM SPNs: SMS_Site_*, SMS_MP, SMS_DP, CCMSetup, etc.
-            $sccmServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=SMS*)(servicePrincipalName=CCM*))" @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            $sccmServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=SMS*)(servicePrincipalName=CCM*))" @PSBoundParameters | Test-AccountActivity -IsEnabled -IncludeDetails)
 
             if ($sccmServers.Count -gt 0) {
                 Show-Line "Found $($sccmServers.Count) SCCM/ConfigMgr Server(s):" -Class "Hint"
@@ -108160,9 +108329,16 @@ function Get-InfrastructureServers {
                     $sccm | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMServerBasic' -Force
                     $sccm | Show-Object
                 }
+
+                Show-SPNIdleServers -ServiceName 'SCCM' -Server $sccmServers
             } else {
                 Show-Line "No SCCM Servers found via SPN" -Class "Note"
             }
+
+            # The identity the service authenticates as may be a domain account rather
+            # than the machine, and then the SPN is not on a computer object at all.
+            Show-SPNServiceAccounts -ServiceName 'SCCM' -SPNFilter "(|(servicePrincipalName=SMS*)(servicePrincipalName=CCM*))" `
+                -SPNPrefix @('SMS_', 'CCM') -ConnectionParams $PSBoundParameters
         } catch {
             Write-Log "[Get-InfrastructureServers] SCCM Server enumeration failed: $_" -Level Error
             Show-Line "SCCM Server enumeration failed - result unknown, not empty" -Class "Note"
@@ -108173,7 +108349,7 @@ function Get-InfrastructureServers {
 
         try {
             # SCOM SPNs: MSOMHSvc (Health Service), MSOMSdkSvc (SDK Service)
-            $scomServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=MSOMHSvc/*)(servicePrincipalName=MSOMSdkSvc/*))" @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            $scomServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=MSOMHSvc/*)(servicePrincipalName=MSOMSdkSvc/*))" @PSBoundParameters | Test-AccountActivity -IsEnabled -IncludeDetails)
 
             if ($scomServers.Count -gt 0) {
                 Show-Line "Found $($scomServers.Count) SCOM Server(s):" -Class "Hint"
@@ -108181,9 +108357,16 @@ function Get-InfrastructureServers {
                     $scom | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServerBasic' -Force
                     $scom | Show-Object
                 }
+
+                Show-SPNIdleServers -ServiceName 'SCOM' -Server $scomServers
             } else {
                 Show-Line "No SCOM Servers found via SPN" -Class "Note"
             }
+
+            # The identity the service authenticates as may be a domain account rather
+            # than the machine, and then the SPN is not on a computer object at all.
+            Show-SPNServiceAccounts -ServiceName 'SCOM' -SPNFilter "(|(servicePrincipalName=MSOMHSvc/*)(servicePrincipalName=MSOMSdkSvc/*))" `
+                -SPNPrefix @('MSOMHSvc/', 'MSOMSdkSvc/') -ConnectionParams $PSBoundParameters
         } catch {
             Write-Log "[Get-InfrastructureServers] SCOM Server enumeration failed: $_" -Level Error
             Show-Line "SCOM Server enumeration failed - result unknown, not empty" -Class "Note"
@@ -132818,7 +133001,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0036"
+$Script:adPEASVersion = "2.7.0+20261012-0101"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

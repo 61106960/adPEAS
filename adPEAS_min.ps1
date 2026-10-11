@@ -50083,16 +50083,18 @@ function Get-LAPSGPOConfig {
                                 $gpoPath = $gpoGuidToPath[$gpoGuid]
                                 if ($Metadata.Legacy) {
                                     $Metadata.Legacy['GPOGUID'] = $gpoGuid
+                                    $Metadata.Legacy['GPOName'] = $gpoName
                                     $Metadata.Legacy['GPOPath'] = $gpoPath
                                     $Metadata.Legacy['SourceFile'] = $sourceFile
-                                    $Script:lapsGPOResults.Legacy[$gpoName] = $Metadata.Legacy
+                                    $Script:lapsGPOResults.Legacy[$gpoGuid] = $Metadata.Legacy
                                     Write-Log "[Get-LAPSGPOConfig] Found Legacy LAPS settings in GPO '$gpoName': $($Metadata.Legacy.Keys -join ', ')"
                                 }
                                 if ($Metadata.Native) {
                                     $Metadata.Native['GPOGUID'] = $gpoGuid
+                                    $Metadata.Native['GPOName'] = $gpoName
                                     $Metadata.Native['GPOPath'] = $gpoPath
                                     $Metadata.Native['SourceFile'] = $sourceFile
-                                    $Script:lapsGPOResults.Native[$gpoName] = $Metadata.Native
+                                    $Script:lapsGPOResults.Native[$gpoGuid] = $Metadata.Native
                                     Write-Log "[Get-LAPSGPOConfig] Found Windows LAPS settings in GPO '$gpoName': $($Metadata.Native.Keys -join ', ')"
                                 }
                             } catch {
@@ -67931,16 +67933,21 @@ function Get-LAPSGPOConfigObjects {
         Write-Log "[Get-LAPSGPOConfigObjects] Failed to read the GPO status: $_"
     }
     $objects = @()
-    if ($LAPSGPOSettings.Native) {
-        foreach ($gpoName in ($LAPSGPOSettings.Native.Keys | Sort-Object)) {
-            $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Native[$gpoName] `
-                -Generation 'Windows LAPS' -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
-        }
-    }
-    if ($LAPSGPOSettings.Legacy) {
-        foreach ($gpoName in ($LAPSGPOSettings.Legacy.Keys | Sort-Object)) {
-            $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Legacy[$gpoName] `
-                -Generation 'LAPS Legacy' -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
+    foreach ($generation in @('Windows LAPS', 'LAPS Legacy')) {
+        $table = if ($generation -eq 'Windows LAPS') { $LAPSGPOSettings.Native } else { $LAPSGPOSettings.Legacy }
+        if (-not $table) { continue }
+        $keys = @($table.Keys | Sort-Object -Property @{ Expression = {
+            if ($table[$_].ContainsKey('GPOName') -and $table[$_]['GPOName']) { [string]$table[$_]['GPOName'] } else { [string]$_ }
+        } }, @{ Expression = { [string]$_ } })
+        foreach ($gpoKey in $keys) {
+            $metadata = $table[$gpoKey]
+            $displayName = if ($metadata.ContainsKey('GPOName') -and $metadata['GPOName']) {
+                [string]$metadata['GPOName']
+            } else {
+                [string]$gpoKey
+            }
+            $objects += New-LAPSGPOConfigObject -GPOName $displayName -Metadata $metadata `
+                -Generation $generation -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
         }
     }
     return $objects
@@ -68018,8 +68025,13 @@ function Get-LAPSConfiguration {
                     $backupTarget = 0
                     if (-not [int]::TryParse([string]$nativeEntry.Value['BackupDirectory'], [ref]$backupTarget)) { continue }
                     if ($backupTarget -eq 2) { continue }
+                    $entryName = if ($nativeEntry.Value.ContainsKey('GPOName') -and $nativeEntry.Value['GPOName']) {
+                        [string]$nativeEntry.Value['GPOName']
+                    } else {
+                        [string]$nativeEntry.Key
+                    }
                     $lapsEntraPolicies += [PSCustomObject]@{
-                        GPOName = [string]$nativeEntry.Key
+                        GPOName = $entryName
                         Target  = if ($backupTarget -eq 1) { 'Microsoft Entra ID' } else { 'nowhere - backup is disabled' }
                     }
                 }
@@ -68395,6 +68407,62 @@ function Get-OutdatedComputers {
         Write-Log "[Get-OutdatedComputers] Check completed"
     }
 }
+function Show-SPNServiceAccounts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ServiceName,
+        [Parameter(Mandatory=$true)]
+        [string]$SPNFilter,
+        [Parameter(Mandatory=$true)]
+        [string[]]$SPNPrefix,
+        [Parameter(Mandatory=$false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+    $accounts = @()
+    try {
+        $accounts = @(Get-DomainObject -LDAPFilter "(&$SPNFilter(!(objectCategory=computer)))" `
+            -Properties 'sAMAccountName', 'servicePrincipalName', 'objectClass' @ConnectionParams)
+    } catch {
+        Write-Log "[Get-InfrastructureServers] $ServiceName service account lookup failed: $_" -Level Error
+        Show-Line "$ServiceName service accounts could not be read - result unknown, not empty" -Class "Note"
+        return
+    }
+    if (@($accounts).Count -eq 0) { return }
+    $described = @()
+    foreach ($account in $accounts) {
+        $hostNames = @()
+        foreach ($spn in @($account.servicePrincipalName)) {
+            foreach ($prefix in $SPNPrefix) {
+                if ("$spn" -like "$prefix*") {
+                    $hostPart = ("$spn".Substring($prefix.Length) -split '[:/]')[0]
+                    if ($hostPart -and ($hostNames -notcontains $hostPart)) { $hostNames += $hostPart }
+                }
+            }
+        }
+        $label = "$($account.sAMAccountName)"
+        if (@($hostNames).Count -gt 0) { $label = $label + ' (' + (@($hostNames) -join ', ') + ')' }
+        $described += $label
+    }
+    Show-Line "$ServiceName also runs under $(@($described).Count) domain account(s), host from the SPN: $(@($described) -join '; ')" -Class "Hint"
+}
+function Show-SPNIdleServers {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ServiceName,
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        $Server
+    )
+    $idle = @(@($Server) | Where-Object {
+        $_ -and $_.PSObject.Properties['ActivityDetails'] -and $_.ActivityDetails -and (-not $_.ActivityDetails.IsActive)
+    })
+    if (@($idle).Count -eq 0) { return }
+    $names = @($idle | ForEach-Object { "$($_.sAMAccountName)" -replace '\$$', '' })
+    Show-Line "$(@($idle).Count) of the $ServiceName computer account(s) show no recent logon - possibly decommissioned: $(@($names) -join ', ')" -Class "Note"
+}
 function Get-InfrastructureServers {
     [CmdletBinding()]
     param(
@@ -68472,48 +68540,57 @@ function Get-InfrastructureServers {
         }
         Show-SubHeader "Searching for MSSQL Servers..." -ObjectType "MSSQLServer"
         try {
-            $mssqlServers = @(Get-DomainComputer -LDAPFilter "(servicePrincipalName=MSSQLSvc/*)" @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            $mssqlServers = @(Get-DomainComputer -LDAPFilter "(servicePrincipalName=MSSQLSvc/*)" @PSBoundParameters | Test-AccountActivity -IsEnabled -IncludeDetails)
             if ($mssqlServers.Count -gt 0) {
                 Show-Line "Found $($mssqlServers.Count) MSSQL Server(s):" -Class "Hint"
                 foreach ($sql in $mssqlServers) {
                     $sql | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MSSQLServer' -Force
                     $sql | Show-Object
                 }
+                Show-SPNIdleServers -ServiceName 'MSSQL' -Server $mssqlServers
             } else {
                 Show-Line "No MSSQL Servers found via SPN" -Class "Note"
             }
+            Show-SPNServiceAccounts -ServiceName 'MSSQL' -SPNFilter "(servicePrincipalName=MSSQLSvc/*)" `
+                -SPNPrefix @('MSSQLSvc/') -ConnectionParams $PSBoundParameters
         } catch {
             Write-Log "[Get-InfrastructureServers] MSSQL Server enumeration failed: $_" -Level Error
             Show-Line "MSSQL Server enumeration failed - result unknown, not empty" -Class "Note"
         }
         Show-SubHeader "Searching for SCCM/ConfigMgr Servers..." -ObjectType "SCCMServerBasic"
         try {
-            $sccmServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=SMS*)(servicePrincipalName=CCM*))" @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            $sccmServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=SMS*)(servicePrincipalName=CCM*))" @PSBoundParameters | Test-AccountActivity -IsEnabled -IncludeDetails)
             if ($sccmServers.Count -gt 0) {
                 Show-Line "Found $($sccmServers.Count) SCCM/ConfigMgr Server(s):" -Class "Hint"
                 foreach ($sccm in $sccmServers) {
                     $sccm | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMServerBasic' -Force
                     $sccm | Show-Object
                 }
+                Show-SPNIdleServers -ServiceName 'SCCM' -Server $sccmServers
             } else {
                 Show-Line "No SCCM Servers found via SPN" -Class "Note"
             }
+            Show-SPNServiceAccounts -ServiceName 'SCCM' -SPNFilter "(|(servicePrincipalName=SMS*)(servicePrincipalName=CCM*))" `
+                -SPNPrefix @('SMS_', 'CCM') -ConnectionParams $PSBoundParameters
         } catch {
             Write-Log "[Get-InfrastructureServers] SCCM Server enumeration failed: $_" -Level Error
             Show-Line "SCCM Server enumeration failed - result unknown, not empty" -Class "Note"
         }
         Show-SubHeader "Searching for SCOM Servers..." -ObjectType "SCOMServerBasic"
         try {
-            $scomServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=MSOMHSvc/*)(servicePrincipalName=MSOMSdkSvc/*))" @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            $scomServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=MSOMHSvc/*)(servicePrincipalName=MSOMSdkSvc/*))" @PSBoundParameters | Test-AccountActivity -IsEnabled -IncludeDetails)
             if ($scomServers.Count -gt 0) {
                 Show-Line "Found $($scomServers.Count) SCOM Server(s):" -Class "Hint"
                 foreach ($scom in $scomServers) {
                     $scom | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServerBasic' -Force
                     $scom | Show-Object
                 }
+                Show-SPNIdleServers -ServiceName 'SCOM' -Server $scomServers
             } else {
                 Show-Line "No SCOM Servers found via SPN" -Class "Note"
             }
+            Show-SPNServiceAccounts -ServiceName 'SCOM' -SPNFilter "(|(servicePrincipalName=MSOMHSvc/*)(servicePrincipalName=MSOMSdkSvc/*))" `
+                -SPNPrefix @('MSOMHSvc/', 'MSOMSdkSvc/') -ConnectionParams $PSBoundParameters
         } catch {
             Write-Log "[Get-InfrastructureServers] SCOM Server enumeration failed: $_" -Level Error
             Show-Line "SCOM Server enumeration failed - result unknown, not empty" -Class "Note"
@@ -86133,7 +86210,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-0036"
+$Script:adPEASVersion = "2.7.0+20261012-0101"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

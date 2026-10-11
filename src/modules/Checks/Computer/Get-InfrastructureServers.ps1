@@ -1,3 +1,128 @@
+<#
+.SYNOPSIS
+    Reports the non-computer accounts that carry one of a service's SPNs.
+
+.DESCRIPTION
+    An SPN sits on the identity the service authenticates as. Where SQL Server, SCCM or
+    SCOM runs under a domain service account - routine in a managed environment, and the
+    precondition for Kerberos against the service rather than an exception - the SPN is on
+    a user or gMSA object, and a query over computer objects sees none of it. The inventory
+    a reader bases their attack surface on then understates it, without saying so.
+
+    The host part of the SPN is what names the target system, so it is reported with the
+    account: the account is the credential, the host is what runs there.
+
+    objectCategory, not objectClass: a gMSA carries 'computer' among its object classes, so
+    (!(objectClass=computer)) would exclude the very accounts this is looking for.
+    objectCategory names the most specific class, which is what tells the two apart.
+
+.PARAMETER ServiceName
+    How the service is called in the report, e.g. 'MSSQL'.
+
+.PARAMETER SPNFilter
+    The same LDAP filter clause the computer query uses, e.g. "(servicePrincipalName=MSSQLSvc/*)".
+
+.PARAMETER SPNPrefix
+    The SPN prefixes whose host part is worth printing, e.g. @('MSSQLSvc/').
+
+.PARAMETER ConnectionParams
+    Domain/Server/Credential, as the caller received them.
+
+.NOTES
+    Internal helper function
+#>
+function Show-SPNServiceAccounts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ServiceName,
+
+        [Parameter(Mandatory=$true)]
+        [string]$SPNFilter,
+
+        [Parameter(Mandatory=$true)]
+        [string[]]$SPNPrefix,
+
+        [Parameter(Mandatory=$false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    $accounts = @()
+    try {
+        $accounts = @(Get-DomainObject -LDAPFilter "(&$SPNFilter(!(objectCategory=computer)))" `
+            -Properties 'sAMAccountName', 'servicePrincipalName', 'objectClass' @ConnectionParams)
+    } catch {
+        Write-Log "[Get-InfrastructureServers] $ServiceName service account lookup failed: $_" -Level Error
+        Show-Line "$ServiceName service accounts could not be read - result unknown, not empty" -Class "Note"
+        return
+    }
+
+    if (@($accounts).Count -eq 0) { return }
+
+    $described = @()
+    foreach ($account in $accounts) {
+        $hostNames = @()
+        foreach ($spn in @($account.servicePrincipalName)) {
+            foreach ($prefix in $SPNPrefix) {
+                if ("$spn" -like "$prefix*") {
+                    # MSSQLSvc/host.contoso.com:1433 and MSSQLSvc/host:INSTANCE both end the
+                    # host at the first colon; SMS and CCM SPNs carry no port.
+                    $hostPart = ("$spn".Substring($prefix.Length) -split '[:/]')[0]
+                    if ($hostPart -and ($hostNames -notcontains $hostPart)) { $hostNames += $hostPart }
+                }
+            }
+        }
+
+        $label = "$($account.sAMAccountName)"
+        if (@($hostNames).Count -gt 0) { $label = $label + ' (' + (@($hostNames) -join ', ') + ')' }
+        $described += $label
+    }
+
+    Show-Line "$ServiceName also runs under $(@($described).Count) domain account(s), host from the SPN: $(@($described) -join '; ')" -Class "Hint"
+}
+
+<#
+.SYNOPSIS
+    Names the computer accounts of a service that show no recent activity.
+
+.DESCRIPTION
+    Test-AccountActivity -IsEnabled filters disabled accounts, not idle ones. A machine
+    that was decommissioned without being disabled keeps its SPN, so it was reported as a
+    live server of that kind - the other error direction of the same inventory, and a
+    reader cannot tell which rows are real.
+
+    A Note rather than a finding: an idle account is not a weakness, and the count stays
+    separate from the inventory line above it so neither number is diluted.
+
+.PARAMETER ServiceName
+    How the service is called in the report, e.g. 'MSSQL'.
+
+.PARAMETER Server
+    The objects the inventory reported, annotated by Test-AccountActivity -IncludeDetails.
+
+.NOTES
+    Internal helper function
+#>
+function Show-SPNIdleServers {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ServiceName,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        $Server
+    )
+
+    $idle = @(@($Server) | Where-Object {
+        $_ -and $_.PSObject.Properties['ActivityDetails'] -and $_.ActivityDetails -and (-not $_.ActivityDetails.IsActive)
+    })
+    if (@($idle).Count -eq 0) { return }
+
+    $names = @($idle | ForEach-Object { "$($_.sAMAccountName)" -replace '\$$', '' })
+    Show-Line "$(@($idle).Count) of the $ServiceName computer account(s) show no recent logon - possibly decommissioned: $(@($names) -join ', ')" -Class "Note"
+}
 function Get-InfrastructureServers {
     <#
     .SYNOPSIS
@@ -14,6 +139,16 @@ function Get-InfrastructureServers {
     - MSSQL Servers (MSSQLSvc/)
     - SCCM/ConfigMgr (SMS*, CCM*)
     - SCOM (MSOMHSvc/, MSOMSdkSvc/)
+
+    For the three SPN-based kinds the service accounts are reported too. An SPN sits on
+    the identity the service authenticates as, so where SQL Server, SCCM or SCOM runs
+    under a domain account - routine, and the precondition for Kerberos against the
+    service - the SPN is on a user or gMSA object and a computer query sees none of it.
+    The host part of the SPN names the system it runs on.
+
+    The other error direction is named as well: a machine that was decommissioned
+    without being disabled keeps its SPN and was reported as a live server of that kind.
+    Those accounts are listed separately as showing no recent logon.
     - AD FS (the DKM container under CN=ADFS,CN=Microsoft,CN=Program Data, plus adfssrv/)
     - Entra ID Connect (MSOL_/ADSync/AAD_ accounts, azureadconnect SPN)
 
@@ -152,7 +287,7 @@ function Get-InfrastructureServers {
         Show-SubHeader "Searching for MSSQL Servers..." -ObjectType "MSSQLServer"
 
         try {
-            $mssqlServers = @(Get-DomainComputer -LDAPFilter "(servicePrincipalName=MSSQLSvc/*)" @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            $mssqlServers = @(Get-DomainComputer -LDAPFilter "(servicePrincipalName=MSSQLSvc/*)" @PSBoundParameters | Test-AccountActivity -IsEnabled -IncludeDetails)
 
             if ($mssqlServers.Count -gt 0) {
                 Show-Line "Found $($mssqlServers.Count) MSSQL Server(s):" -Class "Hint"
@@ -160,9 +295,16 @@ function Get-InfrastructureServers {
                     $sql | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MSSQLServer' -Force
                     $sql | Show-Object
                 }
+
+                Show-SPNIdleServers -ServiceName 'MSSQL' -Server $mssqlServers
             } else {
                 Show-Line "No MSSQL Servers found via SPN" -Class "Note"
             }
+
+            # The identity the service authenticates as may be a domain account rather
+            # than the machine, and then the SPN is not on a computer object at all.
+            Show-SPNServiceAccounts -ServiceName 'MSSQL' -SPNFilter "(servicePrincipalName=MSSQLSvc/*)" `
+                -SPNPrefix @('MSSQLSvc/') -ConnectionParams $PSBoundParameters
         } catch {
             Write-Log "[Get-InfrastructureServers] MSSQL Server enumeration failed: $_" -Level Error
             Show-Line "MSSQL Server enumeration failed - result unknown, not empty" -Class "Note"
@@ -173,7 +315,7 @@ function Get-InfrastructureServers {
 
         try {
             # SCCM SPNs: SMS_Site_*, SMS_MP, SMS_DP, CCMSetup, etc.
-            $sccmServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=SMS*)(servicePrincipalName=CCM*))" @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            $sccmServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=SMS*)(servicePrincipalName=CCM*))" @PSBoundParameters | Test-AccountActivity -IsEnabled -IncludeDetails)
 
             if ($sccmServers.Count -gt 0) {
                 Show-Line "Found $($sccmServers.Count) SCCM/ConfigMgr Server(s):" -Class "Hint"
@@ -181,9 +323,16 @@ function Get-InfrastructureServers {
                     $sccm | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMServerBasic' -Force
                     $sccm | Show-Object
                 }
+
+                Show-SPNIdleServers -ServiceName 'SCCM' -Server $sccmServers
             } else {
                 Show-Line "No SCCM Servers found via SPN" -Class "Note"
             }
+
+            # The identity the service authenticates as may be a domain account rather
+            # than the machine, and then the SPN is not on a computer object at all.
+            Show-SPNServiceAccounts -ServiceName 'SCCM' -SPNFilter "(|(servicePrincipalName=SMS*)(servicePrincipalName=CCM*))" `
+                -SPNPrefix @('SMS_', 'CCM') -ConnectionParams $PSBoundParameters
         } catch {
             Write-Log "[Get-InfrastructureServers] SCCM Server enumeration failed: $_" -Level Error
             Show-Line "SCCM Server enumeration failed - result unknown, not empty" -Class "Note"
@@ -194,7 +343,7 @@ function Get-InfrastructureServers {
 
         try {
             # SCOM SPNs: MSOMHSvc (Health Service), MSOMSdkSvc (SDK Service)
-            $scomServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=MSOMHSvc/*)(servicePrincipalName=MSOMSdkSvc/*))" @PSBoundParameters | Test-AccountActivity -IsEnabled)
+            $scomServers = @(Get-DomainComputer -LDAPFilter "(|(servicePrincipalName=MSOMHSvc/*)(servicePrincipalName=MSOMSdkSvc/*))" @PSBoundParameters | Test-AccountActivity -IsEnabled -IncludeDetails)
 
             if ($scomServers.Count -gt 0) {
                 Show-Line "Found $($scomServers.Count) SCOM Server(s):" -Class "Hint"
@@ -202,9 +351,16 @@ function Get-InfrastructureServers {
                     $scom | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServerBasic' -Force
                     $scom | Show-Object
                 }
+
+                Show-SPNIdleServers -ServiceName 'SCOM' -Server $scomServers
             } else {
                 Show-Line "No SCOM Servers found via SPN" -Class "Note"
             }
+
+            # The identity the service authenticates as may be a domain account rather
+            # than the machine, and then the SPN is not on a computer object at all.
+            Show-SPNServiceAccounts -ServiceName 'SCOM' -SPNFilter "(|(servicePrincipalName=MSOMHSvc/*)(servicePrincipalName=MSOMSdkSvc/*))" `
+                -SPNPrefix @('MSOMHSvc/', 'MSOMSdkSvc/') -ConnectionParams $PSBoundParameters
         } catch {
             Write-Log "[Get-InfrastructureServers] SCOM Server enumeration failed: $_" -Level Error
             Show-Line "SCOM Server enumeration failed - result unknown, not empty" -Class "Note"
