@@ -3168,6 +3168,55 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
     }
 
+    'OU_PERM_SELF_ALL_VALIDATED' = @{
+        Title = "All Validated Writes on OU"
+        Risk = "Finding"
+        BaseScore = 56
+        Description = "A principal holds the Self right with no ObjectType on objects in this OU, which grants every validated write at once rather than one of them. In practice that is Self-Membership, Validated-SPN and Validated-DNS-Host-Name together: the trustee can add itself to any group in the OU, set a service principal name on any user or computer in it, and set the dNSHostName of any computer."
+        Impact = @(
+            "Self-Membership on every group in the OU: the trustee can join a privileged group there without being added by anyone"
+            "Validated-SPN on every user and computer: a service principal name the trustee controls makes the account Kerberoastable on demand"
+            "Validated-DNS-Host-Name on every computer: the basis of the machine-account attacks that depend on a controlled name"
+            "One ACE grants all three, so a delegation that looks like a single entry in the ACL editor is three separate escalation paths"
+        )
+        Attack = @(
+            "1. Attacker controls a principal holding Self with no ObjectType on the OU"
+            "2. Adds itself to a privileged group in the OU through the Self-Membership write"
+            "3. Obtains a new Kerberos ticket to pick up the group SID"
+            "4. Or, where no privileged group is in reach, sets an SPN on an account in the OU and Kerberoasts it"
+        )
+        Remediation = @(
+            "Replace the blanket delegation with the one validated write that is actually needed"
+            "The ACL editor presents these as separate checkboxes - an ACE with no ObjectType means none of them was chosen"
+            "Segregate privileged groups into OUs that carry no self-service delegation at all"
+            "Monitor group membership changes (Event ID 4728, 4732, 4756) and servicePrincipalName writes"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the principals holding Self with no ObjectType on the OU"
+                Command = '(Get-Acl -Path "AD:OU=TARGET_OU,DC=DOMAIN,DC=COM").Access | Where-Object { $_.ActiveDirectoryRights -match "Self" -and $_.ObjectType -eq [GUID]::Empty } | Format-Table IdentityReference,ActiveDirectoryRights,InheritanceFlags,AccessControlType -AutoSize'
+            }
+            @{
+                Description = "Remove the blanket validated-write delegation from a specific principal"
+                Command = '$acl = Get-Acl -Path "AD:OU=TARGET_OU,DC=DOMAIN,DC=COM"; $ace = $acl.Access | Where-Object { $_.IdentityReference -eq "DOMAIN\USER" -and $_.ActiveDirectoryRights -match "Self" -and $_.ObjectType -eq [GUID]::Empty }; $ace | ForEach-Object { $acl.RemoveAccessRule($_) }; Set-Acl -Path "AD:OU=TARGET_OU,DC=DOMAIN,DC=COM" -AclObject $acl'
+            }
+        )
+        References = @(
+            @{ Title = "Validated Writes in AD"; Url = "https://docs.microsoft.com/en-us/windows/win32/adschema/validated-writes" }
+            @{ Title = "AddSelf - BloodHound"; Url = "https://bloodhound.specterops.io/resources/edges/add-self" }
+            @{ Title = "ADS_RIGHT_DS_SELF - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/api/iads/ne-iads-ads_rights_enum" }
+        )
+        Tools = @("BloodHound", "PowerView", "Rubeus")
+        MITRE = "T1098"
+        Triggers = @(
+            # Scored above OU_PERM_SELF_MEMBERSHIP (50) because this one grants that right
+            # and two more, and below the cards for a blanket WriteProperty (60) and for
+            # GenericAll, each of which is a superset of it in turn. Measured: no other
+            # pattern on this attribute matches the text, so before this definition the
+            # row would have been a finding with no write-up behind it.
+            @{ Attribute = 'dangerousRights'; Pattern = 'Self \(All Validated Writes\)'; Severity = 'Finding' }
+        )
+    }
     'OU_PERM_SELF_MEMBERSHIP' = @{
         Title = "Self-Membership Rights on OU"
         Risk = "Finding"

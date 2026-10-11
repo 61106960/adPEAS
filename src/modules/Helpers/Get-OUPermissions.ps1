@@ -527,6 +527,10 @@ function Get-OUPermissions {
                 # before testing - a raw "-band" against $ACE.ActiveDirectoryRights would miss a
                 # right granted only via a generic bit, GenericAll included (see its own header).
                 $HasWriteProperty = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteProperty)
+                # Hoisted: the blanket-Self block below runs before the branches that
+                # used to compute this for themselves. They still do, harmlessly - the
+                # call is idempotent and leaving it there keeps each branch readable.
+                $HasSelf = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)
                 $IsAllProperties = ($objectType -eq [GUID]::Empty) -or (-not $objectType)
 
                 # InheritedObjectType checks - determines which object class this ACE applies to
@@ -590,6 +594,45 @@ function Get-OUPermissions {
                             Severity      = $Severity
                             InheritedFrom = $InheritedFrom
                         }
+                    }
+                }
+
+                # A Self ACE with no ObjectType grants EVERY validated write at once -
+                # Self-Membership, Validated-SPN, Validated-DNS-Host-Name - and fell
+                # through every gate. The three Self branches further down each require
+                # -not $IsAllProperties because they identify their right by its GUID, and
+                # the blanket-WriteProperty block above requires $HasWriteProperty, which a
+                # mask of 0x8 does not satisfy. So the broadest form of the right produced
+                # nothing while each narrow form produced a finding.
+                #
+                # The common superset is already covered: GenericWrite is 0x00020028 and
+                # carries the Self bit, and its branch requires $IsAllProperties. What was
+                # missing is Self on its own, which is what "all validated writes" in the
+                # delegation wizard writes.
+                #
+                # One finding rather than three, for the reason the blanket WriteProperty
+                # gives: emitting one per validated write would report the same delegation
+                # three times. Severity follows the worst of them - joining a privileged
+                # group through Self-Membership.
+                if ($HasSelf -and $IsAllProperties -and $AppliesToChildren -and
+                    ($CheckType -contains 'GroupMembership' -or $CheckType -contains 'SPNModification' -or
+                     $CheckType -contains 'DNSHostName')) {
+
+                    $scopeInfo = if ($IsAllObjectTypes) {
+                        ""
+                    } else {
+                        $targetClass = Get-SchemaClassName -GUID $inheritedObjectType
+                        if ($targetClass) { " on $targetClass objects" } else { "" }
+                    }
+
+                    $Severity = if ($IsPrivileged) { "Info" } else { "High" }
+                    $Findings += [PSCustomObject]@{
+                        CheckType     = "SelfAll"
+                        Right         = "Self (All Validated Writes)$scopeInfo$inheritanceNote"
+                        Principal     = $TrusteeName
+                        SID           = $TrusteeSID
+                        Severity      = $Severity
+                        InheritedFrom = $InheritedFrom
                     }
                 }
 
