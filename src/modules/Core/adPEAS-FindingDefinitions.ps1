@@ -4129,6 +4129,14 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         MITRE = "T1078"
         Triggers = @(
             @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Severity = 'Finding' }
+            # The per-account verdict Get-PasswordNotRequired writes. One flat list used
+            # to come out of that check: a trust account, for which this flag is the
+            # default, a kiosk account and a Domain Admin, all rendered the same way.
+            # Anchored on the first word, because two triggers on one attribute whose
+            # patterns can both match a value pick their winner by hashtable order.
+            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^EMPTY'; Severity = 'Finding' }
+            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^PRIVILEGED'; Severity = 'Finding' }
+            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Exempt'; Severity = 'Hint' }
         )
     }
 
@@ -14424,4 +14432,3 @@ function Get-DateFromValue {
 
     return $null
 }
-
