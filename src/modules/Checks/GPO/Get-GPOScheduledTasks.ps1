@@ -496,6 +496,21 @@ function Parse-ScheduledTasksXML {
                 _Risk      = $risk
             }
 
+            # $hasUnquotedPath was computed above and used only to pick a severity, so the
+            # fact never reached the object and GPO_TASK_UNQUOTED_PATH - a full write-up
+            # about exactly this - could never be named by anything. The statement is
+            # written only when it holds, so the attribute is absent on every other task
+            # and the card cannot attach itself to one.
+            #
+            # Written whenever the condition is true, not only when it decides the
+            # severity. The severity ladder above picks one headline per task, and a task
+            # that runs as SYSTEM from a world-writable path gets that one - but the
+            # quoting is a separate fact about the same command line, and a card is
+            # resolved per row, so stating it costs the stronger finding nothing.
+            if ($hasUnquotedPath) {
+                $taskProps['gpoTaskUnquotedPath'] = 'The command line contains a space and is not quoted, so Windows tries each truncation of the path in turn - C:\Program.exe before C:\Program Files\...'
+            }
+
             $task = [PSCustomObject]$taskProps
 
             $tasks += $task

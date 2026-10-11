@@ -3136,7 +3136,13 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("PowerMad", "Impacket", "PowerView")
         MITRE = "T1136.002"
         Triggers = @(
-            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild'; Severity = 'Finding' }
+            # CreateChild on CN=Computers is a different finding with a card of its own:
+            # whoever holds it can join machines regardless of ms-DS-MachineAccountQuota,
+            # and the container is not an OU. This definition scores 50 against that one's
+            # 35, so without the exclusion it won every time and
+            # COMPUTER_CONTAINER_CREATE_PERMISSIONS was unreachable - its own triggers sat
+            # on an attribute no module writes.
+            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild'; ExcludePattern = 'on CN=Computers'; Severity = 'Finding' }
         )
     }
 
@@ -3410,52 +3416,6 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Triggers = @(
             @{ Attribute = 'userAccountControl'; Pattern = 'INTERDOMAIN_TRUST_ACCOUNT'; Severity = 'Hint' }
         )
-    }
-
-    'ADMIN_COUNT_SET' = @{
-        Title = "AdminCount Attribute Set (Protected Object)"
-        Risk = "Note"
-        BaseScore = 15
-        Description = "This account has AdminCount=1, indicating it is or was a member of a protected administrative group. The Security Descriptor Propagator (SDProp) process manages ACLs on these accounts, which can have security implications."
-        Impact = @(
-            "Account is protected by SDProp ACL management"
-            "Custom ACLs are reset every 60 minutes"
-            "May indicate orphaned admin (AdminCount=1 but no longer admin)"
-            "Password cannot be reset by Help Desk through normal delegation"
-        )
-        Attack = @(
-            "Orphaned admin accounts retain AdminCount but lose protection oversight"
-            "May have residual permissions without active monitoring"
-        )
-        Remediation = @(
-            "Review accounts with AdminCount=1 that are not in admin groups"
-            "Use dsmod or PowerShell to clear AdminCount on orphaned accounts"
-            "Run SDProp manually to update ACLs after admin group changes"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "Find all users with AdminCount=1"
-                Command = "Get-ADUser -Filter {AdminCount -eq 1} -Properties AdminCount,MemberOf | Select-Object SamAccountName,AdminCount,@{Name='Groups';Expression={`$_.MemberOf -join '; '}}"
-            }
-            @{
-                Description = "Clear AdminCount attribute on orphaned admin accounts"
-                Command = "Set-ADUser -Identity 'USERNAME' -Clear AdminCount"
-            }
-            @{
-                Description = "Find orphaned admin accounts (AdminCount=1 but not in protected groups)"
-                Command = "`$protectedGroups = @('Domain Admins','Enterprise Admins','Schema Admins','Administrators','Account Operators','Server Operators','Print Operators','Backup Operators'); Get-ADUser -Filter {AdminCount -eq 1} -Properties MemberOf | Where-Object { -not (`$_.MemberOf | Where-Object { `$protectedGroups -contains (`$_ -replace '^CN=([^,]+).*','`$1') }) } | Select-Object SamAccountName,DistinguishedName"
-            }
-            @{
-                Description = "Manually trigger SDProp to update protected object ACLs (runs on PDC Emulator)"
-                Command = "Invoke-Command -ComputerName PDC_EMULATOR -ScriptBlock { `$rootDSE = [ADSI]'LDAP://RootDSE'; `$rootDSE.Put('FixUpInheritance','1'); `$rootDSE.SetInfo() }"
-            }
-        )
-        References = @(
-            @{ Title = "AdminSDHolder and SDProp"; Url = "https://adsecurity.org/?p=1906" }
-            @{ Title = "Protected Accounts and Groups - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory" }
-        )
-        Tools = @("PowerView", "ADACLScanner")
-        MITRE = "T1078.002"
     }
 
     'PRIVILEGED_GROUP_MEMBERSHIP' = @{
@@ -4190,50 +4150,6 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
             @{ Attribute = 'password'; Context = 'credential'; Severity = 'Finding' }
             @{ Attribute = 'userName'; Context = 'credential'; Severity = 'Finding' }
         )
-    }
-
-    'SCRIPT_CREDENTIAL_EXPOSURE' = @{
-        Title = "Credentials in SYSVOL Scripts"
-        Risk = "Finding"
-        BaseScore = 50
-        Description = "Scripts or configuration files in SYSVOL/NETLOGON contain plaintext credentials or credential patterns. Any authenticated domain user can read SYSVOL and extract these credentials."
-        Impact = @(
-            "Plaintext credentials readable by all domain users"
-            "Often contains service account or admin credentials"
-            "Scripts may have been in SYSVOL for years unnoticed"
-            "Credentials likely still valid and unchanged"
-            "Enables immediate privilege escalation or lateral movement"
-        )
-        Attack = @(
-            "1. Attacker enumerates SYSVOL for script files (.ps1, .bat, .vbs, .cmd, .ini, .config)"
-            "2. Searches for patterns like passwords, credentials, net use /user:"
-            "3. Extracts usernames and passwords from script content"
-            "4. Uses credentials to access systems or escalate privileges"
-        )
-        Remediation = @(
-            "Remove all credentials from SYSVOL scripts immediately"
-            "Use Windows Credential Manager or gMSA for automated tasks"
-            "Implement a SYSVOL scanning process for credential exposure"
-            "Rotate any exposed credentials after removal"
-            "Consider using PowerShell SecretManagement for secrets"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "Search SYSVOL for password patterns"
-                Command = "findstr /S /I /M /C:`"password`" /C:`"credential`" /C:`"pwd`" \\\\domain\\SYSVOL\\*"
-            }
-            @{
-                Description = "List all script files in SYSVOL"
-                Command = "Get-ChildItem -Path \\\\domain\\SYSVOL -Recurse -Include *.ps1,*.bat,*.vbs,*.cmd,*.ini,*.config"
-            }
-        )
-        References = @(
-            @{ Title = "Credential Hunting in SYSVOL"; Url = "https://adsecurity.org/?p=2288" }
-            @{ Title = "Unsecured Credentials - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1552/001/" }
-            @{ Title = "SYSVOL Security Best Practices"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-client/group-policy/create-and-manage-central-store" }
-        )
-        Tools = @("findstr", "Grep", "PowerShell", "Snaffler")
-        MITRE = "T1552.001"
     }
 
     # ============================================================================
@@ -6300,68 +6216,6 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
 
-    'EXCHANGE_DANGEROUS_PERMISSIONS' = @{
-        Title = "Exchange with Dangerous AD Permissions"
-        Risk = "Finding"
-        BaseScore = 45
-        Description = "Exchange security groups have dangerous permissions on Active Directory objects that can be abused for privilege escalation. Historically, Exchange had write access to all AD objects."
-        Impact = @(
-            "Exchange Trusted Subsystem may have DCSync rights"
-            "Exchange Windows Permissions group can modify AD ACLs"
-            "Compromising Exchange can lead to immediate AD compromise"
-            "PrivExchange attack allows any Exchange user to escalate"
-        )
-        Attack = @(
-            "1. Attacker with any Exchange mailbox triggers PrivExchange"
-            "2. Relays Exchange's NTLM authentication to DC"
-            "3. Uses Exchange's DCSync rights to dump credentials"
-            "4. Or modifies AD ACLs for persistence"
-        )
-        Remediation = @(
-            "Apply Exchange security updates"
-            "Review and reduce Exchange permissions in AD"
-            "Remove DCSync rights from Exchange groups"
-            "Enable Extended Protection on Exchange"
-            "Consider Split Permissions model"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "Check Exchange permissions on the domain root (including DCSync-related rights)"
-                Command = "(Get-Acl 'AD:\DC=domain,DC=com').Access | Where-Object {`$_.IdentityReference -match 'Exchange' -and (`$_.ObjectType -eq '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2' -or `$_.ObjectType -eq '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2')} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType -AutoSize"
-            }
-            @{
-                Description = "Remove DCSync rights (DS-Replication-Get-Changes) from Exchange groups - and know that Exchange setup puts them back"
-                Command = @'
-# /PrepareAD grants these rights, so the next cumulative update restores whatever this
-# removes. Removing the ACE is therefore a stopgap, not the fix: the supported answers are
-# the inherit-only flag on the ACE (documented by Microsoft for the shared permissions
-# model) and Active Directory split permissions, which removes the model altogether - the
-# command below this one.
-$acl = Get-Acl 'AD:\DC=domain,DC=com'
-$ace = $acl.Access | Where-Object { $_.IdentityReference -match 'Exchange' -and $_.ObjectType -eq '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2' }
-$ace | ForEach-Object { $acl.RemoveAccessRule($_) }
-Set-Acl -Path 'AD:\DC=domain,DC=com' -AclObject $acl
-'@
-            }
-            @{
-                Description = "Configure Exchange for Active Directory Split Permissions model (prevents Exchange from modifying AD security principals)"
-                Command = "# Run from Exchange installation directory: .\Setup.exe /PrepareAD /ActiveDirectorySplitPermissions:true /IAcceptExchangeServerLicenseTerms"
-            }
-            @{
-                Description = "Review all Exchange security group permissions on domain object"
-                Command = "Get-ADGroup -Filter {Name -like '*Exchange*'} | ForEach-Object { Write-Host `"Group: `$(`$_.Name)`" -ForegroundColor Yellow; (Get-Acl `"AD:`$(`$_.DistinguishedName)`").Access | Where-Object {`$_.IsInherited -eq `$false} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType }"
-            }
-        )
-        References = @(
-            @{ Title = "PrivExchange Attack"; Url = "https://dirkjanm.io/abusing-exchange-one-api-call-away-from-domain-admin/" }
-            @{ Title = "Exchange Permission Hardening"; Url = "https://learn.microsoft.com/en-us/exchange/permissions/split-permissions/split-permissions" }
-            @{ Title = "Configure Exchange for Split Permissions"; Url = "https://learn.microsoft.com/en-us/exchange/permissions/split-permissions/configure-exchange-for-split-permissions" }
-            @{ Title = "Mitigating Exchange Permission Paths"; Url = "https://adsecurity.org/?p=4119" }
-        )
-        Tools = @("PrivExchange", "ntlmrelayx", "BloodHound")
-        MITRE = "T1068"
-    }
-
     # ========================================================================
     # EXCHANGE PERMISSIONS MODEL (Get-ExchangeInfrastructure)
     # Triggered on the 'PermissionsModel' attribute of ExchangePermissionsModel objects.
@@ -8085,64 +7939,6 @@ foreach ($DC in $DCs) {
     # SCCM / MECM FINDINGS
     # ============================================================================
 
-    'SCCM_CREDENTIAL_EXPOSURE' = @{
-        Title = "SCCM/MECM Credential Exposure"
-        Risk = "Finding"
-        BaseScore = 40
-        Description = "SCCM/MECM infrastructure may expose credentials through Network Access Accounts (NAA), task sequences, or collection variables. These credentials are often highly privileged."
-        Impact = @(
-            "Network Access Account credentials may be extractable"
-            "Task sequences may contain plaintext passwords"
-            "Collection variables can store sensitive data"
-            "SCCM admin accounts often have broad domain access"
-        )
-        Attack = @(
-            "1. Attacker compromises SCCM client or obtains WMI access"
-            "2. Extracts NAA credentials from WMI or policy"
-            "3. Decrypts credentials using DPAPI or master keys"
-            "4. Uses credentials for lateral movement"
-        )
-        Remediation = @(
-            "Use Enhanced HTTP instead of NAA where possible"
-            "Store NAA credentials with minimal permissions"
-            "Encrypt task sequence variables"
-            "Audit SCCM for exposed credentials"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "Check if Enhanced HTTP is enabled (eliminates need for Network Access Account)"
-                Command = "Get-WmiObject -Namespace 'root\SMS\site_<SITECODE>' -Class SMS_SCI_SiteDefinition | Select-Object SiteName,@{Name='EnhancedHTTP';Expression={`$_.Props | Where-Object {`$_.PropertyName -eq 'EnhancedHTTP'} | Select-Object -ExpandProperty Value}} | Format-List"
-            }
-            @{
-                Description = "Enable Enhanced HTTP via SCCM console (preferred over NAA)"
-                Command = "# SCCM Console: Administration -> Site Configuration -> Sites -> Right-click site -> Properties -> Communication Security -> Check 'Use Configuration Manager-generated certificates for HTTP site systems' and 'Use PKI client certificate (client authentication capability) when available'"
-            }
-            @{
-                Description = "List all Network Access Accounts configured in SCCM"
-                Command = "Get-WmiObject -Namespace 'root\SMS\site_<SITECODE>' -Class SMS_SCI_Reserved | Where-Object {`$_.ItemName -eq 'Network Access Account'} | Select-Object SiteCode,ItemName,Value1,Value2 | Format-List"
-            }
-            @{
-                Description = "Remove Network Access Account from SCCM (requires Enhanced HTTP to be enabled first)"
-                Command = "# SCCM Console: Administration -> Site Configuration -> Sites -> Right-click site -> Configure Site Components -> Software Distribution -> Network Access Account tab -> Remove all accounts"
-            }
-            @{
-                Description = "Audit task sequences for variables with potentially exposed credentials"
-                Command = "Get-WmiObject -Namespace 'root\SMS\site_<SITECODE>' -Class SMS_TaskSequencePackage | Select-Object Name,PackageID,@{Name='Variables';Expression={(Get-WmiObject -Namespace 'root\SMS\site_<SITECODE>' -Query `"SELECT * FROM SMS_TaskSequence_Step WHERE PackageID='`$(`$_.PackageID)'`").TaskSequenceVariables}} | Where-Object {`$_.Variables -ne `$null} | Format-Table -AutoSize"
-            }
-            @{
-                Description = "Set minimum permissions for SCCM service accounts (avoid Domain Admin)"
-                Command = "# 1. Create dedicated SCCM service accounts with minimum required permissions`n# 2. Grant only necessary rights: Local Admin on SCCM servers, specific SQL permissions, no Domain Admin`n# 3. Document: https://learn.microsoft.com/en-us/mem/configmgr/core/plan-design/hierarchy/accounts"
-            }
-        )
-        References = @(
-            @{ Title = "SCCM Credential Recovery"; Url = "https://posts.specterops.io/sccm-hierarchy-takeover-with-high-availability-7dcbd3696b43" }
-            @{ Title = "SCCM Attack Techniques"; Url = "https://posts.specterops.io/sccm-hierarchy-takeover-with-high-availability-7dcbd3696b43" }
-            @{ Title = "Enhanced HTTP for MECM - Microsoft"; Url = "https://learn.microsoft.com/en-us/mem/configmgr/core/plan-design/hierarchy/enhanced-http" }
-        )
-        Tools = @("SharpSCCM", "sccmwtf", "MalSCCM")
-        MITRE = "T1552.004"
-    }
-
     'SCCM_ADMIN_HIERARCHY' = @{
         Title = "SCCM Hierarchy Takeover Risk"
         Risk = "Finding"
@@ -8976,6 +8772,12 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         )
         Tools = @("PowerSploit", "SharpUp", "GPO analysis")
         MITRE = "T1574.009"
+        Triggers = @(
+            # On an attribute Get-GPOScheduledTasks writes only when the condition holds.
+            # The definition had no triggers at all, so this write-up existed for a reader
+            # who had no way to reach it.
+            @{ Attribute = 'gpoTaskUnquotedPath'; Severity = 'Hint' }
+        )
     }
 
     # ============================================================================
@@ -9910,6 +9712,19 @@ foreach ($oid in $linkedOIDs) {
         )
         Tools = @("PowerMad", "ADACLScanner", "BloodHound")
         MITRE = "T1136.002"
+        Triggers = @(
+            # This definition had no triggers at all, so nothing could ever name it.
+            # Get-AddComputerRights does report the finding - it writes
+            # dangerousRights = "CreateChild (Computer) on CN=Computers" on every principal
+            # holding that right - but measured, the row resolved to OU_PERM_CREATE_CHILD,
+            # titled "CreateChild Rights on OU". The Computers container is not an OU, and
+            # the point here is the one that definition does not make: whoever holds
+            # CreateChild there can join machines regardless of ms-DS-MachineAccountQuota.
+            #
+            # The generic definition scores 50 against this one's 35, so a pattern alone
+            # would not have been enough; it carries an ExcludePattern for this value now.
+            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild \(Computer\) on CN=Computers'; Severity = 'Finding' }
+        )
     }
 
     'GPO_SEMACHINEACCOUNTPRIVILEGE_BROAD' = @{
@@ -10196,38 +10011,6 @@ foreach ($oid in $linkedOIDs) {
             @{ Attribute = 'ServerSigning'; Pattern = '^Required$'; Severity = 'Secure' }
             @{ Attribute = 'ClientSigning'; Pattern = '^Required$'; Severity = 'Secure' }
         )
-    }
-
-    'MANAGER_APPROVAL_REQUIRED' = @{
-        Title = "CA Manager Approval Required"
-        Risk = "Secure"
-        BaseScore = 0
-        Description = "This certificate template requires CA Manager approval before certificates are issued. This control prevents automatic certificate issuance and adds a manual verification step, significantly reducing the risk of certificate-based attacks."
-        Impact = @(
-            "Certificate requests require manual CA Manager approval"
-            "Automatic exploitation of vulnerable templates is prevented"
-            "Human review catches suspicious or unauthorized requests"
-            "ESC1/ESC2/ESC3 attacks are significantly harder to execute"
-        )
-        Attack = @(
-            "With manager approval required, attackers cannot:"
-            "- Automatically request certificates for arbitrary users"
-            "- Exploit ESC1/ESC2/ESC3 vulnerabilities without detection"
-            "- Obtain certificates without human verification"
-            "- Rapidly escalate privileges via ADCS"
-        )
-        Remediation = @(
-            "This is a secure configuration - no remediation needed"
-            "Ensure CA Managers are trained to verify certificate requests"
-            "Implement approval workflows with proper documentation"
-            "Monitor and audit all certificate approvals"
-        )
-        References = @(
-            @{ Title = "Certificate Template Security - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/certificate-template-concepts" }
-            @{ Title = "ADCS Security Best Practices"; Url = "https://posts.specterops.io/certified-pre-owned-d95910965cd2" }
-        )
-        Tools = @()
-        MITRE = "M1026"
     }
 
     'ENROLLMENT_REQUIRES_APPROVAL' = @{
