@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 14:56:30
-    Version: 2.7.0+20261011-1456
+    Build: 2026-10-11 15:36:10
+    Version: 2.7.0+20261011-1536
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -10792,6 +10792,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Use delegation wizards that grant minimal required permissions"
             "Review and remove unnecessary write permissions on OUs"
             "Monitor for attribute modifications on sensitive accounts"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -10845,6 +10846,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Use tiered administration model"
             "Audit the reset itself: event 4724 on a domain controller names who reset whose password"
             "Monitor for password reset events (Event ID 4724)"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -10886,6 +10888,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Use specific delegation instead of broad attribute permissions"
             "Monitor for userAccountControl changes (Event ID 4738)"
             "Protect sensitive accounts in dedicated OUs with restricted ACLs"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -10940,6 +10943,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Grant specific attribute permissions instead of property sets"
             "Property sets were designed for convenience, not security"
             "Review all principals with property set permissions"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -10993,6 +10997,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Remove member write permissions from non-admin principals"
             "Use AdminSDHolder to protect privileged groups"
             "Monitor group membership changes (Event ID 4728, 4732, 4756)"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11046,6 +11051,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "The ACL editor presents these as separate checkboxes - an ACE with no ObjectType means none of them was chosen"
             "Segregate privileged groups into OUs that carry no self-service delegation at all"
             "Monitor group membership changes (Event ID 4728, 4732, 4756) and servicePrincipalName writes"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11095,6 +11101,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Scope self-service membership delegation to distribution groups, never to security groups"
             "Use AdminSDHolder to protect privileged groups"
             "Monitor group membership changes (Event ID 4728, 4732, 4756)"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11149,6 +11156,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Use gMSA for service accounts instead of user accounts"
             "Monitor for SPN changes on user accounts (Event ID 4742)"
             "Protect privileged accounts in separate OUs"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11202,6 +11210,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "For computer objects, this is often legitimate (computer self-management)"
             "For user objects in privileged OUs, consider removing"
             "Monitor SPN changes regardless of method used"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11256,6 +11265,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Only machine accounts should modify their own dNSHostName"
             "Monitor for dNSHostName changes on computer accounts"
             "Use validated writes (Validated-DNS-Host-Name) instead of direct WriteProperty"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11310,6 +11320,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Grant Validated-DNS-Host-Name instead for legitimate delegation"
             "Only computer accounts should manage their own DNS names"
             "Monitor for DNS attribute changes on computer accounts"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11361,6 +11372,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Review if non-computer principals need this permission"
             "Consider removing from user accounts"
             "Monitor for unusual DNS name changes"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         References = @(
             @{ Title = "Validated Writes in AD"; Url = "https://docs.microsoft.com/en-us/windows/win32/adschema/validated-writes" }
@@ -11394,6 +11406,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Use Group Policy for logon scripts instead of per-user settings"
             "Monitor for scriptPath changes on user accounts"
             "Protect privileged accounts in separate OUs"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11447,6 +11460,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Review all accounts with Constrained Delegation configured"
             "Consider using Resource-Based Constrained Delegation (RBCD) with proper controls"
             "Monitor for msDS-AllowedToDelegateTo changes"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11502,6 +11516,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "This is one of the most commonly abused ACL misconfigurations"
             "Lower ms-DS-MachineAccountQuota to prevent machine account creation"
             "Monitor for msDS-AllowedToActOnBehalfOfOtherIdentity changes"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11589,6 +11604,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "If delegation is needed, limit to specific object types"
             "Lower ms-DS-MachineAccountQuota domain-wide"
             "Monitor for new object creation in sensitive OUs"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11616,13 +11632,14 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("PowerMad", "Impacket", "PowerView")
         MITRE = "T1136.002"
         Triggers = @(
-            # CreateChild on CN=Computers is a different finding with a card of its own:
+            # CreateChild on the computer container is a different finding with a card of
+            # its own:
             # whoever holds it can join machines regardless of ms-DS-MachineAccountQuota,
             # and the container is not an OU. This definition scores 50 against that one's
             # 35, so without the exclusion it won every time and
             # COMPUTER_CONTAINER_CREATE_PERMISSIONS was unreachable - its own triggers sat
             # on an attribute no module writes.
-            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild'; ExcludePattern = 'on CN=Computers'; Severity = 'Finding' }
+            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild'; ExcludePattern = 'in the computer container'; Severity = 'Finding' }
         )
     }
 
@@ -11648,6 +11665,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "GPO management should be restricted to Group Policy administrators"
             "Monitor for gPLink changes on OUs"
             "Review linked GPOs regularly for unauthorized modifications"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11702,6 +11720,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "GenericWrite is overly broad for most delegation needs"
             "Review all principals with GenericWrite"
             "Use delegation wizards for specific tasks"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -11747,6 +11766,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Review if broad read access is necessary for this principal"
             "Consider using more granular read permissions per attribute"
             "Ensure LAPS password read is restricted via separate ACLs"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         References = @(
             @{ Title = "AD Confidential Attributes"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/mark-attribute-as-confidential" }
@@ -18256,7 +18276,8 @@ foreach ($oid in $linkedOIDs) {
         Triggers = @(
             # This definition had no triggers at all, so nothing could ever name it.
             # Get-AddComputerRights does report the finding - it writes
-            # dangerousRights = "CreateChild (Computer) on CN=Computers" on every principal
+            # dangerousRights = "CreateChild (Computer) in the computer container" on every
+            # principal
             # holding that right - but measured, the row resolved to OU_PERM_CREATE_CHILD,
             # titled "CreateChild Rights on OU". The Computers container is not an OU, and
             # the point here is the one that definition does not make: whoever holds
@@ -18264,7 +18285,7 @@ foreach ($oid in $linkedOIDs) {
             #
             # The generic definition scores 50 against this one's 35, so a pattern alone
             # would not have been enough; it carries an ExcludePattern for this value now.
-            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild \(Computer\) on CN=Computers'; Severity = 'Finding' }
+            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild \(Computer\) in the computer container'; Severity = 'Finding' }
         )
     }
 
@@ -79576,7 +79597,7 @@ function Get-OUPermissions {
                         # Credential Roaming block below does it.
                         $lapsGrantsControlAccess = ($HasGenericAll -or $HasExtendedRight)
 
-                        # Legacy LAPS (ms-Mcs-AdmPwd) - GUID: E5C0983D-B71E-4F1D-B798-9B0F5ECAEEA3
+                        # Legacy LAPS (ms-Mcs-AdmPwd). GUID from $Script:PropertyGUIDs.
                         $legacyLAPSMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['ms-Mcs-AdmPwd'].Guid)
                         if ($legacyLAPSMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
@@ -79592,8 +79613,8 @@ function Get-OUPermissions {
                             $lapsPropertyFound = $true
                         }
 
-                        # Windows LAPS - Encrypted Password (most common)
-                        # GUID: 0bf205b5-8bcb-4943-8413-52e492d7cf63
+                        # Windows LAPS - Encrypted Password (most common). The GUID comes from
+                        # $Script:PropertyGUIDs and is deliberately not repeated here.
                         $encPwdMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-EncryptedPassword'].Guid)
                         if ($encPwdMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
@@ -79609,8 +79630,8 @@ function Get-OUPermissions {
                             $lapsPropertyFound = $true
                         }
 
-                        # Windows LAPS - Encrypted Password History
-                        # GUID: 01b40040-aeb0-4bb4-ad1c-6b3e09ceeafc
+                        # Windows LAPS - Encrypted Password History. GUID from
+                        # $Script:PropertyGUIDs, as above.
                         $encHistMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-EncryptedPasswordHistory'].Guid)
                         if ($encHistMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
@@ -103940,9 +103961,8 @@ function Get-AddComputerRights {
        - Default: 10 (any authenticated user can add 10 computers)
        - Secure: 0 (only explicit permissions)
 
-    2. ACL on CN=Computers container
-       - Create Computer Objects permission
-       - Extended Right "Add workstations to domain"
+    2. ACL on the computer container (CN=Computers by default, redirectable)
+       - CreateChild for the computer class, or GenericAll, on the container
 
     3. GPO User Rights Assignment
        - "Add workstations to domain" (SeMachineAccountPrivilege)
@@ -104199,9 +104219,10 @@ function Get-AddComputerRights {
                 $hasFindings = $true
             }
 
-            # Finding 2: Explicit ACLs on CN=Computers (show full AD objects)
+            # Finding 2: delegated CreateChild on the computer container, inherited
+            # grants included (show full AD objects)
             if (@($createComputerAccounts).Count -gt 0) {
-                Show-Line "Found $(@($createComputerAccounts).Count) account(s) with explicit CreateChild rights on CN=Computers:" -Class Finding
+                Show-Line "Found $(@($createComputerAccounts).Count) account(s) with CreateChild rights in the computer container ($computersContainerDN):" -Class Finding
 
                 foreach ($account in $createComputerAccounts) {
                     # Check if this is a well-known SID that does NOT belong to the domain partition.
@@ -104224,7 +104245,7 @@ function Get-AddComputerRights {
                     }
 
                     if ($adObject) {
-                        $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue "CreateChild (Computer) on CN=Computers" -Force
+                        $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue "CreateChild (Computer) in the computer container" -Force
                         $adObject | Add-Member -NotePropertyName 'targetContainer' -NotePropertyValue $computersContainerDN -Force
                         if ($account.Severity -in @('Expected', 'Attention')) {
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
@@ -104238,7 +104259,7 @@ function Get-AddComputerRights {
                         $fallbackObject = [PSCustomObject]@{
                             sAMAccountName = $resolvedName
                             objectSid = $account.SID
-                            dangerousRights = "CreateChild (Computer) on CN=Computers"
+                            dangerousRights = "CreateChild (Computer) in the computer container"
                             targetContainer = $computersContainerDN
                         }
                         if ($account.Severity -in @('Expected', 'Attention')) {
@@ -131487,7 +131508,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1456"
+$Script:adPEASVersion = "2.7.0+20261011-1536"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

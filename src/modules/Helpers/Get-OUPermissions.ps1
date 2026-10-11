@@ -1036,7 +1036,7 @@ function Get-OUPermissions {
                         # Credential Roaming block below does it.
                         $lapsGrantsControlAccess = ($HasGenericAll -or $HasExtendedRight)
 
-                        # Legacy LAPS (ms-Mcs-AdmPwd) - GUID: E5C0983D-B71E-4F1D-B798-9B0F5ECAEEA3
+                        # Legacy LAPS (ms-Mcs-AdmPwd). GUID from $Script:PropertyGUIDs.
                         $legacyLAPSMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['ms-Mcs-AdmPwd'].Guid)
                         if ($legacyLAPSMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
@@ -1052,8 +1052,8 @@ function Get-OUPermissions {
                             $lapsPropertyFound = $true
                         }
 
-                        # Windows LAPS - Encrypted Password (most common)
-                        # GUID: 0bf205b5-8bcb-4943-8413-52e492d7cf63
+                        # Windows LAPS - Encrypted Password (most common). The GUID comes from
+                        # $Script:PropertyGUIDs and is deliberately not repeated here.
                         $encPwdMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-EncryptedPassword'].Guid)
                         if ($encPwdMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
@@ -1069,8 +1069,8 @@ function Get-OUPermissions {
                             $lapsPropertyFound = $true
                         }
 
-                        # Windows LAPS - Encrypted Password History
-                        # GUID: 01b40040-aeb0-4bb4-ad1c-6b3e09ceeafc
+                        # Windows LAPS - Encrypted Password History. GUID from
+                        # $Script:PropertyGUIDs, as above.
                         $encHistMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-EncryptedPasswordHistory'].Guid)
                         if ($encHistMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }

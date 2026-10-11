@@ -10,9 +10,8 @@ function Get-AddComputerRights {
        - Default: 10 (any authenticated user can add 10 computers)
        - Secure: 0 (only explicit permissions)
 
-    2. ACL on CN=Computers container
-       - Create Computer Objects permission
-       - Extended Right "Add workstations to domain"
+    2. ACL on the computer container (CN=Computers by default, redirectable)
+       - CreateChild for the computer class, or GenericAll, on the container
 
     3. GPO User Rights Assignment
        - "Add workstations to domain" (SeMachineAccountPrivilege)
@@ -269,9 +268,10 @@ function Get-AddComputerRights {
                 $hasFindings = $true
             }
 
-            # Finding 2: Explicit ACLs on CN=Computers (show full AD objects)
+            # Finding 2: delegated CreateChild on the computer container, inherited
+            # grants included (show full AD objects)
             if (@($createComputerAccounts).Count -gt 0) {
-                Show-Line "Found $(@($createComputerAccounts).Count) account(s) with explicit CreateChild rights on CN=Computers:" -Class Finding
+                Show-Line "Found $(@($createComputerAccounts).Count) account(s) with CreateChild rights in the computer container ($computersContainerDN):" -Class Finding
 
                 foreach ($account in $createComputerAccounts) {
                     # Check if this is a well-known SID that does NOT belong to the domain partition.
@@ -294,7 +294,7 @@ function Get-AddComputerRights {
                     }
 
                     if ($adObject) {
-                        $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue "CreateChild (Computer) on CN=Computers" -Force
+                        $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue "CreateChild (Computer) in the computer container" -Force
                         $adObject | Add-Member -NotePropertyName 'targetContainer' -NotePropertyValue $computersContainerDN -Force
                         if ($account.Severity -in @('Expected', 'Attention')) {
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
@@ -308,7 +308,7 @@ function Get-AddComputerRights {
                         $fallbackObject = [PSCustomObject]@{
                             sAMAccountName = $resolvedName
                             objectSid = $account.SID
-                            dangerousRights = "CreateChild (Computer) on CN=Computers"
+                            dangerousRights = "CreateChild (Computer) in the computer container"
                             targetContainer = $computersContainerDN
                         }
                         if ($account.Severity -in @('Expected', 'Attention')) {

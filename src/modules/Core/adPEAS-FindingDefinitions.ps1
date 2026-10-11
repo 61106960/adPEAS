@@ -3040,6 +3040,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Use delegation wizards that grant minimal required permissions"
             "Review and remove unnecessary write permissions on OUs"
             "Monitor for attribute modifications on sensitive accounts"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3093,6 +3094,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Use tiered administration model"
             "Audit the reset itself: event 4724 on a domain controller names who reset whose password"
             "Monitor for password reset events (Event ID 4724)"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3134,6 +3136,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Use specific delegation instead of broad attribute permissions"
             "Monitor for userAccountControl changes (Event ID 4738)"
             "Protect sensitive accounts in dedicated OUs with restricted ACLs"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3188,6 +3191,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Grant specific attribute permissions instead of property sets"
             "Property sets were designed for convenience, not security"
             "Review all principals with property set permissions"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3241,6 +3245,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Remove member write permissions from non-admin principals"
             "Use AdminSDHolder to protect privileged groups"
             "Monitor group membership changes (Event ID 4728, 4732, 4756)"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3294,6 +3299,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "The ACL editor presents these as separate checkboxes - an ACE with no ObjectType means none of them was chosen"
             "Segregate privileged groups into OUs that carry no self-service delegation at all"
             "Monitor group membership changes (Event ID 4728, 4732, 4756) and servicePrincipalName writes"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3343,6 +3349,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Scope self-service membership delegation to distribution groups, never to security groups"
             "Use AdminSDHolder to protect privileged groups"
             "Monitor group membership changes (Event ID 4728, 4732, 4756)"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3397,6 +3404,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Use gMSA for service accounts instead of user accounts"
             "Monitor for SPN changes on user accounts (Event ID 4742)"
             "Protect privileged accounts in separate OUs"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3450,6 +3458,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "For computer objects, this is often legitimate (computer self-management)"
             "For user objects in privileged OUs, consider removing"
             "Monitor SPN changes regardless of method used"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3504,6 +3513,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Only machine accounts should modify their own dNSHostName"
             "Monitor for dNSHostName changes on computer accounts"
             "Use validated writes (Validated-DNS-Host-Name) instead of direct WriteProperty"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3558,6 +3568,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Grant Validated-DNS-Host-Name instead for legitimate delegation"
             "Only computer accounts should manage their own DNS names"
             "Monitor for DNS attribute changes on computer accounts"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3609,6 +3620,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Review if non-computer principals need this permission"
             "Consider removing from user accounts"
             "Monitor for unusual DNS name changes"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         References = @(
             @{ Title = "Validated Writes in AD"; Url = "https://docs.microsoft.com/en-us/windows/win32/adschema/validated-writes" }
@@ -3642,6 +3654,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Use Group Policy for logon scripts instead of per-user settings"
             "Monitor for scriptPath changes on user accounts"
             "Protect privileged accounts in separate OUs"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3695,6 +3708,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Review all accounts with Constrained Delegation configured"
             "Consider using Resource-Based Constrained Delegation (RBCD) with proper controls"
             "Monitor for msDS-AllowedToDelegateTo changes"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3750,6 +3764,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "This is one of the most commonly abused ACL misconfigurations"
             "Lower ms-DS-MachineAccountQuota to prevent machine account creation"
             "Monitor for msDS-AllowedToActOnBehalfOfOtherIdentity changes"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3837,6 +3852,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "If delegation is needed, limit to specific object types"
             "Lower ms-DS-MachineAccountQuota domain-wide"
             "Monitor for new object creation in sensitive OUs"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3864,13 +3880,14 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
         Tools = @("PowerMad", "Impacket", "PowerView")
         MITRE = "T1136.002"
         Triggers = @(
-            # CreateChild on CN=Computers is a different finding with a card of its own:
+            # CreateChild on the computer container is a different finding with a card of
+            # its own:
             # whoever holds it can join machines regardless of ms-DS-MachineAccountQuota,
             # and the container is not an OU. This definition scores 50 against that one's
             # 35, so without the exclusion it won every time and
             # COMPUTER_CONTAINER_CREATE_PERMISSIONS was unreachable - its own triggers sat
             # on an attribute no module writes.
-            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild'; ExcludePattern = 'on CN=Computers'; Severity = 'Finding' }
+            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild'; ExcludePattern = 'in the computer container'; Severity = 'Finding' }
         )
     }
 
@@ -3896,6 +3913,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "GPO management should be restricted to Group Policy administrators"
             "Monitor for gPLink changes on OUs"
             "Review linked GPOs regularly for unauthorized modifications"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3950,6 +3968,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "GenericWrite is overly broad for most delegation needs"
             "Review all principals with GenericWrite"
             "Use delegation wizards for specific tasks"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         RemediationCommands = @(
             @{
@@ -3995,6 +4014,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
             "Review if broad read access is necessary for this principal"
             "Consider using more granular read permissions per attribute"
             "Ensure LAPS password read is restricted via separate ACLs"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
         )
         References = @(
             @{ Title = "AD Confidential Attributes"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/mark-attribute-as-confidential" }
@@ -10504,7 +10524,8 @@ foreach ($oid in $linkedOIDs) {
         Triggers = @(
             # This definition had no triggers at all, so nothing could ever name it.
             # Get-AddComputerRights does report the finding - it writes
-            # dangerousRights = "CreateChild (Computer) on CN=Computers" on every principal
+            # dangerousRights = "CreateChild (Computer) in the computer container" on every
+            # principal
             # holding that right - but measured, the row resolved to OU_PERM_CREATE_CHILD,
             # titled "CreateChild Rights on OU". The Computers container is not an OU, and
             # the point here is the one that definition does not make: whoever holds
@@ -10512,7 +10533,7 @@ foreach ($oid in $linkedOIDs) {
             #
             # The generic definition scores 50 against this one's 35, so a pattern alone
             # would not have been enough; it carries an ExcludePattern for this value now.
-            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild \(Computer\) on CN=Computers'; Severity = 'Finding' }
+            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild \(Computer\) in the computer container'; Severity = 'Finding' }
         )
     }
 
