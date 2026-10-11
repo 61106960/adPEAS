@@ -353,7 +353,7 @@ function Get-LAPSPermissions {
                 $encryptedOnly = ($generations.Count -eq 1) -and
                                  ($generations -contains 'Windows LAPS (encrypted)')
                 if ($encryptedOnly) {
-                    return 'LAPS Password Read (Windows LAPS, encrypted) - needs the authorized decryptor named in ADPasswordEncryptionPrincipal to open the blob'
+                    return 'LAPS Password Read (Windows LAPS - encrypted) - needs the authorized decryptor named in ADPasswordEncryptionPrincipal to open the blob'
                 }
 
                 return ('LAPS Password Read (' + (($generations | Sort-Object) -join ', ') + ')')

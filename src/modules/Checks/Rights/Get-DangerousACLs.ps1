@@ -280,7 +280,13 @@ function Get-DangerousACLs {
             # top of the scale. What can carry it is the card, which the reported right
             # selects - so the right says it, and a card of its own gives the case the
             # write-up and the rank it deserves.
-            $broadGroupNote = ' - granted to a broad group, so every member holds it'
+            # No comma in this text, and none in any text appended to a right.
+            # Convert-DangerousRightsToRenderValues splits dangerousRights on ',\s*' so
+            # that each right gets its own tooltip, so a comma inside an explanation is
+            # read as "next right" - it breaks the line in the console and, worse, leaves
+            # any ExcludePattern in the discarded tail, which hands the row a stronger
+            # card than it earned.
+            $broadGroupNote = ' - granted to a broad group so every member holds it'
             # Test-IsBroadTrustee (adPEAS-SIDs.ps1) asks both lists. The local copy that
             # used to stand here did the same, and three other places still wrote the
             # pair out by hand - one of them with only the SID half.
@@ -311,11 +317,11 @@ function Get-DangerousACLs {
                     # and the severity are the same as for every other right on this
                     # object, and the text says what the holder can actually do.
                     if (-not $canDCSync -and ($hasGetChanges -or $hasGetChangesAll -or $hasGetChangesFiltered)) {
-                        $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - inert without DS-Replication-Get-Changes, one ACE short of DCSync"
+                        $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - inert without DS-Replication-Get-Changes and one ACE short of DCSync"
                         if ($hasGetChanges) {
                             # Not inert at all: this one replicates the whole directory
                             # except the secrets, every security descriptor included.
-                            $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - replicates the directory except secrets, one right short of DCSync"
+                            $partialText = "$(@($rights | Select-Object -Unique) -join ', ') - replicates the directory except secrets but is one right short of DCSync"
                         }
 
                         $dangerousRightsAccounts += [PSCustomObject]@{
