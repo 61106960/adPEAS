@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 16:56:39
-    Version: 2.7.0+20261011-1656
+    Build: 2026-10-11 17:31:26
+    Version: 2.7.0+20261011-1731
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -10739,7 +10739,10 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             # the domain object scores 60, the single critical attributes 45 to 54 - and below
             # the non-default owner (95) and DCSync (100), both of which are the stronger
             # statement about the same object even when the holder is one account.
-            @{ Attribute = 'dangerousRights'; Pattern = 'granted to a broad group'; Severity = 'Finding' }
+            # The computer container has its own broad card. This definition describes a
+            # dangerous right on the DOMAIN object, so its write-up does not fit a row
+            # about who may create machine accounts in a container.
+            @{ Attribute = 'dangerousRights'; Pattern = 'granted to a broad group'; ExcludePattern = 'in the computer container'; Severity = 'Finding' }
         )
     }
     'DANGEROUS_ACL_DCSYNC' = @{
@@ -18258,6 +18261,55 @@ foreach ($oid in $linkedOIDs) {
     # COMPUTER ACCOUNT CREATION FINDINGS
     # ============================================================================
 
+    'COMPUTER_CONTAINER_CREATE_BROAD' = @{
+        Title = "Create Computer Permissions Held by a Broad Group"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A group that holds most of the domain - Everyone, Authenticated Users, Domain Users, Domain Computers or BUILTIN\Users - may create computer objects in the default computer container. Every member can therefore create a machine account whose password they choose, without the ms-DS-MachineAccountQuota and without SeMachineAccountPrivilege entering into it."
+        Impact = @(
+            "Every member of the group can create a computer account it fully controls"
+            "That account is the delegation source a resource-based constrained delegation attack needs"
+            "It also supplies the machine account an NTLM relay to LDAP requires"
+            "Hardening ms-DS-MachineAccountQuota to 0 does not close this - the permission is granted directly"
+        )
+        Attack = @(
+            "1. Any member of the group creates a computer account in the container"
+            "2. Sets its password, so it owns a machine identity"
+            "3. Writes msDS-AllowedToActOnBehalfOfOtherIdentity on a target computer"
+            "4. Requests a service ticket for a privileged user on that target"
+        )
+        Remediation = @(
+            "Remove CreateChild for the computer class from the broad group on this container"
+            "Grant it to a dedicated provisioning account instead, and only there"
+            "If the finding names an inherited source the entry is not on this container - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this container inherits"
+            "Pre-stage computer accounts rather than letting users create them"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who may create child objects in the computer container"
+                Command = "(Get-Acl 'AD:\\CN=Computers,DC=domain,DC=com').Access | Where-Object { `$_.ActiveDirectoryRights -match 'CreateChild' } | Format-Table IdentityReference, ObjectType"
+            }
+            @{
+                Description = "Remove the broad group's entry (replace the identity, then verify)"
+                Command = "`$acl = Get-Acl 'AD:\\CN=Computers,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object { `$_.IdentityReference -like '*Domain Users*' }; `$acl.RemoveAccessRule(`$ace); Set-Acl 'AD:\\CN=Computers,DC=domain,DC=com' `$acl"
+            }
+        )
+        References = @(
+            @{ Title = "Resource-Based Constrained Delegation"; Url = "https://learn.microsoft.com/en-us/windows-server/security/kerberos/kerberos-constrained-delegation-overview" }
+            @{ Title = "AddAllowedToAct - BloodHound"; Url = "https://bloodhound.specterops.io/resources/edges/add-allowed-to-act" }
+        )
+        Tools = @("PowerView", "BloodHound", "ADACLScanner")
+        MITRE = "T1098"
+        Triggers = @(
+            # The breadth note is appended to the container right, so this pattern needs
+            # both halves: the container phrase keeps it off a domain-object row, and the
+            # note keeps it off a row for a named principal. Without the container half it
+            # would collide with DANGEROUS_ACL_BROAD_GROUP, whose write-up is about the
+            # domain object and scores 90.
+            @{ Attribute = 'dangerousRights'; Pattern = 'in the computer container - granted to a broad group'; Severity = 'Finding' }
+        )
+    }
+
     'COMPUTER_CONTAINER_CREATE_PERMISSIONS' = @{
         Title = "Non-Default Create Computer Permissions"
         Risk = "Finding"
@@ -18317,7 +18369,9 @@ foreach ($oid in $linkedOIDs) {
             #
             # The generic definition scores 50 against this one's 35, so a pattern alone
             # would not have been enough; it carries an ExcludePattern for this value now.
-            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild \(Computer\) in the computer container'; Severity = 'Finding' }
+            # Gives the broad case up to COMPUTER_CONTAINER_CREATE_BROAD, which says the
+            # thing this one does not: that every member of the group holds the right.
+            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild \(Computer\) in the computer container'; ExcludePattern = 'granted to a broad group'; Severity = 'Finding' }
         )
     }
 
@@ -104323,8 +104377,20 @@ function Get-AddComputerRights {
                         }
                     }
 
+                    # A right held by Everyone, Domain Users or Domain Computers is not the
+                    # same finding as the same right held by one provisioning account: every
+                    # member can create a machine account, which is the delegation source an
+                    # RBCD attack needs, and it does not depend on the quota at all. The
+                    # wording is the one Get-DangerousACLs uses on the domain object, and the
+                    # card it selects is the container's own - the domain-object card would
+                    # have brought a write-up about the domain with it.
+                    $rightsText = "CreateChild (Computer) in the computer container"
+                    if (Test-IsBroadTrustee -SID $account.SID) {
+                        $rightsText += ' - granted to a broad group, so every member holds it'
+                    }
+
                     if ($adObject) {
-                        $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue "CreateChild (Computer) in the computer container" -Force
+                        $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue $rightsText -Force
                         $adObject | Add-Member -NotePropertyName 'targetContainer' -NotePropertyValue $computersContainerDN -Force
                         if ($account.Severity -in @('Expected', 'Attention')) {
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
@@ -104338,7 +104404,7 @@ function Get-AddComputerRights {
                         $fallbackObject = [PSCustomObject]@{
                             sAMAccountName = $resolvedName
                             objectSid = $account.SID
-                            dangerousRights = "CreateChild (Computer) in the computer container"
+                            dangerousRights = $rightsText
                             targetContainer = $computersContainerDN
                         }
                         if ($account.Severity -in @('Expected', 'Attention')) {
@@ -131609,7 +131675,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1656"
+$Script:adPEASVersion = "2.7.0+20261011-1731"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

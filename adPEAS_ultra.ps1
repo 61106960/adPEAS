@@ -6578,7 +6578,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    Tools = @("PowerView", "BloodHound", "ADACLScanner")
 	    MITRE = "T1222.001"
 	    Triggers = @(
-	        @{ Attribute = 'dangerousRights'; Pattern = 'granted to a broad group'; Severity = 'Finding' }
+	        @{ Attribute = 'dangerousRights'; Pattern = 'granted to a broad group'; ExcludePattern = 'in the computer container'; Severity = 'Finding' }
 	    )
 	}
 	'DANGEROUS_ACL_DCSYNC' = @{
@@ -13627,6 +13627,49 @@ foreach ($oid in $linkedOIDs) {
 	        @{ Attribute = 'DangerousACEs'; Severity = 'Finding' }
 	    )
 	}
+	'COMPUTER_CONTAINER_CREATE_BROAD' = @{
+	    Title = "Create Computer Permissions Held by a Broad Group"
+	    Risk = "Finding"
+	    BaseScore = 50
+	    Description = "A group that holds most of the domain - Everyone, Authenticated Users, Domain Users, Domain Computers or BUILTIN\Users - may create computer objects in the default computer container. Every member can therefore create a machine account whose password they choose, without the ms-DS-MachineAccountQuota and without SeMachineAccountPrivilege entering into it."
+	    Impact = @(
+	        "Every member of the group can create a computer account it fully controls"
+	        "That account is the delegation source a resource-based constrained delegation attack needs"
+	        "It also supplies the machine account an NTLM relay to LDAP requires"
+	        "Hardening ms-DS-MachineAccountQuota to 0 does not close this - the permission is granted directly"
+	    )
+	    Attack = @(
+	        "1. Any member of the group creates a computer account in the container"
+	        "2. Sets its password, so it owns a machine identity"
+	        "3. Writes msDS-AllowedToActOnBehalfOfOtherIdentity on a target computer"
+	        "4. Requests a service ticket for a privileged user on that target"
+	    )
+	    Remediation = @(
+	        "Remove CreateChild for the computer class from the broad group on this container"
+	        "Grant it to a dedicated provisioning account instead, and only there"
+	        "If the finding names an inherited source the entry is not on this container - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this container inherits"
+	        "Pre-stage computer accounts rather than letting users create them"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show who may create child objects in the computer container"
+	            Command = "(Get-Acl 'AD:\\CN=Computers,DC=domain,DC=com').Access | Where-Object { `$_.ActiveDirectoryRights -match 'CreateChild' } | Format-Table IdentityReference, ObjectType"
+	        }
+	        @{
+	            Description = "Remove the broad group's entry (replace the identity, then verify)"
+	            Command = "`$acl = Get-Acl 'AD:\\CN=Computers,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object { `$_.IdentityReference -like '*Domain Users*' }; `$acl.RemoveAccessRule(`$ace); Set-Acl 'AD:\\CN=Computers,DC=domain,DC=com' `$acl"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Resource-Based Constrained Delegation"; Url = "https://learn.microsoft.com/en-us/windows-server/security/kerberos/kerberos-constrained-delegation-overview" }
+	        @{ Title = "AddAllowedToAct - BloodHound"; Url = "https://bloodhound.specterops.io/resources/edges/add-allowed-to-act" }
+	    )
+	    Tools = @("PowerView", "BloodHound", "ADACLScanner")
+	    MITRE = "T1098"
+	    Triggers = @(
+	        @{ Attribute = 'dangerousRights'; Pattern = 'in the computer container - granted to a broad group'; Severity = 'Finding' }
+	    )
+	}
 	'COMPUTER_CONTAINER_CREATE_PERMISSIONS' = @{
 	    Title = "Non-Default Create Computer Permissions"
 	    Risk = "Finding"
@@ -13675,7 +13718,7 @@ foreach ($oid in $linkedOIDs) {
 	    Tools = @("PowerMad", "ADACLScanner", "BloodHound")
 	    MITRE = "T1136.002"
 	    Triggers = @(
-	        @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild \(Computer\) in the computer container'; Severity = 'Finding' }
+	        @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild \(Computer\) in the computer container'; ExcludePattern = 'granted to a broad group'; Severity = 'Finding' }
 	    )
 	}
 	'GPO_SEMACHINEACCOUNTPRIVILEGE_BROAD' = @{
@@ -63974,8 +64017,12 @@ function Get-AddComputerRights {
 	                        $adObject = @(Get-DomainObject -LDAPFilter "(objectSid=$sidHex)" @connectionParams)[0]
 	                    }
 	                }
+	                $rightsText = "CreateChild (Computer) in the computer container"
+	                if (Test-IsBroadTrustee -SID $account.SID) {
+	                    $rightsText += ' - granted to a broad group, so every member holds it'
+	                }
 	                if ($adObject) {
-	                    $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue "CreateChild (Computer) in the computer container" -Force
+	                    $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue $rightsText -Force
 	                    $adObject | Add-Member -NotePropertyName 'targetContainer' -NotePropertyValue $computersContainerDN -Force
 	                    if ($account.Severity -in @('Expected', 'Attention')) {
 	                        $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
@@ -63987,7 +64034,7 @@ function Get-AddComputerRights {
 	                    $fallbackObject = [PSCustomObject]@{
 	                        sAMAccountName = $resolvedName
 	                        objectSid = $account.SID
-	                        dangerousRights = "CreateChild (Computer) in the computer container"
+	                        dangerousRights = $rightsText
 	                        targetContainer = $computersContainerDN
 	                    }
 	                    if ($account.Severity -in @('Expected', 'Attention')) {
@@ -82634,7 +82681,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-1656"
+$Script:adPEASVersion = "2.7.0+20261011-1731"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

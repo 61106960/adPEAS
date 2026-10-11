@@ -330,8 +330,20 @@ function Get-AddComputerRights {
                         }
                     }
 
+                    # A right held by Everyone, Domain Users or Domain Computers is not the
+                    # same finding as the same right held by one provisioning account: every
+                    # member can create a machine account, which is the delegation source an
+                    # RBCD attack needs, and it does not depend on the quota at all. The
+                    # wording is the one Get-DangerousACLs uses on the domain object, and the
+                    # card it selects is the container's own - the domain-object card would
+                    # have brought a write-up about the domain with it.
+                    $rightsText = "CreateChild (Computer) in the computer container"
+                    if (Test-IsBroadTrustee -SID $account.SID) {
+                        $rightsText += ' - granted to a broad group, so every member holds it'
+                    }
+
                     if ($adObject) {
-                        $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue "CreateChild (Computer) in the computer container" -Force
+                        $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue $rightsText -Force
                         $adObject | Add-Member -NotePropertyName 'targetContainer' -NotePropertyValue $computersContainerDN -Force
                         if ($account.Severity -in @('Expected', 'Attention')) {
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
@@ -345,7 +357,7 @@ function Get-AddComputerRights {
                         $fallbackObject = [PSCustomObject]@{
                             sAMAccountName = $resolvedName
                             objectSid = $account.SID
-                            dangerousRights = "CreateChild (Computer) in the computer container"
+                            dangerousRights = $rightsText
                             targetContainer = $computersContainerDN
                         }
                         if ($account.Severity -in @('Expected', 'Attention')) {
