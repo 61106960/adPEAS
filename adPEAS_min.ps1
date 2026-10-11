@@ -240,6 +240,7 @@ $Script:SchemaClassGUIDs = @{
     'group'                          = [GUID]'bf967a9c-0de6-11d0-a285-00aa003049e2'
     'organizationalUnit'             = [GUID]'bf967aa5-0de6-11d0-a285-00aa003049e2'
     'container'                      = [GUID]'bf967a8b-0de6-11d0-a285-00aa003049e2'
+    'printQueue'                     = [GUID]'bf967aa8-0de6-11d0-a285-00aa003049e2'
     'domain'                         = [GUID]'19195a5a-6da0-11d0-afd3-00c04fd930c9'
     'domainDNS'                      = [GUID]'19195a5b-6da0-11d0-afd3-00c04fd930c9'
     'msDS-GroupManagedServiceAccount' = [GUID]'7b8b558a-93a5-4af7-adca-c017e67f1057'
@@ -950,6 +951,10 @@ $Script:BroadGroupSIDs = @(
     'S-1-5-32-545',
     'S-1-5-32-546'
 )
+$Script:DefaultObjectCreators = @{
+    'S-1-5-32-548' = @('user', 'group', 'computer', 'inetOrgPerson', 'msDS-ManagedServiceAccount')
+    'S-1-5-32-550' = @('printQueue')
+}
 $Script:BroadGroupRIDSuffixes = @(
     '-513',
     '-514',
@@ -51563,7 +51568,7 @@ function Get-OUPermissions {
                         } else {
                             $className = Get-SchemaClassName -GUID $objectType
                             if ($className) {
-                                (Get-Culture).TextInfo.ToTitleCase($className)
+                                $className
                             } else {
                                 $objectType.ToString()
                             }
@@ -51578,6 +51583,7 @@ function Get-OUPermissions {
                         $Findings += [PSCustomObject]@{
                             CheckType     = "ObjectCreation"
                             Right         = "CreateChild ($createTarget)"
+                            CreatableClass = $createTarget
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -65887,6 +65893,16 @@ function Get-DangerousOUPermissions {
                 return
             }
             Write-Log "[Get-DangerousOUPermissions] Found $(@($OUs).Count) OU(s) and container(s) to analyze"
+            function Test-IsDefaultObjectCreation {
+                param([Parameter(Mandatory = $true)]$Finding)
+                if ($Finding.CheckType -ne 'ObjectCreation') { return $false }
+                $creatorSID = [string]$Finding.SID
+                if (-not $creatorSID) { return $false }
+                if (-not $Script:DefaultObjectCreators.ContainsKey($creatorSID)) { return $false }
+                $class = if ($Finding.PSObject.Properties['CreatableClass']) { [string]$Finding.CreatableClass } else { '' }
+                if (-not $class) { return $false }
+                return (@($Script:DefaultObjectCreators[$creatorSID]) -contains $class)
+            }
             $allFindings = @()
             $ouCount = 0
             $ouWithFindings = 0
@@ -65921,7 +65937,7 @@ function Get-DangerousOUPermissions {
                 $dangerousFindings = $ouPermissions.Findings | Where-Object {
                     $_.Severity -in $allowedSeverities -and
                     $_.CheckType -notin $ownModuleCheckTypes -and
-                    -not ($_.SID -eq 'S-1-5-32-548' -and $_.CheckType -eq 'ObjectCreation' -and $_.InheritedFrom -like 'Domain Root*')
+                    -not (Test-IsDefaultObjectCreation -Finding $_)
                 }
                 if ($dangerousFindings) {
                     $ouWithFindings++
@@ -85685,7 +85701,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-1901"
+$Script:adPEASVersion = "2.7.0+20261011-1927"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

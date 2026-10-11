@@ -130,6 +130,24 @@ function Get-DangerousOUPermissions {
 
             Write-Log "[Get-DangerousOUPermissions] Found $(@($OUs).Count) OU(s) and container(s) to analyze"
 
+            # Whether a finding is just a built-in operator group creating what it may
+            # create by design. Only that combination - the group, the CheckType and the
+            # class - so anything else those groups hold is still reported.
+            function Test-IsDefaultObjectCreation {
+                param([Parameter(Mandatory = $true)]$Finding)
+
+                if ($Finding.CheckType -ne 'ObjectCreation') { return $false }
+                $creatorSID = [string]$Finding.SID
+                if (-not $creatorSID) { return $false }
+                if (-not $Script:DefaultObjectCreators.ContainsKey($creatorSID)) { return $false }
+
+                # The class off the finding, not out of its sentence.
+                $class = if ($Finding.PSObject.Properties['CreatableClass']) { [string]$Finding.CreatableClass } else { '' }
+                if (-not $class) { return $false }
+
+                return (@($Script:DefaultObjectCreators[$creatorSID]) -contains $class)
+            }
+
             $allFindings = @()
             $ouCount = 0
             $ouWithFindings = 0
@@ -205,7 +223,7 @@ function Get-DangerousOUPermissions {
                 $dangerousFindings = $ouPermissions.Findings | Where-Object {
                     $_.Severity -in $allowedSeverities -and
                     $_.CheckType -notin $ownModuleCheckTypes -and
-                    -not ($_.SID -eq 'S-1-5-32-548' -and $_.CheckType -eq 'ObjectCreation' -and $_.InheritedFrom -like 'Domain Root*')
+                    -not (Test-IsDefaultObjectCreation -Finding $_)
                 }
 
                 if ($dangerousFindings) {

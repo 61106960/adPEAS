@@ -293,6 +293,20 @@ $Script:BroadGroupSIDs = @(
     Domain Users, Domain Guests, and Domain Computers are "broad" groups
     because they contain many/all domain members by default.
 #>
+# The built-in operator groups and the object classes each may create by design. Both
+# groups carry adminCount=1 and are Tier 1 in the Microsoft model, but Test-IsPrivileged
+# answers IsPrivileged=$false for them - so their default delegations were reported as
+# findings by non-privileged accounts, in every domain, on every container they reach.
+#
+# Bound to the class, not to the group: an explicit GenericAll, WriteDacl or Reset
+# Password for Account Operators on a Tier-0 OU is no default and stays a finding, which
+# is exactly why the blanket SID filter that used to sit in Get-DangerousOUPermissions
+# was removed.
+$Script:DefaultObjectCreators = @{
+    'S-1-5-32-548' = @('user', 'group', 'computer', 'inetOrgPerson', 'msDS-ManagedServiceAccount')  # Account Operators
+    'S-1-5-32-550' = @('printQueue')                                                                # Print Operators
+}
+
 $Script:BroadGroupRIDSuffixes = @(
     '-513',   # Domain Users
     '-514',   # Domain Guests

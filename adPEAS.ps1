@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 19:01:36
-    Version: 2.7.0+20261011-1901
+    Build: 2026-10-11 19:27:18
+    Version: 2.7.0+20261011-1927
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -628,6 +628,9 @@ $Script:SchemaClassGUIDs = @{
     # inheritance filter names this container's own class - a real grant - from one
     # naming some other class, which does not apply to the container at all.
     'container'                      = [GUID]'bf967a8b-0de6-11d0-a285-00aa003049e2'
+    # Print Operators hold CreateChild for this class on the domain by default, so a
+    # table without it printed the raw GUID instead of a name.
+    'printQueue'                     = [GUID]'bf967aa8-0de6-11d0-a285-00aa003049e2'
     'domain'                         = [GUID]'19195a5a-6da0-11d0-afd3-00c04fd930c9'
     'domainDNS'                      = [GUID]'19195a5b-6da0-11d0-afd3-00c04fd930c9'
 
@@ -2397,6 +2400,20 @@ $Script:BroadGroupSIDs = @(
     Domain Users, Domain Guests, and Domain Computers are "broad" groups
     because they contain many/all domain members by default.
 #>
+# The built-in operator groups and the object classes each may create by design. Both
+# groups carry adminCount=1 and are Tier 1 in the Microsoft model, but Test-IsPrivileged
+# answers IsPrivileged=$false for them - so their default delegations were reported as
+# findings by non-privileged accounts, in every domain, on every container they reach.
+#
+# Bound to the class, not to the group: an explicit GenericAll, WriteDacl or Reset
+# Password for Account Operators on a Tier-0 OU is no default and stays a finding, which
+# is exactly why the blanket SID filter that used to sit in Get-DangerousOUPermissions
+# was removed.
+$Script:DefaultObjectCreators = @{
+    'S-1-5-32-548' = @('user', 'group', 'computer', 'inetOrgPerson', 'msDS-ManagedServiceAccount')  # Account Operators
+    'S-1-5-32-550' = @('printQueue')                                                                # Print Operators
+}
+
 $Script:BroadGroupRIDSuffixes = @(
     '-513',   # Domain Users
     '-514',   # Domain Guests
@@ -80098,8 +80115,14 @@ function Get-OUPermissions {
                             # Try to resolve the schema class name
                             $className = Get-SchemaClassName -GUID $objectType
                             if ($className) {
-                                # Title case for readability (user -> User, computer -> Computer)
-                                (Get-Culture).TextInfo.ToTitleCase($className)
+                                # Verbatim, not title-cased. These are schema names:
+                                # ToTitleCase lowercases everything after the first letter
+                                # of a word unless the whole word is uppercase, so
+                                # inetOrgPerson came out as Inetorgperson and
+                                # msDS-ManagedServiceAccount as Msds-Managedserviceaccount -
+                                # names that exist in no schema and that a reader cannot
+                                # search for.
+                                $className
                             } else {
                                 # Unknown GUID - show as-is
                                 $objectType.ToString()
@@ -80119,6 +80142,10 @@ function Get-OUPermissions {
                         $Findings += [PSCustomObject]@{
                             CheckType     = "ObjectCreation"
                             Right         = "CreateChild ($createTarget)"
+                            # The class itself, beside the sentence that names it. The
+                            # caller decides whether a built-in may create it, and that
+                            # decision must not come from parsing the text above.
+                            CreatableClass = $createTarget
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity
@@ -103356,6 +103383,24 @@ function Get-DangerousOUPermissions {
 
             Write-Log "[Get-DangerousOUPermissions] Found $(@($OUs).Count) OU(s) and container(s) to analyze"
 
+            # Whether a finding is just a built-in operator group creating what it may
+            # create by design. Only that combination - the group, the CheckType and the
+            # class - so anything else those groups hold is still reported.
+            function Test-IsDefaultObjectCreation {
+                param([Parameter(Mandatory = $true)]$Finding)
+
+                if ($Finding.CheckType -ne 'ObjectCreation') { return $false }
+                $creatorSID = [string]$Finding.SID
+                if (-not $creatorSID) { return $false }
+                if (-not $Script:DefaultObjectCreators.ContainsKey($creatorSID)) { return $false }
+
+                # The class off the finding, not out of its sentence.
+                $class = if ($Finding.PSObject.Properties['CreatableClass']) { [string]$Finding.CreatableClass } else { '' }
+                if (-not $class) { return $false }
+
+                return (@($Script:DefaultObjectCreators[$creatorSID]) -contains $class)
+            }
+
             $allFindings = @()
             $ouCount = 0
             $ouWithFindings = 0
@@ -103431,7 +103476,7 @@ function Get-DangerousOUPermissions {
                 $dangerousFindings = $ouPermissions.Findings | Where-Object {
                     $_.Severity -in $allowedSeverities -and
                     $_.CheckType -notin $ownModuleCheckTypes -and
-                    -not ($_.SID -eq 'S-1-5-32-548' -and $_.CheckType -eq 'ObjectCreation' -and $_.InheritedFrom -like 'Domain Root*')
+                    -not (Test-IsDefaultObjectCreation -Finding $_)
                 }
 
                 if ($dangerousFindings) {
@@ -131839,7 +131884,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1901"
+$Script:adPEASVersion = "2.7.0+20261011-1927"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

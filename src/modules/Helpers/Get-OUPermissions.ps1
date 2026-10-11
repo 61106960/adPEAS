@@ -1296,8 +1296,14 @@ function Get-OUPermissions {
                             # Try to resolve the schema class name
                             $className = Get-SchemaClassName -GUID $objectType
                             if ($className) {
-                                # Title case for readability (user -> User, computer -> Computer)
-                                (Get-Culture).TextInfo.ToTitleCase($className)
+                                # Verbatim, not title-cased. These are schema names:
+                                # ToTitleCase lowercases everything after the first letter
+                                # of a word unless the whole word is uppercase, so
+                                # inetOrgPerson came out as Inetorgperson and
+                                # msDS-ManagedServiceAccount as Msds-Managedserviceaccount -
+                                # names that exist in no schema and that a reader cannot
+                                # search for.
+                                $className
                             } else {
                                 # Unknown GUID - show as-is
                                 $objectType.ToString()
@@ -1317,6 +1323,10 @@ function Get-OUPermissions {
                         $Findings += [PSCustomObject]@{
                             CheckType     = "ObjectCreation"
                             Right         = "CreateChild ($createTarget)"
+                            # The class itself, beside the sentence that names it. The
+                            # caller decides whether a built-in may create it, and that
+                            # decision must not come from parsing the text above.
+                            CreatableClass = $createTarget
                             Principal     = $TrusteeName
                             SID           = $TrusteeSID
                             Severity      = $Severity

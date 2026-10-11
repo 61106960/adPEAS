@@ -275,6 +275,9 @@ $Script:SchemaClassGUIDs = @{
     # inheritance filter names this container's own class - a real grant - from one
     # naming some other class, which does not apply to the container at all.
     'container'                      = [GUID]'bf967a8b-0de6-11d0-a285-00aa003049e2'
+    # Print Operators hold CreateChild for this class on the domain by default, so a
+    # table without it printed the raw GUID instead of a name.
+    'printQueue'                     = [GUID]'bf967aa8-0de6-11d0-a285-00aa003049e2'
     'domain'                         = [GUID]'19195a5a-6da0-11d0-afd3-00c04fd930c9'
     'domainDNS'                      = [GUID]'19195a5b-6da0-11d0-afd3-00c04fd930c9'
 
