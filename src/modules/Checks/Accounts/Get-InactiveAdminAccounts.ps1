@@ -92,16 +92,51 @@ function Get-InactiveAdminAccounts {
                     # Get days since logon from Test-AccountActivity
                     $daysSinceLogon = $account.ActivityDetails.DaysSinceActivity
 
-                    # Check if account is orphaned (no privileged groups)
-                    # Use SID-based detection via Test-IsPrivileged for language independence
+                    # Whether the account still holds privilege anywhere, or carries nothing
+                    # but a left-over adminCount. SID-based through Test-IsPrivileged, so the
+                    # answer does not depend on the language of the directory.
                     $privilegedGroups = @()
                     $isOrphaned = $true
+
+                    # The primary group first. primaryGroupID puts the group's RID in the
+                    # account's token and appears in no memberOf attribute, so an account
+                    # whose primary group is Domain Admins was reported as "adminCount=1 but
+                    # no privileged groups" while being a Domain Admin.
+                    #
+                    # Asked for by name: under Set-StrictMode -Version Latest, which Pester
+                    # applies, reading a property that is not on the object is an error
+                    # rather than $null, and an account without the attribute has to mean
+                    # "no primary-group privilege", not a broken check.
+                    $primaryRID = $null
+                    if ($account.PSObject.Properties['primaryGroupID']) {
+                        $primaryRID = [string]$account.primaryGroupID
+                    }
+                    if ($primaryRID -and $Script:LDAPContext.DomainSID) {
+                        $primarySID = "$($Script:LDAPContext.DomainSID)-$primaryRID"
+                        $primaryCheck = Test-IsPrivileged -Identity $primarySID -IncludeOperators
+                        if ($primaryCheck.Category -in @('Privileged', 'Operator')) {
+                            $primaryName = [string]$primaryCheck.MatchedGroup
+                            if (-not $primaryName) { $primaryName = $primarySID }
+                            $privilegedGroups += [PSCustomObject]@{
+                                Name        = $primaryName
+                                SID         = $primarySID
+                                DisplayText = $primaryName
+                            }
+                            $isOrphaned = $false
+                        }
+                    }
 
                     if ($account.memberOf) {
                         foreach ($groupDN in $account.memberOf) {
                             # Test-IsPrivileged accepts DN and resolves to SID internally
                             $category = (Test-IsPrivileged -Identity $groupDN -IncludeOperators).Category
-                            if ($category -eq 'Privileged') {
+                            # 'Operator' counts as privilege here. The candidate filter above
+                            # is built with -IncludeOperators, so an account whose only
+                            # privileged membership is Account Operators arrives in this loop
+                            # - and was then called orphaned, because Test-IsPrivileged
+                            # answers Category = 'Operator' with IsPrivileged = $false for
+                            # the four operator groups.
+                            if ($category -in @('Privileged', 'Operator')) {
                                 # Extract group name and resolve SID for proper classification
                                 $groupName = if ($groupDN -match '^CN=([^,]+)') { $matches[1] } else { $groupDN }
                                 $groupSID = ConvertTo-SID -Identity $groupDN
