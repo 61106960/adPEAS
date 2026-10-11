@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 01:01:52
-    Version: 2.7.0+20261012-0101
+    Build: 2026-10-12 01:22:28
+    Version: 2.7.0+20261012-0122
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -26750,41 +26750,42 @@ $Script:WindowsSupportedNoEOL = @(
 # - Product name from HTTP detection
 
 $Script:ExchangeLifecycle = @{
-    # ===== End-of-Life Versions =====
-    # Severity values match Show-Line system: Finding (red), Hint (yellow), Note (green), Secure (highlight)
+    # EOLDate is the data; the severity is derived from it in Get-ExchangeSeverity.
+    #
+    # Each version used to carry a hand-written Severity as well, and the two disagreed:
+    # Exchange 2016 and Exchange 2019 end on the same day, 2016 was written down as a
+    # Finding and 2019 as a Hint. Whoever added the row got it right on the day; nobody
+    # came back when the date passed. One source of truth per fact.
     'Exchange 2007' = @{
         EOLDate = '2017-04-11'
         BuildPrefix = '8.'
-        Severity = 'Finding'      # EOL - critical security risk
     }
     'Exchange 2010' = @{
         EOLDate = '2020-10-13'
         BuildPrefix = '14.'
-        Severity = 'Finding'      # EOL - critical security risk
     }
     'Exchange 2013' = @{
         EOLDate = '2023-04-11'
         BuildPrefix = '15.0.'
-        Severity = 'Finding'      # EOL - critical security risk
     }
     'Exchange 2016' = @{
         EOLDate = '2025-10-14'
         BuildPrefix = '15.1.'
-        Severity = 'Finding'      # EOL October 2025 - upgrade urgently recommended
     }
     'Exchange 2019' = @{
         EOLDate = '2025-10-14'
         BuildPrefix = '15.2.'
         BuildMax = 2561           # Builds below 2562 are Exchange 2019 (CU15 = 15.2.1748.x)
-        Severity = 'Hint'         # EOL October 2025 - upgrade to SE recommended
     }
 
     # ===== Currently Supported =====
+    # Exchange SE follows the Modern Lifecycle Policy: supported as long as it is kept
+    # current, with no published end date. $null is therefore the fact, not a gap - and
+    # it is what makes Get-ExchangeSeverity answer Standard for it.
     'Exchange SE' = @{
-        EOLDate = $null           # Currently supported
+        EOLDate = $null
         BuildPrefix = '15.2.'
         BuildMin = 2562           # Builds 2562+ are Exchange SE (SE RTM = 15.2.2562.17)
-        Severity = 'Standard'     # Current supported version
     }
 }
 
@@ -26977,6 +26978,20 @@ function Get-NormalizedExchangeVersion {
 
     # Fallback to product name
     if (-not [string]::IsNullOrEmpty($ProductName)) {
+        # "Version 15.2 (Build 1544.4)" is what Exchange writes into serialNumber on its
+        # own object in the Configuration partition - and that is the only version string
+        # the inventory in Get-InfrastructureServers has. None of the patterns below
+        # matched it, so Get-ExchangeSeverity answered Standard, the is_exchange_eol
+        # trigger stayed false, and the row rendered uncoloured with no card while the
+        # dedicated Exchange check assessed the same server correctly from its build.
+        if ($ProductName -match 'Version\s+(\d+)\.(\d+)\s*\(Build\s+(\d+)') {
+            return (Get-NormalizedExchangeVersion -BuildNumber "$($Matches[1]).$($Matches[2]).$($Matches[3])")
+        }
+        # A build number handed to the wrong parameter. The trigger does exactly that: it
+        # has a version string and does not know which shape it is in.
+        if ($ProductName -match '^\d+\.\d+\.\d+') {
+            return (Get-NormalizedExchangeVersion -BuildNumber $ProductName)
+        }
         if ($ProductName -match 'Exchange.*2007') { return 'Exchange 2007' }
         if ($ProductName -match 'Exchange.*2010') { return 'Exchange 2010' }
         if ($ProductName -match 'Exchange.*2013') { return 'Exchange 2013' }
@@ -27171,14 +27186,41 @@ function Get-ExchangeSeverity {
         [string]$BuildNumber,
 
         [Parameter(Mandatory=$false)]
-        [string]$ProductName
+        [string]$ProductName,
+
+        [Parameter(Mandatory=$false)]
+        [DateTime]$ReferenceDate = (Get-Date)
     )
 
     $normalizedVersion = Get-NormalizedExchangeVersion -BuildNumber $BuildNumber -ProductName $ProductName
-
-    if ($normalizedVersion -and $Script:ExchangeLifecycle.ContainsKey($normalizedVersion)) {
-        return $Script:ExchangeLifecycle[$normalizedVersion].Severity
+    if (-not $normalizedVersion -or -not $Script:ExchangeLifecycle.ContainsKey($normalizedVersion)) {
+        return 'Standard'
     }
+
+    $entry = $Script:ExchangeLifecycle[$normalizedVersion]
+
+    # Derived from the date, not read out of the table.
+    #
+    # Every version used to carry a hand-written Severity, and it went stale the way a
+    # hand-maintained verdict always does: Exchange 2016 and Exchange 2019 both ended on
+    # 2025-10-14, 2016 was written down as a Finding and 2019 as a Hint - so a year after
+    # support ended for both, one of them was still a yellow hint in every report. The
+    # Windows half of this file computes its verdict from the dates for that reason, and
+    # this half does now too. The dates are the data that has to be maintained; the
+    # verdict follows from them.
+    if (-not $entry.EOLDate) { return 'Standard' }
+
+    $eolDate = [DateTime]::MinValue
+    if (-not [DateTime]::TryParseExact([string]$entry.EOLDate, 'yyyy-MM-dd', `
+            [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$eolDate)) {
+        return 'Standard'
+    }
+
+    if ($ReferenceDate -ge $eolDate) { return 'Finding' }
+
+    # The last half year before the date. Still supported, and too late to start
+    # planning the migration - which is what a hint is for.
+    if ($ReferenceDate -ge $eolDate.AddDays(-180)) { return 'Hint' }
 
     return 'Standard'
 }
@@ -133001,7 +133043,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0101"
+$Script:adPEASVersion = "2.7.0+20261012-0122"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

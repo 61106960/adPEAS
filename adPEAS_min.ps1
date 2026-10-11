@@ -19981,34 +19981,28 @@ $Script:ExchangeLifecycle = @{
     'Exchange 2007' = @{
         EOLDate = '2017-04-11'
         BuildPrefix = '8.'
-        Severity = 'Finding'
     }
     'Exchange 2010' = @{
         EOLDate = '2020-10-13'
         BuildPrefix = '14.'
-        Severity = 'Finding'
     }
     'Exchange 2013' = @{
         EOLDate = '2023-04-11'
         BuildPrefix = '15.0.'
-        Severity = 'Finding'
     }
     'Exchange 2016' = @{
         EOLDate = '2025-10-14'
         BuildPrefix = '15.1.'
-        Severity = 'Finding'
     }
     'Exchange 2019' = @{
         EOLDate = '2025-10-14'
         BuildPrefix = '15.2.'
         BuildMax = 2561
-        Severity = 'Hint'
     }
     'Exchange SE' = @{
         EOLDate = $null
         BuildPrefix = '15.2.'
         BuildMin = 2562
-        Severity = 'Standard'
     }
 }
 function Get-NormalizedOSName {
@@ -20093,6 +20087,12 @@ function Get-NormalizedExchangeVersion {
         }
     }
     if (-not [string]::IsNullOrEmpty($ProductName)) {
+        if ($ProductName -match 'Version\s+(\d+)\.(\d+)\s*\(Build\s+(\d+)') {
+            return (Get-NormalizedExchangeVersion -BuildNumber "$($Matches[1]).$($Matches[2]).$($Matches[3])")
+        }
+        if ($ProductName -match '^\d+\.\d+\.\d+') {
+            return (Get-NormalizedExchangeVersion -BuildNumber $ProductName)
+        }
         if ($ProductName -match 'Exchange.*2007') { return 'Exchange 2007' }
         if ($ProductName -match 'Exchange.*2010') { return 'Exchange 2010' }
         if ($ProductName -match 'Exchange.*2013') { return 'Exchange 2013' }
@@ -20181,12 +20181,23 @@ function Get-ExchangeSeverity {
         [Parameter(Mandatory=$false)]
         [string]$BuildNumber,
         [Parameter(Mandatory=$false)]
-        [string]$ProductName
+        [string]$ProductName,
+        [Parameter(Mandatory=$false)]
+        [DateTime]$ReferenceDate = (Get-Date)
     )
     $normalizedVersion = Get-NormalizedExchangeVersion -BuildNumber $BuildNumber -ProductName $ProductName
-    if ($normalizedVersion -and $Script:ExchangeLifecycle.ContainsKey($normalizedVersion)) {
-        return $Script:ExchangeLifecycle[$normalizedVersion].Severity
+    if (-not $normalizedVersion -or -not $Script:ExchangeLifecycle.ContainsKey($normalizedVersion)) {
+        return 'Standard'
     }
+    $entry = $Script:ExchangeLifecycle[$normalizedVersion]
+    if (-not $entry.EOLDate) { return 'Standard' }
+    $eolDate = [DateTime]::MinValue
+    if (-not [DateTime]::TryParseExact([string]$entry.EOLDate, 'yyyy-MM-dd', `
+            [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$eolDate)) {
+        return 'Standard'
+    }
+    if ($ReferenceDate -ge $eolDate) { return 'Finding' }
+    if ($ReferenceDate -ge $eolDate.AddDays(-180)) { return 'Hint' }
     return 'Standard'
 }
 $Script:adPEAS_FindingsCollection = $null
@@ -86210,7 +86221,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-0101"
+$Script:adPEASVersion = "2.7.0+20261012-0122"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
