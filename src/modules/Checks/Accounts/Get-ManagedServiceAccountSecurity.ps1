@@ -9,6 +9,12 @@ function Get-ManagedServiceAccountSecurity {
     1. gMSA Password Access Analysis:
        - Identifies who can retrieve gMSA passwords via msDS-GroupMSAMembership
        - Flags non-privileged principals with password access (security risk)
+       - Reports the OWNER of that descriptor when it is not a privileged principal:
+         an owner may rewrite the DACL inside it, so it can grant itself the password
+         without appearing among the readers
+       - Reports a rotation interval above 90 days (msDS-ManagedPasswordInterval, the
+         upper bound on how long one stolen password stays valid) and an accountExpires
+         date (the account stops authenticating when it passes)
 
     2. gMSA Password Retrieval:
        - Attempts to read msDS-ManagedPassword for each gMSA
@@ -106,6 +112,7 @@ function Get-ManagedServiceAccountSecurity {
                 # report that it could not analyze anything - honest, but useless, and a
                 # second key costs nothing.
                 $gmsaDescriptors = @{}
+                $gmsaDescriptorOwners = @{}
                 try {
                     foreach ($rawGMSA in @(Get-DomainUser -GMSA -Properties 'distinguishedName', 'sAMAccountName', 'msDS-GroupMSAMembership' -Raw @PSBoundParameters)) {
                         $rawSD = $rawGMSA.'msDS-GroupMSAMembership'
@@ -177,6 +184,17 @@ function Get-ManagedServiceAccountSecurity {
                                 $grantedSIDs += $aceSID
                                 $allReaderSIDs[$aceSID] = $true
                             }
+                        }
+
+                        # The owner of this descriptor may rewrite the DACL that the
+                        # loop above just read, so it can grant itself the password
+                        # without ever appearing among the readers. The check parsed
+                        # the descriptor and looked only at its ACEs.
+                        try {
+                            $sdOwner = $gmsaSD.GetOwner([System.Security.Principal.SecurityIdentifier])
+                            if ($sdOwner) { $gmsaDescriptorOwners[$gmsaName] = [string]$sdOwner.Value }
+                        } catch {
+                            Write-Log "[Get-ManagedServiceAccountSecurity] Could not read the descriptor owner of $gmsaName : $_"
                         }
 
                         $analyzedGMSAs++
@@ -298,6 +316,35 @@ function Get-ManagedServiceAccountSecurity {
                     }
                 }
 
+                # ----- Who may rewrite the descriptor, as opposed to who may read -----
+                #
+                # The owner of a security descriptor may rewrite its DACL whether or not
+                # that DACL grants it anything, so the owner of msDS-GroupMSAMembership
+                # can grant itself the password and does not appear among the readers.
+                # The analysis above parsed the descriptor and looked only at its ACEs.
+                #
+                # Computed before the access findings are printed, so an account that is
+                # reported there carries the owner row when it is rendered. Owners that
+                # could rewrite the descriptor anyway are not reported: Administrators,
+                # SYSTEM, Domain Admins and Enterprise Admins (Test-IsDefaultOwner), and
+                # any privileged principal reaches the password by other means.
+                $descriptorOwnerFindings = @()
+                $reportedGMSANames = @($nonPrivilegedAccessFindings | ForEach-Object { $_.gMSA })
+                foreach ($ownedGMSA in @($gmsaDescriptorOwners.Keys)) {
+                    $ownerSID = $gmsaDescriptorOwners[$ownedGMSA]
+                    if (Test-IsDefaultOwner -SID $ownerSID) { continue }
+                    if ((Test-IsPrivileged -Identity $ownerSID -IncludeOperators).IsPrivileged) { continue }
+
+                    $ownedObject = @($gmsaAccounts | Where-Object { $_.sAMAccountName -eq $ownedGMSA })[0]
+                    if (-not $ownedObject) { continue }
+
+                    $ownerName = ConvertFrom-SID -SID $ownerSID
+                    if (-not $ownerName) { $ownerName = $ownerSID }
+                    $ownedObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'gMSA' -Force
+                    $ownedObject | Add-Member -NotePropertyName 'gmsaMembershipOwner' -NotePropertyValue "$ownerName ($ownerSID) - may rewrite who retrieves the password" -Force
+                    $descriptorOwnerFindings += [PSCustomObject]@{ gMSA = $ownedGMSA; Owner = $ownerName; Object = $ownedObject }
+                }
+
                 # Output non-privileged access findings
                 if (@($nonPrivilegedAccessFindings).Count -gt 0) {
                     # Count how many have broad group access (critical)
@@ -339,6 +386,57 @@ function Get-ManagedServiceAccountSecurity {
                 }
                 if (@($unparsedGMSAs).Count -gt 0) {
                     Show-Line "msDS-GroupMSAMembership could not be parsed on $(@($unparsedGMSAs).Count) gMSA(s) - their password access is unknown: $(@($unparsedGMSAs) -join ', ')" -Class Note
+                }
+                # ----- What the gMSA objects themselves say -----
+                #
+                # Three attributes the check asked the directory for and then never read.
+                # The descriptor owner gets the object, because it is a finding about that
+                # account; the other two get a line naming the accounts, because the
+                # gMSAs that matter are printed above already.
+
+                if (@($descriptorOwnerFindings).Count -gt 0) {
+                    # The names are on the line, because the object itself may already
+                    # have been printed above - the account is then reported once, with
+                    # the owner row on it, instead of twice.
+                    $ownerList = @($descriptorOwnerFindings | ForEach-Object { "$($_.gMSA) ($($_.Owner))" }) -join ', '
+
+                    Show-Line "msDS-GroupMSAMembership is owned by a principal that is not privileged: $ownerList" -Class Finding -FindingId 'GMSA_MEMBERSHIP_OWNER'
+                    foreach ($ownerFinding in $descriptorOwnerFindings) {
+                        if ($reportedGMSANames -contains $ownerFinding.gMSA) { continue }
+                        Show-Object $ownerFinding.Object
+                    }
+                }
+
+                $longIntervals = @()
+                $expiringGMSAs = @()
+                foreach ($gmsa in $gmsaAccounts) {
+                    # msDS-ManagedPasswordInterval is the upper bound on how long a password
+                    # that was read once stays valid. The default is 30 days, and the value
+                    # is read-only after creation.
+                    $intervalDays = 0
+                    if ([int]::TryParse([string]$gmsa.'msDS-ManagedPasswordInterval', [ref]$intervalDays) -and $intervalDays -gt 90) {
+                        $longIntervals += "$($gmsa.sAMAccountName) ($intervalDays days)"
+                    }
+
+                    # accountExpires: 0 and 0x7FFFFFFFFFFFFFFF both mean "never". A date on a
+                    # gMSA is a Note, not a finding - nothing is exposed by it, but every
+                    # service running under the account stops authenticating when it passes.
+                    $expiresValue = [long]0
+                    if ([long]::TryParse([string]$gmsa.accountExpires, [ref]$expiresValue) -and
+                        $expiresValue -gt 0 -and $expiresValue -ne 9223372036854775807) {
+                        $expiryText = 'unreadable'
+                        try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTimeUtc($expiresValue)) 'yyyy-MM-dd' } catch {
+                            Write-Log "[Get-ManagedServiceAccountSecurity] Could not read accountExpires of $($gmsa.sAMAccountName): $_"
+                        }
+                        $expiringGMSAs += "$($gmsa.sAMAccountName) ($expiryText)"
+                    }
+                }
+
+                if (@($longIntervals).Count -gt 0) {
+                    Show-Line "gMSA(s) rotating their password less often than every 90 days: $(@($longIntervals) -join ', ')" -Class Hint -FindingId 'GMSA_ROTATION_INTERVAL_LONG'
+                }
+                if (@($expiringGMSAs).Count -gt 0) {
+                    Show-Line "gMSA(s) with an expiry date - the account stops authenticating when it passes: $(@($expiringGMSAs) -join ', ')" -Class Note
                 }
 
                 # ===== Check 2: Attempt to read gMSA passwords =====

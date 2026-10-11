@@ -839,6 +839,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "msDS-GroupMSAMembership (who can retrieve passwords)"
             "Whether password access follows least privilege"
             "Non-privileged principals with password access"
+            "The owner of that descriptor, who may rewrite the DACL inside it"
+            "msDS-ManagedPasswordInterval (how long a stolen password stays valid)"
+            "accountExpires (when the account stops authenticating)"
         )
         SecureMessage = "All gMSA password access is properly restricted to privileged accounts. No non-privileged principals can retrieve gMSA passwords."
         PrimaryFindingId = 'GMSA_PASSWORD_READABLE'

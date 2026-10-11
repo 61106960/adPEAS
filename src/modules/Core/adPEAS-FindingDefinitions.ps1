@@ -11302,6 +11302,91 @@ foreach ($oid in $linkedOIDs) {
     # META / STATUS ATTRIBUTES
     # ============================================================================
 
+    'GMSA_ROTATION_INTERVAL_LONG' = @{
+        Title = "gMSA Password Rotates Rarely"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "This group managed service account rotates its password less often than every 90 days. The point of a gMSA is that the password is long, random and changed by the directory without anybody holding it - a long interval gives that up gradually, because a password recovered once stays valid until the next rotation. The interval is therefore the upper bound on how long a single theft keeps paying. Microsoft's default is 30 days. The value cannot be changed afterwards: msDS-ManagedPasswordInterval is set when the account is created and is read-only from then on, so a different interval means creating the account again."
+        Impact = @(
+            "A password read from the directory stays valid until the next rotation"
+            "The interval is the upper bound on the useful life of one theft"
+            "An interval far above the default is usually unintentional - it was typed once at creation"
+        )
+        Attack = @(
+            "1. Attacker retrieves msDS-ManagedPassword for the gMSA (see the password access findings)"
+            "2. Derives the Kerberos keys from the blob and authenticates as the service"
+            "3. Keeps doing so until the interval expires - with 365 days, for up to a year"
+        )
+        Remediation = @(
+            "Create the account again with the default interval; msDS-ManagedPasswordInterval cannot be changed on an existing gMSA"
+            "Check who may retrieve the password while the long interval stands - those principals are the exposure"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the rotation interval of every gMSA in the domain"
+                Command = "Get-ADServiceAccount -Filter * -Properties msDS-ManagedPasswordInterval | Select-Object Name,msDS-ManagedPasswordInterval"
+            }
+            @{
+                Description = "Create a replacement with the default 30-day interval"
+                Command = "New-ADServiceAccount -Name 'GMSA_NAME' -DNSHostName 'GMSA_NAME.contoso.com' -ManagedPasswordIntervalInDays 30"
+            }
+        )
+        References = @(
+            @{ Title = "Group Managed Service Accounts Overview"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/group-managed-service-accounts/group-managed-service-accounts-overview" }
+            @{ Title = "msDS-ManagedPasswordInterval"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-msds-managedpasswordinterval" }
+        )
+        Tools = @("PowerShell", "GMSAPasswordReader")
+        Triggers = @(
+            @{ Attribute = 'msDS-ManagedPasswordInterval'; Custom = 'gmsa_interval_gt_90'; Severity = 'Hint' }
+        )
+    }
+
+    'GMSA_MEMBERSHIP_OWNER' = @{
+        Title = "gMSA Password Access Descriptor Owned by a Non-Privileged Principal"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "msDS-GroupMSAMembership is a security descriptor, and who may retrieve this gMSA's password is the DACL inside it. The owner of a security descriptor may rewrite that DACL whether or not the DACL grants it anything - so this principal can add itself as a password reader and then read msDS-ManagedPassword. It does not appear among the readers today, which is why an analysis that looks only at the ACEs reports the account as properly restricted."
+        Impact = @(
+            "The owner can grant itself password retrieval and remove the entry afterwards"
+            "It holds that right without appearing in any list of password readers"
+            "The gMSA's Kerberos keys follow from the password blob, so this is full control of the service identity"
+            "Where the gMSA is privileged, this is a path into that privilege"
+        )
+        Attack = @(
+            "1. Attacker controls the owner of msDS-GroupMSAMembership"
+            "2. Rewrites the descriptor to grant itself ReadProperty"
+            "3. Reads msDS-ManagedPassword and derives the account's Kerberos keys"
+            "4. Authenticates as the gMSA, then restores the descriptor"
+        )
+        Remediation = @(
+            "Set the owner of msDS-GroupMSAMembership back to Domain Admins or SYSTEM"
+            "Review who holds WriteOwner on the gMSA object itself - that right leads back here"
+            "Treat whoever created the account as a holder of its password until the owner is corrected"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the owner of the password access descriptor of every gMSA"
+                Command = "Get-ADServiceAccount -Filter * -Properties msDS-GroupMSAMembership | ForEach-Object { `$sd = New-Object System.DirectoryServices.ActiveDirectorySecurity; `$sd.SetSecurityDescriptorBinaryForm(`$_.'msDS-GroupMSAMembership'); [PSCustomObject]@{ Name = `$_.Name; Owner = `$sd.GetOwner([System.Security.Principal.NTAccount]) } }"
+            }
+            @{
+                Description = "Rewrite the descriptor with the intended readers, which also resets its owner"
+                Command = "Set-ADServiceAccount -Identity 'GMSA_NAME' -PrincipalsAllowedToRetrieveManagedPassword 'GMSA_HOSTS'"
+            }
+        )
+        References = @(
+            @{ Title = "msDS-GroupMSAMembership"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-msds-groupmsamembership" }
+            @{ Title = "Group Managed Service Accounts Overview"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/group-managed-service-accounts/group-managed-service-accounts-overview" }
+            @{ Title = "Owner Rights on an Object - MS-ADTS"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/d2435927-0999-4c62-8c6d-13ba31a52e1a" }
+        )
+        Tools = @("PowerShell", "GMSAPasswordReader", "PowerView")
+        Triggers = @(
+            # The annotation Get-ManagedServiceAccountSecurity writes on a gMSA whose
+            # descriptor owner is neither a default owner nor a privileged principal. No
+            # pattern: the attribute is only ever written when that is the case.
+            @{ Attribute = 'gmsaMembershipOwner'; Severity = 'Finding' }
+        )
+    }
+
     'GMSA_MEMBERSHIP_INFO' = @{
         Title = "gMSA Membership Information"
         Risk = "Hint"
@@ -14328,6 +14413,17 @@ function Test-CustomTrigger {
             }
             return $false
         }
+        'gmsa_interval_gt_90' {
+            # The gMSA password rotation interval, in days. Only a gMSA carries
+            # msDS-ManagedPasswordInterval at all, so this predicate cannot colour
+            # anything else - and the attribute was requested by Get-DomainUser
+            # -ShowGMSADetails and then never read.
+            $intervalDays = 0
+            if ([int]::TryParse([string]$Value, [ref]$intervalDays)) {
+                return ($intervalDays -gt 90)
+            }
+            return $false
+        }
         'gt_0' {
             # Integer value > 0
             $intValue = 0
@@ -14432,3 +14528,4 @@ function Get-DateFromValue {
 
     return $null
 }
+
