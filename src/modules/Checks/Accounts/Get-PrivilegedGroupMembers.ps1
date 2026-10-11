@@ -1119,20 +1119,31 @@ function Get-PrivilegedGroupMembers {
                         # only Finding, Hint, Note and Secure, so the row stayed colourless
                         # and named no finding card for one of the classic legacy findings
                         # there is.
+                        # Three cases, because three different things are true. The
+                        # value is the member name: the sentence these attributes used to
+                        # carry is the card's Description word for word, so the console
+                        # was repeating the tooltip in 160 characters.
+                        $memberClass = 'Finding'
                         if ($MemberSID -eq 'S-1-5-7') {
-                            $finding | Add-Member -NotePropertyName 'prewin2000AnonymousMember' -NotePropertyValue (
-                                'Anonymous Logon is a member of this group, so every user and group object in the domain can be read with no credentials at all.'
-                            ) -Force
+                            # No credentials at all - the strongest of the three.
+                            $finding | Add-Member -NotePropertyName 'prewin2000AnonymousMember' -NotePropertyValue $MemberName -Force
+                        } elseif ($MemberSID -eq 'S-1-5-11') {
+                            # The Microsoft default: still pre-populated in new forests on
+                            # Server 2022 and 2025, and removing it breaks ADFS 3.0
+                            # WebForms and Cisco ISE among others. Hardening worth doing,
+                            # with dependencies to check first - not a finding against the
+                            # configuration as shipped.
+                            $finding | Add-Member -NotePropertyName 'prewin2000DefaultMember' -NotePropertyValue $MemberName -Force
+                            $memberClass = 'Hint'
                         } else {
-                            $finding | Add-Member -NotePropertyName 'prewin2000BroadMember' -NotePropertyValue (
-                                "$MemberName is a member of this group, so every principal it covers can read every user and group object in the domain."
-                            ) -Force
+                            # Everyone, or anyone added by hand. The legacy mode.
+                            $finding | Add-Member -NotePropertyName 'prewin2000BroadMember' -NotePropertyValue $MemberName -Force
                         }
 
                         $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PreWindows2000Access' -Force
                         $PreWin2000Findings += $finding
 
-                        Show-Line "$MemberName is a member" -Class Finding
+                        Show-Line "$MemberName is a member" -Class $memberClass
 
                         # The object was built, counted and never shown, so it reached
                         # neither the console nor the HTML report: the only trace of this

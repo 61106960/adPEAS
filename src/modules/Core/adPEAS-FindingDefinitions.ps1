@@ -11334,6 +11334,45 @@ foreach ($oid in $linkedOIDs) {
         )
     }
 
+    'PREWIN2000_DEFAULT_MEMBER' = @{
+        Title = "Authenticated Users in Pre-Windows 2000 Compatible Access"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "The Pre-Windows 2000 Compatible Access group grants its members read access to every user and group object in the domain, and Authenticated Users is a member. This is how Microsoft ships the group - it is still pre-populated in new forests on Windows Server 2022 and 2025 - so it is the configuration as delivered rather than something that was changed. Worth removing, but not before checking what depends on it."
+        Impact = @(
+            "Any account that can authenticate may enumerate every user and group in the domain"
+            "That includes the group memberships an attacker needs to choose a target"
+            "The group also reads tokenGroupsGlobalAndUniversal, which Authenticated Users alone cannot"
+        )
+        Attack = @(
+            "1. An attacker authenticates with any account, however unprivileged"
+            "2. Enumerates users, groups and memberships across the domain"
+            "3. Chooses targets from what it finds, without touching a privileged object"
+        )
+        Remediation = @(
+            "Check what depends on it first: ADFS 3.0 WebForms authentication and Cisco ISE are documented to require this membership and break without it"
+            "Remove Authenticated Users from the group once nothing needs it"
+            "Grant the read explicitly to the accounts that turn out to need it instead"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current members"
+                Command = "Get-ADGroupMember -Identity 'S-1-5-32-554'"
+            }
+        )
+        References = @(
+            @{ Title = "Security risks of Pre-Windows 2000 Compatibility Access"; Url = "https://www.semperis.com/blog/security-risks-pre-windows-2000-compatibility-windows-2022/" }
+            @{ Title = "Pre-Windows 2000 Compatible Access and ADFS"; Url = "https://learn.microsoft.com/en-us/archive/msdn-technet-forums/e8dfacba-985f-4042-abeb-f341bf37522f" }
+        )
+        Tools = @("PowerView", "BloodHound")
+        MITRE = "T1087.002"
+        Triggers = @(
+            # Its own attribute, so the default case is told from a principal somebody
+            # added by hand. The check decides which attribute to write, by SID.
+            @{ Attribute = 'prewin2000DefaultMember'; Severity = 'Hint' }
+        )
+    }
+
     'PREWIN2000_BROAD_MEMBER' = @{
         Title = "Broad Principal in Pre-Windows 2000 Compatible Access"
         Risk = "Finding"
