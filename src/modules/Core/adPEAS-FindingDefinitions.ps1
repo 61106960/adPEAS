@@ -2720,10 +2720,16 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Tools = @("PowerView", "BloodHound", "ADACLScanner")
         MITRE = "T1222.001"
         Triggers = @(
-            # An exact pattern on dangerousRights, and the wording avoids "WriteDacl" on
-            # purpose: measured, a value containing it matches DANGEROUS_ACL_WRITEDACL
+            # An anchored pattern on dangerousRights, and the wording avoids "WriteDacl"
+            # on purpose: measured, a value containing it matches DANGEROUS_ACL_WRITEDACL
             # (score 55) and the row would carry that card instead of this one.
-            @{ Attribute = 'dangerousRights'; Pattern = '^Owner of the domain object$'; Severity = 'Finding' }
+            #
+            # The anchor allows the comma that Get-DangerousACLs introduces when it joins
+            # every right of one trustee into one string. Fully anchored, a trustee that
+            # owns the domain object and also holds an explicit GenericAll fell back to
+            # that weaker card - 60 against this 95 - and lost the write-up that explains
+            # why an owner reaches everything whatever the DACL says.
+            @{ Attribute = 'dangerousRights'; Pattern = '(^|, )Owner of the domain object(,|$)'; Severity = 'Finding' }
         )
     }
 

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 13:56:24
-    Version: 2.7.0+20261011-1356
+    Build: 2026-10-11 14:13:18
+    Version: 2.7.0+20261011-1413
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -10472,10 +10472,16 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Tools = @("PowerView", "BloodHound", "ADACLScanner")
         MITRE = "T1222.001"
         Triggers = @(
-            # An exact pattern on dangerousRights, and the wording avoids "WriteDacl" on
-            # purpose: measured, a value containing it matches DANGEROUS_ACL_WRITEDACL
+            # An anchored pattern on dangerousRights, and the wording avoids "WriteDacl"
+            # on purpose: measured, a value containing it matches DANGEROUS_ACL_WRITEDACL
             # (score 55) and the row would carry that card instead of this one.
-            @{ Attribute = 'dangerousRights'; Pattern = '^Owner of the domain object$'; Severity = 'Finding' }
+            #
+            # The anchor allows the comma that Get-DangerousACLs introduces when it joins
+            # every right of one trustee into one string. Fully anchored, a trustee that
+            # owns the domain object and also holds an explicit GenericAll fell back to
+            # that weaker card - 60 against this 95 - and lost the write-up that explains
+            # why an owner reaches everything whatever the DACL says.
+            @{ Attribute = 'dangerousRights'; Pattern = '(^|, )Owner of the domain object(,|$)'; Severity = 'Finding' }
         )
     }
 
@@ -131363,7 +131369,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1356"
+$Script:adPEASVersion = "2.7.0+20261011-1413"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
