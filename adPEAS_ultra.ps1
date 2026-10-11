@@ -4726,8 +4726,8 @@ Remove-CATemplate -Name "VulnerableTemplate" -Force
 	    MITRE = "T1649"
 	    Triggers = @(
 	        @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC1(?!\d)'; Severity = 'Finding' }
-	        @{ Attribute = 'CertificateNameFlagDisplay'; Pattern = 'ENROLLEE_SUPPLIES_SUBJECT'; Severity = 'Finding' }
-	        @{ Attribute = 'EnrolleeSuppliesSubject'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
+	        @{ Attribute = 'CertificateNameFlagDisplay'; Pattern = 'ENROLLEE_SUPPLIES_SUBJECT'; Severity = 'Finding'; SeverityOnly = $true }
+	        @{ Attribute = 'EnrolleeSuppliesSubject'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
 	    )
 	}
 	'ESC2_TEMPLATE' = @{
@@ -4841,9 +4841,9 @@ Set-Acl -Path "AD:\$templateDN" -AclObject $acl
 	    MITRE = "T1649"
 	    Triggers = @(
 	        @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC2'; Severity = 'Finding' }
-	        @{ Attribute = 'AnyPurpose'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
-	        @{ Attribute = 'ExtendedKeyUsage'; Pattern = '2\.5\.29\.37\.0|Any Purpose'; Severity = 'Finding' }
-	        @{ Attribute = 'ExtendedKeyUsage'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1|Certificate Request Agent'; Severity = 'Finding' }
+	        @{ Attribute = 'AnyPurpose'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
+	        @{ Attribute = 'ExtendedKeyUsage'; Pattern = '2\.5\.29\.37\.0|Any Purpose'; Severity = 'Finding'; SeverityOnly = $true }
+	        @{ Attribute = 'ExtendedKeyUsage'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1|Certificate Request Agent'; Severity = 'Finding'; SeverityOnly = $true }
 	    )
 	}
 	'ESC3_TEMPLATE' = @{
@@ -4962,7 +4962,7 @@ Set-ADObject -Identity $templateDN -Replace @{'msPKI-Enrollment-Flag' = $newFlag
 	    MITRE = "T1649"
 	    Triggers = @(
 	        @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC3(?!-)'; Severity = 'Finding' }
-	        @{ Attribute = 'EnrollmentAgent'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
+	        @{ Attribute = 'EnrollmentAgent'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
 	    )
 	}
 	'ESC3_TARGET_TEMPLATE' = @{
@@ -5052,7 +5052,7 @@ certutil -view -restrict "Disposition=20" -out "RequestID,CommonName,Certificate
 	    MITRE = "T1649"
 	    Triggers = @(
 	        @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC3-TARGET'; Severity = 'Finding' }
-	        @{ Attribute = 'RAApplicationPolicies'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1'; Severity = 'Hint' }
+	        @{ Attribute = 'RAApplicationPolicies'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1'; Severity = 'Hint'; SeverityOnly = $true }
 	        @{ Attribute = 'Vulnerabilities'; Custom = 'ra_signature_gated'; Severity = 'Hint'; SeverityOnly = $true }
 	        @{ Attribute = 'Vulnerabilities'; Custom = 'manager_approval_gated'; Severity = 'Hint'; SeverityOnly = $true }
 	    )
@@ -11204,7 +11204,7 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
 	    MITRE = "T1649"
 	    Triggers = @(
 	        @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC9'; Severity = 'Finding' }
-	        @{ Attribute = 'NoSecurityExtension'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
+	        @{ Attribute = 'NoSecurityExtension'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
 	    )
 	}
 	'ESC10_WEAK_CERTIFICATE_MAPPING' = @{
@@ -12215,7 +12215,7 @@ certutil -getreg policy\DisableExtensionList
 	    MITRE = "T1649"
 	    Triggers = @(
 	        @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC15'; Severity = 'Hint' }
-	        @{ Attribute = 'SchemaVersion'; Pattern = '^1$'; Severity = 'Hint' }
+	        @{ Attribute = 'SchemaVersion'; Pattern = '^1$'; Severity = 'Hint'; SeverityOnly = $true }
 	    )
 	}
 	'CREDENTIAL_ROAMING_PRESENT' = @{
@@ -81644,7 +81644,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261011-0216"
+$Script:adPEASVersion = "2.7.0+20261011-0230"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

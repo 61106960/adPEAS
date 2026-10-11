@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 02:16:09
-    Version: 2.7.0+20261011-0216
+    Build: 2026-10-11 02:30:25
+    Version: 2.7.0+20261011-0230
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -8657,8 +8657,17 @@ Remove-CATemplate -Name "VulnerableTemplate" -Force
             # Negative lookahead prevents this definition from claiming ESC13 and ESC15,
             # which both start with the literal "ESC1".
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC1(?!\d)'; Severity = 'Finding' }
-            @{ Attribute = 'CertificateNameFlagDisplay'; Pattern = 'ENROLLEE_SUPPLIES_SUBJECT'; Severity = 'Finding' }
-            @{ Attribute = 'EnrolleeSuppliesSubject'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
+            # Colour only. ENROLLEE_SUPPLIES_SUBJECT is one of four conditions ESC1 needs -
+            # the others are an authentication EKU, enrollment rights for a principal the
+            # attacker controls, and no manager approval - and Get-ADCSVulnerabilities
+            # checks all four before it writes Vulnerabilities. These two triggers named
+            # the 90-point card from the flag alone, which made every template that lets
+            # the requester name the subject an ESC1, approval and EKU notwithstanding.
+            #
+            # The flag is worth highlighting wherever a template is rendered, which is why
+            # the triggers stay. The verdict belongs to the check that applied the gates.
+            @{ Attribute = 'CertificateNameFlagDisplay'; Pattern = 'ENROLLEE_SUPPLIES_SUBJECT'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'EnrolleeSuppliesSubject'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
         )
     }
 
@@ -8773,10 +8782,14 @@ Set-Acl -Path "AD:\$templateDN" -AclObject $acl
         MITRE = "T1649"
         Triggers = @(
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC2'; Severity = 'Finding' }
-            @{ Attribute = 'AnyPurpose'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
+            # Colour only, for the same reason as ESC1: Any Purpose (or no EKU at all) is
+            # what makes a certificate usable for authentication, but ESC2 also needs
+            # enrollment rights and no manager approval. Vulnerabilities carries the
+            # verdict once the check has established both.
+            @{ Attribute = 'AnyPurpose'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
             # ExtendedKeyUsage: Any Purpose OID or Certificate Request Agent OID = Finding
-            @{ Attribute = 'ExtendedKeyUsage'; Pattern = '2\.5\.29\.37\.0|Any Purpose'; Severity = 'Finding' }
-            @{ Attribute = 'ExtendedKeyUsage'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1|Certificate Request Agent'; Severity = 'Finding' }
+            @{ Attribute = 'ExtendedKeyUsage'; Pattern = '2\.5\.29\.37\.0|Any Purpose'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'ExtendedKeyUsage'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1|Certificate Request Agent'; Severity = 'Finding'; SeverityOnly = $true }
         )
     }
 
@@ -8898,7 +8911,11 @@ Set-ADObject -Identity $templateDN -Replace @{'msPKI-Enrollment-Flag' = $newFlag
             # Negative lookahead keeps this definition from claiming "ESC3-TARGET", which is the
             # opposite side of the chain and has its own definition below.
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC3(?!-)'; Severity = 'Finding' }
-            @{ Attribute = 'EnrollmentAgent'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
+            # Colour only. The Certificate Request Agent EKU is what an ESC3 enrollment
+            # agent template has, and on its own it is the documented configuration of
+            # every legitimate enrollment agent in the domain. ESC3 is that template plus
+            # enrollment rights for the wrong principal, which the check establishes.
+            @{ Attribute = 'EnrollmentAgent'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
         )
     }
 
@@ -8989,7 +9006,10 @@ certutil -view -restrict "Disposition=20" -out "RequestID,CommonName,Certificate
         MITRE = "T1649"
         Triggers = @(
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC3-TARGET'; Severity = 'Finding' }
-            @{ Attribute = 'RAApplicationPolicies'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1'; Severity = 'Hint' }
+            # Colour only: this attribute says the template *requires* an enrollment agent
+            # signature, which is the mitigation rather than the finding. The two
+            # predicates below decide whether it is actually in force.
+            @{ Attribute = 'RAApplicationPolicies'; Pattern = '1\.3\.6\.1\.4\.1\.311\.20\.2\.1'; Severity = 'Hint'; SeverityOnly = $true }
             # Central severity damping for every enrollment-driven ESC on this attribute.
             # SeverityOnly means it decides the colour but never the tooltip, so ESC1/ESC2/ESC9/
             # ESC13/ESC15 keep their own finding cards while being reported as a two-step attack
@@ -15546,7 +15566,11 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
         MITRE = "T1649"
         Triggers = @(
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC9'; Severity = 'Finding' }
-            @{ Attribute = 'NoSecurityExtension'; Pattern = '^(True|Yes)$'; Severity = 'Finding' }
+            # Colour only. CT_FLAG_NO_SECURITY_EXTENSION suppresses the SID extension,
+            # which matters when the KDC is in compatibility mode and a principal can
+            # enroll with a subject of their choosing. The flag by itself is set on
+            # templates issued for perfectly ordinary reasons.
+            @{ Attribute = 'NoSecurityExtension'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
         )
     }
 
@@ -16620,7 +16644,12 @@ certutil -getreg policy\DisableExtensionList
         MITRE = "T1649"
         Triggers = @(
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC15'; Severity = 'Hint' }
-            @{ Attribute = 'SchemaVersion'; Pattern = '^1$'; Severity = 'Hint' }
+            # Colour only, and this was the broadest of them: schema version 1 is the
+            # template version Windows 2000 and 2003 shipped, so a domain that has been
+            # upgraded rather than rebuilt is full of them. ESC15 is a V1 template that
+            # also lets the requester supply the subject and carries an authentication
+            # EKU - the version on its own says only how old the template is.
+            @{ Attribute = 'SchemaVersion'; Pattern = '^1$'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -129902,7 +129931,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-0216"
+$Script:adPEASVersion = "2.7.0+20261011-0230"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
