@@ -56,7 +56,11 @@ function New-LAPSGPOConfigObject {
 
         [Parameter(Mandatory=$false)]
         [AllowNull()]
-        [hashtable]$GPOLinkage
+        [hashtable]$GPOLinkage,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [hashtable]$GPOStatusMap
     )
 
     $isNative = ($Generation -eq 'Windows LAPS')
@@ -214,6 +218,20 @@ function New-LAPSGPOConfigObject {
         }
     }
 
+    # The other half of "does this policy reach a machine". LAPS is a computer policy, so
+    # a GPO whose computer configuration is switched off carries every setting above into
+    # the report while delivering none of them - and the links can be perfectly healthy
+    # while that is true. flags was never read here; Get-DomainGPO decodes it, and
+    # Get-GPOEffectiveStatus answers $null when the policy does apply, so the row exists
+    # only when there is something to say. GPO_NOT_CURRENTLY_EFFECTIVE hangs off it.
+    $gpoStatus = Get-GPOEffectiveStatus `
+        -StatusEntry $(if ($GPOStatusMap -and $gpoGuid) { $GPOStatusMap[$gpoGuid] } else { $null }) `
+        -Scope 'Machine' `
+        -Link $(if ($null -eq $GPOLinkage) { $null } else { $linkedOUs })
+    if ($gpoStatus) {
+        $obj | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
+    }
+
     $obj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSGPOConfig' -Force
 
     return $obj
@@ -252,19 +270,30 @@ function Get-LAPSGPOConfigObjects {
         Write-Log "[Get-LAPSGPOConfigObjects] Failed to resolve GPO linkage: $_"
     }
 
+    # Read once for the whole batch, like the linkage above it. An empty map is the
+    # honest answer to a failed lookup: Get-GPOEffectiveStatus then says nothing rather
+    # than reporting a policy as ineffective on the strength of a query that did not
+    # answer - the same distinction the linkage block makes.
+    $gpoStatusMap = @{}
+    try {
+        $gpoStatusMap = Get-GPOStatusMap -GPO (Get-DomainGPO)
+    } catch {
+        Write-Log "[Get-LAPSGPOConfigObjects] Failed to read the GPO status: $_"
+    }
+
     $objects = @()
 
     if ($LAPSGPOSettings.Native) {
         foreach ($gpoName in ($LAPSGPOSettings.Native.Keys | Sort-Object)) {
             $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Native[$gpoName] `
-                -Generation 'Windows LAPS' -GPOLinkage $gpoLinkage
+                -Generation 'Windows LAPS' -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
         }
     }
 
     if ($LAPSGPOSettings.Legacy) {
         foreach ($gpoName in ($LAPSGPOSettings.Legacy.Keys | Sort-Object)) {
             $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Legacy[$gpoName] `
-                -Generation 'LAPS Legacy' -GPOLinkage $gpoLinkage
+                -Generation 'LAPS Legacy' -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
         }
     }
 
