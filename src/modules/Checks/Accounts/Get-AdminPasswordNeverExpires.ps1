@@ -77,9 +77,17 @@ function Get-AdminPasswordNeverExpires {
             $thresholdDate = (Get-Date).AddDays(-$PasswordAgeDays)
             $thresholdFileTime = $thresholdDate.ToFileTime()
 
-            # Build LDAP filter for password age (pwdLastSet older than threshold)
-            # pwdLastSet=0 means "must change at next logon" - exclude these
-            $passwordAgeFilter = "(&(pwdLastSet>=1)(pwdLastSet<=$thresholdFileTime))"
+            # The age is a grading now, not an entry condition. The flag says the password
+            # will never rotate; the age only says how long that has already been true. A
+            # Domain Admin with DONT_EXPIRE_PASSWORD whose password was set last month is
+            # the same configuration as one set in 2017 - and demanding both in the filter
+            # made that account invisible, so this check printed "No privileged accounts
+            # with password never expires and password older than N days found" as a green
+            # verdict over a domain full of them.
+            #
+            # pwdLastSet = 0 stays out: that is "must change at next logon", which the DC
+            # honours over the flag.
+            $passwordSetFilter = '(pwdLastSet>=1)'
 
             Write-Log "[Get-AdminPasswordNeverExpires] Password age threshold: $PasswordAgeDays days (before $(Format-adPEASDate $thresholdDate 'yyyy-MM-dd'))"
 
@@ -90,17 +98,26 @@ function Get-AdminPasswordNeverExpires {
             # gaps used to be invisible here, and the verification below only ever removed
             # accounts, never found the missing ones.
             $privilegedFilter = Get-PrivilegedAccountFilter -IncludeOperators @connectionParams
-            $candidates = Get-DomainUser -PasswordNeverExpires -LDAPFilter "(&$privilegedFilter$passwordAgeFilter)" -ShowOwner @connectionParams
+            $candidates = Get-DomainUser -PasswordNeverExpires -LDAPFilter "(&$privilegedFilter$passwordSetFilter)" -ShowOwner @connectionParams
 
             if (-not $candidates -or @($candidates).Count -eq 0) {
-                Show-Line "No privileged accounts with password never expires and password older than $PasswordAgeDays days found" -Class Secure
+                Show-Line "No privileged account has 'password never expires' set" -Class Secure
                 return
             }
+
+            # Annotated, not filtered: without -IsActive or -IsInactive, -IncludeDetails
+            # only adds ActivityDetails and passes everything through.
+            $candidates = @($candidates | Test-AccountActivity -IncludeDetails)
 
             Write-Log "[Get-AdminPasswordNeverExpires] Found $(@($candidates).Count) candidate(s) with adminCount=1, verifying actual privilege status..."
 
             # Verify each candidate is actually privileged (not just orphaned adminCount)
             $vulnerableAccounts = @()
+            # The accounts that carry the flag but whose password is newer than the
+            # threshold, and those where a smart card makes the flag harmless. Both used to
+            # be absent from the report altogether.
+            $recentAccounts = @()
+            $smartcardAccounts = @()
             $totalCandidates = @($candidates).Count
             $currentIndex = 0
 
@@ -121,7 +138,30 @@ function Get-AdminPasswordNeverExpires {
                     # Add privilege information to the user object
                     $user | Add-Member -NotePropertyName 'PrivilegedGroup' -NotePropertyValue $privCheck.MatchedGroup -Force
                     $user | Add-Member -NotePropertyName 'PrivilegeCategory' -NotePropertyValue $privCheck.Category -Force
-                    $vulnerableAccounts += $user
+
+                    # Two things decide the grading on top of "is privileged": how long the
+                    # password has already stood, and whether a smart card is required to log
+                    # on at all - with SMARTCARD_REQUIRED the password is not a logon
+                    # credential, so a password that never expires is not the same exposure.
+                    #
+                    # ActivityDetails is asked for by name first. Under Set-StrictMode
+                    # -Version Latest - which Pester applies - reading a property that is not
+                    # there is an error rather than $null, and a missing annotation has to
+                    # mean "age unknown", not a broken check.
+                    $passwordDays = $null
+                    if ($user.PSObject.Properties['ActivityDetails'] -and $user.ActivityDetails) {
+                        $passwordDays = $user.ActivityDetails.DaysSincePasswordChange
+                    }
+
+                    if (@($user.userAccountControl) -contains 'SMARTCARD_REQUIRED') {
+                        $smartcardAccounts += $user
+                    }
+                    elseif ($null -ne $passwordDays -and $passwordDays -ge $PasswordAgeDays) {
+                        $vulnerableAccounts += $user
+                    }
+                    else {
+                        $recentAccounts += $user
+                    }
 
                     Write-Log "[Get-AdminPasswordNeverExpires] Verified: $($user.sAMAccountName) is $($privCheck.Category) via $($privCheck.MatchedGroup)"
                 } else {
@@ -134,15 +174,35 @@ function Get-AdminPasswordNeverExpires {
                 Show-Progress -Activity "Verifying privileged accounts" -Completed
             }
 
-            if ($vulnerableAccounts -and @($vulnerableAccounts).Count -gt 0) {
+            if (@($vulnerableAccounts).Count -gt 0) {
                 Show-Line "Found $(@($vulnerableAccounts).Count) privileged account(s) with password never expires (password > $PasswordAgeDays days old):" -Class Finding
 
                 foreach ($user in $vulnerableAccounts) {
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
                     Show-Object $user
                 }
-            } else {
-                Show-Line "No privileged accounts with password never expires found (filtered $(@($candidates).Count) candidate(s) with orphaned adminCount)" -Class Secure
+            }
+
+            if (@($recentAccounts).Count -gt 0) {
+                Show-Line "$(@($recentAccounts).Count) further privileged account(s) carry the flag with a password newer than $PasswordAgeDays days:" -Class Hint
+
+                foreach ($user in $recentAccounts) {
+                    $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
+                    Show-Object $user
+                }
+            }
+
+            if (@($smartcardAccounts).Count -gt 0) {
+                Show-Line "$(@($smartcardAccounts).Count) privileged account(s) carry the flag but require a smart card to log on:" -Class Hint
+
+                foreach ($user in $smartcardAccounts) {
+                    $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
+                    Show-Object $user
+                }
+            }
+
+            if (@($vulnerableAccounts).Count -eq 0 -and @($recentAccounts).Count -eq 0 -and @($smartcardAccounts).Count -eq 0) {
+                Show-Line "No privileged account has 'password never expires' set (filtered $(@($candidates).Count) candidate(s) with orphaned adminCount)" -Class Secure
             }
 
         } catch {
