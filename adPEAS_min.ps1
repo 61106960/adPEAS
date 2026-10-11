@@ -14341,7 +14341,7 @@ foreach ($oid in $linkedOIDs) {
         Triggers = @(
             @{ Attribute = 'OperatorGroup'; Severity = 'Hint' }
             @{ Attribute = 'MemberCount'; Custom = 'gt_0'; Severity = 'Hint' }
-            @{ Attribute = 'ProtectedCount'; Pattern = '^0$'; Severity = 'Finding' }
+            @{ Attribute = 'ProtectedCount'; Pattern = '^0$'; Severity = 'Hint' }
         )
     }
     'INACTIVE_ACCOUNT' = @{
@@ -64300,13 +64300,32 @@ function Get-ProtectedUsersStatus {
                 return
             }
             $protectedMemberSIDs = @{}
+            $protectedUsersDN = [string]$protectedUsersGroup.distinguishedName
+            if ($protectedUsersDN) {
+                $escapedProtectedDN = Escape-LDAPFilterDN -DistinguishedName $protectedUsersDN
+                foreach ($protectedObj in @(Get-DomainObject -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedProtectedDN)" -Properties 'objectSid', 'sAMAccountName', 'distinguishedName' @PSBoundParameters)) {
+                    if (-not $protectedObj.objectSid) { continue }
+                    $protectedName = [string]$protectedObj.sAMAccountName
+                    if (-not $protectedName) { $protectedName = [string]$protectedObj.distinguishedName }
+                    $protectedMemberSIDs[$protectedObj.objectSid] = $protectedName
+                }
+            }
             if ($protectedUsersGroup.member) {
                 foreach ($memberDN in @($protectedUsersGroup.member)) {
-                    $memberObj = @(Get-DomainUser -Identity $memberDN -Properties 'objectSid','sAMAccountName' @PSBoundParameters)[0]
-                    if ($memberObj -and $memberObj.objectSid) {
-                        $protectedMemberSIDs[$memberObj.objectSid] = $memberObj.sAMAccountName
-                    }
+                    $memberObj = @(Get-DomainObject -Identity $memberDN -Properties 'objectSid', 'sAMAccountName' @PSBoundParameters)[0]
+                    if (-not $memberObj -or -not $memberObj.objectSid) { continue }
+                    if ($protectedMemberSIDs.ContainsKey($memberObj.objectSid)) { continue }
+                    $directName = [string]$memberObj.sAMAccountName
+                    if (-not $directName) { $directName = [string]$memberDN }
+                    $protectedMemberSIDs[$memberObj.objectSid] = $directName
                 }
+            }
+            foreach ($primaryObj in @(Get-DomainObject -LDAPFilter '(primaryGroupID=525)' -Properties 'objectSid', 'sAMAccountName', 'distinguishedName' @PSBoundParameters)) {
+                if (-not $primaryObj.objectSid) { continue }
+                if ($protectedMemberSIDs.ContainsKey($primaryObj.objectSid)) { continue }
+                $primaryName = [string]$primaryObj.sAMAccountName
+                if (-not $primaryName) { $primaryName = [string]$primaryObj.distinguishedName }
+                $protectedMemberSIDs[$primaryObj.objectSid] = $primaryName
             }
             Write-Log "[Get-ProtectedUsersStatus] Found $($protectedMemberSIDs.Count) members in Protected Users group"
             $tier0GroupSIDs = Get-Tier0GroupSIDs -DomainSID $domainSID
@@ -64321,8 +64340,14 @@ function Get-ProtectedUsersStatus {
                 $groupName = $groupObj.sAMAccountName
                 Write-Log "[Get-ProtectedUsersStatus] Processing Tier-0 group: $groupName ($groupSID)"
                 $groupDN = $groupObj.distinguishedName
-                $escapedDN = $groupDN -replace '\\', '\5c' -replace '\*', '\2a' -replace '\(', '\28' -replace '\)', '\29'
+                $escapedDN = Escape-LDAPFilterDN -DistinguishedName $groupDN
                 $members = @(Get-DomainUser -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedDN)" @PSBoundParameters)
+                if ($groupSID -like "$domainSID-*") {
+                    $groupRID = $groupSID.Substring($domainSID.Length + 1)
+                    if ($groupRID -match '^\d+$') {
+                        $members += @(Get-DomainObject -LDAPFilter "(primaryGroupID=$groupRID)" @PSBoundParameters)
+                    }
+                }
                 foreach ($member in $members) {
                     if (-not $member.objectSid) { continue }
                     $memberSID = $member.objectSid
@@ -64330,7 +64355,9 @@ function Get-ProtectedUsersStatus {
                         $tier0Accounts[$memberSID] = $member
                         $tier0AccountGroups[$memberSID] = @()
                     }
-                    $tier0AccountGroups[$memberSID] += $groupName
+                    if ($groupName -notin $tier0AccountGroups[$memberSID]) {
+                        $tier0AccountGroups[$memberSID] += $groupName
+                    }
                 }
                 if ($groupObj.member) {
                     $knownDNs = @{}
@@ -64466,7 +64493,7 @@ function Get-ProtectedUsersStatus {
                 $memberNameList = @()
                 $protectedCount = 0
                 foreach ($memberDN in @($operatorGroup.member)) {
-                    $memberObj = @(Get-DomainUser -Identity $memberDN -Properties 'objectSid' @PSBoundParameters)[0]
+                    $memberObj = @(Get-DomainObject -Identity $memberDN -Properties 'objectSid' @PSBoundParameters)[0]
                     if ($memberObj -and $memberObj.objectSid) {
                         if ($protectedMemberSIDs.ContainsKey($memberObj.objectSid)) {
                             $protectedCount++
@@ -65006,7 +65033,7 @@ function Get-ManagedServiceAccountSecurity {
                     $_.objectClass -inotcontains 'msDS-GroupManagedServiceAccount'
                 })
             if ($standaloneMSAs.Count -gt 0) {
-                Show-Line "Found $($standaloneMSAs.Count) standalone MSA(s) (legacy, less secure than gMSA):" -Class Finding
+                Show-Line "Found $($standaloneMSAs.Count) standalone MSA(s) (legacy, tied to one host):" -Class Hint
                 foreach ($msa in $standaloneMSAs) {
                     $msa | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MSA' -Force
                     Show-Object $msa
@@ -85767,7 +85794,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-2039"
+$Script:adPEASVersion = "2.7.0+20261011-2058"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

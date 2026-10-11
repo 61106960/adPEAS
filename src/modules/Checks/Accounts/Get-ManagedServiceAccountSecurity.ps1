@@ -17,11 +17,14 @@ function Get-ManagedServiceAccountSecurity {
 
     3. Standalone MSA Detection:
        - Finds legacy Managed Service Accounts (not gMSA)
-       - Standalone MSAs are less secure than gMSAs (single-host, no automatic rotation)
+       - Standalone MSAs rotate their password automatically too, every 30 days by
+         default, managed by the single host they are installed on. What they lack is
+         the gMSA delegation model: the password cannot be shared across hosts and
+         there is no msDS-GroupMSAMembership to say who may retrieve it
 
     Security Relevance:
     - gMSA passwords readable by non-privileged accounts = credential theft risk
-    - Standalone MSAs lack the security benefits of gMSAs
+    - Standalone MSAs are bound to one host and have no delegated retrieval model
     - Misconfigured gMSA access can lead to lateral movement
 
     .PARAMETER Domain
@@ -495,7 +498,10 @@ function Get-ManagedServiceAccountSecurity {
                 })
 
             if ($standaloneMSAs.Count -gt 0) {
-                Show-Line "Found $($standaloneMSAs.Count) standalone MSA(s) (legacy, less secure than gMSA):" -Class Finding
+                # Hint, because STANDALONE_MSA_LEGACY says Risk = Hint and BaseScore 20.
+                # A red line against its own card is one statement too many, and a legacy
+                # account type is not a vulnerability.
+                Show-Line "Found $($standaloneMSAs.Count) standalone MSA(s) (legacy, tied to one host):" -Class Hint
 
                 foreach ($msa in $standaloneMSAs) {
                     $msa | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MSA' -Force
