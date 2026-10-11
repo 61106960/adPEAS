@@ -271,6 +271,10 @@ $Script:SchemaClassGUIDs = @{
     'computer'                       = [GUID]'bf967a86-0de6-11d0-a285-00aa003049e2'
     'group'                          = [GUID]'bf967a9c-0de6-11d0-a285-00aa003049e2'
     'organizationalUnit'             = [GUID]'bf967aa5-0de6-11d0-a285-00aa003049e2'
+    # The class of CN=Computers, CN=Users and CN=System. Needed to tell an ACE whose
+    # inheritance filter names this container's own class - a real grant - from one
+    # naming some other class, which does not apply to the container at all.
+    'container'                      = [GUID]'bf967a8b-0de6-11d0-a285-00aa003049e2'
     'domain'                         = [GUID]'19195a5a-6da0-11d0-afd3-00c04fd930c9'
     'domainDNS'                      = [GUID]'19195a5b-6da0-11d0-afd3-00c04fd930c9'
 

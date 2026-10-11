@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-11 15:36:10
-    Version: 2.7.0+20261011-1536
+    Build: 2026-10-11 16:02:37
+    Version: 2.7.0+20261011-1602
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -624,6 +624,10 @@ $Script:SchemaClassGUIDs = @{
     'computer'                       = [GUID]'bf967a86-0de6-11d0-a285-00aa003049e2'
     'group'                          = [GUID]'bf967a9c-0de6-11d0-a285-00aa003049e2'
     'organizationalUnit'             = [GUID]'bf967aa5-0de6-11d0-a285-00aa003049e2'
+    # The class of CN=Computers, CN=Users and CN=System. Needed to tell an ACE whose
+    # inheritance filter names this container's own class - a real grant - from one
+    # naming some other class, which does not apply to the container at all.
+    'container'                      = [GUID]'bf967a8b-0de6-11d0-a285-00aa003049e2'
     'domain'                         = [GUID]'19195a5a-6da0-11d0-afd3-00c04fd930c9'
     'domainDNS'                      = [GUID]'19195a5b-6da0-11d0-afd3-00c04fd930c9'
 
@@ -104086,6 +104090,28 @@ function Get-AddComputerRights {
             if ($aclResult -and $aclResult.ACEs) {
                 $seenSIDs = @{}
 
+                # The schemaIDGUID of the container the ACL was read from, for the
+                # inheritance-filter check in the loop. ObjectClass is the most specific
+                # class LDAP returned - 'container' for CN=Computers, 'organizationalUnit'
+                # once redircmp has moved the default somewhere else.
+                #
+                # Stays $null when the class cannot be resolved, and the check below then
+                # drops nothing: an unknown class must not silence the whole analysis.
+                #
+                # The table itself is tested for, not just the key. Calling .ContainsKey on
+                # it when adPEAS-GUIDs.ps1 has not been loaded throws, and the throw lands in
+                # this check's own try/catch - which aborted the entire analysis and reported
+                # nothing at all, the exact failure this gate is meant to prevent. Measured:
+                # the suite loads the sources it names and that one was not among them.
+                $containerClassGUID = $null
+                $containerClass = [string]$aclResult.ObjectClass
+                if ($containerClass -and $Script:SchemaClassGUIDs -and
+                    $Script:SchemaClassGUIDs.ContainsKey($containerClass)) {
+                    $containerClassGUID = $Script:SchemaClassGUIDs[$containerClass].Guid
+                } elseif ($containerClass) {
+                    Write-Log "[Get-AddComputerRights] No schema GUID for container class '$containerClass' - inheritance filters are not evaluated"
+                }
+
                 foreach ($ace in $aclResult.ACEs) {
                     $trusteeSID = $ace.TrusteeSID
 
@@ -104105,6 +104131,21 @@ function Get-AddComputerRights {
                     # nothing else here caught it.
                     if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
                         Write-Log "[Get-AddComputerRights] Skipping descendants-only ACE: $($ace.Trustee) ($trusteeSID), PropagationFlags=$($ace.PropagationFlags)"
+                        continue
+                    }
+
+                    # An ACE carrying an inheritance filter grants its rights on this
+                    # container only if the container is of the class named in the filter.
+                    #
+                    # This compares rather than skipping on any filter, which is what the
+                    # domain-root check does: measured, an ACE inherited onto this container
+                    # whose filter names the container's OWN class arrives with InheritOnly
+                    # cleared and is a real grant, so a blanket skip would have turned a
+                    # narrow false positive into a false negative. The wizard forms that do
+                    # not apply here are all InheritOnly and the gate above already has them.
+                    if ($ace.InheritedObjectType -and $containerClassGUID -and
+                        $ace.InheritedObjectType -ne $containerClassGUID) {
+                        Write-Log "[Get-AddComputerRights] Skipping ACE filtered to another class: $($ace.Trustee) ($trusteeSID), InheritedObjectType=$($ace.InheritedObjectType)"
                         continue
                     }
 
@@ -131508,7 +131549,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261011-1536"
+$Script:adPEASVersion = "2.7.0+20261011-1602"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -239,6 +239,7 @@ $Script:SchemaClassGUIDs = @{
     'computer'                       = [GUID]'bf967a86-0de6-11d0-a285-00aa003049e2'
     'group'                          = [GUID]'bf967a9c-0de6-11d0-a285-00aa003049e2'
     'organizationalUnit'             = [GUID]'bf967aa5-0de6-11d0-a285-00aa003049e2'
+    'container'                      = [GUID]'bf967a8b-0de6-11d0-a285-00aa003049e2'
     'domain'                         = [GUID]'19195a5a-6da0-11d0-afd3-00c04fd930c9'
     'domainDNS'                      = [GUID]'19195a5b-6da0-11d0-afd3-00c04fd930c9'
     'msDS-GroupManagedServiceAccount' = [GUID]'7b8b558a-93a5-4af7-adca-c017e67f1057'
@@ -66346,6 +66347,14 @@ function Get-AddComputerRights {
             $aclResult = Get-ObjectACL -DistinguishedName $computersContainerDN -Rights 'GenericAll','CreateChild' -AllowOnly @connectionParams
             if ($aclResult -and $aclResult.ACEs) {
                 $seenSIDs = @{}
+                $containerClassGUID = $null
+                $containerClass = [string]$aclResult.ObjectClass
+                if ($containerClass -and $Script:SchemaClassGUIDs -and
+                    $Script:SchemaClassGUIDs.ContainsKey($containerClass)) {
+                    $containerClassGUID = $Script:SchemaClassGUIDs[$containerClass].Guid
+                } elseif ($containerClass) {
+                    Write-Log "[Get-AddComputerRights] No schema GUID for container class '$containerClass' - inheritance filters are not evaluated"
+                }
                 foreach ($ace in $aclResult.ACEs) {
                     $trusteeSID = $ace.TrusteeSID
                     if ([string]::IsNullOrEmpty($trusteeSID)) {
@@ -66355,6 +66364,11 @@ function Get-AddComputerRights {
                     if ($seenSIDs.ContainsKey($trusteeSID)) { continue }
                     if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
                         Write-Log "[Get-AddComputerRights] Skipping descendants-only ACE: $($ace.Trustee) ($trusteeSID), PropagationFlags=$($ace.PropagationFlags)"
+                        continue
+                    }
+                    if ($ace.InheritedObjectType -and $containerClassGUID -and
+                        $ace.InheritedObjectType -ne $containerClassGUID) {
+                        Write-Log "[Get-AddComputerRights] Skipping ACE filtered to another class: $($ace.Trustee) ($trusteeSID), InheritedObjectType=$($ace.InheritedObjectType)"
                         continue
                     }
                     $hasCreateChild = $false
@@ -85535,7 +85549,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261011-1536"
+$Script:adPEASVersion = "2.7.0+20261011-1602"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
