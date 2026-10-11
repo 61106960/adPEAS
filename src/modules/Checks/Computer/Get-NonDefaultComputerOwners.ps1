@@ -157,6 +157,59 @@ function Get-NonDefaultComputerOwners {
 
             $nonDefaultOwnerComputers = @()
             $dnFilters = @(ConvertTo-LDAPDNFilter -DistinguishedName @($nonDefaultOwners.DN))
+            # What kind of principal each owner is, resolved once per distinct SID.
+            #
+            # A computer account owning a computer object is the cluster pattern: the
+            # cluster name object creates the virtual computer objects of its roles and
+            # owns them afterwards. Without that distinction every clustered environment
+            # gets one takeover finding per virtual object - a finding against a state
+            # somebody chose on purpose. A group owner is a delegation, and a user or a
+            # service account is the case this check exists for.
+            #
+            # Per distinct owner, not per computer: where one delegated account joined
+            # three thousand machines, that is one lookup rather than three thousand.
+            $ownerKindBySID = @{}
+            foreach ($ownerSID in @(@($nonDefaultOwners | ForEach-Object { $_.OwnerSID }) | Select-Object -Unique)) {
+                if (-not $ownerSID) { continue }
+
+                # A machine-local authority is a hash of a name on some computer and is
+                # not a directory object anywhere - asking for it costs a global catalog
+                # timeout per SID and answers nothing. See ConvertFrom-SID.
+                if ("$ownerSID" -match '^S-1-5-(\d+)-\d+' -and $Script:MachineLocalSIDAuthorities -and $Script:MachineLocalSIDAuthorities.ContainsKey($Matches[1])) {
+                    $ownerKindBySID[$ownerSID] = 'Machine-local service principal - not a directory object'
+                    continue
+                }
+
+                $ownerObject = $null
+                try {
+                    $ownerObject = @(Get-DomainObject -Identity $ownerSID -Properties 'objectClass', 'sAMAccountName' @connectionParams)[0]
+                } catch {
+                    Write-Log "[Get-NonDefaultComputerOwners] Could not classify owner $ownerSID : $_"
+                }
+
+                if (-not $ownerObject) {
+                    # Not resolvable is not harmless: a SID that answers nowhere is what a
+                    # deleted principal or one from an untrusted domain looks like.
+                    $ownerKindBySID[$ownerSID] = 'Unknown - the SID does not resolve in this directory'
+                    continue
+                }
+
+                $ownerClasses = @($ownerObject.objectClass)
+                $ownerKindBySID[$ownerSID] = if ($ownerClasses -icontains 'msDS-GroupManagedServiceAccount') {
+                    'Group managed service account'
+                } elseif ($ownerClasses -icontains 'msDS-ManagedServiceAccount') {
+                    'Standalone managed service account'
+                } elseif ($ownerClasses -icontains 'computer') {
+                    'Computer account - a cluster name object owns the virtual computer objects it creates'
+                } elseif ($ownerClasses -icontains 'group') {
+                    'Group - whoever is a member of it owns this computer'
+                } elseif ($ownerClasses -icontains 'user') {
+                    'User account'
+                } else {
+                    "Object class $(@($ownerClasses) | Select-Object -Last 1)"
+                }
+            }
+
             $filterIndex = 0
             foreach ($dnFilter in $dnFilters) {
                 $filterIndex++
@@ -171,6 +224,24 @@ function Get-NonDefaultComputerOwners {
 
                     $fullComputer | Add-Member -NotePropertyName 'Owner' -NotePropertyValue $finding.Owner -Force
                     $fullComputer | Add-Member -NotePropertyName 'OwnerSID' -NotePropertyValue $finding.OwnerSID -Force
+
+                    # What the owner is, not just who. The remediation differs: a cluster
+                    # name object is left alone, a group is emptied or re-pointed, a user
+                    # account is the one to take the ownership back from.
+                    if ($finding.OwnerSID -and $ownerKindBySID.ContainsKey($finding.OwnerSID)) {
+                        $ownerKindText = $ownerKindBySID[$finding.OwnerSID]
+
+                        # Self-ownership is a computer account owning a computer object,
+                        # and it is not the cluster pattern: this machine owns its OWN
+                        # object, so it can rewrite its own DACL. Printing the cluster
+                        # sentence on it would excuse the one case that deserves none.
+                        $ownSID = "$($fullComputer.objectSid)"
+                        if ($ownSID -and $ownSID -eq "$($finding.OwnerSID)") {
+                            $ownerKindText = 'The computer owns its own object - it can rewrite its own DACL'
+                        }
+
+                        $fullComputer | Add-Member -NotePropertyName 'ownerKind' -NotePropertyValue $ownerKindText -Force
+                    }
 
                     # Who created the account, and whether that is still who owns it. Without
                     # this the ordinary MAQ join and a deliberately re-assigned owner look
@@ -211,6 +282,16 @@ function Get-NonDefaultComputerOwners {
                 $reassigned = @($nonDefaultOwnerComputers | Where-Object { $_.PSObject.Properties['ownershipChanged'] }).Count
                 $reassignedInfo = if ($reassigned -gt 0) { ", $reassigned of them owned by somebody other than the creator" } else { "" }
                 Show-Line "Found $(@($nonDefaultOwnerComputers).Count) computer(s) with non-default owners$($reassignedInfo):" -Class "Finding"
+
+                # Counted on a line of its own rather than subtracted from the number
+                # above it: these objects really do have a non-default owner, and a
+                # reader deciding where to look needs to know which part of the list is
+                # a cluster owning what it built.
+                $clusterOwned = @($nonDefaultOwnerComputers | Where-Object {
+                    $_.PSObject.Properties['ownerKind'] -and "$($_.ownerKind)" -like 'Computer account*' }).Count
+                if ($clusterOwned -gt 0) {
+                    Show-Line "$clusterOwned of them are owned by a computer account, which is how a cluster owns the objects it creates" -Class "Note"
+                }
 
                 foreach ($computer in $nonDefaultOwnerComputers) {
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultComputerOwner' -Force

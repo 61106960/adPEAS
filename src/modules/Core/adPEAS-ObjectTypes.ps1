@@ -1350,6 +1350,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Computers where owner is not Domain Admins, Enterprise Admins, BUILTIN\Administrators or SYSTEM"
             "Whether the owner is also the principal that created the account (mS-DS-CreatorSID) - a join leaves the joiner as owner, a later re-assignment does not happen by itself"
+            "What kind of principal the owner is: a computer account is how a cluster owns the objects it creates, a group hands ownership to its members, a user account is the case to act on"
             "Disabled accounts as well: ownership survives the disable and the owner can re-enable the account"
             "Potential for RBCD-based attacks"
         )
