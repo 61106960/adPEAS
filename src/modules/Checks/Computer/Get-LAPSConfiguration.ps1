@@ -283,17 +283,27 @@ function Get-LAPSGPOConfigObjects {
 
     $objects = @()
 
-    if ($LAPSGPOSettings.Native) {
-        foreach ($gpoName in ($LAPSGPOSettings.Native.Keys | Sort-Object)) {
-            $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Native[$gpoName] `
-                -Generation 'Windows LAPS' -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
-        }
-    }
+    # The tables are keyed by GPO GUID, because display names are not unique and the key
+    # used to decide which of two same-named policies survived. The name a reader sees
+    # comes out of the metadata; the key is the fallback for a record that has none, and
+    # the sort is still by name so the report reads in the same order as before.
+    foreach ($generation in @('Windows LAPS', 'LAPS Legacy')) {
+        $table = if ($generation -eq 'Windows LAPS') { $LAPSGPOSettings.Native } else { $LAPSGPOSettings.Legacy }
+        if (-not $table) { continue }
 
-    if ($LAPSGPOSettings.Legacy) {
-        foreach ($gpoName in ($LAPSGPOSettings.Legacy.Keys | Sort-Object)) {
-            $objects += New-LAPSGPOConfigObject -GPOName $gpoName -Metadata $LAPSGPOSettings.Legacy[$gpoName] `
-                -Generation 'LAPS Legacy' -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
+        $keys = @($table.Keys | Sort-Object -Property @{ Expression = {
+            if ($table[$_].ContainsKey('GPOName') -and $table[$_]['GPOName']) { [string]$table[$_]['GPOName'] } else { [string]$_ }
+        } }, @{ Expression = { [string]$_ } })
+
+        foreach ($gpoKey in $keys) {
+            $metadata = $table[$gpoKey]
+            $displayName = if ($metadata.ContainsKey('GPOName') -and $metadata['GPOName']) {
+                [string]$metadata['GPOName']
+            } else {
+                [string]$gpoKey
+            }
+            $objects += New-LAPSGPOConfigObject -GPOName $displayName -Metadata $metadata `
+                -Generation $generation -GPOLinkage $gpoLinkage -GPOStatusMap $gpoStatusMap
         }
     }
 
@@ -505,8 +515,15 @@ function Get-LAPSConfiguration {
                     $backupTarget = 0
                     if (-not [int]::TryParse([string]$nativeEntry.Value['BackupDirectory'], [ref]$backupTarget)) { continue }
                     if ($backupTarget -eq 2) { continue }
+                    # The table is keyed by GPO GUID, so the display name travels in the
+                    # record. Reading the key here would put a GUID in the sentence.
+                    $entryName = if ($nativeEntry.Value.ContainsKey('GPOName') -and $nativeEntry.Value['GPOName']) {
+                        [string]$nativeEntry.Value['GPOName']
+                    } else {
+                        [string]$nativeEntry.Key
+                    }
                     $lapsEntraPolicies += [PSCustomObject]@{
-                        GPOName = [string]$nativeEntry.Key
+                        GPOName = $entryName
                         Target  = if ($backupTarget -eq 1) { 'Microsoft Entra ID' } else { 'nowhere - backup is disabled' }
                     }
                 }

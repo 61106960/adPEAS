@@ -113,25 +113,35 @@ function Get-LAPSGPOConfig {
                             try {
                                 $Metadata = Get-LAPSMetadataFromPol -PolFilePath $polFile.FullName
 
-                                # Carry the GUID so callers can resolve GPO links (Get-GPOLinkage),
-                                # and the file it was read from so a reader can open it. Both
-                                # results are keyed by GPO display name, so a GPO carrying LAPS
-                                # settings in both its Machine and its User half keeps the last
-                                # file seen - the GUID is identical either way, the path is not.
+                                # Keyed by GUID, with the display name carried alongside.
+                                #
+                                # Display names are not unique on groupPolicyContainer - a GPO
+                                # restored into another domain, or a template copied twice,
+                                # produces two policies called the same thing - and the key
+                                # decided which one survived. The second one silently replaced
+                                # the first, so one policy's LAPS settings vanished from the
+                                # report entirely. The GUID is also the folder under SYSVOL, so
+                                # it is the identifier a reader can act on.
+                                #
+                                # A GPO carrying LAPS settings in both its Machine and its User
+                                # half still keeps the last file seen: the GUID is identical
+                                # either way, the path is not.
                                 $sourceFile = Get-GPORelativePath -Path $polFile.FullName
                                 $gpoPath = $gpoGuidToPath[$gpoGuid]
                                 if ($Metadata.Legacy) {
                                     $Metadata.Legacy['GPOGUID'] = $gpoGuid
+                                    $Metadata.Legacy['GPOName'] = $gpoName
                                     $Metadata.Legacy['GPOPath'] = $gpoPath
                                     $Metadata.Legacy['SourceFile'] = $sourceFile
-                                    $Script:lapsGPOResults.Legacy[$gpoName] = $Metadata.Legacy
+                                    $Script:lapsGPOResults.Legacy[$gpoGuid] = $Metadata.Legacy
                                     Write-Log "[Get-LAPSGPOConfig] Found Legacy LAPS settings in GPO '$gpoName': $($Metadata.Legacy.Keys -join ', ')"
                                 }
                                 if ($Metadata.Native) {
                                     $Metadata.Native['GPOGUID'] = $gpoGuid
+                                    $Metadata.Native['GPOName'] = $gpoName
                                     $Metadata.Native['GPOPath'] = $gpoPath
                                     $Metadata.Native['SourceFile'] = $sourceFile
-                                    $Script:lapsGPOResults.Native[$gpoName] = $Metadata.Native
+                                    $Script:lapsGPOResults.Native[$gpoGuid] = $Metadata.Native
                                     Write-Log "[Get-LAPSGPOConfig] Found Windows LAPS settings in GPO '$gpoName': $($Metadata.Native.Keys -join ', ')"
                                 }
                             } catch {
