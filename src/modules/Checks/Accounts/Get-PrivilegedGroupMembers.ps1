@@ -142,7 +142,15 @@ function Get-PrivilegedGroupMembers {
                 )
 
                 # Prevent infinite loops
-                if ($Visited.ContainsKey($GroupDN)) {
+                # The guard has to describe the current PATH, not everything visited so far. $Visited is
+    # a hashtable and goes into every branch by reference: if group A contains both B and C
+    # and both contain D, then D is expanded under B, and under C the entry is already there
+    # - so the second branch stops with "circular reference detected" on a group that is not
+    # a cycle at all. TotalMemberCount per group then undercounts, and the second route by
+    # which an account is a Domain Admin is missing from the display, which is the one thing
+    # the "how do I get to Domain Admin" section is for. The entry is removed again on the
+    # way out, below.
+    if ($Visited.ContainsKey($GroupDN)) {
                     Write-Log "[Get-PrivilegedGroupMembers] Circular reference detected: $GroupDN"
                     return @{
                         DirectMembers = @()
@@ -328,6 +336,17 @@ function Get-PrivilegedGroupMembers {
                     }
                 } catch {
                     Write-Log "[Get-PrivilegedGroupMembers] Error resolving members for $GroupDN : $_"
+                } finally {
+                    # Out of this branch again, so $Visited describes the current path rather
+                    # than everything the walk has seen. A real cycle is still caught: an
+                    # ancestor of this group is still in the table while we are below it.
+                    #
+                    # Not memoised on purpose. A group reachable by two routes is expanded
+                    # twice now, and the result cannot simply be cached per DN because
+                    # NestingLevel and MembershipPath are baked into the objects it returns -
+                    # a cache would hand the second route the first route's path, which is
+                    # the very thing this fix is about.
+                    [void]$Visited.Remove($GroupDN)
                 }
 
                 return @{
@@ -655,6 +674,12 @@ function Get-PrivilegedGroupMembers {
             $UserCount = 0
             $ComputerCount = 0
             $gMSACount = 0
+            # Foreign Security Principals get a count of their own. They used to be added to
+            # $UserCount, so "Found 7 user(s) across 5 privileged group(s)" could mean six
+            # users and one principal from a trusted domain - and if that principal names a
+            # group over there, its members are not enumerated either. The number the
+            # section opens with has to be a number the reader can trust.
+            $ForeignCount = 0
             $totalMembers = @($TotalUniqueMembers.Values).Count
             $currentIndex = 0
 
@@ -681,8 +706,17 @@ function Get-PrivilegedGroupMembers {
                     $ComputerCount++
                     Write-Log "[Get-PrivilegedGroupMembers]   -> Counted as Computer"
                 }
-                # User accounts (including foreignSecurityPrincipal)
-                elseif ($objClass -ieq 'user' -or $objClass -ieq 'foreignSecurityPrincipal') {
+                # A principal from a trusted domain or forest. Counted apart from the users:
+                # adPEAS resolves the SID to a name but cannot read the object behind it, so
+                # it does not know whether that SID names a user or a group over there - and
+                # if it is a group, the members this report should have listed are on the
+                # other side of the trust and were never enumerated.
+                elseif ($objClass -ieq 'foreignSecurityPrincipal') {
+                    $ForeignCount++
+                    Write-Log "[Get-PrivilegedGroupMembers]   -> Counted as foreign principal"
+                }
+                # User accounts
+                elseif ($objClass -ieq 'user') {
                     $UserCount++
                     Write-Log "[Get-PrivilegedGroupMembers]   -> Counted as User"
                 }
@@ -704,7 +738,7 @@ function Get-PrivilegedGroupMembers {
                 Show-Progress -Activity "Analyzing privileged members" -Completed
             }
 
-            Write-Log "[Get-PrivilegedGroupMembers] Count summary: Users=$UserCount, gMSAs=$gMSACount, Computers=$ComputerCount"
+            Write-Log "[Get-PrivilegedGroupMembers] Count summary: Users=$UserCount, gMSAs=$gMSACount, Computers=$ComputerCount, Foreign=$ForeignCount"
 
             Write-Log "[Get-PrivilegedGroupMembers] AllGroupData contains $TotalGroups groups:"
             foreach ($gd in $AllGroupData) {
@@ -795,8 +829,50 @@ function Get-PrivilegedGroupMembers {
                 if ($ComputerCount -gt 0) {
                     $summaryParts += "$ComputerCount computer(s)"
                 }
+                if ($ForeignCount -gt 0) {
+                    $summaryParts += "$ForeignCount foreign principal(s)"
+                }
                 $summaryText = $summaryParts -join ", "
                 Show-Line "Found $summaryText across $TotalGroups privileged group(s):" -Class Finding
+            }
+
+            # What those foreign principals are, said once. $Script:AllForeignMembers was
+            # filled in the recursion under the comment "Track foreign members for summary"
+            # and then read nowhere - the summary it was collected for did not exist. A SID
+            # from across a trust can name a group as easily as a user, and in that case the
+            # members this section is about are on the other side and were not enumerated.
+            # Grouped by SID, not one row per collected entry. The recursion appends to
+            # $Script:AllForeignMembers once per path it reaches the principal on, so a
+            # principal that is a member of two privileged groups - or of one group through
+            # two routes - was in there twice, and the count above it said two where
+            # $ForeignCount, which counts unique members, said one. One line per principal,
+            # naming every group it reaches.
+            if (@($Script:AllForeignMembers).Count -gt 0) {
+                $foreignBySID = @{}
+                foreach ($foreign in $Script:AllForeignMembers) {
+                    $foreignSID = [string]$foreign.SID
+                    if (-not $foreignSID) { continue }
+                    if (-not $foreignBySID.ContainsKey($foreignSID)) {
+                        $foreignName = [string]$foreign.ResolvedName
+                        if (-not $foreignName) { $foreignName = $foreignSID }
+                        $foreignBySID[$foreignSID] = [PSCustomObject]@{
+                            Name   = $foreignName
+                            Groups = @()
+                        }
+                    }
+                    $foreignGroup = [string]$foreign.PrivilegedGroup
+                    if ($foreignGroup -and $foreignBySID[$foreignSID].Groups -notcontains $foreignGroup) {
+                        $foreignBySID[$foreignSID].Groups += $foreignGroup
+                    }
+                }
+
+                if ($foreignBySID.Count -gt 0) {
+                    Show-Line "$($foreignBySID.Count) of them come from a trusted domain - adPEAS cannot read the object behind the SID, so a group there is not expanded:" -Class Hint
+                    foreach ($foreignSID in ($foreignBySID.Keys | Sort-Object)) {
+                        $entry = $foreignBySID[$foreignSID]
+                        Show-Line "  $($entry.Name) in $(@($entry.Groups) -join ', ')" -Class Hint
+                    }
+                }
             }
 
             # Output each unique member with full user object
