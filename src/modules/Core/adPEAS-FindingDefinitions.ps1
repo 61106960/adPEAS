@@ -13842,6 +13842,60 @@ foreach ($oid in $linkedOIDs) {
     }
 
     # Hardcoded scriptPath (UNC or absolute local path)
+    'GPO_SCRIPT_OUTSIDE_POLICY_STORE' = @{
+        Title = "GPO Script Executed From Outside the Policy Store"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "A Group Policy runs this script from a path that is not the policy's own Scripts folder in SYSVOL - a file share, or a local path on every target machine. Whoever may write that file decides what runs, and a startup or shutdown script runs as SYSTEM on every machine the policy reaches. adPEAS reports the path and the context; the permissions of that path are not something it can read from the directory, so they are the first thing to check by hand."
+        Impact = @(
+            "Write access to the script file is code execution in the script's context - SYSTEM for startup and shutdown scripts"
+            "The scope is every machine or every user the GPO applies to, at every boot or every logon"
+            "A UNC path also makes each machine authenticate to that host, which is an NTLM coercion surface"
+            "A local path has to exist on every target, so one machine where it does not is a place to plant it"
+        )
+        Attack = @(
+            "1. Attacker reads the policy's scripts.ini or psscripts.ini out of SYSVOL, which any authenticated user may do"
+            "2. Checks who may write the path it names - a share with loose permissions, or a local directory users can write"
+            "3. Replaces the script, or creates it where it is missing"
+            "4. Waits for the next boot or logon, and the code runs in the script's context"
+        )
+        Remediation = @(
+            "Keep GPO scripts in the policy's own Scripts folder, where the GPO's permissions decide who may change them - that is what the Group Policy editor does by default"
+            "Where a share must be used, confirm that only administrators may write the file and the folder above it, and prefer a path that is not reachable by the machines' own accounts"
+            "Check whether the script exists at all on every target: a missing file on one machine is a place to plant one"
+            "Review the script's content too - it is readable by every authenticated user in SYSVOL, so credentials in it are already exposed"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the scripts a GPO runs and where they come from"
+                Command = "Get-GPOReport -Name 'GPO_NAME' -ReportType Xml | Select-String -Pattern 'Script'"
+            }
+            @{
+                Description = "Show who may write the script file"
+                Command = "(Get-Acl '\\\\SERVER\\SHARE\\script.bat').Access | Format-Table IdentityReference, FileSystemRights, AccessControlType -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Boot or Logon Initialization Scripts - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1037/" }
+            @{ Title = "Group Policy script settings - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/dn789196(v=ws.11)" }
+        )
+        Tools = @("PowerView", "BloodHound")
+        MITRE = "T1037"
+        Triggers = @(
+            @{ Attribute = 'scriptRisk'; Pattern = '^Runs as SYSTEM from a path outside'; Severity = 'Finding' }
+            @{ Attribute = 'scriptRisk'; Pattern = '^Runs as the logged-on user from a path outside'; Severity = 'Hint' }
+
+            # The script in the policy store: a colour and no card, because the GPO
+            # permissions decide who may change it and the GPO permission checks are what
+            # report those. The ExcludePattern keeps this one off the two cases above -
+            # a severity-only trigger without a pattern matches every value of its
+            # attribute, and that pass runs first.
+            @{ Attribute = 'scriptRisk'; ExcludePattern = 'outside the policy store'; Severity = 'Note'; SeverityOnly = $true }
+
+            @{ Attribute = 'scriptParameterCredential'; Severity = 'Finding' }
+        )
+    }
+
     'SCRIPTPATH_HARDCODED' = @{
         Title = "Hardcoded Logon Script Path"
         Risk = "Hint"
@@ -14754,6 +14808,13 @@ function Test-CustomTrigger {
         }
 
         'is_hardcoded_path' {
+            # User accounts only. The attribute is called scriptPath on a user object and
+            # ScriptPath on the rows Get-GPOScriptPaths produces, and the trigger index is
+            # keyed by the lowercased name - so every GPO script with a UNC or absolute
+            # path collected this card, whose text explains that "this user account has a
+            # scriptPath attribute" pointing somewhere unusual. The GPO rows have a card of
+            # their own now: GPO_SCRIPT_OUTSIDE_POLICY_STORE.
+            if ($SourceObject -and "$($SourceObject._adPEASObjectType)" -eq 'GPOScriptPath') { return $false }
             # Returns true if scriptPath is a UNC path (\\server\share) or absolute local path (C:\...)
             $strVal = [string]$Value
             if ([string]::IsNullOrWhiteSpace($strVal)) { return $false }

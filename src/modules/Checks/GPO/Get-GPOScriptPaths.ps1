@@ -247,7 +247,11 @@ function Get-GPOScriptPaths {
                     if (@($split.Inactive) -contains $finding) {
                         Show-Object $finding -Class Note
                     } else {
-                        Show-Object $finding
+                        # The computed verdict decides the colour. Without it every script
+                        # was printed at the default class, so a SYSTEM startup script
+                        # pulled off a file share sat among the logon scripts in SYSVOL.
+                        $scriptClass = if ($finding._Severity) { [string]$finding._Severity } else { 'Note' }
+                        Show-Object $finding -Class $scriptClass
                     }
                 }
             } else {
@@ -394,6 +398,37 @@ function Parse-ScriptIni {
                 default { if ($IsPowerShell) { 'PowerShell' } else { 'Unknown' } }
             }
 
+            # Where the script actually lives. A bare file name has been resolved into the
+            # GPO's own Scripts folder above, so a path inside a Policies\{GUID} folder is
+            # the policy store itself - and so are SYSVOL and NETLOGON. Their ACL is the one
+            # the GPO permission findings already speak about. Anything else is a file on a
+            # share or a local disk whose permissions nobody here has seen.
+            $pathIsInsidePolicyStore = ($cmdLine -match '(?i)\\Policies\\\{') -or
+                                       ($cmdLine -match '(?i)\\(SYSVOL|NETLOGON)\\')
+
+            # And what that is worth. This check used to compute nothing: every script was
+            # printed at the renderer's default class, and the only card a row could reach
+            # was SCRIPTPATH_HARDCODED - a definition written about the scriptPath attribute
+            # of a user account, which described the GPO's script as somebody's logon script
+            # attribute being backdoored.
+            $scriptRisk = ''
+            if (-not $pathIsInsidePolicyStore -and $runsAsSystem) {
+                $scriptRisk = 'Runs as SYSTEM from a path outside the policy store - whoever may write that file executes code as SYSTEM on every machine in scope. The permissions of that path were not checked'
+            } elseif (-not $pathIsInsidePolicyStore) {
+                $scriptRisk = 'Runs as the logged-on user from a path outside the policy store - whoever may write that file executes code as every user in scope. The permissions of that path were not checked'
+            } elseif ($runsAsSystem) {
+                $scriptRisk = 'Runs as SYSTEM from the policy store, where the GPO permissions decide who may change it'
+            } else {
+                $scriptRisk = 'Runs as the logged-on user from the policy store, where the GPO permissions decide who may change it'
+            }
+
+            # A credential in the parameter line of a script that every machine or every user
+            # runs, and that any authenticated user can read out of SYSVOL.
+            $parameterCredential = ''
+            if ($parameters -and $parameters -match '(?i)(^|[\s/-])(pass(word)?|pwd|secret|credential)\s*[:=]\s*\S|(?i)/user:\S+\s+\S') {
+                $parameterCredential = 'The parameter line carries what looks like a credential, and every authenticated user can read this file out of SYSVOL'
+            }
+
             $finding = [PSCustomObject]@{
                 GPOName        = $GPOName
                 GPOGUID        = $GPOGUID
@@ -410,6 +445,16 @@ function Parse-ScriptIni {
                 RunsAsSystem   = $runsAsSystem
                 HasUNCPath     = $hasUNCPath
                 IsPowerShell   = $IsPowerShell
+                InsidePolicyStore = $pathIsInsidePolicyStore
+                scriptRisk     = $scriptRisk
+                _Severity      = $(if (-not $pathIsInsidePolicyStore -and $runsAsSystem) { 'Finding' }
+                                   elseif (-not $pathIsInsidePolicyStore) { 'Hint' }
+                                   else { 'Note' })
+            }
+
+            if ($parameterCredential) {
+                $finding | Add-Member -NotePropertyName 'scriptParameterCredential' -NotePropertyValue $parameterCredential -Force
+                $finding._Severity = 'Finding'
             }
 
             $findings += $finding

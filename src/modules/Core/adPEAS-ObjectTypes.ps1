@@ -1465,8 +1465,10 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Startup/Shutdown scripts (run as SYSTEM)"
             "Logon/Logoff scripts (run as user)"
-            "UNC paths (credential exposure risk)"
+            "Whether the script comes out of the policy's own Scripts folder or from somewhere else"
+            "Whether the parameter line carries something that looks like a credential"
             "PowerShell scripts via psscripts.ini"
+            "Not tested: who may write the script file - its permissions are not in the directory"
         )
         SecureMessage = "No scripts distributed via GPO. No Logon/Logoff/Startup/Shutdown scripts were found in Group Policy configurations."
     }
