@@ -8033,9 +8033,9 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 
     'NO_MAX_PASSWORD_AGE' = @{
         Title = "Maximum Password Age Disabled"
-        Risk = "Finding"
+        Risk = "Hint"
         BaseScore = 20
-        Description = "The maximum password age is disabled, meaning passwords never expire. While NIST SP 800-63B recommends against forced periodic rotation, never-expiring passwords combined with no breach detection means compromised passwords remain valid indefinitely."
+        Description = "The maximum password age is disabled, meaning passwords never expire. Two things used to be said about that in one report: Get-DomainPasswordPolicy counts it among its MODERATE weaknesses, which makes the policy object a hint, and this card called the same value a finding - two steps apart, on one line of output. Hint is the one that survives scrutiny: Microsoft's own security baseline has not set a maximum password age since 2019 and NIST SP 800-63B recommends against routine expiry, so a domain where passwords do not expire is following current guidance rather than failing it. What remains true is the part that has nothing to do with rotation policy: without expiry, a password that leaked stays valid until somebody notices."
         Impact = @(
             "Compromised passwords remain valid indefinitely"
             "No forced rotation after suspected breach"
@@ -8079,7 +8079,10 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
         MITRE = "T1078.002"
         Triggers = @(
-            @{ Attribute = 'maxPwdAge'; Pattern = 'Disabled|Never'; Severity = 'Finding' }
+            # Hint, the same class the check itself assigns the value. Also: the pattern
+            # must not match "Unknown - the value could not be read", which is what an
+            # unreadable attribute renders as since that collapse was separated out.
+            @{ Attribute = 'maxPwdAge'; Pattern = 'Disabled|Never'; Severity = 'Hint' }
         )
     }
 
@@ -11097,8 +11100,13 @@ foreach ($oid in $linkedOIDs) {
         )
         MITRE = "T1078"
         Triggers = @(
-            @{ Attribute = 'domainFunctionalLevel'; Pattern = 'Windows (2000|2003|2008)'; Severity = 'Hint' }
-            @{ Attribute = 'forestFunctionalLevel'; Pattern = 'Windows (2000|2003|2008)'; Severity = 'Hint' }
+            # 2012 included, because Get-DomainInformation already colours the line for
+            # it: its threshold is "[int]$DomainFunc -lt 7", which covers level 5 (2012)
+            # and 6 (2012 R2). Without them here the line was yellow and the row that
+            # carries the actual level stayed neutral - and both products are out of
+            # support, so there is something to say about them.
+            @{ Attribute = 'domainFunctionalLevel'; Pattern = 'Windows (2000|2003|2008|2012)'; Severity = 'Hint' }
+            @{ Attribute = 'forestFunctionalLevel'; Pattern = 'Windows (2000|2003|2008|2012)'; Severity = 'Hint' }
         )
     }
 
