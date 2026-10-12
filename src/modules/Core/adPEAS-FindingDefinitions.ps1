@@ -9105,12 +9105,31 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Tools = @("PowerView", "ldapsearch", "ADExplorer")
         MITRE = "T1552.006"
         Triggers = @(
-            @{ Attribute = 'unixUserPassword'; Severity = 'Finding' }
-            @{ Attribute = 'userPassword'; Severity = 'Finding' }
+            # The card follows the format the value is stored in, which is what decides
+            # what the find is worth: a cleartext password and an NT hash are usable as
+            # they stand, an LM or DES hash falls in hours, a salted $6$ has to be cracked
+            # first. The six attribute triggers below used to carry the card themselves,
+            # pattern-less and Finding, so all of that was one red row at BaseScore 30 -
+            # and the definition's own description names the difference it did not make.
+            @{ Attribute = 'passwordFormat'; Pattern = ': (Cleartext|NT hash|LM hash|DES crypt|Unsalted digest)'; Severity = 'Finding' }
+            # An attribute that is set and carries nothing, or carries the documented
+            # empty-LM placeholder, is not a credential at all - and a yellow row for it
+            # teaches a reader to skip the colour on the rows that are.
+            @{ Attribute = 'passwordFormat'; Pattern = ': (No hash stored|Empty -)'; Severity = 'Note' }
+            @{ Attribute = 'passwordFormat'; Severity = 'Hint' }
+
+            # The value rows follow the same verdict through the predicate, which reads the
+            # formats off the object. SeverityOnly: the format row above has named the card
+            # already, and a second one would say the same thing twice.
+            @{ Attribute = 'unixUserPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'userPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'msSFU30Password'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'sambaNTPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'sambaLMPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+
+            # unicodePwd is write-only in Active Directory, so it never comes back from a
+            # read and no format is computed for it. If one ever does arrive, red is right.
             @{ Attribute = 'unicodePwd'; Severity = 'Finding' }
-            @{ Attribute = 'msSFU30Password'; Severity = 'Finding' }
-            @{ Attribute = 'sambaNTPassword'; Severity = 'Finding' }
-            @{ Attribute = 'sambaLMPassword'; Severity = 'Finding' }
         )
     }
 
@@ -14525,6 +14544,16 @@ function Test-CustomTrigger {
                 $severity = Get-ExchangeSeverity -ProductName $strValue
             }
             return ($severity -ne 'Standard')
+        }
+
+        'unix_password_usable_as_is' {
+            # Whether any value on this object can be used without cracking anything.
+            # Test-UnixPasswordUsableAsIs lives beside Get-UnixPasswordFormat so the
+            # wording and the verdict that reads it cannot drift apart.
+            if ($SourceObject -and $SourceObject.passwordFormat) {
+                return (Test-UnixPasswordUsableAsIs -Format @($SourceObject.passwordFormat))
+            }
+            return $false
         }
 
         'credential_needs_review' {

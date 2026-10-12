@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 05:25:06
-    Version: 2.7.0+20261012-0525
+    Build: 2026-10-12 05:48:33
+    Version: 2.7.0+20261012-0548
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -16940,12 +16940,31 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Tools = @("PowerView", "ldapsearch", "ADExplorer")
         MITRE = "T1552.006"
         Triggers = @(
-            @{ Attribute = 'unixUserPassword'; Severity = 'Finding' }
-            @{ Attribute = 'userPassword'; Severity = 'Finding' }
+            # The card follows the format the value is stored in, which is what decides
+            # what the find is worth: a cleartext password and an NT hash are usable as
+            # they stand, an LM or DES hash falls in hours, a salted $6$ has to be cracked
+            # first. The six attribute triggers below used to carry the card themselves,
+            # pattern-less and Finding, so all of that was one red row at BaseScore 30 -
+            # and the definition's own description names the difference it did not make.
+            @{ Attribute = 'passwordFormat'; Pattern = ': (Cleartext|NT hash|LM hash|DES crypt|Unsalted digest)'; Severity = 'Finding' }
+            # An attribute that is set and carries nothing, or carries the documented
+            # empty-LM placeholder, is not a credential at all - and a yellow row for it
+            # teaches a reader to skip the colour on the rows that are.
+            @{ Attribute = 'passwordFormat'; Pattern = ': (No hash stored|Empty -)'; Severity = 'Note' }
+            @{ Attribute = 'passwordFormat'; Severity = 'Hint' }
+
+            # The value rows follow the same verdict through the predicate, which reads the
+            # formats off the object. SeverityOnly: the format row above has named the card
+            # already, and a second one would say the same thing twice.
+            @{ Attribute = 'unixUserPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'userPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'msSFU30Password'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'sambaNTPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'sambaLMPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+
+            # unicodePwd is write-only in Active Directory, so it never comes back from a
+            # read and no format is computed for it. If one ever does arrive, red is right.
             @{ Attribute = 'unicodePwd'; Severity = 'Finding' }
-            @{ Attribute = 'msSFU30Password'; Severity = 'Finding' }
-            @{ Attribute = 'sambaNTPassword'; Severity = 'Finding' }
-            @{ Attribute = 'sambaLMPassword'; Severity = 'Finding' }
         )
     }
 
@@ -22360,6 +22379,16 @@ function Test-CustomTrigger {
                 $severity = Get-ExchangeSeverity -ProductName $strValue
             }
             return ($severity -ne 'Standard')
+        }
+
+        'unix_password_usable_as_is' {
+            # Whether any value on this object can be used without cracking anything.
+            # Test-UnixPasswordUsableAsIs lives beside Get-UnixPasswordFormat so the
+            # wording and the verdict that reads it cannot drift apart.
+            if ($SourceObject -and $SourceObject.passwordFormat) {
+                return (Test-UnixPasswordUsableAsIs -Format @($SourceObject.passwordFormat))
+            }
+            return $false
         }
 
         'credential_needs_review' {
@@ -77454,6 +77483,184 @@ function Get-LAPSSchemaPresence {
 
 
 
+# ----- Get-UnixPasswordFormat.ps1 -----
+
+function Get-UnixPasswordFormat {
+    <#
+    .SYNOPSIS
+    Names the storage format of a Unix, LDAP or Samba password attribute value.
+
+    .DESCRIPTION
+    userPassword, unixUserPassword, msSFU30Password, sambaNTPassword and sambaLMPassword are
+    ordinary attributes, so whatever is in them is readable by whoever the ACL allows - but
+    what is in them differs by orders of magnitude in what it is worth to an attacker, and
+    the check reported one verdict for all of it.
+
+    Three classes, and the difference between the first two and the third is the whole point:
+
+      Usable as it stands  a cleartext password, or an NT hash, which authenticates as it is.
+                           Nothing has to be cracked and nothing has to be guessed.
+      Trivially cracked    an LM hash (two seven-character halves, uppercased), DES crypt
+                           (eight characters at most), or an unsalted MD5 or SHA-1 digest.
+                           Hours on commodity hardware, and no salt to get in the way.
+      Has to be cracked    a salted crypt(3) hash - MD5, SHA-256, SHA-512, bcrypt, yescrypt -
+                           or {SSHA}. Still worth reporting, because the password is now
+                           offline and the account is a target, but the finding is a hint.
+
+    The shapes are the documented ones: RFC 2307 names a scheme in braces ({crypt}, {MD5},
+    {SHA}, {SSHA}), crypt(3) prefixes the hash with $id$ ($1$ MD5, $2a$/$2b$/$2y$ bcrypt,
+    $5$ SHA-256, $6$ SHA-512, $y$ yescrypt), DES crypt is 13 characters of its own alphabet
+    with no prefix at all, and an NT or LM hash is 32 hex characters.
+
+    .PARAMETER Value
+    The attribute value, already decoded to text.
+
+    .PARAMETER Attribute
+    The attribute it came from. It decides between the two 32-hex-character hashes:
+    sambaLMPassword holds an LM hash, sambaNTPassword an NT hash, and in any other attribute
+    32 hex characters are an NT hash in practice.
+
+    .OUTPUTS
+    Hashtable with Format (the sentence that goes on the object) and Severity.
+
+    .EXAMPLE
+    Get-UnixPasswordFormat -Value '$6$rounds=5000$abc$def' -Attribute 'userPassword'
+
+    .NOTES
+    Author: Alexander Sturz (@_61106960_)
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Value,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string]$Attribute
+    )
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return @{ Format = 'Empty - the attribute is set but carries no value'; Severity = 'Note' }
+    }
+    $text = $text.Trim()
+
+    # The empty-LM placeholder. Every Samba installation that stores no LM hash writes this
+    # exact value, so reporting it as a readable credential is a false positive with a
+    # recognisable face.
+    # The wording deliberately avoids the words "LM hash": Test-UnixPasswordUsableAsIs
+    # matches on those, and a placeholder that says it has none would have read as one.
+    if ($text -ieq 'aad3b435b51404eeaad3b435b51404ee') {
+        return @{ Format = 'No hash stored - the value is the documented empty placeholder'; Severity = 'Note' }
+    }
+
+    # RFC 2307 scheme prefix. {crypt} is followed by a crypt(3) value, which the block
+    # below classifies, so the prefix is stripped rather than answered here.
+    $scheme = $null
+    if ($text -match '^\{([A-Za-z0-9-]+)\}(.*)$') {
+        $scheme = $Matches[1].ToUpper()
+        $text   = $Matches[2]
+        if ($scheme -eq 'CLEARTEXT' -or $scheme -eq 'CLEAR') {
+            return @{ Format = 'Cleartext - the password as it stands, nothing to crack'; Severity = 'Finding' }
+        }
+        if ($scheme -eq 'SSHA' -or $scheme -eq 'SSHA256' -or $scheme -eq 'SSHA512') {
+            return @{ Format = "Salted SHA-1 ({$scheme}) - has to be cracked"; Severity = 'Hint' }
+        }
+        if ($scheme -eq 'MD5' -or $scheme -eq 'SHA') {
+            return @{ Format = "Unsalted digest ({$scheme}) - no salt, so rainbow tables apply"; Severity = 'Finding' }
+        }
+        if ($scheme -eq 'NT' -or $scheme -eq 'NTLM') {
+            return @{ Format = 'NT hash - authenticates as it is, no cracking needed'; Severity = 'Finding' }
+        }
+    }
+
+    # crypt(3), by its $id$ prefix.
+    if ($text -match '^\$([A-Za-z0-9]{1,3})\$') {
+        $id = $Matches[1]
+        switch ($id) {
+            '1'  { return @{ Format = 'MD5 crypt - salted, but fast to try; has to be cracked'; Severity = 'Hint' } }
+            '2'  { return @{ Format = 'bcrypt - salted and deliberately slow; has to be cracked'; Severity = 'Hint' } }
+            '2a' { return @{ Format = 'bcrypt - salted and deliberately slow; has to be cracked'; Severity = 'Hint' } }
+            '2b' { return @{ Format = 'bcrypt - salted and deliberately slow; has to be cracked'; Severity = 'Hint' } }
+            '2x' { return @{ Format = 'bcrypt - salted and deliberately slow; has to be cracked'; Severity = 'Hint' } }
+            '2y' { return @{ Format = 'bcrypt - salted and deliberately slow; has to be cracked'; Severity = 'Hint' } }
+            '5'  { return @{ Format = 'SHA-256 crypt - salted; has to be cracked'; Severity = 'Hint' } }
+            '6'  { return @{ Format = 'SHA-512 crypt - salted; has to be cracked'; Severity = 'Hint' } }
+            'y'  { return @{ Format = 'yescrypt - salted and memory-hard; has to be cracked'; Severity = 'Hint' } }
+            default {
+                return @{ Format = "Crypt hash, scheme `$$id`$ - has to be cracked"; Severity = 'Hint' }
+            }
+        }
+    }
+
+    # 32 hex characters: which of the two depends on the attribute it came from.
+    if ($text -match '^[0-9a-fA-F]{32}$') {
+        if ($Attribute -ieq 'sambaLMPassword') {
+            return @{ Format = 'LM hash - two seven-character halves, cracked in minutes whatever the password'; Severity = 'Finding' }
+        }
+        return @{ Format = 'NT hash - authenticates as it is, no cracking needed'; Severity = 'Finding' }
+    }
+
+    # DES crypt: thirteen characters of the crypt alphabet, no prefix. Checked after the
+    # hex case, because a 13 character value cannot be 32 hex characters anyway, and after
+    # the $id$ case, because $1$... is longer than 13 but would match the alphabet.
+    #
+    # A thirteen character password of letters and digits has the same shape and is read as
+    # a DES hash. Both are findings, so the verdict holds either way, and the shape is the
+    # documented one - there is nothing else in the value to tell them apart.
+    if ($text -match '^[./0-9A-Za-z]{13}$') {
+        return @{ Format = 'DES crypt - eight characters at most, cracked in hours'; Severity = 'Finding' }
+    }
+
+    # Nothing matched a hash shape. A value that no hash format recognises is most often the
+    # password itself - set by hand, by a script, or by an appliance that does not hash -
+    # and it is sometimes an encoding of it, base64 above all, which is no protection
+    # either. The sentence says which of the two it has not ruled out, and the verdict is
+    # the same for both.
+    if ($scheme) {
+        return @{ Format = "Unrecognised format (scheme {$scheme}) - inspect the value"; Severity = 'Hint' }
+    }
+    return @{ Format = 'Cleartext or an encoding of it - no hash format matches this value'; Severity = 'Finding' }
+}
+
+function Test-UnixPasswordUsableAsIs {
+    <#
+    .SYNOPSIS
+    Whether any of the formats on an object can be used without cracking anything.
+
+    .DESCRIPTION
+    The counterpart to Get-UnixPasswordFormat, kept beside it so the wording and the verdict
+    that reads it cannot drift apart. Used by the finding trigger that decides whether the
+    attribute row itself is a finding: a readable $6$ hash and a readable cleartext password
+    are not the same discovery, and six pattern-less triggers used to grade them the same.
+
+    .PARAMETER Format
+    The passwordFormat values the check put on the object.
+
+    .OUTPUTS
+    [bool]
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string[]]$Format
+    )
+
+    foreach ($entry in @($Format)) {
+        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+        # Cleartext and an NT hash need nothing; LM, DES and an unsalted digest need hours.
+        if ($entry -match 'Cleartext|NT hash|LM hash|DES crypt|Unsalted digest') { return $true }
+    }
+    return $false
+}
+
+
+
 # ----- Get-PrivilegedAccountFilter.ps1 -----
 
 <#
@@ -118897,15 +119104,73 @@ function Get-UnixPasswordAccounts {
             # userPassword, is the same leaked credential and was invisible here.
             $usersWithPasswords = Get-DomainObject -LDAPFilter $passwordFilter -ShowOwner @PSBoundParameters
 
-            if (@($usersWithPasswords).Count -gt 0) {
-                Show-Line "Found $(@($usersWithPasswords).Count) account(s) with readable password attributes:" -Class "Finding"
+            # The five attributes, in the order the filter names them. Read per object,
+            # because one account can carry two of them in two different formats.
+            $passwordAttributes = @('unixUserPassword', 'userPassword', 'msSFU30Password',
+                                    'sambaNTPassword', 'sambaLMPassword')
 
-                foreach ($user in $usersWithPasswords) {
-                    $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'UnixPassword' -Force
-                    Show-Object $user
+            $readable = @()
+            $withheld = @()
+
+            # Ranked rather than compared: an account whose only value is the documented
+            # empty-LM placeholder stays a note, and one carrying both a $6$ hash and a
+            # cleartext password is rendered as the louder of the two.
+            $rank = @{ 'Note' = 0; 'Hint' = 1; 'Finding' = 2 }
+
+            foreach ($user in $usersWithPasswords) {
+                # Did the value actually arrive? The presence filter is ACL-gated, so an
+                # object that comes back normally carries the attribute - but it can come
+                # back with the attribute stripped, by an ACL or by the confidential flag,
+                # and then "readable password attribute" is a claim about access the
+                # operator does not have. The two neighbouring checks grew this guard for
+                # the same reason; this one reported every object the filter returned.
+                $formats = @()
+                $worstRank = 0
+                foreach ($attribute in $passwordAttributes) {
+                    $value = [string]$user.$attribute
+                    if ([string]::IsNullOrWhiteSpace($value)) { continue }
+
+                    # What the value is decides what it is worth: a cleartext password or an
+                    # NT hash is usable as it stands, an LM or DES hash falls in hours, and a
+                    # salted $6$ has to be cracked first. All of it used to be one red
+                    # finding with one score.
+                    $verdict = Get-UnixPasswordFormat -Value $value -Attribute $attribute
+                    $formats += "${attribute}: $($verdict.Format)"
+                    $thisRank = 1
+                    if ($rank.ContainsKey([string]$verdict.Severity)) { $thisRank = $rank[[string]$verdict.Severity] }
+                    if ($thisRank -gt $worstRank) { $worstRank = $thisRank }
+                }
+
+                if ($formats.Count -eq 0) {
+                    $withheld += $user
+                    Write-Log "[Get-UnixPasswordAccounts] Attribute withheld for '$($user.distinguishedName)'"
+                    continue
+                }
+
+                $user | Add-Member -NotePropertyName 'passwordFormat' -NotePropertyValue $formats -Force
+                $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'UnixPassword' -Force
+                $worst = 'Hint'
+                foreach ($name in $rank.Keys) { if ($rank[$name] -eq $worstRank) { $worst = $name } }
+                $readable += [PSCustomObject]@{ Object = $user; Class = $worst }
+            }
+
+            if (@($readable).Count -gt 0) {
+                Show-Line "Found $(@($readable).Count) account(s) with readable password attributes:" -Class "Finding"
+
+                foreach ($entry in $readable) {
+                    Show-Object $entry.Object -Class $entry.Class
                 }
             } else {
                 Show-Line "No accounts with readable password attributes found" -Class "Secure"
+            }
+
+            # Named rather than counted: these accounts do carry one of the attributes, and
+            # which ones is what a reader needs to ask the directory about.
+            if (@($withheld).Count -gt 0) {
+                $withheldNames = @($withheld | ForEach-Object {
+                    if ($_.sAMAccountName) { $_.sAMAccountName } else { $_.distinguishedName }
+                })
+                Show-Line "The value was not readable on: $($withheldNames -join ', ')" -Class "Note"
             }
 
         } catch {
@@ -133717,7 +133982,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0525"
+$Script:adPEASVersion = "2.7.0+20261012-0548"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

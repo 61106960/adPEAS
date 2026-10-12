@@ -191,6 +191,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Parse-GptTmpl.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-LAPSGPOConfig.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-LAPSSchemaPresence.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Get-UnixPasswordFormat.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-PrivilegedAccountFilter.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-PrincipalContainer.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-GPOEffectiveness.ps1"

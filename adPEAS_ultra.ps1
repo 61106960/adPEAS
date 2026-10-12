@@ -12303,12 +12303,15 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
 	    Tools = @("PowerView", "ldapsearch", "ADExplorer")
 	    MITRE = "T1552.006"
 	    Triggers = @(
-	        @{ Attribute = 'unixUserPassword'; Severity = 'Finding' }
-	        @{ Attribute = 'userPassword'; Severity = 'Finding' }
+	        @{ Attribute = 'passwordFormat'; Pattern = ': (Cleartext|NT hash|LM hash|DES crypt|Unsalted digest)'; Severity = 'Finding' }
+	        @{ Attribute = 'passwordFormat'; Pattern = ': (No hash stored|Empty -)'; Severity = 'Note' }
+	        @{ Attribute = 'passwordFormat'; Severity = 'Hint' }
+	        @{ Attribute = 'unixUserPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+	        @{ Attribute = 'userPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+	        @{ Attribute = 'msSFU30Password'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+	        @{ Attribute = 'sambaNTPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
+	        @{ Attribute = 'sambaLMPassword'; Custom = 'unix_password_usable_as_is'; Severity = 'Finding'; SeverityOnly = $true }
 	        @{ Attribute = 'unicodePwd'; Severity = 'Finding' }
-	        @{ Attribute = 'msSFU30Password'; Severity = 'Finding' }
-	        @{ Attribute = 'sambaNTPassword'; Severity = 'Finding' }
-	        @{ Attribute = 'sambaLMPassword'; Severity = 'Finding' }
 	    )
 	}
 	'STANDALONE_MSA_LEGACY' = @{
@@ -16805,6 +16808,12 @@ function Test-CustomTrigger {
 	            $severity = Get-ExchangeSeverity -ProductName $strValue
 	        }
 	        return ($severity -ne 'Standard')
+	    }
+	    'unix_password_usable_as_is' {
+	        if ($SourceObject -and $SourceObject.passwordFormat) {
+	            return (Test-UnixPasswordUsableAsIs -Format @($SourceObject.passwordFormat))
+	        }
+	        return $false
 	    }
 	    'credential_needs_review' {
 	        if ($SourceObject -and $SourceObject.credentialType -and $SourceObject.credentialType -match '\(needs review\)') {
@@ -48560,6 +48569,88 @@ function Get-LAPSSchemaPresence {
 	    return $Script:LAPSSchemaInfo
 	}
 }
+function Get-UnixPasswordFormat {
+	[CmdletBinding()]
+	[OutputType([hashtable])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$Value,
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [string]$Attribute
+	)
+	$text = [string]$Value
+	if ([string]::IsNullOrWhiteSpace($text)) {
+	    return @{ Format = 'Empty - the attribute is set but carries no value'; Severity = 'Note' }
+	}
+	$text = $text.Trim()
+	if ($text -ieq 'aad3b435b51404eeaad3b435b51404ee') {
+	    return @{ Format = 'No hash stored - the value is the documented empty placeholder'; Severity = 'Note' }
+	}
+	$scheme = $null
+	if ($text -match '^\{([A-Za-z0-9-]+)\}(.*)$') {
+	    $scheme = $Matches[1].ToUpper()
+	    $text   = $Matches[2]
+	    if ($scheme -eq 'CLEARTEXT' -or $scheme -eq 'CLEAR') {
+	        return @{ Format = 'Cleartext - the password as it stands, nothing to crack'; Severity = 'Finding' }
+	    }
+	    if ($scheme -eq 'SSHA' -or $scheme -eq 'SSHA256' -or $scheme -eq 'SSHA512') {
+	        return @{ Format = "Salted SHA-1 ({$scheme}) - has to be cracked"; Severity = 'Hint' }
+	    }
+	    if ($scheme -eq 'MD5' -or $scheme -eq 'SHA') {
+	        return @{ Format = "Unsalted digest ({$scheme}) - no salt, so rainbow tables apply"; Severity = 'Finding' }
+	    }
+	    if ($scheme -eq 'NT' -or $scheme -eq 'NTLM') {
+	        return @{ Format = 'NT hash - authenticates as it is, no cracking needed'; Severity = 'Finding' }
+	    }
+	}
+	if ($text -match '^\$([A-Za-z0-9]{1,3})\$') {
+	    $id = $Matches[1]
+	    switch ($id) {
+	        '1'  { return @{ Format = 'MD5 crypt - salted, but fast to try; has to be cracked'; Severity = 'Hint' } }
+	        '2'  { return @{ Format = 'bcrypt - salted and deliberately slow; has to be cracked'; Severity = 'Hint' } }
+	        '2a' { return @{ Format = 'bcrypt - salted and deliberately slow; has to be cracked'; Severity = 'Hint' } }
+	        '2b' { return @{ Format = 'bcrypt - salted and deliberately slow; has to be cracked'; Severity = 'Hint' } }
+	        '2x' { return @{ Format = 'bcrypt - salted and deliberately slow; has to be cracked'; Severity = 'Hint' } }
+	        '2y' { return @{ Format = 'bcrypt - salted and deliberately slow; has to be cracked'; Severity = 'Hint' } }
+	        '5'  { return @{ Format = 'SHA-256 crypt - salted; has to be cracked'; Severity = 'Hint' } }
+	        '6'  { return @{ Format = 'SHA-512 crypt - salted; has to be cracked'; Severity = 'Hint' } }
+	        'y'  { return @{ Format = 'yescrypt - salted and memory-hard; has to be cracked'; Severity = 'Hint' } }
+	        default {
+	            return @{ Format = "Crypt hash, scheme `$$id`$ - has to be cracked"; Severity = 'Hint' }
+	        }
+	    }
+	}
+	if ($text -match '^[0-9a-fA-F]{32}$') {
+	    if ($Attribute -ieq 'sambaLMPassword') {
+	        return @{ Format = 'LM hash - two seven-character halves, cracked in minutes whatever the password'; Severity = 'Finding' }
+	    }
+	    return @{ Format = 'NT hash - authenticates as it is, no cracking needed'; Severity = 'Finding' }
+	}
+	if ($text -match '^[./0-9A-Za-z]{13}$') {
+	    return @{ Format = 'DES crypt - eight characters at most, cracked in hours'; Severity = 'Finding' }
+	}
+	if ($scheme) {
+	    return @{ Format = "Unrecognised format (scheme {$scheme}) - inspect the value"; Severity = 'Hint' }
+	}
+	return @{ Format = 'Cleartext or an encoding of it - no hash format matches this value'; Severity = 'Finding' }
+}
+function Test-UnixPasswordUsableAsIs {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [string[]]$Format
+	)
+	foreach ($entry in @($Format)) {
+	    if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+	    if ($entry -match 'Cleartext|NT hash|LM hash|DES crypt|Unsalted digest') { return $true }
+	}
+	return $false
+}
 function Get-PrivilegedAccountFilter {
 	[CmdletBinding()]
 	[OutputType([string])]
@@ -71767,14 +71858,46 @@ function Get-UnixPasswordAccounts {
 	        Show-SubHeader "Searching for accounts with readable password attributes..." -ObjectType "UnixPassword"
 	        $passwordFilter = "(|(unixUserPassword=*)(userPassword=*)(msSFU30Password=*)(sambaNTPassword=*)(sambaLMPassword=*))"
 	        $usersWithPasswords = Get-DomainObject -LDAPFilter $passwordFilter -ShowOwner @PSBoundParameters
-	        if (@($usersWithPasswords).Count -gt 0) {
-	            Show-Line "Found $(@($usersWithPasswords).Count) account(s) with readable password attributes:" -Class "Finding"
-	            foreach ($user in $usersWithPasswords) {
-	                $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'UnixPassword' -Force
-	                Show-Object $user
+	        $passwordAttributes = @('unixUserPassword', 'userPassword', 'msSFU30Password',
+	                                'sambaNTPassword', 'sambaLMPassword')
+	        $readable = @()
+	        $withheld = @()
+	        $rank = @{ 'Note' = 0; 'Hint' = 1; 'Finding' = 2 }
+	        foreach ($user in $usersWithPasswords) {
+	            $formats = @()
+	            $worstRank = 0
+	            foreach ($attribute in $passwordAttributes) {
+	                $value = [string]$user.$attribute
+	                if ([string]::IsNullOrWhiteSpace($value)) { continue }
+	                $verdict = Get-UnixPasswordFormat -Value $value -Attribute $attribute
+	                $formats += "${attribute}: $($verdict.Format)"
+	                $thisRank = 1
+	                if ($rank.ContainsKey([string]$verdict.Severity)) { $thisRank = $rank[[string]$verdict.Severity] }
+	                if ($thisRank -gt $worstRank) { $worstRank = $thisRank }
+	            }
+	            if ($formats.Count -eq 0) {
+	                $withheld += $user
+	                continue
+	            }
+	            $user | Add-Member -NotePropertyName 'passwordFormat' -NotePropertyValue $formats -Force
+	            $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'UnixPassword' -Force
+	            $worst = 'Hint'
+	            foreach ($name in $rank.Keys) { if ($rank[$name] -eq $worstRank) { $worst = $name } }
+	            $readable += [PSCustomObject]@{ Object = $user; Class = $worst }
+	        }
+	        if (@($readable).Count -gt 0) {
+	            Show-Line "Found $(@($readable).Count) account(s) with readable password attributes:" -Class "Finding"
+	            foreach ($entry in $readable) {
+	                Show-Object $entry.Object -Class $entry.Class
 	            }
 	        } else {
 	            Show-Line "No accounts with readable password attributes found" -Class "Secure"
+	        }
+	        if (@($withheld).Count -gt 0) {
+	            $withheldNames = @($withheld | ForEach-Object {
+	                if ($_.sAMAccountName) { $_.sAMAccountName } else { $_.distinguishedName }
+	            })
+	            Show-Line "The value was not readable on: $($withheldNames -join ', ')" -Class "Note"
 	        }
 	    } catch {
 	    }
@@ -83537,7 +83660,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-0525"
+$Script:adPEASVersion = "2.7.0+20261012-0548"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

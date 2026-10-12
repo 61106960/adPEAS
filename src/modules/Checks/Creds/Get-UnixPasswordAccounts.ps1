@@ -70,15 +70,73 @@ function Get-UnixPasswordAccounts {
             # userPassword, is the same leaked credential and was invisible here.
             $usersWithPasswords = Get-DomainObject -LDAPFilter $passwordFilter -ShowOwner @PSBoundParameters
 
-            if (@($usersWithPasswords).Count -gt 0) {
-                Show-Line "Found $(@($usersWithPasswords).Count) account(s) with readable password attributes:" -Class "Finding"
+            # The five attributes, in the order the filter names them. Read per object,
+            # because one account can carry two of them in two different formats.
+            $passwordAttributes = @('unixUserPassword', 'userPassword', 'msSFU30Password',
+                                    'sambaNTPassword', 'sambaLMPassword')
 
-                foreach ($user in $usersWithPasswords) {
-                    $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'UnixPassword' -Force
-                    Show-Object $user
+            $readable = @()
+            $withheld = @()
+
+            # Ranked rather than compared: an account whose only value is the documented
+            # empty-LM placeholder stays a note, and one carrying both a $6$ hash and a
+            # cleartext password is rendered as the louder of the two.
+            $rank = @{ 'Note' = 0; 'Hint' = 1; 'Finding' = 2 }
+
+            foreach ($user in $usersWithPasswords) {
+                # Did the value actually arrive? The presence filter is ACL-gated, so an
+                # object that comes back normally carries the attribute - but it can come
+                # back with the attribute stripped, by an ACL or by the confidential flag,
+                # and then "readable password attribute" is a claim about access the
+                # operator does not have. The two neighbouring checks grew this guard for
+                # the same reason; this one reported every object the filter returned.
+                $formats = @()
+                $worstRank = 0
+                foreach ($attribute in $passwordAttributes) {
+                    $value = [string]$user.$attribute
+                    if ([string]::IsNullOrWhiteSpace($value)) { continue }
+
+                    # What the value is decides what it is worth: a cleartext password or an
+                    # NT hash is usable as it stands, an LM or DES hash falls in hours, and a
+                    # salted $6$ has to be cracked first. All of it used to be one red
+                    # finding with one score.
+                    $verdict = Get-UnixPasswordFormat -Value $value -Attribute $attribute
+                    $formats += "${attribute}: $($verdict.Format)"
+                    $thisRank = 1
+                    if ($rank.ContainsKey([string]$verdict.Severity)) { $thisRank = $rank[[string]$verdict.Severity] }
+                    if ($thisRank -gt $worstRank) { $worstRank = $thisRank }
+                }
+
+                if ($formats.Count -eq 0) {
+                    $withheld += $user
+                    Write-Log "[Get-UnixPasswordAccounts] Attribute withheld for '$($user.distinguishedName)'"
+                    continue
+                }
+
+                $user | Add-Member -NotePropertyName 'passwordFormat' -NotePropertyValue $formats -Force
+                $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'UnixPassword' -Force
+                $worst = 'Hint'
+                foreach ($name in $rank.Keys) { if ($rank[$name] -eq $worstRank) { $worst = $name } }
+                $readable += [PSCustomObject]@{ Object = $user; Class = $worst }
+            }
+
+            if (@($readable).Count -gt 0) {
+                Show-Line "Found $(@($readable).Count) account(s) with readable password attributes:" -Class "Finding"
+
+                foreach ($entry in $readable) {
+                    Show-Object $entry.Object -Class $entry.Class
                 }
             } else {
                 Show-Line "No accounts with readable password attributes found" -Class "Secure"
+            }
+
+            # Named rather than counted: these accounts do carry one of the attributes, and
+            # which ones is what a reader needs to ask the directory about.
+            if (@($withheld).Count -gt 0) {
+                $withheldNames = @($withheld | ForEach-Object {
+                    if ($_.sAMAccountName) { $_.sAMAccountName } else { $_.distinguishedName }
+                })
+                Show-Line "The value was not readable on: $($withheldNames -join ', ')" -Class "Note"
             }
 
         } catch {
