@@ -359,7 +359,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "System Management container permissions"
             "SCCM-related service accounts and groups"
         )
-        SecureMessage = "SCCM infrastructure follows security best practices. System Management container permissions are properly restricted and no credential exposure was found."
+        SecureMessage = "No principal outside the site servers and management points can write to the System Management container. Credentials are not part of this statement: network access accounts live in the Configuration Manager database and in client policies, not in Active Directory, so nothing here can say whether any are exposed."
     }
 
     'SCCMServerBasic' = @{
@@ -468,7 +468,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "SCOM service accounts"
             "SCOM-related security groups"
         )
-        SecureMessage = "SCOM infrastructure is properly configured. Run As accounts use least-privilege principles and no exposed credentials were found."
+        SecureMessage = "The SCOM service accounts found in the directory hold no privileged group membership. What a Run As account is allowed to do on its targets is configured inside SCOM, not in Active Directory, so this says nothing about least privilege there - and credentials for those accounts are stored by SCOM itself."
     }
 
     'SCOMServerBasic' = @{

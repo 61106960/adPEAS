@@ -241,8 +241,29 @@ function Get-ExchangeRBACAssignments {
                 $isDefaultAssignment = ($assigneeType -eq 'Exchange role group') -and
                                        (@($roleInfo.Defaults) -contains $assigneeRDN)
 
+                # What the assignee already holds. A Domain Admin with Mailbox Import Export
+                # gains nothing from the assignment - that account reaches every mailbox
+                # anyway - while a help desk group with the same role is the finding. Both
+                # were reported identically, and the output is sorted by role name, so the
+                # one that matters sat wherever the alphabet put it.
+                #
+                # Asked by SID where the object was resolved, with -IncludeOperators for the
+                # same reason the roasting checks use it: an Account Operator can reset the
+                # password of the accounts that hold the role.
+                $assigneePrivileged = $null
+                if ($assigneeObject -and $assigneeObject.objectSid) {
+                    try {
+                        $assigneePrivileged = Test-IsPrivileged -Identity ([string]$assigneeObject.objectSid) -IncludeOperators
+                    } catch {
+                        Write-Log "[Get-ExchangeRBACAssignments] Privilege check failed for '$assigneeName': $_"
+                    }
+                }
+
                 if ($isDefaultAssignment) {
                     $verdict = "Default assignment - $roleName is assigned to $assigneeRDN as shipped by Exchange"
+                    $consoleClass = 'Hint'
+                } elseif ($assigneePrivileged -and $assigneePrivileged.IsPrivileged -eq $true) {
+                    $verdict = "$($roleInfo.Verdict) The assignee is already privileged ($($assigneePrivileged.Reason)), so the role grants it nothing it could not reach anyway - the assignment is worth removing as hygiene, not as an escalation path."
                     $consoleClass = 'Hint'
                 } else {
                     $verdict = $roleInfo.Verdict
@@ -255,6 +276,11 @@ function Get-ExchangeRBACAssignments {
                     Assignee     = $assigneeName
                     AssigneeType = $assigneeType
                     RiskVerdict  = $verdict
+                }
+
+                if ($assigneePrivileged -and $assigneePrivileged.IsPrivileged -eq $true) {
+                    $resultObj | Add-Member -NotePropertyName 'assigneePrivilege' -NotePropertyValue (
+                        "Already privileged: $($assigneePrivileged.Reason)") -Force
                 }
 
                 # Scope is reported only from a scope object that actually exists. Exchange

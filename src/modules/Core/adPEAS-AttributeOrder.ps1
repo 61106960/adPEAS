@@ -505,7 +505,7 @@ $Script:PrimaryAttributes = @{
     # evidence for it.
     ExchangeReceiveConnector = @(
         'Name', 'RelayStatus', 'ExchangeServer',
-        'AnonymousPermissions', 'Bindings', 'RemoteIPRanges',
+        'GrantedSMTPRights', 'Bindings', 'RemoteIPRanges',
         'distinguishedName'
     )
 

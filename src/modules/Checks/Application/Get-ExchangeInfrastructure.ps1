@@ -231,6 +231,12 @@ function Get-ExchangeInfrastructure {
             Show-Object $orgObj
 
             # --- Phase 3: Per-Server Config Cards ---
+            #
+            # Server name -> build number, for the domain-partition rows further down: a
+            # computer object carries no version attribute, and msExchVersion is the object
+            # format version rather than the product one.
+            $configVersionByName = @{}
+
             foreach ($srv in $realServers) {
                 $srvName = $srv.name
                 $srvDN = $srv.distinguishedName
@@ -251,6 +257,10 @@ function Get-ExchangeInfrastructure {
                 $exchBuildNumber = $null
                 if ($sn -match 'Version (\d+)\.(\d+).*Build (\d+)\.(\d+)') {
                     $exchBuildNumber = "$($Matches[1]).$($Matches[2]).$($Matches[3]).$($Matches[4])"
+                }
+
+                if ($srvName -and $exchBuildNumber) {
+                    $configVersionByName[([string]$srvName).Split('.')[0].ToLower()] = $exchBuildNumber
                 }
 
                 # Extract domain from Config DN (DC= components after CN=Configuration)
@@ -374,9 +384,6 @@ function Get-ExchangeInfrastructure {
                         [int]$rawServer.msExchCurrentServerRoles
                     } else { 0 }
 
-                    $versionValue = if ($rawServer.msExchVersion) {
-                        [long]$rawServer.msExchVersion
-                    } else { 0 }
 
                     # Decode server roles (bitfield)
                     $roles = @()
@@ -386,28 +393,46 @@ function Get-ExchangeInfrastructure {
                     if ($rolesValue -band 32) { $roles += "HubTransport" }
                     if ($rolesValue -band 64) { $roles += "EdgeTransport" }
 
-                    # Decode Exchange version. Major.Minor.Build.Revision encoded in long integer
-                    # High 4 bits = Major, next 6 bits = Minor
-                    $major = ($versionValue -shr 22) -band 0x3F
-                    $minor = ($versionValue -shr 16) -band 0x3F
-                    $build = ($versionValue -shr 0) -band 0xFFFF
+                    # The version comes from the Configuration partition, where
+                    # serialNumber carries it as "Version 15.2 (Build 1544.4)" - the
+                    # attribute that holds the product version, matched to this computer by
+                    # its own name. A computer object in the domain partition has no version
+                    # attribute at all.
+                    #
+                    # The bit arithmetic that stood here decoded msExchVersion, which is the
+                    # object format version: every build from Exchange 2013 on stores the
+                    # same value (2^50), so the result was empty for all of them, and for
+                    # Exchange 2010 it produced 0.8.23552.0 - a number that is no Microsoft
+                    # build, displayed as the server's build and carrying no EOL verdict, so
+                    # an Exchange 2010 with no reachable HTTPS looked unremarkable.
+                    # Defensive: the Configuration partition may not have been readable at
+                    # all, and then this block still has to run.
+                    if (-not $configVersionByName) { $configVersionByName = @{} }
 
-                    $versionString = "$major.$minor.$build.0"
+                    $versionString = ''
+                    $serverShortName = if ($rawServer.cn) { ([string]$rawServer.cn).Split('.')[0] } else { '' }
+                    if ($serverShortName -and $configVersionByName.ContainsKey($serverShortName.ToLower())) {
+                        $versionString = [string]$configVersionByName[$serverShortName.ToLower()]
+                    }
 
-                    # Use the same Convert function for LDAP fallback
-                    $exchangeVersion = Convert-ExchangeBuildToVersion -BuildNumber $versionString
-                    $versionClass = Get-ExchangeVersionClass -BuildNumber $versionString
-                    $isEOL = ($versionClass -eq "Finding")
+                    $exchangeVersion = $null
+                    $isEOL = $false
+                    if ($versionString) {
+                        $exchangeVersion = Convert-ExchangeBuildToVersion -BuildNumber $versionString
+                        $versionClass = Get-ExchangeVersionClass -BuildNumber $versionString
+                        $isEOL = ($versionClass -eq "Finding")
+                    }
 
                     $serverObj = [PSCustomObject]@{
                         ComputerName = if ($rawServer.cn) { $rawServer.cn } else { "Unknown" }
+                        # Carried so the row can show where the version came from.
+                        SerialNumber = $versionString
                         DNSHostName = if ($rawServer.dNSHostName) { $rawServer.dNSHostName } else { "Unknown" }
                         OperatingSystem = if ($rawServer.operatingSystem) { $rawServer.operatingSystem } else { "Unknown" }
                         Roles = $roles
                         RolesValue = $rolesValue
                         ExchangeVersion = $exchangeVersion
                         VersionString = $versionString
-                        VersionValue = $versionValue
                         IsEOL = $isEOL
                         SPNs = @($rawServer.servicePrincipalName | Where-Object { $_ -match 'exchange|SMTP|HTTP' })
                         RawObject = $rawServer  # Store original object for Show-Object display
@@ -554,11 +579,16 @@ function Get-ExchangeInfrastructure {
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
                                         }
-                                        # Add EPA status only for HTTPS (EPA is TLS-based)
+                                        # Add EPA status only for HTTPS (EPA is TLS-based).
+                                        # "Untested" is its own answer: EPA is probed only
+                                        # where NTLM is on offer, so on a Negotiate-only
+                                        # endpoint a missing marker read as "nothing found"
+                                        # instead of "not asked".
+                                        $epaStatus = "Untested"
                                         if ($null -ne $epData.EPAEnabled) {
                                             $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                            $epString += " [EPA: $epaStatus]"
                                         }
+                                        $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
                                 }
@@ -816,7 +846,14 @@ function Get-ExchangeInfrastructure {
                                         if ($anonymousSIDs -contains $ace.TrusteeSID) {
                                             $anonymousGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
                                         }
-                                        elseif ($Script:BroadGroupSIDs -contains $ace.TrusteeSID) {
+                                        elseif (Test-IsBroadTrustee -SID ([string]$ace.TrusteeSID)) {
+                                            # Test-IsBroadTrustee, not a -contains against
+                                            # $Script:BroadGroupSIDs: that list holds the
+                                            # static SIDs only, and Domain Users is domain
+                                            # relative - RID 513, with no entry there. A
+                                            # connector that grants relay to Domain Users
+                                            # fell through both branches and came out as
+                                            # "Authenticated senders only", in green.
                                             $broadGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
                                         }
                                     }
@@ -855,6 +892,24 @@ function Get-ExchangeInfrastructure {
                     elseif ($broadRights -contains 'ms-exch-smtp-accept-any-recipient') {
                         $verdict = 'Broad relay - every authenticated domain principal can relay to any recipient domain'
                         $consoleClass = 'Hint'
+                    }
+                    elseif (($broadRights -contains 'ms-exch-smtp-accept-authoritative-domain-sender') -or
+                            ($broadRights -contains 'ms-exch-smtp-accept-any-sender')) {
+                        # The sender rights were examined for anonymous grants and not for
+                        # broad ones, so a connector that lets every domain user send as the
+                        # board of directors fell through to "Authenticated senders only" -
+                        # with the evidence row sitting right underneath it.
+                        $verdict = 'Broad sender spoofing - every authenticated domain principal can claim an internal sender address'
+                        $consoleClass = 'Finding'
+                    }
+                    elseif ($anonymousRights -contains 'ms-exch-bypass-anti-spam') {
+                        # The catch-all below called this "expected on an internet-facing
+                        # connector". Granting an unauthenticated session the right to
+                        # bypass anti-spam means the message skips the filtering that
+                        # exists for exactly this path, and Exchange then handles it like
+                        # internally classified mail - which is the opposite of expected.
+                        $verdict = 'Anonymous anti-spam bypass - unauthenticated mail skips the spam and malware filters on this connector'
+                        $consoleClass = 'Finding'
                     }
                     elseif (@($anonymousGrants).Count -gt 0) {
                         $verdict = 'Anonymous submission only - expected on an internet-facing connector'
@@ -896,7 +951,10 @@ function Get-ExchangeInfrastructure {
 
                     $allGrants = @($anonymousGrants + $broadGrants | ForEach-Object { $_.Display })
                     if (@($allGrants).Count -gt 0) {
-                        $connectorObj | Add-Member -NotePropertyName 'AnonymousPermissions' -NotePropertyValue $allGrants -Force
+                        # Named for what it holds: every SMTP right the connector grants to
+                        # an anonymous or a broad principal. Called AnonymousPermissions, it
+                        # labelled a grant to Domain Users as anonymous.
+                        $connectorObj | Add-Member -NotePropertyName 'GrantedSMTPRights' -NotePropertyValue $allGrants -Force
                     }
 
                     $connectorObj | Add-Member -NotePropertyName 'distinguishedName' -NotePropertyValue $connectorDN -Force

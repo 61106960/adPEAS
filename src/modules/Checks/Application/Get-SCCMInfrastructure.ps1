@@ -182,6 +182,13 @@ function Get-SCCMInfrastructure {
 
             $casDetected = $false
 
+            # Filled by the loop below and read by the container ACL step further down,
+            # which has to know which computer accounts are supposed to hold rights there.
+            # Declared here rather than inside the loop: a domain with no management point
+            # never enters it, and reading an unset variable is an error under
+            # Set-StrictMode -Version Latest.
+            $sccmManagementPointNames = @()
+
             try {
                 $mgmtPoints = @()
                 if ($systemMgmt) {
@@ -194,6 +201,10 @@ function Get-SCCMInfrastructure {
                     foreach ($mp in $mgmtPoints) {
                         $mpName = $mp.mSSMSMPName
                         $mpSiteCode = $mp.mSSMSSiteCode
+
+                        # Collected for the container ACL step further down (declared above
+                        # the try, so a domain without management points still has a list).
+                        if ($mpName) { $sccmManagementPointNames += [string]$mpName }
 
                         # Parse mSSMSCapabilities XML for site hierarchy
                         $cmdLineSiteCode = $null
@@ -262,7 +273,12 @@ function Get-SCCMInfrastructure {
 
                     # CAS Finding
                     if ($casDetected) {
-                        Show-Line "Central Administration Site (CAS) detected - multi-site SCCM hierarchy" -Class Finding -FindingId "SCCM_SITE_HIERARCHY"
+                        # Hint, which is what SCCM_SITE_HIERARCHY itself says (Risk = Hint,
+                        # BaseScore 30). A hierarchy with a central administration site is a
+                        # normal SCCM build: the finding is "there is one more Tier-0 system
+                        # here", not "something is wrong here". Red spends the colour that
+                        # the container ACL findings need.
+                        Show-Line "Central Administration Site (CAS) detected - multi-site SCCM hierarchy" -Class Hint -FindingId "SCCM_SITE_HIERARCHY"
                     }
                 } elseif (-not $systemMgmt) {
                     Show-Line "The System Management container does not exist - no management point could be read" -Class Note
@@ -328,6 +344,32 @@ function Get-SCCMInfrastructure {
                 $sccmServerSIDs = @{}
                 foreach ($knownServer in @($sccmServers)) {
                     if ($knownServer.objectSid) { $sccmServerSIDs["$($knownServer.objectSid)"] = $true }
+                }
+
+                # The management points as well, resolved by the host name they publish.
+                # The expected set came from one source only - the SPN query above - and
+                # the module prints "No SCCM servers found via SPN detection" itself, which
+                # is exactly when that set is empty: every legitimate site server with Full
+                # Control on the container then came out as a finding. A management point
+                # publishes its own name in mSSMSMPName and is supposed to hold rights here.
+                foreach ($knownMP in @($sccmManagementPointNames)) {
+                    if ([string]::IsNullOrWhiteSpace($knownMP)) { continue }
+                    $mpHost = ([string]$knownMP).Split('.')[0]
+                    if ([string]::IsNullOrWhiteSpace($mpHost)) { continue }
+                    try {
+                        $mpComputer = @(Get-DomainComputer -Identity $mpHost -Properties 'objectSid', 'dNSHostName' @PSBoundParameters)[0]
+                        if ($mpComputer -and $mpComputer.objectSid) {
+                            $sccmServerSIDs["$($mpComputer.objectSid)"] = $true
+                        } else {
+                            # A management point in another domain of the forest cannot be
+                            # resolved from here. Its ACE stays reported, which is the
+                            # honest outcome - the alternative would be to excuse an ACE
+                            # because a name looked familiar.
+                            Write-Log "[Get-SCCMInfrastructure] Management point '$knownMP' could not be resolved to a computer account - its ACE stays reported"
+                        }
+                    } catch {
+                        Write-Log "[Get-SCCMInfrastructure] Error resolving management point '$knownMP': $_"
+                    }
                 }
 
                 # -Raw for the byte[] form of nTSecurityDescriptor: the converted object

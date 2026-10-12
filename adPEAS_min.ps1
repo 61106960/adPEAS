@@ -3377,7 +3377,7 @@ $Script:PrimaryAttributes = @{
     )
     ExchangeReceiveConnector = @(
         'Name', 'RelayStatus', 'ExchangeServer',
-        'AnonymousPermissions', 'Bindings', 'RemoteIPRanges',
+        'GrantedSMTPRights', 'Bindings', 'RemoteIPRanges',
         'distinguishedName'
     )
     ExchangePermissionsModel = @(
@@ -10444,28 +10444,27 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
     'EXCHANGE_VULNERABLE_VERSION' = @{
-        Title = "Vulnerable Exchange Server Version"
+        Title = "Exchange Server Version Out of Support"
         Risk = "Finding"
         BaseScore = 45
-        Description = "This Exchange server is running a version with known critical vulnerabilities (ProxyLogon, ProxyShell, etc.). These vulnerabilities allow unauthenticated remote code execution."
+        Description = "This Exchange server runs a product version whose support has ended, or ends within the year. What that means is that no security update exists for the next vulnerability of the ProxyLogon or ProxyShell class - and Exchange is the single most reliably attacked server role in an Active Directory, with a service account that reaches the directory. Which updates are installed is not visible from here: Active Directory records the product version, not the cumulative or security update level, so this finding is about the support status and not about a specific CVE. Confirming the patch level needs the Exchange Health Checker on the server itself, which is the first command below."
         Impact = @(
-            "Remote code execution without authentication"
-            "Complete server compromise from the internet"
-            "Access to all email and potentially AD compromise"
-            "Often targeted by APT groups and ransomware operators"
-            "Exchange often has Domain Admin-equivalent permissions"
+            "No security updates: the next critical vulnerability in this version stays open"
+            "Exchange historically carries pre-authentication remote code execution bugs - ProxyLogon, ProxyShell and ProxyNotShell were all of that class"
+            "The server reaches Active Directory through its own service account, so compromising it is rarely the last step"
+            "Unsupported versions are the ones ransomware operators scan for, because the install base stays exploitable"
         )
         Attack = @(
-            "1. Attacker scans for vulnerable Exchange servers"
-            "2. Exploits ProxyLogon/ProxyShell/ProxyNotShell"
-            "3. Gains SYSTEM shell on Exchange server"
-            "4. Dumps credentials or leverages Exchange permissions for AD compromise"
+            "1. Attacker fingerprints the Exchange version from the outside - the build number is in the OWA response"
+            "2. Picks the published exploit chain for that version, or waits for the next one"
+            "3. Gains code execution as SYSTEM on the Exchange server"
+            "4. Uses the server's own directory permissions, or the credentials on it, to move into Active Directory"
         )
         Remediation = @(
-            "Apply all security updates immediately"
-            "Run Exchange Health Checker to identify missing patches"
-            "Enable Extended Protection for Authentication"
-            "Restrict external access where possible"
+            "Move to a supported version - Exchange Subscription Edition is the only line still receiving updates, and the upgrade path from 2016 and 2019 is in place"
+            "Until then, run the Exchange Health Checker on the server to see which cumulative and security updates are missing: that is the question this finding cannot answer from the directory"
+            "Enable Extended Protection for Authentication, which is what closes the relay half of these chains"
+            "Keep the server off the internet where the role does not require it, and in front of a reverse proxy where it does"
             "Consider migration to Exchange Online"
         )
         RemediationCommands = @(
@@ -10492,7 +10491,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             @{ Title = "ProxyLogon Information"; Url = "https://proxylogon.com/" }
             @{ Title = "Microsoft Exchange ProxyNotShell Vulnerability"; Url = "https://www.csoonline.com/article/574205/microsoft-exchange-proxynotshell-vulnerability-explained-and-how-to-mitigate-it.html" }
         )
-        Tools = @("Nmap", "Metasploit", "ProxyShell PoC")
+        Tools = @("Exchange Health Checker", "Nmap")
         MITRE = "T1190"
         Triggers = @(
             @{ Attribute = 'ExchangeVersion'; Custom = 'is_exchange_eol'; Severity = 'Finding' }
@@ -10572,9 +10571,9 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         BaseScore = 0
         Description = "The forest was prepared with /ActiveDirectorySplitPermissions, which is the hardened of the two Exchange permissions models. Exchange administrators and Exchange servers cannot create Active Directory security principals at all, and setup removed every Exchange Windows Permissions entry from the domain object - so membership of that group is no longer a route to the domain DACL. The Microsoft Exchange Protected Groups OU, which only this setup mode creates, is what records the choice."
         Impact = @(
-            "Exchange Windows Permissions holds no access control entries on the domain object"
-            "Exchange Trusted Subsystem is not a member of Exchange Windows Permissions"
+            "Exchange Windows Permissions holds no access control entries on the domain object - that is what was read"
             "Creating users and groups, and changing distribution group membership, requires Active Directory tools and Active Directory permissions"
+            "Not read here: whether Exchange Trusted Subsystem is a member of Exchange Windows Permissions. Setup does not nest them in this model, but the group membership itself is not part of this verdict - the privileged-groups section is where that is listed"
         )
         Remediation = @(
             "No action required - this is the hardened model"
@@ -10704,6 +10703,83 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             @{ Attribute = 'RelayStatus'; Pattern = '^Broad relay'; Severity = 'Hint' }
         )
     }
+    'EXCHANGE_SMTP_ANONYMOUS_BYPASS_ANTISPAM' = @{
+        Title = "SMTP Receive Connector Lets Unauthenticated Mail Bypass Anti-Spam"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "This receive connector grants ms-Exch-Bypass-Anti-Spam to an anonymous principal. Mail arriving unauthenticated on this connector therefore skips the spam and malware filtering that exists for exactly that path, and Exchange treats it as internally classified material from then on. The grant is normally made for an internal relay host or a scanning appliance that filters first; on a connector that anonymous senders can reach it is an open door for everything the filters exist to stop."
+        Impact = @(
+            "Unauthenticated mail reaches mailboxes without spam or malware filtering"
+            "Exchange marks it as having passed inspection, so downstream rules that trust that marking also let it through"
+            "Phishing and malware delivery become a question of reaching the connector, which is the easy part"
+            "The same grant usually carries headers-routing, which lets the sender dictate how the message appears to have travelled"
+        )
+        Attack = @(
+            "1. Attacker finds the connector that accepts anonymous sessions - port 25 on a published host"
+            "2. Submits a message with a malicious attachment or a credential phishing link"
+            "3. The bypass grant means no filtering is applied to it"
+            "4. The message is delivered and looks like mail that passed inspection"
+        )
+        Remediation = @(
+            "Remove ms-Exch-Bypass-Anti-Spam from the anonymous principal: Remove-ADPermission -Identity 'CONNECTOR' -User 'NT AUTHORITY\ANONYMOUS LOGON' -ExtendedRights ms-Exch-Bypass-Anti-Spam"
+            "Where an upstream appliance really does the filtering, give that host its own connector restricted by RemoteIPRanges, and grant the bypass only there"
+            "Confirm which hosts actually deliver to this connector before changing it - a shared internet-facing connector may carry both kinds of traffic"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the anonymous grants on the connector"
+                Command = "Get-ADPermission -Identity 'CONNECTOR' -User 'NT AUTHORITY\ANONYMOUS LOGON' | Format-Table ExtendedRights -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Receive connector permissions - Microsoft"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connector-permissions" }
+            @{ Title = "Anti-spam protection - Microsoft"; Url = "https://learn.microsoft.com/en-us/exchange/antispam-and-antimalware/antispam-protection/antispam-protection" }
+        )
+        Tools = @("swaks", "Exchange Management Shell")
+        MITRE = "T1566"
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Anonymous anti-spam bypass'; Severity = 'Finding' }
+        )
+    }
+    'EXCHANGE_SMTP_BROAD_SPOOFING' = @{
+        Title = "SMTP Receive Connector Lets Every Domain Principal Spoof an Internal Sender"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "This receive connector grants ms-Exch-SMTP-Accept-Authoritative-Domain-Sender, or ms-Exch-SMTP-Accept-Any-Sender, to a broad principal - Authenticated Users, Domain Users, Everyone or one of their siblings. Any account in the domain can therefore submit mail whose From address is an internal one: the chief executive, the help desk, the payroll mailbox. The message arrives with every internal marker a recipient uses to trust it, and SPF, DKIM and DMARC say nothing about a message that never left the organisation."
+        Impact = @(
+            "Any domain account can send mail as any internal address through this connector"
+            "The message is internal, so it passes the checks that exist for external mail and lands without a banner"
+            "That is the opening move of most internal phishing: a password reset, an invoice change, an instruction from a manager"
+            "It also defeats approval workflows that trust the sender address of an internal message"
+        )
+        Attack = @(
+            "1. Attacker authenticates to the connector with any domain account"
+            "2. Submits a message with MAIL FROM and the From header set to an internal address"
+            "3. Exchange accepts it as authoritative because the connector grants the sender right"
+            "4. The recipient sees an ordinary internal mail from a colleague"
+        )
+        Remediation = @(
+            "Remove ms-Exch-SMTP-Accept-Authoritative-Domain-Sender and ms-Exch-SMTP-Accept-Any-Sender from the broad principal: Remove-ADPermission -Identity 'CONNECTOR' -User 'DOMAIN\\Domain Users' -ExtendedRights ms-Exch-SMTP-Accept-Authoritative-Domain-Sender"
+            "Where an application needs to send as an internal address, give that application its own account and grant the right to it alone, on a connector that only it can reach"
+            "Restrict the connector's RemoteIPRanges to the hosts that are meant to use it"
+            "Check the other connectors too: the grant is often copied from one to the next"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who holds sender rights on the connector"
+                Command = "Get-ADPermission -Identity 'CONNECTOR' | Where-Object { `$_.ExtendedRights -like '*Sender*' } | Format-Table User, ExtendedRights -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Receive connector permissions - Microsoft"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connector-permissions" }
+            @{ Title = "Anti-spoofing protection - Microsoft"; Url = "https://learn.microsoft.com/en-us/defender-office-365/anti-phishing-protection-spoofing-about" }
+        )
+        Tools = @("swaks", "telnet", "Exchange Management Shell")
+        MITRE = "T1534"
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Broad sender spoofing'; Severity = 'Finding' }
+        )
+    }
     'EXCHANGE_SMTP_CONNECTOR_AUTHENTICATED' = @{
         Title = "SMTP Receive Connector Requires Authentication"
         Risk = "Secure"
@@ -10825,6 +10901,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1114.002"
         Triggers = @(
             @{ Attribute = 'RiskVerdict'; Pattern = '^Mailbox export'; Severity = 'Finding' }
+            @{ Attribute = 'RiskVerdict'; Custom = 'rbac_assignee_already_privileged'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
     'EXCHANGE_RBAC_APPLICATION_IMPERSONATION' = @{
@@ -13907,6 +13984,7 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "M1041"
         Triggers = @(
             @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '\[EPA:\s*Enabled\]'; Severity = 'Secure' }
+            @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Enabled\]'; Severity = 'Secure' }
         )
     }
     'PKI_STRONG_SIGNATURE_ALGORITHM' = @{
@@ -14904,7 +14982,7 @@ foreach ($oid in $linkedOIDs) {
         )
         MITRE = "T1187"
         Triggers = @(
-            @{ Attribute = 'WebEndpoints'; Pattern = 'NTLM'; Severity = 'Finding' }
+            @{ Attribute = 'WebEndpoints'; Pattern = 'NTLM'; ExcludePattern = '\[EPA:\s*Enabled\]'; Severity = 'Finding' }
         )
     }
     'RBCD_ENABLED' = @{
@@ -16788,6 +16866,12 @@ function Test-CustomTrigger {
             if ($encList.Count -eq 0) { return $false }
             return (@($encList | Where-Object { $_ -like 'RC4*' -or $_ -like 'DES*' }).Count -eq 0)
         }
+        'rbac_assignee_already_privileged' {
+            if (-not $SourceObject) { return $false }
+            $privilege = $SourceObject.PSObject.Properties['assigneePrivilege']
+            if ($privilege -and $privilege.Value) { return $true }
+            return $false
+        }
         'esc13_group_not_privileged' {
             if (-not $SourceObject) { return $false }
             $linkFlag = $SourceObject.PSObject.Properties['issuancePolicyGroupPrivileged']
@@ -17226,14 +17310,7 @@ function Get-ExchangeGroupMemberClass {
         }
     }
     $privilegeCheck = Test-IsPrivileged -Identity $sid -IncludeOperators
-    if ($privilegeCheck.IsPrivileged -eq $true) {
-        return "Hint"
-    }
-    if ($dn -and ($dn -match 'CN=Computers,' -or $dn -match 'OU=.*Server')) {
-        return "Hint"
-    }
-    $name = $MemberInfo.DisplayName
-    if ($name -and $name -match '\$$') {
+    if ($privilegeCheck.Category -eq 'Privileged') {
         return "Hint"
     }
     return "Finding"
@@ -18796,7 +18873,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "System Management container permissions"
             "SCCM-related service accounts and groups"
         )
-        SecureMessage = "SCCM infrastructure follows security best practices. System Management container permissions are properly restricted and no credential exposure was found."
+        SecureMessage = "No principal outside the site servers and management points can write to the System Management container. Credentials are not part of this statement: network access accounts live in the Configuration Manager database and in client policies, not in Active Directory, so nothing here can say whether any are exposed."
     }
     'SCCMServerBasic' = @{
         TitleFormat = "SCCM Server: {Name}"
@@ -18897,7 +18974,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "SCOM service accounts"
             "SCOM-related security groups"
         )
-        SecureMessage = "SCOM infrastructure is properly configured. Run As accounts use least-privilege principles and no exposed credentials were found."
+        SecureMessage = "The SCOM service accounts found in the directory hold no privileged group membership. What a Run As account is allowed to do on its targets is configured inside SCOM, not in Active Directory, so this says nothing about least privilege there - and credentials for those accounts are stored by SCOM itself."
     }
     'SCOMServerBasic' = @{
         TitleFormat = "SCOM Server: {Name}"
@@ -73564,6 +73641,7 @@ function Get-ExchangeInfrastructure {
             $orgObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeOrganization' -Force
             Show-Line "Exchange Organization found in Configuration partition" -Class Hint
             Show-Object $orgObj
+            $configVersionByName = @{}
             foreach ($srv in $realServers) {
                 $srvName = $srv.name
                 $srvDN = $srv.distinguishedName
@@ -73578,6 +73656,9 @@ function Get-ExchangeInfrastructure {
                 $exchBuildNumber = $null
                 if ($sn -match 'Version (\d+)\.(\d+).*Build (\d+)\.(\d+)') {
                     $exchBuildNumber = "$($Matches[1]).$($Matches[2]).$($Matches[3]).$($Matches[4])"
+                }
+                if ($srvName -and $exchBuildNumber) {
+                    $configVersionByName[([string]$srvName).Split('.')[0].ToLower()] = $exchBuildNumber
                 }
                 $serverDomain = $null
                 if ($srvDN -match 'CN=Configuration,(.+)$') {
@@ -73673,31 +73754,34 @@ function Get-ExchangeInfrastructure {
                     $rolesValue = if ($rawServer.msExchCurrentServerRoles) {
                         [int]$rawServer.msExchCurrentServerRoles
                     } else { 0 }
-                    $versionValue = if ($rawServer.msExchVersion) {
-                        [long]$rawServer.msExchVersion
-                    } else { 0 }
                     $roles = @()
                     if ($rolesValue -band 2) { $roles += "Mailbox" }
                     if ($rolesValue -band 4) { $roles += "ClientAccess" }
                     if ($rolesValue -band 16) { $roles += "UnifiedMessaging" }
                     if ($rolesValue -band 32) { $roles += "HubTransport" }
                     if ($rolesValue -band 64) { $roles += "EdgeTransport" }
-                    $major = ($versionValue -shr 22) -band 0x3F
-                    $minor = ($versionValue -shr 16) -band 0x3F
-                    $build = ($versionValue -shr 0) -band 0xFFFF
-                    $versionString = "$major.$minor.$build.0"
-                    $exchangeVersion = Convert-ExchangeBuildToVersion -BuildNumber $versionString
-                    $versionClass = Get-ExchangeVersionClass -BuildNumber $versionString
-                    $isEOL = ($versionClass -eq "Finding")
+                    if (-not $configVersionByName) { $configVersionByName = @{} }
+                    $versionString = ''
+                    $serverShortName = if ($rawServer.cn) { ([string]$rawServer.cn).Split('.')[0] } else { '' }
+                    if ($serverShortName -and $configVersionByName.ContainsKey($serverShortName.ToLower())) {
+                        $versionString = [string]$configVersionByName[$serverShortName.ToLower()]
+                    }
+                    $exchangeVersion = $null
+                    $isEOL = $false
+                    if ($versionString) {
+                        $exchangeVersion = Convert-ExchangeBuildToVersion -BuildNumber $versionString
+                        $versionClass = Get-ExchangeVersionClass -BuildNumber $versionString
+                        $isEOL = ($versionClass -eq "Finding")
+                    }
                     $serverObj = [PSCustomObject]@{
                         ComputerName = if ($rawServer.cn) { $rawServer.cn } else { "Unknown" }
+                        SerialNumber = $versionString
                         DNSHostName = if ($rawServer.dNSHostName) { $rawServer.dNSHostName } else { "Unknown" }
                         OperatingSystem = if ($rawServer.operatingSystem) { $rawServer.operatingSystem } else { "Unknown" }
                         Roles = $roles
                         RolesValue = $rolesValue
                         ExchangeVersion = $exchangeVersion
                         VersionString = $versionString
-                        VersionValue = $versionValue
                         IsEOL = $isEOL
                         SPNs = @($rawServer.servicePrincipalName | Where-Object { $_ -match 'exchange|SMTP|HTTP' })
                         RawObject = $rawServer
@@ -73799,10 +73883,11 @@ function Get-ExchangeInfrastructure {
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
                                         }
+                                        $epaStatus = "Untested"
                                         if ($null -ne $epData.EPAEnabled) {
                                             $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                            $epString += " [EPA: $epaStatus]"
                                         }
+                                        $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
                                 }
@@ -73957,7 +74042,7 @@ function Get-ExchangeInfrastructure {
                                         if ($anonymousSIDs -contains $ace.TrusteeSID) {
                                             $anonymousGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
                                         }
-                                        elseif ($Script:BroadGroupSIDs -contains $ace.TrusteeSID) {
+                                        elseif (Test-IsBroadTrustee -SID ([string]$ace.TrusteeSID)) {
                                             $broadGrants += [PSCustomObject]@{ Right = $rightName; Display = $grant }
                                         }
                                     }
@@ -73988,6 +74073,15 @@ function Get-ExchangeInfrastructure {
                     elseif ($broadRights -contains 'ms-exch-smtp-accept-any-recipient') {
                         $verdict = 'Broad relay - every authenticated domain principal can relay to any recipient domain'
                         $consoleClass = 'Hint'
+                    }
+                    elseif (($broadRights -contains 'ms-exch-smtp-accept-authoritative-domain-sender') -or
+                            ($broadRights -contains 'ms-exch-smtp-accept-any-sender')) {
+                        $verdict = 'Broad sender spoofing - every authenticated domain principal can claim an internal sender address'
+                        $consoleClass = 'Finding'
+                    }
+                    elseif ($anonymousRights -contains 'ms-exch-bypass-anti-spam') {
+                        $verdict = 'Anonymous anti-spam bypass - unauthenticated mail skips the spam and malware filters on this connector'
+                        $consoleClass = 'Finding'
                     }
                     elseif (@($anonymousGrants).Count -gt 0) {
                         $verdict = 'Anonymous submission only - expected on an internet-facing connector'
@@ -74020,7 +74114,7 @@ function Get-ExchangeInfrastructure {
                     }
                     $allGrants = @($anonymousGrants + $broadGrants | ForEach-Object { $_.Display })
                     if (@($allGrants).Count -gt 0) {
-                        $connectorObj | Add-Member -NotePropertyName 'AnonymousPermissions' -NotePropertyValue $allGrants -Force
+                        $connectorObj | Add-Member -NotePropertyName 'GrantedSMTPRights' -NotePropertyValue $allGrants -Force
                     }
                     $connectorObj | Add-Member -NotePropertyName 'distinguishedName' -NotePropertyValue $connectorDN -Force
                     $connectorObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeReceiveConnector' -Force
@@ -74342,8 +74436,19 @@ function Get-ExchangeRBACAssignments {
                 }
                 $isDefaultAssignment = ($assigneeType -eq 'Exchange role group') -and
                                        (@($roleInfo.Defaults) -contains $assigneeRDN)
+                $assigneePrivileged = $null
+                if ($assigneeObject -and $assigneeObject.objectSid) {
+                    try {
+                        $assigneePrivileged = Test-IsPrivileged -Identity ([string]$assigneeObject.objectSid) -IncludeOperators
+                    } catch {
+                        Write-Log "[Get-ExchangeRBACAssignments] Privilege check failed for '$assigneeName': $_"
+                    }
+                }
                 if ($isDefaultAssignment) {
                     $verdict = "Default assignment - $roleName is assigned to $assigneeRDN as shipped by Exchange"
+                    $consoleClass = 'Hint'
+                } elseif ($assigneePrivileged -and $assigneePrivileged.IsPrivileged -eq $true) {
+                    $verdict = "$($roleInfo.Verdict) The assignee is already privileged ($($assigneePrivileged.Reason)), so the role grants it nothing it could not reach anyway - the assignment is worth removing as hygiene, not as an escalation path."
                     $consoleClass = 'Hint'
                 } else {
                     $verdict = $roleInfo.Verdict
@@ -74355,6 +74460,10 @@ function Get-ExchangeRBACAssignments {
                     Assignee     = $assigneeName
                     AssigneeType = $assigneeType
                     RiskVerdict  = $verdict
+                }
+                if ($assigneePrivileged -and $assigneePrivileged.IsPrivileged -eq $true) {
+                    $resultObj | Add-Member -NotePropertyName 'assigneePrivilege' -NotePropertyValue (
+                        "Already privileged: $($assigneePrivileged.Reason)") -Force
                 }
                 $recipientScope = [string]$assignment.msExchRecipientWriteScopeLink
                 $configScope = [string]$assignment.msExchConfigWriteScopeLink
@@ -74498,6 +74607,7 @@ function Get-SCCMInfrastructure {
             }
             Show-SubHeader "Enumerating SCCM Management Points and site hierarchy..." -ObjectType "SCCMManagementPoint"
             $casDetected = $false
+            $sccmManagementPointNames = @()
             try {
                 $mgmtPoints = @()
                 if ($systemMgmt) {
@@ -74508,6 +74618,7 @@ function Get-SCCMInfrastructure {
                     foreach ($mp in $mgmtPoints) {
                         $mpName = $mp.mSSMSMPName
                         $mpSiteCode = $mp.mSSMSSiteCode
+                        if ($mpName) { $sccmManagementPointNames += [string]$mpName }
                         $cmdLineSiteCode = $null
                         $rootSiteCode = $null
                         $forest = $null
@@ -74559,7 +74670,7 @@ function Get-SCCMInfrastructure {
                         Show-Object $mpObj
                     }
                     if ($casDetected) {
-                        Show-Line "Central Administration Site (CAS) detected - multi-site SCCM hierarchy" -Class Finding -FindingId "SCCM_SITE_HIERARCHY"
+                        Show-Line "Central Administration Site (CAS) detected - multi-site SCCM hierarchy" -Class Hint -FindingId "SCCM_SITE_HIERARCHY"
                     }
                 } elseif (-not $systemMgmt) {
                     Show-Line "The System Management container does not exist - no management point could be read" -Class Note
@@ -74596,6 +74707,21 @@ function Get-SCCMInfrastructure {
                 $sccmServerSIDs = @{}
                 foreach ($knownServer in @($sccmServers)) {
                     if ($knownServer.objectSid) { $sccmServerSIDs["$($knownServer.objectSid)"] = $true }
+                }
+                foreach ($knownMP in @($sccmManagementPointNames)) {
+                    if ([string]::IsNullOrWhiteSpace($knownMP)) { continue }
+                    $mpHost = ([string]$knownMP).Split('.')[0]
+                    if ([string]::IsNullOrWhiteSpace($mpHost)) { continue }
+                    try {
+                        $mpComputer = @(Get-DomainComputer -Identity $mpHost -Properties 'objectSid', 'dNSHostName' @PSBoundParameters)[0]
+                        if ($mpComputer -and $mpComputer.objectSid) {
+                            $sccmServerSIDs["$($mpComputer.objectSid)"] = $true
+                        } else {
+                            Write-Log "[Get-SCCMInfrastructure] Management point '$knownMP' could not be resolved to a computer account - its ACE stays reported"
+                        }
+                    } catch {
+                        Write-Log "[Get-SCCMInfrastructure] Error resolving management point '$knownMP': $_"
+                    }
                 }
                 $containerRaw = $null
                 if ($systemMgmt) {
@@ -87212,7 +87338,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-1147"
+$Script:adPEASVersion = "2.7.0+20261012-1209"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

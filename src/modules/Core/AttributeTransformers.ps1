@@ -208,22 +208,22 @@ function Get-ExchangeGroupMemberClass {
         }
     }
 
-    # Use Test-IsPrivileged with -IncludeOperators for recursive group membership check
+    # Category 'Privileged', not -IncludeOperators. An Account Operator in Exchange
+    # Windows Permissions is the finding, not an expected member: in the shared permissions
+    # model that group holds WriteDACL on the domain object, so the membership turns a
+    # non-Tier-0 operator group into a path to DCSync. The SCCM container check in this
+    # same project argues exactly that for its own expected set, and keeps 'Attention'
+    # rather than filtering it.
     $privilegeCheck = Test-IsPrivileged -Identity $sid -IncludeOperators
-    if ($privilegeCheck.IsPrivileged -eq $true) {
+    if ($privilegeCheck.Category -eq 'Privileged') {
         return "Hint"
     }
 
-    # Fallback: Check if this is a computer account by DN pattern
-    if ($dn -and ($dn -match 'CN=Computers,' -or $dn -match 'OU=.*Server')) {
-        return "Hint"
-    }
-
-    # Fallback: Check if the account name ends with $ (computer account convention)
-    $name = $MemberInfo.DisplayName
-    if ($name -and $name -match '\$$') {
-        return "Hint"
-    }
+    # The two name-based fallbacks that used to follow are gone. "OU=.*Server" anywhere in
+    # a DN cleared every member of an OU whose name happens to contain Server - including
+    # a user account in OU=Serverteam - and a trailing "$" is a naming convention, not an
+    # identity: a user account may carry one. The computer-account question is answered
+    # above, by objectClass, from the SID.
 
     # Low-privileged account in Exchange group - CRITICAL!
     return "Finding"

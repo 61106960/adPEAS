@@ -7122,28 +7122,27 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
     # ============================================================================
 
     'EXCHANGE_VULNERABLE_VERSION' = @{
-        Title = "Vulnerable Exchange Server Version"
+        Title = "Exchange Server Version Out of Support"
         Risk = "Finding"
         BaseScore = 45
-        Description = "This Exchange server is running a version with known critical vulnerabilities (ProxyLogon, ProxyShell, etc.). These vulnerabilities allow unauthenticated remote code execution."
+        Description = "This Exchange server runs a product version whose support has ended, or ends within the year. What that means is that no security update exists for the next vulnerability of the ProxyLogon or ProxyShell class - and Exchange is the single most reliably attacked server role in an Active Directory, with a service account that reaches the directory. Which updates are installed is not visible from here: Active Directory records the product version, not the cumulative or security update level, so this finding is about the support status and not about a specific CVE. Confirming the patch level needs the Exchange Health Checker on the server itself, which is the first command below."
         Impact = @(
-            "Remote code execution without authentication"
-            "Complete server compromise from the internet"
-            "Access to all email and potentially AD compromise"
-            "Often targeted by APT groups and ransomware operators"
-            "Exchange often has Domain Admin-equivalent permissions"
+            "No security updates: the next critical vulnerability in this version stays open"
+            "Exchange historically carries pre-authentication remote code execution bugs - ProxyLogon, ProxyShell and ProxyNotShell were all of that class"
+            "The server reaches Active Directory through its own service account, so compromising it is rarely the last step"
+            "Unsupported versions are the ones ransomware operators scan for, because the install base stays exploitable"
         )
         Attack = @(
-            "1. Attacker scans for vulnerable Exchange servers"
-            "2. Exploits ProxyLogon/ProxyShell/ProxyNotShell"
-            "3. Gains SYSTEM shell on Exchange server"
-            "4. Dumps credentials or leverages Exchange permissions for AD compromise"
+            "1. Attacker fingerprints the Exchange version from the outside - the build number is in the OWA response"
+            "2. Picks the published exploit chain for that version, or waits for the next one"
+            "3. Gains code execution as SYSTEM on the Exchange server"
+            "4. Uses the server's own directory permissions, or the credentials on it, to move into Active Directory"
         )
         Remediation = @(
-            "Apply all security updates immediately"
-            "Run Exchange Health Checker to identify missing patches"
-            "Enable Extended Protection for Authentication"
-            "Restrict external access where possible"
+            "Move to a supported version - Exchange Subscription Edition is the only line still receiving updates, and the upgrade path from 2016 and 2019 is in place"
+            "Until then, run the Exchange Health Checker on the server to see which cumulative and security updates are missing: that is the question this finding cannot answer from the directory"
+            "Enable Extended Protection for Authentication, which is what closes the relay half of these chains"
+            "Keep the server off the internet where the role does not require it, and in front of a reverse proxy where it does"
             "Consider migration to Exchange Online"
         )
         RemediationCommands = @(
@@ -7170,7 +7169,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             @{ Title = "ProxyLogon Information"; Url = "https://proxylogon.com/" }
             @{ Title = "Microsoft Exchange ProxyNotShell Vulnerability"; Url = "https://www.csoonline.com/article/574205/microsoft-exchange-proxynotshell-vulnerability-explained-and-how-to-mitigate-it.html" }
         )
-        Tools = @("Nmap", "Metasploit", "ProxyShell PoC")
+        Tools = @("Exchange Health Checker", "Nmap")
         MITRE = "T1190"
         Triggers = @(
             @{ Attribute = 'ExchangeVersion'; Custom = 'is_exchange_eol'; Severity = 'Finding' }
@@ -7261,9 +7260,9 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         BaseScore = 0
         Description = "The forest was prepared with /ActiveDirectorySplitPermissions, which is the hardened of the two Exchange permissions models. Exchange administrators and Exchange servers cannot create Active Directory security principals at all, and setup removed every Exchange Windows Permissions entry from the domain object - so membership of that group is no longer a route to the domain DACL. The Microsoft Exchange Protected Groups OU, which only this setup mode creates, is what records the choice."
         Impact = @(
-            "Exchange Windows Permissions holds no access control entries on the domain object"
-            "Exchange Trusted Subsystem is not a member of Exchange Windows Permissions"
+            "Exchange Windows Permissions holds no access control entries on the domain object - that is what was read"
             "Creating users and groups, and changing distribution group membership, requires Active Directory tools and Active Directory permissions"
+            "Not read here: whether Exchange Trusted Subsystem is a member of Exchange Windows Permissions. Setup does not nest them in this model, but the group membership itself is not part of this verdict - the privileged-groups section is where that is listed"
         )
         Remediation = @(
             "No action required - this is the hardened model"
@@ -7405,6 +7404,85 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
 
+    'EXCHANGE_SMTP_ANONYMOUS_BYPASS_ANTISPAM' = @{
+        Title = "SMTP Receive Connector Lets Unauthenticated Mail Bypass Anti-Spam"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "This receive connector grants ms-Exch-Bypass-Anti-Spam to an anonymous principal. Mail arriving unauthenticated on this connector therefore skips the spam and malware filtering that exists for exactly that path, and Exchange treats it as internally classified material from then on. The grant is normally made for an internal relay host or a scanning appliance that filters first; on a connector that anonymous senders can reach it is an open door for everything the filters exist to stop."
+        Impact = @(
+            "Unauthenticated mail reaches mailboxes without spam or malware filtering"
+            "Exchange marks it as having passed inspection, so downstream rules that trust that marking also let it through"
+            "Phishing and malware delivery become a question of reaching the connector, which is the easy part"
+            "The same grant usually carries headers-routing, which lets the sender dictate how the message appears to have travelled"
+        )
+        Attack = @(
+            "1. Attacker finds the connector that accepts anonymous sessions - port 25 on a published host"
+            "2. Submits a message with a malicious attachment or a credential phishing link"
+            "3. The bypass grant means no filtering is applied to it"
+            "4. The message is delivered and looks like mail that passed inspection"
+        )
+        Remediation = @(
+            "Remove ms-Exch-Bypass-Anti-Spam from the anonymous principal: Remove-ADPermission -Identity 'CONNECTOR' -User 'NT AUTHORITY\ANONYMOUS LOGON' -ExtendedRights ms-Exch-Bypass-Anti-Spam"
+            "Where an upstream appliance really does the filtering, give that host its own connector restricted by RemoteIPRanges, and grant the bypass only there"
+            "Confirm which hosts actually deliver to this connector before changing it - a shared internet-facing connector may carry both kinds of traffic"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the anonymous grants on the connector"
+                Command = "Get-ADPermission -Identity 'CONNECTOR' -User 'NT AUTHORITY\ANONYMOUS LOGON' | Format-Table ExtendedRights -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Receive connector permissions - Microsoft"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connector-permissions" }
+            @{ Title = "Anti-spam protection - Microsoft"; Url = "https://learn.microsoft.com/en-us/exchange/antispam-and-antimalware/antispam-protection/antispam-protection" }
+        )
+        Tools = @("swaks", "Exchange Management Shell")
+        MITRE = "T1566"
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Anonymous anti-spam bypass'; Severity = 'Finding' }
+        )
+    }
+
+    'EXCHANGE_SMTP_BROAD_SPOOFING' = @{
+        Title = "SMTP Receive Connector Lets Every Domain Principal Spoof an Internal Sender"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "This receive connector grants ms-Exch-SMTP-Accept-Authoritative-Domain-Sender, or ms-Exch-SMTP-Accept-Any-Sender, to a broad principal - Authenticated Users, Domain Users, Everyone or one of their siblings. Any account in the domain can therefore submit mail whose From address is an internal one: the chief executive, the help desk, the payroll mailbox. The message arrives with every internal marker a recipient uses to trust it, and SPF, DKIM and DMARC say nothing about a message that never left the organisation."
+        Impact = @(
+            "Any domain account can send mail as any internal address through this connector"
+            "The message is internal, so it passes the checks that exist for external mail and lands without a banner"
+            "That is the opening move of most internal phishing: a password reset, an invoice change, an instruction from a manager"
+            "It also defeats approval workflows that trust the sender address of an internal message"
+        )
+        Attack = @(
+            "1. Attacker authenticates to the connector with any domain account"
+            "2. Submits a message with MAIL FROM and the From header set to an internal address"
+            "3. Exchange accepts it as authoritative because the connector grants the sender right"
+            "4. The recipient sees an ordinary internal mail from a colleague"
+        )
+        Remediation = @(
+            "Remove ms-Exch-SMTP-Accept-Authoritative-Domain-Sender and ms-Exch-SMTP-Accept-Any-Sender from the broad principal: Remove-ADPermission -Identity 'CONNECTOR' -User 'DOMAIN\\Domain Users' -ExtendedRights ms-Exch-SMTP-Accept-Authoritative-Domain-Sender"
+            "Where an application needs to send as an internal address, give that application its own account and grant the right to it alone, on a connector that only it can reach"
+            "Restrict the connector's RemoteIPRanges to the hosts that are meant to use it"
+            "Check the other connectors too: the grant is often copied from one to the next"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who holds sender rights on the connector"
+                Command = "Get-ADPermission -Identity 'CONNECTOR' | Where-Object { `$_.ExtendedRights -like '*Sender*' } | Format-Table User, ExtendedRights -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Receive connector permissions - Microsoft"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connector-permissions" }
+            @{ Title = "Anti-spoofing protection - Microsoft"; Url = "https://learn.microsoft.com/en-us/defender-office-365/anti-phishing-protection-spoofing-about" }
+        )
+        Tools = @("swaks", "telnet", "Exchange Management Shell")
+        MITRE = "T1534"
+        Triggers = @(
+            @{ Attribute = 'RelayStatus'; Pattern = '^Broad sender spoofing'; Severity = 'Finding' }
+        )
+    }
+
     'EXCHANGE_SMTP_CONNECTOR_AUTHENTICATED' = @{
         Title = "SMTP Receive Connector Requires Authentication"
         Risk = "Secure"
@@ -7542,6 +7620,14 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1114.002"
         Triggers = @(
             @{ Attribute = 'RiskVerdict'; Pattern = '^Mailbox export'; Severity = 'Finding' }
+
+            # The damping for every RBAC verdict, not only this one: the trigger index is
+            # keyed by attribute, so a severity-only trigger on RiskVerdict is consulted
+            # for whatever value that attribute carries. An assignee that is already
+            # privileged gains nothing from the role - the card and its remediation stay,
+            # the colour says the assignment is hygiene rather than a path. Same mechanism
+            # as ra_signature_gated on the certificate templates.
+            @{ Attribute = 'RiskVerdict'; Custom = 'rbac_assignee_already_privileged'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -10889,6 +10975,9 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "M1041"
         Triggers = @(
             @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '\[EPA:\s*Enabled\]'; Severity = 'Secure' }
+            # The same statement about an Exchange endpoint, which could not reach this
+            # definition at all: its attribute is WebEndpoints.
+            @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Enabled\]'; Severity = 'Secure' }
         )
     }
 
@@ -12000,7 +12089,11 @@ foreach ($oid in $linkedOIDs) {
         )
         MITRE = "T1187"
         Triggers = @(
-            @{ Attribute = 'WebEndpoints'; Pattern = 'NTLM'; Severity = 'Finding' }
+            # EPA enabled is the mitigation this card describes, so an endpoint that has it
+            # must not carry the card: the row went green through the severity-only trigger
+            # and kept the "NTLM endpoints are vulnerable to relay" write-up, while the
+            # Secure definition that fits it was reachable from the AD CS attribute only.
+            @{ Attribute = 'WebEndpoints'; Pattern = 'NTLM'; ExcludePattern = '\[EPA:\s*Enabled\]'; Severity = 'Finding' }
         )
     }
 
@@ -14438,6 +14531,18 @@ function Test-CustomTrigger {
             $encList = @(Get-EncryptionTypeList -SourceObject $SourceObject | Where-Object { $_ })
             if ($encList.Count -eq 0) { return $false }
             return (@($encList | Where-Object { $_ -like 'RC4*' -or $_ -like 'DES*' }).Count -eq 0)
+        }
+
+        'rbac_assignee_already_privileged' {
+            # Exchange role assignment only: true when the principal the role was assigned
+            # to is privileged in its own right, which Get-ExchangeRBACAssignments records
+            # on the row. Defaults to false without the annotation, which is the undamped
+            # reading - a row that cannot say what the assignee holds must not be treated
+            # as if it held everything already.
+            if (-not $SourceObject) { return $false }
+            $privilege = $SourceObject.PSObject.Properties['assigneePrivilege']
+            if ($privilege -and $privilege.Value) { return $true }
+            return $false
         }
 
         'esc13_group_not_privileged' {
