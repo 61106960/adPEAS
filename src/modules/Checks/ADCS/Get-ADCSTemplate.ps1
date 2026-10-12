@@ -342,11 +342,58 @@ function Get-ADCSTemplate {
                 @()
             }
 
+            # Deny first, because a Deny wins the Windows access check wherever it applies
+            # and can stand anywhere in the ACE order. Only Allow ACEs were read, so the
+            # common hardening - Allow Enroll for a wide group, Deny Enroll for the same
+            # group on the template - was invisible: the template kept reporting ESC1, ESC2,
+            # ESC3, ESC9, ESC13 and ESC15 for principals that cannot enrol at all, and those
+            # are precisely the templates a customer considers dealt with.
+            #
+            # Only an explicit Deny for the same trustee is acted on. A Deny that reaches
+            # the principal through a group it belongs to is not resolved here - that needs
+            # the membership of every trustee - so such a Deny is reported as its own row
+            # and left for the reader to apply.
+            $enrollmentDenied = @()
+            $enrollmentDeniedSIDs = @{}
+            $enrollmentDeniedNames = @{}
+            foreach ($ace in @($sdACEs)) {
+                if ($ace.Type -ne 'Deny') { continue }
+                if ($ace.Rights -notmatch 'ExtendedRight|GenericAll') { continue }
+
+                $deniedRight = ''
+                if ($ace.Rights -match 'GenericAll' -or $ace.RightsDisplay -match 'All-Extended-Rights') {
+                    $deniedRight = 'every right, enrollment included'
+                } elseif ($ace.RightsDisplay -match 'Certificate-Enrollment') {
+                    $deniedRight = 'Certificate-Enrollment'
+                } elseif ($ace.RightsDisplay -match 'Certificate-AutoEnrollment') {
+                    # Autoenrollment alone. It does not stop a manual request, so the
+                    # trustee stays in the enrollment list and only the row is printed.
+                    $deniedRight = 'Certificate-AutoEnrollment only, manual enrollment still allowed'
+                } else {
+                    continue
+                }
+
+                $deniedName = if ($ace.Name) { [string]$ace.Name } else { [string]$ace.SID }
+                if (-not $deniedName) { continue }
+                $deniedEntry = "${deniedName}: Deny on $deniedRight"
+                if ($enrollmentDenied -notcontains $deniedEntry) { $enrollmentDenied += $deniedEntry }
+
+                if ($deniedRight -notlike 'Certificate-AutoEnrollment only*') {
+                    if ($ace.SID) { $enrollmentDeniedSIDs[[string]$ace.SID] = $true }
+                    if ($ace.Name) { $enrollmentDeniedNames[[string]$ace.Name] = $true }
+                }
+            }
+
             if (@($sdACEs).Count -gt 0) {
                 # Use structured ACEs (includes SIDs directly from SD)
                 foreach ($ace in $sdACEs) {
                     # Only Allow ACEs
                     if ($ace.Type -ne 'Allow') { continue }
+
+                    # A trustee denied enrollment explicitly cannot enrol, whatever this
+                    # ACE grants.
+                    if ($ace.SID -and $enrollmentDeniedSIDs.ContainsKey([string]$ace.SID)) { continue }
+                    if ($ace.Name -and $enrollmentDeniedNames.ContainsKey([string]$ace.Name)) { continue }
 
                     # Check for enrollment rights
                     $hasEnroll = $false
@@ -376,6 +423,13 @@ function Get-ADCSTemplate {
             }
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipals' -NotePropertyValue $enrollmentPrincipals
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipalSIDs' -NotePropertyValue $enrollmentPrincipalSIDs
+
+            # Shown, not only applied: a Deny that reaches a principal through a group is
+            # not resolved here, so the reader needs to see which Deny ACEs exist to judge
+            # the enrollment list for themselves.
+            if (@($enrollmentDenied).Count -gt 0) {
+                $template | Add-Member -NotePropertyName 'enrollmentDeniedPrincipals' -NotePropertyValue @($enrollmentDenied) -Force
+            }
 
             # Whether the security descriptor was there to read, which is a different
             # statement from "no principal holds Certificate-Enrollment". A template that

@@ -1526,25 +1526,57 @@ function Get-ADCSVulnerabilities {
                 # Only flag if non-privileged users can enroll
                 if (-not $allEnrollmentPrivileged -and $oidToGroupLink.Count -gt 0 -and @($template.CertificatePolicies).Count -gt 0) {
                     $linkedPolicies = @()
+                    $anyPrivilegedGroupLink = $false
 
                     foreach ($policyOID in @($template.CertificatePolicies)) {
                         if ($oidToGroupLink.ContainsKey($policyOID)) {
                             $linkInfo = $oidToGroupLink[$policyOID]
 
-                            # Resolve group name from DN
+                            # Resolve the group, and ask what it is worth. Every link used
+                            # to read the same: a policy pointing at Domain Admins and one
+                            # pointing at a distribution group produced the same finding at
+                            # the same score, so the one link that ends the engagement sat
+                            # among the ones that do not matter. The group was resolved for
+                            # the display and then never asked about.
+                            #
+                            # Escape-LDAPFilterDN rather than Escape-LDAPFilterValue: a DN
+                            # from the directory is already RFC 4514 escaped, and escaping
+                            # its backslashes a second time produces a filter that matches
+                            # nothing - the group then silently stayed a bare DN.
                             $groupName = $linkInfo.GroupLinkDN
+                            $groupPrivileged = $null
+                            $groupReason = ''
                             try {
-                                $escapedDN = Escape-LDAPFilterValue -Value $linkInfo.GroupLinkDN
+                                $escapedDN = Escape-LDAPFilterDN -DistinguishedName $linkInfo.GroupLinkDN
                                 $groupObj = @(Get-DomainObject -LDAPFilter "(distinguishedName=$escapedDN)" @CredParams)[0]
                                 if ($groupObj) {
                                     $groupName = if ($groupObj.sAMAccountName) { $groupObj.sAMAccountName } else { $groupObj.name }
+
+                                    # By SID, as every identity question in adPEAS is: a
+                                    # group name depends on the installation language.
+                                    $groupSID = [string]$groupObj.objectSid
+                                    if ($groupSID) {
+                                        $groupVerdict = Test-IsPrivileged -Identity $groupSID
+                                        if ($groupVerdict) {
+                                            $groupPrivileged = ($groupVerdict.IsPrivileged -eq $true)
+                                            $groupReason = [string]$groupVerdict.Reason
+                                        }
+                                    }
                                 }
                             }
                             catch {
                                 Write-Log "[Get-ADCSVulnerabilities] ESC13: Error resolving group '$($linkInfo.GroupLinkDN)': $_" -Level Debug
                             }
 
-                            $linkedPolicies += "$($linkInfo.PolicyName) (OID: $policyOID) -> $groupName"
+                            $verdictText = 'privilege not assessed - the group could not be resolved'
+                            if ($groupPrivileged -eq $true) {
+                                $verdictText = if ($groupReason) { "privileged: $groupReason" } else { 'privileged' }
+                                $anyPrivilegedGroupLink = $true
+                            } elseif ($groupPrivileged -eq $false) {
+                                $verdictText = 'not a privileged group'
+                            }
+
+                            $linkedPolicies += "$($linkInfo.PolicyName) (OID: $policyOID) -> $groupName [$verdictText]"
                             Write-Log "[Get-ADCSVulnerabilities] ESC13: Template '$($template.Name)' - Policy '$($linkInfo.PolicyName)' linked to group '$groupName'"
                         }
                     }
@@ -1561,6 +1593,12 @@ function Get-ADCSVulnerabilities {
 
                         # Add linked policies info to template for display
                         $template | Add-Member -NotePropertyName 'IssuancePolicyGroupLinks' -NotePropertyValue $linkedPolicies -Force
+
+                        # And the verdict in machine-readable form, for the trigger that
+                        # damps the colour when enrollment buys membership in a group that
+                        # is worth nothing. The finding and its remediation stay either way:
+                        # the link is still a membership nobody applied for.
+                        $template | Add-Member -NotePropertyName 'issuancePolicyGroupPrivileged' -NotePropertyValue $anyPrivilegedGroupLink -Force
                     }
                 }
 

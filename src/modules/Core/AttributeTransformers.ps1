@@ -889,10 +889,27 @@ function Convert-EnrollPrincipalsToRenderValues {
     param([string]$Name, $Value, $Context)
 
     $principals = @($Value)
+
+    # The SIDs the check collected beside the names, in the same order - the convention
+    # Get-EnrollmentPrivilegeState in Get-ADCSVulnerabilities already relies on. This
+    # transformer asked Test-IsPrivileged with "DOMAIN\Name", against the project rule that
+    # every identity question is answered by SID: a name depends on the installation
+    # language of the domain, and the same name can belong to two principals across a
+    # trust.
+    $principalSIDs = @()
+    if ($Context -and $Context.SourceObject) {
+        $principalSIDs = @($Context.SourceObject.EnrollmentPrincipalSIDs)
+    }
+
     $renderValues = @()
-    foreach ($p in $principals) {
+    for ($pIndex = 0; $pIndex -lt @($principals).Count; $pIndex++) {
+        $p = $principals[$pIndex]
         $pStr = [string]$p
-        $privCheck = Test-IsPrivileged -Identity $pStr
+        $pIdentity = $pStr
+        if ($pIndex -lt @($principalSIDs).Count -and $principalSIDs[$pIndex]) {
+            $pIdentity = [string]$principalSIDs[$pIndex]
+        }
+        $privCheck = Test-IsPrivileged -Identity $pIdentity
         $severity = switch ($privCheck.Category) {
             'Privileged'  { 'Standard' }   # Admins expected to enroll
             'BroadGroup'  { 'Finding' }    # Everyone, Auth Users, Domain Users

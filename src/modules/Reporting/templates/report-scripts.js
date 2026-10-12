@@ -2083,9 +2083,15 @@
                 for (const vulnTag of meta.vulnerabilities) {
                     const vulnLower = String(vulnTag).toLowerCase();
                     if (!vulnLower) continue;
+                    // ESC3-TARGET is tagged with a hyphen while its key is
+                    // ESC3_TARGET_TEMPLATE, so neither comparison below matched and the
+                    // card fell back to the severity base score - half of what the
+                    // definition says the finding is worth.
+                    const vulnKey = vulnLower.replace(/-/g, '_');
                     for (const key of Object.keys(findingBaseScores)) {
                         const keyLower = key.toLowerCase();
-                        if (keyLower === vulnLower || keyLower.startsWith(vulnLower + '_')) {
+                        if (keyLower === vulnLower || keyLower.startsWith(vulnLower + '_') ||
+                            keyLower === vulnKey || keyLower.startsWith(vulnKey + '_')) {
                             consider(key);
                         }
                     }
@@ -2581,8 +2587,12 @@
             if (!bestKey && meta.vulnerabilities && meta.vulnerabilities.length > 0) {
                 for (const vulnTag of meta.vulnerabilities) {
                     const vulnLower = vulnTag.toLowerCase();
+                    // "ESC3-TARGET" against the key ESC3_TARGET_TEMPLATE - see the same
+                    // normalisation in resolveCardBaseScore.
+                    const vulnKey = vulnLower.replace(/-/g, '_');
                     for (const [key, score] of Object.entries(findingBaseScores)) {
-                        if (key.toLowerCase().startsWith(vulnLower + '_') || key.toLowerCase() === vulnLower) {
+                        if (key.toLowerCase().startsWith(vulnLower + '_') || key.toLowerCase() === vulnLower ||
+                            key.toLowerCase().startsWith(vulnKey + '_') || key.toLowerCase() === vulnKey) {
                             if (score > bestScore && findingDefinitions[key]) {
                                 bestScore = score;
                                 bestKey = key;

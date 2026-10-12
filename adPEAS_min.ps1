@@ -12693,6 +12693,7 @@ certutil -getreg policy\DisableExtensionList
         Tools = @("Certipy", "Certify", "PSPKI")
         MITRE = "T1649"
         Triggers = @(
+            @{ Attribute = 'enrollmentDeniedPrincipals'; Severity = 'Note'; SeverityOnly = $true }
             @{ Attribute = 'escSchemaVersionUnread'; Severity = 'Hint'; SeverityOnly = $true }
             @{ Attribute = 'escPublicationUnread'; Severity = 'Hint'; SeverityOnly = $true }
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC15'; Severity = 'Finding' }
@@ -13067,7 +13068,9 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "T1649"
         Triggers = @(
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC13'; Severity = 'Finding' }
-            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '.'; Severity = 'Finding' }
+            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '\[privileged'; Severity = 'Finding' }
+            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '.'; Severity = 'Hint' }
+            @{ Attribute = 'Vulnerabilities'; Custom = 'esc13_group_not_privileged'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
     'ADCS_CA_WEAK_SIGNATURE' = @{
@@ -16785,6 +16788,14 @@ function Test-CustomTrigger {
             if ($encList.Count -eq 0) { return $false }
             return (@($encList | Where-Object { $_ -like 'RC4*' -or $_ -like 'DES*' }).Count -eq 0)
         }
+        'esc13_group_not_privileged' {
+            if (-not $SourceObject) { return $false }
+            $linkFlag = $SourceObject.PSObject.Properties['issuancePolicyGroupPrivileged']
+            if (-not $linkFlag) { return $false }
+            if ([string]::IsNullOrWhiteSpace([string]$SourceObject.Vulnerabilities)) { return $false }
+            if ([string]$SourceObject.Vulnerabilities -notmatch 'ESC13') { return $false }
+            return (-not $linkFlag.Value)
+        }
         'esc_enrollment_rights_unread' {
             if (-not $SourceObject) { return $false }
             $caveat = $SourceObject.PSObject.Properties['escEnrollmentRightsUnread']
@@ -17705,10 +17716,19 @@ function Convert-EnrollPrincipalsToRenderValues {
     [CmdletBinding()]
     param([string]$Name, $Value, $Context)
     $principals = @($Value)
+    $principalSIDs = @()
+    if ($Context -and $Context.SourceObject) {
+        $principalSIDs = @($Context.SourceObject.EnrollmentPrincipalSIDs)
+    }
     $renderValues = @()
-    foreach ($p in $principals) {
+    for ($pIndex = 0; $pIndex -lt @($principals).Count; $pIndex++) {
+        $p = $principals[$pIndex]
         $pStr = [string]$p
-        $privCheck = Test-IsPrivileged -Identity $pStr
+        $pIdentity = $pStr
+        if ($pIndex -lt @($principalSIDs).Count -and $principalSIDs[$pIndex]) {
+            $pIdentity = [string]$principalSIDs[$pIndex]
+        }
+        $privCheck = Test-IsPrivileged -Identity $pIdentity
         $severity = switch ($privCheck.Category) {
             'Privileged'  { 'Standard' }
             'BroadGroup'  { 'Finding' }
@@ -71912,9 +71932,36 @@ function Get-ADCSTemplate {
             } else {
                 @()
             }
+            $enrollmentDenied = @()
+            $enrollmentDeniedSIDs = @{}
+            $enrollmentDeniedNames = @{}
+            foreach ($ace in @($sdACEs)) {
+                if ($ace.Type -ne 'Deny') { continue }
+                if ($ace.Rights -notmatch 'ExtendedRight|GenericAll') { continue }
+                $deniedRight = ''
+                if ($ace.Rights -match 'GenericAll' -or $ace.RightsDisplay -match 'All-Extended-Rights') {
+                    $deniedRight = 'every right, enrollment included'
+                } elseif ($ace.RightsDisplay -match 'Certificate-Enrollment') {
+                    $deniedRight = 'Certificate-Enrollment'
+                } elseif ($ace.RightsDisplay -match 'Certificate-AutoEnrollment') {
+                    $deniedRight = 'Certificate-AutoEnrollment only, manual enrollment still allowed'
+                } else {
+                    continue
+                }
+                $deniedName = if ($ace.Name) { [string]$ace.Name } else { [string]$ace.SID }
+                if (-not $deniedName) { continue }
+                $deniedEntry = "${deniedName}: Deny on $deniedRight"
+                if ($enrollmentDenied -notcontains $deniedEntry) { $enrollmentDenied += $deniedEntry }
+                if ($deniedRight -notlike 'Certificate-AutoEnrollment only*') {
+                    if ($ace.SID) { $enrollmentDeniedSIDs[[string]$ace.SID] = $true }
+                    if ($ace.Name) { $enrollmentDeniedNames[[string]$ace.Name] = $true }
+                }
+            }
             if (@($sdACEs).Count -gt 0) {
                 foreach ($ace in $sdACEs) {
                     if ($ace.Type -ne 'Allow') { continue }
+                    if ($ace.SID -and $enrollmentDeniedSIDs.ContainsKey([string]$ace.SID)) { continue }
+                    if ($ace.Name -and $enrollmentDeniedNames.ContainsKey([string]$ace.Name)) { continue }
                     $hasEnroll = $false
                     if ($ace.Rights -match 'ExtendedRight' -or $ace.Rights -match 'GenericAll') {
                         if ($ace.Rights -match 'GenericAll' -or
@@ -71932,6 +71979,9 @@ function Get-ADCSTemplate {
             }
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipals' -NotePropertyValue $enrollmentPrincipals
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipalSIDs' -NotePropertyValue $enrollmentPrincipalSIDs
+            if (@($enrollmentDenied).Count -gt 0) {
+                $template | Add-Member -NotePropertyName 'enrollmentDeniedPrincipals' -NotePropertyValue @($enrollmentDenied) -Force
+            }
             $template | Add-Member -NotePropertyName 'EnrollmentRightsRead' -NotePropertyValue (@($sdACEs).Count -gt 0)
             $templateACL = @()
             $writeRights = @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner')
@@ -72940,21 +72990,39 @@ function Get-ADCSVulnerabilities {
                 }
                 if (-not $allEnrollmentPrivileged -and $oidToGroupLink.Count -gt 0 -and @($template.CertificatePolicies).Count -gt 0) {
                     $linkedPolicies = @()
+                    $anyPrivilegedGroupLink = $false
                     foreach ($policyOID in @($template.CertificatePolicies)) {
                         if ($oidToGroupLink.ContainsKey($policyOID)) {
                             $linkInfo = $oidToGroupLink[$policyOID]
                             $groupName = $linkInfo.GroupLinkDN
+                            $groupPrivileged = $null
+                            $groupReason = ''
                             try {
-                                $escapedDN = Escape-LDAPFilterValue -Value $linkInfo.GroupLinkDN
+                                $escapedDN = Escape-LDAPFilterDN -DistinguishedName $linkInfo.GroupLinkDN
                                 $groupObj = @(Get-DomainObject -LDAPFilter "(distinguishedName=$escapedDN)" @CredParams)[0]
                                 if ($groupObj) {
                                     $groupName = if ($groupObj.sAMAccountName) { $groupObj.sAMAccountName } else { $groupObj.name }
+                                    $groupSID = [string]$groupObj.objectSid
+                                    if ($groupSID) {
+                                        $groupVerdict = Test-IsPrivileged -Identity $groupSID
+                                        if ($groupVerdict) {
+                                            $groupPrivileged = ($groupVerdict.IsPrivileged -eq $true)
+                                            $groupReason = [string]$groupVerdict.Reason
+                                        }
+                                    }
                                 }
                             }
                             catch {
                                 Write-Log "[Get-ADCSVulnerabilities] ESC13: Error resolving group '$($linkInfo.GroupLinkDN)': $_" -Level Debug
                             }
-                            $linkedPolicies += "$($linkInfo.PolicyName) (OID: $policyOID) -> $groupName"
+                            $verdictText = 'privilege not assessed - the group could not be resolved'
+                            if ($groupPrivileged -eq $true) {
+                                $verdictText = if ($groupReason) { "privileged: $groupReason" } else { 'privileged' }
+                                $anyPrivilegedGroupLink = $true
+                            } elseif ($groupPrivileged -eq $false) {
+                                $verdictText = 'not a privileged group'
+                            }
+                            $linkedPolicies += "$($linkInfo.PolicyName) (OID: $policyOID) -> $groupName [$verdictText]"
                             Write-Log "[Get-ADCSVulnerabilities] ESC13: Template '$($template.Name)' - Policy '$($linkInfo.PolicyName)' linked to group '$groupName'"
                         }
                     }
@@ -72968,6 +73036,7 @@ function Get-ADCSVulnerabilities {
                             Reference = "https://posts.specterops.io/adcs-esc13-abuse-technique-fda4272fbd53"
                         }
                         $template | Add-Member -NotePropertyName 'IssuancePolicyGroupLinks' -NotePropertyValue $linkedPolicies -Force
+                        $template | Add-Member -NotePropertyName 'issuancePolicyGroupPrivileged' -NotePropertyValue $anyPrivilegedGroupLink -Force
                     }
                 }
                 if ($template.EnrolleeSuppliesSubject -and $template.SchemaVersion -eq 1 -and -not $allEnrollmentPrivileged) {
@@ -82447,9 +82516,15 @@ function Get-HTMLTemplate {
                 for (const vulnTag of meta.vulnerabilities) {
                     const vulnLower = String(vulnTag).toLowerCase();
                     if (!vulnLower) continue;
+                    // ESC3-TARGET is tagged with a hyphen while its key is
+                    // ESC3_TARGET_TEMPLATE, so neither comparison below matched and the
+                    // card fell back to the severity base score - half of what the
+                    // definition says the finding is worth.
+                    const vulnKey = vulnLower.replace(/-/g, '_');
                     for (const key of Object.keys(findingBaseScores)) {
                         const keyLower = key.toLowerCase();
-                        if (keyLower === vulnLower || keyLower.startsWith(vulnLower + '_')) {
+                        if (keyLower === vulnLower || keyLower.startsWith(vulnLower + '_') ||
+                            keyLower === vulnKey || keyLower.startsWith(vulnKey + '_')) {
                             consider(key);
                         }
                     }
@@ -82945,8 +83020,12 @@ function Get-HTMLTemplate {
             if (!bestKey && meta.vulnerabilities && meta.vulnerabilities.length > 0) {
                 for (const vulnTag of meta.vulnerabilities) {
                     const vulnLower = vulnTag.toLowerCase();
+                    // "ESC3-TARGET" against the key ESC3_TARGET_TEMPLATE - see the same
+                    // normalisation in resolveCardBaseScore.
+                    const vulnKey = vulnLower.replace(/-/g, '_');
                     for (const [key, score] of Object.entries(findingBaseScores)) {
-                        if (key.toLowerCase().startsWith(vulnLower + '_') || key.toLowerCase() === vulnLower) {
+                        if (key.toLowerCase().startsWith(vulnLower + '_') || key.toLowerCase() === vulnLower ||
+                            key.toLowerCase().startsWith(vulnKey + '_') || key.toLowerCase() === vulnKey) {
                             if (score > bestScore && findingDefinitions[key]) {
                                 bestScore = score;
                                 bestKey = key;
@@ -87133,7 +87212,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-1132"
+$Script:adPEASVersion = "2.7.0+20261012-1147"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

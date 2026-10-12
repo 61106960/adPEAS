@@ -9537,6 +9537,10 @@ certutil -getreg policy\DisableExtensionList
         Tools = @("Certipy", "Certify", "PSPKI")
         MITRE = "T1649"
         Triggers = @(
+            # A Deny ACE on enrollment is hardening, so the row reads as a note rather than
+            # a finding, and it names no card of its own.
+            @{ Attribute = 'enrollmentDeniedPrincipals'; Severity = 'Note'; SeverityOnly = $true }
+
             # The two template caveats Get-ADCSVulnerabilities writes when a precondition
             # could not be read. Severity-only on purpose: they colour their own row and
             # name no card, because "this was not decided" is not a finding of its own -
@@ -9962,7 +9966,20 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "T1649"
         Triggers = @(
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC13'; Severity = 'Finding' }
-            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '.'; Severity = 'Finding' }
+
+            # The link row itself follows what the group is worth: red where enrollment
+            # grants membership in a privileged group, yellow where it grants membership in
+            # something that is not. Both are reported - a group nobody applied for is
+            # still a membership - but a distribution group and Domain Admins used to be
+            # the same finding at the same score.
+            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '\[privileged'; Severity = 'Finding' }
+            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '.'; Severity = 'Hint' }
+
+            # And the same damping on the ESC13 row of the Vulnerabilities line, so the
+            # card keeps its text and its remediation while the colour says what the link
+            # is worth. This is the mechanism ra_signature_gated and manager_approval_gated
+            # use for the two enrollment barriers.
+            @{ Attribute = 'Vulnerabilities'; Custom = 'esc13_group_not_privileged'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -14421,6 +14438,24 @@ function Test-CustomTrigger {
             $encList = @(Get-EncryptionTypeList -SourceObject $SourceObject | Where-Object { $_ })
             if ($encList.Count -eq 0) { return $false }
             return (@($encList | Where-Object { $_ -like 'RC4*' -or $_ -like 'DES*' }).Count -eq 0)
+        }
+
+        'esc13_group_not_privileged' {
+            # Certificate template only: true when the issuance policy on this template
+            # links to a group that Test-IsPrivileged does not call privileged. Enrollment
+            # then grants a membership nobody applied for, which stays a finding - but not
+            # the one that ends the engagement.
+            #
+            # Defaults to false without a source object or without the annotation, which is
+            # the undamped reading: a template that cannot say what its link is worth must
+            # not be treated as if the link were harmless. It also only answers for a
+            # template that has such a link at all.
+            if (-not $SourceObject) { return $false }
+            $linkFlag = $SourceObject.PSObject.Properties['issuancePolicyGroupPrivileged']
+            if (-not $linkFlag) { return $false }
+            if ([string]::IsNullOrWhiteSpace([string]$SourceObject.Vulnerabilities)) { return $false }
+            if ([string]$SourceObject.Vulnerabilities -notmatch 'ESC13') { return $false }
+            return (-not $linkFlag.Value)
         }
 
         'esc_enrollment_rights_unread' {

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 11:32:00
-    Version: 2.7.0+20261012-1132
+    Build: 2026-10-12 11:47:59
+    Version: 2.7.0+20261012-1147
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -17400,6 +17400,10 @@ certutil -getreg policy\DisableExtensionList
         Tools = @("Certipy", "Certify", "PSPKI")
         MITRE = "T1649"
         Triggers = @(
+            # A Deny ACE on enrollment is hardening, so the row reads as a note rather than
+            # a finding, and it names no card of its own.
+            @{ Attribute = 'enrollmentDeniedPrincipals'; Severity = 'Note'; SeverityOnly = $true }
+
             # The two template caveats Get-ADCSVulnerabilities writes when a precondition
             # could not be read. Severity-only on purpose: they colour their own row and
             # name no card, because "this was not decided" is not a finding of its own -
@@ -17825,7 +17829,20 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "T1649"
         Triggers = @(
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC13'; Severity = 'Finding' }
-            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '.'; Severity = 'Finding' }
+
+            # The link row itself follows what the group is worth: red where enrollment
+            # grants membership in a privileged group, yellow where it grants membership in
+            # something that is not. Both are reported - a group nobody applied for is
+            # still a membership - but a distribution group and Domain Admins used to be
+            # the same finding at the same score.
+            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '\[privileged'; Severity = 'Finding' }
+            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '.'; Severity = 'Hint' }
+
+            # And the same damping on the ESC13 row of the Vulnerabilities line, so the
+            # card keeps its text and its remediation while the colour says what the link
+            # is worth. This is the mechanism ra_signature_gated and manager_approval_gated
+            # use for the two enrollment barriers.
+            @{ Attribute = 'Vulnerabilities'; Custom = 'esc13_group_not_privileged'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -22286,6 +22303,24 @@ function Test-CustomTrigger {
             return (@($encList | Where-Object { $_ -like 'RC4*' -or $_ -like 'DES*' }).Count -eq 0)
         }
 
+        'esc13_group_not_privileged' {
+            # Certificate template only: true when the issuance policy on this template
+            # links to a group that Test-IsPrivileged does not call privileged. Enrollment
+            # then grants a membership nobody applied for, which stays a finding - but not
+            # the one that ends the engagement.
+            #
+            # Defaults to false without a source object or without the annotation, which is
+            # the undamped reading: a template that cannot say what its link is worth must
+            # not be treated as if the link were harmless. It also only answers for a
+            # template that has such a link at all.
+            if (-not $SourceObject) { return $false }
+            $linkFlag = $SourceObject.PSObject.Properties['issuancePolicyGroupPrivileged']
+            if (-not $linkFlag) { return $false }
+            if ([string]::IsNullOrWhiteSpace([string]$SourceObject.Vulnerabilities)) { return $false }
+            if ([string]$SourceObject.Vulnerabilities -notmatch 'ESC13') { return $false }
+            return (-not $linkFlag.Value)
+        }
+
         'esc_enrollment_rights_unread' {
             # Certificate template only: true when Get-ADCSVulnerabilities could not read
             # who may enroll, which is what its 'Unknown' enrollment state writes onto the
@@ -23722,10 +23757,27 @@ function Convert-EnrollPrincipalsToRenderValues {
     param([string]$Name, $Value, $Context)
 
     $principals = @($Value)
+
+    # The SIDs the check collected beside the names, in the same order - the convention
+    # Get-EnrollmentPrivilegeState in Get-ADCSVulnerabilities already relies on. This
+    # transformer asked Test-IsPrivileged with "DOMAIN\Name", against the project rule that
+    # every identity question is answered by SID: a name depends on the installation
+    # language of the domain, and the same name can belong to two principals across a
+    # trust.
+    $principalSIDs = @()
+    if ($Context -and $Context.SourceObject) {
+        $principalSIDs = @($Context.SourceObject.EnrollmentPrincipalSIDs)
+    }
+
     $renderValues = @()
-    foreach ($p in $principals) {
+    for ($pIndex = 0; $pIndex -lt @($principals).Count; $pIndex++) {
+        $p = $principals[$pIndex]
         $pStr = [string]$p
-        $privCheck = Test-IsPrivileged -Identity $pStr
+        $pIdentity = $pStr
+        if ($pIndex -lt @($principalSIDs).Count -and $principalSIDs[$pIndex]) {
+            $pIdentity = [string]$principalSIDs[$pIndex]
+        }
+        $privCheck = Test-IsPrivileged -Identity $pIdentity
         $severity = switch ($privCheck.Category) {
             'Privileged'  { 'Standard' }   # Admins expected to enroll
             'BroadGroup'  { 'Finding' }    # Everyone, Auth Users, Domain Users
@@ -114663,11 +114715,58 @@ function Get-ADCSTemplate {
                 @()
             }
 
+            # Deny first, because a Deny wins the Windows access check wherever it applies
+            # and can stand anywhere in the ACE order. Only Allow ACEs were read, so the
+            # common hardening - Allow Enroll for a wide group, Deny Enroll for the same
+            # group on the template - was invisible: the template kept reporting ESC1, ESC2,
+            # ESC3, ESC9, ESC13 and ESC15 for principals that cannot enrol at all, and those
+            # are precisely the templates a customer considers dealt with.
+            #
+            # Only an explicit Deny for the same trustee is acted on. A Deny that reaches
+            # the principal through a group it belongs to is not resolved here - that needs
+            # the membership of every trustee - so such a Deny is reported as its own row
+            # and left for the reader to apply.
+            $enrollmentDenied = @()
+            $enrollmentDeniedSIDs = @{}
+            $enrollmentDeniedNames = @{}
+            foreach ($ace in @($sdACEs)) {
+                if ($ace.Type -ne 'Deny') { continue }
+                if ($ace.Rights -notmatch 'ExtendedRight|GenericAll') { continue }
+
+                $deniedRight = ''
+                if ($ace.Rights -match 'GenericAll' -or $ace.RightsDisplay -match 'All-Extended-Rights') {
+                    $deniedRight = 'every right, enrollment included'
+                } elseif ($ace.RightsDisplay -match 'Certificate-Enrollment') {
+                    $deniedRight = 'Certificate-Enrollment'
+                } elseif ($ace.RightsDisplay -match 'Certificate-AutoEnrollment') {
+                    # Autoenrollment alone. It does not stop a manual request, so the
+                    # trustee stays in the enrollment list and only the row is printed.
+                    $deniedRight = 'Certificate-AutoEnrollment only, manual enrollment still allowed'
+                } else {
+                    continue
+                }
+
+                $deniedName = if ($ace.Name) { [string]$ace.Name } else { [string]$ace.SID }
+                if (-not $deniedName) { continue }
+                $deniedEntry = "${deniedName}: Deny on $deniedRight"
+                if ($enrollmentDenied -notcontains $deniedEntry) { $enrollmentDenied += $deniedEntry }
+
+                if ($deniedRight -notlike 'Certificate-AutoEnrollment only*') {
+                    if ($ace.SID) { $enrollmentDeniedSIDs[[string]$ace.SID] = $true }
+                    if ($ace.Name) { $enrollmentDeniedNames[[string]$ace.Name] = $true }
+                }
+            }
+
             if (@($sdACEs).Count -gt 0) {
                 # Use structured ACEs (includes SIDs directly from SD)
                 foreach ($ace in $sdACEs) {
                     # Only Allow ACEs
                     if ($ace.Type -ne 'Allow') { continue }
+
+                    # A trustee denied enrollment explicitly cannot enrol, whatever this
+                    # ACE grants.
+                    if ($ace.SID -and $enrollmentDeniedSIDs.ContainsKey([string]$ace.SID)) { continue }
+                    if ($ace.Name -and $enrollmentDeniedNames.ContainsKey([string]$ace.Name)) { continue }
 
                     # Check for enrollment rights
                     $hasEnroll = $false
@@ -114697,6 +114796,13 @@ function Get-ADCSTemplate {
             }
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipals' -NotePropertyValue $enrollmentPrincipals
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipalSIDs' -NotePropertyValue $enrollmentPrincipalSIDs
+
+            # Shown, not only applied: a Deny that reaches a principal through a group is
+            # not resolved here, so the reader needs to see which Deny ACEs exist to judge
+            # the enrollment list for themselves.
+            if (@($enrollmentDenied).Count -gt 0) {
+                $template | Add-Member -NotePropertyName 'enrollmentDeniedPrincipals' -NotePropertyValue @($enrollmentDenied) -Force
+            }
 
             # Whether the security descriptor was there to read, which is a different
             # statement from "no principal holds Certificate-Enrollment". A template that
@@ -116314,25 +116420,57 @@ function Get-ADCSVulnerabilities {
                 # Only flag if non-privileged users can enroll
                 if (-not $allEnrollmentPrivileged -and $oidToGroupLink.Count -gt 0 -and @($template.CertificatePolicies).Count -gt 0) {
                     $linkedPolicies = @()
+                    $anyPrivilegedGroupLink = $false
 
                     foreach ($policyOID in @($template.CertificatePolicies)) {
                         if ($oidToGroupLink.ContainsKey($policyOID)) {
                             $linkInfo = $oidToGroupLink[$policyOID]
 
-                            # Resolve group name from DN
+                            # Resolve the group, and ask what it is worth. Every link used
+                            # to read the same: a policy pointing at Domain Admins and one
+                            # pointing at a distribution group produced the same finding at
+                            # the same score, so the one link that ends the engagement sat
+                            # among the ones that do not matter. The group was resolved for
+                            # the display and then never asked about.
+                            #
+                            # Escape-LDAPFilterDN rather than Escape-LDAPFilterValue: a DN
+                            # from the directory is already RFC 4514 escaped, and escaping
+                            # its backslashes a second time produces a filter that matches
+                            # nothing - the group then silently stayed a bare DN.
                             $groupName = $linkInfo.GroupLinkDN
+                            $groupPrivileged = $null
+                            $groupReason = ''
                             try {
-                                $escapedDN = Escape-LDAPFilterValue -Value $linkInfo.GroupLinkDN
+                                $escapedDN = Escape-LDAPFilterDN -DistinguishedName $linkInfo.GroupLinkDN
                                 $groupObj = @(Get-DomainObject -LDAPFilter "(distinguishedName=$escapedDN)" @CredParams)[0]
                                 if ($groupObj) {
                                     $groupName = if ($groupObj.sAMAccountName) { $groupObj.sAMAccountName } else { $groupObj.name }
+
+                                    # By SID, as every identity question in adPEAS is: a
+                                    # group name depends on the installation language.
+                                    $groupSID = [string]$groupObj.objectSid
+                                    if ($groupSID) {
+                                        $groupVerdict = Test-IsPrivileged -Identity $groupSID
+                                        if ($groupVerdict) {
+                                            $groupPrivileged = ($groupVerdict.IsPrivileged -eq $true)
+                                            $groupReason = [string]$groupVerdict.Reason
+                                        }
+                                    }
                                 }
                             }
                             catch {
                                 Write-Log "[Get-ADCSVulnerabilities] ESC13: Error resolving group '$($linkInfo.GroupLinkDN)': $_" -Level Debug
                             }
 
-                            $linkedPolicies += "$($linkInfo.PolicyName) (OID: $policyOID) -> $groupName"
+                            $verdictText = 'privilege not assessed - the group could not be resolved'
+                            if ($groupPrivileged -eq $true) {
+                                $verdictText = if ($groupReason) { "privileged: $groupReason" } else { 'privileged' }
+                                $anyPrivilegedGroupLink = $true
+                            } elseif ($groupPrivileged -eq $false) {
+                                $verdictText = 'not a privileged group'
+                            }
+
+                            $linkedPolicies += "$($linkInfo.PolicyName) (OID: $policyOID) -> $groupName [$verdictText]"
                             Write-Log "[Get-ADCSVulnerabilities] ESC13: Template '$($template.Name)' - Policy '$($linkInfo.PolicyName)' linked to group '$groupName'"
                         }
                     }
@@ -116349,6 +116487,12 @@ function Get-ADCSVulnerabilities {
 
                         # Add linked policies info to template for display
                         $template | Add-Member -NotePropertyName 'IssuancePolicyGroupLinks' -NotePropertyValue $linkedPolicies -Force
+
+                        # And the verdict in machine-readable form, for the trigger that
+                        # damps the colour when enrollment buys membership in a group that
+                        # is worth nothing. The finding and its remediation stay either way:
+                        # the link is still a membership nobody applied for.
+                        $template | Add-Member -NotePropertyName 'issuancePolicyGroupPrivileged' -NotePropertyValue $anyPrivilegedGroupLink -Force
                     }
                 }
 
@@ -129109,9 +129253,15 @@ function Get-HTMLTemplate {
                 for (const vulnTag of meta.vulnerabilities) {
                     const vulnLower = String(vulnTag).toLowerCase();
                     if (!vulnLower) continue;
+                    // ESC3-TARGET is tagged with a hyphen while its key is
+                    // ESC3_TARGET_TEMPLATE, so neither comparison below matched and the
+                    // card fell back to the severity base score - half of what the
+                    // definition says the finding is worth.
+                    const vulnKey = vulnLower.replace(/-/g, '_');
                     for (const key of Object.keys(findingBaseScores)) {
                         const keyLower = key.toLowerCase();
-                        if (keyLower === vulnLower || keyLower.startsWith(vulnLower + '_')) {
+                        if (keyLower === vulnLower || keyLower.startsWith(vulnLower + '_') ||
+                            keyLower === vulnKey || keyLower.startsWith(vulnKey + '_')) {
                             consider(key);
                         }
                     }
@@ -129607,8 +129757,12 @@ function Get-HTMLTemplate {
             if (!bestKey && meta.vulnerabilities && meta.vulnerabilities.length > 0) {
                 for (const vulnTag of meta.vulnerabilities) {
                     const vulnLower = vulnTag.toLowerCase();
+                    // "ESC3-TARGET" against the key ESC3_TARGET_TEMPLATE - see the same
+                    // normalisation in resolveCardBaseScore.
+                    const vulnKey = vulnLower.replace(/-/g, '_');
                     for (const [key, score] of Object.entries(findingBaseScores)) {
-                        if (key.toLowerCase().startsWith(vulnLower + '_') || key.toLowerCase() === vulnLower) {
+                        if (key.toLowerCase().startsWith(vulnLower + '_') || key.toLowerCase() === vulnLower ||
+                            key.toLowerCase().startsWith(vulnKey + '_') || key.toLowerCase() === vulnKey) {
                             if (score > bestScore && findingDefinitions[key]) {
                                 bestScore = score;
                                 bestKey = key;
@@ -135141,7 +135295,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-1132"
+$Script:adPEASVersion = "2.7.0+20261012-1147"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
