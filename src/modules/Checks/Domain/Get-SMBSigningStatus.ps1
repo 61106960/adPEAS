@@ -4,8 +4,14 @@ function Get-SMBSigningStatus {
     Checks SMB Signing configuration status via GPO analysis.
 
     .DESCRIPTION
-    Analyzes SMB Signing configuration by examining GPOs in SYSVOL and calculating coverage across all computer accounts.
-    SMB Signing protects against SMB Relay and NTLM Relay attacks.
+    Reads the four SMB signing values out of every GPO in SYSVOL - from GptTmpl.inf and from
+    Registry.pol - and works out which policy reaches a machine: its links, their status, the
+    GPO status, and per scope which link wins. SMB signing is what makes an NTLM relay to SMB
+    fail.
+
+    It asks no computer object anything, and there is no coverage figure here. Which machines
+    a policy covers is answered from the links. The .DESCRIPTION used to claim it was
+    "calculating coverage across all computer accounts", which nothing in the module did.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -393,6 +399,29 @@ function Get-SMBSigningStatus {
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
                     $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue ([bool](@($linksEff | Where-Object { $_ }).Count)) -Force
                     $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
+
+                    # A server-side value nobody set does not mean the same thing on a
+                    # domain controller as on a member server, and the row said "Not
+                    # configured" for both - the same yellow hint for a state that is
+                    # required anyway and one that is what a relay needs. The Default
+                    # Domain Controllers Policy requires server-side signing; a member
+                    # server before Windows Server 2025 has it enabled but not required.
+                    #
+                    # Only the server side is qualified. The client default is "not
+                    # required" on every role up to Windows 11 24H2 - SYSVOL and NETLOGON
+                    # aside, which are hardened separately - so a DC-linked policy that is
+                    # silent about the client half says nothing reassuring.
+                    #
+                    # NotLinked and Unknown keep the bare wording on purpose: a policy
+                    # that reaches no machine, or whose links could not be resolved, has
+                    # no role to be read against.
+                    if ($gpoFinding.ServerSigning -eq 'Not configured') {
+                        if ($precScope -eq 'DomainControllers') {
+                            $gpoFinding.ServerSigning = 'Not configured - the Domain Controllers default requires it'
+                        } elseif ($precScope -eq 'Domain' -or $precScope -eq 'OtherOU') {
+                            $gpoFinding.ServerSigning = 'Not configured - not required by default before Windows Server 2025'
+                        }
+                    }
                 }
 
                 # For DC OU / Domain scope: mark the single highest-priority GPO as
@@ -461,8 +490,15 @@ function Get-SMBSigningStatus {
 
                 # Check if SMB Signing is only configured for Domain Controllers
                 # This means member servers and clients rely on OS defaults (which vary by version)
+                # Over the policies that actually reach a machine. $gpoFindings is every
+                # policy that carries a signing value, dormant ones included, and both
+                # summaries below used to be computed from it: a disabled or unlinked GPO
+                # counted as an insecure configuration, and one single dormant policy
+                # outside the DC OU was enough to suppress the member-server warning.
+                # Same defect as the headline above, two blocks further down.
+                $reaching = @($split.Active)
                 $gpoLinkage = Get-GPOLinkage
-                $dcOnlyGPOs = @($gpoFindings | Where-Object {
+                $dcOnlyGPOs = @($reaching | Where-Object {
                     # Normalize GUID to uppercase for hashtable lookup. Guarded, because a
                     # bare index on an unresolved ($null) map emits an error record into the
                     # host for every GPO in the list.
@@ -487,7 +523,7 @@ function Get-SMBSigningStatus {
                 # If ALL SMB Signing GPOs are DC-only, warn about member servers.
                 # Use Hint when the DC policy actually requires signing (partially secured).
                 # Keep Finding when signing is only Optional or Disabled on DCs.
-                if (@($dcOnlyGPOs).Count -eq @($gpoFindings).Count) {
+                if (@($dcOnlyGPOs).Count -gt 0 -and @($dcOnlyGPOs).Count -eq $reaching.Count) {
                     $hasRequiredSigning = @($dcOnlyGPOs | Where-Object { $_.ServerSigning -eq 'Required' }).Count -gt 0
                     $dcOnlyClass = if ($hasRequiredSigning) { 'Hint' } else { 'Finding' }
                     Show-Line "SMB Signing only configured for Domain Controllers - Member Servers and Clients rely on OS defaults (varies by version)" -Class $dcOnlyClass
@@ -495,7 +531,7 @@ function Get-SMBSigningStatus {
 
                 # Check for insecure configurations and report findings
                 $insecureGPOs = @()
-                foreach ($gpoFinding in $gpoFindings) {
+                foreach ($gpoFinding in $reaching) {
                     # Server: Disabled or Optional is insecure (allows relay attacks)
                     if ($gpoFinding.ServerSigning -eq "Disabled" -or $gpoFinding.ServerSigning -eq "Optional") {
                         $insecureGPOs += $gpoFinding.DisplayName
@@ -507,7 +543,9 @@ function Get-SMBSigningStatus {
                 }
 
                 if ($insecureGPOs.Count -gt 0) {
-                    Show-Line "$($insecureGPOs.Count) GPO(s) with insecure SMB Signing configuration" -Class Finding
+                    # The names were collected all along and then counted. A number sends
+                    # the reader back up through the objects to work out which ones.
+                    Show-Line "SMB signing is weakened by: $($insecureGPOs -join ', ')" -Class Finding
                 }
 
             } else {

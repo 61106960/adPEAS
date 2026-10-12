@@ -7971,7 +7971,9 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
 	        "Enable 'Domain controller: LDAP server signing requirements' = Require signing"
 	        "Configure via GPO: Computer Configuration > Policies > Windows Settings > Security Settings > Local Policies > Security Options"
 	        "Best practice: Always configure security settings via GPO rather than local policy"
-	        "Test applications for LDAP signing compatibility before enforcing"
+	        "Measure before enforcing, do not survey: set the diagnostic 16 LDAP Interface Events to 2 on the DCs and read the Directory Service log. 2886 and 2887 are the standing reminder and the 24-hour count; 2889 names the client address and the account for each unsigned or cleartext bind. That list is what enforcing breaks, by name"
+	        "What is usually on it: printers, scanners and multifunction devices doing a simple bind on port 389, appliances with an LDAP user directory behind them (VPN gateways, load balancers, NAS), older monitoring and backup agents, Linux hosts whose nss/pam/sssd configuration points at ldap:// without TLS, and in-house tools that bind with no authentication type set"
+	        "Every one of those is fixed on the client - LDAPS or StartTLS, or a SASL bind that requests signing - and not by leaving the domain controller as it is"
 	    )
 	    RemediationCommands = @(
 	        @{
@@ -8024,7 +8026,9 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
 	        "Enable LDAP channel binding on Domain Controllers"
 	        "Set registry: HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters\\LdapEnforceChannelBinding = 2"
 	        "Best practice: Deploy via GPO Preferences for consistent configuration"
-	        "Test application compatibility before enforcing"
+	        "Go through 1 (When supported) first: it demands the token only from clients that announce they can supply one, which leaves the rest working while they are found. 2 (Always) once the audit is quiet"
+	        "The audit in between: with 16 LDAP Interface Events at 2, the Directory Service log writes 3039 per client, and 3040 and 3041 as the 24-hour summary. The clients named there are the ones that stop working at 2"
+	        "What this setting does not touch: a simple bind over LDAPS carries no channel binding token at all and is unaffected - it is the SASL binds (Negotiate, Kerberos, NTLM) over TLS that have to supply one. Windows clients do once the March 2020 updates are in, so what is usually left is non-Windows LDAP libraries and appliance firmware that never implemented CBT"
 	    )
 	    RemediationCommands = @(
 	        @{
@@ -9423,7 +9427,9 @@ Get-ADObject -SearchBase $schema `
 	        "Deploy via GPO: Computer Configuration > Policies > Windows Settings > Security Settings > Local Policies > Security Options"
 	        "Microsoft network server: Digitally sign communications (always) = Enabled"
 	        "Best practice: Always configure security settings via GPO rather than relying on local policy or OS defaults"
-	        "Test application compatibility before enforcing"
+	        "Domain controllers already require it through the Default Domain Controllers Policy, so the work is member servers and clients - per OU, not domain-wide in one step"
+	        "What breaks: devices that cannot sign at all. Multifunction printers and scanners writing to a share, embedded NAS and SAN firmware, imaging and backup appliances, anything still speaking SMB1. Such a device cannot be exempted from a server that requires signing - either its firmware is updated, or its share moves to a server deliberately kept outside the enforcing OU and documented as the exception it is"
+	        "What it costs: signing is computed per packet. With SMB 3 and AES-based signing on current CPUs that is cheap, but it is still measurable on sequential file-server loads over fast links - worth measuring throughput on the busiest file server before the change rather than after"
 	    )
 	    RemediationCommands = @(
 	        @{
@@ -9454,6 +9460,8 @@ Get-ADObject -SearchBase $schema `
 	    Triggers = @(
 	        @{ Attribute = 'ServerSigning'; Pattern = '^Disabled$'; Severity = 'Finding' }
 	        @{ Attribute = 'ServerSigning'; Pattern = '^(Optional|Not Configured|Not Required)$'; Severity = 'Hint' }
+	        @{ Attribute = 'ServerSigning'; Pattern = '^Not configured - the Domain Controllers default'; Severity = 'Note'; SeverityOnly = $true }
+	        @{ Attribute = 'ServerSigning'; Pattern = '^Not configured - not required by default'; Severity = 'Hint' }
 	        @{ Attribute = 'ClientSigning'; Pattern = '^Disabled$'; Severity = 'Finding' }
 	        @{ Attribute = 'ClientSigning'; Pattern = '^(Optional|Not Configured|Not Required)$'; Severity = 'Hint' }
 	    )
@@ -10032,10 +10040,11 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        "4. Gains Domain Admin access in trusting domain"
 	    )
 	    Remediation = @(
-	        "Enable SID Filtering: netdom trust /quarantine:yes"
-	        "Review why SID Filtering was disabled"
-	        "Use Selective Authentication where possible"
-	        "Monitor cross-trust authentication for SID History abuse"
+	        "This is the external or realm trust case, and quarantine is the lever: netdom trust THIS.DOMAIN /domain:TRUSTED.DOMAIN /quarantine:yes. It is also the default for such a trust, so somebody cleared it. A forest trust is relaxed by a different flag and has its own write-up - TRUST_TREAT_AS_EXTERNAL"
+	        "Find out what it was cleared for before setting it back. Quarantine stops this domain honouring sIDHistory from the other side, so accounts migrated out of the trusted domain that still reach resources here through an old SID of theirs lose that access the moment it is on - after a domain consolidation that is a working arrangement rather than an oversight, and it is the usual reason the flag is gone"
+	        "Where migrated accounts still depend on it: re-permission the resources onto the current SIDs first, then enable quarantine"
+	        "Selective Authentication limits which principals may authenticate across the trust at all - worth having in addition, not instead"
+	        "Until it is on, treat the trusted domain as part of this domain's attack surface and watch cross-trust authentication for SID history abuse"
 	    )
 	    RemediationCommands = @(
 	        @{
@@ -10050,10 +10059,6 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	            Description = "Enable SID Filtering using PowerShell (alternative method)"
 	            Command = "Set-ADTrust -Identity 'TrustedDomain' -SIDFilteringQuarantined `$true"
 	        }
-	        @{
-	            Description = "Disable SID Filtering only if explicitly required (use with extreme caution)"
-	            Command = "netdom trust TRUSTINGDOMAIN /domain:TRUSTEDDOMAIN /quarantine:no"
-	        }
 	    )
 	    References = @(
 	        @{ Title = "SID Filtering - Microsoft"; Url = "https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2003/cc772633(v=ws.10)" }
@@ -10063,7 +10068,9 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    Tools = @("Mimikatz", "Rubeus")
 	    MITRE = "T1134.005"
 	    Triggers = @(
-	        @{ Attribute = 'trustRisk'; Severity = 'Finding' }
+	        @{ Attribute = 'sidFiltering'; Pattern = '^DISABLED'; Severity = 'Finding' }
+	        @{ Attribute = 'trustRisk'; Severity = 'Finding'; SeverityOnly = $true }
+	        @{ Attribute = 'sidFiltering'; Pattern = '^Enabled'; Severity = 'Secure'; SeverityOnly = $true }
 	        @{ Attribute = 'isQuarantined'; Pattern = '^True$'; Severity = 'Secure'; SeverityOnly = $true }
 	    )
 	}
@@ -10283,6 +10290,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    MITRE = "T1134.005"
 	    Triggers = @(
 	        @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Custom = 'is_not_within_forest_trust'; Severity = 'Finding' }
+	        @{ Attribute = 'sidFiltering'; Pattern = '^Weakened'; Severity = 'Finding' }
 	    )
 	}
 	'OS_EXTENDED_SECURITY_UPDATES_ONLY' = @{
@@ -61441,6 +61449,13 @@ function Get-SMBSigningStatus {
 	                $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
 	                $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue ([bool](@($linksEff | Where-Object { $_ }).Count)) -Force
 	                $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
+	                if ($gpoFinding.ServerSigning -eq 'Not configured') {
+	                    if ($precScope -eq 'DomainControllers') {
+	                        $gpoFinding.ServerSigning = 'Not configured - the Domain Controllers default requires it'
+	                    } elseif ($precScope -eq 'Domain' -or $precScope -eq 'OtherOU') {
+	                        $gpoFinding.ServerSigning = 'Not configured - not required by default before Windows Server 2025'
+	                    }
+	                }
 	            }
 	            $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
 	            $effectiveDC = $null
@@ -61478,8 +61493,9 @@ function Get-SMBSigningStatus {
 	                    Show-Object $gpoFinding
 	                }
 	            }
+	            $reaching = @($split.Active)
 	            $gpoLinkage = Get-GPOLinkage
-	            $dcOnlyGPOs = @($gpoFindings | Where-Object {
+	            $dcOnlyGPOs = @($reaching | Where-Object {
 	                $links = $null
 	                if ($null -ne $gpoLinkage) { $links = $gpoLinkage[$_.Name.ToUpper()] }
 	                if (-not $links) { return $false }
@@ -61494,13 +61510,13 @@ function Get-SMBSigningStatus {
 	                }
 	                return $allLinksToDCOU
 	            })
-	            if (@($dcOnlyGPOs).Count -eq @($gpoFindings).Count) {
+	            if (@($dcOnlyGPOs).Count -gt 0 -and @($dcOnlyGPOs).Count -eq $reaching.Count) {
 	                $hasRequiredSigning = @($dcOnlyGPOs | Where-Object { $_.ServerSigning -eq 'Required' }).Count -gt 0
 	                $dcOnlyClass = if ($hasRequiredSigning) { 'Hint' } else { 'Finding' }
 	                Show-Line "SMB Signing only configured for Domain Controllers - Member Servers and Clients rely on OS defaults (varies by version)" -Class $dcOnlyClass
 	            }
 	            $insecureGPOs = @()
-	            foreach ($gpoFinding in $gpoFindings) {
+	            foreach ($gpoFinding in $reaching) {
 	                if ($gpoFinding.ServerSigning -eq "Disabled" -or $gpoFinding.ServerSigning -eq "Optional") {
 	                    $insecureGPOs += $gpoFinding.DisplayName
 	                }
@@ -61509,7 +61525,7 @@ function Get-SMBSigningStatus {
 	                }
 	            }
 	            if ($insecureGPOs.Count -gt 0) {
-	                Show-Line "$($insecureGPOs.Count) GPO(s) with insecure SMB Signing configuration" -Class Finding
+	                Show-Line "SMB signing is weakened by: $($insecureGPOs -join ', ')" -Class Finding
 	            }
 	        } else {
 	            Show-Line "No SMB Signing configuration found in any GPO - computers rely on OS defaults (varies by Windows version)" -Class Finding
@@ -83597,7 +83613,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-0343"
+$Script:adPEASVersion = "2.7.0+20261012-0412"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
