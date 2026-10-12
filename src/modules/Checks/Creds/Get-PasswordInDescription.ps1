@@ -154,6 +154,7 @@ function Get-PasswordInDescription {
 
             $findingCount = 0
             $hintCount = 0
+            $unreadableCount = 0
 
             # Every object class, not only users and computers. description and info sit on
             # practically everything in the directory, and a password typed into a group's
@@ -336,9 +337,13 @@ function Get-PasswordInDescription {
                         # query above - and it escapes the DN on the way in.
                         $fullObj = @(Get-DomainObject -Identity $accountName -ShowOwner @connectionParams)[0]
 
-                        if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
-
                         if ($fullObj) {
+                            # Counted here rather than above. The counter used to be raised
+                            # before this guard, and it is also what suppresses the clean
+                            # line at the end - so a candidate that matched and could not be
+                            # read again left a section with nothing in it at all: no row, no
+                            # finding, and no statement that nothing was found either. In the
+                            # HTML report that is an empty section, which reads as clean.
                             # An organizational unit has no sAMAccountName, and a Group
                             # Policy object's name is its GUID while displayName is the one
                             # a reader recognises.
@@ -355,6 +360,14 @@ function Get-PasswordInDescription {
                                 Show-Line "Possible credential mention in $bestAttrName of $objectType '$shownName'" -Class Hint
                             }
                             Show-Object $fullObj
+                            if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
+                        } else {
+                            # Named, because the reader can go and look: the object matched
+                            # on a value this check read a moment earlier and then could not
+                            # be read back - deleted in between, or moved out of reach.
+                            $unreadableCount++
+                            Write-Log "[Get-PasswordInDescription] Candidate could not be re-read: $accountName"
+                            Show-Line "Matched but could not be read again: $accountName" -Class Note
                         }
                     }
             }
@@ -364,7 +377,13 @@ function Get-PasswordInDescription {
             }
 
             if ($findingCount -eq 0 -and $hintCount -eq 0) {
-                Show-Line "No credentials found in the free-text attributes of any object" -Class Secure
+                if ($unreadableCount -gt 0) {
+                    # Not green: a candidate matched and could not be read back, so the
+                    # directory was not cleared - it was not fully looked at.
+                    Show-Line "Nothing could be reported - every match could not be read again" -Class Note
+                } else {
+                    Show-Line "No credentials found in the free-text attributes of any object" -Class Secure
+                }
             } else {
                 Write-Log "[Get-PasswordInDescription] Total: $findingCount finding(s), $hintCount hint(s)"
             }

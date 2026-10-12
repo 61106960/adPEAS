@@ -74724,6 +74724,27 @@ function Get-UnixPasswordAccounts {
         Write-Log "[Get-UnixPasswordAccounts] Check completed"
     }
 }
+$Script:CredentialScanExtensions = @(
+    '*.txt', '*.bat', '*.ini', '*.conf', '*.cnf', '*.cmd', '*.vbs', '*.vbe', '*.kix',
+    '*.ps1', '*.psm1'
+)
+function Get-ReportedLineKey {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string[]]$Lines,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Match
+    )
+    foreach ($line in @($Lines)) {
+        if ($null -eq $line) { continue }
+        if ($line.Contains($Match)) { return $line.Trim() }
+    }
+    return $Match.Trim()
+}
 function Get-CredentialExposure {
     [CmdletBinding()]
     param(
@@ -74886,7 +74907,7 @@ function Get-CredentialExposure {
                         }
                     }
                 }
-                $searchExtensions = @('*.txt','*.bat','*.ini','*.conf','*.cnf','*.cmd','*.vbs','*.vbe','*.kix','*.ps1','*.psm1')
+                $searchExtensions = $Script:CredentialScanExtensions
                 $files = Get-ChildItem -Force -Path $scanPath -Recurse -Include $searchExtensions -ErrorAction SilentlyContinue
                 if (@($files).Count -gt 0) {
                     Write-Log "[Get-CredentialExposure] Found $(@($files).Count) script/config file(s) in custom path"
@@ -74927,17 +74948,13 @@ function Get-CredentialExposure {
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
                                         Show-Object $credObj
-                                    $reportedLines[$match.Value] = $true
+                                    $reportedLines[(Get-ReportedLineKey -Lines $lines -Match $match.Value)] = $true
                                 }
                             }
                             foreach ($line in $lines) {
                                 $trimmedLine = $line.Trim()
                                 if ([string]::IsNullOrWhiteSpace($trimmedLine)) { continue }
-                                $alreadyReported = $false
-                                foreach ($reported in $reportedLines.Keys) {
-                                    if ($trimmedLine.Contains($reported)) { $alreadyReported = $true; break }
-                                }
-                                if ($alreadyReported) { continue }
+                                if ($reportedLines.ContainsKey($trimmedLine)) { continue }
                                 $isPlaceholder = $false
                                 foreach ($phPattern in $placeholderPatterns) {
                                     if ($trimmedLine -imatch $phPattern) { $isPlaceholder = $true; break }
@@ -75038,7 +75055,7 @@ function Get-CredentialExposure {
                 else {
                     $Script:sysvolAccessible = $true
                     Write-Log "[Get-CredentialExposure] SYSVOL accessible: $sysvolBase"
-                    $allExtensions = @('*.xml','*.txt','*.bat','*.ini','*.conf','*.cnf','*.cmd','*.vbs','*.vbe','*.kix','*.ps1','*.psm1')
+                    $allExtensions = @('*.xml') + $Script:CredentialScanExtensions
                     $allFiles = @(Get-CachedSYSVOLFiles -Filter $allExtensions -SYSVOLPath $sysvolBase)
                     $xmlFiles = @($allFiles | Where-Object { $_.Extension -eq '.xml' })
                     $scriptFiles = @($allFiles | Where-Object { $_.Extension -ne '.xml' })
@@ -75252,21 +75269,14 @@ function Get-CredentialExposure {
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
                                         Show-Object $credObj
-                                        $reportedLines[$match.Value] = $true
+                                        $reportedLines[(Get-ReportedLineKey -Lines $lines -Match $match.Value)] = $true
                                         $sysvolFindingsCount++
                                     }
                                 }
                                 foreach ($line in $lines) {
                                     $trimmedLine = $line.Trim()
                                     if ([string]::IsNullOrWhiteSpace($trimmedLine)) { continue }
-                                    $alreadyReported = $false
-                                    foreach ($reported in $reportedLines.Keys) {
-                                        if ($trimmedLine.Contains($reported)) {
-                                            $alreadyReported = $true
-                                            break
-                                        }
-                                    }
-                                    if ($alreadyReported) { continue }
+                                    if ($reportedLines.ContainsKey($trimmedLine)) { continue }
                                     $isPlaceholder = $false
                                     foreach ($phPattern in $placeholderPatterns) {
                                         if ($trimmedLine -imatch $phPattern) { $isPlaceholder = $true; break }
@@ -76025,6 +76035,7 @@ function Get-PasswordInDescription {
             )
             $findingCount = 0
             $hintCount = 0
+            $unreadableCount = 0
             $baseAttributes     = @('description', 'info', 'comment', 'adminDescription')
             $optionalAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
             $candidates = @{}
@@ -76129,7 +76140,6 @@ function Get-PasswordInDescription {
                     }
                     if ($bestTier -gt 0) {
                         $fullObj = @(Get-DomainObject -Identity $accountName -ShowOwner @connectionParams)[0]
-                        if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
                         if ($fullObj) {
                             $shownName = if ($fullObj.sAMAccountName) { $fullObj.sAMAccountName }
                                          elseif ($fullObj.displayName) { $fullObj.displayName }
@@ -76143,6 +76153,11 @@ function Get-PasswordInDescription {
                                 Show-Line "Possible credential mention in $bestAttrName of $objectType '$shownName'" -Class Hint
                             }
                             Show-Object $fullObj
+                            if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
+                        } else {
+                            $unreadableCount++
+                            Write-Log "[Get-PasswordInDescription] Candidate could not be re-read: $accountName"
+                            Show-Line "Matched but could not be read again: $accountName" -Class Note
                         }
                     }
             }
@@ -76150,7 +76165,11 @@ function Get-PasswordInDescription {
                 Show-Progress -Activity "Checking free-text attributes" -Completed
             }
             if ($findingCount -eq 0 -and $hintCount -eq 0) {
-                Show-Line "No credentials found in the free-text attributes of any object" -Class Secure
+                if ($unreadableCount -gt 0) {
+                    Show-Line "Nothing could be reported - every match could not be read again" -Class Note
+                } else {
+                    Show-Line "No credentials found in the free-text attributes of any object" -Class Secure
+                }
             } else {
                 Write-Log "[Get-PasswordInDescription] Total: $findingCount finding(s), $hintCount hint(s)"
             }
@@ -86680,7 +86699,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-0657"
+$Script:adPEASVersion = "2.7.0+20261012-0724"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

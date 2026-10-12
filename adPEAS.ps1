@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 06:57:29
-    Version: 2.7.0+20261012-0657
+    Build: 2026-10-12 07:24:51
+    Version: 2.7.0+20261012-0724
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -119211,6 +119211,60 @@ function Get-UnixPasswordAccounts {
 
 # ----- Get-CredentialExposure.ps1 -----
 
+# The script and configuration files this check greps, in one place. It stood in three:
+# the custom path, the domain scan and docs/04-Security-Checks.md, and all three differed -
+# the documentation named neither .ps1 nor .psm1 nor .cnf, and .ps1 is both the most common
+# logon script today and the biggest source of tier 2 noise. A reader could not tell what
+# the section covered.
+#
+# .xml is deliberately not in here: it is the preference-file half of the check, queried
+# separately because those files are parsed as XML rather than grepped.
+$Script:CredentialScanExtensions = @(
+    '*.txt', '*.bat', '*.ini', '*.conf', '*.cnf', '*.cmd', '*.vbs', '*.vbe', '*.kix',
+    '*.ps1', '*.psm1'
+)
+
+function Get-ReportedLineKey {
+    <#
+    .SYNOPSIS
+    The whole line a regex match sits in, for the "already reported" bookkeeping.
+
+    .DESCRIPTION
+    The net use detector runs a regex over the file rather than over single lines, so what
+    it has in hand is the command and not the line around it. The duplicate guard compares
+    whole lines, and a key that is only part of one is a substring of every longer line
+    that repeats it - which is how a second credential on such a line came to be dropped.
+
+    .PARAMETER Lines
+    The file's lines, as the caller split them.
+
+    .PARAMETER Match
+    The matched text to locate.
+
+    .OUTPUTS
+    [string] the trimmed line that contains the match, or the trimmed match if no line does.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string[]]$Lines,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Match
+    )
+
+    foreach ($line in @($Lines)) {
+        if ($null -eq $line) { continue }
+        if ($line.Contains($Match)) { return $line.Trim() }
+    }
+    # A match that spans a line break has no single line to key on; its own text is then
+    # the honest key, and the old behaviour for that case.
+    return $Match.Trim()
+}
+
 function Get-CredentialExposure {
     <#
     .SYNOPSIS
@@ -119485,7 +119539,7 @@ function Get-CredentialExposure {
                 }
 
                 # Scan script/config files
-                $searchExtensions = @('*.txt','*.bat','*.ini','*.conf','*.cnf','*.cmd','*.vbs','*.vbe','*.kix','*.ps1','*.psm1')
+                $searchExtensions = $Script:CredentialScanExtensions
                 $files = Get-ChildItem -Force -Path $scanPath -Recurse -Include $searchExtensions -ErrorAction SilentlyContinue
 
                 if (@($files).Count -gt 0) {
@@ -119531,7 +119585,12 @@ function Get-CredentialExposure {
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
                                         Show-Object $credObj
-                                    $reportedLines[$match.Value] = $true
+                                    # The whole line, not the match. The guard below compares
+                                    # lines, and a net use match covers only the command - as
+                                    # a key it was a substring of any later line that
+                                    # repeated the same command with more on it, and that
+                                    # line was then dropped with whatever else it carried.
+                                    $reportedLines[(Get-ReportedLineKey -Lines $lines -Match $match.Value)] = $true
                                 }
                             }
 
@@ -119540,15 +119599,18 @@ function Get-CredentialExposure {
                                 $trimmedLine = $line.Trim()
                                 if ([string]::IsNullOrWhiteSpace($trimmedLine)) { continue }
 
-                                $alreadyReported = $false
-                                foreach ($reported in $reportedLines.Keys) {
-                                    # Contains, not -like: a previously reported line is DATA, not a
-                                    # wildcard pattern. A reported password containing * or ? made the
-                                    # pattern match unrelated later lines and silently swallowed real
-                                    # credentials found further down the same file.
-                                    if ($trimmedLine.Contains($reported)) { $alreadyReported = $true; break }
-                                }
-                                if ($alreadyReported) { continue }
+                                # One report per line, decided by the line itself.
+                                #
+                                # This was a substring test, and before that a -like, where a
+                                # reported password containing * or ? matched unrelated later
+                                # lines. Contains fixed the wildcard half and kept the
+                                # asymmetry: a short key is a substring of every longer line
+                                # that contains it, so a second line carrying a different
+                                # credential was dropped because an earlier one was a prefix
+                                # of it. Every key is a whole trimmed line now, which makes
+                                # equality the right test - and the net use branch above
+                                # stores the line it matched in rather than the match.
+                                if ($reportedLines.ContainsKey($trimmedLine)) { continue }
 
                                 # A masked or bracketed value is not a credential however
                                 # much the syntax around it looks like an assignment.
@@ -119690,10 +119752,9 @@ function Get-CredentialExposure {
                     Write-Log "[Get-CredentialExposure] SYSVOL accessible: $sysvolBase"
 
                     # Use cached SYSVOL file listing (builds cache on first call, reuses on subsequent calls)
-                    # PowerShell is included because logon scripts in SYSVOL are commonly
-                    # .ps1 today. The custom-path branch already scanned them, so the domain
-                    # scan was the narrower of the two for no reason.
-                    $allExtensions = @('*.xml','*.txt','*.bat','*.ini','*.conf','*.cnf','*.cmd','*.vbs','*.vbe','*.kix','*.ps1','*.psm1')
+                    # One walk for both halves: the preference files are parsed as XML, the
+                    # rest is grepped, and splitting them locally costs nothing.
+                    $allExtensions = @('*.xml') + $Script:CredentialScanExtensions
                     $allFiles = @(Get-CachedSYSVOLFiles -Filter $allExtensions -SYSVOLPath $sysvolBase)
 
                     # Split into XML and script files locally (no additional SMB round-trips)
@@ -119980,7 +120041,9 @@ function Get-CredentialExposure {
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
                                         Show-Object $credObj
-                                        $reportedLines[$match.Value] = $true
+                                        # The whole line rather than the match - see the
+                                        # custom path above for what the difference cost.
+                                        $reportedLines[(Get-ReportedLineKey -Lines $lines -Match $match.Value)] = $true
                                         $sysvolFindingsCount++
                                     }
                                 }
@@ -119990,16 +120053,8 @@ function Get-CredentialExposure {
                                     $trimmedLine = $line.Trim()
                                     if ([string]::IsNullOrWhiteSpace($trimmedLine)) { continue }
 
-                                    $alreadyReported = $false
-                                    foreach ($reported in $reportedLines.Keys) {
-                                        # Contains, not -like: see the identical guard in the
-                                        # custom-path branch. A reported line is data, not a pattern.
-                                        if ($trimmedLine.Contains($reported)) {
-                                            $alreadyReported = $true
-                                            break
-                                        }
-                                    }
-                                    if ($alreadyReported) { continue }
+                                    # One report per line - see the custom path above.
+                                    if ($reportedLines.ContainsKey($trimmedLine)) { continue }
 
                                     # A masked or bracketed value is not a credential
                                     # however much the syntax around it looks like an
@@ -121476,6 +121531,7 @@ function Get-PasswordInDescription {
 
             $findingCount = 0
             $hintCount = 0
+            $unreadableCount = 0
 
             # Every object class, not only users and computers. description and info sit on
             # practically everything in the directory, and a password typed into a group's
@@ -121658,9 +121714,13 @@ function Get-PasswordInDescription {
                         # query above - and it escapes the DN on the way in.
                         $fullObj = @(Get-DomainObject -Identity $accountName -ShowOwner @connectionParams)[0]
 
-                        if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
-
                         if ($fullObj) {
+                            # Counted here rather than above. The counter used to be raised
+                            # before this guard, and it is also what suppresses the clean
+                            # line at the end - so a candidate that matched and could not be
+                            # read again left a section with nothing in it at all: no row, no
+                            # finding, and no statement that nothing was found either. In the
+                            # HTML report that is an empty section, which reads as clean.
                             # An organizational unit has no sAMAccountName, and a Group
                             # Policy object's name is its GUID while displayName is the one
                             # a reader recognises.
@@ -121677,6 +121737,14 @@ function Get-PasswordInDescription {
                                 Show-Line "Possible credential mention in $bestAttrName of $objectType '$shownName'" -Class Hint
                             }
                             Show-Object $fullObj
+                            if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
+                        } else {
+                            # Named, because the reader can go and look: the object matched
+                            # on a value this check read a moment earlier and then could not
+                            # be read back - deleted in between, or moved out of reach.
+                            $unreadableCount++
+                            Write-Log "[Get-PasswordInDescription] Candidate could not be re-read: $accountName"
+                            Show-Line "Matched but could not be read again: $accountName" -Class Note
                         }
                     }
             }
@@ -121686,7 +121754,13 @@ function Get-PasswordInDescription {
             }
 
             if ($findingCount -eq 0 -and $hintCount -eq 0) {
-                Show-Line "No credentials found in the free-text attributes of any object" -Class Secure
+                if ($unreadableCount -gt 0) {
+                    # Not green: a candidate matched and could not be read back, so the
+                    # directory was not cleared - it was not fully looked at.
+                    Show-Line "Nothing could be reported - every match could not be read again" -Class Note
+                } else {
+                    Show-Line "No credentials found in the free-text attributes of any object" -Class Secure
+                }
             } else {
                 Write-Log "[Get-PasswordInDescription] Total: $findingCount finding(s), $hintCount hint(s)"
             }
@@ -134168,7 +134242,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0657"
+$Script:adPEASVersion = "2.7.0+20261012-0724"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
