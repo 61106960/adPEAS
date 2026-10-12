@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 07:24:51
-    Version: 2.7.0+20261012-0724
+    Build: 2026-10-12 07:41:28
+    Version: 2.7.0+20261012-0741
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -12818,6 +12818,16 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
             # blob the holder cannot open. LAPS_ENCRYPTED_PASSWORD says what it is.
             @{ Attribute = 'ms-Mcs-AdmPwd'; Severity = 'Finding' }
             @{ Attribute = 'msLAPS-Password'; Severity = 'Finding' }
+
+            # Read access that the account was given on purpose. Get-LAPSCredentialAccess
+            # puts lapsReadContext on the row when the bound principal is privileged, and
+            # then every LAPS-managed machine in the domain is readable by design - a red
+            # row each would be 2000 findings that say nothing. SeverityOnly: the card
+            # still explains what a readable LAPS password is, it just stops calling an
+            # expected one a finding.
+            @{ Attribute = 'ms-Mcs-AdmPwd'; Custom = 'laps_read_is_expected'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'msLAPS-Password'; Custom = 'laps_read_is_expected'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'lapsReadContext'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -22379,6 +22389,15 @@ function Test-CustomTrigger {
                 $severity = Get-ExchangeSeverity -ProductName $strValue
             }
             return ($severity -ne 'Standard')
+        }
+
+        'laps_read_is_expected' {
+            # Whether this row's read access is the one the account is meant to have.
+            # Get-LAPSCredentialAccess sets lapsReadContext only when the bound principal
+            # is privileged, which is where "expected" comes from - the predicate does not
+            # decide it, it reads what the check decided.
+            if ($SourceObject -and $SourceObject.lapsReadContext) { return $true }
+            return $false
         }
 
         'unix_password_usable_as_is' {
@@ -120455,16 +120474,55 @@ function Get-LAPSCredentialAccess {
                 }
             }
 
+            # Whose read access this is.
+            #
+            # Every computer whose LAPS password the bound account can read used to be a
+            # Finding at BaseScore 55, which is the wrong answer in both directions. An
+            # audit run with an administrative account - the normal case - reads every
+            # LAPS-managed machine in the domain, so a 2000-seat domain produced 2000 red
+            # findings that say nothing, and buried the one machine a helpdesk account can
+            # read. The neighbouring BitLocker check has exactly the same mechanism and says
+            # so in its own definition: "Read access is often legitimate (recovery and
+            # helpdesk roles) and is not by itself a vulnerability".
+            #
+            # So the verdict hangs on the principal rather than on the read succeeding.
+            # Test-IsPrivileged is what Get-CredentialRoaming uses for the same distinction.
+            $readerIsPrivileged = $false
+            $readerName = $null
+            if ($Script:LDAPContext.AuthenticatedUserSAM) { $readerName = [string]$Script:LDAPContext.AuthenticatedUserSAM }
+            elseif ($Script:LDAPContext.AuthenticatedUserDN) { $readerName = [string]$Script:LDAPContext.AuthenticatedUserDN }
+            if ($readerName) {
+                try {
+                    $readerIsPrivileged = ((Test-IsPrivileged -Identity $readerName).IsPrivileged -eq $true)
+                } catch {
+                    Write-Log "[Get-LAPSCredentialAccess] Privilege check failed for '$readerName': $_"
+                }
+            }
+
             # Output results
             if (@($readableComputers).Count -gt 0) {
-                Show-Line "Found $(@($readableComputers).Count) computer(s) with readable LAPS password:" -Class "Finding"
+                if ($readerIsPrivileged) {
+                    # A hint, and the headline says why - not a finding to be explained away
+                    # in the card after the reader has already counted it.
+                    Show-Line "Found $(@($readableComputers).Count) computer(s) with readable LAPS password - expected for this account:" -Class "Hint"
+                } else {
+                    Show-Line "Found $(@($readableComputers).Count) computer(s) with readable LAPS password:" -Class "Finding"
+                }
                 $totalComputers = @($readableComputers).Count
                 $currentIndex = 0
                 foreach ($computer in $readableComputers) {
                     $currentIndex++
                     if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS credential access" -Current $currentIndex -Total $totalComputers -ObjectName $computer.name }
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSCredential' -Force
-                    Show-Object $computer
+                    if ($readerIsPrivileged) {
+                        # On the object, because the card is what a reader opens next and
+                        # the row has to say the same thing as the line above it.
+                        $computer | Add-Member -NotePropertyName 'lapsReadContext' -NotePropertyValue (
+                            "Expected - the account this scan runs as is privileged ($readerName)") -Force
+                        Show-Object $computer -Class Hint
+                    } else {
+                        Show-Object $computer
+                    }
                 }
                 if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS credential access" -Completed }
             } else {
@@ -134242,7 +134300,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0724"
+$Script:adPEASVersion = "2.7.0+20261012-0741"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

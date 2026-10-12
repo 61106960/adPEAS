@@ -266,16 +266,55 @@ function Get-LAPSCredentialAccess {
                 }
             }
 
+            # Whose read access this is.
+            #
+            # Every computer whose LAPS password the bound account can read used to be a
+            # Finding at BaseScore 55, which is the wrong answer in both directions. An
+            # audit run with an administrative account - the normal case - reads every
+            # LAPS-managed machine in the domain, so a 2000-seat domain produced 2000 red
+            # findings that say nothing, and buried the one machine a helpdesk account can
+            # read. The neighbouring BitLocker check has exactly the same mechanism and says
+            # so in its own definition: "Read access is often legitimate (recovery and
+            # helpdesk roles) and is not by itself a vulnerability".
+            #
+            # So the verdict hangs on the principal rather than on the read succeeding.
+            # Test-IsPrivileged is what Get-CredentialRoaming uses for the same distinction.
+            $readerIsPrivileged = $false
+            $readerName = $null
+            if ($Script:LDAPContext.AuthenticatedUserSAM) { $readerName = [string]$Script:LDAPContext.AuthenticatedUserSAM }
+            elseif ($Script:LDAPContext.AuthenticatedUserDN) { $readerName = [string]$Script:LDAPContext.AuthenticatedUserDN }
+            if ($readerName) {
+                try {
+                    $readerIsPrivileged = ((Test-IsPrivileged -Identity $readerName).IsPrivileged -eq $true)
+                } catch {
+                    Write-Log "[Get-LAPSCredentialAccess] Privilege check failed for '$readerName': $_"
+                }
+            }
+
             # Output results
             if (@($readableComputers).Count -gt 0) {
-                Show-Line "Found $(@($readableComputers).Count) computer(s) with readable LAPS password:" -Class "Finding"
+                if ($readerIsPrivileged) {
+                    # A hint, and the headline says why - not a finding to be explained away
+                    # in the card after the reader has already counted it.
+                    Show-Line "Found $(@($readableComputers).Count) computer(s) with readable LAPS password - expected for this account:" -Class "Hint"
+                } else {
+                    Show-Line "Found $(@($readableComputers).Count) computer(s) with readable LAPS password:" -Class "Finding"
+                }
                 $totalComputers = @($readableComputers).Count
                 $currentIndex = 0
                 foreach ($computer in $readableComputers) {
                     $currentIndex++
                     if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS credential access" -Current $currentIndex -Total $totalComputers -ObjectName $computer.name }
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSCredential' -Force
-                    Show-Object $computer
+                    if ($readerIsPrivileged) {
+                        # On the object, because the card is what a reader opens next and
+                        # the row has to say the same thing as the line above it.
+                        $computer | Add-Member -NotePropertyName 'lapsReadContext' -NotePropertyValue (
+                            "Expected - the account this scan runs as is privileged ($readerName)") -Force
+                        Show-Object $computer -Class Hint
+                    } else {
+                        Show-Object $computer
+                    }
                 }
                 if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS credential access" -Completed }
             } else {

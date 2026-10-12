@@ -8518,6 +8518,9 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
         Triggers = @(
             @{ Attribute = 'ms-Mcs-AdmPwd'; Severity = 'Finding' }
             @{ Attribute = 'msLAPS-Password'; Severity = 'Finding' }
+            @{ Attribute = 'ms-Mcs-AdmPwd'; Custom = 'laps_read_is_expected'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'msLAPS-Password'; Custom = 'laps_read_is_expected'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'lapsReadContext'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
     'BITLOCKER_KEY_READABLE' = @{
@@ -16828,6 +16831,10 @@ function Test-CustomTrigger {
                 $severity = Get-ExchangeSeverity -ProductName $strValue
             }
             return ($severity -ne 'Standard')
+        }
+        'laps_read_is_expected' {
+            if ($SourceObject -and $SourceObject.lapsReadContext) { return $true }
+            return $false
         }
         'unix_password_usable_as_is' {
             if ($SourceObject -and $SourceObject.passwordFormat) {
@@ -75506,15 +75513,36 @@ function Get-LAPSCredentialAccess {
                     }
                 }
             }
+            $readerIsPrivileged = $false
+            $readerName = $null
+            if ($Script:LDAPContext.AuthenticatedUserSAM) { $readerName = [string]$Script:LDAPContext.AuthenticatedUserSAM }
+            elseif ($Script:LDAPContext.AuthenticatedUserDN) { $readerName = [string]$Script:LDAPContext.AuthenticatedUserDN }
+            if ($readerName) {
+                try {
+                    $readerIsPrivileged = ((Test-IsPrivileged -Identity $readerName).IsPrivileged -eq $true)
+                } catch {
+                    Write-Log "[Get-LAPSCredentialAccess] Privilege check failed for '$readerName': $_"
+                }
+            }
             if (@($readableComputers).Count -gt 0) {
-                Show-Line "Found $(@($readableComputers).Count) computer(s) with readable LAPS password:" -Class "Finding"
+                if ($readerIsPrivileged) {
+                    Show-Line "Found $(@($readableComputers).Count) computer(s) with readable LAPS password - expected for this account:" -Class "Hint"
+                } else {
+                    Show-Line "Found $(@($readableComputers).Count) computer(s) with readable LAPS password:" -Class "Finding"
+                }
                 $totalComputers = @($readableComputers).Count
                 $currentIndex = 0
                 foreach ($computer in $readableComputers) {
                     $currentIndex++
                     if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS credential access" -Current $currentIndex -Total $totalComputers -ObjectName $computer.name }
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSCredential' -Force
-                    Show-Object $computer
+                    if ($readerIsPrivileged) {
+                        $computer | Add-Member -NotePropertyName 'lapsReadContext' -NotePropertyValue (
+                            "Expected - the account this scan runs as is privileged ($readerName)") -Force
+                        Show-Object $computer -Class Hint
+                    } else {
+                        Show-Object $computer
+                    }
                 }
                 if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS credential access" -Completed }
             } else {
@@ -86699,7 +86727,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-0724"
+$Script:adPEASVersion = "2.7.0+20261012-0741"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

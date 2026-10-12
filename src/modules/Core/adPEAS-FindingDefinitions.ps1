@@ -4983,6 +4983,16 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
             # blob the holder cannot open. LAPS_ENCRYPTED_PASSWORD says what it is.
             @{ Attribute = 'ms-Mcs-AdmPwd'; Severity = 'Finding' }
             @{ Attribute = 'msLAPS-Password'; Severity = 'Finding' }
+
+            # Read access that the account was given on purpose. Get-LAPSCredentialAccess
+            # puts lapsReadContext on the row when the bound principal is privileged, and
+            # then every LAPS-managed machine in the domain is readable by design - a red
+            # row each would be 2000 findings that say nothing. SeverityOnly: the card
+            # still explains what a readable LAPS password is, it just stops calling an
+            # expected one a finding.
+            @{ Attribute = 'ms-Mcs-AdmPwd'; Custom = 'laps_read_is_expected'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'msLAPS-Password'; Custom = 'laps_read_is_expected'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'lapsReadContext'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -14544,6 +14554,15 @@ function Test-CustomTrigger {
                 $severity = Get-ExchangeSeverity -ProductName $strValue
             }
             return ($severity -ne 'Standard')
+        }
+
+        'laps_read_is_expected' {
+            # Whether this row's read access is the one the account is meant to have.
+            # Get-LAPSCredentialAccess sets lapsReadContext only when the bound principal
+            # is privileged, which is where "expected" comes from - the predicate does not
+            # decide it, it reads what the check decided.
+            if ($SourceObject -and $SourceObject.lapsReadContext) { return $true }
+            return $false
         }
 
         'unix_password_usable_as_is' {
