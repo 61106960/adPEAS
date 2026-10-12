@@ -3225,7 +3225,7 @@ $Script:PrimaryAttributes = @{
 	    'anonymousLDAPAccess', 'anonymousReadableAttributes'
 	)
 	KerberosPolicy = @(
-	    'maxTicketAgeTGT', 'maxRenewalAge', 'krbtgtPasswordAge', 'domainControllerTime'
+	    'ticketLifetime', 'maxTicketAgeTGT', 'maxRenewalAge', 'krbtgtPasswordAge', 'domainControllerTime'
 	)
 	GuestAccount = @(
 	    'accountStatus', 'memberOf'
@@ -10067,10 +10067,51 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        @{ Attribute = 'isQuarantined'; Pattern = '^True$'; Severity = 'Secure'; SeverityOnly = $true }
 	    )
 	}
+	'KERBEROS_TICKET_LIFETIME_EXTENDED' = @{
+	    Title = "Kerberos Ticket Lifetime Extended Beyond the Default"
+	    Risk = "Hint"
+	    BaseScore = 25
+	    Description = "The domain grants Kerberos tickets a longer life than the Microsoft default of 10 hours, or allows them to be renewed for longer than the default 7 days. Those two numbers are the whole of what decides how long a stolen ticket keeps working: a TGT taken out of LSASS, or forged with the krbtgt key, is accepted until it expires, and no password change and no account disable shortens that. Both values were read and printed by adPEAS before this write-up existed, with nothing said about them either way."
+	    Impact = @(
+	        "A stolen or forged TGT is accepted for as long as the lifetime allows"
+	        "Disabling the account or resetting its password does not invalidate a ticket already issued"
+	        "The renewal window is the outer bound: a ticket renewed in time never has to be re-requested"
+	        "A longer lifetime widens every pass-the-ticket and Golden Ticket window by the same amount"
+	    )
+	    Attack = @(
+	        "1. Attacker obtains a TGT - from LSASS on a machine the user logged on to, or forged with the krbtgt key"
+	        "2. Uses it for the remainder of its lifetime, with no further contact with the password"
+	        "3. Renews it inside the renewal window, which costs one request and extends the hold"
+	    )
+	    Remediation = @(
+	        "Set the maximum lifetime for user tickets back to 10 hours and the renewal lifetime to 7 days"
+	        "Both live in Default Domain Policy under Computer Configuration -> Policies -> Windows Settings -> Security Settings -> Account Policies -> Kerberos Policy"
+	        "A longer lifetime is sometimes set for an application that cannot re-authenticate; the fix there belongs in the application, not in the domain policy"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Read the two values as the directory holds them (negative 100ns intervals)"
+	            Command = "Get-ADObject -Identity (Get-ADDomain).DistinguishedName -Properties maxTicketAge,maxRenewAge | Select-Object maxTicketAge,maxRenewAge"
+	        }
+	        @{
+	            Description = "The policy path that sets them"
+	            Command = "# Default Domain Policy -> Computer Configuration -> Policies -> Windows Settings -> Security Settings -> Account Policies -> Kerberos Policy"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Kerberos Policy - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/kerberos-policy" }
+	        @{ Title = "Maximum lifetime for user ticket"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/maximum-lifetime-for-user-ticket" }
+	    )
+	    Tools = @("Rubeus", "mimikatz")
+	    MITRE = "T1550.003"
+	    Triggers = @(
+	        @{ Attribute = 'ticketLifetime'; Pattern = '^EXTENDED'; Severity = 'Hint' }
+	    )
+	}
 	'TRUST_USES_RC4' = @{
-	    Title = "Trust Uses Weak RC4 Encryption"
-	    Risk = "Finding"
-	    BaseScore = 40
+	    Title = "Trust Key Uses RC4 Rather Than AES"
+	    Risk = "Hint"
+	    BaseScore = 25
 	    Description = "This trust relationship is configured to use RC4 encryption. RC4 is cryptographically weak and vulnerable to offline brute-force attacks, similar to Kerberoasting."
 	    Impact = @(
 	        "Trust traffic can be decrypted with offline attacks"
@@ -10115,7 +10156,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    Tools = @("Rubeus", "Hashcat", "John the Ripper")
 	    MITRE = "T1558"
 	    Triggers = @(
-	        @{ Attribute = 'usesRC4'; Pattern = '^True$'; Severity = 'Finding' }
+	        @{ Attribute = 'trustKeyWeakness'; Pattern = '^RC4'; Severity = 'Hint' }
 	    )
 	}
 	'TRUST_BIDIRECTIONAL' = @{
@@ -60018,12 +60059,18 @@ function Get-DomainInformation {
 	                $MaxTicketAge = $null
 	                $MaxRenewAge = $null
 	                if ($DomainObject.maxTicketAge) {
-	                    $TicketAgeTicks = [Math]::Abs([Int64]$DomainObject.maxTicketAge)
-	                    $MaxTicketAge = [TimeSpan]::FromTicks($TicketAgeTicks)
+	                    $TicketAgeRaw = [Int64]$DomainObject.maxTicketAge
+	                    if ($TicketAgeRaw -ne [Int64]::MinValue) {
+	                        $MaxTicketAge = [TimeSpan]::FromTicks([Math]::Abs($TicketAgeRaw))
+	                    } else {
+	                    }
 	                }
 	                if ($DomainObject.maxRenewAge) {
-	                    $RenewAgeTicks = [Math]::Abs([Int64]$DomainObject.maxRenewAge)
-	                    $MaxRenewAge = [TimeSpan]::FromTicks($RenewAgeTicks)
+	                    $RenewAgeRaw = [Int64]$DomainObject.maxRenewAge
+	                    if ($RenewAgeRaw -ne [Int64]::MinValue) {
+	                        $MaxRenewAge = [TimeSpan]::FromTicks([Math]::Abs($RenewAgeRaw))
+	                    } else {
+	                    }
 	                }
 	                $KerberosPolicy = @{
 	                    MaxTicketAge = $MaxTicketAge
@@ -60201,13 +60248,16 @@ function Get-DomainInformation {
 	        $domainInfoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainBasicInfo' -Force
 	        Show-Object $domainInfoObj
 	        Show-SubHeader "Analyzing Kerberos policy..." -ObjectType "KerberosPolicy"
-	        $maxTicketAgeText = "10 hours (default)"
-	        $maxRenewalAgeText = "7 days (default)"
+	        $maxTicketAgeText = "Unknown - the domain Kerberos policy could not be read"
+	        $maxRenewalAgeText = $maxTicketAgeText
+	        $ticketLifetimeVerdict = $null
 	        if ($KerberosPolicy -and $KerberosPolicy.MaxTicketAge) {
 	            $TicketAgeHours = [Math]::Round($KerberosPolicy.MaxTicketAge.TotalHours, 1)
 	            $maxTicketAgeText = "$TicketAgeHours hours"
 	            if ($TicketAgeHours -eq 10) {
 	                $maxTicketAgeText += " (default)"
+	            } elseif ($TicketAgeHours -gt 10) {
+	                $ticketLifetimeVerdict = "EXTENDED - a ticket lives $TicketAgeHours hours instead of the default 10"
 	            }
 	        }
 	        if ($KerberosPolicy -and $KerberosPolicy.MaxRenewAge) {
@@ -60215,6 +60265,13 @@ function Get-DomainInformation {
 	            $maxRenewalAgeText = "$RenewAgeDays days"
 	            if ($RenewAgeDays -eq 7) {
 	                $maxRenewalAgeText += " (default)"
+	            } elseif ($RenewAgeDays -gt 7) {
+	                $renewVerdict = "EXTENDED - a ticket can be renewed for $RenewAgeDays days instead of the default 7"
+	                $ticketLifetimeVerdict = if ($ticketLifetimeVerdict) {
+	                    $ticketLifetimeVerdict + ", and renewed for $RenewAgeDays days instead of 7"
+	                } else {
+	                    $renewVerdict
+	                }
 	            }
 	        }
 	        $dcTimeText = $null
@@ -60251,6 +60308,9 @@ function Get-DomainInformation {
 	        }
 	        if ($dcTimeText) {
 	            $kerberosObj | Add-Member -NotePropertyName 'domainControllerTime' -NotePropertyValue $dcTimeText -Force
+	        }
+	        if ($ticketLifetimeVerdict) {
+	            $kerberosObj | Add-Member -NotePropertyName 'ticketLifetime' -NotePropertyValue $ticketLifetimeVerdict -Force
 	        }
 	        $kerberosSeverity = "Note"
 	        if ($KrbtgtInfo) {
@@ -60404,12 +60464,22 @@ function Get-DomainPasswordPolicy {
 	            return
 	        }
 	        $domainPolicy = if ($domainPolicyResults -is [array]) { $domainPolicyResults[0] } else { $domainPolicyResults }
-	        $minPwdLength = if ($domainPolicy.minPwdLength) {
-	            try { [int]$domainPolicy.minPwdLength } catch { 0 }
-	        } else { 0 }
-	        $minPwdAgeSpan = ConvertFrom-ADInterval -Value $domainPolicy.minPwdAge
+	        $rawMinPwdLength = $domainPolicy.minPwdLength
+	        $hasMinPwdLength = ($null -ne $rawMinPwdLength) -and
+	                           (-not [string]::IsNullOrWhiteSpace([string]$rawMinPwdLength))
+	        $minPwdLength = 0
+	        if ($hasMinPwdLength) {
+	            try { $minPwdLength = [int]$rawMinPwdLength } catch { $hasMinPwdLength = $false }
+	        }
+	        $rawMinPwdAge = $domainPolicy.minPwdAge
+	        $hasMinPwdAge = ($null -ne $rawMinPwdAge) -and
+	                        (-not [string]::IsNullOrWhiteSpace([string]$rawMinPwdAge))
+	        $minPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMinPwdAge
 	        $minPwdAge = if ($minPwdAgeSpan) { [Math]::Round($minPwdAgeSpan.TotalDays) } else { 0 }
-	        $maxPwdAgeSpan = ConvertFrom-ADInterval -Value $domainPolicy.maxPwdAge
+	        $rawMaxPwdAge = $domainPolicy.maxPwdAge
+	        $hasMaxPwdAge = ($null -ne $rawMaxPwdAge) -and
+	                        (-not [string]::IsNullOrWhiteSpace([string]$rawMaxPwdAge))
+	        $maxPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMaxPwdAge
 	        $maxPwdAge = if ($maxPwdAgeSpan) { [Math]::Round($maxPwdAgeSpan.TotalDays) } else { 0 }
 	        $lockoutThreshold = if ($domainPolicy.lockoutThreshold -and $domainPolicy.lockoutThreshold -notmatch "Not set") {
 	            try { [int]$domainPolicy.lockoutThreshold } catch { 0 }
@@ -60442,9 +60512,12 @@ function Get-DomainPasswordPolicy {
 	            $reversibleEncryption = ($pwdPropsInt -band 16) -ne 0
 	        }
 	        $passwordPolicyObj = [PSCustomObject]@{
-	            minPwdLength = if ($minPwdLength -eq 0) { "Disabled" } else { "$minPwdLength characters" }
-	            minPwdAge = if ($minPwdAge -eq 0) { "Disabled" } else { "$minPwdAge days" }
-	            maxPwdAge = if ($maxPwdAge -eq 0) { "Disabled (Never expires)" } else { "$maxPwdAge days" }
+	            minPwdLength = if (-not $hasMinPwdLength) { "Unknown - the value could not be read" }
+	                           elseif ($minPwdLength -eq 0) { "Disabled" } else { "$minPwdLength characters" }
+	            minPwdAge = if (-not $hasMinPwdAge) { "Unknown - the value could not be read" }
+	                        elseif ($minPwdAge -eq 0) { "Disabled" } else { "$minPwdAge days" }
+	            maxPwdAge = if (-not $hasMaxPwdAge) { "Unknown - the value could not be read" }
+	                        elseif ($maxPwdAge -eq 0) { "Disabled (Never expires)" } else { "$maxPwdAge days" }
 	            passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
 	            reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
 	            lockoutThreshold = if ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
@@ -60452,14 +60525,14 @@ function Get-DomainPasswordPolicy {
 	            lockoutObservationWindow = if ($lockoutWindow -gt 0) { "$lockoutWindow minutes" } else { "N/A" }
 	        }
 	        $policyWeaknesses = @()
-	        if ($minPwdLength -lt 8) { $policyWeaknesses += "short_password" }
+	        if ($hasMinPwdLength -and $minPwdLength -lt 8) { $policyWeaknesses += "short_password" }
 	        if (-not $complexityEnabled) { $policyWeaknesses += "no_complexity" }
 	        if ($reversibleEncryption) { $policyWeaknesses += "reversible_encryption" }
 	        if ($lockoutThreshold -eq 0) { $policyWeaknesses += "no_lockout" }
 	        $moderateWeaknesses = @()
-	        if ($minPwdLength -ge 8 -and $minPwdLength -lt 14) { $moderateWeaknesses += "moderate_password_length" }
+	        if ($hasMinPwdLength -and $minPwdLength -ge 8 -and $minPwdLength -lt 14) { $moderateWeaknesses += "moderate_password_length" }
 	        if ($lockoutThreshold -gt 10) { $moderateWeaknesses += "high_lockout_threshold" }
-	        if ($maxPwdAge -eq 0) { $moderateWeaknesses += "password_never_expires" }
+	        if ($hasMaxPwdAge -and $maxPwdAge -eq 0) { $moderateWeaknesses += "password_never_expires" }
 	        $policySeverity = if (@($policyWeaknesses).Count -gt 0) {
 	            "Finding"
 	        } elseif (@($moderateWeaknesses).Count -gt 0) {
@@ -60665,8 +60738,13 @@ function Get-DomainTrusts {
 	                    $trustObject | Add-Member -NotePropertyName 'trustRisk' -NotePropertyValue $verdict.Risk -Force
 	                }
 	                if ($usesRC4) {
-	                    $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
-	                        -NotePropertyValue 'The trust key is RC4 rather than AES. Weaker to crack, and it is the key an inter-realm ticket would be forged with.' -Force
+	                    if ("$type" -match 'MIT') {
+	                        $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
+	                            -NotePropertyValue 'RC4 - the trust key is RC4 rather than AES. Weaker to crack, and it is the key an inter-realm ticket would be forged with.' -Force
+	                    } else {
+	                        $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
+	                            -NotePropertyValue "Set, but not meaningful on a $type trust - MS-ADTS defines the RC4 attribute bit for an MIT realm trust. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
+	                    }
 	                }
 	                $trustObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainTrust' -Force
 	                Show-Object $trustObject -Class $verdict.Severity
@@ -83428,7 +83506,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-0231"
+$Script:adPEASVersion = "2.7.0+20261012-0255"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

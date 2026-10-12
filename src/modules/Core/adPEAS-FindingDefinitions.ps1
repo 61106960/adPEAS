@@ -6701,9 +6701,9 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
     }
 
     'TRUST_USES_RC4' = @{
-        Title = "Trust Uses Weak RC4 Encryption"
-        Risk = "Finding"
-        BaseScore = 40
+        Title = "Trust Key Uses RC4 Rather Than AES"
+        Risk = "Hint"
+        BaseScore = 25
         Description = "This trust relationship is configured to use RC4 encryption. RC4 is cryptographically weak and vulnerable to offline brute-force attacks, similar to Kerberoasting."
         Impact = @(
             "Trust traffic can be decrypted with offline attacks"
@@ -6748,7 +6748,16 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Tools = @("Rubeus", "Hashcat", "John the Ripper")
         MITRE = "T1558"
         Triggers = @(
-            @{ Attribute = 'usesRC4'; Pattern = '^True$'; Severity = 'Finding' }
+            # On trustKeyWeakness, not on the raw usesRC4 boolean.
+            #
+            # MS-ADTS defines TRUST_ATTRIBUTE_USES_RC4_ENCRYPTION for an MIT realm trust
+            # only, so on an Active Directory trust the bit says nothing about the key -
+            # and a trigger on the bare True made it a red finding worth 40 points on
+            # every trust that happened to carry it. Get-DomainTrusts writes the
+            # attribute now only where the bit means something, and the severity is the
+            # one the module has always stated in its own comment: a weaker key is not
+            # on its own a way in.
+            @{ Attribute = 'trustKeyWeakness'; Pattern = '^RC4'; Severity = 'Hint' }
         )
     }
 
@@ -14764,3 +14773,4 @@ function Get-DateFromValue {
 
     return $null
 }
+

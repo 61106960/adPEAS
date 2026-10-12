@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 02:31:46
-    Version: 2.7.0+20261012-0231
+    Build: 2026-10-12 02:55:43
+    Version: 2.7.0+20261012-0255
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6485,7 +6485,9 @@ $Script:PrimaryAttributes = @{
 
     # Kerberos Policy object
     KerberosPolicy = @(
-        'maxTicketAgeTGT', 'maxRenewalAge', 'krbtgtPasswordAge', 'domainControllerTime'
+        # ticketLifetime carries the verdict on the two values above it and exists only
+        # when one of them was widened past the Microsoft default.
+        'ticketLifetime', 'maxTicketAgeTGT', 'maxRenewalAge', 'krbtgtPasswordAge', 'domainControllerTime'
     )
 
     # Guest Account object (from Get-DomainInformation)
@@ -14486,10 +14488,55 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
 
+    'KERBEROS_TICKET_LIFETIME_EXTENDED' = @{
+        Title = "Kerberos Ticket Lifetime Extended Beyond the Default"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "The domain grants Kerberos tickets a longer life than the Microsoft default of 10 hours, or allows them to be renewed for longer than the default 7 days. Those two numbers are the whole of what decides how long a stolen ticket keeps working: a TGT taken out of LSASS, or forged with the krbtgt key, is accepted until it expires, and no password change and no account disable shortens that. Both values were read and printed by adPEAS before this write-up existed, with nothing said about them either way."
+        Impact = @(
+            "A stolen or forged TGT is accepted for as long as the lifetime allows"
+            "Disabling the account or resetting its password does not invalidate a ticket already issued"
+            "The renewal window is the outer bound: a ticket renewed in time never has to be re-requested"
+            "A longer lifetime widens every pass-the-ticket and Golden Ticket window by the same amount"
+        )
+        Attack = @(
+            "1. Attacker obtains a TGT - from LSASS on a machine the user logged on to, or forged with the krbtgt key"
+            "2. Uses it for the remainder of its lifetime, with no further contact with the password"
+            "3. Renews it inside the renewal window, which costs one request and extends the hold"
+        )
+        Remediation = @(
+            "Set the maximum lifetime for user tickets back to 10 hours and the renewal lifetime to 7 days"
+            "Both live in Default Domain Policy under Computer Configuration -> Policies -> Windows Settings -> Security Settings -> Account Policies -> Kerberos Policy"
+            "A longer lifetime is sometimes set for an application that cannot re-authenticate; the fix there belongs in the application, not in the domain policy"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Read the two values as the directory holds them (negative 100ns intervals)"
+                Command = "Get-ADObject -Identity (Get-ADDomain).DistinguishedName -Properties maxTicketAge,maxRenewAge | Select-Object maxTicketAge,maxRenewAge"
+            }
+            @{
+                Description = "The policy path that sets them"
+                Command = "# Default Domain Policy -> Computer Configuration -> Policies -> Windows Settings -> Security Settings -> Account Policies -> Kerberos Policy"
+            }
+        )
+        References = @(
+            @{ Title = "Kerberos Policy - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/kerberos-policy" }
+            @{ Title = "Maximum lifetime for user ticket"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/maximum-lifetime-for-user-ticket" }
+        )
+        Tools = @("Rubeus", "mimikatz")
+        MITRE = "T1550.003"
+        Triggers = @(
+            # The verdict Get-DomainInformation writes when one of the two values is above
+            # its default. Anchored, and the attribute exists only in that case - an
+            # ordinary domain gets no row and no card.
+            @{ Attribute = 'ticketLifetime'; Pattern = '^EXTENDED'; Severity = 'Hint' }
+        )
+    }
+
     'TRUST_USES_RC4' = @{
-        Title = "Trust Uses Weak RC4 Encryption"
-        Risk = "Finding"
-        BaseScore = 40
+        Title = "Trust Key Uses RC4 Rather Than AES"
+        Risk = "Hint"
+        BaseScore = 25
         Description = "This trust relationship is configured to use RC4 encryption. RC4 is cryptographically weak and vulnerable to offline brute-force attacks, similar to Kerberoasting."
         Impact = @(
             "Trust traffic can be decrypted with offline attacks"
@@ -14534,7 +14581,16 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Tools = @("Rubeus", "Hashcat", "John the Ripper")
         MITRE = "T1558"
         Triggers = @(
-            @{ Attribute = 'usesRC4'; Pattern = '^True$'; Severity = 'Finding' }
+            # On trustKeyWeakness, not on the raw usesRC4 boolean.
+            #
+            # MS-ADTS defines TRUST_ATTRIBUTE_USES_RC4_ENCRYPTION for an MIT realm trust
+            # only, so on an Active Directory trust the bit says nothing about the key -
+            # and a trigger on the bare True made it a red finding worth 40 points on
+            # every trust that happened to carry it. Get-DomainTrusts writes the
+            # attribute now only where the bit means something, and the severity is the
+            # one the module has always stated in its own comment: a weaker key is not
+            # on its own a way in.
+            @{ Attribute = 'trustKeyWeakness'; Pattern = '^RC4'; Severity = 'Hint' }
         )
     }
 
@@ -97071,14 +97127,29 @@ function Get-DomainInformation {
                     $MaxTicketAge = $null
                     $MaxRenewAge = $null
 
+                    # The interval attributes are negative 100ns units, so the sign goes
+                    # away before the TimeSpan - but [Math]::Abs throws on
+                    # [Int64]::MinValue, the sentinel these attributes use for "never",
+                    # and there is no positive Int64 to return. The throw would land in
+                    # the catch below and take the rest of this block with it: the PDC
+                    # role owner and the NetBIOS fallback, with nothing in the report to
+                    # say why. One comparison each.
                     if ($DomainObject.maxTicketAge) {
-                        $TicketAgeTicks = [Math]::Abs([Int64]$DomainObject.maxTicketAge)
-                        $MaxTicketAge = [TimeSpan]::FromTicks($TicketAgeTicks)
+                        $TicketAgeRaw = [Int64]$DomainObject.maxTicketAge
+                        if ($TicketAgeRaw -ne [Int64]::MinValue) {
+                            $MaxTicketAge = [TimeSpan]::FromTicks([Math]::Abs($TicketAgeRaw))
+                        } else {
+                            Write-Log "[Get-DomainInformation] maxTicketAge is the never sentinel - no ticket lifetime to report"
+                        }
                     }
 
                     if ($DomainObject.maxRenewAge) {
-                        $RenewAgeTicks = [Math]::Abs([Int64]$DomainObject.maxRenewAge)
-                        $MaxRenewAge = [TimeSpan]::FromTicks($RenewAgeTicks)
+                        $RenewAgeRaw = [Int64]$DomainObject.maxRenewAge
+                        if ($RenewAgeRaw -ne [Int64]::MinValue) {
+                            $MaxRenewAge = [TimeSpan]::FromTicks([Math]::Abs($RenewAgeRaw))
+                        } else {
+                            Write-Log "[Get-DomainInformation] maxRenewAge is the never sentinel - no renewal window to report"
+                        }
                     }
 
                     $KerberosPolicy = @{
@@ -97362,15 +97433,28 @@ function Get-DomainInformation {
             # ===================================================================
             Show-SubHeader "Analyzing Kerberos policy..." -ObjectType "KerberosPolicy"
 
-            # Build Kerberos policy values
-            $maxTicketAgeText = "10 hours (default)"
-            $maxRenewalAgeText = "7 days (default)"
+            # Build Kerberos policy values.
+            #
+            # Not "the default" until something was read. These two lines used to carry
+            # the Microsoft defaults before any query had run, and $KerberosPolicy is
+            # $null whenever the domain object could not be read at all - so a domain
+            # nobody had looked at was reported as having 10 hours and 7 days, in the
+            # same words as a domain that really does.
+            $maxTicketAgeText = "Unknown - the domain Kerberos policy could not be read"
+            $maxRenewalAgeText = $maxTicketAgeText
+
+            # And the values are assessed now. Microsoft's defaults are 10 hours and 7
+            # days; above them a stolen TGT keeps working for longer, which is the whole
+            # of what these two settings decide.
+            $ticketLifetimeVerdict = $null
 
             if ($KerberosPolicy -and $KerberosPolicy.MaxTicketAge) {
                 $TicketAgeHours = [Math]::Round($KerberosPolicy.MaxTicketAge.TotalHours, 1)
                 $maxTicketAgeText = "$TicketAgeHours hours"
                 if ($TicketAgeHours -eq 10) {
                     $maxTicketAgeText += " (default)"
+                } elseif ($TicketAgeHours -gt 10) {
+                    $ticketLifetimeVerdict = "EXTENDED - a ticket lives $TicketAgeHours hours instead of the default 10"
                 }
             }
             if ($KerberosPolicy -and $KerberosPolicy.MaxRenewAge) {
@@ -97378,6 +97462,16 @@ function Get-DomainInformation {
                 $maxRenewalAgeText = "$RenewAgeDays days"
                 if ($RenewAgeDays -eq 7) {
                     $maxRenewalAgeText += " (default)"
+                } elseif ($RenewAgeDays -gt 7) {
+                    # Both widened: one sentence, because the renewal window is the
+                    # outer bound and reporting them separately says the same thing
+                    # twice.
+                    $renewVerdict = "EXTENDED - a ticket can be renewed for $RenewAgeDays days instead of the default 7"
+                    $ticketLifetimeVerdict = if ($ticketLifetimeVerdict) {
+                        $ticketLifetimeVerdict + ", and renewed for $RenewAgeDays days instead of 7"
+                    } else {
+                        $renewVerdict
+                    }
                 }
             }
 
@@ -97422,6 +97516,14 @@ function Get-DomainInformation {
             # Add DC time if available
             if ($dcTimeText) {
                 $kerberosObj | Add-Member -NotePropertyName 'domainControllerTime' -NotePropertyValue $dcTimeText -Force
+            }
+
+            # The verdict on the two lifetimes, on an attribute of its own so it can
+            # carry a write-up. Written only when something was actually widened: a
+            # row saying "the defaults are in place" on every ordinary domain is a
+            # sentence nobody reads twice.
+            if ($ticketLifetimeVerdict) {
+                $kerberosObj | Add-Member -NotePropertyName 'ticketLifetime' -NotePropertyValue $ticketLifetimeVerdict -Force
             }
 
             # Determine severity for Kerberos Policy based on krbtgt age
@@ -97718,17 +97820,36 @@ function Get-DomainPasswordPolicy {
             # - minPwdLength, lockoutThreshold: integer as string (e.g., "7")
             # - pwdProperties: flag array (e.g., @("DOMAIN_PASSWORD_COMPLEX", ...))
 
-            $minPwdLength = if ($domainPolicy.minPwdLength) {
-                try { [int]$domainPolicy.minPwdLength } catch { 0 }
-            } else { 0 }
+            # Whether the attribute arrived at all, kept apart from its value - the same
+            # distinction the lockout block below already makes, for the same reason.
+            #
+            # A minPwdLength nobody could read became 0, and 0 renders as "Disabled",
+            # which the lt_12 predicate reads as the worst possible policy. So an
+            # unreadable attribute produced the hardest finding this check has, about a
+            # setting nobody had seen. The other direction of the same mistake is one
+            # screen further down in this file.
+            $rawMinPwdLength = $domainPolicy.minPwdLength
+            $hasMinPwdLength = ($null -ne $rawMinPwdLength) -and
+                               (-not [string]::IsNullOrWhiteSpace([string]$rawMinPwdLength))
+            $minPwdLength = 0
+            if ($hasMinPwdLength) {
+                try { $minPwdLength = [int]$rawMinPwdLength } catch { $hasMinPwdLength = $false }
+            }
 
-            # minPwdAge / maxPwdAge in whole days. A null TimeSpan means the "never"
-            # sentinel or an unreadable value; both are 0 here, which the display below
-            # renders as "Disabled" resp. "Disabled (Never expires)".
-            $minPwdAgeSpan = ConvertFrom-ADInterval -Value $domainPolicy.minPwdAge
+            # minPwdAge / maxPwdAge in whole days. ConvertFrom-ADInterval answers $null
+            # for three different things - an unreadable value, an absent one, and the
+            # Int64.MinValue "never" sentinel - so the raw attribute decides whether
+            # anything was read, and the TimeSpan decides what it said.
+            $rawMinPwdAge = $domainPolicy.minPwdAge
+            $hasMinPwdAge = ($null -ne $rawMinPwdAge) -and
+                            (-not [string]::IsNullOrWhiteSpace([string]$rawMinPwdAge))
+            $minPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMinPwdAge
             $minPwdAge = if ($minPwdAgeSpan) { [Math]::Round($minPwdAgeSpan.TotalDays) } else { 0 }
 
-            $maxPwdAgeSpan = ConvertFrom-ADInterval -Value $domainPolicy.maxPwdAge
+            $rawMaxPwdAge = $domainPolicy.maxPwdAge
+            $hasMaxPwdAge = ($null -ne $rawMaxPwdAge) -and
+                            (-not [string]::IsNullOrWhiteSpace([string]$rawMaxPwdAge))
+            $maxPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMaxPwdAge
             $maxPwdAge = if ($maxPwdAgeSpan) { [Math]::Round($maxPwdAgeSpan.TotalDays) } else { 0 }
 
             $lockoutThreshold = if ($domainPolicy.lockoutThreshold -and $domainPolicy.lockoutThreshold -notmatch "Not set") {
@@ -97785,11 +97906,19 @@ function Get-DomainPasswordPolicy {
                 $reversibleEncryption = ($pwdPropsInt -band 16) -ne 0
             }
 
-            # Create password policy object for consistent display
+            # Create password policy object for consistent display.
+            #
+            # "Unknown" where the attribute never arrived. It is not a hedge: the three
+            # settings below each have a verdict attached to them, and an unreadable
+            # value would otherwise be reported as the verdict for its numeric zero -
+            # "Disabled" for the length, which is the worst state the policy has.
             $passwordPolicyObj = [PSCustomObject]@{
-                minPwdLength = if ($minPwdLength -eq 0) { "Disabled" } else { "$minPwdLength characters" }
-                minPwdAge = if ($minPwdAge -eq 0) { "Disabled" } else { "$minPwdAge days" }
-                maxPwdAge = if ($maxPwdAge -eq 0) { "Disabled (Never expires)" } else { "$maxPwdAge days" }
+                minPwdLength = if (-not $hasMinPwdLength) { "Unknown - the value could not be read" }
+                               elseif ($minPwdLength -eq 0) { "Disabled" } else { "$minPwdLength characters" }
+                minPwdAge = if (-not $hasMinPwdAge) { "Unknown - the value could not be read" }
+                            elseif ($minPwdAge -eq 0) { "Disabled" } else { "$minPwdAge days" }
+                maxPwdAge = if (-not $hasMaxPwdAge) { "Unknown - the value could not be read" }
+                            elseif ($maxPwdAge -eq 0) { "Disabled (Never expires)" } else { "$maxPwdAge days" }
                 passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
                 reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
                 lockoutThreshold = if ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
@@ -97803,8 +97932,13 @@ function Get-DomainPasswordPolicy {
             # Secure: Good policy
             $policyWeaknesses = @()
 
-            # Check for critical weaknesses (Finding)
-            if ($minPwdLength -lt 8) { $policyWeaknesses += "short_password" }
+            # Check for critical weaknesses (Finding).
+            #
+            # Only on values that were read. An unreadable minimum length is not a short
+            # one, and "0 characters" is what an absent attribute looked like here -
+            # which made the hardest verdict this check has the default answer for a
+            # policy nobody had seen. The row says Unknown now, and this list skips it.
+            if ($hasMinPwdLength -and $minPwdLength -lt 8) { $policyWeaknesses += "short_password" }
             if (-not $complexityEnabled) { $policyWeaknesses += "no_complexity" }
             if ($reversibleEncryption) { $policyWeaknesses += "reversible_encryption" }
 
@@ -97816,9 +97950,11 @@ function Get-DomainPasswordPolicy {
 
             # Check for moderate weaknesses (Hint)
             $moderateWeaknesses = @()
-            if ($minPwdLength -ge 8 -and $minPwdLength -lt 14) { $moderateWeaknesses += "moderate_password_length" }
+            if ($hasMinPwdLength -and $minPwdLength -ge 8 -and $minPwdLength -lt 14) { $moderateWeaknesses += "moderate_password_length" }
             if ($lockoutThreshold -gt 10) { $moderateWeaknesses += "high_lockout_threshold" }
-            if ($maxPwdAge -eq 0) { $moderateWeaknesses += "password_never_expires" }
+            # Same rule: the sentinel and a configured 0 both mean "never expires", and
+            # an attribute that did not arrive means nothing at all.
+            if ($hasMaxPwdAge -and $maxPwdAge -eq 0) { $moderateWeaknesses += "password_never_expires" }
 
             # Determine overall severity
             $policySeverity = if (@($policyWeaknesses).Count -gt 0) {
@@ -98191,9 +98327,21 @@ function Get-DomainTrusts {
                     # The trust key itself. RC4 is weaker than the AES the trust could be
                     # using, and it is the key a Golden Ticket across the trust is forged
                     # with - but it is not on its own a way in, so it stays a hint.
+                    #
+                    # Which trust type it is decides whether the bit means anything.
+                    # MS-ADTS defines TRUST_ATTRIBUTE_USES_RC4_ENCRYPTION for an MIT realm
+                    # trust; on an Active Directory trust the encryption of the trust key
+                    # comes from msDS-SupportedEncryptionTypes instead, and the bit is
+                    # left over. Reported as a red finding on every trust that carried it,
+                    # it said something about the key that the attribute cannot say.
                     if ($usesRC4) {
-                        $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
-                            -NotePropertyValue 'The trust key is RC4 rather than AES. Weaker to crack, and it is the key an inter-realm ticket would be forged with.' -Force
+                        if ("$type" -match 'MIT') {
+                            $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
+                                -NotePropertyValue 'RC4 - the trust key is RC4 rather than AES. Weaker to crack, and it is the key an inter-realm ticket would be forged with.' -Force
+                        } else {
+                            $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
+                                -NotePropertyValue "Set, but not meaningful on a $type trust - MS-ADTS defines the RC4 attribute bit for an MIT realm trust. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
+                        }
                     }
 
                     $trustObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainTrust' -Force
@@ -133320,7 +133468,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0231"
+$Script:adPEASVersion = "2.7.0+20261012-0255"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

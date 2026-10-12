@@ -242,9 +242,21 @@ function Get-DomainTrusts {
                     # The trust key itself. RC4 is weaker than the AES the trust could be
                     # using, and it is the key a Golden Ticket across the trust is forged
                     # with - but it is not on its own a way in, so it stays a hint.
+                    #
+                    # Which trust type it is decides whether the bit means anything.
+                    # MS-ADTS defines TRUST_ATTRIBUTE_USES_RC4_ENCRYPTION for an MIT realm
+                    # trust; on an Active Directory trust the encryption of the trust key
+                    # comes from msDS-SupportedEncryptionTypes instead, and the bit is
+                    # left over. Reported as a red finding on every trust that carried it,
+                    # it said something about the key that the attribute cannot say.
                     if ($usesRC4) {
-                        $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
-                            -NotePropertyValue 'The trust key is RC4 rather than AES. Weaker to crack, and it is the key an inter-realm ticket would be forged with.' -Force
+                        if ("$type" -match 'MIT') {
+                            $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
+                                -NotePropertyValue 'RC4 - the trust key is RC4 rather than AES. Weaker to crack, and it is the key an inter-realm ticket would be forged with.' -Force
+                        } else {
+                            $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
+                                -NotePropertyValue "Set, but not meaningful on a $type trust - MS-ADTS defines the RC4 attribute bit for an MIT realm trust. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
+                        }
                     }
 
                     $trustObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainTrust' -Force
