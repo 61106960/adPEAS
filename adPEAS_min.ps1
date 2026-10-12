@@ -38843,7 +38843,15 @@ function Get-CurrentUserTokenGroups {
     }
     try {
         Write-Log "[Get-CurrentUserTokenGroups] Querying tokenGroups for current session..."
-        $TokenResults = @(Invoke-LDAPSearch -Filter "(objectClass=*)" -Properties "tokenGroups" -Scope "Base" -Raw)
+        $principalDN = $null
+        if ($Script:LDAPContext.AuthenticatedUserDN) {
+            $principalDN = [string]$Script:LDAPContext.AuthenticatedUserDN
+        }
+        if ([string]::IsNullOrWhiteSpace($principalDN)) {
+            Write-Log "[Get-CurrentUserTokenGroups] No DN for the bound principal, cannot read its tokenGroups"
+            return ,@()
+        }
+        $TokenResults = @(Invoke-LDAPSearch -Filter "(objectClass=*)" -Properties "tokenGroups" -Scope "Base" -SearchBase $principalDN -Raw)
         $TokenGroupSIDs = @()
         if ($TokenResults -and $TokenResults.Count -gt 0) {
             $TokenResult = $TokenResults[0]
@@ -86672,7 +86680,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-0636"
+$Script:adPEASVersion = "2.7.0+20261012-0657"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 06:36:18
-    Version: 2.7.0+20261012-0636
+    Build: 2026-10-12 06:57:29
+    Version: 2.7.0+20261012-0657
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -58405,15 +58405,38 @@ function Get-CurrentUserTokenGroups {
     try {
         Write-Log "[Get-CurrentUserTokenGroups] Querying tokenGroups for current session..."
 
-        # Query tokenGroups on domain root with Base scope using Invoke-LDAPSearch
-        # When using SSPI/Kerberos, this returns groups for the AUTHENTICATED user
+        # tokenGroups on the bound principal's own object, Base scope.
+        #
+        # It used to read the domain root, with a comment claiming that returns the groups
+        # of the authenticated user. It does not: tokenGroups is a constructed attribute
+        # that AD computes for the object being read (MS-ADTS 3.1.1.4.5.19), and the
+        # documented way to read your own is a Base-scope search on your own DN. Without a
+        # SearchBase, Invoke-LDAPSearch uses the domain DN, so the best case was an empty
+        # attribute and the realistic case the domain object's own SID and nothing else.
+        #
+        # What hung off it: the encrypted-LAPS authorization gate, which compares these
+        # SIDs against the decryptor group named in each blob. It never matched, so a
+        # domain using encrypted Windows LAPS - the configuration Microsoft recommends -
+        # had every computer silently discarded.
+        #
         # Note: tokenGroups is a special constructed attribute that returns raw byte arrays
+        $principalDN = $null
+        if ($Script:LDAPContext.AuthenticatedUserDN) {
+            $principalDN = [string]$Script:LDAPContext.AuthenticatedUserDN
+        }
+        if ([string]::IsNullOrWhiteSpace($principalDN)) {
+            # Honest empty rather than a wrong answer: without the principal's DN there is
+            # no object to compute the groups for, and the caller treats an empty list as
+            # "could not be determined" rather than as "member of nothing".
+            Write-Log "[Get-CurrentUserTokenGroups] No DN for the bound principal, cannot read its tokenGroups"
+            return ,@()
+        }
         # @() wrap required: a Base-scope self-lookup always returns exactly one entry,
         # and Invoke-LDAPSearch's own bare "return $OutputObjects" unrolls a one-element
         # result to that bare entry rather than a one-item array (PSCustomObject has no
         # synthetic .Count, so the check below would silently always see 0). Every other
         # Invoke-LDAPSearch call site in this codebase already wraps the call the same way.
-        $TokenResults = @(Invoke-LDAPSearch -Filter "(objectClass=*)" -Properties "tokenGroups" -Scope "Base" -Raw)
+        $TokenResults = @(Invoke-LDAPSearch -Filter "(objectClass=*)" -Properties "tokenGroups" -Scope "Base" -SearchBase $principalDN -Raw)
 
         $TokenGroupSIDs = @()
 
@@ -134145,7 +134168,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0636"
+$Script:adPEASVersion = "2.7.0+20261012-0657"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
