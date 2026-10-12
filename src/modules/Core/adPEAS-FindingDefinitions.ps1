@@ -4405,7 +4405,9 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
             "Enable 'Domain controller: LDAP server signing requirements' = Require signing"
             "Configure via GPO: Computer Configuration > Policies > Windows Settings > Security Settings > Local Policies > Security Options"
             "Best practice: Always configure security settings via GPO rather than local policy"
-            "Test applications for LDAP signing compatibility before enforcing"
+            "Measure before enforcing, do not survey: set the diagnostic 16 LDAP Interface Events to 2 on the DCs and read the Directory Service log. 2886 and 2887 are the standing reminder and the 24-hour count; 2889 names the client address and the account for each unsigned or cleartext bind. That list is what enforcing breaks, by name"
+            "What is usually on it: printers, scanners and multifunction devices doing a simple bind on port 389, appliances with an LDAP user directory behind them (VPN gateways, load balancers, NAS), older monitoring and backup agents, Linux hosts whose nss/pam/sssd configuration points at ldap:// without TLS, and in-house tools that bind with no authentication type set"
+            "Every one of those is fixed on the client - LDAPS or StartTLS, or a SASL bind that requests signing - and not by leaving the domain controller as it is"
         )
         RemediationCommands = @(
             @{
@@ -4459,7 +4461,9 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
             "Enable LDAP channel binding on Domain Controllers"
             "Set registry: HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters\\LdapEnforceChannelBinding = 2"
             "Best practice: Deploy via GPO Preferences for consistent configuration"
-            "Test application compatibility before enforcing"
+            "Go through 1 (When supported) first: it demands the token only from clients that announce they can supply one, which leaves the rest working while they are found. 2 (Always) once the audit is quiet"
+            "The audit in between: with 16 LDAP Interface Events at 2, the Directory Service log writes 3039 per client, and 3040 and 3041 as the 24-hour summary. The clients named there are the ones that stop working at 2"
+            "What this setting does not touch: a simple bind over LDAPS carries no channel binding token at all and is unaffected - it is the SASL binds (Negotiate, Kerberos, NTLM) over TLS that have to supply one. Windows clients do once the March 2020 updates are in, so what is usually left is non-Windows LDAP libraries and appliance firmware that never implemented CBT"
         )
         RemediationCommands = @(
             @{
@@ -5969,7 +5973,9 @@ Get-ADObject -SearchBase $schema `
             "Deploy via GPO: Computer Configuration > Policies > Windows Settings > Security Settings > Local Policies > Security Options"
             "Microsoft network server: Digitally sign communications (always) = Enabled"
             "Best practice: Always configure security settings via GPO rather than relying on local policy or OS defaults"
-            "Test application compatibility before enforcing"
+            "Domain controllers already require it through the Default Domain Controllers Policy, so the work is member servers and clients - per OU, not domain-wide in one step"
+            "What breaks: devices that cannot sign at all. Multifunction printers and scanners writing to a share, embedded NAS and SAN firmware, imaging and backup appliances, anything still speaking SMB1. Such a device cannot be exempted from a server that requires signing - either its firmware is updated, or its share moves to a server deliberately kept outside the enforcing OU and documented as the exception it is"
+            "What it costs: signing is computed per packet. With SMB 3 and AES-based signing on current CPUs that is cheap, but it is still measurable on sequential file-server loads over fast links - worth measuring throughput on the busiest file server before the change rather than after"
         )
         RemediationCommands = @(
             @{
@@ -6606,10 +6612,11 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             "4. Gains Domain Admin access in trusting domain"
         )
         Remediation = @(
-            "Enable SID Filtering: netdom trust /quarantine:yes"
-            "Review why SID Filtering was disabled"
-            "Use Selective Authentication where possible"
-            "Monitor cross-trust authentication for SID History abuse"
+            "This is the external or realm trust case, and quarantine is the lever: netdom trust THIS.DOMAIN /domain:TRUSTED.DOMAIN /quarantine:yes. It is also the default for such a trust, so somebody cleared it. A forest trust is relaxed by a different flag and has its own write-up - TRUST_TREAT_AS_EXTERNAL"
+            "Find out what it was cleared for before setting it back. Quarantine stops this domain honouring sIDHistory from the other side, so accounts migrated out of the trusted domain that still reach resources here through an old SID of theirs lose that access the moment it is on - after a domain consolidation that is a working arrangement rather than an oversight, and it is the usual reason the flag is gone"
+            "Where migrated accounts still depend on it: re-permission the resources onto the current SIDs first, then enable quarantine"
+            "Selective Authentication limits which principals may authenticate across the trust at all - worth having in addition, not instead"
+            "Until it is on, treat the trusted domain as part of this domain's attack surface and watch cross-trust authentication for SID history abuse"
         )
         RemediationCommands = @(
             @{
@@ -6623,10 +6630,6 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             @{
                 Description = "Enable SID Filtering using PowerShell (alternative method)"
                 Command = "Set-ADTrust -Identity 'TrustedDomain' -SIDFilteringQuarantined `$true"
-            }
-            @{
-                Description = "Disable SID Filtering only if explicitly required (use with extreme caution)"
-                Command = "netdom trust TRUSTINGDOMAIN /domain:TRUSTEDDOMAIN /quarantine:no"
             }
         )
         References = @(
@@ -6647,10 +6650,26 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             # trust in existence was reported, which is the fastest way to teach a reader
             # to skip the colour. And an inbound-only trust was reported although the
             # exposure belongs to the partner: inbound means they trust us.
-            @{ Attribute = 'trustRisk'; Severity = 'Finding' }
+            #
+            # The card, though, follows the regime rather than the risk sentence. Two
+            # combinations set trustRisk - an external trust without quarantine, and a
+            # forest trust carrying TREAT_AS_EXTERNAL - and they are undone by different
+            # commands, so a single card on trustRisk handed one of the two a remediation
+            # that cannot work on it: netdom /quarantine:yes is not the lever on a forest
+            # trust. sidFiltering states which regime applies, in a prefix
+            # Get-TrustSIDFilteringVerdict writes; the forest half is TRUST_TREAT_AS_EXTERNAL.
+            @{ Attribute = 'sidFiltering'; Pattern = '^DISABLED'; Severity = 'Finding' }
 
-            # The plain state of the bit, without a verdict attached to it. sidFiltering
-            # carries the sentence that explains which of the three regimes applies.
+            # The risk sentence stays red wherever it appears and names no card of its
+            # own - the regime line above has already supplied one.
+            @{ Attribute = 'trustRisk'; Severity = 'Finding'; SeverityOnly = $true }
+
+            # Filtering in force, on either kind of trust. The external case also has the
+            # bit itself below, but a forest trust does not carry QUARANTINED_DOMAIN at
+            # all, so without this line its good news rendered as colourless as the bad.
+            @{ Attribute = 'sidFiltering'; Pattern = '^Enabled'; Severity = 'Secure'; SeverityOnly = $true }
+
+            # The plain state of the bit, without a verdict attached to it.
             @{ Attribute = 'isQuarantined'; Pattern = '^True$'; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
@@ -6898,6 +6917,12 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             # trust to external filtering". Both appeared on the same trust object, the
             # green one carrying the tooltip that closed the subject.
             @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Custom = 'is_not_within_forest_trust'; Severity = 'Finding' }
+
+            # And the verdict line, so the row naming the regime carries this card instead
+            # of the external-trust one, whose remediation - netdom /quarantine:yes - is
+            # the wrong command here. "Weakened" is written only for a forest trust this
+            # domain actually extends, which is the only place the flag does anything.
+            @{ Attribute = 'sidFiltering'; Pattern = '^Weakened'; Severity = 'Finding' }
         )
     }
 
