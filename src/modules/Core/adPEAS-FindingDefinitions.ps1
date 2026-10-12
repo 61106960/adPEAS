@@ -8031,6 +8031,57 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
 
+    'WEAK_FGPP' = @{
+        Title = "Fine-Grained Password Policy Weaker Than the Domain Default"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Password Settings Object sets a weaker password policy than the domain default for the users and groups it is assigned to: a minimum length below 8, no complexity requirement, reversible encryption, or no account lockout. A PSO overrides the domain policy for its targets, so the domain-wide line in this report says nothing about them. Where the target is a privileged account or group, the exception applies to exactly the accounts the domain policy exists to protect. adPEAS reported the number of weak policies before this write-up existed, without naming them and without a card behind the line."
+        Impact = @(
+            "The accounts a PSO is assigned to are exempt from the domain password policy"
+            "A short or complexity-free minimum makes guessing and cracking cheaper for those accounts"
+            "Reversible encryption stores the password in a form that can be decrypted, not hashed"
+            "No lockout threshold on the PSO removes the limit on guessing against its targets"
+            "A PSO assigned to a privileged group is an exception carved out for the accounts that matter most"
+        )
+        Attack = @(
+            "1. Attacker reads the PSOs - msDS-PasswordSettings objects are readable by any authenticated user"
+            "2. Reads msDS-PSOAppliesTo to learn which accounts the weaker policy covers"
+            "3. Sprays or cracks against exactly those accounts, within whatever lockout the PSO allows"
+        )
+        Remediation = @(
+            "Raise the PSO to at least the domain default: minimum length 14, complexity on, reversible encryption off, a lockout threshold set"
+            "Where the PSO exists for a service account that cannot meet the policy, prefer a gMSA - the password is then 240 random characters and nobody has to type it"
+            "Remove a PSO that is assigned to nobody rather than leaving it in the container"
+            "Check msDS-PasswordSettingsPrecedence: the lowest value wins, so a weak PSO with precedence 1 beats a strong one with 10"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List every PSO with the settings that matter and who it applies to"
+                Command = "Get-ADFineGrainedPasswordPolicy -Filter * | Select-Object Name,Precedence,MinPasswordLength,ComplexityEnabled,ReversibleEncryptionEnabled,LockoutThreshold,AppliesTo"
+            }
+            @{
+                Description = "Raise one PSO to the domain default"
+                Command = "Set-ADFineGrainedPasswordPolicy -Identity 'PSO_NAME' -MinPasswordLength 14 -ComplexityEnabled `$true -ReversibleEncryptionEnabled `$false -LockoutThreshold 5"
+            }
+            @{
+                Description = "Who the policy currently covers"
+                Command = "Get-ADFineGrainedPasswordPolicySubject -Identity 'PSO_NAME'"
+            }
+        )
+        References = @(
+            @{ Title = "Fine-Grained Password Policies - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/get-started/adac/introduction-to-active-directory-administrative-center-enhancements--level-100-#fine_grained_pswd_policy_mgmt" }
+            @{ Title = "msDS-PSOAppliesTo"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-msds-psoappliesto" }
+        )
+        Tools = @("PowerView", "Get-ADFineGrainedPasswordPolicy")
+        MITRE = "T1110"
+        Triggers = @(
+            # The line that names the weak policies carries this id directly. The trigger
+            # below is for the row on the policy object: a PSO whose targets include a
+            # privileged principal is the case this card exists for.
+            @{ Attribute = 'appliesToPrivileged'; Pattern = '^PRIVILEGED'; Severity = 'Finding' }
+        )
+    }
+
     'NO_MAX_PASSWORD_AGE' = @{
         Title = "Maximum Password Age Disabled"
         Risk = "Hint"

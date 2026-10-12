@@ -284,7 +284,25 @@ function Get-DomainPasswordPolicy {
                             $complexityEnabled = if ($pso.'msDS-PasswordComplexityEnabled') { $pso.'msDS-PasswordComplexityEnabled' -eq 'TRUE' } else { $false }
                             $reversibleEncryption = if ($pso.'msDS-PasswordReversibleEncryptionEnabled') { $pso.'msDS-PasswordReversibleEncryptionEnabled' -eq 'TRUE' } else { $false }
                             $lockoutThresholdPSO = if ($pso.'msDS-LockoutThreshold') { [int]$pso.'msDS-LockoutThreshold' } else { 0 }
-                            $appliesTo = if ($pso.'msDS-PSOAppliesTo') { $pso.'msDS-PSOAppliesTo' } else { @() }
+                            $appliesTo = @(@(if ($pso.'msDS-PSOAppliesTo') { $pso.'msDS-PSOAppliesTo' } else { @() }) | Where-Object { $_ })
+
+                            # Who the policy applies to, by name, and whether any of them
+                            # is privileged.
+                            #
+                            # The row used to read "3 user(s)/group(s)" - a count, which
+                            # is the one thing a reader cannot act on. "A weak policy
+                            # applies to Domain Admins" is the reason to look at PSOs at
+                            # all, and msDS-PSOAppliesTo has carried the answer all along.
+                            $appliesToNames = @()
+                            $appliesToPrivileged = @()
+                            foreach ($targetDN in $appliesTo) {
+                                $targetName = (("$targetDN" -split ',')[0]) -replace '^CN=', ''
+                                if (-not $targetName) { $targetName = "$targetDN" }
+                                $appliesToNames += $targetName
+
+                                $psoTargetPriv = Test-IsPrivileged -Identity "$targetDN" -IncludeOperators
+                                if ($psoTargetPriv.IsPrivileged) { $appliesToPrivileged += $targetName }
+                            }
 
                             # Create PSO object for consistent display
                             $psoObj = [PSCustomObject]@{
@@ -294,27 +312,62 @@ function Get-DomainPasswordPolicy {
                                 passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
                                 reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
                                 lockoutThreshold = if ($lockoutThresholdPSO -eq 0) { "Disabled" } else { "After $lockoutThresholdPSO failed attempts" }
-                                appliesTo = "$($appliesTo.Count) user(s)/group(s)"
+                                appliesTo = if (@($appliesToNames).Count -gt 0) {
+                                    (@($appliesToNames) -join ', ')
+                                } else {
+                                    'Nobody - this policy is assigned to no user and no group'
+                                }
+                            }
+
+                            if (@($appliesToPrivileged).Count -gt 0) {
+                                $psoObj | Add-Member -NotePropertyName 'appliesToPrivileged' -NotePropertyValue (
+                                    'PRIVILEGED - ' + (@($appliesToPrivileged) -join ', ')) -Force
                             }
 
                             $psoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'FineGrainedPasswordPolicy' -Force
                             Show-Object $psoObj
                         }
 
-                        # Output FGPP findings summary
-                        $weakPSOCount = @($psos | Where-Object {
-                            $psoRE = if ($_.'msDS-PasswordReversibleEncryptionEnabled') { $_.'msDS-PasswordReversibleEncryptionEnabled' -eq 'TRUE' } else { $false }
-                            $psoMinLen = if ($_.'msDS-MinimumPasswordLength') { [int]$_.'msDS-MinimumPasswordLength' } else { 0 }
-                            $psoComp = if ($_.'msDS-PasswordComplexityEnabled') { $_.'msDS-PasswordComplexityEnabled' -eq 'TRUE' } else { $false }
-                            $psoLockout = if ($_.'msDS-LockoutThreshold') { [int]$_.'msDS-LockoutThreshold' } else { 0 }
+                        # Output FGPP findings summary.
+                        #
+                        # A policy assigned to nobody applies to nobody. Counting it as a
+                        # weakness was the same false positive as an unlinked GPO, which
+                        # two other checks in this project state explicitly - so the
+                        # unassigned ones are named separately instead.
+                        $unassignedPSOs = @()
+                        $weakPSOs = @()
+                        foreach ($candidate in @($psos)) {
+                            $psoTargets = @(@($candidate.'msDS-PSOAppliesTo') | Where-Object { $_ })
+                            if (@($psoTargets).Count -eq 0) {
+                                $unassignedPSOs += $candidate
+                                continue
+                            }
 
-                            $psoRE -or ($psoMinLen -lt 8) -or (-not $psoComp) -or ($psoLockout -eq 0)
-                        }).Count
+                            $psoRE = if ($candidate.'msDS-PasswordReversibleEncryptionEnabled') { $candidate.'msDS-PasswordReversibleEncryptionEnabled' -eq 'TRUE' } else { $false }
+                            $psoMinLen = if ($candidate.'msDS-MinimumPasswordLength') { [int]$candidate.'msDS-MinimumPasswordLength' } else { 0 }
+                            $psoComp = if ($candidate.'msDS-PasswordComplexityEnabled') { $candidate.'msDS-PasswordComplexityEnabled' -eq 'TRUE' } else { $false }
+                            $psoLockout = if ($candidate.'msDS-LockoutThreshold') { [int]$candidate.'msDS-LockoutThreshold' } else { 0 }
 
-                        if ($weakPSOCount -gt 0) {
-                            Show-Line "Found $weakPSOCount FGPP weakness(es)" -Class Finding
-                        } else {
+                            if ($psoRE -or ($psoMinLen -lt 8) -or (-not $psoComp) -or ($psoLockout -eq 0)) {
+                                $weakPSOs += $candidate
+                            }
+                        }
+
+                        if (@($weakPSOs).Count -gt 0) {
+                            # Named, not counted: which policy is weak is the whole
+                            # answer, and the line carries the write-up so the HTML
+                            # report has an impact and a remediation for it. It had no
+                            # FindingId at all, so it reached the report as a sentence
+                            # with nothing behind it and no contribution to the score.
+                            $weakPSONames = @($weakPSOs | ForEach-Object { "$($_.name)" })
+                            Show-Line "$(@($weakPSOs).Count) Fine-Grained Password Polic$(if(@($weakPSOs).Count -eq 1){'y'}else{'ies'}) with a weakness: $(@($weakPSONames) -join ', ')" -Class Finding -FindingId 'WEAK_FGPP'
+                        } elseif (@($unassignedPSOs).Count -lt @($psos).Count) {
                             Show-Line "Fine-Grained Password Policies are properly configured" -Class Secure
+                        }
+
+                        if (@($unassignedPSOs).Count -gt 0) {
+                            $unassignedNames = @($unassignedPSOs | ForEach-Object { "$($_.name)" })
+                            Show-Line "Assigned to no user and no group, and therefore not assessed: $(@($unassignedNames) -join ', ')" -Class Note
                         }
 
                     } else {

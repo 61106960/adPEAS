@@ -222,7 +222,9 @@ $Script:PrimaryAttributes = @{
         'minPwdLength', 'passwordComplexity',
         'reversibleEncryption',
         'lockoutThreshold',
-        'appliesTo'
+        # appliesToPrivileged exists only where a target of the policy is privileged,
+        # and this type is strict - a row the list does not name is dropped in silence.
+        'appliesTo', 'appliesToPrivileged'
     )
 
     # Certificate Authority objects

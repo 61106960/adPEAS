@@ -3186,7 +3186,7 @@ $Script:PrimaryAttributes = @{
 	    'minPwdLength', 'passwordComplexity',
 	    'reversibleEncryption',
 	    'lockoutThreshold',
-	    'appliesTo'
+	    'appliesTo', 'appliesToPrivileged'
 	)
 	CertificateAuthority = @(
 	    'caName',
@@ -11334,11 +11334,58 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        @{ Attribute = 'passwordComplexity'; Pattern = 'Disabled'; Severity = 'Finding' }
 	    )
 	}
+	'WEAK_FGPP' = @{
+	    Title = "Fine-Grained Password Policy Weaker Than the Domain Default"
+	    Risk = "Finding"
+	    BaseScore = 45
+	    Description = "A Password Settings Object sets a weaker password policy than the domain default for the users and groups it is assigned to: a minimum length below 8, no complexity requirement, reversible encryption, or no account lockout. A PSO overrides the domain policy for its targets, so the domain-wide line in this report says nothing about them. Where the target is a privileged account or group, the exception applies to exactly the accounts the domain policy exists to protect. adPEAS reported the number of weak policies before this write-up existed, without naming them and without a card behind the line."
+	    Impact = @(
+	        "The accounts a PSO is assigned to are exempt from the domain password policy"
+	        "A short or complexity-free minimum makes guessing and cracking cheaper for those accounts"
+	        "Reversible encryption stores the password in a form that can be decrypted, not hashed"
+	        "No lockout threshold on the PSO removes the limit on guessing against its targets"
+	        "A PSO assigned to a privileged group is an exception carved out for the accounts that matter most"
+	    )
+	    Attack = @(
+	        "1. Attacker reads the PSOs - msDS-PasswordSettings objects are readable by any authenticated user"
+	        "2. Reads msDS-PSOAppliesTo to learn which accounts the weaker policy covers"
+	        "3. Sprays or cracks against exactly those accounts, within whatever lockout the PSO allows"
+	    )
+	    Remediation = @(
+	        "Raise the PSO to at least the domain default: minimum length 14, complexity on, reversible encryption off, a lockout threshold set"
+	        "Where the PSO exists for a service account that cannot meet the policy, prefer a gMSA - the password is then 240 random characters and nobody has to type it"
+	        "Remove a PSO that is assigned to nobody rather than leaving it in the container"
+	        "Check msDS-PasswordSettingsPrecedence: the lowest value wins, so a weak PSO with precedence 1 beats a strong one with 10"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "List every PSO with the settings that matter and who it applies to"
+	            Command = "Get-ADFineGrainedPasswordPolicy -Filter * | Select-Object Name,Precedence,MinPasswordLength,ComplexityEnabled,ReversibleEncryptionEnabled,LockoutThreshold,AppliesTo"
+	        }
+	        @{
+	            Description = "Raise one PSO to the domain default"
+	            Command = "Set-ADFineGrainedPasswordPolicy -Identity 'PSO_NAME' -MinPasswordLength 14 -ComplexityEnabled `$true -ReversibleEncryptionEnabled `$false -LockoutThreshold 5"
+	        }
+	        @{
+	            Description = "Who the policy currently covers"
+	            Command = "Get-ADFineGrainedPasswordPolicySubject -Identity 'PSO_NAME'"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Fine-Grained Password Policies - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/get-started/adac/introduction-to-active-directory-administrative-center-enhancements--level-100-#fine_grained_pswd_policy_mgmt" }
+	        @{ Title = "msDS-PSOAppliesTo"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-msds-psoappliesto" }
+	    )
+	    Tools = @("PowerView", "Get-ADFineGrainedPasswordPolicy")
+	    MITRE = "T1110"
+	    Triggers = @(
+	        @{ Attribute = 'appliesToPrivileged'; Pattern = '^PRIVILEGED'; Severity = 'Finding' }
+	    )
+	}
 	'NO_MAX_PASSWORD_AGE' = @{
 	    Title = "Maximum Password Age Disabled"
-	    Risk = "Finding"
+	    Risk = "Hint"
 	    BaseScore = 20
-	    Description = "The maximum password age is disabled, meaning passwords never expire. While NIST SP 800-63B recommends against forced periodic rotation, never-expiring passwords combined with no breach detection means compromised passwords remain valid indefinitely."
+	    Description = "The maximum password age is disabled, meaning passwords never expire. Two things used to be said about that in one report: Get-DomainPasswordPolicy counts it among its MODERATE weaknesses, which makes the policy object a hint, and this card called the same value a finding - two steps apart, on one line of output. Hint is the one that survives scrutiny: Microsoft's own security baseline has not set a maximum password age since 2019 and NIST SP 800-63B recommends against routine expiry, so a domain where passwords do not expire is following current guidance rather than failing it. What remains true is the part that has nothing to do with rotation policy: without expiry, a password that leaked stays valid until somebody notices."
 	    Impact = @(
 	        "Compromised passwords remain valid indefinitely"
 	        "No forced rotation after suspected breach"
@@ -11382,7 +11429,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    )
 	    MITRE = "T1078.002"
 	    Triggers = @(
-	        @{ Attribute = 'maxPwdAge'; Pattern = 'Disabled|Never'; Severity = 'Finding' }
+	        @{ Attribute = 'maxPwdAge'; Pattern = 'Disabled|Never'; Severity = 'Hint' }
 	    )
 	}
 	'WEAK_LOCKOUT_DURATION' = @{
@@ -14186,8 +14233,8 @@ foreach ($oid in $linkedOIDs) {
 	    )
 	    MITRE = "T1078"
 	    Triggers = @(
-	        @{ Attribute = 'domainFunctionalLevel'; Pattern = 'Windows (2000|2003|2008)'; Severity = 'Hint' }
-	        @{ Attribute = 'forestFunctionalLevel'; Pattern = 'Windows (2000|2003|2008)'; Severity = 'Hint' }
+	        @{ Attribute = 'domainFunctionalLevel'; Pattern = 'Windows (2000|2003|2008|2012)'; Severity = 'Hint' }
+	        @{ Attribute = 'forestFunctionalLevel'; Pattern = 'Windows (2000|2003|2008|2012)'; Severity = 'Hint' }
 	    )
 	}
 	'PREWIN2000_ANONYMOUS_MEMBER' = @{
@@ -60580,7 +60627,16 @@ function Get-DomainPasswordPolicy {
 	                        $complexityEnabled = if ($pso.'msDS-PasswordComplexityEnabled') { $pso.'msDS-PasswordComplexityEnabled' -eq 'TRUE' } else { $false }
 	                        $reversibleEncryption = if ($pso.'msDS-PasswordReversibleEncryptionEnabled') { $pso.'msDS-PasswordReversibleEncryptionEnabled' -eq 'TRUE' } else { $false }
 	                        $lockoutThresholdPSO = if ($pso.'msDS-LockoutThreshold') { [int]$pso.'msDS-LockoutThreshold' } else { 0 }
-	                        $appliesTo = if ($pso.'msDS-PSOAppliesTo') { $pso.'msDS-PSOAppliesTo' } else { @() }
+	                        $appliesTo = @(@(if ($pso.'msDS-PSOAppliesTo') { $pso.'msDS-PSOAppliesTo' } else { @() }) | Where-Object { $_ })
+	                        $appliesToNames = @()
+	                        $appliesToPrivileged = @()
+	                        foreach ($targetDN in $appliesTo) {
+	                            $targetName = (("$targetDN" -split ',')[0]) -replace '^CN=', ''
+	                            if (-not $targetName) { $targetName = "$targetDN" }
+	                            $appliesToNames += $targetName
+	                            $psoTargetPriv = Test-IsPrivileged -Identity "$targetDN" -IncludeOperators
+	                            if ($psoTargetPriv.IsPrivileged) { $appliesToPrivileged += $targetName }
+	                        }
 	                        $psoObj = [PSCustomObject]@{
 	                            psoName = $psoName
 	                            precedence = $precedence
@@ -60588,22 +60644,44 @@ function Get-DomainPasswordPolicy {
 	                            passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
 	                            reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
 	                            lockoutThreshold = if ($lockoutThresholdPSO -eq 0) { "Disabled" } else { "After $lockoutThresholdPSO failed attempts" }
-	                            appliesTo = "$($appliesTo.Count) user(s)/group(s)"
+	                            appliesTo = if (@($appliesToNames).Count -gt 0) {
+	                                (@($appliesToNames) -join ', ')
+	                            } else {
+	                                'Nobody - this policy is assigned to no user and no group'
+	                            }
+	                        }
+	                        if (@($appliesToPrivileged).Count -gt 0) {
+	                            $psoObj | Add-Member -NotePropertyName 'appliesToPrivileged' -NotePropertyValue (
+	                                'PRIVILEGED - ' + (@($appliesToPrivileged) -join ', ')) -Force
 	                        }
 	                        $psoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'FineGrainedPasswordPolicy' -Force
 	                        Show-Object $psoObj
 	                    }
-	                    $weakPSOCount = @($psos | Where-Object {
-	                        $psoRE = if ($_.'msDS-PasswordReversibleEncryptionEnabled') { $_.'msDS-PasswordReversibleEncryptionEnabled' -eq 'TRUE' } else { $false }
-	                        $psoMinLen = if ($_.'msDS-MinimumPasswordLength') { [int]$_.'msDS-MinimumPasswordLength' } else { 0 }
-	                        $psoComp = if ($_.'msDS-PasswordComplexityEnabled') { $_.'msDS-PasswordComplexityEnabled' -eq 'TRUE' } else { $false }
-	                        $psoLockout = if ($_.'msDS-LockoutThreshold') { [int]$_.'msDS-LockoutThreshold' } else { 0 }
-	                        $psoRE -or ($psoMinLen -lt 8) -or (-not $psoComp) -or ($psoLockout -eq 0)
-	                    }).Count
-	                    if ($weakPSOCount -gt 0) {
-	                        Show-Line "Found $weakPSOCount FGPP weakness(es)" -Class Finding
-	                    } else {
+	                    $unassignedPSOs = @()
+	                    $weakPSOs = @()
+	                    foreach ($candidate in @($psos)) {
+	                        $psoTargets = @(@($candidate.'msDS-PSOAppliesTo') | Where-Object { $_ })
+	                        if (@($psoTargets).Count -eq 0) {
+	                            $unassignedPSOs += $candidate
+	                            continue
+	                        }
+	                        $psoRE = if ($candidate.'msDS-PasswordReversibleEncryptionEnabled') { $candidate.'msDS-PasswordReversibleEncryptionEnabled' -eq 'TRUE' } else { $false }
+	                        $psoMinLen = if ($candidate.'msDS-MinimumPasswordLength') { [int]$candidate.'msDS-MinimumPasswordLength' } else { 0 }
+	                        $psoComp = if ($candidate.'msDS-PasswordComplexityEnabled') { $candidate.'msDS-PasswordComplexityEnabled' -eq 'TRUE' } else { $false }
+	                        $psoLockout = if ($candidate.'msDS-LockoutThreshold') { [int]$candidate.'msDS-LockoutThreshold' } else { 0 }
+	                        if ($psoRE -or ($psoMinLen -lt 8) -or (-not $psoComp) -or ($psoLockout -eq 0)) {
+	                            $weakPSOs += $candidate
+	                        }
+	                    }
+	                    if (@($weakPSOs).Count -gt 0) {
+	                        $weakPSONames = @($weakPSOs | ForEach-Object { "$($_.name)" })
+	                        Show-Line "$(@($weakPSOs).Count) Fine-Grained Password Polic$(if(@($weakPSOs).Count -eq 1){'y'}else{'ies'}) with a weakness: $(@($weakPSONames) -join ', ')" -Class Finding -FindingId 'WEAK_FGPP'
+	                    } elseif (@($unassignedPSOs).Count -lt @($psos).Count) {
 	                        Show-Line "Fine-Grained Password Policies are properly configured" -Class Secure
+	                    }
+	                    if (@($unassignedPSOs).Count -gt 0) {
+	                        $unassignedNames = @($unassignedPSOs | ForEach-Object { "$($_.name)" })
+	                        Show-Line "Assigned to no user and no group, and therefore not assessed: $(@($unassignedNames) -join ', ')" -Class Note
 	                    }
 	                } else {
 	                    Show-Line "No Fine-Grained Password Policies configured" -Class Note
@@ -83506,7 +83584,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-0255"
+$Script:adPEASVersion = "2.7.0+20261012-0318"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
