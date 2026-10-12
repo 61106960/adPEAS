@@ -4088,6 +4088,7 @@ $Script:FindingDefinitions = @{
 	    MITRE = "T1558.004"
 	    Triggers = @(
 	        @{ Attribute = 'userAccountControl'; Pattern = 'DONT_REQ_PREAUTH'; Severity = 'Finding' }
+	        @{ Attribute = 'protectedUsersMember'; Severity = 'Hint' }
 	    )
 	}
 	'KERBEROS_HASH_CRACKABLE' = @{
@@ -19050,9 +19051,10 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    WhatWeCheck = @(
 	        "Computers with TRUSTED_FOR_DELEGATION flag"
 	        "Users with TRUSTED_FOR_DELEGATION flag"
-	        "Whether these systems could be coerced to receive DC TGTs"
+	        "Whether the account is a Domain Controller, which carries the flag by design"
+	        "Not tested: whether a Domain Controller can be coerced into authenticating to the system - that needs a connection to the host, not an LDAP query"
 	    )
-	    SecureMessage = "No accounts with unconstrained delegation found (excluding Domain Controllers). TGT theft through delegation abuse is not possible in this environment."
+	    SecureMessage = "No account other than the Domain Controllers has unconstrained delegation, so no member server stores the TGT of everyone who authenticates to it. Constrained and resource-based delegation are separate sections."
 	    PrimaryFindingId = 'UNCONSTRAINED_DELEGATION'
 	}
 	'ConstrainedDelegation' = @{
@@ -19079,9 +19081,11 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    Summary = "Identifies computers with Resource-Based Constrained Delegation settings."
 	    WhyItMatters = "RBCD allows specified accounts to impersonate users to the target computer. If attackers can write to this attribute or control a listed principal, they can compromise the target."
 	    WhatWeCheck = @(
-	        "Computers with msDS-AllowedToActOnBehalfOfOtherIdentity"
-	        "Which principals are allowed to delegate"
-	        "Whether those principals could be compromised or created"
+	        "Computers, users and managed service accounts with msDS-AllowedToActOnBehalfOfOtherIdentity"
+	        "Which principals are allowed to delegate to the resource"
+	        "Whether any of them is a broad group, or an identity this domain does not expect to delegate"
+	        "Whether the resource itself is a Domain Controller"
+	        "Not tested: who may write the attribute, which decides who can add themselves to it - the ACL and ownership sections answer that"
 	    )
 	    SecureMessage = "No account in this domain has Resource-Based Constrained Delegation configured - msDS-AllowedToActOnBehalfOfOtherIdentity is not set anywhere. Nothing was assessed because there was nothing to assess."
 	    PrimaryFindingId = 'RBCD_DANGEROUS_PRINCIPALS'
@@ -19310,9 +19314,10 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    WhyItMatters = "Any domain user can request service tickets for accounts with SPNs. These tickets are encrypted with the account's password hash and can be cracked offline to reveal the password."
 	    WhatWeCheck = @(
 	        "User accounts (not computers) with servicePrincipalName"
-	        "Whether these accounts have weak or old passwords"
 	        "Privilege level of Kerberoastable accounts"
+	        "How old the password is - pwdLastSet, flagged above one year and again above five"
 	        "Encryption types supported (RC4 is easier to crack)"
+	        "Not tested: whether the password is weak - adPEAS extracts the hash, cracking it happens offline"
 	    )
 	    SecureMessage = "No user accounts with Service Principal Names found (excluding computer accounts and gMSAs). Kerberoasting attacks are not possible in this environment."
 	    PrimaryFindingId = 'KERBEROASTABLE_SPN'
@@ -19326,8 +19331,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    WhyItMatters = "Accounts with pre-authentication disabled can have their password hashes obtained without any authentication. Anyone can request an AS-REP and crack the password offline."
 	    WhatWeCheck = @(
 	        "Accounts with DONT_REQUIRE_PREAUTH flag"
-	        "Whether this setting is intentional or misconfiguration"
 	        "Privilege level of vulnerable accounts"
+	        "Whether the account is in Protected Users, where RC4 is refused and the AS-REP comes back AES-encrypted"
 	    )
 	    SecureMessage = "No accounts with Kerberos pre-authentication disabled found. AS-REP Roasting attacks are not possible in this environment."
 	    PrimaryFindingId = 'ASREP_ROASTABLE'
@@ -71960,6 +71965,21 @@ function Get-ASREPRoastableAccounts {
 	        $asrepRoastableUsers = @($asrepRoastableUsers) + @($asrepRoastableMSAs)
 	        if (@($asrepRoastableUsers).Count -gt 0) {
 	            Show-Line "Found $(@($asrepRoastableUsers).Count) AS-REP Roastable account(s):" -Class "Finding"
+	            $protectedSIDs = @{}
+	            try {
+	                $domainSID = $Script:LDAPContext.DomainSID
+	                if ($domainSID) {
+	                    $protectedGroup = @(Get-DomainGroup -Identity "$domainSID-525" @connectionParams)[0]
+	                    if ($protectedGroup -and $protectedGroup.distinguishedName) {
+	                        $escapedProtectedDN = Escape-LDAPFilterDN -DistinguishedName ([string]$protectedGroup.distinguishedName)
+	                        foreach ($protectedObj in @(Get-DomainObject -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedProtectedDN)" -Properties 'objectSid' @connectionParams)) {
+	                            if ($protectedObj.objectSid) { $protectedSIDs[[string]$protectedObj.objectSid] = $true }
+	                        }
+	                    }
+	                }
+	            } catch {
+	                Show-Line "Protected Users membership could not be read - members are not marked below" -Class "Note"
+	            }
 	            $canTestASREPRoast = -not $OPSEC
 	            if ($OPSEC) {
 	                Show-Line "Skipping hash extraction (OPSEC mode)" -Class "Hint"
@@ -71967,6 +71987,7 @@ function Get-ASREPRoastableAccounts {
 	            $totalUsers = @($asrepRoastableUsers).Count
 	            $currentIndex = 0
 	            $privilegedCount = 0
+	            $protectedCount = 0
 	            foreach ($user in $asrepRoastableUsers) {
 	                $currentIndex++
 	                if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing AS-REP Roastable accounts" -Current $currentIndex -Total $totalUsers -ObjectName $user.sAMAccountName }
@@ -72004,6 +72025,11 @@ function Get-ASREPRoastableAccounts {
 	                    $user | Add-Member -NotePropertyName 'PrivilegedRoastTarget' `
 	                        -NotePropertyValue $privileged.Reason -Force
 	                }
+	                if ($user.objectSid -and $protectedSIDs.ContainsKey([string]$user.objectSid)) {
+	                    $protectedCount++
+	                    $user | Add-Member -NotePropertyName 'protectedUsersMember' -NotePropertyValue (
+	                        'Yes - RC4 is refused for members, so the AS-REP is AES-encrypted and far slower to crack') -Force
+	                }
 	                $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ASREPRoastable' -Force
 	                Show-Object $user
 	                Show-EmptyLine
@@ -72011,6 +72037,9 @@ function Get-ASREPRoastableAccounts {
 	            if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing AS-REP Roastable accounts" -Completed }
 	            if ($privilegedCount -gt 0) {
 	                Show-Line "$privilegedCount of them is/are privileged - this hash needs no credentials at all to obtain" -Class "Finding"
+	            }
+	            if ($protectedCount -gt 0) {
+	                Show-Line "$protectedCount of them is/are in Protected Users - AES-only AS-REP, slower to crack" -Class "Hint"
 	            }
 	        } else {
 	            Show-Line "No AS-REP Roastable accounts found" -Class "Secure"
@@ -83941,7 +83970,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-0940"
+$Script:adPEASVersion = "2.7.0+20261012-1003"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

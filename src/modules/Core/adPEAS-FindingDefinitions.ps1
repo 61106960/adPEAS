@@ -232,6 +232,11 @@ $Script:FindingDefinitions = @{
         MITRE = "T1558.004"
         Triggers = @(
             @{ Attribute = 'userAccountControl'; Pattern = 'DONT_REQ_PREAUTH'; Severity = 'Finding' }
+
+            # Membership in Protected Users does not clear the flag, so the row stays a
+            # finding - but RC4 is refused for a member and the AS-REP comes back AES-
+            # encrypted, which is the difference between a crack and a cracking budget.
+            @{ Attribute = 'protectedUsersMember'; Severity = 'Hint' }
         )
     }
 

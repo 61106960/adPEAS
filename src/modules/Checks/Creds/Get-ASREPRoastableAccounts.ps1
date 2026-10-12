@@ -88,6 +88,41 @@ function Get-ASREPRoastableAccounts {
             if (@($asrepRoastableUsers).Count -gt 0) {
                 Show-Line "Found $(@($asrepRoastableUsers).Count) AS-REP Roastable account(s):" -Class "Finding"
 
+                # Which of them is in Protected Users. One query for the whole check, and
+                # only when there is something to annotate.
+                #
+                # Protected Users does not force pre-authentication - that is not among the
+                # documented effects of the group - so a member with DONT_REQ_PREAUTH still
+                # answers with an AS-REP. What the group does is forbid RC4, so that AS-REP
+                # comes back AES-encrypted: far slower to crack, not unobtainable. Both
+                # checks were wrong in opposite directions - Get-ProtectedUsersStatus
+                # promised immunity, and this one said "needs no credentials at all" about
+                # an account whose hash is practically out of reach.
+                $protectedSIDs = @{}
+                try {
+                    $domainSID = $Script:LDAPContext.DomainSID
+                    if ($domainSID) {
+                        $protectedGroup = @(Get-DomainGroup -Identity "$domainSID-525" @connectionParams)[0]
+                        if ($protectedGroup -and $protectedGroup.distinguishedName) {
+                            # Recursively, and over every object class, the way
+                            # Get-ProtectedUsersStatus asks: the group takes effect through
+                            # the token, so a nested group protects its members exactly as a
+                            # direct membership does. Escape-LDAPFilterDN because a group DN
+                            # holding a parenthesis otherwise produces a filter the server
+                            # rejects.
+                            $escapedProtectedDN = Escape-LDAPFilterDN -DistinguishedName ([string]$protectedGroup.distinguishedName)
+                            foreach ($protectedObj in @(Get-DomainObject -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedProtectedDN)" -Properties 'objectSid' @connectionParams)) {
+                                if ($protectedObj.objectSid) { $protectedSIDs[[string]$protectedObj.objectSid] = $true }
+                            }
+                        }
+                    }
+                } catch {
+                    # A group that does not exist is not an error - below Domain Functional
+                    # Level 2012 R2 there is none, and then no account can be a member.
+                    Write-Log "[Get-ASREPRoastableAccounts] Protected Users membership could not be read: $_" -Level Warning
+                    Show-Line "Protected Users membership could not be read - members are not marked below" -Class "Note"
+                }
+
                 # Determine if we should extract hashes (not in OPSEC mode)
                 $canTestASREPRoast = -not $OPSEC
 
@@ -98,6 +133,7 @@ function Get-ASREPRoastableAccounts {
                 $totalUsers = @($asrepRoastableUsers).Count
                 $currentIndex = 0
                 $privilegedCount = 0
+                $protectedCount = 0
                 foreach ($user in $asrepRoastableUsers) {
                     $currentIndex++
                     if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing AS-REP Roastable accounts" -Current $currentIndex -Total $totalUsers -ObjectName $user.sAMAccountName }
@@ -157,6 +193,12 @@ function Get-ASREPRoastableAccounts {
                             -NotePropertyValue $privileged.Reason -Force
                     }
 
+                    if ($user.objectSid -and $protectedSIDs.ContainsKey([string]$user.objectSid)) {
+                        $protectedCount++
+                        $user | Add-Member -NotePropertyName 'protectedUsersMember' -NotePropertyValue (
+                            'Yes - RC4 is refused for members, so the AS-REP is AES-encrypted and far slower to crack') -Force
+                    }
+
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ASREPRoastable' -Force
                     Show-Object $user
 
@@ -167,6 +209,10 @@ function Get-ASREPRoastableAccounts {
 
                 if ($privilegedCount -gt 0) {
                     Show-Line "$privilegedCount of them is/are privileged - this hash needs no credentials at all to obtain" -Class "Finding"
+                }
+
+                if ($protectedCount -gt 0) {
+                    Show-Line "$protectedCount of them is/are in Protected Users - AES-only AS-REP, slower to crack" -Class "Hint"
                 }
             } else {
                 Show-Line "No AS-REP Roastable accounts found" -Class "Secure"

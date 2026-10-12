@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 09:40:25
-    Version: 2.7.0+20261012-0940
+    Build: 2026-10-12 10:03:33
+    Version: 2.7.0+20261012-1003
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -8067,6 +8067,11 @@ $Script:FindingDefinitions = @{
         MITRE = "T1558.004"
         Triggers = @(
             @{ Attribute = 'userAccountControl'; Pattern = 'DONT_REQ_PREAUTH'; Severity = 'Finding' }
+
+            # Membership in Protected Users does not clear the flag, so the row stays a
+            # finding - but RC4 is refused for a member and the AS-REP comes back AES-
+            # encrypted, which is the difference between a crack and a cracking budget.
+            @{ Attribute = 'protectedUsersMember'; Severity = 'Hint' }
         )
     }
 
@@ -25592,9 +25597,10 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Computers with TRUSTED_FOR_DELEGATION flag"
             "Users with TRUSTED_FOR_DELEGATION flag"
-            "Whether these systems could be coerced to receive DC TGTs"
+            "Whether the account is a Domain Controller, which carries the flag by design"
+            "Not tested: whether a Domain Controller can be coerced into authenticating to the system - that needs a connection to the host, not an LDAP query"
         )
-        SecureMessage = "No accounts with unconstrained delegation found (excluding Domain Controllers). TGT theft through delegation abuse is not possible in this environment."
+        SecureMessage = "No account other than the Domain Controllers has unconstrained delegation, so no member server stores the TGT of everyone who authenticates to it. Constrained and resource-based delegation are separate sections."
         PrimaryFindingId = 'UNCONSTRAINED_DELEGATION'
     }
 
@@ -25623,9 +25629,11 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Summary = "Identifies computers with Resource-Based Constrained Delegation settings."
         WhyItMatters = "RBCD allows specified accounts to impersonate users to the target computer. If attackers can write to this attribute or control a listed principal, they can compromise the target."
         WhatWeCheck = @(
-            "Computers with msDS-AllowedToActOnBehalfOfOtherIdentity"
-            "Which principals are allowed to delegate"
-            "Whether those principals could be compromised or created"
+            "Computers, users and managed service accounts with msDS-AllowedToActOnBehalfOfOtherIdentity"
+            "Which principals are allowed to delegate to the resource"
+            "Whether any of them is a broad group, or an identity this domain does not expect to delegate"
+            "Whether the resource itself is a Domain Controller"
+            "Not tested: who may write the attribute, which decides who can add themselves to it - the ACL and ownership sections answer that"
         )
         SecureMessage = "No account in this domain has Resource-Based Constrained Delegation configured - msDS-AllowedToActOnBehalfOfOtherIdentity is not set anywhere. Nothing was assessed because there was nothing to assess."
         PrimaryFindingId = 'RBCD_DANGEROUS_PRINCIPALS'
@@ -25881,9 +25889,10 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "Any domain user can request service tickets for accounts with SPNs. These tickets are encrypted with the account's password hash and can be cracked offline to reveal the password."
         WhatWeCheck = @(
             "User accounts (not computers) with servicePrincipalName"
-            "Whether these accounts have weak or old passwords"
             "Privilege level of Kerberoastable accounts"
+            "How old the password is - pwdLastSet, flagged above one year and again above five"
             "Encryption types supported (RC4 is easier to crack)"
+            "Not tested: whether the password is weak - adPEAS extracts the hash, cracking it happens offline"
         )
         SecureMessage = "No user accounts with Service Principal Names found (excluding computer accounts and gMSAs). Kerberoasting attacks are not possible in this environment."
         PrimaryFindingId = 'KERBEROASTABLE_SPN'
@@ -25898,8 +25907,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "Accounts with pre-authentication disabled can have their password hashes obtained without any authentication. Anyone can request an AS-REP and crack the password offline."
         WhatWeCheck = @(
             "Accounts with DONT_REQUIRE_PREAUTH flag"
-            "Whether this setting is intentional or misconfiguration"
             "Privilege level of vulnerable accounts"
+            "Whether the account is in Protected Users, where RC4 is refused and the AS-REP comes back AES-encrypted"
         )
         SecureMessage = "No accounts with Kerberos pre-authentication disabled found. AS-REP Roasting attacks are not possible in this environment."
         PrimaryFindingId = 'ASREP_ROASTABLE'
@@ -119272,6 +119281,41 @@ function Get-ASREPRoastableAccounts {
             if (@($asrepRoastableUsers).Count -gt 0) {
                 Show-Line "Found $(@($asrepRoastableUsers).Count) AS-REP Roastable account(s):" -Class "Finding"
 
+                # Which of them is in Protected Users. One query for the whole check, and
+                # only when there is something to annotate.
+                #
+                # Protected Users does not force pre-authentication - that is not among the
+                # documented effects of the group - so a member with DONT_REQ_PREAUTH still
+                # answers with an AS-REP. What the group does is forbid RC4, so that AS-REP
+                # comes back AES-encrypted: far slower to crack, not unobtainable. Both
+                # checks were wrong in opposite directions - Get-ProtectedUsersStatus
+                # promised immunity, and this one said "needs no credentials at all" about
+                # an account whose hash is practically out of reach.
+                $protectedSIDs = @{}
+                try {
+                    $domainSID = $Script:LDAPContext.DomainSID
+                    if ($domainSID) {
+                        $protectedGroup = @(Get-DomainGroup -Identity "$domainSID-525" @connectionParams)[0]
+                        if ($protectedGroup -and $protectedGroup.distinguishedName) {
+                            # Recursively, and over every object class, the way
+                            # Get-ProtectedUsersStatus asks: the group takes effect through
+                            # the token, so a nested group protects its members exactly as a
+                            # direct membership does. Escape-LDAPFilterDN because a group DN
+                            # holding a parenthesis otherwise produces a filter the server
+                            # rejects.
+                            $escapedProtectedDN = Escape-LDAPFilterDN -DistinguishedName ([string]$protectedGroup.distinguishedName)
+                            foreach ($protectedObj in @(Get-DomainObject -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedProtectedDN)" -Properties 'objectSid' @connectionParams)) {
+                                if ($protectedObj.objectSid) { $protectedSIDs[[string]$protectedObj.objectSid] = $true }
+                            }
+                        }
+                    }
+                } catch {
+                    # A group that does not exist is not an error - below Domain Functional
+                    # Level 2012 R2 there is none, and then no account can be a member.
+                    Write-Log "[Get-ASREPRoastableAccounts] Protected Users membership could not be read: $_" -Level Warning
+                    Show-Line "Protected Users membership could not be read - members are not marked below" -Class "Note"
+                }
+
                 # Determine if we should extract hashes (not in OPSEC mode)
                 $canTestASREPRoast = -not $OPSEC
 
@@ -119282,6 +119326,7 @@ function Get-ASREPRoastableAccounts {
                 $totalUsers = @($asrepRoastableUsers).Count
                 $currentIndex = 0
                 $privilegedCount = 0
+                $protectedCount = 0
                 foreach ($user in $asrepRoastableUsers) {
                     $currentIndex++
                     if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing AS-REP Roastable accounts" -Current $currentIndex -Total $totalUsers -ObjectName $user.sAMAccountName }
@@ -119341,6 +119386,12 @@ function Get-ASREPRoastableAccounts {
                             -NotePropertyValue $privileged.Reason -Force
                     }
 
+                    if ($user.objectSid -and $protectedSIDs.ContainsKey([string]$user.objectSid)) {
+                        $protectedCount++
+                        $user | Add-Member -NotePropertyName 'protectedUsersMember' -NotePropertyValue (
+                            'Yes - RC4 is refused for members, so the AS-REP is AES-encrypted and far slower to crack') -Force
+                    }
+
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ASREPRoastable' -Force
                     Show-Object $user
 
@@ -119351,6 +119402,10 @@ function Get-ASREPRoastableAccounts {
 
                 if ($privilegedCount -gt 0) {
                     Show-Line "$privilegedCount of them is/are privileged - this hash needs no credentials at all to obtain" -Class "Finding"
+                }
+
+                if ($protectedCount -gt 0) {
+                    Show-Line "$protectedCount of them is/are in Protected Users - AES-only AS-REP, slower to crack" -Class "Hint"
                 }
             } else {
                 Show-Line "No AS-REP Roastable accounts found" -Class "Secure"
@@ -134595,7 +134650,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0940"
+$Script:adPEASVersion = "2.7.0+20261012-1003"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
