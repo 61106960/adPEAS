@@ -4727,14 +4727,15 @@ $Script:FindingDefinitions = @{
             "4. Performs any privileged operations in the domain"
         )
         Remediation = @(
-            "Remove 'ENROLLEE_SUPPLIES_SUBJECT' flag from the template"
+            "Clear both enrollee-supplied-subject flags: CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT (0x1) and CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME (0x10000) - the second one alone is enough to put another account's UPN into the SAN, which is the ESC1 primitive"
+            "Expect this to break every workflow that supplies its own subject or SAN, web server certificates first - plan the replacement template before clearing the flag"
             "Require CA Manager approval for certificate requests"
             "Restrict enrollment permissions to specific required groups"
             "Use 'Supply in the request' only when absolutely necessary with strong controls"
         )
         RemediationCommands = @(
             @{
-                Description = "Remove ENROLLEE_SUPPLIES_SUBJECT flag from certificate template (requires Enterprise Admin)"
+                Description = "Remove both enrollee-supplied-subject flags from the template (requires Enterprise Admin)"
                 Command = @'
 # Get template DN (replace 'VulnerableTemplate' with actual template name)
 $templateName = "VulnerableTemplate"
@@ -4745,8 +4746,13 @@ $templateDN = "CN=$templateName,CN=Certificate Templates,CN=Public Key Services,
 $template = Get-ADObject -Identity $templateDN -Properties msPKI-Certificate-Name-Flag
 $currentFlag = $template.'msPKI-Certificate-Name-Flag'
 
-# Remove CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT (0x00000001)
-$newFlag = $currentFlag -band (-bnot 0x00000001)
+# Remove CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT (0x00000001) and
+# CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME (0x00010000).
+#
+# Both are ESC1: whoever may supply the SAN writes another account's UPN into it.
+# This command used to clear 0x1 alone, so a template flagged for the SAN variant was
+# reported as remediated and stayed exactly as exploitable as before.
+$newFlag = $currentFlag -band (-bnot 0x00010001)
 
 # Update template
 Set-ADObject -Identity $templateDN -Replace @{'msPKI-Certificate-Name-Flag' = $newFlag}
@@ -12595,20 +12601,20 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
     }
     'ESC15_SCHEMA_V1_ENROLLEE_SUBJECT' = @{
         Title = "ESC15 - Schema v1 Template with Enrollee-Supplied Subject"
-        Risk = "Hint"
-        BaseScore = 30
-        Description = "This certificate template uses Schema Version 1 and allows the enrollee to supply the subject name. Schema v1 templates lack the szOID_NTDS_CA_SECURITY_EXT extension, so issued certificates are not bound to the requestor's SID. Microsoft patched this as CVE-2024-49019 in November 2024 - on unpatched CAs, this remains exploitable for domain privilege escalation. Even on patched systems, Schema v1 templates are a certificate hygiene concern and should be replaced with v2+ templates."
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "This certificate template uses Schema Version 1 and allows the enrollee to supply the subject name. On a v1 template the CA takes the Application Policies extension (1.3.6.1.4.1.311.21.10) out of the request, so the enrollee adds Client Authentication - or Certificate Request Agent - to a template that has neither, and supplies the subject of any account in the same request. Microsoft patched this as CVE-2024-49019 in November 2024. The patch level of the CA cannot be read over LDAP, which is the same reservation ESC9 carries about StrongCertificateBindingEnforcement, and is why this is reported as a finding on the template rather than scored down to a hint."
         Impact = @(
-            "Unpatched CA: Enrollee can inject arbitrary Application Policies (EKUwu attack)"
-            "Schema v1 templates lack szOID_NTDS_CA_SECURITY_EXT (no SID binding)"
-            "Certificate not bound to requestor - usable by anyone who obtains it"
-            "Patched CA: Direct exploitation blocked, but v1 templates remain less controllable than v2+"
+            "The enrollee injects the EKU: no client-authentication EKU is needed on the template, which is why no other check in this section flags it"
+            "That makes it the one ESC that reaches exactly the templates everything else passes as harmless - a web server template is a typical case"
+            "The subject comes from the request, so which account the certificate authenticates as is the attacker's choice"
+            "Patched CA: direct exploitation blocked, but a v1 template remains less controllable than v2+ and cannot be confirmed as patched from here"
         )
         Attack = @(
             "1. Attacker enrolls using vulnerable v1 template on unpatched CA"
             "2. Injects Client Authentication EKU via Application Policies"
             "3. Specifies Domain Admin UPN in Subject Alternative Name"
-            "4. Obtains certificate without SID binding"
+            "4. Obtains a certificate that authenticates as the account it named"
             "5. Authenticates as Domain Admin via PKINIT"
         )
         Remediation = @(
@@ -12669,7 +12675,7 @@ certutil -getreg policy\DisableExtensionList
         Tools = @("Certipy", "Certify", "PSPKI")
         MITRE = "T1649"
         Triggers = @(
-            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC15'; Severity = 'Hint' }
+            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC15'; Severity = 'Finding' }
             @{ Attribute = 'SchemaVersion'; Pattern = '^1$'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
@@ -86924,7 +86930,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-1003"
+$Script:adPEASVersion = "2.7.0+20261012-1021"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
