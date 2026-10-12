@@ -299,8 +299,30 @@ $Script:DangerousRegistryKeys = @(
         VulnerabilityName = 'LSA Protection (RunAsPPL) explicitly disabled'
         RiskReason        = 'LSASS not protected - eases credential dumping from memory'
     }
+    # Credential Guard is configured through Device Guard policy, and that is the path a
+    # GPO writes: "Turn On Virtualization Based Security" sets LsaCfgFlags under
+    # Software\Policies\Microsoft\Windows\DeviceGuard. The entry below looked for the value
+    # under System\CurrentControlSet\Control\Lsa, which is where Windows keeps the state at
+    # runtime - a location no Group Policy template writes, so this check could not match
+    # it and said nothing about a domain that turns Credential Guard off everywhere.
     @{
         Id                = 'CREDGUARD_OFF'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\DeviceGuard'
+        ValueName         = 'LsaCfgFlags'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_CREDGUARD'
+        VulnerabilityName = 'Credential Guard explicitly disabled'
+        RiskReason        = 'Credential Guard off - derived credentials exposed in LSASS'
+    }
+    # The runtime path as well, because a Group Policy Preference item can write any key it
+    # likes and setting the runtime value directly is a known way to turn the feature off
+    # without touching the policy.
+    @{
+        Id                = 'CREDGUARD_OFF_RUNTIME'
         Hive              = 'HKLM'
         Key               = 'System\CurrentControlSet\Control\Lsa'
         ValueName         = 'LsaCfgFlags'
@@ -309,7 +331,7 @@ $Script:DangerousRegistryKeys = @(
         Severity          = 'Medium'
         ConsoleClass      = 'Hint'
         FindingId         = 'REGISTRY_CREDGUARD'
-        VulnerabilityName = 'Credential Guard explicitly disabled'
+        VulnerabilityName = 'Credential Guard disabled on the runtime key'
         RiskReason        = 'Credential Guard off - derived credentials exposed in LSASS'
     }
     @{

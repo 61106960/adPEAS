@@ -64,6 +64,75 @@ function Get-GPORelativePath {
 
 <#
 .SYNOPSIS
+    Which half of a GPO delivers a registry value: Machine or User.
+
+.DESCRIPTION
+    The half is a property of the folder the file came out of, not of the hive the value
+    writes. For Registry.pol the two always agree, because the hive is derived from the
+    folder in the first place. For a Group Policy Preference item they can differ: GPP
+    carries the hive per item in the XML, and an item under User\Preferences\Registry may
+    write HKEY_LOCAL_MACHINE - that is a choice in the GPP editor.
+
+    The half decides which status flag has to be enabled for the value to arrive. A GPO
+    with its user configuration disabled delivers nothing from its User folder, whatever
+    hive the items in there write.
+
+    The hive is the fallback, for a source path that says nothing: a custom scan outside a
+    Policies\{GUID} folder, or a record without a source.
+
+.PARAMETER SourceFile
+    The path inside the GPO folder, as Get-GPORelativePath returns it. May name several
+    files separated by commas, which is the form the Point and Print check carries.
+
+.PARAMETER RegistryKey
+    The key or hive of the value. Read only when the source says nothing.
+
+.OUTPUTS
+    [string] "Machine" or "User".
+
+.EXAMPLE
+    Get-GPOHalfFromSource -SourceFile "User\Preferences\Registry\Registry.xml" -RegistryKey "HKLM\Software\..."
+    User
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Get-GPOHalfFromSource {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$SourceFile,
+
+        [Parameter(Mandatory = $false)]
+        [string]$RegistryKey
+    )
+
+    $source = [string]$SourceFile
+    if (-not [string]::IsNullOrWhiteSpace($source)) {
+        # Per named file, because one row can carry several - the Point and Print check
+        # joins the sources of a bucket with a comma. StartsWith rather than a regex: the
+        # separator is a backslash, and a pattern built around escaped backslashes is the
+        # kind of literal that breaks silently when the file is edited.
+        $pieces = @($source -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+
+        # Machine wins a bucket that names files from both halves: those values reach every
+        # computer in scope, and holding them back because a user-side sibling is disabled
+        # is the worse of the two errors.
+        foreach ($piece in $pieces) {
+            if ($piece.StartsWith('Machine' + [char]0x5C, [System.StringComparison]::OrdinalIgnoreCase)) { return 'Machine' }
+        }
+        foreach ($piece in $pieces) {
+            if ($piece.StartsWith('User' + [char]0x5C, [System.StringComparison]::OrdinalIgnoreCase)) { return 'User' }
+        }
+    }
+
+    if ("$RegistryKey" -like "HKLM*") { return "Machine" }
+    return "User"
+}
+
+<#
+.SYNOPSIS
     Maps each GPO's GUID to the SYSVOL path the directory records for it.
 
 .DESCRIPTION

@@ -275,13 +275,17 @@ function Get-GPOPointAndPrint {
                 @{ Expression = { $_.GPOName } })
 
             # A driver policy in a GPO that is not linked or not enabled installs nothing.
-            # Held back rather than dropped - see Show-GPOInactiveSummary. The scope comes
-            # from the bucket's own hive, which is why each object carries it: HKLM settings
-            # depend on the computer half, HKCU on the user half, and a policy with one of
-            # them switched off stops one and not the other.
+            # Held back rather than dropped - see Show-GPOInactiveSummary.
+            #
+            # Which half has to be enabled is the half the file came out of, which is not the
+            # same question as which hive the value lands in: a Group Policy Preference item
+            # under User\Preferences\Registry may write HKLM, and that item needs the user
+            # half of the GPO. Taking it from the bucket's hive put such a value in the
+            # computer bucket and then tested it against the computer half.
             foreach ($object in $objects) {
                 $object | Add-Member -NotePropertyName '_ReachScope' `
-                    -NotePropertyValue $(if ("$($object.Scope)" -like 'Computer*') { 'Machine' } else { 'User' }) -Force
+                    -NotePropertyValue (Get-GPOHalfFromSource -SourceFile $object.SourceFile `
+                        -RegistryKey $(if ("$($object.Scope)" -like 'Computer*') { 'HKLM' } else { 'HKCU' })) -Force
             }
 
             $split = Split-GPOFindingByReach -Finding $objects -GPOStatusMap $gpoStatusMap `
@@ -652,7 +656,11 @@ function Get-PointAndPrintAssessment {
     # Checked before the prompt settings on purpose: an explicit 1 blocks the install, so any
     # prompt suppression in the same GPO is dead configuration rather than a latent risk. The
     # Latent verdict below is reserved for the case where the block rests on the default.
-    if ($null -ne $restrictToAdmins -and [int64]$restrictToAdmins -eq 1) {
+    # Any non-zero value, not the exact 1. The spooler reads this as a flag, and the display
+    # attribute next to the verdict already said "Limited to Administrators" for anything
+    # but 0 - so a GPO setting 2 was shown as restrictive and assessed as "configures no
+    # printer driver installation control" in the same card.
+    if ($null -ne $restrictToAdmins -and [int64]$restrictToAdmins -ne 0) {
         if (@($secondary).Count -gt 0) {
             # Both statements hold, and the second one decides the severity: hardening the
             # driver installation does not close the queue-specific file vector or the
@@ -819,8 +827,13 @@ function New-PointAndPrintObject {
     if ($null -ne $restrictToAdmins) {
         $text = if ([int64]$restrictToAdmins -eq 0) {
             'Open to non-administrators (RestrictDriverInstallationToAdministrators=0)'
-        } else {
+        } elseif ([int64]$restrictToAdmins -eq 1) {
             'Limited to Administrators'
+        } else {
+            # Documented values are 0 and 1. Anything else is read as a set flag, and
+            # saying which value is there lets a reader check the policy rather than
+            # wonder why the verdict says restricted.
+            "Limited to Administrators (RestrictDriverInstallationToAdministrators=$([int64]$restrictToAdmins), which is not a documented value)"
         }
         $obj | Add-Member -NotePropertyName 'DriverInstallRestriction' -NotePropertyValue $text -Force
     }

@@ -224,13 +224,20 @@ function Get-GPORegistrySettings {
                     @{ Expression = { if ($severityRank.ContainsKey($_.Severity)) { $severityRank[$_.Severity] } else { 9 } } }, `
                     @{ Expression = { $_.GPOName } })
 
-                # Which half of the policy each value depends on, derived from the hive: a
-                # Registry.pol under Machine writes HKLM, the one under User writes HKCU. The
-                # partition below reads it per finding, because a policy with only its
-                # computer configuration switched off stops the first and not the second.
+                # Which half of the policy each value depends on. Read from the folder the
+                # file came out of, not from the hive it writes.
+                #
+                # For Registry.pol the two agree, because the hive is derived from the folder
+                # in the first place. For a Group Policy Preference item they do not: GPP
+                # carries the hive per item in the XML, and an item under
+                # User\Preferences\Registry can write HKEY_LOCAL_MACHINE - that is a choice
+                # in the GPP editor. Such a value was tested against the computer half of the
+                # GPO: with the user half switched off it was reported at full severity
+                # although it reaches nothing, and with the computer half switched off it was
+                # held back as dormant although it is live - the worse of the two directions.
                 foreach ($finding in $findings) {
                     $finding | Add-Member -NotePropertyName '_ReachScope' `
-                        -NotePropertyValue $(if ("$($finding.RegistryKey)" -like 'HKLM*') { 'Machine' } else { 'User' }) -Force
+                        -NotePropertyValue (Get-GPOHalfFromSource -SourceFile $finding.SourceFile -RegistryKey $finding.RegistryKey) -Force
                 }
 
                 # A value deployed by a policy that is not linked or not enabled is written
@@ -289,11 +296,12 @@ function Get-GPORegistrySettings {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 
                     # A value in a policy whose relevant half is switched off reaches no
-                    # registry. The hive says which half: the Registry.pol under Machine
-                    # writes HKLM, the one under User HKCU.
+                    # registry. Which half is the one the file came out of - see the comment
+                    # at the _ReachScope assignment above for why the hive does not answer
+                    # this for a Preferences item.
                     $gpoStatus = Get-GPOEffectiveStatus `
                         -StatusEntry $gpoStatusMap[$finding.GPOGUID] `
-                        -Scope $(if ("$($finding.RegistryKey)" -like 'HKLM*') { 'Machine' } else { 'User' }) `
+                        -Scope (Get-GPOHalfFromSource -SourceFile $finding.SourceFile -RegistryKey $finding.RegistryKey) `
                         -Link $linkedOUs
                     if ($gpoStatus) {
                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force

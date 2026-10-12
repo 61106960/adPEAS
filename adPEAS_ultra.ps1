@@ -1787,7 +1787,7 @@ $Script:DangerousRegistryKeys = @(
 	@{
 	    Id                = 'CREDGUARD_OFF'
 	    Hive              = 'HKLM'
-	    Key               = 'System\CurrentControlSet\Control\Lsa'
+	    Key               = 'Software\Policies\Microsoft\Windows\DeviceGuard'
 	    ValueName         = 'LsaCfgFlags'
 	    Match             = 'Equals'
 	    MatchValue        = 0
@@ -1795,6 +1795,19 @@ $Script:DangerousRegistryKeys = @(
 	    ConsoleClass      = 'Hint'
 	    FindingId         = 'REGISTRY_CREDGUARD'
 	    VulnerabilityName = 'Credential Guard explicitly disabled'
+	    RiskReason        = 'Credential Guard off - derived credentials exposed in LSASS'
+	}
+	@{
+	    Id                = 'CREDGUARD_OFF_RUNTIME'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Control\Lsa'
+	    ValueName         = 'LsaCfgFlags'
+	    Match             = 'Equals'
+	    MatchValue        = 0
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
+	    FindingId         = 'REGISTRY_CREDGUARD'
+	    VulnerabilityName = 'Credential Guard disabled on the runtime key'
 	    RiskReason        = 'Credential Guard off - derived credentials exposed in LSASS'
 	}
 	@{
@@ -48356,7 +48369,8 @@ function Parse-RegistryXml {
 	        $valueString = $null
 	        if ($type -match 'DWORD|QWORD') {
 	            $parsed = $null
-	            if ($rawValue -match '^[0-9A-Fa-f]+$') {
+	            $looksHex = ($rawValue -match '^[0-9A-Fa-f]{8,}$') -or ($rawValue -match '^[0-9A-Fa-f]*[A-Fa-f][0-9A-Fa-f]*$')
+	            if ($looksHex) {
 	                try { $parsed = [System.Convert]::ToInt64($rawValue, 16) } catch { $parsed = $null }
 	            }
 	            if ($null -eq $parsed -and $rawValue -match '^\d+$') {
@@ -49182,6 +49196,28 @@ function Get-GPORelativePath {
 	    return $Matches[1]
 	}
 	return $Path
+}
+function Get-GPOHalfFromSource {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [string]$SourceFile,
+	    [Parameter(Mandatory = $false)]
+	    [string]$RegistryKey
+	)
+	$source = [string]$SourceFile
+	if (-not [string]::IsNullOrWhiteSpace($source)) {
+	    $pieces = @($source -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+	    foreach ($piece in $pieces) {
+	        if ($piece.StartsWith('Machine' + [char]0x5C, [System.StringComparison]::OrdinalIgnoreCase)) { return 'Machine' }
+	    }
+	    foreach ($piece in $pieces) {
+	        if ($piece.StartsWith('User' + [char]0x5C, [System.StringComparison]::OrdinalIgnoreCase)) { return 'User' }
+	    }
+	}
+	if ("$RegistryKey" -like "HKLM*") { return "Machine" }
+	return "User"
 }
 function Get-GPOPathMap {
 	[CmdletBinding()]
@@ -67334,6 +67370,7 @@ function Get-GPOLocalGroupMembership {
 	                                -Link $linkedOUs
 	                            foreach ($finding in $restrictedGroupsFindings) {
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+	                                $finding | Add-Member -NotePropertyName '_ReachScope' -NotePropertyValue 'Machine' -Force
 	                                if ($gpoStatus) {
 	                                    $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
 	                                }
@@ -67374,6 +67411,8 @@ function Get-GPOLocalGroupMembership {
 	                                -Link $linkedOUs
 	                            foreach ($finding in $gppGroupsFindings) {
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+	                                $finding | Add-Member -NotePropertyName '_ReachScope' `
+	                                    -NotePropertyValue (Get-GPOHalfFromSource -SourceFile (Get-GPORelativePath -Path $file.FullName)) -Force
 	                                if ($gpoStatus) {
 	                                    $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
 	                                }
@@ -67400,7 +67439,7 @@ function Get-GPOLocalGroupMembership {
 	        }
 	        if (@($vulnerableGPOs).Count -gt 0) {
 	            $split = Split-GPOFindingByReach -Finding $vulnerableGPOs -GPOStatusMap $gpoStatusMap `
-	                -GPOLinkage $gpoLinkage -Scope 'Machine'
+	                -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
 	            $shown = if ($IncludeInactive) { @($vulnerableGPOs) } else { @($split.Active) }
 	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
 	                -Dormant $split.Dormant -Listed:$IncludeInactive
@@ -67850,8 +67889,12 @@ function Get-GPOScheduledTasks {
 	            $scheduledTasks = @($scheduledTasks | Sort-Object -Property `
 	                @{ Expression = { if ($severityRank.ContainsKey([string]$_._Severity)) { $severityRank[[string]$_._Severity] } else { 9 } } }, `
 	                @{ Expression = { $_.GPOName } })
+	            foreach ($task in $scheduledTasks) {
+	                $task | Add-Member -NotePropertyName '_ReachScope' `
+	                    -NotePropertyValue $(if ("$($task.Context)" -eq 'Machine') { 'Machine' } else { 'User' }) -Force
+	            }
 	            $split = Split-GPOFindingByReach -Finding $scheduledTasks -GPOStatusMap $gpoStatusMap `
-	                -GPOLinkage $gpoLinkage -Scope 'Machine'
+	                -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
 	            $shown = if ($IncludeInactive) { @($scheduledTasks) } else { @($split.Active) }
 	            $hasFinding = @($shown | Where-Object { $_._Severity -eq 'Finding' }).Count -gt 0
 	            $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
@@ -68375,7 +68418,7 @@ function Get-GPORegistrySettings {
 	                @{ Expression = { $_.GPOName } })
 	            foreach ($finding in $findings) {
 	                $finding | Add-Member -NotePropertyName '_ReachScope' `
-	                    -NotePropertyValue $(if ("$($finding.RegistryKey)" -like 'HKLM*') { 'Machine' } else { 'User' }) -Force
+	                    -NotePropertyValue (Get-GPOHalfFromSource -SourceFile $finding.SourceFile -RegistryKey $finding.RegistryKey) -Force
 	            }
 	            $split = Split-GPOFindingByReach -Finding $findings -GPOStatusMap $gpoStatusMap `
 	                -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
@@ -68405,7 +68448,7 @@ function Get-GPORegistrySettings {
 	                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 	                $gpoStatus = Get-GPOEffectiveStatus `
 	                    -StatusEntry $gpoStatusMap[$finding.GPOGUID] `
-	                    -Scope $(if ("$($finding.RegistryKey)" -like 'HKLM*') { 'Machine' } else { 'User' }) `
+	                    -Scope (Get-GPOHalfFromSource -SourceFile $finding.SourceFile -RegistryKey $finding.RegistryKey) `
 	                    -Link $linkedOUs
 	                if ($gpoStatus) {
 	                    $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
@@ -68655,7 +68698,8 @@ function Get-GPOPointAndPrint {
 	            @{ Expression = { $_.GPOName } })
 	        foreach ($object in $objects) {
 	            $object | Add-Member -NotePropertyName '_ReachScope' `
-	                -NotePropertyValue $(if ("$($object.Scope)" -like 'Computer*') { 'Machine' } else { 'User' }) -Force
+	                -NotePropertyValue (Get-GPOHalfFromSource -SourceFile $object.SourceFile `
+	                    -RegistryKey $(if ("$($object.Scope)" -like 'Computer*') { 'HKLM' } else { 'HKCU' })) -Force
 	        }
 	        $split = Split-GPOFindingByReach -Finding $objects -GPOStatusMap $gpoStatusMap `
 	            -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
@@ -68865,7 +68909,7 @@ function Get-PointAndPrintAssessment {
 	    $secondary += 'printing over HTTP is permitted'
 	    if ($severityRank['Low'] -gt $severityRank[$secondarySeverity]) { $secondarySeverity = 'Low' }
 	}
-	if ($null -ne $restrictToAdmins -and [int64]$restrictToAdmins -eq 1) {
+	if ($null -ne $restrictToAdmins -and [int64]$restrictToAdmins -ne 0) {
 	    if (@($secondary).Count -gt 0) {
 	        return @{
 	            Exploitability = "Hardened for driver installation, but $($secondary -join '; ')"
@@ -68959,8 +69003,10 @@ function New-PointAndPrintObject {
 	if ($null -ne $restrictToAdmins) {
 	    $text = if ([int64]$restrictToAdmins -eq 0) {
 	        'Open to non-administrators (RestrictDriverInstallationToAdministrators=0)'
-	    } else {
+	    } elseif ([int64]$restrictToAdmins -eq 1) {
 	        'Limited to Administrators'
+	    } else {
+	        "Limited to Administrators (RestrictDriverInstallationToAdministrators=$([int64]$restrictToAdmins), which is not a documented value)"
 	    }
 	    $obj | Add-Member -NotePropertyName 'DriverInstallRestriction' -NotePropertyValue $text -Force
 	}
@@ -84119,7 +84165,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-1055"
+$Script:adPEASVersion = "2.7.0+20261012-1116"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 10:55:34
-    Version: 2.7.0+20261012-1055
+    Build: 2026-10-12 11:16:22
+    Version: 2.7.0+20261012-1116
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -3881,8 +3881,30 @@ $Script:DangerousRegistryKeys = @(
         VulnerabilityName = 'LSA Protection (RunAsPPL) explicitly disabled'
         RiskReason        = 'LSASS not protected - eases credential dumping from memory'
     }
+    # Credential Guard is configured through Device Guard policy, and that is the path a
+    # GPO writes: "Turn On Virtualization Based Security" sets LsaCfgFlags under
+    # Software\Policies\Microsoft\Windows\DeviceGuard. The entry below looked for the value
+    # under System\CurrentControlSet\Control\Lsa, which is where Windows keeps the state at
+    # runtime - a location no Group Policy template writes, so this check could not match
+    # it and said nothing about a domain that turns Credential Guard off everywhere.
     @{
         Id                = 'CREDGUARD_OFF'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\DeviceGuard'
+        ValueName         = 'LsaCfgFlags'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_CREDGUARD'
+        VulnerabilityName = 'Credential Guard explicitly disabled'
+        RiskReason        = 'Credential Guard off - derived credentials exposed in LSASS'
+    }
+    # The runtime path as well, because a Group Policy Preference item can write any key it
+    # likes and setting the runtime value directly is a known way to turn the feature off
+    # without touching the policy.
+    @{
+        Id                = 'CREDGUARD_OFF_RUNTIME'
         Hive              = 'HKLM'
         Key               = 'System\CurrentControlSet\Control\Lsa'
         ValueName         = 'LsaCfgFlags'
@@ -3891,7 +3913,7 @@ $Script:DangerousRegistryKeys = @(
         Severity          = 'Medium'
         ConsoleClass      = 'Hint'
         FindingId         = 'REGISTRY_CREDGUARD'
-        VulnerabilityName = 'Credential Guard explicitly disabled'
+        VulnerabilityName = 'Credential Guard disabled on the runtime key'
         RiskReason        = 'Credential Guard off - derived credentials exposed in LSASS'
     }
     @{
@@ -77006,9 +77028,17 @@ function Parse-RegistryXml {
             $valueInt = $null
             $valueString = $null
             if ($type -match 'DWORD|QWORD') {
-                # GPP stores DWORD/QWORD values as hexadecimal in the XML value attribute
+                # GPMC writes a GPP DWORD as eight hexadecimal digits, zero padded, and that
+                # is what the hex branch is for. A plain decimal number matches the same
+                # character class, though, and was read as hex: a hand-written or
+                # third-party Registry.xml saying value="10" came out as 16, and value="31"
+                # as 49 - which drops the 0x4 bit the Schannel UPN mapping check looks for.
+                #
+                # So the shape decides: eight digits or more, or a hex letter anywhere, is
+                # the GPMC form; a short all-digit value is decimal.
                 $parsed = $null
-                if ($rawValue -match '^[0-9A-Fa-f]+$') {
+                $looksHex = ($rawValue -match '^[0-9A-Fa-f]{8,}$') -or ($rawValue -match '^[0-9A-Fa-f]*[A-Fa-f][0-9A-Fa-f]*$')
+                if ($looksHex) {
                     try { $parsed = [System.Convert]::ToInt64($rawValue, 16) } catch { $parsed = $null }
                 }
                 if ($null -eq $parsed -and $rawValue -match '^\d+$') {
@@ -79107,6 +79137,75 @@ function Get-GPORelativePath {
     }
 
     return $Path
+}
+
+<#
+.SYNOPSIS
+    Which half of a GPO delivers a registry value: Machine or User.
+
+.DESCRIPTION
+    The half is a property of the folder the file came out of, not of the hive the value
+    writes. For Registry.pol the two always agree, because the hive is derived from the
+    folder in the first place. For a Group Policy Preference item they can differ: GPP
+    carries the hive per item in the XML, and an item under User\Preferences\Registry may
+    write HKEY_LOCAL_MACHINE - that is a choice in the GPP editor.
+
+    The half decides which status flag has to be enabled for the value to arrive. A GPO
+    with its user configuration disabled delivers nothing from its User folder, whatever
+    hive the items in there write.
+
+    The hive is the fallback, for a source path that says nothing: a custom scan outside a
+    Policies\{GUID} folder, or a record without a source.
+
+.PARAMETER SourceFile
+    The path inside the GPO folder, as Get-GPORelativePath returns it. May name several
+    files separated by commas, which is the form the Point and Print check carries.
+
+.PARAMETER RegistryKey
+    The key or hive of the value. Read only when the source says nothing.
+
+.OUTPUTS
+    [string] "Machine" or "User".
+
+.EXAMPLE
+    Get-GPOHalfFromSource -SourceFile "User\Preferences\Registry\Registry.xml" -RegistryKey "HKLM\Software\..."
+    User
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Get-GPOHalfFromSource {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$SourceFile,
+
+        [Parameter(Mandatory = $false)]
+        [string]$RegistryKey
+    )
+
+    $source = [string]$SourceFile
+    if (-not [string]::IsNullOrWhiteSpace($source)) {
+        # Per named file, because one row can carry several - the Point and Print check
+        # joins the sources of a bucket with a comma. StartsWith rather than a regex: the
+        # separator is a backslash, and a pattern built around escaped backslashes is the
+        # kind of literal that breaks silently when the file is edited.
+        $pieces = @($source -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+
+        # Machine wins a bucket that names files from both halves: those values reach every
+        # computer in scope, and holding them back because a user-side sibling is disabled
+        # is the worse of the two errors.
+        foreach ($piece in $pieces) {
+            if ($piece.StartsWith('Machine' + [char]0x5C, [System.StringComparison]::OrdinalIgnoreCase)) { return 'Machine' }
+        }
+        foreach ($piece in $pieces) {
+            if ($piece.StartsWith('User' + [char]0x5C, [System.StringComparison]::OrdinalIgnoreCase)) { return 'User' }
+        }
+    }
+
+    if ("$RegistryKey" -like "HKLM*") { return "Machine" }
+    return "User"
 }
 
 <#
@@ -111048,6 +111147,11 @@ function Get-GPOLocalGroupMembership {
 
                                 foreach ($finding in $restrictedGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                    # Restricted Groups is a computer-side section, so the
+                                    # half is Machine - stated per finding because the
+                                    # suppression decision reads it from the row now, and
+                                    # the GPP branch below answers differently.
+                                    $finding | Add-Member -NotePropertyName '_ReachScope' -NotePropertyValue 'Machine' -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
@@ -111109,6 +111213,10 @@ function Get-GPOLocalGroupMembership {
 
                                 foreach ($finding in $gppGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                    # And here the file's path decides, the same way the
+                                    # GPOStatus line above is computed.
+                                    $finding | Add-Member -NotePropertyName '_ReachScope' `
+                                        -NotePropertyValue (Get-GPOHalfFromSource -SourceFile (Get-GPORelativePath -Path $file.FullName)) -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
@@ -111144,11 +111252,17 @@ function Get-GPOLocalGroupMembership {
             if (@($vulnerableGPOs).Count -gt 0) {
                 # A local group assignment made by a policy that is not linked or not
                 # enabled adds nobody to any group. Held back rather than dropped - see
-                # Show-GPOInactiveSummary. Restricted Groups is a computer-side section and
-                # the GPP Groups variant is read from the Machine half as well, so Machine
-                # throughout.
+                # Show-GPOInactiveSummary.
+                #
+                # Per finding, from the half it came out of. "Machine throughout" claimed
+                # that the GPP Groups variant is read from the machine half as well, which
+                # contradicted the GPOStatus computation two dozen lines above it: a
+                # Preferences item under User\ is applied during user policy processing. A
+                # GPO with its user half disabled therefore reported "User configuration
+                # disabled" on the row and counted the finding as active, and one with its
+                # computer half disabled held back a finding that does apply.
                 $split = Split-GPOFindingByReach -Finding $vulnerableGPOs -GPOStatusMap $gpoStatusMap `
-                    -GPOLinkage $gpoLinkage -Scope 'Machine'
+                    -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
 
                 $shown = if ($IncludeInactive) { @($vulnerableGPOs) } else { @($split.Active) }
 
@@ -111972,11 +112086,24 @@ function Get-GPOScheduledTasks {
 
                 # A task defined by a policy that is not linked or not enabled is never
                 # registered on any machine. Held back rather than dropped - see
-                # Show-GPOInactiveSummary. The scope is Machine throughout: a GPP scheduled
-                # task under User\ still registers the task on the computer the user logs
-                # on to, and the Context property on the row says which half it came from.
+                # Show-GPOInactiveSummary.
+                #
+                # Per task, from the half it came out of - the same half the GPOStatus line
+                # above is computed from. "Machine throughout" was the previous reading,
+                # with the argument that a task defined under User\ still runs on the
+                # computer the user logs on to. That is true of where it runs and says
+                # nothing about whether it is created: a Preferences item in the User
+                # configuration is applied during user policy processing, so with the user
+                # half switched off the task never exists. The module therefore said
+                # "User configuration disabled" on the row and counted the finding as
+                # active in the same breath.
+                foreach ($task in $scheduledTasks) {
+                    $task | Add-Member -NotePropertyName '_ReachScope' `
+                        -NotePropertyValue $(if ("$($task.Context)" -eq 'Machine') { 'Machine' } else { 'User' }) -Force
+                }
+
                 $split = Split-GPOFindingByReach -Finding $scheduledTasks -GPOStatusMap $gpoStatusMap `
-                    -GPOLinkage $gpoLinkage -Scope 'Machine'
+                    -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
 
                 $shown = if ($IncludeInactive) { @($scheduledTasks) } else { @($split.Active) }
 
@@ -112913,13 +113040,20 @@ function Get-GPORegistrySettings {
                     @{ Expression = { if ($severityRank.ContainsKey($_.Severity)) { $severityRank[$_.Severity] } else { 9 } } }, `
                     @{ Expression = { $_.GPOName } })
 
-                # Which half of the policy each value depends on, derived from the hive: a
-                # Registry.pol under Machine writes HKLM, the one under User writes HKCU. The
-                # partition below reads it per finding, because a policy with only its
-                # computer configuration switched off stops the first and not the second.
+                # Which half of the policy each value depends on. Read from the folder the
+                # file came out of, not from the hive it writes.
+                #
+                # For Registry.pol the two agree, because the hive is derived from the folder
+                # in the first place. For a Group Policy Preference item they do not: GPP
+                # carries the hive per item in the XML, and an item under
+                # User\Preferences\Registry can write HKEY_LOCAL_MACHINE - that is a choice
+                # in the GPP editor. Such a value was tested against the computer half of the
+                # GPO: with the user half switched off it was reported at full severity
+                # although it reaches nothing, and with the computer half switched off it was
+                # held back as dormant although it is live - the worse of the two directions.
                 foreach ($finding in $findings) {
                     $finding | Add-Member -NotePropertyName '_ReachScope' `
-                        -NotePropertyValue $(if ("$($finding.RegistryKey)" -like 'HKLM*') { 'Machine' } else { 'User' }) -Force
+                        -NotePropertyValue (Get-GPOHalfFromSource -SourceFile $finding.SourceFile -RegistryKey $finding.RegistryKey) -Force
                 }
 
                 # A value deployed by a policy that is not linked or not enabled is written
@@ -112978,11 +113112,12 @@ function Get-GPORegistrySettings {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 
                     # A value in a policy whose relevant half is switched off reaches no
-                    # registry. The hive says which half: the Registry.pol under Machine
-                    # writes HKLM, the one under User HKCU.
+                    # registry. Which half is the one the file came out of - see the comment
+                    # at the _ReachScope assignment above for why the hive does not answer
+                    # this for a Preferences item.
                     $gpoStatus = Get-GPOEffectiveStatus `
                         -StatusEntry $gpoStatusMap[$finding.GPOGUID] `
-                        -Scope $(if ("$($finding.RegistryKey)" -like 'HKLM*') { 'Machine' } else { 'User' }) `
+                        -Scope (Get-GPOHalfFromSource -SourceFile $finding.SourceFile -RegistryKey $finding.RegistryKey) `
                         -Link $linkedOUs
                     if ($gpoStatus) {
                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
@@ -113456,13 +113591,17 @@ function Get-GPOPointAndPrint {
                 @{ Expression = { $_.GPOName } })
 
             # A driver policy in a GPO that is not linked or not enabled installs nothing.
-            # Held back rather than dropped - see Show-GPOInactiveSummary. The scope comes
-            # from the bucket's own hive, which is why each object carries it: HKLM settings
-            # depend on the computer half, HKCU on the user half, and a policy with one of
-            # them switched off stops one and not the other.
+            # Held back rather than dropped - see Show-GPOInactiveSummary.
+            #
+            # Which half has to be enabled is the half the file came out of, which is not the
+            # same question as which hive the value lands in: a Group Policy Preference item
+            # under User\Preferences\Registry may write HKLM, and that item needs the user
+            # half of the GPO. Taking it from the bucket's hive put such a value in the
+            # computer bucket and then tested it against the computer half.
             foreach ($object in $objects) {
                 $object | Add-Member -NotePropertyName '_ReachScope' `
-                    -NotePropertyValue $(if ("$($object.Scope)" -like 'Computer*') { 'Machine' } else { 'User' }) -Force
+                    -NotePropertyValue (Get-GPOHalfFromSource -SourceFile $object.SourceFile `
+                        -RegistryKey $(if ("$($object.Scope)" -like 'Computer*') { 'HKLM' } else { 'HKCU' })) -Force
             }
 
             $split = Split-GPOFindingByReach -Finding $objects -GPOStatusMap $gpoStatusMap `
@@ -113833,7 +113972,11 @@ function Get-PointAndPrintAssessment {
     # Checked before the prompt settings on purpose: an explicit 1 blocks the install, so any
     # prompt suppression in the same GPO is dead configuration rather than a latent risk. The
     # Latent verdict below is reserved for the case where the block rests on the default.
-    if ($null -ne $restrictToAdmins -and [int64]$restrictToAdmins -eq 1) {
+    # Any non-zero value, not the exact 1. The spooler reads this as a flag, and the display
+    # attribute next to the verdict already said "Limited to Administrators" for anything
+    # but 0 - so a GPO setting 2 was shown as restrictive and assessed as "configures no
+    # printer driver installation control" in the same card.
+    if ($null -ne $restrictToAdmins -and [int64]$restrictToAdmins -ne 0) {
         if (@($secondary).Count -gt 0) {
             # Both statements hold, and the second one decides the severity: hardening the
             # driver installation does not close the queue-specific file vector or the
@@ -114000,8 +114143,13 @@ function New-PointAndPrintObject {
     if ($null -ne $restrictToAdmins) {
         $text = if ([int64]$restrictToAdmins -eq 0) {
             'Open to non-administrators (RestrictDriverInstallationToAdministrators=0)'
-        } else {
+        } elseif ([int64]$restrictToAdmins -eq 1) {
             'Limited to Administrators'
+        } else {
+            # Documented values are 0 and 1. Anything else is read as a set flag, and
+            # saying which value is there lets a reader check the policy rather than
+            # wonder why the verdict says restricted.
+            "Limited to Administrators (RestrictDriverInstallationToAdministrators=$([int64]$restrictToAdmins), which is not a documented value)"
         }
         $obj | Add-Member -NotePropertyName 'DriverInstallRestriction' -NotePropertyValue $text -Force
     }
@@ -134969,7 +135117,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-1055"
+$Script:adPEASVersion = "2.7.0+20261012-1116"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

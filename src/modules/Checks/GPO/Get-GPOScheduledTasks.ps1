@@ -240,11 +240,24 @@ function Get-GPOScheduledTasks {
 
                 # A task defined by a policy that is not linked or not enabled is never
                 # registered on any machine. Held back rather than dropped - see
-                # Show-GPOInactiveSummary. The scope is Machine throughout: a GPP scheduled
-                # task under User\ still registers the task on the computer the user logs
-                # on to, and the Context property on the row says which half it came from.
+                # Show-GPOInactiveSummary.
+                #
+                # Per task, from the half it came out of - the same half the GPOStatus line
+                # above is computed from. "Machine throughout" was the previous reading,
+                # with the argument that a task defined under User\ still runs on the
+                # computer the user logs on to. That is true of where it runs and says
+                # nothing about whether it is created: a Preferences item in the User
+                # configuration is applied during user policy processing, so with the user
+                # half switched off the task never exists. The module therefore said
+                # "User configuration disabled" on the row and counted the finding as
+                # active in the same breath.
+                foreach ($task in $scheduledTasks) {
+                    $task | Add-Member -NotePropertyName '_ReachScope' `
+                        -NotePropertyValue $(if ("$($task.Context)" -eq 'Machine') { 'Machine' } else { 'User' }) -Force
+                }
+
                 $split = Split-GPOFindingByReach -Finding $scheduledTasks -GPOStatusMap $gpoStatusMap `
-                    -GPOLinkage $gpoLinkage -Scope 'Machine'
+                    -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
 
                 $shown = if ($IncludeInactive) { @($scheduledTasks) } else { @($split.Active) }
 

@@ -213,6 +213,11 @@ function Get-GPOLocalGroupMembership {
 
                                 foreach ($finding in $restrictedGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                    # Restricted Groups is a computer-side section, so the
+                                    # half is Machine - stated per finding because the
+                                    # suppression decision reads it from the row now, and
+                                    # the GPP branch below answers differently.
+                                    $finding | Add-Member -NotePropertyName '_ReachScope' -NotePropertyValue 'Machine' -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
@@ -274,6 +279,10 @@ function Get-GPOLocalGroupMembership {
 
                                 foreach ($finding in $gppGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                    # And here the file's path decides, the same way the
+                                    # GPOStatus line above is computed.
+                                    $finding | Add-Member -NotePropertyName '_ReachScope' `
+                                        -NotePropertyValue (Get-GPOHalfFromSource -SourceFile (Get-GPORelativePath -Path $file.FullName)) -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
@@ -309,11 +318,17 @@ function Get-GPOLocalGroupMembership {
             if (@($vulnerableGPOs).Count -gt 0) {
                 # A local group assignment made by a policy that is not linked or not
                 # enabled adds nobody to any group. Held back rather than dropped - see
-                # Show-GPOInactiveSummary. Restricted Groups is a computer-side section and
-                # the GPP Groups variant is read from the Machine half as well, so Machine
-                # throughout.
+                # Show-GPOInactiveSummary.
+                #
+                # Per finding, from the half it came out of. "Machine throughout" claimed
+                # that the GPP Groups variant is read from the machine half as well, which
+                # contradicted the GPOStatus computation two dozen lines above it: a
+                # Preferences item under User\ is applied during user policy processing. A
+                # GPO with its user half disabled therefore reported "User configuration
+                # disabled" on the row and counted the finding as active, and one with its
+                # computer half disabled held back a finding that does apply.
                 $split = Split-GPOFindingByReach -Finding $vulnerableGPOs -GPOStatusMap $gpoStatusMap `
-                    -GPOLinkage $gpoLinkage -Scope 'Machine'
+                    -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
 
                 $shown = if ($IncludeInactive) { @($vulnerableGPOs) } else { @($split.Active) }
 

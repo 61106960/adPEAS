@@ -75,9 +75,17 @@ function Parse-RegistryXml {
             $valueInt = $null
             $valueString = $null
             if ($type -match 'DWORD|QWORD') {
-                # GPP stores DWORD/QWORD values as hexadecimal in the XML value attribute
+                # GPMC writes a GPP DWORD as eight hexadecimal digits, zero padded, and that
+                # is what the hex branch is for. A plain decimal number matches the same
+                # character class, though, and was read as hex: a hand-written or
+                # third-party Registry.xml saying value="10" came out as 16, and value="31"
+                # as 49 - which drops the 0x4 bit the Schannel UPN mapping check looks for.
+                #
+                # So the shape decides: eight digits or more, or a hex letter anywhere, is
+                # the GPMC form; a short all-digit value is decimal.
                 $parsed = $null
-                if ($rawValue -match '^[0-9A-Fa-f]+$') {
+                $looksHex = ($rawValue -match '^[0-9A-Fa-f]{8,}$') -or ($rawValue -match '^[0-9A-Fa-f]*[A-Fa-f][0-9A-Fa-f]*$')
+                if ($looksHex) {
                     try { $parsed = [System.Convert]::ToInt64($rawValue, 16) } catch { $parsed = $null }
                 }
                 if ($null -eq $parsed -and $rawValue -match '^\d+$') {
