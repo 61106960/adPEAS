@@ -233,16 +233,23 @@ function Get-LDAPConfiguration {
                     if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
                 }
 
-                # ----- Channel binding, which does not live in GptTmpl.inf -----
+                # ----- The values Group Policy delivers through Registry.pol -----
                 #
-                # LDAPServerIntegrity is a Security Option and lands in GptTmpl.inf, so the
-                # parser below finds it. LdapEnforceChannelBinding has no Security Option
-                # UI at all: it is a plain registry value, and Group Policy carries it in
-                # Registry.pol instead. Reading only GptTmpl.inf meant a domain that
-                # enforces channel binding correctly was told every one of its domain
-                # controllers was potentially vulnerable - a false alarm aimed precisely at
-                # the domains that had done the right thing.
-                $channelBindingByGpo = @{}
+                # LdapEnforceChannelBinding has no Security Option UI at all: it is a plain
+                # registry value, and Group Policy carries it in Registry.pol. Reading only
+                # GptTmpl.inf meant a domain that enforces channel binding correctly was
+                # told every one of its domain controllers was potentially vulnerable - a
+                # false alarm aimed precisely at the domains that had done the right thing.
+                #
+                # LDAPServerIntegrity used to be read from GptTmpl.inf alone, because it
+                # does have a Security Option. But it sits in the same registry key, and a
+                # hardening baseline from a third-party tool deploys it as a registry
+                # policy like any other value - at which point this check said "No LDAP
+                # Security configuration found in any GPO - all N DC(s) potentially
+                # vulnerable". The same false alarm as above, on the setting that matters
+                # most, and again aimed at the domains that had hardened.
+                $ldapRegPolValueNames = @('LdapEnforceChannelBinding', 'LDAPServerIntegrity')
+                $regPolValuesByGpo = @{}
                 foreach ($polFile in @(Get-CachedSYSVOLFiles -Filter "Registry.pol")) {
                     if ($polFile.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
                     # Read the capture out before the next comparison, which overwrites
@@ -255,15 +262,20 @@ function Get-LDAPConfiguration {
 
                     try {
                         foreach ($record in @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive 'HKLM')) {
-                            if ($record.ValueName -ine 'LdapEnforceChannelBinding') { continue }
+                            if ("$($record.ValueName)" -notin $ldapRegPolValueNames) { continue }
                             if ("$($record.Key)" -notmatch 'Services\\NTDS\\Parameters$') { continue }
-                            # REG_DWORD (4) only - the value is a number, and anything else
-                            # written under this name is not the setting we are reading
+                            # REG_DWORD (4) only - both values are numbers, and anything
+                            # else written under these names is not the setting
                             if ($record.Type -ne 4) { continue }
                             if ($null -eq $record.ValueInt) { continue }
 
-                            $channelBindingByGpo[$polGuid] = [int]$record.ValueInt
-                            Write-Log "[Get-LDAPConfiguration] Channel binding $($record.ValueInt) from Registry.pol of $polGuid"
+                            if (-not $regPolValuesByGpo.ContainsKey($polGuid)) {
+                                $regPolValuesByGpo[$polGuid] = @{}
+                            }
+                            # Keyed by the documented value name, not by the shape it is
+                            # read in: the two merge points below ask for one of them.
+                            $regPolValuesByGpo[$polGuid]["$($record.ValueName)"] = [int]$record.ValueInt
+                            Write-Log "[Get-LDAPConfiguration] $($record.ValueName) = $($record.ValueInt) from Registry.pol of $polGuid"
                         }
                     } catch {
                         Write-Log "[Get-LDAPConfiguration] Could not read $($polFile.FullName): $($_.Exception.Message)"
@@ -320,13 +332,23 @@ function Get-LDAPConfiguration {
                             }
                         }
 
-                        # A hand-written GptTmpl.inf can carry channel binding, but Group
-                        # Policy normally puts it in Registry.pol. Consumed here so the pass
-                        # after the loop does not report the same GPO a second time.
+                        # A hand-written GptTmpl.inf can carry either value, but Group
+                        # Policy normally puts them in Registry.pol. Consumed here so the
+                        # pass after the loop does not report the same GPO a second time.
+                        #
+                        # GptTmpl.inf wins where a GPO somehow carries both: that is what
+                        # this check did for channel binding before, and a GPO setting one
+                        # value twice is a question about that GPO, not about the reading.
                         $gpoGuidKey = ([string]$gpo.Name).ToUpper()
-                        if ($null -eq $ldapChannelBindingValue -and $channelBindingByGpo.ContainsKey($gpoGuidKey)) {
-                            $ldapChannelBindingValue = $channelBindingByGpo[$gpoGuidKey]
-                            $channelBindingByGpo.Remove($gpoGuidKey)
+                        if ($regPolValuesByGpo.ContainsKey($gpoGuidKey)) {
+                            $regPolValues = $regPolValuesByGpo[$gpoGuidKey]
+                            if ($null -eq $ldapChannelBindingValue -and $regPolValues.ContainsKey('LdapEnforceChannelBinding')) {
+                                $ldapChannelBindingValue = $regPolValues['LdapEnforceChannelBinding']
+                            }
+                            if ($null -eq $ldapSigningValue -and $regPolValues.ContainsKey('LDAPServerIntegrity')) {
+                                $ldapSigningValue = $regPolValues['LDAPServerIntegrity']
+                            }
+                            $regPolValuesByGpo.Remove($gpoGuidKey)
                         }
 
                         # Parse System Access section
@@ -453,19 +475,36 @@ function Get-LDAPConfiguration {
                     Show-Progress -Activity "Scanning LDAP configuration GPO settings" -Completed
                 }
 
-                # Whatever is left in the map belongs to a GPO that sets channel binding in
+                # Whatever is left in the map belongs to a GPO that sets these values in
                 # Registry.pol and has no GptTmpl.inf at all - a perfectly ordinary way to
-                # deploy it, and one the loop above never reaches because it walks
+                # deploy them, and one the loop above never reaches because it walks
                 # GptTmpl.inf files. Without this the value would be found and then dropped.
-                foreach ($leftoverGuid in @($channelBindingByGpo.Keys)) {
+                foreach ($leftoverGuid in @($regPolValuesByGpo.Keys)) {
                     $gpo = $gpoByGuid[$leftoverGuid]
                     if (-not $gpo) { continue }
 
-                    $channelBindingLevel = switch ($channelBindingByGpo[$leftoverGuid]) {
-                        0 { "Never" }
-                        1 { "When Supported" }
-                        2 { "Always" }
-                        default { "Unknown" }
+                    $leftoverValues = $regPolValuesByGpo[$leftoverGuid]
+
+                    $channelBindingLevel = "Not Configured"
+                    if ($leftoverValues.ContainsKey('LdapEnforceChannelBinding')) {
+                        $channelBindingLevel = switch ($leftoverValues['LdapEnforceChannelBinding']) {
+                            0 { "Never" }
+                            1 { "When Supported" }
+                            2 { "Always" }
+                            default { "Unknown" }
+                        }
+                    }
+
+                    # The same decode the GptTmpl.inf loop uses, so one setting reads the
+                    # same way whichever file it arrived in.
+                    $signingLevel = "Not Configured"
+                    if ($leftoverValues.ContainsKey('LDAPServerIntegrity')) {
+                        $signingLevel = switch ($leftoverValues['LDAPServerIntegrity']) {
+                            0 { "None" }
+                            1 { "Optional" }
+                            2 { "Required" }
+                            default { "Unknown" }
+                        }
                     }
 
                     # Three-valued, same as the GptTmpl.inf loop: $null for an unresolved map,
@@ -481,7 +520,7 @@ function Get-LDAPConfiguration {
                     $activeLinks = @($links | Where-Object { $_ -and $_.LinkStatus -ne "Disabled" })
                     $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
 
-                    $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue "Not Configured" -Force
+                    $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue $signingLevel -Force
                     $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
                     $gpo | Add-Member -NotePropertyName "anonymousSamEnumeration" -NotePropertyValue "Not Configured" -Force
                     $gpo | Add-Member -NotePropertyName "anonymousSidNameTranslation" -NotePropertyValue "Not Configured" -Force
