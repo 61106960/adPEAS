@@ -183,8 +183,14 @@ $Script:DangerousRegistryKeys = @(
         ValueName         = 'DisableRestrictedAdmin'
         Match             = 'Equals'
         MatchValue        = 0
-        Severity          = 'High'
-        ConsoleClass      = 'Finding'
+        # Medium, not High. The value is the KB2871997 retrofit switch for Windows 7 and
+        # Server 2008 R2: from Windows 8.1 and Server 2012 R2 on, Restricted Admin mode is
+        # there without it, so setting it to 0 establishes nothing that is not already the
+        # case - while a domain without this GPO has the same path open and this check says
+        # nothing at all. Administrators also set it to 0 deliberately, because Restricted
+        # Admin is how they keep their credentials off the target host.
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
         FindingId         = 'REGISTRY_RESTRICTEDADMIN'
         VulnerabilityName = 'RDP Restricted Admin mode enabled (Pass-the-Hash over RDP)'
         RiskReason        = 'RDP accepts hash-based auth - enables PtH over RDP and MFA bypass'

@@ -1687,8 +1687,8 @@ $Script:DangerousRegistryKeys = @(
 	    ValueName         = 'DisableRestrictedAdmin'
 	    Match             = 'Equals'
 	    MatchValue        = 0
-	    Severity          = 'High'
-	    ConsoleClass      = 'Finding'
+	    Severity          = 'Medium'
+	    ConsoleClass      = 'Hint'
 	    FindingId         = 'REGISTRY_RESTRICTEDADMIN'
 	    VulnerabilityName = 'RDP Restricted Admin mode enabled (Pass-the-Hash over RDP)'
 	    RiskReason        = 'RDP accepts hash-based auth - enables PtH over RDP and MFA bypass'
@@ -5923,6 +5923,8 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    )
 	    Remediation = @(
 	        "Remove unnecessary WriteProperty permissions on GPO objects"
+	        "Where the row says the ACE is inherited, removing it on the GPO is not possible: it is written on the parent container - CN=Policies,CN=System - and either has to go there or inheritance has to be broken on this object"
+	        "Check the owner as well: an owner may rewrite the ACL and put the permission back, and neither Set-GPPermission nor the delegation tab changes ownership"
 	        "Delegate GPO editing through the Group Policy Management Console's built-in delegation model rather than raw ACL grants"
 	        "Monitor changes to gPCFileSysPath, gPCMachineExtensionNames and gPCUserExtensionNames (Event ID 5136)"
 	    )
@@ -5988,6 +5990,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    )
 	    Remediation = @(
 	        "Remove unnecessary Delete/DeleteTree/DeleteChild/CreateChild permissions on GPO objects and on the Group Policy Objects container"
+	        "An inherited entry has to be removed on the container it is written on, and the owner of the object can restore any of this - both are outside what Set-GPPermission reaches"
 	        "Monitor GPO deletion (Event ID 5141) and GPO creation, not only content changes"
 	        "Back up GPOs (Get-GPOReport / Backup-GPO) so a deleted policy can be restored with its original settings intact"
 	    )
@@ -8309,6 +8312,8 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
 	    )
 	    Remediation = @(
 	        "Remove unnecessary write permissions from GPOs"
+	        "An inherited ACE does not go away here: it has to be removed where it is written, usually on CN=Policies,CN=System, or inheritance has to be broken on the GPO. Set-GPPermission and the GPMC delegation tab cannot touch an inherited entry at all, so check the row for whether the grant is inherited before acting on it"
+	        "Set-GPPermission does not change the owner either. A trustee that owns the GPO can re-grant itself everything that was just removed, so an owner outside the administrative tier is its own task: Set-Acl on the AD object, or dsacls with /takeownership"
 	        "Only Domain Admins and specific GPO management groups should have write access"
 	        "Use GPO delegation carefully - prefer read-only access"
 	        "Monitor GPO modifications (Event ID 5136) - that event covers the directory object. The attack path here is the policy content in SYSVOL, and a change to those files raises no 5136: it needs file system auditing (4663) on the SYSVOL policy folder"
@@ -15638,7 +15643,7 @@ foreach ($oid in $linkedOIDs) {
 	    Title = "RDP Restricted Admin Mode Enabled via GPO"
 	    Risk = "Finding"
 	    BaseScore = 50
-	    Description = "A Group Policy sets DisableRestrictedAdmin=0, enabling RDP Restricted Admin mode. While intended to protect credentials, it lets RDP accept hash-based authentication - enabling Pass-the-Hash over RDP and bypassing some MFA solutions."
+	    Description = "A Group Policy sets DisableRestrictedAdmin=0, which allows RDP Restricted Admin mode. The mode exists to keep an administrator's credentials off the remote host, and the cost is that RDP then accepts hash-based authentication - Pass-the-Hash over RDP, and a bypass of some MFA solutions that only see the interactive logon. The value itself is the KB2871997 retrofit switch for Windows 7 and Server 2008 R2: from Windows 8.1 and Server 2012 R2 on the mode is available without it, so on a current estate this GPO documents an intention rather than creating the state. The same path is open on every host where no policy mentions the value at all, which is why this is reported as a hint about a deliberate setting rather than as a vulnerability of its own."
 	    Impact = @(
 	        "RDP accepts NT hash without plaintext password"
 	        "Pass-the-Hash over RDP becomes possible"
@@ -15651,6 +15656,7 @@ foreach ($oid in $linkedOIDs) {
 	    )
 	    Remediation = @(
 	        "Set DisableRestrictedAdmin=1 unless a documented need exists"
+	        "Where Restricted Admin is wanted, DisableRestrictedAdminOutboundCreds=1 is the hardening that keeps it: the session can no longer use the target host's credentials outbound, which is the part an attacker on that host would relay"
 	        "That also turns off mstsc /restrictedadmin and Remote Credential Guard, which exist so an administrator's credentials never reach the remote host. Where those are in use the trade is one credential protection for another, so decide per host class rather than domain-wide"
 	        "Monitor changes to this value as a compromise indicator"
 	    )
@@ -16252,7 +16258,7 @@ foreach ($oid in $linkedOIDs) {
 	        @{ Attribute = 'InstallDriversSecurityOption'; Pattern = '^Any user'; Severity = 'Hint' }
 	        @{ Attribute = 'WebDriverDownload'; Pattern = '^Blocked'; Severity = 'Secure'; SeverityOnly = $true }
 	        @{ Attribute = 'InstallDriversSecurityOption'; Pattern = '^Only Administrators'; Severity = 'Secure'; SeverityOnly = $true }
-	        @{ Attribute = 'HTTPPrinting'; Pattern = '^Allowed'; Severity = 'Hint'; SeverityOnly = $true }
+	        @{ Attribute = 'HTTPPrinting'; Pattern = '^Allowed'; Severity = 'Hint' }
 	        @{ Attribute = 'HTTPPrinting'; Pattern = '^Blocked'; Severity = 'Secure'; SeverityOnly = $true }
 	    )
 	}
@@ -68878,7 +68884,7 @@ function Get-PointAndPrintAssessment {
 	if ($driverInstallOpen) {
 	    return @{
 	        Exploitability = 'Weakened - non-administrators may install printer drivers, an elevation prompt is still shown'
-	        Severity       = 'Medium'
+	        Severity       = 'High'
 	    }
 	}
 	$secondary = @()
@@ -68924,7 +68930,7 @@ function Get-PointAndPrintAssessment {
 	if ($promptSuppressed -or $policyDisabled) {
 	    return @{
 	        Exploitability = 'Latent - elevation prompts are suppressed, currently blocked by the RestrictDriverInstallationToAdministrators default'
-	        Severity       = 'Medium'
+	        Severity       = 'Low'
 	    }
 	}
 	if (@($secondary).Count -gt 0) {
@@ -84165,7 +84171,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-1116"
+$Script:adPEASVersion = "2.7.0+20261012-1132"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

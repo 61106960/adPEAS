@@ -602,10 +602,14 @@ function Get-PointAndPrintAssessment {
         }
     }
 
+    # High, against Low for the latent case below. Both carried Medium, so the console
+    # sorted and coloured them alike and only the Exploitability sentence told them apart -
+    # while the cards behind them already differ (45 against 30). This one is the active
+    # rollback of the PrintNightmare countermeasure on every machine in scope.
     if ($driverInstallOpen) {
         return @{
             Exploitability = 'Weakened - non-administrators may install printer drivers, an elevation prompt is still shown'
-            Severity       = 'Medium'
+            Severity       = 'High'
         }
     }
 
@@ -677,10 +681,13 @@ function Get-PointAndPrintAssessment {
         }
     }
 
+    # Low: nothing is exposed today. The prompt suppression is a pre-2021 leftover that the
+    # RestrictDriverInstallationToAdministrators default blocks, and it turns into the
+    # finding above the moment somebody sets that value to 0.
     if ($promptSuppressed -or $policyDisabled) {
         return @{
             Exploitability = 'Latent - elevation prompts are suppressed, currently blocked by the RestrictDriverInstallationToAdministrators default'
-            Severity       = 'Medium'
+            Severity       = 'Low'
         }
     }
 
