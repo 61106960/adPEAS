@@ -5,7 +5,8 @@
 .DESCRIPTION
     Write-Log provides a centralized logging mechanism that:
     - Outputs to console using appropriate PowerShell cmdlets (Write-Verbose, Write-Debug, etc.)
-    - Optionally writes to a log file when $Script:adPEAS_Outputfile is set AND $Script:adPEAS_VerboseLogging is enabled
+    - Writes to the log file when $Script:adPEAS_Outputfile is set: Warning and Error always,
+      Info, Verbose and Debug only with $Script:adPEAS_VerboseLogging
     - Adds timestamps to file output for troubleshooting
     - Respects PowerShell preference variables ($VerbosePreference, $DebugPreference, etc.)
 
@@ -37,9 +38,11 @@
 .NOTES
     Author: Alexander Sturz (@_61106960_)
 
-    File output is only active when BOTH conditions are met:
-    1. $Script:adPEAS_Outputfile is set (via -Outputfile parameter)
-    2. $Script:adPEAS_VerboseLogging is $true (via -VerboseLogging parameter)
+    File output needs $Script:adPEAS_Outputfile (via -Outputfile). Beyond that, the level
+    decides: Warning and Error are written whatever the logging settings are, because a
+    scan that logged an error and said nothing about it in the file cannot be told from a
+    clean scan once the console has scrolled away. Info, Verbose and Debug additionally
+    need $Script:adPEAS_VerboseLogging ($true via -VerboseLogging).
 
     The file output includes timestamps for each entry in format:
     yyyy-MM-dd HH:mm:ss [Level] Message

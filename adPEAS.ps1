@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 07:41:28
-    Version: 2.7.0+20261012-0741
+    Build: 2026-10-12 08:02:38
+    Version: 2.7.0+20261012-0802
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -51790,7 +51790,8 @@ function Resolve-adPEASModules {
 .DESCRIPTION
     Write-Log provides a centralized logging mechanism that:
     - Outputs to console using appropriate PowerShell cmdlets (Write-Verbose, Write-Debug, etc.)
-    - Optionally writes to a log file when $Script:adPEAS_Outputfile is set AND $Script:adPEAS_VerboseLogging is enabled
+    - Writes to the log file when $Script:adPEAS_Outputfile is set: Warning and Error always,
+      Info, Verbose and Debug only with $Script:adPEAS_VerboseLogging
     - Adds timestamps to file output for troubleshooting
     - Respects PowerShell preference variables ($VerbosePreference, $DebugPreference, etc.)
 
@@ -51822,9 +51823,11 @@ function Resolve-adPEASModules {
 .NOTES
     Author: Alexander Sturz (@_61106960_)
 
-    File output is only active when BOTH conditions are met:
-    1. $Script:adPEAS_Outputfile is set (via -Outputfile parameter)
-    2. $Script:adPEAS_VerboseLogging is $true (via -VerboseLogging parameter)
+    File output needs $Script:adPEAS_Outputfile (via -Outputfile). Beyond that, the level
+    decides: Warning and Error are written whatever the logging settings are, because a
+    scan that logged an error and said nothing about it in the file cannot be told from a
+    clean scan once the console has scrolled away. Info, Verbose and Debug additionally
+    need $Script:adPEAS_VerboseLogging ($true via -VerboseLogging).
 
     The file output includes timestamps for each entry in format:
     yyyy-MM-dd HH:mm:ss [Level] Message
@@ -134300,7 +134303,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0741"
+$Script:adPEASVersion = "2.7.0+20261012-0802"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -134420,7 +134423,18 @@ function Invoke-adPEAS {
     Include privileged accounts (Domain Admins, Enterprise Admins, etc.) in permission checks.
     By default, these expected privileged accounts are hidden from output.
     When enabled, privileged accounts are shown in yellow (Hint) instead of red (Finding).
-    Affects: Get-DangerousACLs, Get-GPOPermissions, Get-AddComputerRights, Get-PrivilegedGroupMembers, Get-ADCSVulnerabilities.
+
+    Affects twelve checks - the list named five of them, and how much a default run
+    hides is part of what this switch means:
+      Get-DangerousACLs, Get-DangerousOUPermissions, Get-PasswordResetRights,
+      Get-AddComputerRights, Get-LAPSPermissions, Get-GPOPermissions,
+      Get-PrivilegedGroupMembers, Get-ADCSVulnerabilities, Get-WeakCertificateMapping,
+      Get-CredentialRoaming.
+
+    Two of them read it as something else, which is worth knowing before setting it:
+    Get-GPOUserRightsAssignment and Get-GPOPointAndPrint take it as -IncludeDefaults,
+    where it adds the assignments and the printer policies that match the Windows
+    default - more rows rather than re-coloured ones.
 
 .PARAMETER TimeoutSeconds
     Timeout in seconds for LDAP operations.

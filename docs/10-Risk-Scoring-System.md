@@ -22,11 +22,33 @@ FINAL_SCORE = (BASE × IMPACT × EXPLOITABILITY × SECURITY) + CORRELATION
 |-----------|-------|-------------|
 | **BASE** | 0-100 | Intrinsic severity of the finding type |
 | **IMPACT** | 1.0-2.0 | Multiplier based on account privilege tier |
-| **EXPLOITABILITY** | 0.6-1.6 | Modifier based on password age, policy, encryption |
-| **SECURITY** | 0.1-1.0 | Reduction factor for mitigating controls |
-| **CORRELATION** | 0-15 | Bonus for accounts appearing in multiple findings |
+| **EXPLOITABILITY** | 0.72-3.64 | Product of four factors: password age, minimum length, complexity, encryption |
+| **SECURITY** | 0.07-1.3 | Mitigating controls, multiplied together |
+| **CORRELATION** | 0-15, or 0-30 for a non-privileged account | Bonus for accounts appearing in multiple findings |
 
 **Final score is clamped to 0-100.**
+
+The ranges above are the products of the tables in
+`src/modules/Core/adPEAS-ScoringDefinitions.ps1`, not separate numbers:
+
+- **EXPLOITABILITY** multiplies password age (1.0-1.6), minimum password length
+  (0.8-1.4), complexity (1.0-1.25) and encryption type (0.9-1.3). Hence 0.72 at the
+  bottom and 3.64 at the top - this component can raise a score as well as lower it,
+  and it is applied only to the attacks that need cracking (Kerberoast, AS-REP,
+  pre-auth).
+- **SECURITY** multiplies whichever mitigations apply, so two of them compound: a
+  disabled account (0.1) whose password has expired (0.7) comes out at 0.07. One entry
+  in that table is above 1 - `USE_DES_KEY_ONLY` at 1.3, which raises the score because
+  DES is weak encryption rather than a mitigation. It sits in this table for historical
+  reasons and belongs with the exploitability factors; moving it would change scores,
+  so it is left where it is and named here instead.
+- **CORRELATION** adds 5 per additional finding up to 15 for a privileged account, and
+  8 up to 30 for a non-privileged one - an ordinary account that turns up in four
+  findings is the pattern worth noticing, which is why the bonus is larger there.
+
+Because the components multiply, the arithmetic reaches the 100 clamp long before the
+theoretical maximum. A score of 100 therefore means "at or above the top of the scale",
+not "exactly 100".
 
 ---
 

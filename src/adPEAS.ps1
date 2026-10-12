@@ -367,7 +367,18 @@ function Invoke-adPEAS {
     Include privileged accounts (Domain Admins, Enterprise Admins, etc.) in permission checks.
     By default, these expected privileged accounts are hidden from output.
     When enabled, privileged accounts are shown in yellow (Hint) instead of red (Finding).
-    Affects: Get-DangerousACLs, Get-GPOPermissions, Get-AddComputerRights, Get-PrivilegedGroupMembers, Get-ADCSVulnerabilities.
+
+    Affects twelve checks - the list named five of them, and how much a default run
+    hides is part of what this switch means:
+      Get-DangerousACLs, Get-DangerousOUPermissions, Get-PasswordResetRights,
+      Get-AddComputerRights, Get-LAPSPermissions, Get-GPOPermissions,
+      Get-PrivilegedGroupMembers, Get-ADCSVulnerabilities, Get-WeakCertificateMapping,
+      Get-CredentialRoaming.
+
+    Two of them read it as something else, which is worth knowing before setting it:
+    Get-GPOUserRightsAssignment and Get-GPOPointAndPrint take it as -IncludeDefaults,
+    where it adds the assignments and the printer policies that match the Windows
+    default - more rows rather than re-coloured ones.
 
 .PARAMETER TimeoutSeconds
     Timeout in seconds for LDAP operations.
