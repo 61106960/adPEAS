@@ -234,10 +234,44 @@ function Get-DomainComputer {
                 $Filter = "(&$Filter(operatingSystem=$OperatingSystem))"
             }
 
+            # What counts as a domain controller, written once.
+            #
+            # A writable domain controller's computer account carries SERVER_TRUST_ACCOUNT
+            # (8192). A read-only one does not: an RODC is a WORKSTATION_TRUST_ACCOUNT with
+            # PARTIAL_SECRETS_ACCOUNT (67108864 = 0x4000000) and primaryGroupID 521. An
+            # RODC holds credentials and is a domain controller, so leaving it out is a
+            # blind spot.
+            #
+            # 67108864, not 16777216 - that is TRUSTED_TO_AUTH_FOR_DELEGATION, and matching
+            # on it would call every server with protocol transition a domain controller.
+            #
+            # This file used to answer the question twice and differently: -DomainController
+            # by the clause below, and the unconstrained exclusion by
+            # (!(primaryGroupID=516)) alone. 516 is the Domain Controllers group, so the
+            # exclusion covered writable DCs and left every RODC in - reported as an
+            # account with unconstrained delegation, which every domain controller is by
+            # design, with a remediation that breaks the RODC. Get-InfrastructureServers
+            # states in its own comment that this definition lives in one place so the
+            # inventory and the delegation checks cannot drift apart; now it does.
+            $dcConditions = @(
+                '(userAccountControl:1.2.840.113556.1.4.803:=8192)'      # SERVER_TRUST_ACCOUNT
+                '(userAccountControl:1.2.840.113556.1.4.803:=67108864)'  # PARTIAL_SECRETS_ACCOUNT
+                '(primaryGroupID=521)'                                   # Read-only Domain Controllers
+            )
+            $dcClause = '(|' + ($dcConditions -join '') + ')'
+
+            # The same three conditions negated, one clause each rather than one negated OR
+            # group: identical in meaning, and it reads condition by condition in a server
+            # log. primaryGroupID 516 is not among them and does not need to be - a writable
+            # domain controller carries SERVER_TRUST_ACCOUNT whichever group it is in, which
+            # is the point of defining this by what the account IS.
+            $dcExclusion = ($dcConditions | ForEach-Object { "(!$_)" }) -join ''
+
             # Add computer-specific filters (not delegated to Get-DomainObject)
             if ($Unconstrained) {
-                # TRUSTED_FOR_DELEGATION Flag (524288) - but NOT Domain Controllers
-                $Filter = "(&$Filter(userAccountControl:1.2.840.113556.1.4.803:=524288)(!(primaryGroupID=516)))"
+                # TRUSTED_FOR_DELEGATION (524288), on anything that is not a domain
+                # controller - every domain controller carries the flag by design.
+                $Filter = "(&$Filter(userAccountControl:1.2.840.113556.1.4.803:=524288)$dcExclusion)"
             }
 
             if ($Constrained) {
@@ -253,14 +287,8 @@ function Get-DomainComputer {
             }
 
             if ($DomainController) {
-                # A writable domain controller's computer account carries SERVER_TRUST_ACCOUNT
-                # (8192). A read-only one does not: an RODC is a WORKSTATION_TRUST_ACCOUNT with
-                # PARTIAL_SECRETS_ACCOUNT (67108864 = 0x4000000) and primaryGroupID 521. An RODC
-                # holds credentials and is a domain controller, so leaving it out is a blind spot.
-                #
-                # 67108864, not 16777216 - that is TRUSTED_TO_AUTH_FOR_DELEGATION, and matching on
-                # it would call every server with protocol transition a domain controller.
-                $Filter = "(&$Filter(|(userAccountControl:1.2.840.113556.1.4.803:=8192)(userAccountControl:1.2.840.113556.1.4.803:=67108864)(primaryGroupID=521)))"
+                # The same clause the unconstrained exclusion negates - see above.
+                $Filter = "(&$Filter$dcClause)"
             }
 
             if ($LAPS) {

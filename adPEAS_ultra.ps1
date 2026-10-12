@@ -26659,8 +26659,15 @@ function Get-DomainComputer {
 	        if ($OperatingSystem) {
 	            $Filter = "(&$Filter(operatingSystem=$OperatingSystem))"
 	        }
+	        $dcConditions = @(
+	            '(userAccountControl:1.2.840.113556.1.4.803:=8192)'
+	            '(userAccountControl:1.2.840.113556.1.4.803:=67108864)'
+	            '(primaryGroupID=521)'
+	        )
+	        $dcClause = '(|' + ($dcConditions -join '') + ')'
+	        $dcExclusion = ($dcConditions | ForEach-Object { "(!$_)" }) -join ''
 	        if ($Unconstrained) {
-	            $Filter = "(&$Filter(userAccountControl:1.2.840.113556.1.4.803:=524288)(!(primaryGroupID=516)))"
+	            $Filter = "(&$Filter(userAccountControl:1.2.840.113556.1.4.803:=524288)$dcExclusion)"
 	        }
 	        if ($Constrained) {
 	            $Filter = "(&$Filter(msDS-AllowedToDelegateTo=*))"
@@ -26669,7 +26676,7 @@ function Get-DomainComputer {
 	            $Filter = "(&$Filter(msDS-AllowedToActOnBehalfOfOtherIdentity=*))"
 	        }
 	        if ($DomainController) {
-	            $Filter = "(&$Filter(|(userAccountControl:1.2.840.113556.1.4.803:=8192)(userAccountControl:1.2.840.113556.1.4.803:=67108864)(primaryGroupID=521)))"
+	            $Filter = "(&$Filter$dcClause)"
 	        }
 	        if ($LAPS) {
 	            $Filter = "(&$Filter(|(ms-Mcs-AdmPwdExpirationTime=*)(msLAPS-PasswordExpirationTime=*)))"
@@ -83811,7 +83818,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-0850"
+$Script:adPEASVersion = "2.7.0+20261012-0907"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
