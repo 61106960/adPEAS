@@ -207,7 +207,28 @@ function Get-DomainInformation {
 
             try {
                 Write-Log "[Get-DomainInformation] Checking krbtgt account password age"
-                $KrbtgtAccount = @(Get-DomainObject -LDAPFilter "(sAMAccountName=krbtgt)" @PSBoundParameters)[0]
+
+                # By RID, not by name. krbtgt can be renamed - it happens after an
+                # incident, which is exactly when its password age matters most - and a
+                # name-based lookup then finds nothing, leaves $KrbtgtInfo null and drops
+                # the whole statement without a word. The kerberoast check already
+                # excludes the account by (objectSid=<domain>-502) and says why; this is
+                # the same identity, asked the same way. Name only as the fallback for a
+                # session that has no resolved domain SID.
+                $krbtgtDomainSID = $Script:LDAPContext['DomainSID']
+                $krbtgtFilter = if ($krbtgtDomainSID) {
+                    "(objectSid=$krbtgtDomainSID-502)"
+                } else {
+                    Write-Log "[Get-DomainInformation] No domain SID in session - looking up krbtgt by name"
+                    "(sAMAccountName=krbtgt)"
+                }
+                $KrbtgtAccount = @(Get-DomainObject -LDAPFilter $krbtgtFilter @PSBoundParameters)[0]
+
+                if (-not $KrbtgtAccount) {
+                    # Said rather than skipped: the krbtgt password age is the Golden Ticket
+                    # window, and silence here reads as "in order".
+                    Show-Line "The krbtgt account could not be read - its password age is unknown" -Class Note
+                }
 
                 if ($KrbtgtAccount -and $KrbtgtAccount.pwdLastSet) {
                     # pwdLastSet is already converted to DateTime by Get-DomainObject

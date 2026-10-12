@@ -76,12 +76,18 @@ function Get-KerberoastableAccounts {
             # report as a kerberoastable account - which it is by design and which nobody
             # can act on. Project rule: identity checks are SID based, names are not stable.
             # The name filter stays as the fallback for a session with no resolved domain SID.
+            # And the per-RODC clones of it. Every read-only domain controller gets its own
+            # krbtgt account with an ordinary RID, so the -502 exclusion does not cover
+            # them; what identifies them is msDS-SecondaryKrbTgtNumber, which only they
+            # carry. Their password is machine-generated and not crackable, and the
+            # remediation this check prints - remove the SPN, set a 25 character password -
+            # cannot be carried out on a KDC key account.
             $domainSID = $Script:LDAPContext['DomainSID']
             $krbtgtExclusion = if ($domainSID) {
-                "(!(objectSid=$domainSID-502))"
+                "(&(!(objectSid=$domainSID-502))(!(msDS-SecondaryKrbTgtNumber=*)))"
             } else {
                 Write-Log "[Get-KerberoastableAccounts] No domain SID in session - excluding krbtgt by name"
-                "(!(samAccountName=krbtgt))"
+                "(&(!(samAccountName=krbtgt))(!(msDS-SecondaryKrbTgtNumber=*)))"
             }
             $kerberoastableUsers = @(Get-DomainUser -SPN -Enabled -LDAPFilter $krbtgtExclusion -ShowOwner @connectionParams)
 

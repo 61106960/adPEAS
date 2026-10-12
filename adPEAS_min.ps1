@@ -62378,7 +62378,17 @@ function Get-DomainInformation {
             $KrbtgtSeverity = "Info"
             try {
                 Write-Log "[Get-DomainInformation] Checking krbtgt account password age"
-                $KrbtgtAccount = @(Get-DomainObject -LDAPFilter "(sAMAccountName=krbtgt)" @PSBoundParameters)[0]
+                $krbtgtDomainSID = $Script:LDAPContext['DomainSID']
+                $krbtgtFilter = if ($krbtgtDomainSID) {
+                    "(objectSid=$krbtgtDomainSID-502)"
+                } else {
+                    Write-Log "[Get-DomainInformation] No domain SID in session - looking up krbtgt by name"
+                    "(sAMAccountName=krbtgt)"
+                }
+                $KrbtgtAccount = @(Get-DomainObject -LDAPFilter $krbtgtFilter @PSBoundParameters)[0]
+                if (-not $KrbtgtAccount) {
+                    Show-Line "The krbtgt account could not be read - its password age is unknown" -Class Note
+                }
                 if ($KrbtgtAccount -and $KrbtgtAccount.pwdLastSet) {
                     $PwdLastSet = $KrbtgtAccount.pwdLastSet
                     $PasswordAge = (Get-Date) - $PwdLastSet
@@ -74504,10 +74514,10 @@ function Get-KerberoastableAccounts {
             Show-SubHeader "Searching for Kerberoastable accounts (users with SPNs)..." -ObjectType "Kerberoastable"
             $domainSID = $Script:LDAPContext['DomainSID']
             $krbtgtExclusion = if ($domainSID) {
-                "(!(objectSid=$domainSID-502))"
+                "(&(!(objectSid=$domainSID-502))(!(msDS-SecondaryKrbTgtNumber=*)))"
             } else {
                 Write-Log "[Get-KerberoastableAccounts] No domain SID in session - excluding krbtgt by name"
-                "(!(samAccountName=krbtgt))"
+                "(&(!(samAccountName=krbtgt))(!(msDS-SecondaryKrbTgtNumber=*)))"
             }
             $kerberoastableUsers = @(Get-DomainUser -SPN -Enabled -LDAPFilter $krbtgtExclusion -ShowOwner @connectionParams)
             if (@($kerberoastableUsers).Count -gt 0) {
@@ -86752,7 +86762,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-0830"
+$Script:adPEASVersion = "2.7.0+20261012-0850"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

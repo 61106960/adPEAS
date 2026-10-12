@@ -74,14 +74,23 @@ Some checks are scoped exclusively to accounts with `adminCount=1` — accounts 
 
 ### Disabled Account Handling
 
-adPEAS does **not** globally exclude disabled accounts. Most checks return both enabled and disabled accounts, because disabled accounts can still represent security risks (e.g., a disabled account with Kerberoastable SPN can be re-enabled by an attacker with the right permissions).
+adPEAS does **not** globally exclude disabled accounts. Most checks return both, because a disabled account can still be a risk: whoever can re-enable it gets whatever it carried.
 
-Exceptions where disabled accounts are excluded:
+The Kerberos checks are the exception, and they exclude disabled accounts for a reason that belongs to the protocol rather than to a preference: the KDC answers a request for a disabled principal with KDC_ERR_CLIENT_REVOKED, so there is no ticket to roast and no delegation to abuse while the account stays disabled.
+
+Checks that ask the directory for enabled accounts only:
 
 | Check | Why |
 |-------|-----|
+| **Get-KerberoastableAccounts** | The KDC issues no service ticket for a disabled principal, so there is no hash to crack |
+| **Get-ASREPRoastableAccounts** | Same: no AS-REP for a disabled account |
+| **Get-UnconstrainedDelegation** | Delegation is performed by an account that can authenticate |
+| **Get-ConstrainedDelegation** | As above, for both of its populations |
+| **Get-ResourceBasedConstrainedDelegation** | As above |
 | **Get-InactiveAdminAccounts** | Only enabled accounts — purpose is to find *active* admins who are not being used |
 | **Get-LAPSPermissions** | Only enabled computers — LAPS passwords for disabled computers are not actionable |
+
+A disabled account that carries an SPN, or delegation, is still worth knowing about the moment somebody can re-enable it - that is a question about who may change the account, which `Get-PasswordResetRights` and `Get-DangerousACLs` answer, and not one these checks can answer from a ticket they cannot get.
 
 ---
 

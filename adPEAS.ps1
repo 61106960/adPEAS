@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 08:30:58
-    Version: 2.7.0+20261012-0830
+    Build: 2026-10-12 08:50:35
+    Version: 2.7.0+20261012-0850
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -97509,7 +97509,28 @@ function Get-DomainInformation {
 
             try {
                 Write-Log "[Get-DomainInformation] Checking krbtgt account password age"
-                $KrbtgtAccount = @(Get-DomainObject -LDAPFilter "(sAMAccountName=krbtgt)" @PSBoundParameters)[0]
+
+                # By RID, not by name. krbtgt can be renamed - it happens after an
+                # incident, which is exactly when its password age matters most - and a
+                # name-based lookup then finds nothing, leaves $KrbtgtInfo null and drops
+                # the whole statement without a word. The kerberoast check already
+                # excludes the account by (objectSid=<domain>-502) and says why; this is
+                # the same identity, asked the same way. Name only as the fallback for a
+                # session that has no resolved domain SID.
+                $krbtgtDomainSID = $Script:LDAPContext['DomainSID']
+                $krbtgtFilter = if ($krbtgtDomainSID) {
+                    "(objectSid=$krbtgtDomainSID-502)"
+                } else {
+                    Write-Log "[Get-DomainInformation] No domain SID in session - looking up krbtgt by name"
+                    "(sAMAccountName=krbtgt)"
+                }
+                $KrbtgtAccount = @(Get-DomainObject -LDAPFilter $krbtgtFilter @PSBoundParameters)[0]
+
+                if (-not $KrbtgtAccount) {
+                    # Said rather than skipped: the krbtgt password age is the Golden Ticket
+                    # window, and silence here reads as "in order".
+                    Show-Line "The krbtgt account could not be read - its password age is unknown" -Class Note
+                }
 
                 if ($KrbtgtAccount -and $KrbtgtAccount.pwdLastSet) {
                     # pwdLastSet is already converted to DateTime by Get-DomainObject
@@ -118815,12 +118836,18 @@ function Get-KerberoastableAccounts {
             # report as a kerberoastable account - which it is by design and which nobody
             # can act on. Project rule: identity checks are SID based, names are not stable.
             # The name filter stays as the fallback for a session with no resolved domain SID.
+            # And the per-RODC clones of it. Every read-only domain controller gets its own
+            # krbtgt account with an ordinary RID, so the -502 exclusion does not cover
+            # them; what identifies them is msDS-SecondaryKrbTgtNumber, which only they
+            # carry. Their password is machine-generated and not crackable, and the
+            # remediation this check prints - remove the SPN, set a 25 character password -
+            # cannot be carried out on a KDC key account.
             $domainSID = $Script:LDAPContext['DomainSID']
             $krbtgtExclusion = if ($domainSID) {
-                "(!(objectSid=$domainSID-502))"
+                "(&(!(objectSid=$domainSID-502))(!(msDS-SecondaryKrbTgtNumber=*)))"
             } else {
                 Write-Log "[Get-KerberoastableAccounts] No domain SID in session - excluding krbtgt by name"
-                "(!(samAccountName=krbtgt))"
+                "(&(!(samAccountName=krbtgt))(!(msDS-SecondaryKrbTgtNumber=*)))"
             }
             $kerberoastableUsers = @(Get-DomainUser -SPN -Enabled -LDAPFilter $krbtgtExclusion -ShowOwner @connectionParams)
 
@@ -134356,7 +134383,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0830"
+$Script:adPEASVersion = "2.7.0+20261012-0850"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
