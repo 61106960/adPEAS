@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 03:18:53
-    Version: 2.7.0+20261012-0318
+    Build: 2026-10-12 03:43:33
+    Version: 2.7.0+20261012-0343
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -18390,6 +18390,11 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "M1035"
         Triggers = @(
             @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^Restricted$'; Severity = 'Secure' }
+            # The live test has its own wording, because it says something stronger than
+            # the dsHeuristics character does: a bind was actually attempted and refused.
+            # Get-DomainInformation writes it; "Not tested" deliberately matches neither
+            # pattern, so a skipped check renders neutral instead of green.
+            @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^Refused'; Severity = 'Secure' }
         )
     }
 
@@ -30403,6 +30408,14 @@ function Connect-LDAP {
             $Script:AnonymousAccessEnabled = $false
             $Script:AnonymousAccessDetails = $null
 
+            # Whether the question was asked at all, which is a third state the boolean
+            # above cannot hold. It is set to $false before the two skips below, and
+            # Get-DomainInformation then printed no row at all - so a reader of a report
+            # from an -UseLDAPS scan saw the same thing they see for a domain that
+            # refuses anonymous binds, which is nothing. That is the scan mode a
+            # security-conscious customer picks.
+            $Script:AnonymousAccessTested = $false
+
             if ($AsGlobalCatalog) {
                 Write-Log "[Connect-LDAP] Skipping anonymous access check for GC mode"
             }
@@ -30412,6 +30425,8 @@ function Connect-LDAP {
 
             $AnonLdapConn = $null
             if (-not $UseLDAPS -and -not $AsGlobalCatalog) {
+                # From here the answer is measured rather than assumed.
+                $Script:AnonymousAccessTested = $true
             try {
                 # Use resolved IP when custom DNS is active
                 $AnonTarget = if ($CustomDnsServer -and $ResolvedIPString) { $ResolvedIPString } else { $Server }
@@ -30906,6 +30921,7 @@ function Connect-LDAP {
             # ===== Phase 7c: Store Anonymous Access Results =====
             # Note: Display of anonymous access findings is handled by Get-DomainInformation
             $DomainInfo['AnonymousAccessEnabled'] = $Script:AnonymousAccessEnabled
+            $DomainInfo['AnonymousAccessTested'] = $Script:AnonymousAccessTested
             $DomainInfo['AnonymousAccessDetails'] = $Script:AnonymousAccessDetails
 
             # ===== Phase 8: User Context Verification via LDAP =====
@@ -33597,6 +33613,7 @@ function Clear-SessionState {
     # Anonymous access detection (Connect-LDAP)
     $Script:AnonymousAccessEnabled = $null
     $Script:AnonymousAccessDetails = $null
+    $Script:AnonymousAccessTested = $null
 
     # License (runtime-provided via -License parameter)
     $Script:RuntimeLicense = $null
@@ -97469,7 +97486,13 @@ function Get-DomainInformation {
             # Note: Everything OK
             $domainInfoSeverity = "Note"
 
-            # Anonymous LDAP Access Warning - Critical finding
+            # Anonymous LDAP access: three states, and the row used to exist for one.
+            #
+            # Connect-LDAP skips the test under -UseLDAPS and for a global catalog
+            # connection, and the flag it sets beforehand is $false - so no row was
+            # written and the report looked exactly like a domain that refuses anonymous
+            # binds. A reader takes an absent row for an absent problem, and -UseLDAPS is
+            # the mode a security-conscious customer picks.
             if ($Script:LDAPContext['AnonymousAccessEnabled']) {
                 $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue "ENABLED - Security Risk!" -Force
                 $anonDetails = $Script:LDAPContext['AnonymousAccessDetails']
@@ -97478,8 +97501,25 @@ function Get-DomainInformation {
                 }
                 $domainInfoSeverity = "Finding"
             }
-            # Check for old functional level (< 2016 = level 7)
-            elseif ([int]$DomainFunc -lt 7) {
+            elseif ($Script:LDAPContext['AnonymousAccessTested']) {
+                # Measured and refused. This is the earned green state, and nothing used
+                # to say it out loud.
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue (
+                    'Refused - an anonymous bind was tried and could not read the domain object') -Force
+            }
+            else {
+                # Not asked. Neutral on purpose: this is the one state where adPEAS has
+                # nothing to report either way, and saying so is the whole point.
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue (
+                    'Not tested - the session is LDAPS or a global catalog connection, where the anonymous bind test is skipped') -Force
+            }
+            # Check for old functional level (< 2016 = level 7).
+            #
+            # Its own statement now, guarded on the severity rather than chained: it
+            # used to be an elseif of the anonymous-access branch above, which worked
+            # only as long as that branch had a single arm. The guard keeps the old
+            # precedence - a Finding above outranks this hint.
+            if ($domainInfoSeverity -eq "Note" -and [int]$DomainFunc -lt 7) {
                 $domainInfoSeverity = "Hint"
             }
 
@@ -133582,7 +133622,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0318"
+$Script:adPEASVersion = "2.7.0+20261012-0343"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

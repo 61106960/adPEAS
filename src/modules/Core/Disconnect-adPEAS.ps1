@@ -222,6 +222,7 @@ function Clear-SessionState {
     # Anonymous access detection (Connect-LDAP)
     $Script:AnonymousAccessEnabled = $null
     $Script:AnonymousAccessDetails = $null
+    $Script:AnonymousAccessTested = $null
 
     # License (runtime-provided via -License parameter)
     $Script:RuntimeLicense = $null

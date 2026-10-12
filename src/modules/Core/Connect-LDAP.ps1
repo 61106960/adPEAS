@@ -479,6 +479,14 @@ function Connect-LDAP {
             $Script:AnonymousAccessEnabled = $false
             $Script:AnonymousAccessDetails = $null
 
+            # Whether the question was asked at all, which is a third state the boolean
+            # above cannot hold. It is set to $false before the two skips below, and
+            # Get-DomainInformation then printed no row at all - so a reader of a report
+            # from an -UseLDAPS scan saw the same thing they see for a domain that
+            # refuses anonymous binds, which is nothing. That is the scan mode a
+            # security-conscious customer picks.
+            $Script:AnonymousAccessTested = $false
+
             if ($AsGlobalCatalog) {
                 Write-Log "[Connect-LDAP] Skipping anonymous access check for GC mode"
             }
@@ -488,6 +496,8 @@ function Connect-LDAP {
 
             $AnonLdapConn = $null
             if (-not $UseLDAPS -and -not $AsGlobalCatalog) {
+                # From here the answer is measured rather than assumed.
+                $Script:AnonymousAccessTested = $true
             try {
                 # Use resolved IP when custom DNS is active
                 $AnonTarget = if ($CustomDnsServer -and $ResolvedIPString) { $ResolvedIPString } else { $Server }
@@ -982,6 +992,7 @@ function Connect-LDAP {
             # ===== Phase 7c: Store Anonymous Access Results =====
             # Note: Display of anonymous access findings is handled by Get-DomainInformation
             $DomainInfo['AnonymousAccessEnabled'] = $Script:AnonymousAccessEnabled
+            $DomainInfo['AnonymousAccessTested'] = $Script:AnonymousAccessTested
             $DomainInfo['AnonymousAccessDetails'] = $Script:AnonymousAccessDetails
 
             # ===== Phase 8: User Context Verification via LDAP =====

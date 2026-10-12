@@ -13696,6 +13696,7 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "M1035"
         Triggers = @(
             @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^Restricted$'; Severity = 'Secure' }
+            @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^Refused'; Severity = 'Secure' }
         )
     }
     'ANONYMOUS_SAM_ENUMERATION_ALLOWED' = @{
@@ -21895,6 +21896,7 @@ function Connect-LDAP {
             }
             $Script:AnonymousAccessEnabled = $false
             $Script:AnonymousAccessDetails = $null
+            $Script:AnonymousAccessTested = $false
             if ($AsGlobalCatalog) {
                 Write-Log "[Connect-LDAP] Skipping anonymous access check for GC mode"
             }
@@ -21903,6 +21905,7 @@ function Connect-LDAP {
             }
             $AnonLdapConn = $null
             if (-not $UseLDAPS -and -not $AsGlobalCatalog) {
+                $Script:AnonymousAccessTested = $true
             try {
                 $AnonTarget = if ($CustomDnsServer -and $ResolvedIPString) { $ResolvedIPString } else { $Server }
                 $AnonIdentifier = New-Object System.DirectoryServices.Protocols.LdapDirectoryIdentifier($AnonTarget, 389)
@@ -22247,6 +22250,7 @@ function Connect-LDAP {
             }
             $DomainInfo['DomainNetBIOS'] = $DomainNetBIOS
             $DomainInfo['AnonymousAccessEnabled'] = $Script:AnonymousAccessEnabled
+            $DomainInfo['AnonymousAccessTested'] = $Script:AnonymousAccessTested
             $DomainInfo['AnonymousAccessDetails'] = $Script:AnonymousAccessDetails
             Write-Log "[Connect-LDAP] Verifying authenticated user context via LDAP..."
             $AuthenticatedUser = $null
@@ -23954,6 +23958,7 @@ function Clear-SessionState {
     $Script:SchemaClassNameCache = $null
     $Script:AnonymousAccessEnabled = $null
     $Script:AnonymousAccessDetails = $null
+    $Script:AnonymousAccessTested = $null
     $Script:RuntimeLicense = $null
     $Script:adPEASDisclaimer = $null
     $Script:KirbiMetadata = $null
@@ -62501,7 +62506,15 @@ function Get-DomainInformation {
                 }
                 $domainInfoSeverity = "Finding"
             }
-            elseif ([int]$DomainFunc -lt 7) {
+            elseif ($Script:LDAPContext['AnonymousAccessTested']) {
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue (
+                    'Refused - an anonymous bind was tried and could not read the domain object') -Force
+            }
+            else {
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue (
+                    'Not tested - the session is LDAPS or a global catalog connection, where the anonymous bind test is skipped') -Force
+            }
+            if ($domainInfoSeverity -eq "Note" -and [int]$DomainFunc -lt 7) {
                 $domainInfoSeverity = "Hint"
             }
             Show-Line "Found domain information:" -Class $domainInfoSeverity
@@ -86529,7 +86542,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-0318"
+$Script:adPEASVersion = "2.7.0+20261012-0343"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

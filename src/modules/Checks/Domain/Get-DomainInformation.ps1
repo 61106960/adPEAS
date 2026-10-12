@@ -394,7 +394,13 @@ function Get-DomainInformation {
             # Note: Everything OK
             $domainInfoSeverity = "Note"
 
-            # Anonymous LDAP Access Warning - Critical finding
+            # Anonymous LDAP access: three states, and the row used to exist for one.
+            #
+            # Connect-LDAP skips the test under -UseLDAPS and for a global catalog
+            # connection, and the flag it sets beforehand is $false - so no row was
+            # written and the report looked exactly like a domain that refuses anonymous
+            # binds. A reader takes an absent row for an absent problem, and -UseLDAPS is
+            # the mode a security-conscious customer picks.
             if ($Script:LDAPContext['AnonymousAccessEnabled']) {
                 $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue "ENABLED - Security Risk!" -Force
                 $anonDetails = $Script:LDAPContext['AnonymousAccessDetails']
@@ -403,8 +409,25 @@ function Get-DomainInformation {
                 }
                 $domainInfoSeverity = "Finding"
             }
-            # Check for old functional level (< 2016 = level 7)
-            elseif ([int]$DomainFunc -lt 7) {
+            elseif ($Script:LDAPContext['AnonymousAccessTested']) {
+                # Measured and refused. This is the earned green state, and nothing used
+                # to say it out loud.
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue (
+                    'Refused - an anonymous bind was tried and could not read the domain object') -Force
+            }
+            else {
+                # Not asked. Neutral on purpose: this is the one state where adPEAS has
+                # nothing to report either way, and saying so is the whole point.
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue (
+                    'Not tested - the session is LDAPS or a global catalog connection, where the anonymous bind test is skipped') -Force
+            }
+            # Check for old functional level (< 2016 = level 7).
+            #
+            # Its own statement now, guarded on the severity rather than chained: it
+            # used to be an elseif of the anonymous-access branch above, which worked
+            # only as long as that branch had a single arm. The guard keeps the old
+            # precedence - a Finding above outranks this hint.
+            if ($domainInfoSeverity -eq "Note" -and [int]$DomainFunc -lt 7) {
                 $domainInfoSeverity = "Hint"
             }
 

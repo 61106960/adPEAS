@@ -10555,6 +10555,11 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "M1035"
         Triggers = @(
             @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^Restricted$'; Severity = 'Secure' }
+            # The live test has its own wording, because it says something stronger than
+            # the dsHeuristics character does: a bind was actually attempted and refused.
+            # Get-DomainInformation writes it; "Not tested" deliberately matches neither
+            # pattern, so a skipped check renders neutral instead of green.
+            @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^Refused'; Severity = 'Secure' }
         )
     }
 
