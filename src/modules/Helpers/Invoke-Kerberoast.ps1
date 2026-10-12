@@ -384,11 +384,15 @@ function Invoke-KerberoastWindowsAPI {
         $TicketHash = $null
         $TicketFound = $false
 
-        # Get realm name with proper null check and uppercase for Kerberos
+        # Get realm name with proper null check and uppercase for Kerberos.
+        #
+        # There used to be a branch in front of this one that built the realm out of
+        # $Script:LDAPContext.distinguishedName. The context has no such key - the
+        # domain DN is DomainDN - so the branch never ran, and what it would have
+        # produced is what the line below produces anyway: DC=contoso,DC=com with the
+        # labels joined is the domain name.
         $RealmName = "UNKNOWN"
-        if ($Script:LDAPContext -and $Script:LDAPContext.distinguishedName) {
-            $RealmName = ($Script:LDAPContext.distinguishedName -replace 'DC=','' -replace ',','.').ToUpper()
-        } elseif ($Script:LDAPContext -and $Script:LDAPContext.Domain) {
+        if ($Script:LDAPContext -and $Script:LDAPContext.Domain) {
             $RealmName = $Script:LDAPContext.Domain.ToUpper()
         }
 

@@ -389,10 +389,15 @@ function Invoke-PasswordSpray {
             $abortRun = $true; return
         }
 
-        # Get Domain from session if not specified
+        # Get Domain from session if not specified.
+        #
+        # The key is Domain. DomainDNS is written nowhere in the project, so this read
+        # answered $null and the guard below refused the run with "No domain specified and
+        # no active session" - on a session that was perfectly alive. Spraying off an
+        # established session, which is what the help describes, never worked.
         $targetDomain = $Domain
         if (-not $targetDomain -and $Script:LDAPContext) {
-            $targetDomain = $Script:LDAPContext.DomainDNS
+            $targetDomain = $Script:LDAPContext.Domain
         }
 
         if (-not $targetDomain) {

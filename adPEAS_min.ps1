@@ -3578,11 +3578,16 @@ function Get-OrderedAttributes {
         if ($prop.Name -ieq 'Owner') {
             $ownerSID = $Object.OwnerSID
             if ($ownerSID) {
-                $isDefaultOwner = Test-IsDefaultOwner -SID $ownerSID
-                if ($isDefaultOwner) {
+                if (Test-IsDefaultOwner -SID $ownerSID) {
                     $severity = 'Standard'
                 } else {
-                    $severity = 'Finding'
+                    $ownerContext = if ($IsComputer) { 'NonDefaultOwner' } else { 'NonDefaultUserOwner' }
+                    $ownerMatch = Get-TriggerMatch -Name 'Owner' -Value $prop.Value -Context $ownerContext
+                    $severity = if ($ownerMatch -and $ownerMatch.Severity -and $ownerMatch.Severity -ne 'Standard') {
+                        [string]$ownerMatch.Severity
+                    } else {
+                        'Hint'
+                    }
                 }
             }
         }
@@ -19576,6 +19581,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Computers where owner is not Domain Admins, Enterprise Admins, BUILTIN\Administrators or SYSTEM"
             "Whether the owner is also the principal that created the account (mS-DS-CreatorSID) - a join leaves the joiner as owner, a later re-assignment does not happen by itself"
+            "What kind of principal the owner is: a computer account is how a cluster owns the objects it creates, a group hands ownership to its members, a user account is the case to act on"
             "Disabled accounts as well: ownership survives the disable and the owner can re-enable the account"
             "Potential for RBCD-based attacks"
         )
@@ -22158,6 +22164,8 @@ function Connect-LDAP {
             $AuthenticatedUser = $null
             $AuthenticatedUserDN = $null
             $AuthenticatedUserSAM = $null
+            $AuthenticatedUserSID = $null
+            $AuthenticatedUserUPN = $null
             try {
                 if ($Credential) {
                     $AuthenticatedUser = $Credential.UserName
@@ -22173,7 +22181,7 @@ function Connect-LDAP {
                             $DomainDN,
                             "(sAMAccountName=$CredentialSAM)",
                             [System.DirectoryServices.Protocols.SearchScope]::Subtree,
-                            @("distinguishedName", "sAMAccountName", "userPrincipalName")
+                            @("distinguishedName", "sAMAccountName", "userPrincipalName", "objectSid")
                         )
                         $UserResponse = $Script:LdapConnection.SendRequest($UserRequest)
                         if ($UserResponse -and $UserResponse.Entries.Count -gt 0) {
@@ -22181,6 +22189,17 @@ function Connect-LDAP {
                             $AuthenticatedUserDN = $UserEntry.DistinguishedName
                             if ($UserEntry.Attributes["samaccountname"]) {
                                 $AuthenticatedUserSAM = $UserEntry.Attributes["samaccountname"][0]
+                            }
+                            if ($UserEntry.Attributes["userprincipalname"]) {
+                                $AuthenticatedUserUPN = $UserEntry.Attributes["userprincipalname"][0]
+                            }
+                            if ($UserEntry.Attributes["objectsid"]) {
+                                try {
+                                    $UserSIDBytes = $UserEntry.Attributes["objectsid"][0]
+                                    $AuthenticatedUserSID = (New-Object System.Security.Principal.SecurityIdentifier($UserSIDBytes, 0)).Value
+                                } catch {
+                                    Write-Log "[Connect-LDAP] Could not decode the objectSid of $AuthenticatedUserDN : $_"
+                                }
                             }
                             Write-Log "[Connect-LDAP] Verified user: $AuthenticatedUserDN"
                         }
@@ -22234,6 +22253,19 @@ function Connect-LDAP {
                 $DomainInfo['AuthenticatedUser'] = $AuthenticatedUser
                 $DomainInfo['AuthenticatedUserDN'] = $AuthenticatedUserDN
                 $DomainInfo['AuthenticatedUserSAM'] = $AuthenticatedUserSAM
+                $DomainInfo['AuthenticatedUserSID'] = $AuthenticatedUserSID
+                $DomainInfo['AuthenticatedUserUPN'] = $AuthenticatedUserUPN
+                if (-not $Credential) {
+                    $LocalIdentity = $null
+                    if ($env:USERDOMAIN -and $env:USERNAME) {
+                        $LocalIdentity = "$($env:USERDOMAIN)\$($env:USERNAME)"
+                    }
+                    $DomainInfo['LocalIdentity'] = $LocalIdentity
+                    $DomainInfo['IdentityMismatch'] = (
+                        $LocalIdentity -and $AuthenticatedUser -and
+                        $AuthenticatedUser -notlike '*[[]*Unknown*' -and
+                        $LocalIdentity -ne $AuthenticatedUser)
+                }
                 if ($AuthenticatedUser -notmatch '^\[' -and -not $Credential) {
                     $DomainInfo['DetectedKerberos'] = $true
                     Write-Log "[Connect-LDAP] Kerberos authentication detected (Who Am I? returned domain user)"
@@ -44714,9 +44746,7 @@ function Invoke-KerberoastWindowsAPI {
         $TicketHash = $null
         $TicketFound = $false
         $RealmName = "UNKNOWN"
-        if ($Script:LDAPContext -and $Script:LDAPContext.distinguishedName) {
-            $RealmName = ($Script:LDAPContext.distinguishedName -replace 'DC=','' -replace ',','.').ToUpper()
-        } elseif ($Script:LDAPContext -and $Script:LDAPContext.Domain) {
+        if ($Script:LDAPContext -and $Script:LDAPContext.Domain) {
             $RealmName = $Script:LDAPContext.Domain.ToUpper()
         }
         if ($TicketBytes -and $TicketBytes.Length -gt 0) {
@@ -59806,7 +59836,7 @@ function Invoke-PasswordSpray {
         }
         $targetDomain = $Domain
         if (-not $targetDomain -and $Script:LDAPContext) {
-            $targetDomain = $Script:LDAPContext.DomainDNS
+            $targetDomain = $Script:LDAPContext.Domain
         }
         if (-not $targetDomain) {
             Write-Error "No domain specified and no active session. Use -Domain parameter or Connect-adPEAS first."
@@ -62831,7 +62861,7 @@ function Get-DomainTrusts {
             }
             Show-SubHeader "Searching for domain trusts..." -ObjectType "DomainTrust"
             $trustsRaw = Get-DomainObject -LDAPFilter "(objectClass=trustedDomain)" @PSBoundParameters
-            $domainDNS = $Script:LDAPContext.DomainDNS
+            $domainDNS = $Script:LDAPContext.Domain
             $trusts = @($trustsRaw) | Where-Object {
                 $_.trustPartner -and $_.trustPartner -ne $domainDNS
             }
@@ -63005,19 +63035,23 @@ function Get-LDAPConfiguration {
                 foreach ($g in $allGPOs) {
                     if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
                 }
-                $channelBindingByGpo = @{}
+                $ldapRegPolValueNames = @('LdapEnforceChannelBinding', 'LDAPServerIntegrity')
+                $regPolValuesByGpo = @{}
                 foreach ($polFile in @(Get-CachedSYSVOLFiles -Filter "Registry.pol")) {
                     if ($polFile.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
                     $polGuid = $Matches[1].ToUpper()
                     if ($polFile.FullName -notmatch '\\Machine\\') { continue }
                     try {
                         foreach ($record in @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive 'HKLM')) {
-                            if ($record.ValueName -ine 'LdapEnforceChannelBinding') { continue }
+                            if ("$($record.ValueName)" -notin $ldapRegPolValueNames) { continue }
                             if ("$($record.Key)" -notmatch 'Services\\NTDS\\Parameters$') { continue }
                             if ($record.Type -ne 4) { continue }
                             if ($null -eq $record.ValueInt) { continue }
-                            $channelBindingByGpo[$polGuid] = [int]$record.ValueInt
-                            Write-Log "[Get-LDAPConfiguration] Channel binding $($record.ValueInt) from Registry.pol of $polGuid"
+                            if (-not $regPolValuesByGpo.ContainsKey($polGuid)) {
+                                $regPolValuesByGpo[$polGuid] = @{}
+                            }
+                            $regPolValuesByGpo[$polGuid]["$($record.ValueName)"] = [int]$record.ValueInt
+                            Write-Log "[Get-LDAPConfiguration] $($record.ValueName) = $($record.ValueInt) from Registry.pol of $polGuid"
                         }
                     } catch {
                         Write-Log "[Get-LDAPConfiguration] Could not read $($polFile.FullName): $($_.Exception.Message)"
@@ -63052,9 +63086,15 @@ function Get-LDAPConfiguration {
                             }
                         }
                         $gpoGuidKey = ([string]$gpo.Name).ToUpper()
-                        if ($null -eq $ldapChannelBindingValue -and $channelBindingByGpo.ContainsKey($gpoGuidKey)) {
-                            $ldapChannelBindingValue = $channelBindingByGpo[$gpoGuidKey]
-                            $channelBindingByGpo.Remove($gpoGuidKey)
+                        if ($regPolValuesByGpo.ContainsKey($gpoGuidKey)) {
+                            $regPolValues = $regPolValuesByGpo[$gpoGuidKey]
+                            if ($null -eq $ldapChannelBindingValue -and $regPolValues.ContainsKey('LdapEnforceChannelBinding')) {
+                                $ldapChannelBindingValue = $regPolValues['LdapEnforceChannelBinding']
+                            }
+                            if ($null -eq $ldapSigningValue -and $regPolValues.ContainsKey('LDAPServerIntegrity')) {
+                                $ldapSigningValue = $regPolValues['LDAPServerIntegrity']
+                            }
+                            $regPolValuesByGpo.Remove($gpoGuidKey)
                         }
                         if ($content -match '(?s)\[System Access\](.*?)(\[|$)') {
                             $systemAccessSection = $Matches[1]
@@ -63128,14 +63168,27 @@ function Get-LDAPConfiguration {
                 if ($totalGPOs -gt $Script:ProgressThreshold) {
                     Show-Progress -Activity "Scanning LDAP configuration GPO settings" -Completed
                 }
-                foreach ($leftoverGuid in @($channelBindingByGpo.Keys)) {
+                foreach ($leftoverGuid in @($regPolValuesByGpo.Keys)) {
                     $gpo = $gpoByGuid[$leftoverGuid]
                     if (-not $gpo) { continue }
-                    $channelBindingLevel = switch ($channelBindingByGpo[$leftoverGuid]) {
-                        0 { "Never" }
-                        1 { "When Supported" }
-                        2 { "Always" }
-                        default { "Unknown" }
+                    $leftoverValues = $regPolValuesByGpo[$leftoverGuid]
+                    $channelBindingLevel = "Not Configured"
+                    if ($leftoverValues.ContainsKey('LdapEnforceChannelBinding')) {
+                        $channelBindingLevel = switch ($leftoverValues['LdapEnforceChannelBinding']) {
+                            0 { "Never" }
+                            1 { "When Supported" }
+                            2 { "Always" }
+                            default { "Unknown" }
+                        }
+                    }
+                    $signingLevel = "Not Configured"
+                    if ($leftoverValues.ContainsKey('LDAPServerIntegrity')) {
+                        $signingLevel = switch ($leftoverValues['LDAPServerIntegrity']) {
+                            0 { "None" }
+                            1 { "Optional" }
+                            2 { "Required" }
+                            default { "Unknown" }
+                        }
                     }
                     $links = $null
                     $gpoLinkage = Get-GPOLinkage
@@ -63147,7 +63200,7 @@ function Get-LDAPConfiguration {
                     }
                     $activeLinks = @($links | Where-Object { $_ -and $_.LinkStatus -ne "Disabled" })
                     $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
-                    $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue "Not Configured" -Force
+                    $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue $signingLevel -Force
                     $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
                     $gpo | Add-Member -NotePropertyName "anonymousSamEnumeration" -NotePropertyValue "Not Configured" -Force
                     $gpo | Add-Member -NotePropertyName "anonymousSidNameTranslation" -NotePropertyValue "Not Configured" -Force
@@ -63297,21 +63350,58 @@ function Get-SMBSigningStatus {
                 foreach ($g in $allGPOs) {
                     if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
                 }
-                $totalGPOs = $gptTmplFiles.Count
-                $currentGPOIndex = 0
+                $gptTmplByGuid = @{}
                 foreach ($file in $gptTmplFiles) {
                     if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
-                    $gpoGUID = $Matches[1]
-                    $gpo = $gpoByGuid[$gpoGUID.ToUpper()]
+                    $gptTmplByGuid[$Matches[1].ToUpper()] = $file
+                }
+                $smbRegPolValueNames = @('RequireSecuritySignature', 'EnableSecuritySignature')
+                $smbRegPolByGpo = @{}
+                foreach ($polFile in @(Get-CachedSYSVOLFiles -Filter "Registry.pol")) {
+                    if ($polFile.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+                    $polGuid = $Matches[1].ToUpper()
+                    if ($polFile.FullName -notmatch '\\Machine\\') { continue }
+                    try {
+                        foreach ($record in @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive 'HKLM')) {
+                            $valueName = "$($record.ValueName)"
+                            if ($valueName -notin $smbRegPolValueNames) { continue }
+                            $recordKey = "$($record.Key)"
+                            $side = $null
+                            if ($recordKey -match 'Services\\LanmanServer\\Parameters$') { $side = 'Server' }
+                            elseif ($recordKey -match 'Services\\LanmanWorkstation\\Parameters$') { $side = 'Client' }
+                            if (-not $side) { continue }
+                            if ($record.Type -ne 4) { continue }
+                            if ($null -eq $record.ValueInt) { continue }
+                            if (-not $smbRegPolByGpo.ContainsKey($polGuid)) {
+                                $smbRegPolByGpo[$polGuid] = @{}
+                            }
+                            $smbRegPolByGpo[$polGuid]["$side$valueName"] = [int]$record.ValueInt
+                            Write-Log "[Get-SMBSigningStatus] $side $valueName = $($record.ValueInt) from Registry.pol of $polGuid"
+                        }
+                    } catch {
+                        Write-Log "[Get-SMBSigningStatus] Could not read $($polFile.FullName): $($_.Exception.Message)"
+                    }
+                }
+                $candidateGuids = @(@($gptTmplByGuid.Keys) + @($smbRegPolByGpo.Keys) | Select-Object -Unique)
+                $totalGPOs = $candidateGuids.Count
+                $currentGPOIndex = 0
+                foreach ($gpoGUID in $candidateGuids) {
+                    $gpo = $gpoByGuid[$gpoGUID]
                     if (-not $gpo) { continue }
                     $currentGPOIndex++
                     if ($totalGPOs -gt $Script:ProgressThreshold) {
                         Show-Progress -Activity "Scanning SMB signing GPO settings" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.DisplayName
                     }
-                    $content = Get-CachedSYSVOLContent -Path $file.FullName
-                    if ($content) {
-                        $registrySection = Get-GptTmplRegistrySection -Content $content
-                        if ($registrySection) {
+                    $content = $null
+                    if ($gptTmplByGuid.ContainsKey($gpoGUID)) {
+                        $content = Get-CachedSYSVOLContent -Path $gptTmplByGuid[$gpoGUID].FullName
+                    }
+                    if ($content -or $smbRegPolByGpo.ContainsKey($gpoGUID)) {
+                        $registrySection = $null
+                        if ($content) {
+                            $registrySection = Get-GptTmplRegistrySection -Content $content
+                        }
+                        if ($registrySection -or $smbRegPolByGpo.ContainsKey($gpoGUID)) {
                             $serverRequire = $null
                             $serverEnable = $null
                             $clientRequire = $null
@@ -63327,6 +63417,21 @@ function Get-SMBSigningStatus {
                             }
                             if ($registrySection -match 'MACHINE\\System\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters\\EnableSecuritySignature.*?=.*?4,(\d+)') {
                                 $clientEnable = [int]$Matches[1]
+                            }
+                            if ($smbRegPolByGpo.ContainsKey($gpoGUID)) {
+                                $smbRegPol = $smbRegPolByGpo[$gpoGUID]
+                                if ($null -eq $serverRequire -and $smbRegPol.ContainsKey('ServerRequireSecuritySignature')) {
+                                    $serverRequire = $smbRegPol['ServerRequireSecuritySignature']
+                                }
+                                if ($null -eq $serverEnable -and $smbRegPol.ContainsKey('ServerEnableSecuritySignature')) {
+                                    $serverEnable = $smbRegPol['ServerEnableSecuritySignature']
+                                }
+                                if ($null -eq $clientRequire -and $smbRegPol.ContainsKey('ClientRequireSecuritySignature')) {
+                                    $clientRequire = $smbRegPol['ClientRequireSecuritySignature']
+                                }
+                                if ($null -eq $clientEnable -and $smbRegPol.ContainsKey('ClientEnableSecuritySignature')) {
+                                    $clientEnable = $smbRegPol['ClientEnableSecuritySignature']
+                                }
                             }
                             if ($null -ne $serverRequire -or $null -ne $serverEnable -or
                                 $null -ne $clientRequire -or $null -ne $clientEnable) {
@@ -68759,6 +68864,38 @@ function Get-NonDefaultComputerOwners {
             }
             $nonDefaultOwnerComputers = @()
             $dnFilters = @(ConvertTo-LDAPDNFilter -DistinguishedName @($nonDefaultOwners.DN))
+            $ownerKindBySID = @{}
+            foreach ($ownerSID in @(@($nonDefaultOwners | ForEach-Object { $_.OwnerSID }) | Select-Object -Unique)) {
+                if (-not $ownerSID) { continue }
+                if ("$ownerSID" -match '^S-1-5-(\d+)-\d+' -and $Script:MachineLocalSIDAuthorities -and $Script:MachineLocalSIDAuthorities.ContainsKey($Matches[1])) {
+                    $ownerKindBySID[$ownerSID] = 'Machine-local service principal - not a directory object'
+                    continue
+                }
+                $ownerObject = $null
+                try {
+                    $ownerObject = @(Get-DomainObject -Identity $ownerSID -Properties 'objectClass', 'sAMAccountName' @connectionParams)[0]
+                } catch {
+                    Write-Log "[Get-NonDefaultComputerOwners] Could not classify owner $ownerSID : $_"
+                }
+                if (-not $ownerObject) {
+                    $ownerKindBySID[$ownerSID] = 'Unknown - the SID does not resolve in this directory'
+                    continue
+                }
+                $ownerClasses = @($ownerObject.objectClass)
+                $ownerKindBySID[$ownerSID] = if ($ownerClasses -icontains 'msDS-GroupManagedServiceAccount') {
+                    'Group managed service account'
+                } elseif ($ownerClasses -icontains 'msDS-ManagedServiceAccount') {
+                    'Standalone managed service account'
+                } elseif ($ownerClasses -icontains 'computer') {
+                    'Computer account - a cluster name object owns the virtual computer objects it creates'
+                } elseif ($ownerClasses -icontains 'group') {
+                    'Group - whoever is a member of it owns this computer'
+                } elseif ($ownerClasses -icontains 'user') {
+                    'User account'
+                } else {
+                    "Object class $(@($ownerClasses) | Select-Object -Last 1)"
+                }
+            }
             $filterIndex = 0
             foreach ($dnFilter in $dnFilters) {
                 $filterIndex++
@@ -68771,6 +68908,14 @@ function Get-NonDefaultComputerOwners {
                     if (-not $finding) { continue }
                     $fullComputer | Add-Member -NotePropertyName 'Owner' -NotePropertyValue $finding.Owner -Force
                     $fullComputer | Add-Member -NotePropertyName 'OwnerSID' -NotePropertyValue $finding.OwnerSID -Force
+                    if ($finding.OwnerSID -and $ownerKindBySID.ContainsKey($finding.OwnerSID)) {
+                        $ownerKindText = $ownerKindBySID[$finding.OwnerSID]
+                        $ownSID = "$($fullComputer.objectSid)"
+                        if ($ownSID -and $ownSID -eq "$($finding.OwnerSID)") {
+                            $ownerKindText = 'The computer owns its own object - it can rewrite its own DACL'
+                        }
+                        $fullComputer | Add-Member -NotePropertyName 'ownerKind' -NotePropertyValue $ownerKindText -Force
+                    }
                     if ($finding.CreatorSID) {
                         $creatorName = ConvertFrom-SID -SID $finding.CreatorSID
                         $fullComputer | Add-Member -NotePropertyName 'creator' -NotePropertyValue $(
@@ -68798,6 +68943,11 @@ function Get-NonDefaultComputerOwners {
                 $reassigned = @($nonDefaultOwnerComputers | Where-Object { $_.PSObject.Properties['ownershipChanged'] }).Count
                 $reassignedInfo = if ($reassigned -gt 0) { ", $reassigned of them owned by somebody other than the creator" } else { "" }
                 Show-Line "Found $(@($nonDefaultOwnerComputers).Count) computer(s) with non-default owners$($reassignedInfo):" -Class "Finding"
+                $clusterOwned = @($nonDefaultOwnerComputers | Where-Object {
+                    $_.PSObject.Properties['ownerKind'] -and "$($_.ownerKind)" -like 'Computer account*' }).Count
+                if ($clusterOwned -gt 0) {
+                    Show-Line "$clusterOwned of them are owned by a computer account, which is how a cluster owns the objects it creates" -Class "Note"
+                }
                 foreach ($computer in $nonDefaultOwnerComputers) {
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultComputerOwner' -Force
                     Show-Object $computer
@@ -86221,7 +86371,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-0122"
+$Script:adPEASVersion = "2.7.0+20261012-0231"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

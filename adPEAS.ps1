@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 01:22:28
-    Version: 2.7.0+20261012-0122
+    Build: 2026-10-12 02:31:46
+    Version: 2.7.0+20261012-0231
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7139,13 +7139,26 @@ function Get-OrderedAttributes {
         if ($prop.Name -ieq 'Owner') {
             $ownerSID = $Object.OwnerSID
             if ($ownerSID) {
-                $isDefaultOwner = Test-IsDefaultOwner -SID $ownerSID
-                if ($isDefaultOwner) {
+                if (Test-IsDefaultOwner -SID $ownerSID) {
                     # Default owner - Standard severity, goes to Extended
                     $severity = 'Standard'
                 } else {
-                    # Non-default owner - Finding severity (red), will be promoted if PromoteNonStandard is set
-                    $severity = 'Finding'
+                    # Non-default owner. What this decides is placement: any answer
+                    # other than Standard promotes the row out of Extended, which is
+                    # where a takeover path belongs.
+                    #
+                    # It used to be the literal 'Finding' - a second place deciding a
+                    # fact the trigger and the card already decide, and after the
+                    # renderer was corrected to follow them it was the only statement
+                    # left saying Finding. Asking the same source costs nothing here,
+                    # because Hint promotes the row just as Finding did.
+                    $ownerContext = if ($IsComputer) { 'NonDefaultOwner' } else { 'NonDefaultUserOwner' }
+                    $ownerMatch = Get-TriggerMatch -Name 'Owner' -Value $prop.Value -Context $ownerContext
+                    $severity = if ($ownerMatch -and $ownerMatch.Severity -and $ownerMatch.Severity -ne 'Standard') {
+                        [string]$ownerMatch.Severity
+                    } else {
+                        'Hint'
+                    }
                 }
             }
         }
@@ -26010,6 +26023,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Computers where owner is not Domain Admins, Enterprise Admins, BUILTIN\Administrators or SYSTEM"
             "Whether the owner is also the principal that created the account (mS-DS-CreatorSID) - a join leaves the joiner as owner, a later re-assignment does not happen by itself"
+            "What kind of principal the owner is: a computer account is how a cluster owns the objects it creates, a group hands ownership to its members, a user account is the case to act on"
             "Disabled accounts as well: ownership survives the disable and the owner can re-enable the account"
             "Potential for RBCD-based attacks"
         )
@@ -30783,6 +30797,8 @@ function Connect-LDAP {
             $AuthenticatedUser = $null
             $AuthenticatedUserDN = $null
             $AuthenticatedUserSAM = $null
+            $AuthenticatedUserSID = $null
+            $AuthenticatedUserUPN = $null
 
             try {
                 if ($Credential) {
@@ -30801,11 +30817,17 @@ function Connect-LDAP {
                     # Query LDAP to get full user DN and verify the user exists
                     # UNIFIED: Always use LdapConnection (works for both LDAP and LDAPS)
                     try {
+                        # objectSid is one more attribute on a request that is already
+                        # being sent, and userPrincipalName was already being asked for
+                        # and then thrown away. Get-adPEASSession prints both - it reads
+                        # AuthenticatedUserSID and AuthenticatedUserUPN off the context,
+                        # and nothing ever wrote them, so those two rows never appeared
+                        # in a single session summary.
                         $UserRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
                             $DomainDN,
                             "(sAMAccountName=$CredentialSAM)",
                             [System.DirectoryServices.Protocols.SearchScope]::Subtree,
-                            @("distinguishedName", "sAMAccountName", "userPrincipalName")
+                            @("distinguishedName", "sAMAccountName", "userPrincipalName", "objectSid")
                         )
                         $UserResponse = $Script:LdapConnection.SendRequest($UserRequest)
 
@@ -30814,6 +30836,17 @@ function Connect-LDAP {
                             $AuthenticatedUserDN = $UserEntry.DistinguishedName
                             if ($UserEntry.Attributes["samaccountname"]) {
                                 $AuthenticatedUserSAM = $UserEntry.Attributes["samaccountname"][0]
+                            }
+                            if ($UserEntry.Attributes["userprincipalname"]) {
+                                $AuthenticatedUserUPN = $UserEntry.Attributes["userprincipalname"][0]
+                            }
+                            if ($UserEntry.Attributes["objectsid"]) {
+                                try {
+                                    $UserSIDBytes = $UserEntry.Attributes["objectsid"][0]
+                                    $AuthenticatedUserSID = (New-Object System.Security.Principal.SecurityIdentifier($UserSIDBytes, 0)).Value
+                                } catch {
+                                    Write-Log "[Connect-LDAP] Could not decode the objectSid of $AuthenticatedUserDN : $_"
+                                }
                             }
                             Write-Log "[Connect-LDAP] Verified user: $AuthenticatedUserDN"
                         }
@@ -30887,6 +30920,27 @@ function Connect-LDAP {
                 $DomainInfo['AuthenticatedUser'] = $AuthenticatedUser
                 $DomainInfo['AuthenticatedUserDN'] = $AuthenticatedUserDN
                 $DomainInfo['AuthenticatedUserSAM'] = $AuthenticatedUserSAM
+                $DomainInfo['AuthenticatedUserSID'] = $AuthenticatedUserSID
+                $DomainInfo['AuthenticatedUserUPN'] = $AuthenticatedUserUPN
+
+                # Who the operating system thinks we are, against who the directory
+                # answered. Only meaningful without an explicit credential: with one the
+                # two differ by definition, and that is the point of passing it. Without
+                # one they differ when the tickets in the cache are not the logon's -
+                # after a pass-the-ticket, which is exactly when an operator wants to be
+                # told. Get-adPEASSession has always had the row for it; nothing wrote
+                # the two keys it reads.
+                if (-not $Credential) {
+                    $LocalIdentity = $null
+                    if ($env:USERDOMAIN -and $env:USERNAME) {
+                        $LocalIdentity = "$($env:USERDOMAIN)\$($env:USERNAME)"
+                    }
+                    $DomainInfo['LocalIdentity'] = $LocalIdentity
+                    $DomainInfo['IdentityMismatch'] = (
+                        $LocalIdentity -and $AuthenticatedUser -and
+                        $AuthenticatedUser -notlike '*[[]*Unknown*' -and
+                        $LocalIdentity -ne $AuthenticatedUser)
+                }
 
                 # Detect if Kerberos was used for authentication
                 if ($AuthenticatedUser -notmatch '^\[' -and -not $Credential) {
@@ -68284,11 +68338,15 @@ function Invoke-KerberoastWindowsAPI {
         $TicketHash = $null
         $TicketFound = $false
 
-        # Get realm name with proper null check and uppercase for Kerberos
+        # Get realm name with proper null check and uppercase for Kerberos.
+        #
+        # There used to be a branch in front of this one that built the realm out of
+        # $Script:LDAPContext.distinguishedName. The context has no such key - the
+        # domain DN is DomainDN - so the branch never ran, and what it would have
+        # produced is what the line below produces anyway: DC=contoso,DC=com with the
+        # labels joined is the domain name.
         $RealmName = "UNKNOWN"
-        if ($Script:LDAPContext -and $Script:LDAPContext.distinguishedName) {
-            $RealmName = ($Script:LDAPContext.distinguishedName -replace 'DC=','' -replace ',','.').ToUpper()
-        } elseif ($Script:LDAPContext -and $Script:LDAPContext.Domain) {
+        if ($Script:LDAPContext -and $Script:LDAPContext.Domain) {
             $RealmName = $Script:LDAPContext.Domain.ToUpper()
         }
 
@@ -93405,10 +93463,15 @@ function Invoke-PasswordSpray {
             $abortRun = $true; return
         }
 
-        # Get Domain from session if not specified
+        # Get Domain from session if not specified.
+        #
+        # The key is Domain. DomainDNS is written nowhere in the project, so this read
+        # answered $null and the guard below refused the run with "No domain specified and
+        # no active session" - on a session that was perfectly alive. Spraying off an
+        # established session, which is what the help describes, never worked.
         $targetDomain = $Domain
         if (-not $targetDomain -and $Script:LDAPContext) {
-            $targetDomain = $Script:LDAPContext.DomainDNS
+            $targetDomain = $Script:LDAPContext.Domain
         }
 
         if (-not $targetDomain) {
@@ -98065,7 +98128,11 @@ function Get-DomainTrusts {
 
             # Filter out self-referencing trust objects (e.g. child domain's trust back to us
             # returned as phantom object from GC, or trust object where trustPartner = own domain)
-            $domainDNS = $Script:LDAPContext.DomainDNS
+            #
+            # The key is Domain. DomainDNS is written nowhere in the project, so this read
+            # answered $null and the comparison below was "trustPartner -ne $null" - true
+            # for every trust object there is. The filter has never removed anything.
+            $domainDNS = $Script:LDAPContext.Domain
             $trusts = @($trustsRaw) | Where-Object {
                 $_.trustPartner -and $_.trustPartner -ne $domainDNS
             }
@@ -98394,16 +98461,23 @@ function Get-LDAPConfiguration {
                     if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
                 }
 
-                # ----- Channel binding, which does not live in GptTmpl.inf -----
+                # ----- The values Group Policy delivers through Registry.pol -----
                 #
-                # LDAPServerIntegrity is a Security Option and lands in GptTmpl.inf, so the
-                # parser below finds it. LdapEnforceChannelBinding has no Security Option
-                # UI at all: it is a plain registry value, and Group Policy carries it in
-                # Registry.pol instead. Reading only GptTmpl.inf meant a domain that
-                # enforces channel binding correctly was told every one of its domain
-                # controllers was potentially vulnerable - a false alarm aimed precisely at
-                # the domains that had done the right thing.
-                $channelBindingByGpo = @{}
+                # LdapEnforceChannelBinding has no Security Option UI at all: it is a plain
+                # registry value, and Group Policy carries it in Registry.pol. Reading only
+                # GptTmpl.inf meant a domain that enforces channel binding correctly was
+                # told every one of its domain controllers was potentially vulnerable - a
+                # false alarm aimed precisely at the domains that had done the right thing.
+                #
+                # LDAPServerIntegrity used to be read from GptTmpl.inf alone, because it
+                # does have a Security Option. But it sits in the same registry key, and a
+                # hardening baseline from a third-party tool deploys it as a registry
+                # policy like any other value - at which point this check said "No LDAP
+                # Security configuration found in any GPO - all N DC(s) potentially
+                # vulnerable". The same false alarm as above, on the setting that matters
+                # most, and again aimed at the domains that had hardened.
+                $ldapRegPolValueNames = @('LdapEnforceChannelBinding', 'LDAPServerIntegrity')
+                $regPolValuesByGpo = @{}
                 foreach ($polFile in @(Get-CachedSYSVOLFiles -Filter "Registry.pol")) {
                     if ($polFile.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
                     # Read the capture out before the next comparison, which overwrites
@@ -98416,15 +98490,20 @@ function Get-LDAPConfiguration {
 
                     try {
                         foreach ($record in @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive 'HKLM')) {
-                            if ($record.ValueName -ine 'LdapEnforceChannelBinding') { continue }
+                            if ("$($record.ValueName)" -notin $ldapRegPolValueNames) { continue }
                             if ("$($record.Key)" -notmatch 'Services\\NTDS\\Parameters$') { continue }
-                            # REG_DWORD (4) only - the value is a number, and anything else
-                            # written under this name is not the setting we are reading
+                            # REG_DWORD (4) only - both values are numbers, and anything
+                            # else written under these names is not the setting
                             if ($record.Type -ne 4) { continue }
                             if ($null -eq $record.ValueInt) { continue }
 
-                            $channelBindingByGpo[$polGuid] = [int]$record.ValueInt
-                            Write-Log "[Get-LDAPConfiguration] Channel binding $($record.ValueInt) from Registry.pol of $polGuid"
+                            if (-not $regPolValuesByGpo.ContainsKey($polGuid)) {
+                                $regPolValuesByGpo[$polGuid] = @{}
+                            }
+                            # Keyed by the documented value name, not by the shape it is
+                            # read in: the two merge points below ask for one of them.
+                            $regPolValuesByGpo[$polGuid]["$($record.ValueName)"] = [int]$record.ValueInt
+                            Write-Log "[Get-LDAPConfiguration] $($record.ValueName) = $($record.ValueInt) from Registry.pol of $polGuid"
                         }
                     } catch {
                         Write-Log "[Get-LDAPConfiguration] Could not read $($polFile.FullName): $($_.Exception.Message)"
@@ -98481,13 +98560,23 @@ function Get-LDAPConfiguration {
                             }
                         }
 
-                        # A hand-written GptTmpl.inf can carry channel binding, but Group
-                        # Policy normally puts it in Registry.pol. Consumed here so the pass
-                        # after the loop does not report the same GPO a second time.
+                        # A hand-written GptTmpl.inf can carry either value, but Group
+                        # Policy normally puts them in Registry.pol. Consumed here so the
+                        # pass after the loop does not report the same GPO a second time.
+                        #
+                        # GptTmpl.inf wins where a GPO somehow carries both: that is what
+                        # this check did for channel binding before, and a GPO setting one
+                        # value twice is a question about that GPO, not about the reading.
                         $gpoGuidKey = ([string]$gpo.Name).ToUpper()
-                        if ($null -eq $ldapChannelBindingValue -and $channelBindingByGpo.ContainsKey($gpoGuidKey)) {
-                            $ldapChannelBindingValue = $channelBindingByGpo[$gpoGuidKey]
-                            $channelBindingByGpo.Remove($gpoGuidKey)
+                        if ($regPolValuesByGpo.ContainsKey($gpoGuidKey)) {
+                            $regPolValues = $regPolValuesByGpo[$gpoGuidKey]
+                            if ($null -eq $ldapChannelBindingValue -and $regPolValues.ContainsKey('LdapEnforceChannelBinding')) {
+                                $ldapChannelBindingValue = $regPolValues['LdapEnforceChannelBinding']
+                            }
+                            if ($null -eq $ldapSigningValue -and $regPolValues.ContainsKey('LDAPServerIntegrity')) {
+                                $ldapSigningValue = $regPolValues['LDAPServerIntegrity']
+                            }
+                            $regPolValuesByGpo.Remove($gpoGuidKey)
                         }
 
                         # Parse System Access section
@@ -98614,19 +98703,36 @@ function Get-LDAPConfiguration {
                     Show-Progress -Activity "Scanning LDAP configuration GPO settings" -Completed
                 }
 
-                # Whatever is left in the map belongs to a GPO that sets channel binding in
+                # Whatever is left in the map belongs to a GPO that sets these values in
                 # Registry.pol and has no GptTmpl.inf at all - a perfectly ordinary way to
-                # deploy it, and one the loop above never reaches because it walks
+                # deploy them, and one the loop above never reaches because it walks
                 # GptTmpl.inf files. Without this the value would be found and then dropped.
-                foreach ($leftoverGuid in @($channelBindingByGpo.Keys)) {
+                foreach ($leftoverGuid in @($regPolValuesByGpo.Keys)) {
                     $gpo = $gpoByGuid[$leftoverGuid]
                     if (-not $gpo) { continue }
 
-                    $channelBindingLevel = switch ($channelBindingByGpo[$leftoverGuid]) {
-                        0 { "Never" }
-                        1 { "When Supported" }
-                        2 { "Always" }
-                        default { "Unknown" }
+                    $leftoverValues = $regPolValuesByGpo[$leftoverGuid]
+
+                    $channelBindingLevel = "Not Configured"
+                    if ($leftoverValues.ContainsKey('LdapEnforceChannelBinding')) {
+                        $channelBindingLevel = switch ($leftoverValues['LdapEnforceChannelBinding']) {
+                            0 { "Never" }
+                            1 { "When Supported" }
+                            2 { "Always" }
+                            default { "Unknown" }
+                        }
+                    }
+
+                    # The same decode the GptTmpl.inf loop uses, so one setting reads the
+                    # same way whichever file it arrived in.
+                    $signingLevel = "Not Configured"
+                    if ($leftoverValues.ContainsKey('LDAPServerIntegrity')) {
+                        $signingLevel = switch ($leftoverValues['LDAPServerIntegrity']) {
+                            0 { "None" }
+                            1 { "Optional" }
+                            2 { "Required" }
+                            default { "Unknown" }
+                        }
                     }
 
                     # Three-valued, same as the GptTmpl.inf loop: $null for an unresolved map,
@@ -98642,7 +98748,7 @@ function Get-LDAPConfiguration {
                     $activeLinks = @($links | Where-Object { $_ -and $_.LinkStatus -ne "Disabled" })
                     $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
 
-                    $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue "Not Configured" -Force
+                    $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue $signingLevel -Force
                     $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
                     $gpo | Add-Member -NotePropertyName "anonymousSamEnumeration" -NotePropertyValue "Not Configured" -Force
                     $gpo | Add-Member -NotePropertyName "anonymousSidNameTranslation" -NotePropertyValue "Not Configured" -Force
@@ -98929,14 +99035,73 @@ function Get-SMBSigningStatus {
                     if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
                 }
 
-                # Parse GPOs for SMB Signing settings
-                $totalGPOs = $gptTmplFiles.Count
-                $currentGPOIndex = 0
+                # GPO GUID -> its GptTmpl.inf, so the loop below can walk the GPOs that
+                # carry these settings in EITHER file rather than only those with an .inf.
+                $gptTmplByGuid = @{}
                 foreach ($file in $gptTmplFiles) {
-                    # Extract GPO GUID from path: ...\Policies\{GUID}\Machine\...
                     if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
-                    $gpoGUID = $Matches[1]
-                    $gpo = $gpoByGuid[$gpoGUID.ToUpper()]
+                    $gptTmplByGuid[$Matches[1].ToUpper()] = $file
+                }
+
+                # ----- The same four values, delivered as a registry policy -----
+                #
+                # SMB signing has Security Options, so the Group Policy editor writes it
+                # into GptTmpl.inf and the parser below finds it. A hardening baseline from
+                # a third-party tool sets the registry values directly instead, which is an
+                # ordinary way to deploy them - and then this check found nothing at all
+                # and said "No SMB Signing configuration found in any GPO" as a Finding.
+                # The same false alarm that was fixed for LDAP channel binding, aimed again
+                # at the domains that had hardened.
+                $smbRegPolValueNames = @('RequireSecuritySignature', 'EnableSecuritySignature')
+                $smbRegPolByGpo = @{}
+                foreach ($polFile in @(Get-CachedSYSVOLFiles -Filter "Registry.pol")) {
+                    if ($polFile.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+                    # Read the capture out before the next comparison, which overwrites
+                    # $Matches even when it is a -notmatch that comes out false
+                    $polGuid = $Matches[1].ToUpper()
+
+                    # Machine-side only: both keys live under HKLM, and a user policy
+                    # cannot set them.
+                    if ($polFile.FullName -notmatch '\\Machine\\') { continue }
+
+                    try {
+                        foreach ($record in @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive 'HKLM')) {
+                            $valueName = "$($record.ValueName)"
+                            if ($valueName -notin $smbRegPolValueNames) { continue }
+
+                            # The same value name exists on both sides, and which key it
+                            # sits under is the entire difference between "this machine
+                            # signs what it serves" and "this machine insists on signing
+                            # what it consumes".
+                            $recordKey = "$($record.Key)"
+                            $side = $null
+                            if ($recordKey -match 'Services\\LanmanServer\\Parameters$') { $side = 'Server' }
+                            elseif ($recordKey -match 'Services\\LanmanWorkstation\\Parameters$') { $side = 'Client' }
+                            if (-not $side) { continue }
+
+                            # REG_DWORD (4) only - all four values are numbers
+                            if ($record.Type -ne 4) { continue }
+                            if ($null -eq $record.ValueInt) { continue }
+
+                            if (-not $smbRegPolByGpo.ContainsKey($polGuid)) {
+                                $smbRegPolByGpo[$polGuid] = @{}
+                            }
+                            $smbRegPolByGpo[$polGuid]["$side$valueName"] = [int]$record.ValueInt
+                            Write-Log "[Get-SMBSigningStatus] $side $valueName = $($record.ValueInt) from Registry.pol of $polGuid"
+                        }
+                    } catch {
+                        Write-Log "[Get-SMBSigningStatus] Could not read $($polFile.FullName): $($_.Exception.Message)"
+                    }
+                }
+
+                # Parse GPOs for SMB Signing settings. The union of both sources: a GPO
+                # that sets them only as a registry policy has no GptTmpl.inf at all, and
+                # a loop over .inf files never reaches it.
+                $candidateGuids = @(@($gptTmplByGuid.Keys) + @($smbRegPolByGpo.Keys) | Select-Object -Unique)
+                $totalGPOs = $candidateGuids.Count
+                $currentGPOIndex = 0
+                foreach ($gpoGUID in $candidateGuids) {
+                    $gpo = $gpoByGuid[$gpoGUID]
                     if (-not $gpo) { continue }
 
                     $currentGPOIndex++
@@ -98944,8 +99109,13 @@ function Get-SMBSigningStatus {
                         Show-Progress -Activity "Scanning SMB signing GPO settings" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.DisplayName
                     }
 
-                    $content = Get-CachedSYSVOLContent -Path $file.FullName
-                    if ($content) {
+                    $content = $null
+                    if ($gptTmplByGuid.ContainsKey($gpoGUID)) {
+                        $content = Get-CachedSYSVOLContent -Path $gptTmplByGuid[$gpoGUID].FullName
+                    }
+                    # Either source is enough to reach the construction below: a GPO that
+                    # sets these values as a registry policy has no GptTmpl.inf at all.
+                    if ($content -or $smbRegPolByGpo.ContainsKey($gpoGUID)) {
                         # Look for SMB Signing settings in [Registry Values] section.
                         # Get-GptTmplRegistrySection ends the section at the next line
                         # beginning with '[' rather than at the next '[' character. The
@@ -98953,8 +99123,14 @@ function Get-SMBSigningStatus {
                         # section is sorted by key: a logon banner containing a bracket
                         # sits under MACHINE\Software\... and truncated the section before
                         # the four MACHINE\System\...\Lanman* values read below.
-                        $registrySection = Get-GptTmplRegistrySection -Content $content
-                        if ($registrySection) {
+                        $registrySection = $null
+                        if ($content) {
+                            $registrySection = Get-GptTmplRegistrySection -Content $content
+                        }
+                        # The four reads below are -match against $null when there is no
+                        # section, which is false rather than an error, so one path serves
+                        # both sources and the finding is built in one place.
+                        if ($registrySection -or $smbRegPolByGpo.ContainsKey($gpoGUID)) {
 
                             $serverRequire = $null
                             $serverEnable = $null
@@ -98975,6 +99151,26 @@ function Get-SMBSigningStatus {
                             }
                             if ($registrySection -match 'MACHINE\\System\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters\\EnableSecuritySignature.*?=.*?4,(\d+)') {
                                 $clientEnable = [int]$Matches[1]
+                            }
+
+                            # Whatever GptTmpl.inf did not say, the registry policy may
+                            # have. GptTmpl.inf wins where a GPO carries both: a policy
+                            # setting one value twice is a question about that policy, not
+                            # about the reading of it.
+                            if ($smbRegPolByGpo.ContainsKey($gpoGUID)) {
+                                $smbRegPol = $smbRegPolByGpo[$gpoGUID]
+                                if ($null -eq $serverRequire -and $smbRegPol.ContainsKey('ServerRequireSecuritySignature')) {
+                                    $serverRequire = $smbRegPol['ServerRequireSecuritySignature']
+                                }
+                                if ($null -eq $serverEnable -and $smbRegPol.ContainsKey('ServerEnableSecuritySignature')) {
+                                    $serverEnable = $smbRegPol['ServerEnableSecuritySignature']
+                                }
+                                if ($null -eq $clientRequire -and $smbRegPol.ContainsKey('ClientRequireSecuritySignature')) {
+                                    $clientRequire = $smbRegPol['ClientRequireSecuritySignature']
+                                }
+                                if ($null -eq $clientEnable -and $smbRegPol.ContainsKey('ClientEnableSecuritySignature')) {
+                                    $clientEnable = $smbRegPol['ClientEnableSecuritySignature']
+                                }
                             }
 
                             # If any SMB Signing settings found, add to findings
@@ -108709,6 +108905,59 @@ function Get-NonDefaultComputerOwners {
 
             $nonDefaultOwnerComputers = @()
             $dnFilters = @(ConvertTo-LDAPDNFilter -DistinguishedName @($nonDefaultOwners.DN))
+            # What kind of principal each owner is, resolved once per distinct SID.
+            #
+            # A computer account owning a computer object is the cluster pattern: the
+            # cluster name object creates the virtual computer objects of its roles and
+            # owns them afterwards. Without that distinction every clustered environment
+            # gets one takeover finding per virtual object - a finding against a state
+            # somebody chose on purpose. A group owner is a delegation, and a user or a
+            # service account is the case this check exists for.
+            #
+            # Per distinct owner, not per computer: where one delegated account joined
+            # three thousand machines, that is one lookup rather than three thousand.
+            $ownerKindBySID = @{}
+            foreach ($ownerSID in @(@($nonDefaultOwners | ForEach-Object { $_.OwnerSID }) | Select-Object -Unique)) {
+                if (-not $ownerSID) { continue }
+
+                # A machine-local authority is a hash of a name on some computer and is
+                # not a directory object anywhere - asking for it costs a global catalog
+                # timeout per SID and answers nothing. See ConvertFrom-SID.
+                if ("$ownerSID" -match '^S-1-5-(\d+)-\d+' -and $Script:MachineLocalSIDAuthorities -and $Script:MachineLocalSIDAuthorities.ContainsKey($Matches[1])) {
+                    $ownerKindBySID[$ownerSID] = 'Machine-local service principal - not a directory object'
+                    continue
+                }
+
+                $ownerObject = $null
+                try {
+                    $ownerObject = @(Get-DomainObject -Identity $ownerSID -Properties 'objectClass', 'sAMAccountName' @connectionParams)[0]
+                } catch {
+                    Write-Log "[Get-NonDefaultComputerOwners] Could not classify owner $ownerSID : $_"
+                }
+
+                if (-not $ownerObject) {
+                    # Not resolvable is not harmless: a SID that answers nowhere is what a
+                    # deleted principal or one from an untrusted domain looks like.
+                    $ownerKindBySID[$ownerSID] = 'Unknown - the SID does not resolve in this directory'
+                    continue
+                }
+
+                $ownerClasses = @($ownerObject.objectClass)
+                $ownerKindBySID[$ownerSID] = if ($ownerClasses -icontains 'msDS-GroupManagedServiceAccount') {
+                    'Group managed service account'
+                } elseif ($ownerClasses -icontains 'msDS-ManagedServiceAccount') {
+                    'Standalone managed service account'
+                } elseif ($ownerClasses -icontains 'computer') {
+                    'Computer account - a cluster name object owns the virtual computer objects it creates'
+                } elseif ($ownerClasses -icontains 'group') {
+                    'Group - whoever is a member of it owns this computer'
+                } elseif ($ownerClasses -icontains 'user') {
+                    'User account'
+                } else {
+                    "Object class $(@($ownerClasses) | Select-Object -Last 1)"
+                }
+            }
+
             $filterIndex = 0
             foreach ($dnFilter in $dnFilters) {
                 $filterIndex++
@@ -108723,6 +108972,24 @@ function Get-NonDefaultComputerOwners {
 
                     $fullComputer | Add-Member -NotePropertyName 'Owner' -NotePropertyValue $finding.Owner -Force
                     $fullComputer | Add-Member -NotePropertyName 'OwnerSID' -NotePropertyValue $finding.OwnerSID -Force
+
+                    # What the owner is, not just who. The remediation differs: a cluster
+                    # name object is left alone, a group is emptied or re-pointed, a user
+                    # account is the one to take the ownership back from.
+                    if ($finding.OwnerSID -and $ownerKindBySID.ContainsKey($finding.OwnerSID)) {
+                        $ownerKindText = $ownerKindBySID[$finding.OwnerSID]
+
+                        # Self-ownership is a computer account owning a computer object,
+                        # and it is not the cluster pattern: this machine owns its OWN
+                        # object, so it can rewrite its own DACL. Printing the cluster
+                        # sentence on it would excuse the one case that deserves none.
+                        $ownSID = "$($fullComputer.objectSid)"
+                        if ($ownSID -and $ownSID -eq "$($finding.OwnerSID)") {
+                            $ownerKindText = 'The computer owns its own object - it can rewrite its own DACL'
+                        }
+
+                        $fullComputer | Add-Member -NotePropertyName 'ownerKind' -NotePropertyValue $ownerKindText -Force
+                    }
 
                     # Who created the account, and whether that is still who owns it. Without
                     # this the ordinary MAQ join and a deliberately re-assigned owner look
@@ -108763,6 +109030,16 @@ function Get-NonDefaultComputerOwners {
                 $reassigned = @($nonDefaultOwnerComputers | Where-Object { $_.PSObject.Properties['ownershipChanged'] }).Count
                 $reassignedInfo = if ($reassigned -gt 0) { ", $reassigned of them owned by somebody other than the creator" } else { "" }
                 Show-Line "Found $(@($nonDefaultOwnerComputers).Count) computer(s) with non-default owners$($reassignedInfo):" -Class "Finding"
+
+                # Counted on a line of its own rather than subtracted from the number
+                # above it: these objects really do have a non-default owner, and a
+                # reader deciding where to look needs to know which part of the list is
+                # a cluster owning what it built.
+                $clusterOwned = @($nonDefaultOwnerComputers | Where-Object {
+                    $_.PSObject.Properties['ownerKind'] -and "$($_.ownerKind)" -like 'Computer account*' }).Count
+                if ($clusterOwned -gt 0) {
+                    Show-Line "$clusterOwned of them are owned by a computer account, which is how a cluster owns the objects it creates" -Class "Note"
+                }
 
                 foreach ($computer in $nonDefaultOwnerComputers) {
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultComputerOwner' -Force
@@ -133043,7 +133320,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0122"
+$Script:adPEASVersion = "2.7.0+20261012-0231"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

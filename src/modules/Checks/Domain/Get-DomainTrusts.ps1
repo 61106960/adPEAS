@@ -179,7 +179,11 @@ function Get-DomainTrusts {
 
             # Filter out self-referencing trust objects (e.g. child domain's trust back to us
             # returned as phantom object from GC, or trust object where trustPartner = own domain)
-            $domainDNS = $Script:LDAPContext.DomainDNS
+            #
+            # The key is Domain. DomainDNS is written nowhere in the project, so this read
+            # answered $null and the comparison below was "trustPartner -ne $null" - true
+            # for every trust object there is. The filter has never removed anything.
+            $domainDNS = $Script:LDAPContext.Domain
             $trusts = @($trustsRaw) | Where-Object {
                 $_.trustPartner -and $_.trustPartner -ne $domainDNS
             }

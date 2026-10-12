@@ -990,6 +990,8 @@ function Connect-LDAP {
             $AuthenticatedUser = $null
             $AuthenticatedUserDN = $null
             $AuthenticatedUserSAM = $null
+            $AuthenticatedUserSID = $null
+            $AuthenticatedUserUPN = $null
 
             try {
                 if ($Credential) {
@@ -1008,11 +1010,17 @@ function Connect-LDAP {
                     # Query LDAP to get full user DN and verify the user exists
                     # UNIFIED: Always use LdapConnection (works for both LDAP and LDAPS)
                     try {
+                        # objectSid is one more attribute on a request that is already
+                        # being sent, and userPrincipalName was already being asked for
+                        # and then thrown away. Get-adPEASSession prints both - it reads
+                        # AuthenticatedUserSID and AuthenticatedUserUPN off the context,
+                        # and nothing ever wrote them, so those two rows never appeared
+                        # in a single session summary.
                         $UserRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
                             $DomainDN,
                             "(sAMAccountName=$CredentialSAM)",
                             [System.DirectoryServices.Protocols.SearchScope]::Subtree,
-                            @("distinguishedName", "sAMAccountName", "userPrincipalName")
+                            @("distinguishedName", "sAMAccountName", "userPrincipalName", "objectSid")
                         )
                         $UserResponse = $Script:LdapConnection.SendRequest($UserRequest)
 
@@ -1021,6 +1029,17 @@ function Connect-LDAP {
                             $AuthenticatedUserDN = $UserEntry.DistinguishedName
                             if ($UserEntry.Attributes["samaccountname"]) {
                                 $AuthenticatedUserSAM = $UserEntry.Attributes["samaccountname"][0]
+                            }
+                            if ($UserEntry.Attributes["userprincipalname"]) {
+                                $AuthenticatedUserUPN = $UserEntry.Attributes["userprincipalname"][0]
+                            }
+                            if ($UserEntry.Attributes["objectsid"]) {
+                                try {
+                                    $UserSIDBytes = $UserEntry.Attributes["objectsid"][0]
+                                    $AuthenticatedUserSID = (New-Object System.Security.Principal.SecurityIdentifier($UserSIDBytes, 0)).Value
+                                } catch {
+                                    Write-Log "[Connect-LDAP] Could not decode the objectSid of $AuthenticatedUserDN : $_"
+                                }
                             }
                             Write-Log "[Connect-LDAP] Verified user: $AuthenticatedUserDN"
                         }
@@ -1094,6 +1113,27 @@ function Connect-LDAP {
                 $DomainInfo['AuthenticatedUser'] = $AuthenticatedUser
                 $DomainInfo['AuthenticatedUserDN'] = $AuthenticatedUserDN
                 $DomainInfo['AuthenticatedUserSAM'] = $AuthenticatedUserSAM
+                $DomainInfo['AuthenticatedUserSID'] = $AuthenticatedUserSID
+                $DomainInfo['AuthenticatedUserUPN'] = $AuthenticatedUserUPN
+
+                # Who the operating system thinks we are, against who the directory
+                # answered. Only meaningful without an explicit credential: with one the
+                # two differ by definition, and that is the point of passing it. Without
+                # one they differ when the tickets in the cache are not the logon's -
+                # after a pass-the-ticket, which is exactly when an operator wants to be
+                # told. Get-adPEASSession has always had the row for it; nothing wrote
+                # the two keys it reads.
+                if (-not $Credential) {
+                    $LocalIdentity = $null
+                    if ($env:USERDOMAIN -and $env:USERNAME) {
+                        $LocalIdentity = "$($env:USERDOMAIN)\$($env:USERNAME)"
+                    }
+                    $DomainInfo['LocalIdentity'] = $LocalIdentity
+                    $DomainInfo['IdentityMismatch'] = (
+                        $LocalIdentity -and $AuthenticatedUser -and
+                        $AuthenticatedUser -notlike '*[[]*Unknown*' -and
+                        $LocalIdentity -ne $AuthenticatedUser)
+                }
 
                 # Detect if Kerberos was used for authentication
                 if ($AuthenticatedUser -notmatch '^\[' -and -not $Credential) {
