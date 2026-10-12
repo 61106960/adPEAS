@@ -461,15 +461,24 @@ function Get-GPOUserRightsAssignment {
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
                     -Dormant $split.Dormant -Listed:$IncludeInactive
 
+                # What was read decides what may be claimed. Every GptTmpl.inf here comes out
+                # of the SYSVOL walk, and that walk skips a Policies folder whose NTFS ACL
+                # denies the running account - which is the normal case for a low-privileged
+                # pentest account, not the exception. The note goes out before either
+                # conclusion, because a list of deviations found in the readable folders is
+                # incomplete in the same way a clean verdict is wrong.
+                $rightsClass = 'Secure'
+                if (Show-SYSVOLCoverageNote) { $rightsClass = 'Note' }
+
                 if ($deviations.Count -gt 0) {
                     Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
                 } elseif ($inactiveCount -gt 0) {
                     # Not Secure. Every departure sits on a policy that reaches nothing, which is
                     # a different statement from having none, and the dampening line above
                     # carries the count.
-                    Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class "Secure"
+                    Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class $rightsClass
                 } else {
-                    Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
+                    Show-Line "No user right is granted beyond the Windows default" -Class $rightsClass
                 }
 
                 # Findings first, then hints, then the removals.
@@ -502,7 +511,11 @@ function Get-GPOUserRightsAssignment {
                 # below and reported a blind scan as a clean domain.
                 Show-Line "SYSVOL access failed - GPO user rights could not be evaluated - SMB access failed (authentication/network issue)" -Class "Finding"
             } else {
-                Show-Line "Every user right assigned via GPO matches the Windows default" -Class "Secure"
+                # Same question as above, on the branch where no GPO carried a user right at
+                # all: that is only a clean domain if the folders were readable.
+                $emptyClass = 'Secure'
+                if (Show-SYSVOLCoverageNote) { $emptyClass = 'Note' }
+                Show-Line "Every user right assigned via GPO matches the Windows default" -Class $emptyClass
             }
 
         } catch {

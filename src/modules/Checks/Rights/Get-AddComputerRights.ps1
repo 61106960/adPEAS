@@ -448,7 +448,12 @@ function Get-AddComputerRights {
             }
 
             if (-not $hasFindings) {
-                Show-Line "Add Computer to Domain rights properly configured" -Class Secure
+                # The GPO half of this check reads SeMachineAccountPrivilege out of
+                # GptTmpl.inf, and the SYSVOL walk silently skips a Policies folder it may
+                # not read. A green line over those folders claims more than was looked at.
+                $quotaClass = 'Secure'
+                if (Show-SYSVOLCoverageNote) { $quotaClass = 'Note' }
+                Show-Line "Add Computer to Domain rights properly configured" -Class $quotaClass
             }
 
         } catch {
