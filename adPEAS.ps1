@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 04:12:08
-    Version: 2.7.0+20261012-0412
+    Build: 2026-10-12 04:46:27
+    Version: 2.7.0+20261012-0446
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -12697,59 +12697,6 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
         )
     }
 
-    'GPO_CREDENTIAL_EXPOSURE' = @{
-        Title = "Credentials in Group Policy Preferences"
-        Risk = "Finding"
-        BaseScore = 50
-        Description = "Group Policy Preferences contain embedded credentials. The GPP password is encrypted with a publicly known AES key, making any stored password trivially recoverable by any authenticated user."
-        Impact = @(
-            "Passwords are encrypted with a KNOWN key (published by Microsoft)"
-            "Any domain user can read SYSVOL and decrypt the passwords"
-            "Often contains local administrator passwords"
-            "Historical GPPs may contain domain admin credentials"
-            "Credentials remain valid until manually changed"
-        )
-        Attack = @(
-            "1. Attacker reads Groups.xml, ScheduledTasks.xml, etc. from SYSVOL"
-            "2. Finds cpassword attribute in the XML"
-            "3. Decrypts using the known AES key"
-            "4. Uses credentials to access systems or escalate privileges"
-        )
-        Remediation = @(
-            "Change the password first. Deleting the XML does not revoke it: the file is cached on every client that applied the policy (%ProgramData%\Microsoft\Group Policy\History), it is in every SYSVOL and system-state backup, and anybody who read it before the cleanup keeps it"
-            "Remove all GPP files containing cpassword"
-            "Use LAPS for local administrator password management"
-            "Never store credentials in GPP - use secure alternatives"
-            "Search SYSVOL for cpassword: findstr /S cpassword \\\\domain\\SYSVOL\\*"
-            "Consider Microsoft KB2962486 to block new GPP credential storage"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "Search SYSVOL for all XML files containing cpassword attributes"
-                Command = "Get-ChildItem -Path '\\\\domain.com\\SYSVOL\\domain.com\\Policies' -Recurse -Include *.xml | Select-String -Pattern 'cpassword' | Select-Object Path,LineNumber"
-            }
-            @{
-                Description = "Find specific GPP files that commonly contain passwords"
-                Command = "`$gpoPath = '\\\\domain.com\\SYSVOL\\domain.com\\Policies'; Get-ChildItem -Path `$gpoPath -Recurse -Include Groups.xml,ScheduledTasks.xml,Services.xml,DataSources.xml | ForEach-Object { if (Select-String -Path `$_.FullName -Pattern 'cpassword' -Quiet) { `$_ } }"
-            }
-            @{
-                Description = "Remove cpassword from GPP via GPMC (preferred method)"
-                Command = "# In GPMC: Navigate to the GPO > Preferences, locate the preference with password, change Action to 'Delete', save, then after GPO refresh delete the entire preference item"
-            }
-        )
-        References = @(
-            @{ Title = "MS14-025 - GPP Password Vulnerability"; Url = "https://support.microsoft.com/en-us/topic/ms14-025-vulnerability-in-group-policy-preferences-could-allow-elevation-of-privilege-may-13-2014-60734e15-af79-26ca-ea53-8cd617073c30" }
-            @{ Title = "GPP Abuse - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1552/006/" }
-            @{ Title = "GPO Abuse - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/acl-persistence-abuse/README.html#gpp-group-policy-preferences" }
-        )
-        Tools = @("Get-GPPPassword", "gpp-decrypt", "Metasploit")
-        MITRE = "T1552.006"
-        Triggers = @(
-            @{ Attribute = 'password'; Context = 'credential'; Severity = 'Finding' }
-            @{ Attribute = 'userName'; Context = 'credential'; Severity = 'Finding' }
-        )
-    }
-
     # ============================================================================
     # LAPS FINDINGS
     # ============================================================================
@@ -12862,9 +12809,15 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
         Tools = @("LAPSToolkit", "PowerView")
         MITRE = "T1552.004"
         Triggers = @(
+            # The two attributes that ARE the password. The encrypted one is deliberately
+            # not here: Get-LAPSCredentialAccess decrypts where it can, and on success it
+            # replaces msLAPS-EncryptedPassword on the object with msLAPS-Password - so a
+            # row that still carries the blob is the case where decryption did not happen.
+            # This card calls that "the current user can read the LAPS password for this
+            # computer", with "they can fully compromise the system" under Impact, for a
+            # blob the holder cannot open. LAPS_ENCRYPTED_PASSWORD says what it is.
             @{ Attribute = 'ms-Mcs-AdmPwd'; Severity = 'Finding' }
             @{ Attribute = 'msLAPS-Password'; Severity = 'Finding' }
-            @{ Attribute = 'msLAPS-EncryptedPassword'; Severity = 'Finding' }
         )
     }
 
@@ -14161,8 +14114,16 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Tools = @("Snaffler", "trufflehog", "grep", "Manual review")
         MITRE = "T1552.001"
         Triggers = @(
-            @{ Attribute = 'credentialType'; Pattern = 'Password|Credential|PSExec|Schtasks|Cmdkey|SecureString|API key'; Severity = 'Finding' }
-            @{ Attribute = 'matchedLine'; Severity = 'Finding' }
+            # Both of these matched a Tier 2 row as well, and at BaseScore 45 against the
+            # Tier 2 card's 20 they won it. Three of the five Tier 2 descriptions contain
+            # "password" or "credential", and the matchedLine trigger has no pattern at all,
+            # so it matched every line of either tier.
+            #
+            # The marker sits on credentialType, which is why the two triggers exclude it
+            # differently: an ExcludePattern tests the value, and the value of a matchedLine
+            # row is the line, where "(needs review)" never appears.
+            @{ Attribute = 'credentialType'; Pattern = 'Password|Credential|PSExec|Schtasks|Cmdkey|SecureString|API key'; ExcludePattern = '\(needs review\)'; Severity = 'Finding' }
+            @{ Attribute = 'matchedLine'; Custom = 'credential_not_needs_review'; Severity = 'Finding' }
         )
     }
 
@@ -14223,7 +14184,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 
     'CREDENTIAL_MENTION_REVIEW' = @{
         Title = "Possible Credential Reference (Needs Review)"
-        Risk = "Note"
+        Risk = "Hint"
         BaseScore = 20
         Description = "A script or configuration file contains a term that may indicate credential storage or usage. This is a lower-confidence finding that requires manual review to determine if actual credentials are exposed."
         Impact = @(
@@ -14250,8 +14211,16 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Tools = @("Manual review", "Snaffler")
         MITRE = "T1552.001"
         Triggers = @(
-            @{ Attribute = 'credentialType'; Pattern = '\(needs review\)'; Severity = 'Note' }
-            @{ Attribute = 'matchedLine'; Context = 'needs review'; Severity = 'Note' }
+            # The matchedLine trigger was Context-bound, and -Context reaches
+            # Get-TriggerMatch from exactly one place in the project: the Owner transformer,
+            # which fills it itself. Nothing supplies a context for a credential row, so the
+            # guard skipped this trigger every time and the line fell through to
+            # CREDENTIAL_SCRIPT_PASSWORD - BaseScore 45, "Password Found in Script File",
+            # with an attack path that ends in using the credential - for a line whose only
+            # offence is containing the word "credential". The predicate below reads the
+            # marker off the object instead, which is where the check writes it.
+            @{ Attribute = 'credentialType'; Pattern = '\(needs review\)'; Severity = 'Hint' }
+            @{ Attribute = 'matchedLine'; Custom = 'credential_needs_review'; Severity = 'Hint' }
         )
     }
 
@@ -16363,90 +16332,6 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
             # enroll with a subject of their choosing. The flag by itself is set on
             # templates issued for perfectly ordinary reasons.
             @{ Attribute = 'NoSecurityExtension'; Pattern = '^(True|Yes)$'; Severity = 'Finding'; SeverityOnly = $true }
-        )
-    }
-
-    'ESC10_WEAK_CERTIFICATE_MAPPING' = @{
-        Title = "ESC10 - Weak Certificate Mapping"
-        Risk = "Finding"
-        BaseScore = 60
-        Description = "The domain uses weak certificate mapping that relies on UPN or DNS name in the certificate's SAN. This can be exploited if an attacker can obtain a certificate with a controlled SAN value."
-        Impact = @(
-            "Certificate-to-account mapping can be spoofed"
-            "Enables cross-account certificate usage"
-            "Weak binding allows certificate impersonation"
-        )
-        Attack = @(
-            "1. Attacker obtains certificate with controlled SAN"
-            "2. SAN contains target user's UPN"
-            "3. Weak mapping allows authentication as target"
-            "4. Strong binding would prevent this"
-        )
-        Remediation = @(
-            "Enable StrongCertificateBindingEnforcement=2 (Full Enforcement)"
-            "Set CertificateMappingMethods to exclude weak mappings"
-            "Require szOID_NTDS_CA_SECURITY_EXT in templates"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "Enable StrongCertificateBindingEnforcement (Full Enforcement) on all DCs"
-                Command = @'
-# Set to 2 (Full Enforcement) on all Domain Controllers
-$DCs = Get-ADDomainController -Filter *
-foreach ($DC in $DCs) {
-    Invoke-Command -ComputerName $DC.HostName -ScriptBlock {
-        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Kdc' -Name 'StrongCertificateBindingEnforcement' -Value 2 -Type DWord
-        Write-Host "[+] Set StrongCertificateBindingEnforcement=2 on $env:COMPUTERNAME"
-    }
-}
-# No restart required
-'@
-            }
-            @{
-                Description = "Disable weak UPN mapping (remove 0x4 flag from CertificateMappingMethods)"
-                Command = @'
-# Remove UPN mapping (0x4) from Schannel certificate mapping
-$DCs = Get-ADDomainController -Filter *
-foreach ($DC in $DCs) {
-    Invoke-Command -ComputerName $DC.HostName -ScriptBlock {
-        $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\Schannel'
-        $currentValue = (Get-ItemProperty -Path $regPath -Name 'CertificateMappingMethods' -ErrorAction SilentlyContinue).CertificateMappingMethods
-        if ($currentValue) {
-            # Remove 0x4 (UPN mapping)
-            $newValue = $currentValue -band (-bnot 0x4)
-            Set-ItemProperty -Path $regPath -Name 'CertificateMappingMethods' -Value $newValue -Type DWord
-            Write-Host "[+] Removed weak UPN mapping on $env:COMPUTERNAME"
-        }
-    }
-}
-'@
-            }
-            @{
-                Description = "Verify strong certificate binding configuration on DCs"
-                Command = @'
-# Check configuration on all DCs
-$DCs = Get-ADDomainController -Filter *
-foreach ($DC in $DCs) {
-    Invoke-Command -ComputerName $DC.HostName -ScriptBlock {
-        $kdcReg = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Kdc' -Name 'StrongCertificateBindingEnforcement' -ErrorAction SilentlyContinue
-        $schannelReg = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\Schannel' -Name 'CertificateMappingMethods' -ErrorAction SilentlyContinue
-
-        Write-Host "`n$env:COMPUTERNAME Configuration:" -ForegroundColor Cyan
-        Write-Host "  StrongCertificateBindingEnforcement: $($kdcReg.StrongCertificateBindingEnforcement) (Should be 2)"
-        Write-Host "  CertificateMappingMethods: $($schannelReg.CertificateMappingMethods) (Should NOT include 0x4)"
-    }
-}
-'@
-            }
-        )
-        References = @(
-            @{ Title = "KB5014754 - Certificate Mapping"; Url = "https://support.microsoft.com/en-us/topic/kb5014754-certificate-based-authentication-changes-on-windows-domain-controllers-ad2c23b0-15d8-4340-a468-4d4f3b188f16" }
-        )
-        Tools = @("Certipy", "Certify")
-        MITRE = "T1649"
-        Triggers = @(
-            @{ Attribute = 'StrongCertificateBindingEnforcement'; Severity = 'Finding' }
-            @{ Attribute = 'CertificateMappingMethods'; Severity = 'Finding' }
         )
     }
 
@@ -20033,12 +19918,39 @@ foreach ($oid in $linkedOIDs) {
 
     # msLAPS-EncryptedPassword: Hint (still sensitive but encrypted)
     'LAPS_ENCRYPTED_PASSWORD' = @{
-        Title = "LAPS Encrypted Password Accessible"
+        Title = "Encrypted LAPS Password Readable, Without the Decryptor"
         Risk = "Hint"
         BaseScore = 20
-        Description = "The encrypted LAPS password is accessible. While encrypted, this still indicates password retrieval capability."
+        Description = "msLAPS-EncryptedPassword came back for this computer, so the account adPEAS runs as can read it. What came back is a blob: Windows LAPS encrypts the password for the principal named in ADPasswordEncryptionPrincipal - Domain Admins by default - and only that principal can open it through NCryptUnprotectSecret. adPEAS attempts the decryption, and where it succeeds the row carries msLAPS-Password and the password-readable write-up instead of this one. This row is the other outcome: the attribute is readable and the blob is not openable by this account, which is exactly what the encrypted generation is for."
+        Impact = @(
+            "Not a password read today - without the configured decryptor the blob stays a blob"
+            "The read right is granted though, so it becomes a password read the moment the account reaches the decryptor principal, which is a group membership rather than an ACL change"
+            "The blob names its decryptor: the target SID parses out of it without any right, which tells an attacker precisely which group to go after"
+            "Reported as a hint rather than a finding on purpose - calling it a password read teaches the reader that the encryption buys nothing"
+        )
+        Attack = @(
+            "1. Attacker reads msLAPS-EncryptedPassword, which the ACL allows, and keeps the blobs"
+            "2. Parses the target SID out of them to learn which principal can decrypt"
+            "3. Looks for a path into that principal, by default Domain Admins"
+            "4. Opens every blob collected earlier, offline, as soon as that path exists"
+        )
+        Remediation = @(
+            "Review the read right rather than the encryption: an account that cannot decrypt has no use for the attribute"
+            "Confirm who ADPasswordEncryptionPrincipal names and treat that group as Tier 0 - it decrypts every LAPS password in its scope"
+            "Keep this generation rather than the legacy attribute: a read right on ms-Mcs-AdmPwd or msLAPS-Password is the password itself"
+        )
+        References = @(
+            @{ Title = "Windows LAPS password encryption - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview" }
+            @{ Title = "NCryptUnprotectSecret - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/api/ncryptprotect/nf-ncryptprotect-ncryptunprotectsecret" }
+        )
+        Tools = @("LAPSToolkit", "PowerView")
+        MITRE = "T1552.001"
         Triggers = @(
-            @{ Attribute = 'msLAPS-EncryptedPassword'; Severity = 'Hint'; SeverityOnly = $true }
+            # Not SeverityOnly any more. Every trigger of this definition was, which left it
+            # able to colour a row and unable to name itself on one: the card came from
+            # LAPS_PASSWORD_READABLE, which claimed the password had been read. The colour
+            # was right all along and the explanation behind it belonged to another state.
+            @{ Attribute = 'msLAPS-EncryptedPassword'; Severity = 'Hint' }
         )
     }
 
@@ -22456,6 +22368,17 @@ function Test-CustomTrigger {
                 return $true
             }
             return $false
+        }
+
+        'credential_not_needs_review' {
+            # The inverse, for the Tier 1 triggers. A Tier 2 row carries the marker on
+            # credentialType, so a trigger on matchedLine cannot exclude it by pattern -
+            # the line itself says nothing about the tier. Without this, the Tier 1 card
+            # (BaseScore 45) claimed every Tier 2 row from the Tier 2 card (20).
+            if ($SourceObject -and $SourceObject.credentialType -and $SourceObject.credentialType -match '\(needs review\)') {
+                return $false
+            }
+            return $true
         }
 
         'dangerous_rights_expected' {
@@ -133694,7 +133617,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0412"
+$Script:adPEASVersion = "2.7.0+20261012-0446"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
