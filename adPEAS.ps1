@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 09:07:47
-    Version: 2.7.0+20261012-0907
+    Build: 2026-10-12 09:40:25
+    Version: 2.7.0+20261012-0940
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -8701,7 +8701,20 @@ $Script:FindingDefinitions = @{
         Tools = @("Rubeus", "PowerView", "Impacket")
         MITRE = "T1550.003"
         Triggers = @(
-            @{ Attribute = 'msDS-AllowedToActOnBehalfOfOtherIdentity'; Severity = 'Finding' }
+            # The verdict, which the check now computes: who is listed, and whether the
+            # resource is a domain controller.
+            #
+            # This definition used to hang off the bare presence of the attribute, so the
+            # Microsoft-documented frontend-to-backend pattern and an attacker-set entry on
+            # a domain controller carried the same title - "Misconfiguration" - and the
+            # same score. RBCD is a feature; what decides is who may use it and on what.
+            @{ Attribute = 'rbcdTarget'; Severity = 'Finding' }
+            @{ Attribute = 'rbcdPrincipalRisk'; Pattern = 'a broad group|not an identity this domain expects|unresolved - a deleted or foreign principal'; Severity = 'Finding' }
+
+            # The attribute itself follows the verdict rather than carrying one: red where
+            # the check found something to say, and otherwise the colour its own row earns.
+            @{ Attribute = 'msDS-AllowedToActOnBehalfOfOtherIdentity'; Custom = 'rbcd_principal_is_dangerous'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'msDS-AllowedToActOnBehalfOfOtherIdentity'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -14494,6 +14507,52 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 
             # The plain state of the bit, without a verdict attached to it.
             @{ Attribute = 'isQuarantined'; Pattern = '^True$'; Severity = 'Secure'; SeverityOnly = $true }
+        )
+    }
+
+    'RBCD_CONFIGURED' = @{
+        Title = "Resource-Based Constrained Delegation Configured"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "This resource has msDS-AllowedToActOnBehalfOfOtherIdentity set, and the principals it names were assessed: none of them is a broad group, none is an identity this domain does not expect to delegate, and the resource itself is not a domain controller. RBCD is a feature rather than a misconfiguration - it is how a front-end service is allowed to act for a user against a back-end, and Microsoft documents it as the successor to the older constrained delegation. What makes it a finding is who may use it and on what, which is the other card: RBCD_DANGEROUS_PRINCIPALS."
+        Impact = @(
+            "Whoever controls a principal listed here can obtain a service ticket to this resource as any account the resource accepts"
+            "That is the intended behaviour of the feature, so the question is whether the principals are the ones that should hold it"
+            "An attacker who can write this attribute adds themselves to it, which is why write access to the resource object matters as much as the current contents"
+        )
+        Attack = @(
+            "1. Attacker gains control of a principal named in the descriptor - or write access to this attribute, which the owner of the object has"
+            "2. Requests a service ticket to this resource on behalf of a chosen account (S4U2Self, then S4U2Proxy)"
+            "3. Uses it against the resource as that account"
+        )
+        Remediation = @(
+            "Confirm the entries are the ones intended, and remove the rest: Set-ADComputer -Identity RESOURCE -Clear msDS-AllowedToActOnBehalfOfOtherIdentity removes all of them"
+            "Who may write the attribute decides who may add themselves to it - review the ACL of the resource object and its owner, which Get-DangerousACLs and the owner checks report"
+            "Put the accounts that must never be impersonated into Protected Users, or mark them sensitive and not delegated - that is what stops the S4U chain regardless of this attribute"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who may act on behalf of others against this resource"
+                Command = "(Get-ADComputer -Identity 'RESOURCE' -Properties msDS-AllowedToActOnBehalfOfOtherIdentity).'msDS-AllowedToActOnBehalfOfOtherIdentity'.Access | Select-Object IdentityReference, AccessControlType"
+            }
+            @{
+                Description = "Remove the delegation entirely"
+                Command = "Set-ADComputer -Identity 'RESOURCE' -Clear msDS-AllowedToActOnBehalfOfOtherIdentity"
+            }
+        )
+        References = @(
+            @{ Title = "Resource-Based Constrained Delegation - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/security/kerberos/kerberos-constrained-delegation-overview" }
+            @{ Title = "Resource-Based Constrained Delegation Abuse - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/resource-based-constrained-delegation.html" }
+        )
+        Tools = @("Rubeus", "PowerView", "Impacket")
+        MITRE = "T1134.001"
+        Triggers = @(
+            # The assessed-and-unremarkable half of the RBCD verdict. The dangerous half
+            # keeps RBCD_DANGEROUS_PRINCIPALS, whose title says "Misconfiguration" - which
+            # is the wrong word for the documented frontend-to-backend pattern, and was the
+            # only title this check had.
+            @{ Attribute = 'rbcdPrincipalRisk'; Pattern = '^None - the attribute is set'; Severity = 'Note' }
+            @{ Attribute = 'rbcdPrincipalRisk'; Severity = 'Hint' }
         )
     }
 
@@ -22391,6 +22450,20 @@ function Test-CustomTrigger {
             return ($severity -ne 'Standard')
         }
 
+        'rbcd_principal_is_dangerous' {
+            # Whether the check's own assessment of the principals found something. It
+            # reads what the check decided rather than deciding again - see
+            # Get-ResourceBasedConstrainedDelegation for the three cases that qualify: a
+            # broad group, a principal the domain does not expect to delegate, and an
+            # unresolved trustee that still holds the delegation.
+            if ($SourceObject -and $SourceObject.rbcdTarget) { return $true }
+            foreach ($entry in @($SourceObject.rbcdPrincipalRisk)) {
+                if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+                if ($entry -match 'a broad group|not an identity this domain expects|unresolved - a deleted or foreign principal') { return $true }
+            }
+            return $false
+        }
+
         'laps_read_is_expected' {
             # Whether this row's read access is the one the account is meant to have.
             # Get-LAPSCredentialAccess sets lapsReadContext only when the bound principal
@@ -25554,7 +25627,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Which principals are allowed to delegate"
             "Whether those principals could be compromised or created"
         )
-        SecureMessage = "No dangerous RBCD configurations found. RBCD settings only allow expected privileged accounts to delegate, preventing impersonation-based attacks."
+        SecureMessage = "No account in this domain has Resource-Based Constrained Delegation configured - msDS-AllowedToActOnBehalfOfOtherIdentity is not set anywhere. Nothing was assessed because there was nothing to assess."
         PrimaryFindingId = 'RBCD_DANGEROUS_PRINCIPALS'
     }
 
@@ -104296,13 +104369,124 @@ function Get-ResourceBasedConstrainedDelegation {
             if ($totalMSAs -gt 0) { $populations = "$populations, $totalMSAs managed service accounts" }
             Show-Line "Found $total account(s) with Resource-Based Constrained Delegation ($populations):" -Class "Finding"
 
+            # Which of these resources is a domain controller. One query for the whole
+            # check, names only - these objects are never displayed.
+            #
+            # An RBCD entry on a domain controller's own computer account is a path to the
+            # whole domain: whoever is listed may ask for a ticket to it as any account,
+            # including a Domain Admin. The constrained-delegation check asks the same
+            # question about its targets (DelegationTargetsOnDC) and this one did not, so
+            # an entry on a file server and an attacker-set entry on a DC carried the same
+            # title - "Misconfiguration" - and the same score.
+            $dcIdentity = @{}
+            try {
+                foreach ($dc in @(Get-DomainComputer -DomainController -Properties 'dNSHostName', 'sAMAccountName', 'name' @PSBoundParameters)) {
+                    foreach ($candidate in @($dc.dNSHostName, $dc.sAMAccountName, $dc.name)) {
+                        if ($candidate) { $dcIdentity[([string]$candidate).Trim().TrimEnd('$').ToLower()] = $true }
+                    }
+                }
+            } catch {
+                Write-Log "[Get-ResourceBasedConstrainedDelegation] Domain controllers could not be enumerated: $_" -Level Warning
+            }
+            if ($dcIdentity.Count -eq 0) {
+                Show-Line "Domain Controllers could not be enumerated - RBCD targets are not checked against them" -Class "Note"
+            }
+
             foreach ($account in $rbcdAccounts) {
                 # Add type marker for HTML report
                 $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'RBCDelegation' -Force
                 if (@($rbcdMSAs) -contains $account) {
                     $account | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
                 }
-                Show-Object $account
+
+                # Is the resource itself a domain controller?
+                $targetIsDC = $false
+                foreach ($targetName in @($account.sAMAccountName, $account.dNSHostName, $account.name)) {
+                    if (-not $targetName) { continue }
+                    if ($dcIdentity.ContainsKey(([string]$targetName).Trim().TrimEnd('$').ToLower())) { $targetIsDC = $true }
+                }
+                if ($targetIsDC) {
+                    $account | Add-Member -NotePropertyName 'rbcdTarget' -NotePropertyValue (
+                        'Domain controller - whoever is listed below can request a ticket to it as any account, including a Domain Admin') -Force
+                }
+
+                # And who is listed. The attribute arrives decoded: one name per Allow ACE
+                # of the security descriptor, or the sentinel below when the descriptor is
+                # there and allows nobody.
+                #
+                # A descriptor the decoder could not read arrives as the raw byte array.
+                # Iterating that yields one "principal" per byte, which is how the first
+                # version of this block produced rows called 1, 2, 3 and 4.
+                $rawPrincipals = $account.'msDS-AllowedToActOnBehalfOfOtherIdentity'
+                $undecoded = ($rawPrincipals -is [byte[]])
+                $principals = @()
+                if (-not $undecoded) { $principals = @($rawPrincipals | Where-Object { $_ }) }
+                $emptyDescriptor = ($principals.Count -eq 1 -and ([string]$principals[0]) -eq '[SD present, no Allow ACEs]')
+
+                $rbcdClass = 'Hint'
+                if ($undecoded) {
+                    $account | Add-Member -NotePropertyName 'rbcdPrincipalRisk' -NotePropertyValue (
+                        'Unknown - the security descriptor could not be decoded, so who may delegate to this resource is not visible here') -Force
+                } elseif ($emptyDescriptor) {
+                    # A descriptor that allows nobody delegates nothing. It is a leftover of
+                    # a removed configuration, and it was reported as a finding.
+                    $account | Add-Member -NotePropertyName 'rbcdPrincipalRisk' -NotePropertyValue (
+                        'None - the attribute is set and its descriptor allows nobody, which is a leftover rather than a delegation') -Force
+                    $rbcdClass = 'Note'
+                } else {
+                    $risks = @()
+                    foreach ($principal in $principals) {
+                        $principalText = ([string]$principal).Trim()
+                        if (-not $principalText) { continue }
+
+                        # An unresolved SID is a deleted or foreign trustee. Worth naming:
+                        # the entry still grants delegation, and nobody can tell from the
+                        # report who holds it.
+                        if ($principalText -match '^S-1-') {
+                            $risks += "${principalText}: unresolved - a deleted or foreign principal that still holds the delegation"
+                            continue
+                        }
+
+                        $principalSID = $null
+                        try { $principalSID = ConvertTo-SID -Identity $principalText @PSBoundParameters } catch { }
+
+                        if ($principalSID -and (Test-IsBroadTrustee -SID ([string]$principalSID))) {
+                            # Everyone, Authenticated Users, Domain Users, Domain Computers:
+                            # every member may impersonate any account to this resource.
+                            $risks += "${principalText}: a broad group - every member of it can impersonate any account to this resource"
+                            $rbcdClass = 'Finding'
+                            continue
+                        }
+
+                        $verdict = $null
+                        try {
+                            $verdict = Test-IsExpectedInScope -Identity $principalText -Scope 'KerberosDelegation' -ReturnDetails
+                        } catch {
+                            Write-Log "[Get-ResourceBasedConstrainedDelegation] Scope check failed for '$principalText': $_"
+                        }
+
+                        if ($verdict -and $verdict.Severity -eq 'Secure') {
+                            $risks += "${principalText}: expected - $($verdict.Reason)"
+                        } elseif ($verdict -and $verdict.Severity -eq 'Finding') {
+                            $risks += "${principalText}: $($verdict.Reason)"
+                            $rbcdClass = 'Finding'
+                        } elseif ($verdict -and $verdict.Reason) {
+                            $risks += "${principalText}: $($verdict.Reason)"
+                        } else {
+                            # No verdict available: say that rather than imply one.
+                            $risks += "${principalText}: not assessed - the principal could not be resolved"
+                        }
+                    }
+
+                    if ($risks.Count -gt 0) {
+                        $account | Add-Member -NotePropertyName 'rbcdPrincipalRisk' -NotePropertyValue $risks -Force
+                    }
+                }
+
+                # A domain controller as the resource outranks whatever the principals are.
+                if ($targetIsDC) { $rbcdClass = 'Finding' }
+
+                Show-Object $account -Class $rbcdClass
             }
 
         } catch {
@@ -134411,7 +134595,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0907"
+$Script:adPEASVersion = "2.7.0+20261012-0940"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

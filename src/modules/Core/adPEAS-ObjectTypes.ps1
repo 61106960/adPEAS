@@ -754,7 +754,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Which principals are allowed to delegate"
             "Whether those principals could be compromised or created"
         )
-        SecureMessage = "No dangerous RBCD configurations found. RBCD settings only allow expected privileged accounts to delegate, preventing impersonation-based attacks."
+        SecureMessage = "No account in this domain has Resource-Based Constrained Delegation configured - msDS-AllowedToActOnBehalfOfOtherIdentity is not set anywhere. Nothing was assessed because there was nothing to assess."
         PrimaryFindingId = 'RBCD_DANGEROUS_PRINCIPALS'
     }
 
