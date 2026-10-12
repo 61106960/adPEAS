@@ -144,7 +144,21 @@ function Get-CredentialExposure {
                     @{ Pattern = 'connectionstring.{1,200}passw'; Description = "DB connection string" },
                     @{ Pattern = 'ConvertTo-SecureString\s+["''][^"'']+["'']'; Description = "SecureString conversion" },
                     @{ Pattern = 'api[_-]?key\s*[=:]\s*["''][^"'']{10,}["'']'; Description = "API key assignment" },
-                    @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" }
+                    @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" },
+                    # The short forms, which carry a value just as often in a script as the
+                    # spelled-out word does. Get-PasswordInDescription has had them for a while;
+                    # this module, with otherwise the same lists, never did - so "pwd=Hunter2"
+                    # was at best a tier 2 mention of the word beside it, and behind an exclusion
+                    # it was nothing at all.
+                    #
+                    # Last in the list on purpose: the loop takes the first pattern that matches
+                    # and names the finding after it, and "/pass:Hunter2" is part of a cmdkey
+                    # line that has a pattern of its own with a better name.
+                    @{ Pattern = 'pwd\s*[=:]\s*\S{3,}'; Description = "Pwd assignment" },
+                    @{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" },
+                    @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" },
+                    @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" },
+                    @{ Pattern = 'passord\s*[=:]\s*\S{3,}'; Description = "Passord assignment (Norwegian)" }
                 )
                 $tier2Patterns = @(
                     # Ordered most specific first: the list is first-match-wins, and the generic
@@ -166,10 +180,24 @@ function Get-CredentialExposure {
                     '^\s*(REM|::|''|#)\s+.*passw',
                     'echo\s+.*passw(or)?d.*help',
                     'usage:.*passw(or)?d',
-                    'passw(or)?d\s*:\s*\*+',
-                    'passw(or)?d\s*:\s*<[^>]+>',
                     'Enter\s+(your\s+)?passw(or)?d',
                     'passw(or)?d\s+prompt'
+                )
+
+                # These describe the VALUE rather than the prose around it: the syntax is an
+                # assignment, but what was assigned is a row of asterisks or an
+                # angle-bracket placeholder, so there is no credential whatever the pattern
+                # says. That makes them the one list allowed to silence a line outright -
+                # the exclusions above only decide against a bare mention. Two of them used
+                # to sit in that list, where they did the right thing for the wrong reason.
+                # Same split as Get-PasswordInDescription, which needed it first.
+                $placeholderPatterns = @(
+                    'passw(or)?d\s*[=:]\s*["'']?\*+["'']?\s*$',
+                    'passw(or)?d\s*[=:]\s*["'']?<[^>]+>',
+                    'pwd\s*[=:]\s*["'']?\*+["'']?\s*$',
+                    'pwd\s*[=:]\s*["'']?<[^>]+>',
+                    '[-/]pass(word)?[:\s]+["'']?\*+["'']?\s*$',
+                    '[-/]pass(word)?[:\s]+["'']?<[^>]+>'
                 )
                 $netUsePattern = "net use (?<devicename>(\w|\*|LPT\d):?) (?<path>\\\\?.*?)(( (?<user>/user:((?<domain>[\w.]*)\\)?(?<username>\S*)))|( /(p(ersistent)?|P(ERSISTENT)?):(no|NO|yes|YES))|( (?<password>(?!/)\S*))|( /(delete|DELETE))|( /(savecred|SAVECRED))|( /(smartcard|SMARTCARD)))+"
 
@@ -309,12 +337,17 @@ function Get-CredentialExposure {
                                 }
                                 if ($alreadyReported) { continue }
 
-                                $isExcluded = $false
-                                foreach ($exclusion in $exclusionPatterns) {
-                                    if ($trimmedLine -match $exclusion) { $isExcluded = $true; break }
+                                # A masked or bracketed value is not a credential however
+                                # much the syntax around it looks like an assignment.
+                                $isPlaceholder = $false
+                                foreach ($phPattern in $placeholderPatterns) {
+                                    if ($trimmedLine -imatch $phPattern) { $isPlaceholder = $true; break }
                                 }
-                                if ($isExcluded) { continue }
+                                if ($isPlaceholder) { continue }
 
+                                # Tier 1 is decided before the prose exclusions are
+                                # consulted - see the longer note on the domain scan path,
+                                # which carries the same two steps in the same order.
                                 $tier1Match = $false
                                 foreach ($pattern in $tier1Patterns) {
                                     if ($trimmedLine -match $pattern.Pattern) {
@@ -336,6 +369,15 @@ function Get-CredentialExposure {
                                     }
                                 }
                                 if ($tier1Match) { continue }
+
+                                # No assignment on this line, so wording that reads like
+                                # policy text is what it looks like - and here it does mean
+                                # the line can be dropped.
+                                $isExcluded = $false
+                                foreach ($exclusion in $exclusionPatterns) {
+                                    if ($trimmedLine -match $exclusion) { $isExcluded = $true; break }
+                                }
+                                if ($isExcluded) { continue }
 
                                 foreach ($pattern in $tier2Patterns) {
                                     if ($trimmedLine -match $pattern.Pattern) {
@@ -592,7 +634,21 @@ function Get-CredentialExposure {
                             @{ Pattern = 'connectionstring.{1,200}passw'; Description = "DB connection string" },
                             @{ Pattern = 'ConvertTo-SecureString\s+["''][^"'']+["'']'; Description = "SecureString conversion" },
                             @{ Pattern = 'api[_-]?key\s*[=:]\s*["''][^"'']{10,}["'']'; Description = "API key assignment" },
-                            @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" }
+                            @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" },
+                            # The short forms, which carry a value just as often in a script as the
+                            # spelled-out word does. Get-PasswordInDescription has had them for a while;
+                            # this module, with otherwise the same lists, never did - so "pwd=Hunter2"
+                            # was at best a tier 2 mention of the word beside it, and behind an exclusion
+                            # it was nothing at all.
+                            #
+                            # Last in the list on purpose: the loop takes the first pattern that matches
+                            # and names the finding after it, and "/pass:Hunter2" is part of a cmdkey
+                            # line that has a pattern of its own with a better name.
+                            @{ Pattern = 'pwd\s*[=:]\s*\S{3,}'; Description = "Pwd assignment" },
+                            @{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" },
+                            @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" },
+                            @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" },
+                            @{ Pattern = 'passord\s*[=:]\s*\S{3,}'; Description = "Passord assignment (Norwegian)" }
                         )
 
                         $tier2Patterns = @(
@@ -616,10 +672,24 @@ function Get-CredentialExposure {
                             '^\s*(REM|::|''|#)\s+.*passw',
                             'echo\s+.*passw(or)?d.*help',
                             'usage:.*passw(or)?d',
-                            'passw(or)?d\s*:\s*\*+',
-                            'passw(or)?d\s*:\s*<[^>]+>',
                             'Enter\s+(your\s+)?passw(or)?d',
                             'passw(or)?d\s+prompt'
+                        )
+
+                        # These describe the VALUE rather than the prose around it: the syntax is an
+                        # assignment, but what was assigned is a row of asterisks or an
+                        # angle-bracket placeholder, so there is no credential whatever the pattern
+                        # says. That makes them the one list allowed to silence a line outright -
+                        # the exclusions above only decide against a bare mention. Two of them used
+                        # to sit in that list, where they did the right thing for the wrong reason.
+                        # Same split as Get-PasswordInDescription, which needed it first.
+                        $placeholderPatterns = @(
+                            'passw(or)?d\s*[=:]\s*["'']?\*+["'']?\s*$',
+                            'passw(or)?d\s*[=:]\s*["'']?<[^>]+>',
+                            'pwd\s*[=:]\s*["'']?\*+["'']?\s*$',
+                            'pwd\s*[=:]\s*["'']?<[^>]+>',
+                            '[-/]pass(word)?[:\s]+["'']?\*+["'']?\s*$',
+                            '[-/]pass(word)?[:\s]+["'']?<[^>]+>'
                         )
 
                         $netUsePattern = "net use (?<devicename>(\w|\*|LPT\d):?) (?<path>\\\\?.*?)(( (?<user>/user:((?<domain>[\w.]*)\\)?(?<username>\S*)))|( /(p(ersistent)?|P(ERSISTENT)?):(no|NO|yes|YES))|( (?<password>(?!/)\S*))|( /(delete|DELETE))|( /(savecred|SAVECRED))|( /(smartcard|SMARTCARD)))+"
@@ -718,16 +788,32 @@ function Get-CredentialExposure {
                                     }
                                     if ($alreadyReported) { continue }
 
-                                    $isExcluded = $false
-                                    foreach ($exclusion in $exclusionPatterns) {
-                                        if ($trimmedLine -match $exclusion) {
-                                            $isExcluded = $true
-                                            Write-Log "[Get-CredentialExposure] Excluded by pattern: $trimmedLine"
-                                            break
-                                        }
+                                    # A masked or bracketed value is not a credential
+                                    # however much the syntax around it looks like an
+                                    # assignment.
+                                    $isPlaceholder = $false
+                                    foreach ($phPattern in $placeholderPatterns) {
+                                        if ($trimmedLine -imatch $phPattern) { $isPlaceholder = $true; break }
                                     }
-                                    if ($isExcluded) { continue }
+                                    if ($isPlaceholder) { continue }
 
+                                    # Tier 1 is decided before the prose exclusions are
+                                    # consulted. They used to run first and drop the line
+                                    # outright, which is the opposite of what this check is
+                                    # for: policy wording and a real credential share a
+                                    # line all the time, and a script line is long enough
+                                    # for both. "echo Set the password: Winter2024" matched
+                                    # an exclusion and never reached the assignment pattern
+                                    # that would have caught it, and the comment exclusion
+                                    # dropped every commented-out line carrying "passw" -
+                                    # including a net use with a password on it, which is
+                                    # readable whether the line runs or not.
+                                    #
+                                    # Get-PasswordInDescription turned the same two steps
+                                    # around for the same reason: an exclusion says "this
+                                    # reads like policy text", which is a reason to distrust
+                                    # a bare mention and never a reason to ignore an
+                                    # assignment with a value next to it.
                                     $tier1Match = $false
                                     foreach ($pattern in $tier1Patterns) {
                                         if ($trimmedLine -match $pattern.Pattern) {
@@ -749,6 +835,19 @@ function Get-CredentialExposure {
                                         }
                                     }
                                     if ($tier1Match) { continue }
+
+                                    # No assignment on this line, so wording that reads
+                                    # like policy text is what it looks like - and here it
+                                    # does mean the line can be dropped.
+                                    $isExcluded = $false
+                                    foreach ($exclusion in $exclusionPatterns) {
+                                        if ($trimmedLine -match $exclusion) {
+                                            $isExcluded = $true
+                                            Write-Log "[Get-CredentialExposure] Excluded by pattern: $trimmedLine"
+                                            break
+                                        }
+                                    }
+                                    if ($isExcluded) { continue }
 
                                     foreach ($pattern in $tier2Patterns) {
                                         if ($trimmedLine -match $pattern.Pattern) {

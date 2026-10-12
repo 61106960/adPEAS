@@ -71965,7 +71965,12 @@ function Get-CredentialExposure {
 	                @{ Pattern = 'connectionstring.{1,200}passw'; Description = "DB connection string" },
 	                @{ Pattern = 'ConvertTo-SecureString\s+["''][^"'']+["'']'; Description = "SecureString conversion" },
 	                @{ Pattern = 'api[_-]?key\s*[=:]\s*["''][^"'']{10,}["'']'; Description = "API key assignment" },
-	                @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" }
+	                @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" },
+	                @{ Pattern = 'pwd\s*[=:]\s*\S{3,}'; Description = "Pwd assignment" },
+	                @{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" },
+	                @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" },
+	                @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" },
+	                @{ Pattern = 'passord\s*[=:]\s*\S{3,}'; Description = "Passord assignment (Norwegian)" }
 	            )
 	            $tier2Patterns = @(
 	                @{ Pattern = "<passw[^>]*>[^<]+</passw"; Description = "XML password element" },
@@ -71984,10 +71989,16 @@ function Get-CredentialExposure {
 	                '^\s*(REM|::|''|#)\s+.*passw',
 	                'echo\s+.*passw(or)?d.*help',
 	                'usage:.*passw(or)?d',
-	                'passw(or)?d\s*:\s*\*+',
-	                'passw(or)?d\s*:\s*<[^>]+>',
 	                'Enter\s+(your\s+)?passw(or)?d',
 	                'passw(or)?d\s+prompt'
+	            )
+	            $placeholderPatterns = @(
+	                'passw(or)?d\s*[=:]\s*["'']?\*+["'']?\s*$',
+	                'passw(or)?d\s*[=:]\s*["'']?<[^>]+>',
+	                'pwd\s*[=:]\s*["'']?\*+["'']?\s*$',
+	                'pwd\s*[=:]\s*["'']?<[^>]+>',
+	                '[-/]pass(word)?[:\s]+["'']?\*+["'']?\s*$',
+	                '[-/]pass(word)?[:\s]+["'']?<[^>]+>'
 	            )
 	            $netUsePattern = "net use (?<devicename>(\w|\*|LPT\d):?) (?<path>\\\\?.*?)(( (?<user>/user:((?<domain>[\w.]*)\\)?(?<username>\S*)))|( /(p(ersistent)?|P(ERSISTENT)?):(no|NO|yes|YES))|( (?<password>(?!/)\S*))|( /(delete|DELETE))|( /(savecred|SAVECRED))|( /(smartcard|SMARTCARD)))+"
 	            $xmlFiles = Get-ChildItem -Force -Path $scanPath -Recurse -Include "*.xml" -ErrorAction SilentlyContinue
@@ -72096,11 +72107,11 @@ function Get-CredentialExposure {
 	                                if ($trimmedLine.Contains($reported)) { $alreadyReported = $true; break }
 	                            }
 	                            if ($alreadyReported) { continue }
-	                            $isExcluded = $false
-	                            foreach ($exclusion in $exclusionPatterns) {
-	                                if ($trimmedLine -match $exclusion) { $isExcluded = $true; break }
+	                            $isPlaceholder = $false
+	                            foreach ($phPattern in $placeholderPatterns) {
+	                                if ($trimmedLine -imatch $phPattern) { $isPlaceholder = $true; break }
 	                            }
-	                            if ($isExcluded) { continue }
+	                            if ($isPlaceholder) { continue }
 	                            $tier1Match = $false
 	                            foreach ($pattern in $tier1Patterns) {
 	                                if ($trimmedLine -match $pattern.Pattern) {
@@ -72119,6 +72130,11 @@ function Get-CredentialExposure {
 	                                }
 	                            }
 	                            if ($tier1Match) { continue }
+	                            $isExcluded = $false
+	                            foreach ($exclusion in $exclusionPatterns) {
+	                                if ($trimmedLine -match $exclusion) { $isExcluded = $true; break }
+	                            }
+	                            if ($isExcluded) { continue }
 	                            foreach ($pattern in $tier2Patterns) {
 	                                if ($trimmedLine -match $pattern.Pattern) {
 	                                    $credObj = [PSCustomObject]@{
@@ -72296,7 +72312,12 @@ function Get-CredentialExposure {
 	                        @{ Pattern = 'connectionstring.{1,200}passw'; Description = "DB connection string" },
 	                        @{ Pattern = 'ConvertTo-SecureString\s+["''][^"'']+["'']'; Description = "SecureString conversion" },
 	                        @{ Pattern = 'api[_-]?key\s*[=:]\s*["''][^"'']{10,}["'']'; Description = "API key assignment" },
-	                        @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" }
+	                        @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" },
+	                        @{ Pattern = 'pwd\s*[=:]\s*\S{3,}'; Description = "Pwd assignment" },
+	                        @{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" },
+	                        @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" },
+	                        @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" },
+	                        @{ Pattern = 'passord\s*[=:]\s*\S{3,}'; Description = "Passord assignment (Norwegian)" }
 	                    )
 	                    $tier2Patterns = @(
 	                        @{ Pattern = "<passw[^>]*>[^<]+</passw"; Description = "XML password element" },
@@ -72315,10 +72336,16 @@ function Get-CredentialExposure {
 	                        '^\s*(REM|::|''|#)\s+.*passw',
 	                        'echo\s+.*passw(or)?d.*help',
 	                        'usage:.*passw(or)?d',
-	                        'passw(or)?d\s*:\s*\*+',
-	                        'passw(or)?d\s*:\s*<[^>]+>',
 	                        'Enter\s+(your\s+)?passw(or)?d',
 	                        'passw(or)?d\s+prompt'
+	                    )
+	                    $placeholderPatterns = @(
+	                        'passw(or)?d\s*[=:]\s*["'']?\*+["'']?\s*$',
+	                        'passw(or)?d\s*[=:]\s*["'']?<[^>]+>',
+	                        'pwd\s*[=:]\s*["'']?\*+["'']?\s*$',
+	                        'pwd\s*[=:]\s*["'']?<[^>]+>',
+	                        '[-/]pass(word)?[:\s]+["'']?\*+["'']?\s*$',
+	                        '[-/]pass(word)?[:\s]+["'']?<[^>]+>'
 	                    )
 	                    $netUsePattern = "net use (?<devicename>(\w|\*|LPT\d):?) (?<path>\\\\?.*?)(( (?<user>/user:((?<domain>[\w.]*)\\)?(?<username>\S*)))|( /(p(ersistent)?|P(ERSISTENT)?):(no|NO|yes|YES))|( (?<password>(?!/)\S*))|( /(delete|DELETE))|( /(savecred|SAVECRED))|( /(smartcard|SMARTCARD)))+"
 	                    $totalScriptFiles = @($scriptFiles).Count
@@ -72396,14 +72423,11 @@ function Get-CredentialExposure {
 	                                    }
 	                                }
 	                                if ($alreadyReported) { continue }
-	                                $isExcluded = $false
-	                                foreach ($exclusion in $exclusionPatterns) {
-	                                    if ($trimmedLine -match $exclusion) {
-	                                        $isExcluded = $true
-	                                        break
-	                                    }
+	                                $isPlaceholder = $false
+	                                foreach ($phPattern in $placeholderPatterns) {
+	                                    if ($trimmedLine -imatch $phPattern) { $isPlaceholder = $true; break }
 	                                }
-	                                if ($isExcluded) { continue }
+	                                if ($isPlaceholder) { continue }
 	                                $tier1Match = $false
 	                                foreach ($pattern in $tier1Patterns) {
 	                                    if ($trimmedLine -match $pattern.Pattern) {
@@ -72425,6 +72449,14 @@ function Get-CredentialExposure {
 	                                    }
 	                                }
 	                                if ($tier1Match) { continue }
+	                                $isExcluded = $false
+	                                foreach ($exclusion in $exclusionPatterns) {
+	                                    if ($trimmedLine -match $exclusion) {
+	                                        $isExcluded = $true
+	                                        break
+	                                    }
+	                                }
+	                                if ($isExcluded) { continue }
 	                                foreach ($pattern in $tier2Patterns) {
 	                                    if ($trimmedLine -match $pattern.Pattern) {
 	                                        $credObj = [PSCustomObject]@{
@@ -83660,7 +83692,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-0548"
+$Script:adPEASVersion = "2.7.0+20261012-0614"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
