@@ -5027,9 +5027,15 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
         Tools = @("LAPSToolkit", "PowerView")
         MITRE = "T1552.004"
         Triggers = @(
+            # The two attributes that ARE the password. The encrypted one is deliberately
+            # not here: Get-LAPSCredentialAccess decrypts where it can, and on success it
+            # replaces msLAPS-EncryptedPassword on the object with msLAPS-Password - so a
+            # row that still carries the blob is the case where decryption did not happen.
+            # This card calls that "the current user can read the LAPS password for this
+            # computer", with "they can fully compromise the system" under Impact, for a
+            # blob the holder cannot open. LAPS_ENCRYPTED_PASSWORD says what it is.
             @{ Attribute = 'ms-Mcs-AdmPwd'; Severity = 'Finding' }
             @{ Attribute = 'msLAPS-Password'; Severity = 'Finding' }
-            @{ Attribute = 'msLAPS-EncryptedPassword'; Severity = 'Finding' }
         )
     }
 
@@ -12198,12 +12204,39 @@ foreach ($oid in $linkedOIDs) {
 
     # msLAPS-EncryptedPassword: Hint (still sensitive but encrypted)
     'LAPS_ENCRYPTED_PASSWORD' = @{
-        Title = "LAPS Encrypted Password Accessible"
+        Title = "Encrypted LAPS Password Readable, Without the Decryptor"
         Risk = "Hint"
         BaseScore = 20
-        Description = "The encrypted LAPS password is accessible. While encrypted, this still indicates password retrieval capability."
+        Description = "msLAPS-EncryptedPassword came back for this computer, so the account adPEAS runs as can read it. What came back is a blob: Windows LAPS encrypts the password for the principal named in ADPasswordEncryptionPrincipal - Domain Admins by default - and only that principal can open it through NCryptUnprotectSecret. adPEAS attempts the decryption, and where it succeeds the row carries msLAPS-Password and the password-readable write-up instead of this one. This row is the other outcome: the attribute is readable and the blob is not openable by this account, which is exactly what the encrypted generation is for."
+        Impact = @(
+            "Not a password read today - without the configured decryptor the blob stays a blob"
+            "The read right is granted though, so it becomes a password read the moment the account reaches the decryptor principal, which is a group membership rather than an ACL change"
+            "The blob names its decryptor: the target SID parses out of it without any right, which tells an attacker precisely which group to go after"
+            "Reported as a hint rather than a finding on purpose - calling it a password read teaches the reader that the encryption buys nothing"
+        )
+        Attack = @(
+            "1. Attacker reads msLAPS-EncryptedPassword, which the ACL allows, and keeps the blobs"
+            "2. Parses the target SID out of them to learn which principal can decrypt"
+            "3. Looks for a path into that principal, by default Domain Admins"
+            "4. Opens every blob collected earlier, offline, as soon as that path exists"
+        )
+        Remediation = @(
+            "Review the read right rather than the encryption: an account that cannot decrypt has no use for the attribute"
+            "Confirm who ADPasswordEncryptionPrincipal names and treat that group as Tier 0 - it decrypts every LAPS password in its scope"
+            "Keep this generation rather than the legacy attribute: a read right on ms-Mcs-AdmPwd or msLAPS-Password is the password itself"
+        )
+        References = @(
+            @{ Title = "Windows LAPS password encryption - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview" }
+            @{ Title = "NCryptUnprotectSecret - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/api/ncryptprotect/nf-ncryptprotect-ncryptunprotectsecret" }
+        )
+        Tools = @("LAPSToolkit", "PowerView")
+        MITRE = "T1552.001"
         Triggers = @(
-            @{ Attribute = 'msLAPS-EncryptedPassword'; Severity = 'Hint'; SeverityOnly = $true }
+            # Not SeverityOnly any more. Every trigger of this definition was, which left it
+            # able to colour a row and unable to name itself on one: the card came from
+            # LAPS_PASSWORD_READABLE, which claimed the password had been read. The colour
+            # was right all along and the explanation behind it belonged to another state.
+            @{ Attribute = 'msLAPS-EncryptedPassword'; Severity = 'Hint' }
         )
     }
 
