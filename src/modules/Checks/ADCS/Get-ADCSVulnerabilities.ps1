@@ -411,6 +411,29 @@ function Get-ADCSVulnerabilities {
                                 }
                             }
 
+                            # And WriteProperty, which only the generic rights covered so
+                            # far. The attributes of a pKIEnrollmentService object are the
+                            # CA's enrollment configuration: whoever may write
+                            # certificateTemplates publishes any template - including one
+                            # they built themselves - on this CA, which is the direct
+                            # continuation of ESC4 and ESC5. The attribute is named on the
+                            # row, so a reader can judge a delegation that names a harmless
+                            # one.
+                            if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty') {
+                                $hasDangerousRight = $true
+                                $caObjectTypeGuid = $ace.ObjectType
+                                if ($null -eq $caObjectTypeGuid -or $caObjectTypeGuid -eq [Guid]::Empty) {
+                                    $matchedRight = 'WriteProperty (All)'
+                                } else {
+                                    $caResolved = Resolve-ObjectTypeGUID -GUID $caObjectTypeGuid
+                                    $matchedRight = if ($caResolved -and $caResolved.Name) {
+                                        "WriteProperty ($($caResolved.Name))"
+                                    } else {
+                                        "WriteProperty ($caObjectTypeGuid)"
+                                    }
+                                }
+                            }
+
                             # Note: ExtendedRight with GUID 0e10c968-... is Certificate-Enrollment, NOT ManageCA!
                             # ManageCA/ManageCertificates are CA-level permissions stored in registry, not AD.
                             # We skip ExtendedRights here as Enroll is expected for most principals.
@@ -833,6 +856,15 @@ function Get-ADCSVulnerabilities {
                         DN = "CN=OID,CN=Public Key Services,CN=Services,$configNC"
                         Name = "OID Container"
                         Description = "Controls issuance policies (ESC13-related)"
+                    },
+                    @{
+                        # Key Recovery Agents. A KRA certificate recovers the archived
+                        # private key of anybody whose template archives keys, so write
+                        # access here belongs in the same list as AIA and CDP - it was the
+                        # one Enterprise PKI container missing from it.
+                        DN = "CN=KRA,CN=Public Key Services,CN=Services,$configNC"
+                        Name = "KRA Container"
+                        Description = "Controls the key recovery agents that can recover archived private keys"
                     }
                 )
 
@@ -930,6 +962,38 @@ function Get-ADCSVulnerabilities {
                                         ContainerName = $container.Name
                                         ContainerDescription = $container.Description
                                     }
+                                }
+                            }
+
+                            # The owner of the container, which no ACE has to name. An owner
+                            # holds WriteDacl implicitly: it writes itself whatever right it
+                            # wants and takes the grant away afterwards. Only GetAccessRules
+                            # was read here, so a container whose owner had been reassigned
+                            # produced the green line of this section - "PKI container
+                            # permissions are properly restricted" - on a path that ends in
+                            # a template of the attacker's making or a CA certificate in the
+                            # NTAuth store.
+                            $containerOwnerSID = ''
+                            try {
+                                $containerOwnerSID = [string]$secDescriptor.GetOwner([System.Security.Principal.SecurityIdentifier])
+                            } catch {
+                                Write-Log "[Get-ADCSVulnerabilities] ESC5: Owner of $($container.Name) could not be read: $_"
+                            }
+
+                            if ($containerOwnerSID) {
+                                $ownerScope = Test-IsExpectedInScope -Identity $containerOwnerSID -Scope 'PKIContainer' -ReturnDetails
+                                $ownerExpected = ($ownerScope.Severity -eq 'Expected' -or $ownerScope.Severity -eq 'Attention')
+
+                                if ($IncludePrivileged -or -not $ownerExpected) {
+                                    $allFindings += [PSCustomObject]@{
+                                        SID = $containerOwnerSID
+                                        Rights = 'Owner (may rewrite the DACL)'
+                                        Severity = $ownerScope.Severity
+                                        ContainerName = $container.Name
+                                        ContainerDescription = $container.Description
+                                    }
+                                } else {
+                                    Write-Log "[Get-ADCSVulnerabilities] ESC5: $($container.Name) is owned by $containerOwnerSID, which the PKIContainer scope expects"
                                 }
                             }
                         }
@@ -1280,8 +1344,10 @@ function Get-ADCSVulnerabilities {
                         $dacl = $securityDescriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 
                         $dangerousACEs = @()
-                        # Note: WriteProperty is only dangerous if it applies to ALL properties (empty ObjectType)
-                        # Property-specific WriteProperty (with ObjectType GUID) is NOT dangerous for ESC4
+                        # The blanket rights. WriteProperty is judged below, where the
+                        # attribute it names decides - the note that used to stand here
+                        # said property-specific WriteProperty was not ESC4, which is the
+                        # usual reading and wrong on a certificate template.
                         $dangerousRights = @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner')
 
                         # Uses central privileged SID definitions from ConvertFrom-SID.ps1
@@ -1390,8 +1456,41 @@ function Get-ADCSVulnerabilities {
                             }
                         }
 
+                        # And the owner of the template, for the same reason as on the PKI
+                        # containers: it may rewrite the DACL and grant itself every right
+                        # in the list above. ESC4 read GetAccessRules alone, so a template
+                        # owned by an ordinary account was not an ESC4 finding - and because
+                        # only a finding or non-privileged enrollment makes a template
+                        # "interesting", a template with privileged-only enrollment and an
+                        # unprivileged owner was not displayed at all.
+                        $templateOwnerSID = ''
+                        try {
+                            $templateOwnerSID = [string]$securityDescriptor.GetOwner([System.Security.Principal.SecurityIdentifier])
+                        } catch {
+                            Write-Log "[Get-ADCSVulnerabilities] ESC4: Owner of template '$($template.Name)' could not be read: $_"
+                        }
+
+                        if ($templateOwnerSID) {
+                            $ownerScope = Test-IsExpectedInScope -Identity $templateOwnerSID -Scope 'ADCSTemplateWrite' -ReturnDetails
+                            $ownerExpected = ($ownerScope.Severity -eq 'Expected' -or $ownerScope.Severity -eq 'Attention')
+
+                            if ($IncludePrivileged -or -not $ownerExpected) {
+                                $dangerousACEs += [PSCustomObject]@{
+                                    Identity = (ConvertFrom-SID -SID $templateOwnerSID)
+                                    IdentitySID = $templateOwnerSID
+                                    Rights = 'Owner'
+                                    DangerousRight = 'Owner (may rewrite the DACL)'
+                                    Severity = $ownerScope.Severity
+                                }
+                            } else {
+                                Write-Log "[Get-ADCSVulnerabilities] ESC4: Template '$($template.Name)' is owned by $templateOwnerSID, which the ADCSTemplateWrite scope expects"
+                            }
+                        }
+
                         if (@($dangerousACEs).Count -gt 0) {
-                            $identities = ($dangerousACEs | ForEach-Object { $_.Identity }) -join ', '
+                            # Unique: the owner of a template usually holds an ACE on it as
+                            # well, and the same name twice in one line reads as a defect.
+                            $identities = ($dangerousACEs | ForEach-Object { $_.Identity } | Select-Object -Unique) -join ', '
                             $templateVulns += [PSCustomObject]@{
                                 ESC = "ESC4"
                                 Title = "Dangerous Template Permissions"

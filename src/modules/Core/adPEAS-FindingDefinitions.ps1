@@ -1403,6 +1403,9 @@ certutil -view -restrict "Disposition=20" -out "RequestID,CommonName,Certificate
         )
     }
 
+    # NOTE: the owner of a template is reported as an ESC4 entry with the right "Owner".
+    # An owner may rewrite the DACL at will, so it holds every right this card describes
+    # whether or not an ACE says so.
     'ESC4_TEMPLATE' = @{
         Title = "ESC4 - Certificate Template with Dangerous ACL"
         Risk = "Finding"
@@ -9837,6 +9840,8 @@ Set-ADUser -Identity 'targetuser' -Replace @{ altSecurityIdentities = $strong }
         )
         Remediation = @(
             "Remove WriteProperty on altSecurityIdentities, and the blanket rights that include it, from non-administrative principals"
+            "Check the property-set delegations too: WriteProperty on the set that contains the attribute - usually Public-Information - grants it without naming it"
+            "Check the owner of the account: an owner may rewrite the DACL and grant itself the write, so an owner outside the administrative tier is the same exposure"
             "Audit the attribute on privileged accounts: a mapping that is already there may have been added this way"
             "Monitor changes to altSecurityIdentities on privileged accounts"
         )

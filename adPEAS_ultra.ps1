@@ -12921,6 +12921,8 @@ Set-ADUser -Identity 'targetuser' -Replace @{ altSecurityIdentities = $strong }
 	    )
 	    Remediation = @(
 	        "Remove WriteProperty on altSecurityIdentities, and the blanket rights that include it, from non-administrative principals"
+	        "Check the property-set delegations too: WriteProperty on the set that contains the attribute - usually Public-Information - grants it without naming it"
+	        "Check the owner of the account: an owner may rewrite the DACL and grant itself the write, so an owner outside the administrative tier is the same exposure"
 	        "Audit the attribute on privileged accounts: a mapping that is already there may have been added this way"
 	        "Monitor changes to altSecurityIdentities on privileged accounts"
 	    )
@@ -69493,6 +69495,20 @@ function Get-ADCSVulnerabilities {
 	                                break
 	                            }
 	                        }
+	                        if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty') {
+	                            $hasDangerousRight = $true
+	                            $caObjectTypeGuid = $ace.ObjectType
+	                            if ($null -eq $caObjectTypeGuid -or $caObjectTypeGuid -eq [Guid]::Empty) {
+	                                $matchedRight = 'WriteProperty (All)'
+	                            } else {
+	                                $caResolved = Resolve-ObjectTypeGUID -GUID $caObjectTypeGuid
+	                                $matchedRight = if ($caResolved -and $caResolved.Name) {
+	                                    "WriteProperty ($($caResolved.Name))"
+	                                } else {
+	                                    "WriteProperty ($caObjectTypeGuid)"
+	                                }
+	                            }
+	                        }
 	                        if (-not $hasDangerousRight) { continue }
 	                        $identityName = ConvertFrom-SID -SID $aceSID
 	                        $scopeResult = Test-IsExpectedInScope -Identity $aceSID -Scope 'ADCSEnroll' -ReturnDetails
@@ -69774,6 +69790,11 @@ function Get-ADCSVulnerabilities {
 	                    DN = "CN=OID,CN=Public Key Services,CN=Services,$configNC"
 	                    Name = "OID Container"
 	                    Description = "Controls issuance policies (ESC13-related)"
+	                },
+	                @{
+	                    DN = "CN=KRA,CN=Public Key Services,CN=Services,$configNC"
+	                    Name = "KRA Container"
+	                    Description = "Controls the key recovery agents that can recover archived private keys"
 	                }
 	            )
 	            $allFindings = @()
@@ -69824,6 +69845,25 @@ function Get-ADCSVulnerabilities {
 	                                    ContainerName = $container.Name
 	                                    ContainerDescription = $container.Description
 	                                }
+	                            }
+	                        }
+	                        $containerOwnerSID = ''
+	                        try {
+	                            $containerOwnerSID = [string]$secDescriptor.GetOwner([System.Security.Principal.SecurityIdentifier])
+	                        } catch {
+	                        }
+	                        if ($containerOwnerSID) {
+	                            $ownerScope = Test-IsExpectedInScope -Identity $containerOwnerSID -Scope 'PKIContainer' -ReturnDetails
+	                            $ownerExpected = ($ownerScope.Severity -eq 'Expected' -or $ownerScope.Severity -eq 'Attention')
+	                            if ($IncludePrivileged -or -not $ownerExpected) {
+	                                $allFindings += [PSCustomObject]@{
+	                                    SID = $containerOwnerSID
+	                                    Rights = 'Owner (may rewrite the DACL)'
+	                                    Severity = $ownerScope.Severity
+	                                    ContainerName = $container.Name
+	                                    ContainerDescription = $container.Description
+	                                }
+	                            } else {
 	                            }
 	                        }
 	                    }
@@ -70092,8 +70132,27 @@ function Get-ADCSVulnerabilities {
 	                            Severity = $severity
 	                        }
 	                    }
+	                    $templateOwnerSID = ''
+	                    try {
+	                        $templateOwnerSID = [string]$securityDescriptor.GetOwner([System.Security.Principal.SecurityIdentifier])
+	                    } catch {
+	                    }
+	                    if ($templateOwnerSID) {
+	                        $ownerScope = Test-IsExpectedInScope -Identity $templateOwnerSID -Scope 'ADCSTemplateWrite' -ReturnDetails
+	                        $ownerExpected = ($ownerScope.Severity -eq 'Expected' -or $ownerScope.Severity -eq 'Attention')
+	                        if ($IncludePrivileged -or -not $ownerExpected) {
+	                            $dangerousACEs += [PSCustomObject]@{
+	                                Identity = (ConvertFrom-SID -SID $templateOwnerSID)
+	                                IdentitySID = $templateOwnerSID
+	                                Rights = 'Owner'
+	                                DangerousRight = 'Owner (may rewrite the DACL)'
+	                                Severity = $ownerScope.Severity
+	                            }
+	                        } else {
+	                        }
+	                    }
 	                    if (@($dangerousACEs).Count -gt 0) {
-	                        $identities = ($dangerousACEs | ForEach-Object { $_.Identity }) -join ', '
+	                        $identities = ($dangerousACEs | ForEach-Object { $_.Identity } | Select-Object -Unique) -join ', '
 	                        $templateVulns += [PSCustomObject]@{
 	                            ESC = "ESC4"
 	                            Title = "Dangerous Template Permissions"
@@ -70318,8 +70377,15 @@ function Get-WeakCertificateMapping {
 	    $writableFindings = @()
 	    $exchangeOnlyFindings = @()
 	    try {
-	        $privilegedTargets = @(Get-DomainUser -LDAPFilter '(adminCount=1)' `
+	        $privilegedFilter = '(&(adminCount=1)(|(objectCategory=person)(objectCategory=computer)' +
+	                            '(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount)))'
+	        $privilegedTargets = @(Get-DomainObject -LDAPFilter $privilegedFilter `
 	            -Properties 'distinguishedName', 'sAMAccountName', 'nTSecurityDescriptor' -Raw @connectionParams)
+	        $altSecPropertySet = Get-AltSecurityIdentitiesPropertySet -CredParams $connectionParams
+	        if ($altSecPropertySet) {
+	        } elseif (@($privilegedTargets).Count -gt 0) {
+	            Show-Line "The property set containing altSecurityIdentities could not be read - a delegation naming the set is not examined" -Class Note
+	        }
 	        foreach ($target in $privilegedTargets) {
 	            if (-not $target.distinguishedName) { continue }
 	            if (-not $target.nTSecurityDescriptor) { continue }
@@ -70335,7 +70401,7 @@ function Get-WeakCertificateMapping {
 	            foreach ($ace in @($descriptor.ACEs)) {
 	                if (-not $ace) { continue }
 	                if ($ace.Type -ne 'Allow') { continue }
-	                if (-not (Test-AltSecurityIdentitiesWrite -Ace $ace)) { continue }
+	                if (-not (Test-AltSecurityIdentitiesWrite -Ace $ace -PropertySetGUID $altSecPropertySet)) { continue }
 	                $trusteeSID = [string]$ace.SID
 	                if ([string]::IsNullOrWhiteSpace($trusteeSID)) { continue }
 	                $trusteePrivileged = $false
@@ -70355,13 +70421,40 @@ function Get-WeakCertificateMapping {
 	                }
 	                if ($trusteeIsExchange) { $exchangeWriters += $entry } else { $writers += $entry }
 	            }
+	            $ownerSID = ''
+	            if ($descriptor.Owner) { $ownerSID = [string]$descriptor.Owner.SID }
+	            if ($ownerSID) {
+	                $ownerPrivileged = $false
+	                try {
+	                    $ownerPrivileged = ((Test-IsPrivileged -Identity $ownerSID).IsPrivileged -eq $true)
+	                } catch {
+	                }
+	                if (-not $ownerPrivileged) {
+	                    $ownerName = if ($descriptor.Owner.Name) { $descriptor.Owner.Name } else { ConvertFrom-SID -SID $ownerSID }
+	                    $ownerEntry = "${ownerName}: Owner - may rewrite the DACL and grant itself the write"
+	                    if (-not $seenWriters.ContainsKey($ownerEntry)) {
+	                        $seenWriters[$ownerEntry] = $true
+	                        $ownerIsExchange = $false
+	                        try {
+	                            $ownerIsExchange = [bool](Test-IsExchangeServiceGroup -Identity $ownerSID).IsExchangeService
+	                        } catch {
+	                        }
+	                        if ($ownerIsExchange) { $exchangeWriters += $ownerEntry } else { $writers += $ownerEntry }
+	                    }
+	                }
+	            }
 	            if (@($writers).Count -eq 0 -and @($exchangeWriters).Count -eq 0) { continue }
 	            $displayObject = $null
 	            try {
-	                $displayObject = @(Get-DomainUser -Identity $target.distinguishedName @connectionParams)[0]
+	                $displayObject = @(Get-DomainObject -Identity $target.distinguishedName @connectionParams)[0]
 	            } catch {
 	            }
-	            if (-not $displayObject) { $displayObject = $target }
+	            if (-not $displayObject) {
+	                $displayObject = $target
+	                if ($displayObject.PSObject.Properties['nTSecurityDescriptor']) {
+	                    $displayObject.PSObject.Properties.Remove('nTSecurityDescriptor')
+	                }
+	            }
 	            if (@($writers).Count -gt 0) {
 	                $displayObject | Add-Member -NotePropertyName 'altSecurityIdentitiesWriters' -NotePropertyValue @($writers) -Force
 	            }
@@ -70434,7 +70527,9 @@ function Test-AltSecurityIdentitiesWrite {
 	param(
 	    [Parameter(Mandatory = $true)]
 	    [AllowNull()]
-	    $Ace
+	    $Ace,
+	    [Parameter(Mandatory = $false)]
+	    [string]$PropertySetGUID
 	)
 	if (-not $Ace) { return $false }
 	$rights = [string]$Ace.Rights
@@ -70445,7 +70540,33 @@ function Test-AltSecurityIdentitiesWrite {
 	if ([string]::IsNullOrWhiteSpace($objectType)) { return $true }
 	if ($objectType -match '(?i)altSecurityIdentities') { return $true }
 	if ($objectType -match '(?i)00fbf30c-91fe-11d1-aebc-0000f80367c1') { return $true }
+	if ($PropertySetGUID -and $objectType -match ('(?i)' + [regex]::Escape($PropertySetGUID))) { return $true }
 	return $false
+}
+function Get-AltSecurityIdentitiesPropertySet {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [hashtable]$CredParams = @{}
+	)
+	$schemaDN = [string]$Script:LDAPContext.SchemaNamingContext
+	if ([string]::IsNullOrWhiteSpace($schemaDN)) { return $null }
+	try {
+	    $attributeFilter = '(&(objectClass=attributeSchema)(lDAPDisplayName=altSecurityIdentities))'
+	    $attribute = @(Get-DomainObject -LDAPFilter $attributeFilter -SearchBase $schemaDN `
+	        -Properties 'attributeSecurityGUID' -ResultLimit 1 @CredParams)[0]
+	    if (-not $attribute) { return $null }
+	    $raw = $attribute.attributeSecurityGUID
+	    if (-not $raw) { return $null }
+	    if ($raw -is [byte[]]) {
+	        if (@($raw).Count -ne 16) { return $null }
+	        return (New-Object System.Guid -ArgumentList (,[byte[]]$raw)).ToString()
+	    }
+	    return ([string]$raw).Trim('{', '}')
+	} catch {
+	    return $null
+	}
 }
 function Get-ExchangeInfrastructure {
 	[CmdletBinding()]
@@ -83998,7 +84119,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-1037"
+$Script:adPEASVersion = "2.7.0+20261012-1055"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

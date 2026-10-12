@@ -256,8 +256,30 @@ function Get-WeakCertificateMapping {
             # adminCount is a sticky flag - it stays set after the account leaves the group,
             # so the list is longer than the domain's actual administrators. -Raw keeps
             # nTSecurityDescriptor as the bytes ConvertFrom-SecurityDescriptor takes.
-            $privilegedTargets = @(Get-DomainUser -LDAPFilter '(adminCount=1)' `
+            #
+            # Over every principal that can authenticate, not over users alone. Domain
+            # Controllers is an AdminSDHolder-protected group, so a DC computer account
+            # carries adminCount=1 - and a write to altSecurityIdentities on a domain
+            # controller is DC impersonation by certificate, the most valuable target this
+            # check has. Get-DomainUser filters
+            # (objectCategory=person)(objectClass=user)(!(objectClass=computer)), so every
+            # computer account and every managed service account fell out of the query, and
+            # the section closed with "No non-privileged principal can write
+            # altSecurityIdentities on a privileged account".
+            $privilegedFilter = '(&(adminCount=1)(|(objectCategory=person)(objectCategory=computer)' +
+                                '(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount)))'
+            $privilegedTargets = @(Get-DomainObject -LDAPFilter $privilegedFilter `
                 -Properties 'distinguishedName', 'sAMAccountName', 'nTSecurityDescriptor' -Raw @connectionParams)
+
+            # One schema lookup for the whole check: which property set contains the
+            # attribute, so a delegation that names the set instead of the attribute is
+            # recognised as what it is.
+            $altSecPropertySet = Get-AltSecurityIdentitiesPropertySet -CredParams $connectionParams
+            if ($altSecPropertySet) {
+                Write-Log "[Get-WeakCertificateMapping] altSecurityIdentities belongs to property set $altSecPropertySet"
+            } elseif (@($privilegedTargets).Count -gt 0) {
+                Show-Line "The property set containing altSecurityIdentities could not be read - a delegation naming the set is not examined" -Class Note
+            }
             Write-Log "[Get-WeakCertificateMapping] Checking altSecurityIdentities write access on $(@($privilegedTargets).Count) privileged principal(s)"
 
             foreach ($target in $privilegedTargets) {
@@ -283,7 +305,7 @@ function Get-WeakCertificateMapping {
                     if (-not $ace) { continue }
                     # ConvertFrom-SecurityDescriptor names these Type and SID.
                     if ($ace.Type -ne 'Allow') { continue }
-                    if (-not (Test-AltSecurityIdentitiesWrite -Ace $ace)) { continue }
+                    if (-not (Test-AltSecurityIdentitiesWrite -Ace $ace -PropertySetGUID $altSecPropertySet)) { continue }
 
                     $trusteeSID = [string]$ace.SID
                     if ([string]::IsNullOrWhiteSpace($trusteeSID)) { continue }
@@ -325,17 +347,59 @@ function Get-WeakCertificateMapping {
                     if ($trusteeIsExchange) { $exchangeWriters += $entry } else { $writers += $entry }
                 }
 
+                # The owner holds WriteDacl implicitly: whatever the ACEs say, it can give
+                # itself the write and then take the grant away again. Only the ACEs were
+                # read here, so an account whose owner had been reassigned - the case
+                # Get-NonDefaultUserOwners reports without ever connecting it to ESC14 -
+                # produced no finding in this section.
+                $ownerSID = ''
+                if ($descriptor.Owner) { $ownerSID = [string]$descriptor.Owner.SID }
+                if ($ownerSID) {
+                    $ownerPrivileged = $false
+                    try {
+                        $ownerPrivileged = ((Test-IsPrivileged -Identity $ownerSID).IsPrivileged -eq $true)
+                    } catch {
+                        Write-Log "[Get-WeakCertificateMapping] Privilege check failed for owner '$ownerSID': $_"
+                    }
+
+                    if (-not $ownerPrivileged) {
+                        $ownerName = if ($descriptor.Owner.Name) { $descriptor.Owner.Name } else { ConvertFrom-SID -SID $ownerSID }
+                        $ownerEntry = "${ownerName}: Owner - may rewrite the DACL and grant itself the write"
+                        if (-not $seenWriters.ContainsKey($ownerEntry)) {
+                            $seenWriters[$ownerEntry] = $true
+                            $ownerIsExchange = $false
+                            try {
+                                $ownerIsExchange = [bool](Test-IsExchangeServiceGroup -Identity $ownerSID).IsExchangeService
+                            } catch {
+                                Write-Log "[Get-WeakCertificateMapping] Exchange check failed for owner '$ownerSID': $_"
+                            }
+                            if ($ownerIsExchange) { $exchangeWriters += $ownerEntry } else { $writers += $ownerEntry }
+                        }
+                    }
+                }
+
                 if (@($writers).Count -eq 0 -and @($exchangeWriters).Count -eq 0) { continue }
 
                 # Second phase again: the full object, only for an account that is actually
                 # reported.
+                # Get-DomainObject, not Get-DomainUser: the targets include computer
+                # accounts and managed service accounts now, and a user query answers
+                # nothing for those - the row would fall back to the three properties the
+                # raw search asked for, with the descriptor bytes among them.
                 $displayObject = $null
                 try {
-                    $displayObject = @(Get-DomainUser -Identity $target.distinguishedName @connectionParams)[0]
+                    $displayObject = @(Get-DomainObject -Identity $target.distinguishedName @connectionParams)[0]
                 } catch {
                     Write-Log "[Get-WeakCertificateMapping] Could not re-read '$($target.distinguishedName)': $_"
                 }
-                if (-not $displayObject) { $displayObject = $target }
+                if (-not $displayObject) {
+                    # The raw result as a last resort, without the binary descriptor: it
+                    # renders as a wall of bytes and says nothing a reader can use.
+                    $displayObject = $target
+                    if ($displayObject.PSObject.Properties['nTSecurityDescriptor']) {
+                        $displayObject.PSObject.Properties.Remove('nTSecurityDescriptor')
+                    }
+                }
 
                 # Two attributes rather than one list, because the render pipeline colours
                 # by attribute name: the delegated writers stay red, the Exchange ones go
@@ -486,7 +550,13 @@ function Test-AltSecurityIdentitiesWrite {
         # first and the guard is dead code. An ACL can legitimately hand back an empty slot.
         [Parameter(Mandatory = $true)]
         [AllowNull()]
-        $Ace
+        $Ace,
+
+        # The property set that contains altSecurityIdentities, read from the schema by the
+        # caller. Empty means it could not be read, and then the question is simply not
+        # asked - a guessed GUID would be a verdict about an attribute nobody looked up.
+        [Parameter(Mandatory = $false)]
+        [string]$PropertySetGUID
     )
 
     if (-not $Ace) { return $false }
@@ -506,5 +576,64 @@ function Test-AltSecurityIdentitiesWrite {
     if ($objectType -match '(?i)altSecurityIdentities') { return $true }
     if ($objectType -match '(?i)00fbf30c-91fe-11d1-aebc-0000f80367c1') { return $true }
 
+    # Or a WriteProperty ACE that names the property set the attribute belongs to. That is
+    # the shape the "helpdesk may maintain user attributes" delegation takes, and it was
+    # the one way in that this test did not cover: an attacker who holds it writes
+    # altSecurityIdentities on a Tier-0 account while the section printed its green line.
+    #
+    # The set is resolved from the schema by the caller rather than hardcoded here. The
+    # usual answer is Public-Information, but attributeSecurityGUID is what the DC
+    # enforces, and a schema extension can move an attribute into another set.
+    if ($PropertySetGUID -and $objectType -match ('(?i)' + [regex]::Escape($PropertySetGUID))) { return $true }
+
     return $false
+}
+
+<#
+.SYNOPSIS
+    Reads the property set that altSecurityIdentities belongs to out of the schema.
+
+.DESCRIPTION
+    An ACE granting WriteProperty on a property set grants it on every attribute in that
+    set, so a delegation naming the set is a write to altSecurityIdentities without ever
+    naming the attribute. Which set contains it is a schema fact, readable from
+    attributeSecurityGUID on the attributeSchema object.
+
+    Asked once per run, and $null when the schema cannot be read - which leaves that one
+    way of holding the write unexamined rather than guessing at a GUID.
+
+.OUTPUTS
+    [string] GUID in registry form without braces, or $null.
+#>
+function Get-AltSecurityIdentitiesPropertySet {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [hashtable]$CredParams = @{}
+    )
+
+    $schemaDN = [string]$Script:LDAPContext.SchemaNamingContext
+    if ([string]::IsNullOrWhiteSpace($schemaDN)) { return $null }
+
+    try {
+        $attributeFilter = '(&(objectClass=attributeSchema)(lDAPDisplayName=altSecurityIdentities))'
+        $attribute = @(Get-DomainObject -LDAPFilter $attributeFilter -SearchBase $schemaDN `
+            -Properties 'attributeSecurityGUID' -ResultLimit 1 @CredParams)[0]
+        if (-not $attribute) { return $null }
+
+        $raw = $attribute.attributeSecurityGUID
+        if (-not $raw) { return $null }
+
+        # Either the raw octet string or an already converted value, depending on whether
+        # the caller asked for -Raw.
+        if ($raw -is [byte[]]) {
+            if (@($raw).Count -ne 16) { return $null }
+            return (New-Object System.Guid -ArgumentList (,[byte[]]$raw)).ToString()
+        }
+        return ([string]$raw).Trim('{', '}')
+    } catch {
+        Write-Log "[Get-AltSecurityIdentitiesPropertySet] Schema lookup failed: $_"
+        return $null
+    }
 }
