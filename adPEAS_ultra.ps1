@@ -72348,6 +72348,36 @@ function Get-CredentialExposure {
 	    }
 	}
 }
+function Resolve-LAPSEncryptedComputer {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowNull()]
+	    $Computer
+	)
+	if (-not $Computer) { return $false }
+	$blob = $Computer.'msLAPS-EncryptedPassword'
+	if (-not $blob) { return $false }
+	$decryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob -Decrypt
+	if (-not $decryptedInfo -or -not $decryptedInfo.DecryptionSucceeded) { return $false }
+	if ($Computer.objectSid -is [byte[]]) {
+	    try {
+	        $sidObj = New-Object System.Security.Principal.SecurityIdentifier($Computer.objectSid, 0)
+	        $Computer | Add-Member -NotePropertyName 'objectSid' -NotePropertyValue $sidObj.Value -Force
+	    } catch { }
+	}
+	if ($Computer.objectGUID -is [byte[]]) {
+	    try {
+	        $Computer | Add-Member -NotePropertyName 'objectGUID' -NotePropertyValue ([System.Guid]$Computer.objectGUID).ToString() -Force
+	    } catch { }
+	}
+	$Computer | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue $decryptedInfo.Password -Force
+	$Computer | Add-Member -NotePropertyName 'msLAPS-Account' -NotePropertyValue $decryptedInfo.Account -Force
+	$Computer | Add-Member -NotePropertyName 'msLAPS-Updated' -NotePropertyValue $decryptedInfo.UpdateTimestamp -Force
+	$Computer.PSObject.Properties.Remove('msLAPS-EncryptedPassword')
+	return $true
+}
 function Get-LAPSCredentialAccess {
 	[CmdletBinding()]
 	param(
@@ -72404,45 +72434,40 @@ function Get-LAPSCredentialAccess {
 	                if (@($encryptedComputers).Count -gt 0) {
 	                    $authorizedCount = 0
 	                    foreach ($comp in $encryptedComputers) {
+	                        $readable = $false
 	                        $blob = $comp.'msLAPS-EncryptedPassword'
 	                        if ($blob) {
 	                            $lapsInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob
 	                            if ($lapsInfo -and $lapsInfo.TargetSID) {
 	                                if ($myTokenGroups -contains $lapsInfo.TargetSID) {
 	                                    $authorizedCount++
-	                                    $decryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob -Decrypt
-	                                    if ($decryptedInfo -and $decryptedInfo.DecryptionSucceeded) {
-	                                        if ($comp.objectSid -is [byte[]]) {
-	                                            try {
-	                                                $sidObj = New-Object System.Security.Principal.SecurityIdentifier($comp.objectSid, 0)
-	                                                $comp | Add-Member -NotePropertyName 'objectSid' -NotePropertyValue $sidObj.Value -Force
-	                                            } catch { }
-	                                        }
-	                                        if ($comp.objectGUID -is [byte[]]) {
-	                                            try {
-	                                                $comp | Add-Member -NotePropertyName 'objectGUID' -NotePropertyValue ([System.Guid]$comp.objectGUID).ToString() -Force
-	                                            } catch { }
-	                                        }
-	                                        $comp | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue $decryptedInfo.Password -Force
-	                                        $comp | Add-Member -NotePropertyName 'msLAPS-Account' -NotePropertyValue $decryptedInfo.Account -Force
-	                                        $comp | Add-Member -NotePropertyName 'msLAPS-Updated' -NotePropertyValue $decryptedInfo.UpdateTimestamp -Force
-	                                        $comp.PSObject.Properties.Remove('msLAPS-EncryptedPassword')
-	                                        $readableComputers += $comp
-	                                    }
+	                                    $readable = Resolve-LAPSEncryptedComputer -Computer $comp
+	                                    if ($readable) { $readableComputers += $comp }
 	                                }
 	                            }
+	                        }
+	                        if (-not $readable) {
+	                            $withheldCount++
 	                        }
 	                    }
 	                }
 	            } else {
-	                $sampleComputers = @(Get-DomainComputer -LDAPFilter "(msLAPS-EncryptedPassword=*)" -ResultLimit 3 @PSBoundParameters)
-	                if ($sampleComputers.Count -gt 0) {
-	                    $decryptableSample = $sampleComputers | Where-Object { $_.'msLAPS-Password' }
-	                    if ($decryptableSample) {
-	                        $allEncrypted = @(Get-DomainComputer -LDAPFilter "(msLAPS-EncryptedPassword=*)" @PSBoundParameters)
-	                        $decryptable = $allEncrypted | Where-Object { $_.'msLAPS-Password' }
-	                        $readableComputers += @($decryptable)
+	                $encryptedComputers = @(Get-DomainComputer -LDAPFilter "(msLAPS-EncryptedPassword=*)" -Raw @PSBoundParameters)
+	                $sampleDecrypts = $false
+	                foreach ($comp in @($encryptedComputers | Select-Object -First 3)) {
+	                    $sampleInfo = ConvertFrom-LAPSEncryptedPassword -Blob $comp.'msLAPS-EncryptedPassword' -Decrypt
+	                    if ($sampleInfo -and $sampleInfo.DecryptionSucceeded) { $sampleDecrypts = $true; break }
+	                }
+	                if ($sampleDecrypts) {
+	                    foreach ($comp in $encryptedComputers) {
+	                        if (Resolve-LAPSEncryptedComputer -Computer $comp) {
+	                            $readableComputers += $comp
+	                        } else {
+	                            $withheldCount++
+	                        }
 	                    }
+	                } else {
+	                    $withheldCount += @($encryptedComputers).Count
 	                }
 	            }
 	        }
@@ -83506,7 +83531,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-0446"
+$Script:adPEASVersion = "2.7.0+20261012-0505"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

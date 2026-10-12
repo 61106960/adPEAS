@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 04:46:27
-    Version: 2.7.0+20261012-0446
+    Build: 2026-10-12 05:05:40
+    Version: 2.7.0+20261012-0505
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -119714,6 +119714,64 @@ function Get-CredentialExposure {
 
 # ----- Get-LAPSCredentialAccess.ps1 -----
 
+function Resolve-LAPSEncryptedComputer {
+    <#
+    .SYNOPSIS
+    Decrypts a computer's Windows LAPS blob onto the object, if this account may.
+
+    .DESCRIPTION
+    The only reliable test of whether an encrypted LAPS password is readable is whether
+    NCryptUnprotectSecret opens the blob. On success the password, the account name and the
+    update timestamp are added to the object and the blob is removed, so what goes to the
+    report is the password rather than the envelope it came in - and the finding definitions
+    see msLAPS-Password, which is what they describe.
+
+    Both callers need the same conversions beforehand: a -Raw query answers objectSid and
+    objectGUID as byte arrays, and Show-Object cannot render those.
+
+    .PARAMETER Computer
+    A computer object from a -Raw query, carrying msLAPS-EncryptedPassword.
+
+    .OUTPUTS
+    [bool] whether the password is now on the object.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Computer
+    )
+
+    if (-not $Computer) { return $false }
+    $blob = $Computer.'msLAPS-EncryptedPassword'
+    if (-not $blob) { return $false }
+
+    $decryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob -Decrypt
+    if (-not $decryptedInfo -or -not $decryptedInfo.DecryptionSucceeded) { return $false }
+
+    if ($Computer.objectSid -is [byte[]]) {
+        try {
+            $sidObj = New-Object System.Security.Principal.SecurityIdentifier($Computer.objectSid, 0)
+            $Computer | Add-Member -NotePropertyName 'objectSid' -NotePropertyValue $sidObj.Value -Force
+        } catch { }
+    }
+    if ($Computer.objectGUID -is [byte[]]) {
+        try {
+            $Computer | Add-Member -NotePropertyName 'objectGUID' -NotePropertyValue ([System.Guid]$Computer.objectGUID).ToString() -Force
+        } catch { }
+    }
+
+    $Computer | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue $decryptedInfo.Password -Force
+    $Computer | Add-Member -NotePropertyName 'msLAPS-Account' -NotePropertyValue $decryptedInfo.Account -Force
+    $Computer | Add-Member -NotePropertyName 'msLAPS-Updated' -NotePropertyValue $decryptedInfo.UpdateTimestamp -Force
+    # The envelope has served its purpose, and leaving it on the object would have the row
+    # claim both states at once.
+    $Computer.PSObject.Properties.Remove('msLAPS-EncryptedPassword')
+
+    return $true
+}
+
 function Get-LAPSCredentialAccess {
     <#
     .SYNOPSIS
@@ -119858,6 +119916,7 @@ function Get-LAPSCredentialAccess {
                         # Step 3, 4 & 5: Parse Target SID, check authorization, decrypt if authorized
                         $authorizedCount = 0
                         foreach ($comp in $encryptedComputers) {
+                            $readable = $false
                             $blob = $comp.'msLAPS-EncryptedPassword'
                             if ($blob) {
                                 # Parse metadata only (no decryption attempt) - very fast, <1ms
@@ -119867,47 +119926,58 @@ function Get-LAPSCredentialAccess {
                                     if ($myTokenGroups -contains $lapsInfo.TargetSID) {
                                         $authorizedCount++
                                         # Decrypt directly - no second LDAP query needed!
-                                        $decryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob -Decrypt
-                                        if ($decryptedInfo -and $decryptedInfo.DecryptionSucceeded) {
-                                            # Convert Raw byte[] attributes to proper types for Show-Object
-                                            if ($comp.objectSid -is [byte[]]) {
-                                                try {
-                                                    $sidObj = New-Object System.Security.Principal.SecurityIdentifier($comp.objectSid, 0)
-                                                    $comp | Add-Member -NotePropertyName 'objectSid' -NotePropertyValue $sidObj.Value -Force
-                                                } catch { }
-                                            }
-                                            if ($comp.objectGUID -is [byte[]]) {
-                                                try {
-                                                    $comp | Add-Member -NotePropertyName 'objectGUID' -NotePropertyValue ([System.Guid]$comp.objectGUID).ToString() -Force
-                                                } catch { }
-                                            }
-                                            # Add decrypted LAPS properties to existing object
-                                            $comp | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue $decryptedInfo.Password -Force
-                                            $comp | Add-Member -NotePropertyName 'msLAPS-Account' -NotePropertyValue $decryptedInfo.Account -Force
-                                            $comp | Add-Member -NotePropertyName 'msLAPS-Updated' -NotePropertyValue $decryptedInfo.UpdateTimestamp -Force
-                                            # Remove raw encrypted blob from output
-                                            $comp.PSObject.Properties.Remove('msLAPS-EncryptedPassword')
-                                            $readableComputers += $comp
-                                        }
+                                        $readable = Resolve-LAPSEncryptedComputer -Computer $comp
+                                        if ($readable) { $readableComputers += $comp }
                                     }
                                 }
+                            }
+                            # Every one of these computers has a LAPS password stored. The
+                            # ones left over are the ones this account cannot open, and they
+                            # were counted nowhere - so a domain on encrypted LAPS where
+                            # nothing decrypts ended on "No readable LAPS passwords found",
+                            # in green, with no mention that there were passwords at all.
+                            if (-not $readable) {
+                                $withheldCount++
+                                Write-Log "[Get-LAPSCredentialAccess] Encrypted LAPS password not readable for '$($comp.distinguishedName)'"
                             }
                         }
 
                         Write-Log "[Get-LAPSCredentialAccess] User is authorized for $authorizedCount of $($encryptedComputers.Count) encrypted LAPS computers"
                     }
                 } else {
-                    Write-Log "[Get-LAPSCredentialAccess] Could not retrieve token groups - skipping encrypted LAPS optimization"
-                    # Fallback: try sampling approach
-                    $sampleComputers = @(Get-DomainComputer -LDAPFilter "(msLAPS-EncryptedPassword=*)" -ResultLimit 3 @PSBoundParameters)
-                    if ($sampleComputers.Count -gt 0) {
-                        $decryptableSample = $sampleComputers | Where-Object { $_.'msLAPS-Password' }
-                        if ($decryptableSample) {
-                            Write-Log "[Get-LAPSCredentialAccess] Fallback: Decryption works, loading all"
-                            $allEncrypted = @(Get-DomainComputer -LDAPFilter "(msLAPS-EncryptedPassword=*)" @PSBoundParameters)
-                            $decryptable = $allEncrypted | Where-Object { $_.'msLAPS-Password' }
-                            $readableComputers += @($decryptable)
+                    # No token groups, so the authorization pre-check is unavailable. That
+                    # check is an optimisation and never the test: what decides whether a
+                    # blob is readable is whether NCryptUnprotectSecret opens it. Three of
+                    # them decide whether the rest are worth the attempt.
+                    #
+                    # This branch used to sample without -Raw and then filter on
+                    # msLAPS-Password - an attribute that cannot be there. Without -Raw,
+                    # ConvertFrom-LDAPAttribute renders the blob as
+                    # "[Encrypted - Updated: ...]" and produces no password property at all,
+                    # so the sample was always empty, the load-everything branch behind it
+                    # was dead, and nothing was counted as withheld either. On a domain
+                    # using encrypted LAPS, a failed token-group lookup therefore ended the
+                    # section with "No readable LAPS passwords found" in green.
+                    Write-Log "[Get-LAPSCredentialAccess] No token groups - sampling decryption instead"
+                    $encryptedComputers = @(Get-DomainComputer -LDAPFilter "(msLAPS-EncryptedPassword=*)" -Raw @PSBoundParameters)
+
+                    $sampleDecrypts = $false
+                    foreach ($comp in @($encryptedComputers | Select-Object -First 3)) {
+                        $sampleInfo = ConvertFrom-LAPSEncryptedPassword -Blob $comp.'msLAPS-EncryptedPassword' -Decrypt
+                        if ($sampleInfo -and $sampleInfo.DecryptionSucceeded) { $sampleDecrypts = $true; break }
+                    }
+
+                    if ($sampleDecrypts) {
+                        Write-Log "[Get-LAPSCredentialAccess] Fallback: decryption works, trying all $(@($encryptedComputers).Count)"
+                        foreach ($comp in $encryptedComputers) {
+                            if (Resolve-LAPSEncryptedComputer -Computer $comp) {
+                                $readableComputers += $comp
+                            } else {
+                                $withheldCount++
+                            }
                         }
+                    } else {
+                        $withheldCount += @($encryptedComputers).Count
                     }
                 }
             }
@@ -133617,7 +133687,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0446"
+$Script:adPEASVersion = "2.7.0+20261012-0505"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
