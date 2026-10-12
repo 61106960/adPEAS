@@ -64700,7 +64700,9 @@ function Get-AddComputerRights {
 	            $hasFindings = $true
 	        }
 	        if (-not $hasFindings) {
-	            Show-Line "Add Computer to Domain rights properly configured" -Class Secure
+	            $quotaClass = 'Secure'
+	            if (Show-SYSVOLCoverageNote) { $quotaClass = 'Note' }
+	            Show-Line "Add Computer to Domain rights properly configured" -Class $quotaClass
 	        }
 	    } catch {
 	    }
@@ -65085,12 +65087,14 @@ function Get-GPOUserRightsAssignment {
 	            }
 	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
 	                -Dormant $split.Dormant -Listed:$IncludeInactive
+	            $rightsClass = 'Secure'
+	            if (Show-SYSVOLCoverageNote) { $rightsClass = 'Note' }
 	            if ($deviations.Count -gt 0) {
 	                Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
 	            } elseif ($inactiveCount -gt 0) {
-	                Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class "Secure"
+	                Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class $rightsClass
 	            } else {
-	                Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
+	                Show-Line "No user right is granted beyond the Windows default" -Class $rightsClass
 	            }
 	            $listed = if ($showDefaults) { @($shown) } else { @($shown | Where-Object { $_._severity -ne 'Note' }) }
 	            $ordered = @($listed | Sort-Object @{Expression={
@@ -65106,7 +65110,9 @@ function Get-GPOUserRightsAssignment {
 	        } elseif (-not $sysvolScanned) {
 	            Show-Line "SYSVOL access failed - GPO user rights could not be evaluated - SMB access failed (authentication/network issue)" -Class "Finding"
 	        } else {
-	            Show-Line "Every user right assigned via GPO matches the Windows default" -Class "Secure"
+	            $emptyClass = 'Secure'
+	            if (Show-SYSVOLCoverageNote) { $emptyClass = 'Note' }
+	            Show-Line "Every user right assigned via GPO matches the Windows default" -Class $emptyClass
 	        }
 	    } catch {
 	        Show-Line "Error during check: $_" -Class "Finding"
@@ -71890,7 +71896,7 @@ function Get-CredentialExposure {
 	                                }
 	                            }
 	                        }
-	                        elseif ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
+	                        if ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
 	                            $autoLogonUser = $null
 	                            $autoLogonPassword = $null
 	                            $autoLogonDomain = $null
@@ -72115,7 +72121,7 @@ function Get-CredentialExposure {
 	                                    }
 	                                }
 	                            }
-	                            elseif ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
+	                            if ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
 	                                $autoLogonUser = $null
 	                                $autoLogonPassword = $null
 	                                $autoLogonDomain = $null
@@ -83531,7 +83537,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-0505"
+$Script:adPEASVersion = "2.7.0+20261012-0525"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

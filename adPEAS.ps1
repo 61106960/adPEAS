@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 05:05:40
-    Version: 2.7.0+20261012-0505
+    Build: 2026-10-12 05:25:06
+    Version: 2.7.0+20261012-0525
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -105979,7 +105979,12 @@ function Get-AddComputerRights {
             }
 
             if (-not $hasFindings) {
-                Show-Line "Add Computer to Domain rights properly configured" -Class Secure
+                # The GPO half of this check reads SeMachineAccountPrivilege out of
+                # GptTmpl.inf, and the SYSVOL walk silently skips a Policies folder it may
+                # not read. A green line over those folders claims more than was looked at.
+                $quotaClass = 'Secure'
+                if (Show-SYSVOLCoverageNote) { $quotaClass = 'Note' }
+                Show-Line "Add Computer to Domain rights properly configured" -Class $quotaClass
             }
 
         } catch {
@@ -106734,15 +106739,24 @@ function Get-GPOUserRightsAssignment {
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
                     -Dormant $split.Dormant -Listed:$IncludeInactive
 
+                # What was read decides what may be claimed. Every GptTmpl.inf here comes out
+                # of the SYSVOL walk, and that walk skips a Policies folder whose NTFS ACL
+                # denies the running account - which is the normal case for a low-privileged
+                # pentest account, not the exception. The note goes out before either
+                # conclusion, because a list of deviations found in the readable folders is
+                # incomplete in the same way a clean verdict is wrong.
+                $rightsClass = 'Secure'
+                if (Show-SYSVOLCoverageNote) { $rightsClass = 'Note' }
+
                 if ($deviations.Count -gt 0) {
                     Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
                 } elseif ($inactiveCount -gt 0) {
                     # Not Secure. Every departure sits on a policy that reaches nothing, which is
                     # a different statement from having none, and the dampening line above
                     # carries the count.
-                    Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class "Secure"
+                    Show-Line "No user right is granted beyond the Windows default by a policy that reaches a machine" -Class $rightsClass
                 } else {
-                    Show-Line "No user right is granted beyond the Windows default" -Class "Secure"
+                    Show-Line "No user right is granted beyond the Windows default" -Class $rightsClass
                 }
 
                 # Findings first, then hints, then the removals.
@@ -106775,7 +106789,11 @@ function Get-GPOUserRightsAssignment {
                 # below and reported a blind scan as a clean domain.
                 Show-Line "SYSVOL access failed - GPO user rights could not be evaluated - SMB access failed (authentication/network issue)" -Class "Finding"
             } else {
-                Show-Line "Every user right assigned via GPO matches the Windows default" -Class "Secure"
+                # Same question as above, on the branch where no GPO carried a user right at
+                # all: that is only a clean domain if the folders were readable.
+                $emptyClass = 'Secure'
+                if (Show-SYSVOLCoverageNote) { $emptyClass = 'Note' }
+                Show-Line "Every user right assigned via GPO matches the Windows default" -Class $emptyClass
             }
 
         } catch {
@@ -119112,7 +119130,13 @@ function Get-CredentialExposure {
                                     }
                                 }
                             }
-                            elseif ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
+                            # Its own if, not an elseif of the cpassword branch above. A
+                            # Registry.xml that carries both - GPP registry items with a
+                            # cpassword and the Winlogon values - reported only the first,
+                            # and whoever rolls out AutoAdminLogon by GPP usually rolls out
+                            # several items in one file. The plaintext password was the
+                            # heavier of the two findings, and the one that went missing.
+                            if ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
                                 $autoLogonUser = $null
                                 $autoLogonPassword = $null
                                 $autoLogonDomain = $null
@@ -119421,7 +119445,13 @@ function Get-CredentialExposure {
                                     }
                                 }
                                 # Check 2: AutoAdminLogon in Registry.xml (plaintext passwords!)
-                                elseif ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
+                                #
+                                # Independent of check 1, and it used to be an elseif of it:
+                                # a Registry.xml holding both a cpassword item and the
+                                # Winlogon values reported the cpassword alone. The
+                                # deduplication that elseif was standing in for happens
+                                # through the differing CredentialType anyway.
+                                if ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
                                     $autoLogonUser = $null
                                     $autoLogonPassword = $null
                                     $autoLogonDomain = $null
@@ -133687,7 +133717,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0505"
+$Script:adPEASVersion = "2.7.0+20261012-0525"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

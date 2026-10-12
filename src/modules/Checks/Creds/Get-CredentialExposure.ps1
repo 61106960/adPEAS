@@ -206,7 +206,13 @@ function Get-CredentialExposure {
                                     }
                                 }
                             }
-                            elseif ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
+                            # Its own if, not an elseif of the cpassword branch above. A
+                            # Registry.xml that carries both - GPP registry items with a
+                            # cpassword and the Winlogon values - reported only the first,
+                            # and whoever rolls out AutoAdminLogon by GPP usually rolls out
+                            # several items in one file. The plaintext password was the
+                            # heavier of the two findings, and the one that went missing.
+                            if ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
                                 $autoLogonUser = $null
                                 $autoLogonPassword = $null
                                 $autoLogonDomain = $null
@@ -515,7 +521,13 @@ function Get-CredentialExposure {
                                     }
                                 }
                                 # Check 2: AutoAdminLogon in Registry.xml (plaintext passwords!)
-                                elseif ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
+                                #
+                                # Independent of check 1, and it used to be an elseif of it:
+                                # a Registry.xml holding both a cpassword item and the
+                                # Winlogon values reported the cpassword alone. The
+                                # deduplication that elseif was standing in for happens
+                                # through the differing CredentialType anyway.
+                                if ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
                                     $autoLogonUser = $null
                                     $autoLogonPassword = $null
                                     $autoLogonDomain = $null
