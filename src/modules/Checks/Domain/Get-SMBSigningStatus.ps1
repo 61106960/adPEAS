@@ -102,14 +102,73 @@ function Get-SMBSigningStatus {
                     if ($g.Name) { $gpoByGuid[$g.Name.ToUpper()] = $g }
                 }
 
-                # Parse GPOs for SMB Signing settings
-                $totalGPOs = $gptTmplFiles.Count
-                $currentGPOIndex = 0
+                # GPO GUID -> its GptTmpl.inf, so the loop below can walk the GPOs that
+                # carry these settings in EITHER file rather than only those with an .inf.
+                $gptTmplByGuid = @{}
                 foreach ($file in $gptTmplFiles) {
-                    # Extract GPO GUID from path: ...\Policies\{GUID}\Machine\...
                     if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
-                    $gpoGUID = $Matches[1]
-                    $gpo = $gpoByGuid[$gpoGUID.ToUpper()]
+                    $gptTmplByGuid[$Matches[1].ToUpper()] = $file
+                }
+
+                # ----- The same four values, delivered as a registry policy -----
+                #
+                # SMB signing has Security Options, so the Group Policy editor writes it
+                # into GptTmpl.inf and the parser below finds it. A hardening baseline from
+                # a third-party tool sets the registry values directly instead, which is an
+                # ordinary way to deploy them - and then this check found nothing at all
+                # and said "No SMB Signing configuration found in any GPO" as a Finding.
+                # The same false alarm that was fixed for LDAP channel binding, aimed again
+                # at the domains that had hardened.
+                $smbRegPolValueNames = @('RequireSecuritySignature', 'EnableSecuritySignature')
+                $smbRegPolByGpo = @{}
+                foreach ($polFile in @(Get-CachedSYSVOLFiles -Filter "Registry.pol")) {
+                    if ($polFile.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+                    # Read the capture out before the next comparison, which overwrites
+                    # $Matches even when it is a -notmatch that comes out false
+                    $polGuid = $Matches[1].ToUpper()
+
+                    # Machine-side only: both keys live under HKLM, and a user policy
+                    # cannot set them.
+                    if ($polFile.FullName -notmatch '\\Machine\\') { continue }
+
+                    try {
+                        foreach ($record in @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive 'HKLM')) {
+                            $valueName = "$($record.ValueName)"
+                            if ($valueName -notin $smbRegPolValueNames) { continue }
+
+                            # The same value name exists on both sides, and which key it
+                            # sits under is the entire difference between "this machine
+                            # signs what it serves" and "this machine insists on signing
+                            # what it consumes".
+                            $recordKey = "$($record.Key)"
+                            $side = $null
+                            if ($recordKey -match 'Services\\LanmanServer\\Parameters$') { $side = 'Server' }
+                            elseif ($recordKey -match 'Services\\LanmanWorkstation\\Parameters$') { $side = 'Client' }
+                            if (-not $side) { continue }
+
+                            # REG_DWORD (4) only - all four values are numbers
+                            if ($record.Type -ne 4) { continue }
+                            if ($null -eq $record.ValueInt) { continue }
+
+                            if (-not $smbRegPolByGpo.ContainsKey($polGuid)) {
+                                $smbRegPolByGpo[$polGuid] = @{}
+                            }
+                            $smbRegPolByGpo[$polGuid]["$side$valueName"] = [int]$record.ValueInt
+                            Write-Log "[Get-SMBSigningStatus] $side $valueName = $($record.ValueInt) from Registry.pol of $polGuid"
+                        }
+                    } catch {
+                        Write-Log "[Get-SMBSigningStatus] Could not read $($polFile.FullName): $($_.Exception.Message)"
+                    }
+                }
+
+                # Parse GPOs for SMB Signing settings. The union of both sources: a GPO
+                # that sets them only as a registry policy has no GptTmpl.inf at all, and
+                # a loop over .inf files never reaches it.
+                $candidateGuids = @(@($gptTmplByGuid.Keys) + @($smbRegPolByGpo.Keys) | Select-Object -Unique)
+                $totalGPOs = $candidateGuids.Count
+                $currentGPOIndex = 0
+                foreach ($gpoGUID in $candidateGuids) {
+                    $gpo = $gpoByGuid[$gpoGUID]
                     if (-not $gpo) { continue }
 
                     $currentGPOIndex++
@@ -117,8 +176,13 @@ function Get-SMBSigningStatus {
                         Show-Progress -Activity "Scanning SMB signing GPO settings" -Current $currentGPOIndex -Total $totalGPOs -ObjectName $gpo.DisplayName
                     }
 
-                    $content = Get-CachedSYSVOLContent -Path $file.FullName
-                    if ($content) {
+                    $content = $null
+                    if ($gptTmplByGuid.ContainsKey($gpoGUID)) {
+                        $content = Get-CachedSYSVOLContent -Path $gptTmplByGuid[$gpoGUID].FullName
+                    }
+                    # Either source is enough to reach the construction below: a GPO that
+                    # sets these values as a registry policy has no GptTmpl.inf at all.
+                    if ($content -or $smbRegPolByGpo.ContainsKey($gpoGUID)) {
                         # Look for SMB Signing settings in [Registry Values] section.
                         # Get-GptTmplRegistrySection ends the section at the next line
                         # beginning with '[' rather than at the next '[' character. The
@@ -126,8 +190,14 @@ function Get-SMBSigningStatus {
                         # section is sorted by key: a logon banner containing a bracket
                         # sits under MACHINE\Software\... and truncated the section before
                         # the four MACHINE\System\...\Lanman* values read below.
-                        $registrySection = Get-GptTmplRegistrySection -Content $content
-                        if ($registrySection) {
+                        $registrySection = $null
+                        if ($content) {
+                            $registrySection = Get-GptTmplRegistrySection -Content $content
+                        }
+                        # The four reads below are -match against $null when there is no
+                        # section, which is false rather than an error, so one path serves
+                        # both sources and the finding is built in one place.
+                        if ($registrySection -or $smbRegPolByGpo.ContainsKey($gpoGUID)) {
 
                             $serverRequire = $null
                             $serverEnable = $null
@@ -148,6 +218,26 @@ function Get-SMBSigningStatus {
                             }
                             if ($registrySection -match 'MACHINE\\System\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters\\EnableSecuritySignature.*?=.*?4,(\d+)') {
                                 $clientEnable = [int]$Matches[1]
+                            }
+
+                            # Whatever GptTmpl.inf did not say, the registry policy may
+                            # have. GptTmpl.inf wins where a GPO carries both: a policy
+                            # setting one value twice is a question about that policy, not
+                            # about the reading of it.
+                            if ($smbRegPolByGpo.ContainsKey($gpoGUID)) {
+                                $smbRegPol = $smbRegPolByGpo[$gpoGUID]
+                                if ($null -eq $serverRequire -and $smbRegPol.ContainsKey('ServerRequireSecuritySignature')) {
+                                    $serverRequire = $smbRegPol['ServerRequireSecuritySignature']
+                                }
+                                if ($null -eq $serverEnable -and $smbRegPol.ContainsKey('ServerEnableSecuritySignature')) {
+                                    $serverEnable = $smbRegPol['ServerEnableSecuritySignature']
+                                }
+                                if ($null -eq $clientRequire -and $smbRegPol.ContainsKey('ClientRequireSecuritySignature')) {
+                                    $clientRequire = $smbRegPol['ClientRequireSecuritySignature']
+                                }
+                                if ($null -eq $clientEnable -and $smbRegPol.ContainsKey('ClientEnableSecuritySignature')) {
+                                    $clientEnable = $smbRegPol['ClientEnableSecuritySignature']
+                                }
                             }
 
                             # If any SMB Signing settings found, add to findings
