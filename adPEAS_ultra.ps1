@@ -5545,7 +5545,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    MITRE = "T1187"
 	    Triggers = @(
 	        @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC8'; Severity = 'Finding' }
-	        @{ Attribute = 'WebEnrollmentEndpoints'; ExcludePattern = '\[EPA:\s*Enabled\]'; Severity = 'Finding' }
+	        @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '(?i)NTLM'; ExcludePattern = '\[EPA:\s*Enabled\]'; Severity = 'Finding' }
 	    )
 	}
 	'ADCS_HTTP_AVAILABLE' = @{
@@ -12655,6 +12655,8 @@ certutil -getreg policy\DisableExtensionList
 	    Tools = @("Certipy", "Certify", "PSPKI")
 	    MITRE = "T1649"
 	    Triggers = @(
+	        @{ Attribute = 'escSchemaVersionUnread'; Severity = 'Hint'; SeverityOnly = $true }
+	        @{ Attribute = 'escPublicationUnread'; Severity = 'Hint'; SeverityOnly = $true }
 	        @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC15'; Severity = 'Finding' }
 	        @{ Attribute = 'SchemaVersion'; Pattern = '^1$'; Severity = 'Hint'; SeverityOnly = $true }
 	    )
@@ -27561,17 +27563,20 @@ function Get-CertificateTemplate {
 	                    Write-Warning "No Certificate Authorities found. Cannot determine which templates are enabled."
 	                    Write-Warning "Returning all templates instead."
 	                    $ResultTemplates = $Templates
+	                    $PublicationUnknown = $true
 	                }
 	            }
 	            catch {
 	                Write-Warning "Error querying CA enrollment services: $_"
 	                Write-Warning "Returning all templates instead."
 	                $ResultTemplates = $Templates
+	                $PublicationUnknown = $true
 	            }
 	            if ($ResultTemplates) {
 	                foreach ($tmpl in @($ResultTemplates)) {
 	                    $caList = if ($TemplateCAMap.ContainsKey($tmpl.cn)) { @($TemplateCAMap[$tmpl.cn]) } else { @() }
 	                    $tmpl | Add-Member -NotePropertyName 'PublishedOn' -NotePropertyValue $caList -Force
+	                    $tmpl | Add-Member -NotePropertyName 'PublicationUnknown' -NotePropertyValue ([bool]$PublicationUnknown) -Force
 	                }
 	            }
 	            if ($ResultTemplates -and ($EnrolleeSuppliesSubject -or $NoSecurityExtension -or $ClientAuthentication -or $ExportableKey -or $NoManagerApproval -or $EnrollmentAllowed)) {
@@ -69115,9 +69120,11 @@ function Get-ADCSTemplate {
 	            DisplayName = $coreTemplate.displayName
 	            DistinguishedName = $coreTemplate.distinguishedName
 	            PublishedOn = if ($coreTemplate.PublishedOn) { @($coreTemplate.PublishedOn) } else { @() }
-	            SchemaVersion = if ($coreTemplate.'msPKI-Template-Schema-Version') {
+	            PublicationUnknown = [bool]$coreTemplate.PublicationUnknown
+	            SchemaVersion = if ($null -ne $coreTemplate.'msPKI-Template-Schema-Version' -and
+	                                ([string]$coreTemplate.'msPKI-Template-Schema-Version') -ne '') {
 	                [int]$coreTemplate.'msPKI-Template-Schema-Version'
-	            } else { 1 }
+	            } else { $null }
 	            CertificateNameFlagDisplay = $coreTemplate.'msPKI-Certificate-Name-Flag'
 	            EnrollmentFlagDisplay = $coreTemplate.'msPKI-Enrollment-Flag'
 	            PrivateKeyFlagDisplay = $coreTemplate.'msPKI-Private-Key-Flag'
@@ -69575,10 +69582,11 @@ function Get-ADCSVulnerabilities {
 	                                    if ($authMethods) {
 	                                        $epString += " ($authMethods)"
 	                                    }
+	                                    $epaStatus = "Untested"
 	                                    if ($null -ne $epData.EPAEnabled) {
 	                                        $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-	                                        $epString += " [EPA: $epaStatus]"
 	                                    }
+	                                    $epString += " [EPA: $epaStatus]"
 	                                    $endpointsWithAuth += $epString
 	                                }
 	                            }
@@ -69668,10 +69676,11 @@ function Get-ADCSVulnerabilities {
 	                                if ($epData.AvailableHttps) {
 	                                    $epString = "$ep via HTTPS"
 	                                    if ($authMethods) { $epString += " ($authMethods)" }
+	                                    $epaStatus = "Untested"
 	                                    if ($null -ne $epData.EPAEnabled) {
 	                                        $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-	                                        $epString += " [EPA: $epaStatus]"
 	                                    }
+	                                    $epString += " [EPA: $epaStatus]"
 	                                    $endpointsWithAuth += $epString
 	                                }
 	                            }
@@ -69908,6 +69917,9 @@ function Get-ADCSVulnerabilities {
 	            }
 	        }
 	        catch {
+	        }
+	        if (@($templates | Where-Object { $_.PublicationUnknown }).Count -gt 0) {
+	            Show-Line "Which templates are published to a CA could not be determined - disabled templates may appear below" -Class "Note"
 	        }
 	        $enrollStateCache = @{}
 	        $agentTemplateNames = @()
@@ -70161,6 +70173,16 @@ function Get-ADCSVulnerabilities {
 	                    if ($enrollmentRightsUnknown) {
 	                        $template | Add-Member -NotePropertyName 'escEnrollmentRightsUnread' -NotePropertyValue (
 	                            'The enrollment rights of this template could not be read, so whether an unprivileged principal can enroll is undecided. A template that withdraws Read-Control arrives without a security descriptor, and an enrollment ACE written as GENERIC_ALL reads the same way. The conditions below are the template''s own settings and hold regardless; what is missing is who could use them.'
+	                        ) -Force
+	                    }
+	                    if ($template.PublicationUnknown) {
+	                        $template | Add-Member -NotePropertyName 'escPublicationUnread' -NotePropertyValue (
+	                            'Whether this template is published to a CA could not be determined, because the enrollment service query failed or returned nothing. A template published on no CA cannot be enrolled from at all, so the conditions below may describe a disabled template.'
+	                        ) -Force
+	                    }
+	                    if ($null -eq $template.SchemaVersion) {
+	                        $template | Add-Member -NotePropertyName 'escSchemaVersionUnread' -NotePropertyValue (
+	                            'The schema version of this template could not be read, so the two verdicts that depend on it were not reached: ESC15 applies to version 1 only, and the Any Purpose gate is stricter for version 1 than for later ones.'
 	                        ) -Force
 	                    }
 	                    if ($esc4Vuln -and $esc4Vuln.DangerousACEs) {
@@ -83976,7 +83998,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-1021"
+$Script:adPEASVersion = "2.7.0+20261012-1037"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

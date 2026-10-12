@@ -182,10 +182,24 @@ function Get-ADCSTemplate {
                 # CA publishing info: which CAs have this template enabled (from Core)
                 PublishedOn = if ($coreTemplate.PublishedOn) { @($coreTemplate.PublishedOn) } else { @() }
 
-                # Schema Version (from Core)
-                SchemaVersion = if ($coreTemplate.'msPKI-Template-Schema-Version') {
+                # And whether that list means anything: Get-CertificateTemplate falls back
+                # to every template when the CA query fails, which drops the publication
+                # gate without a word. Carried through here because the analysis reads its
+                # templates from this function, not from Core.
+                PublicationUnknown = [bool]$coreTemplate.PublicationUnknown
+
+                # Schema Version (from Core).
+                #
+                # $null when the attribute did not arrive, not 1. A template whose version
+                # could not be read was taken for version 1, which is the worse of the two
+                # readings: ESC15 exists only for v1, and the ESC2 Any-Purpose gate is
+                # stricter there. The result was an ESC15 hint produced by a missing
+                # attribute - the second place in this module where absent data was read as
+                # the worst case.
+                SchemaVersion = if ($null -ne $coreTemplate.'msPKI-Template-Schema-Version' -and
+                                    ([string]$coreTemplate.'msPKI-Template-Schema-Version') -ne '') {
                     [int]$coreTemplate.'msPKI-Template-Schema-Version'
-                } else { 1 }
+                } else { $null }
 
                 # Flags for security analysis - Core converts to string arrays like @('ENROLLEE_SUPPLIES_SUBJECT')
                 # We keep original values for display AND extract raw integers for bitwise operations

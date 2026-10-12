@@ -1807,7 +1807,13 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         MITRE = "T1187"
         Triggers = @(
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC8'; Severity = 'Finding' }
-            @{ Attribute = 'WebEnrollmentEndpoints'; ExcludePattern = '\[EPA:\s*Enabled\]'; Severity = 'Finding' }
+            # NTLM has to be on offer. ESC8 is an NTLM relay: the attacker coerces a machine
+            # account into authenticating to this endpoint and relays it into a certificate
+            # request. Without this condition the trigger fired on every endpoint whose
+            # string lacked "[EPA: Enabled]" - and EPA is probed only where NTLM is offered,
+            # so a Negotiate-only HTTPS endpoint carried no marker and came out red for
+            # being configured the way Microsoft recommends.
+            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '(?i)NTLM'; ExcludePattern = '\[EPA:\s*Enabled\]'; Severity = 'Finding' }
         )
     }
 
@@ -9523,6 +9529,15 @@ certutil -getreg policy\DisableExtensionList
         Tools = @("Certipy", "Certify", "PSPKI")
         MITRE = "T1649"
         Triggers = @(
+            # The two template caveats Get-ADCSVulnerabilities writes when a precondition
+            # could not be read. Severity-only on purpose: they colour their own row and
+            # name no card, because "this was not decided" is not a finding of its own -
+            # and a card chosen by the highest base score must not be pulled here by a
+            # caveat. ESC15 hosts them because it is the definition whose verdict both of
+            # them withhold.
+            @{ Attribute = 'escSchemaVersionUnread'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'escPublicationUnread'; Severity = 'Hint'; SeverityOnly = $true }
+
             # Finding, not Hint. ESC15 was the lowest-rated ADCS definition at 30 while
             # being the only one that needs no client-authentication EKU on the template -
             # it reaches the templates every other ESC passes as harmless. The reservation

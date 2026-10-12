@@ -395,12 +395,14 @@ function Get-CertificateTemplate {
                         Write-Warning "No Certificate Authorities found. Cannot determine which templates are enabled."
                         Write-Warning "Returning all templates instead."
                         $ResultTemplates = $Templates
+                        $PublicationUnknown = $true
                     }
                 }
                 catch {
                     Write-Warning "Error querying CA enrollment services: $_"
                     Write-Warning "Returning all templates instead."
                     $ResultTemplates = $Templates
+                    $PublicationUnknown = $true
                 }
 
                 # Add PublishedOn property to each template (empty array for unpublished templates in -ShowAll mode)
@@ -408,6 +410,16 @@ function Get-CertificateTemplate {
                     foreach ($tmpl in @($ResultTemplates)) {
                         $caList = if ($TemplateCAMap.ContainsKey($tmpl.cn)) { @($TemplateCAMap[$tmpl.cn]) } else { @() }
                         $tmpl | Add-Member -NotePropertyName 'PublishedOn' -NotePropertyValue $caList -Force
+
+                        # Whether the publication filter could be applied at all. The two
+                        # paths above fall back to "all templates" on a failed or empty CA
+                        # query, which silently removes the default gate: every disabled
+                        # legacy template - in a grown environment often dozens, with
+                        # enrollee-supplied subject and client auth - then arrives as an
+                        # exploitable finding. The fallback is still the right call, because
+                        # returning nothing would make the whole ADCS section go quiet; what
+                        # was missing is that nobody downstream could tell.
+                        $tmpl | Add-Member -NotePropertyName 'PublicationUnknown' -NotePropertyValue ([bool]$PublicationUnknown) -Force
                     }
                 }
 

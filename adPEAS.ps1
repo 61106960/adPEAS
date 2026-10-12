@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 10:21:55
-    Version: 2.7.0+20261012-1021
+    Build: 2026-10-12 10:37:59
+    Version: 2.7.0+20261012-1037
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -9642,7 +9642,13 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         MITRE = "T1187"
         Triggers = @(
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC8'; Severity = 'Finding' }
-            @{ Attribute = 'WebEnrollmentEndpoints'; ExcludePattern = '\[EPA:\s*Enabled\]'; Severity = 'Finding' }
+            # NTLM has to be on offer. ESC8 is an NTLM relay: the attacker coerces a machine
+            # account into authenticating to this endpoint and relays it into a certificate
+            # request. Without this condition the trigger fired on every endpoint whose
+            # string lacked "[EPA: Enabled]" - and EPA is probed only where NTLM is offered,
+            # so a Negotiate-only HTTPS endpoint carried no marker and came out red for
+            # being configured the way Microsoft recommends.
+            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '(?i)NTLM'; ExcludePattern = '\[EPA:\s*Enabled\]'; Severity = 'Finding' }
         )
     }
 
@@ -17358,6 +17364,15 @@ certutil -getreg policy\DisableExtensionList
         Tools = @("Certipy", "Certify", "PSPKI")
         MITRE = "T1649"
         Triggers = @(
+            # The two template caveats Get-ADCSVulnerabilities writes when a precondition
+            # could not be read. Severity-only on purpose: they colour their own row and
+            # name no card, because "this was not decided" is not a finding of its own -
+            # and a card chosen by the highest base score must not be pulled here by a
+            # caveat. ESC15 hosts them because it is the definition whose verdict both of
+            # them withhold.
+            @{ Attribute = 'escSchemaVersionUnread'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'escPublicationUnread'; Severity = 'Hint'; SeverityOnly = $true }
+
             # Finding, not Hint. ESC15 was the lowest-rated ADCS definition at 30 while
             # being the only one that needs no client-authentication EKU on the template -
             # it reaches the templates every other ESC passes as harmless. The reservation
@@ -40657,12 +40672,14 @@ function Get-CertificateTemplate {
                         Write-Warning "No Certificate Authorities found. Cannot determine which templates are enabled."
                         Write-Warning "Returning all templates instead."
                         $ResultTemplates = $Templates
+                        $PublicationUnknown = $true
                     }
                 }
                 catch {
                     Write-Warning "Error querying CA enrollment services: $_"
                     Write-Warning "Returning all templates instead."
                     $ResultTemplates = $Templates
+                    $PublicationUnknown = $true
                 }
 
                 # Add PublishedOn property to each template (empty array for unpublished templates in -ShowAll mode)
@@ -40670,6 +40687,16 @@ function Get-CertificateTemplate {
                     foreach ($tmpl in @($ResultTemplates)) {
                         $caList = if ($TemplateCAMap.ContainsKey($tmpl.cn)) { @($TemplateCAMap[$tmpl.cn]) } else { @() }
                         $tmpl | Add-Member -NotePropertyName 'PublishedOn' -NotePropertyValue $caList -Force
+
+                        # Whether the publication filter could be applied at all. The two
+                        # paths above fall back to "all templates" on a failed or empty CA
+                        # query, which silently removes the default gate: every disabled
+                        # legacy template - in a grown environment often dozens, with
+                        # enrollee-supplied subject and client auth - then arrives as an
+                        # exploitable finding. The fallback is still the right call, because
+                        # returning nothing would make the whole ADCS section go quiet; what
+                        # was missing is that nobody downstream could tell.
+                        $tmpl | Add-Member -NotePropertyName 'PublicationUnknown' -NotePropertyValue ([bool]$PublicationUnknown) -Force
                     }
                 }
 
@@ -114299,10 +114326,24 @@ function Get-ADCSTemplate {
                 # CA publishing info: which CAs have this template enabled (from Core)
                 PublishedOn = if ($coreTemplate.PublishedOn) { @($coreTemplate.PublishedOn) } else { @() }
 
-                # Schema Version (from Core)
-                SchemaVersion = if ($coreTemplate.'msPKI-Template-Schema-Version') {
+                # And whether that list means anything: Get-CertificateTemplate falls back
+                # to every template when the CA query fails, which drops the publication
+                # gate without a word. Carried through here because the analysis reads its
+                # templates from this function, not from Core.
+                PublicationUnknown = [bool]$coreTemplate.PublicationUnknown
+
+                # Schema Version (from Core).
+                #
+                # $null when the attribute did not arrive, not 1. A template whose version
+                # could not be read was taken for version 1, which is the worse of the two
+                # readings: ESC15 exists only for v1, and the ESC2 Any-Purpose gate is
+                # stricter there. The result was an ESC15 hint produced by a missing
+                # attribute - the second place in this module where absent data was read as
+                # the worst case.
+                SchemaVersion = if ($null -ne $coreTemplate.'msPKI-Template-Schema-Version' -and
+                                    ([string]$coreTemplate.'msPKI-Template-Schema-Version') -ne '') {
                     [int]$coreTemplate.'msPKI-Template-Schema-Version'
-                } else { 1 }
+                } else { $null }
 
                 # Flags for security analysis - Core converts to string arrays like @('ENROLLEE_SUPPLIES_SUBJECT')
                 # We keep original values for display AND extract raw integers for bitwise operations
@@ -115094,12 +115135,20 @@ function Get-ADCSVulnerabilities {
                                 # Build array of endpoints with protocol, auth methods, and EPA status (multi-value, one per line)
                                 # Show EACH available protocol separately (HTTP and HTTPS can both be available)
                                 # EPA is only relevant for HTTPS - show it only on HTTPS lines
-                                # ESC8 severity classification:
-                                # - HTTP + NTLM = Critical (ESC8 directly exploitable, no EPA possible)
-                                # - HTTPS + NTLM + EPA disabled = Finding (ESC8 possible)
-                                # - HTTPS + NTLM + EPA enabled = Secure (protected)
-                                # - HTTP + Negotiate = Hint (could have NTLM fallback)
-                                # - HTTPS + Negotiate only = Standard (Kerberos-only is secure)
+                                # ESC8 severity classification, as the triggers in
+                                # adPEAS-FindingDefinitions.ps1 actually apply it:
+                                # - any HTTP line           = Finding (unencrypted enrollment; ADCS_HTTP_AVAILABLE carries its own card)
+                                # - HTTPS + NTLM + EPA off  = Finding (ESC8_WEB_ENROLLMENT)
+                                # - HTTPS + NTLM + EPA on   = Secure
+                                # - HTTPS, no NTLM offered  = no ESC8 finding
+                                #
+                                # The last line was the defect: the finding trigger asked only
+                                # whether "[EPA: Enabled]" was absent from the string, and EPA
+                                # is tested only where NTLM is offered - so a Negotiate-only
+                                # HTTPS endpoint, which is the configuration Microsoft
+                                # recommends, carried no EPA marker at all and was reported as
+                                # an NTLM relay path. The untested case says so now, and the
+                                # trigger requires NTLM.
                                 $endpointsWithAuth = @()
 
                                 foreach ($ep in $activeEndpoints) {
@@ -115124,11 +115173,15 @@ function Get-ADCSVulnerabilities {
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
                                         }
-                                        # Add EPA status only for HTTPS (EPA is TLS-based)
+                                        # Add EPA status only for HTTPS (EPA is TLS-based).
+                                        # "Untested" is its own answer: EPA is probed only
+                                        # where NTLM is on offer, and a missing marker read
+                                        # exactly like a disabled one.
+                                        $epaStatus = "Untested"
                                         if ($null -ne $epData.EPAEnabled) {
                                             $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                            $epString += " [EPA: $epaStatus]"
                                         }
+                                        $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
                                 }
@@ -115265,10 +115318,12 @@ function Get-ADCSVulnerabilities {
                                     if ($epData.AvailableHttps) {
                                         $epString = "$ep via HTTPS"
                                         if ($authMethods) { $epString += " ($authMethods)" }
+                                        # Same three EPA states as the caComputer path above.
+                                        $epaStatus = "Untested"
                                         if ($null -ne $epData.EPAEnabled) {
                                             $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                            $epString += " [EPA: $epaStatus]"
                                         }
+                                        $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
                                 }
@@ -115614,6 +115669,13 @@ function Get-ADCSVulnerabilities {
             }
             catch {
                 Write-Log "[Get-ADCSVulnerabilities] ESC13: Error loading issuance policy cache: $_" -Level Warning
+            }
+
+            # One line for the whole section when the publication gate could not be applied.
+            # Without it the only trace is an empty PublishedOn row per template, which reads
+            # as "published nowhere" rather than "not determined".
+            if (@($templates | Where-Object { $_.PublicationUnknown }).Count -gt 0) {
+                Show-Line "Which templates are published to a CA could not be determined - disabled templates may appear below" -Class "Note"
             }
 
             # Pre-pass: resolve enrollment privilege for every template once, and record which
@@ -116067,6 +116129,19 @@ function Get-ADCSVulnerabilities {
                         if ($enrollmentRightsUnknown) {
                             $template | Add-Member -NotePropertyName 'escEnrollmentRightsUnread' -NotePropertyValue (
                                 'The enrollment rights of this template could not be read, so whether an unprivileged principal can enroll is undecided. A template that withdraws Read-Control arrives without a security descriptor, and an enrollment ACE written as GENERIC_ALL reads the same way. The conditions below are the template''s own settings and hold regardless; what is missing is who could use them.'
+                            ) -Force
+                        }
+                        # The two readings this template could not be given, each on its own
+                        # row. Both are severity-only triggers: they say what was not decided
+                        # without claiming a card of their own.
+                        if ($template.PublicationUnknown) {
+                            $template | Add-Member -NotePropertyName 'escPublicationUnread' -NotePropertyValue (
+                                'Whether this template is published to a CA could not be determined, because the enrollment service query failed or returned nothing. A template published on no CA cannot be enrolled from at all, so the conditions below may describe a disabled template.'
+                            ) -Force
+                        }
+                        if ($null -eq $template.SchemaVersion) {
+                            $template | Add-Member -NotePropertyName 'escSchemaVersionUnread' -NotePropertyValue (
+                                'The schema version of this template could not be read, so the two verdicts that depend on it were not reached: ESC15 applies to version 1 only, and the Any Purpose gate is stricter for version 1 than for later ones.'
                             ) -Force
                         }
                         if ($esc4Vuln -and $esc4Vuln.DangerousACEs) {
@@ -134661,7 +134736,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-1021"
+$Script:adPEASVersion = "2.7.0+20261012-1037"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
