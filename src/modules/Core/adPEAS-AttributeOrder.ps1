@@ -284,7 +284,9 @@ $Script:PrimaryAttributes = @{
 
     # Kerberos Policy object
     KerberosPolicy = @(
-        'maxTicketAgeTGT', 'maxRenewalAge', 'krbtgtPasswordAge', 'domainControllerTime'
+        # ticketLifetime carries the verdict on the two values above it and exists only
+        # when one of them was widened past the Microsoft default.
+        'ticketLifetime', 'maxTicketAgeTGT', 'maxRenewalAge', 'krbtgtPasswordAge', 'domainControllerTime'
     )
 
     # Guest Account object (from Get-DomainInformation)

@@ -113,14 +113,29 @@ function Get-DomainInformation {
                     $MaxTicketAge = $null
                     $MaxRenewAge = $null
 
+                    # The interval attributes are negative 100ns units, so the sign goes
+                    # away before the TimeSpan - but [Math]::Abs throws on
+                    # [Int64]::MinValue, the sentinel these attributes use for "never",
+                    # and there is no positive Int64 to return. The throw would land in
+                    # the catch below and take the rest of this block with it: the PDC
+                    # role owner and the NetBIOS fallback, with nothing in the report to
+                    # say why. One comparison each.
                     if ($DomainObject.maxTicketAge) {
-                        $TicketAgeTicks = [Math]::Abs([Int64]$DomainObject.maxTicketAge)
-                        $MaxTicketAge = [TimeSpan]::FromTicks($TicketAgeTicks)
+                        $TicketAgeRaw = [Int64]$DomainObject.maxTicketAge
+                        if ($TicketAgeRaw -ne [Int64]::MinValue) {
+                            $MaxTicketAge = [TimeSpan]::FromTicks([Math]::Abs($TicketAgeRaw))
+                        } else {
+                            Write-Log "[Get-DomainInformation] maxTicketAge is the never sentinel - no ticket lifetime to report"
+                        }
                     }
 
                     if ($DomainObject.maxRenewAge) {
-                        $RenewAgeTicks = [Math]::Abs([Int64]$DomainObject.maxRenewAge)
-                        $MaxRenewAge = [TimeSpan]::FromTicks($RenewAgeTicks)
+                        $RenewAgeRaw = [Int64]$DomainObject.maxRenewAge
+                        if ($RenewAgeRaw -ne [Int64]::MinValue) {
+                            $MaxRenewAge = [TimeSpan]::FromTicks([Math]::Abs($RenewAgeRaw))
+                        } else {
+                            Write-Log "[Get-DomainInformation] maxRenewAge is the never sentinel - no renewal window to report"
+                        }
                     }
 
                     $KerberosPolicy = @{
@@ -404,15 +419,28 @@ function Get-DomainInformation {
             # ===================================================================
             Show-SubHeader "Analyzing Kerberos policy..." -ObjectType "KerberosPolicy"
 
-            # Build Kerberos policy values
-            $maxTicketAgeText = "10 hours (default)"
-            $maxRenewalAgeText = "7 days (default)"
+            # Build Kerberos policy values.
+            #
+            # Not "the default" until something was read. These two lines used to carry
+            # the Microsoft defaults before any query had run, and $KerberosPolicy is
+            # $null whenever the domain object could not be read at all - so a domain
+            # nobody had looked at was reported as having 10 hours and 7 days, in the
+            # same words as a domain that really does.
+            $maxTicketAgeText = "Unknown - the domain Kerberos policy could not be read"
+            $maxRenewalAgeText = $maxTicketAgeText
+
+            # And the values are assessed now. Microsoft's defaults are 10 hours and 7
+            # days; above them a stolen TGT keeps working for longer, which is the whole
+            # of what these two settings decide.
+            $ticketLifetimeVerdict = $null
 
             if ($KerberosPolicy -and $KerberosPolicy.MaxTicketAge) {
                 $TicketAgeHours = [Math]::Round($KerberosPolicy.MaxTicketAge.TotalHours, 1)
                 $maxTicketAgeText = "$TicketAgeHours hours"
                 if ($TicketAgeHours -eq 10) {
                     $maxTicketAgeText += " (default)"
+                } elseif ($TicketAgeHours -gt 10) {
+                    $ticketLifetimeVerdict = "EXTENDED - a ticket lives $TicketAgeHours hours instead of the default 10"
                 }
             }
             if ($KerberosPolicy -and $KerberosPolicy.MaxRenewAge) {
@@ -420,6 +448,16 @@ function Get-DomainInformation {
                 $maxRenewalAgeText = "$RenewAgeDays days"
                 if ($RenewAgeDays -eq 7) {
                     $maxRenewalAgeText += " (default)"
+                } elseif ($RenewAgeDays -gt 7) {
+                    # Both widened: one sentence, because the renewal window is the
+                    # outer bound and reporting them separately says the same thing
+                    # twice.
+                    $renewVerdict = "EXTENDED - a ticket can be renewed for $RenewAgeDays days instead of the default 7"
+                    $ticketLifetimeVerdict = if ($ticketLifetimeVerdict) {
+                        $ticketLifetimeVerdict + ", and renewed for $RenewAgeDays days instead of 7"
+                    } else {
+                        $renewVerdict
+                    }
                 }
             }
 
@@ -464,6 +502,14 @@ function Get-DomainInformation {
             # Add DC time if available
             if ($dcTimeText) {
                 $kerberosObj | Add-Member -NotePropertyName 'domainControllerTime' -NotePropertyValue $dcTimeText -Force
+            }
+
+            # The verdict on the two lifetimes, on an attribute of its own so it can
+            # carry a write-up. Written only when something was actually widened: a
+            # row saying "the defaults are in place" on every ordinary domain is a
+            # sentence nobody reads twice.
+            if ($ticketLifetimeVerdict) {
+                $kerberosObj | Add-Member -NotePropertyName 'ticketLifetime' -NotePropertyValue $ticketLifetimeVerdict -Force
             }
 
             # Determine severity for Kerberos Policy based on krbtgt age

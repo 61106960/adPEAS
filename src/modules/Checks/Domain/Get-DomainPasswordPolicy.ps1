@@ -82,17 +82,36 @@ function Get-DomainPasswordPolicy {
             # - minPwdLength, lockoutThreshold: integer as string (e.g., "7")
             # - pwdProperties: flag array (e.g., @("DOMAIN_PASSWORD_COMPLEX", ...))
 
-            $minPwdLength = if ($domainPolicy.minPwdLength) {
-                try { [int]$domainPolicy.minPwdLength } catch { 0 }
-            } else { 0 }
+            # Whether the attribute arrived at all, kept apart from its value - the same
+            # distinction the lockout block below already makes, for the same reason.
+            #
+            # A minPwdLength nobody could read became 0, and 0 renders as "Disabled",
+            # which the lt_12 predicate reads as the worst possible policy. So an
+            # unreadable attribute produced the hardest finding this check has, about a
+            # setting nobody had seen. The other direction of the same mistake is one
+            # screen further down in this file.
+            $rawMinPwdLength = $domainPolicy.minPwdLength
+            $hasMinPwdLength = ($null -ne $rawMinPwdLength) -and
+                               (-not [string]::IsNullOrWhiteSpace([string]$rawMinPwdLength))
+            $minPwdLength = 0
+            if ($hasMinPwdLength) {
+                try { $minPwdLength = [int]$rawMinPwdLength } catch { $hasMinPwdLength = $false }
+            }
 
-            # minPwdAge / maxPwdAge in whole days. A null TimeSpan means the "never"
-            # sentinel or an unreadable value; both are 0 here, which the display below
-            # renders as "Disabled" resp. "Disabled (Never expires)".
-            $minPwdAgeSpan = ConvertFrom-ADInterval -Value $domainPolicy.minPwdAge
+            # minPwdAge / maxPwdAge in whole days. ConvertFrom-ADInterval answers $null
+            # for three different things - an unreadable value, an absent one, and the
+            # Int64.MinValue "never" sentinel - so the raw attribute decides whether
+            # anything was read, and the TimeSpan decides what it said.
+            $rawMinPwdAge = $domainPolicy.minPwdAge
+            $hasMinPwdAge = ($null -ne $rawMinPwdAge) -and
+                            (-not [string]::IsNullOrWhiteSpace([string]$rawMinPwdAge))
+            $minPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMinPwdAge
             $minPwdAge = if ($minPwdAgeSpan) { [Math]::Round($minPwdAgeSpan.TotalDays) } else { 0 }
 
-            $maxPwdAgeSpan = ConvertFrom-ADInterval -Value $domainPolicy.maxPwdAge
+            $rawMaxPwdAge = $domainPolicy.maxPwdAge
+            $hasMaxPwdAge = ($null -ne $rawMaxPwdAge) -and
+                            (-not [string]::IsNullOrWhiteSpace([string]$rawMaxPwdAge))
+            $maxPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMaxPwdAge
             $maxPwdAge = if ($maxPwdAgeSpan) { [Math]::Round($maxPwdAgeSpan.TotalDays) } else { 0 }
 
             $lockoutThreshold = if ($domainPolicy.lockoutThreshold -and $domainPolicy.lockoutThreshold -notmatch "Not set") {
@@ -149,11 +168,19 @@ function Get-DomainPasswordPolicy {
                 $reversibleEncryption = ($pwdPropsInt -band 16) -ne 0
             }
 
-            # Create password policy object for consistent display
+            # Create password policy object for consistent display.
+            #
+            # "Unknown" where the attribute never arrived. It is not a hedge: the three
+            # settings below each have a verdict attached to them, and an unreadable
+            # value would otherwise be reported as the verdict for its numeric zero -
+            # "Disabled" for the length, which is the worst state the policy has.
             $passwordPolicyObj = [PSCustomObject]@{
-                minPwdLength = if ($minPwdLength -eq 0) { "Disabled" } else { "$minPwdLength characters" }
-                minPwdAge = if ($minPwdAge -eq 0) { "Disabled" } else { "$minPwdAge days" }
-                maxPwdAge = if ($maxPwdAge -eq 0) { "Disabled (Never expires)" } else { "$maxPwdAge days" }
+                minPwdLength = if (-not $hasMinPwdLength) { "Unknown - the value could not be read" }
+                               elseif ($minPwdLength -eq 0) { "Disabled" } else { "$minPwdLength characters" }
+                minPwdAge = if (-not $hasMinPwdAge) { "Unknown - the value could not be read" }
+                            elseif ($minPwdAge -eq 0) { "Disabled" } else { "$minPwdAge days" }
+                maxPwdAge = if (-not $hasMaxPwdAge) { "Unknown - the value could not be read" }
+                            elseif ($maxPwdAge -eq 0) { "Disabled (Never expires)" } else { "$maxPwdAge days" }
                 passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
                 reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
                 lockoutThreshold = if ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
@@ -167,8 +194,13 @@ function Get-DomainPasswordPolicy {
             # Secure: Good policy
             $policyWeaknesses = @()
 
-            # Check for critical weaknesses (Finding)
-            if ($minPwdLength -lt 8) { $policyWeaknesses += "short_password" }
+            # Check for critical weaknesses (Finding).
+            #
+            # Only on values that were read. An unreadable minimum length is not a short
+            # one, and "0 characters" is what an absent attribute looked like here -
+            # which made the hardest verdict this check has the default answer for a
+            # policy nobody had seen. The row says Unknown now, and this list skips it.
+            if ($hasMinPwdLength -and $minPwdLength -lt 8) { $policyWeaknesses += "short_password" }
             if (-not $complexityEnabled) { $policyWeaknesses += "no_complexity" }
             if ($reversibleEncryption) { $policyWeaknesses += "reversible_encryption" }
 
@@ -180,9 +212,11 @@ function Get-DomainPasswordPolicy {
 
             # Check for moderate weaknesses (Hint)
             $moderateWeaknesses = @()
-            if ($minPwdLength -ge 8 -and $minPwdLength -lt 14) { $moderateWeaknesses += "moderate_password_length" }
+            if ($hasMinPwdLength -and $minPwdLength -ge 8 -and $minPwdLength -lt 14) { $moderateWeaknesses += "moderate_password_length" }
             if ($lockoutThreshold -gt 10) { $moderateWeaknesses += "high_lockout_threshold" }
-            if ($maxPwdAge -eq 0) { $moderateWeaknesses += "password_never_expires" }
+            # Same rule: the sentinel and a configured 0 both mean "never expires", and
+            # an attribute that did not arrive means nothing at all.
+            if ($hasMaxPwdAge -and $maxPwdAge -eq 0) { $moderateWeaknesses += "password_never_expires" }
 
             # Determine overall severity
             $policySeverity = if (@($policyWeaknesses).Count -gt 0) {

@@ -6655,6 +6655,51 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
 
+    'KERBEROS_TICKET_LIFETIME_EXTENDED' = @{
+        Title = "Kerberos Ticket Lifetime Extended Beyond the Default"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "The domain grants Kerberos tickets a longer life than the Microsoft default of 10 hours, or allows them to be renewed for longer than the default 7 days. Those two numbers are the whole of what decides how long a stolen ticket keeps working: a TGT taken out of LSASS, or forged with the krbtgt key, is accepted until it expires, and no password change and no account disable shortens that. Both values were read and printed by adPEAS before this write-up existed, with nothing said about them either way."
+        Impact = @(
+            "A stolen or forged TGT is accepted for as long as the lifetime allows"
+            "Disabling the account or resetting its password does not invalidate a ticket already issued"
+            "The renewal window is the outer bound: a ticket renewed in time never has to be re-requested"
+            "A longer lifetime widens every pass-the-ticket and Golden Ticket window by the same amount"
+        )
+        Attack = @(
+            "1. Attacker obtains a TGT - from LSASS on a machine the user logged on to, or forged with the krbtgt key"
+            "2. Uses it for the remainder of its lifetime, with no further contact with the password"
+            "3. Renews it inside the renewal window, which costs one request and extends the hold"
+        )
+        Remediation = @(
+            "Set the maximum lifetime for user tickets back to 10 hours and the renewal lifetime to 7 days"
+            "Both live in Default Domain Policy under Computer Configuration -> Policies -> Windows Settings -> Security Settings -> Account Policies -> Kerberos Policy"
+            "A longer lifetime is sometimes set for an application that cannot re-authenticate; the fix there belongs in the application, not in the domain policy"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Read the two values as the directory holds them (negative 100ns intervals)"
+                Command = "Get-ADObject -Identity (Get-ADDomain).DistinguishedName -Properties maxTicketAge,maxRenewAge | Select-Object maxTicketAge,maxRenewAge"
+            }
+            @{
+                Description = "The policy path that sets them"
+                Command = "# Default Domain Policy -> Computer Configuration -> Policies -> Windows Settings -> Security Settings -> Account Policies -> Kerberos Policy"
+            }
+        )
+        References = @(
+            @{ Title = "Kerberos Policy - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/kerberos-policy" }
+            @{ Title = "Maximum lifetime for user ticket"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/maximum-lifetime-for-user-ticket" }
+        )
+        Tools = @("Rubeus", "mimikatz")
+        MITRE = "T1550.003"
+        Triggers = @(
+            # The verdict Get-DomainInformation writes when one of the two values is above
+            # its default. Anchored, and the attribute exists only in that case - an
+            # ordinary domain gets no row and no card.
+            @{ Attribute = 'ticketLifetime'; Pattern = '^EXTENDED'; Severity = 'Hint' }
+        )
+    }
+
     'TRUST_USES_RC4' = @{
         Title = "Trust Uses Weak RC4 Encryption"
         Risk = "Finding"
@@ -14719,4 +14764,3 @@ function Get-DateFromValue {
 
     return $null
 }
-
