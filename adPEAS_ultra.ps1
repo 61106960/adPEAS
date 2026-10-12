@@ -19384,16 +19384,17 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    TitleFormat = "Password in Description: {Name}"
 	    Module = "Creds"
 	    Category = "Credentials"
-	    SectionTitle = "Passwords in Description/Info"
-	    Summary = "Detects user and computer accounts with potential credentials in description or info attributes."
-	    WhyItMatters = "Administrators sometimes store passwords directly in the description or info attributes of AD objects. These attributes are readable by all authenticated domain users, exposing credentials to anyone with basic domain access."
+	    SectionTitle = "Passwords in Free-Text Attributes"
+	    Summary = "Finds credentials typed into the free-text attributes of any directory object."
+	    WhyItMatters = "Administrators store passwords in the attributes they type into: description, info, comment, adminDescription, and above all extensionAttribute1-15, which is where an initial password tends to end up. Every one of them is readable by any authenticated domain user, so a password there is a password handed to the whole domain - and it sits on groups, organizational units and service accounts as often as on user accounts."
 	    WhatWeCheck = @(
-	        "Description and info attributes of user accounts"
-	        "Description and info attributes of computer accounts"
+	        "description, info, comment and adminDescription on every object class"
+	        "extensionAttribute1-15, where the schema defines them"
+	        "Groups, organizational units, contacts, managed service accounts and Group Policy objects, not only user and computer accounts"
 	        "High-confidence password assignments (e.g., password=value)"
 	        "Lower-confidence credential mentions for manual review"
 	    )
-	    SecureMessage = "No credentials were found in description or info attributes. Account descriptions do not contain exposed passwords or credential patterns."
+	    SecureMessage = "No credentials were found in the free-text attributes of any object. The attributes a password tends to be typed into - description, info, comment, adminDescription, extensionAttribute1-15 - carry none."
 	    PrimaryFindingId = 'CREDENTIAL_IN_DESCRIPTION'
 	}
 	'DangerousACL' = @{
@@ -73125,26 +73126,59 @@ function Get-PasswordInDescription {
 	        )
 	        $findingCount = 0
 	        $hintCount = 0
-	        foreach ($objectType in @('User', 'Computer')) {
-	            $candidates = if ($objectType -eq 'User') {
-	                Get-DomainUser -LDAPFilter "(|(description=*)(info=*))" -Properties "description","info" @connectionParams
-	            } else {
-	                Get-DomainComputer -LDAPFilter "(|(description=*)(info=*))" -Properties "description","info" @connectionParams
+	        $baseAttributes     = @('description', 'info', 'comment', 'adminDescription')
+	        $optionalAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
+	        $candidates = @{}
+	        foreach ($set in @(
+	            @{ Attributes = $baseAttributes;     Optional = $false }
+	            @{ Attributes = $optionalAttributes; Optional = $true }
+	        )) {
+	            $presenceFilter = '(|' + ((@($set.Attributes) | ForEach-Object { "($_=*)" }) -join '') + ')'
+	            $wanted = @($set.Attributes) + @('objectCategory', 'sAMAccountName', 'name')
+	            $found = @()
+	            try {
+	                $found = @(Get-DomainObject -LDAPFilter $presenceFilter -Properties $wanted @connectionParams)
+	            } catch {
+	                if (-not $set.Optional) { throw }
 	            }
-	            if (-not $candidates) { continue }
-	            $currentIndex = 0
-	            $totalCandidates = @($candidates).Count
-	            foreach ($candidate in @($candidates)) {
+	            foreach ($obj in $found) {
+	                $dn = [string]$obj.distinguishedName
+	                if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+	                if (-not $candidates.ContainsKey($dn)) {
+	                    $candidates[$dn] = @{ Object = $obj; Attributes = @() }
+	                }
+	                foreach ($name in @($set.Attributes)) {
+	                    $value = (@($obj.$name) | Where-Object { $_ }) -join ' '
+	                    if (-not [string]::IsNullOrWhiteSpace($value)) {
+	                        $candidates[$dn].Attributes += @{ Name = $name; Value = $value }
+	                    }
+	                }
+	            }
+	        }
+	        $currentIndex = 0
+	        $totalCandidates = $candidates.Count
+	        foreach ($dn in @($candidates.Keys)) {
+	                $candidate = $candidates[$dn].Object
 	                $currentIndex++
 	                if ($totalCandidates -gt 50) {
-	                    Show-Progress -Activity "Checking $objectType descriptions" `
+	                    Show-Progress -Activity "Checking free-text attributes" `
 	                                 -Current $currentIndex `
 	                                 -Total $totalCandidates
 	                }
-	                $accountName = $candidate.distinguishedName
-	                $attributesToCheck = @()
-	                if ($candidate.description) { $attributesToCheck += @{ Name = 'description'; Value = $candidate.description } }
-	                if ($candidate.info) { $attributesToCheck += @{ Name = 'info'; Value = $candidate.info } }
+	                $accountName = $dn
+	                $attributesToCheck = @($candidates[$dn].Attributes)
+	                $objectType = 'object'
+	                if ($candidate.objectCategory) {
+	                    $schemaClass = ((([string]$candidate.objectCategory) -split ',')[0] -replace '^CN=', '')
+	                    $objectType = $schemaClass
+	                    $kindLabels = @{
+	                        'Person'                              = 'User'
+	                        'Organizational-Unit'                 = 'OU'
+	                        'Group-Policy-Container'              = 'GPO'
+	                        'ms-DS-Group-Managed-Service-Account' = 'gMSA'
+	                    }
+	                    if ($kindLabels.ContainsKey($schemaClass)) { $objectType = $kindLabels[$schemaClass] }
+	                }
 	                $bestTier = 0
 	                $bestAttrName = $null
 	                foreach ($attr in $attributesToCheck) {
@@ -73190,30 +73224,29 @@ function Get-PasswordInDescription {
 	                    }
 	                }
 	                if ($bestTier -gt 0) {
-	                    $fullObj = if ($objectType -eq 'User') {
-	                        @(Get-DomainUser -Identity $accountName -ShowOwner @connectionParams)[0]
-	                    } else {
-	                        @(Get-DomainComputer -Identity $accountName @connectionParams)[0]
-	                    }
+	                    $fullObj = @(Get-DomainObject -Identity $accountName -ShowOwner @connectionParams)[0]
 	                    if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
 	                    if ($fullObj) {
+	                        $shownName = if ($fullObj.sAMAccountName) { $fullObj.sAMAccountName }
+	                                     elseif ($fullObj.displayName) { $fullObj.displayName }
+	                                     elseif ($fullObj.name) { $fullObj.name }
+	                                     else { $accountName }
 	                        $fullObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordInDescription' -Force
 	                        $fullObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue "$objectType - $bestAttrName attribute" -Force
 	                        if ($bestTier -eq 1) {
-	                            Show-Line "Probable credential found in $bestAttrName of $objectType '$($fullObj.sAMAccountName)'" -Class Finding
+	                            Show-Line "Probable credential found in $bestAttrName of $objectType '$shownName'" -Class Finding
 	                        } else {
-	                            Show-Line "Possible credential mention in $bestAttrName of $objectType '$($fullObj.sAMAccountName)'" -Class Hint
+	                            Show-Line "Possible credential mention in $bestAttrName of $objectType '$shownName'" -Class Hint
 	                        }
 	                        Show-Object $fullObj
 	                    }
 	                }
-	            }
-	            if ($totalCandidates -gt 50) {
-	                Show-Progress -Activity "Checking $objectType descriptions" -Completed
-	            }
+	        }
+	        if ($totalCandidates -gt 50) {
+	            Show-Progress -Activity "Checking free-text attributes" -Completed
 	        }
 	        if ($findingCount -eq 0 -and $hintCount -eq 0) {
-	            Show-Line "No credentials found in description or info attributes" -Class Secure
+	            Show-Line "No credentials found in the free-text attributes of any object" -Class Secure
 	        } else {
 	        }
 	    } catch {
@@ -83692,7 +83725,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261012-0614"
+$Script:adPEASVersion = "2.7.0+20261012-0636"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

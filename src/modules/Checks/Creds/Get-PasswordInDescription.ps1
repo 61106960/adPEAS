@@ -155,37 +155,96 @@ function Get-PasswordInDescription {
             $findingCount = 0
             $hintCount = 0
 
-            # Process both Users and Computers
-            foreach ($objectType in @('User', 'Computer')) {
-                Write-Log "[Get-PasswordInDescription] Checking $objectType accounts..."
+            # Every object class, not only users and computers. description and info sit on
+            # practically everything in the directory, and a password typed into a group's
+            # description - "Zugang Fileserver, PW Sommer2024" - is the same credential as
+            # one in a user's. Get-DomainUser prepends
+            # (&(objectCategory=person)(objectClass=user)(!(objectClass=computer))), which is
+            # what kept groups, organizational units, contacts, managed service accounts,
+            # Group Policy objects and containers out of a check whose own secure line
+            # claims the directory is clean. Get-UnixPasswordAccounts makes the same
+            # argument in its own comment, one file over.
+            #
+            # And more than two attributes. These are the free-text fields a human types
+            # into, which is where a password ends up.
+            #
+            # Two queries rather than one: description, info, comment and adminDescription
+            # are in every schema, extensionAttribute1-15 are not - they arrive with the
+            # Exchange schema extension, which most but not all domains have. A filter that
+            # names an attribute the schema does not define does not skip that one clause,
+            # the whole search fails with an undefined-attribute error, so the optional half
+            # runs on its own and a failure there costs that half alone.
+            $baseAttributes     = @('description', 'info', 'comment', 'adminDescription')
+            $optionalAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
 
-                # Phase 1: Lightweight query - only fetch description + info (DN is always included)
-                # This avoids loading ALL properties for potentially thousands of objects
-                $candidates = if ($objectType -eq 'User') {
-                    Get-DomainUser -LDAPFilter "(|(description=*)(info=*))" -Properties "description","info" @connectionParams
-                } else {
-                    Get-DomainComputer -LDAPFilter "(|(description=*)(info=*))" -Properties "description","info" @connectionParams
+            # Merged by distinguishedName: an object can come back from both queries, and
+            # reporting it twice would be two findings for one account.
+            $candidates = @{}
+            foreach ($set in @(
+                @{ Attributes = $baseAttributes;     Optional = $false }
+                @{ Attributes = $optionalAttributes; Optional = $true }
+            )) {
+                $presenceFilter = '(|' + ((@($set.Attributes) | ForEach-Object { "($_=*)" }) -join '') + ')'
+                $wanted = @($set.Attributes) + @('objectCategory', 'sAMAccountName', 'name')
+
+                $found = @()
+                try {
+                    $found = @(Get-DomainObject -LDAPFilter $presenceFilter -Properties $wanted @connectionParams)
+                } catch {
+                    if (-not $set.Optional) { throw }
+                    Write-Log "[Get-PasswordInDescription] Optional attribute query failed, schema may not define extensionAttribute1-15: $_"
                 }
 
-                if (-not $candidates) { continue }
+                foreach ($obj in $found) {
+                    $dn = [string]$obj.distinguishedName
+                    if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+                    if (-not $candidates.ContainsKey($dn)) {
+                        $candidates[$dn] = @{ Object = $obj; Attributes = @() }
+                    }
+                    foreach ($name in @($set.Attributes)) {
+                        # Joined rather than cast: url and otherWebPages are multi-valued,
+                        # and a cast would render an array as System.Object[].
+                        $value = (@($obj.$name) | Where-Object { $_ }) -join ' '
+                        if (-not [string]::IsNullOrWhiteSpace($value)) {
+                            $candidates[$dn].Attributes += @{ Name = $name; Value = $value }
+                        }
+                    }
+                }
+            }
 
-                $currentIndex = 0
-                $totalCandidates = @($candidates).Count
+            $currentIndex = 0
+            $totalCandidates = $candidates.Count
 
-                foreach ($candidate in @($candidates)) {
+            foreach ($dn in @($candidates.Keys)) {
+                    $candidate = $candidates[$dn].Object
                     $currentIndex++
 
                     # Progress indicator for large candidate counts
                     if ($totalCandidates -gt 50) {
-                        Show-Progress -Activity "Checking $objectType descriptions" `
+                        Show-Progress -Activity "Checking free-text attributes" `
                                      -Current $currentIndex `
                                      -Total $totalCandidates
                     }
-                    $accountName = $candidate.distinguishedName
-                    $attributesToCheck = @()
+                    $accountName = $dn
+                    $attributesToCheck = @($candidates[$dn].Attributes)
 
-                    if ($candidate.description) { $attributesToCheck += @{ Name = 'description'; Value = $candidate.description } }
-                    if ($candidate.info) { $attributesToCheck += @{ Name = 'info'; Value = $candidate.info } }
+                    # What kind of object this is, out of objectCategory - which names the
+                    # most specific class, and names it the way the schema does: a user
+                    # object's category is Person. The four that a reader would otherwise
+                    # have to translate are translated; anything else keeps the schema's
+                    # own word, which is better than a wrong guess.
+                    $objectType = 'object'
+                    if ($candidate.objectCategory) {
+                        $schemaClass = ((([string]$candidate.objectCategory) -split ',')[0] -replace '^CN=', '')
+                        $objectType = $schemaClass
+                        $kindLabels = @{
+                            'Person'                              = 'User'
+                            'Organizational-Unit'                 = 'OU'
+                            'Group-Policy-Container'              = 'GPO'
+                            'ms-DS-Group-Managed-Service-Account' = 'gMSA'
+                        }
+                        if ($kindLabels.ContainsKey($schemaClass)) { $objectType = $kindLabels[$schemaClass] }
+                    }
 
                     # Look at every attribute before reporting, and keep the strongest hit.
                     # Reporting on the first hit meant description was allowed to decide the
@@ -272,36 +331,40 @@ function Get-PasswordInDescription {
                     }
 
                     if ($bestTier -gt 0) {
-                        # Phase 2: Re-fetch full object for Show-Object display
-                        $fullObj = if ($objectType -eq 'User') {
-                            @(Get-DomainUser -Identity $accountName -ShowOwner @connectionParams)[0]
-                        } else {
-                            @(Get-DomainComputer -Identity $accountName @connectionParams)[0]
-                        }
+                        # Phase 2: the full object, for the row itself. Get-DomainObject
+                        # rather than the two typed wrappers, for the same reason as the
+                        # query above - and it escapes the DN on the way in.
+                        $fullObj = @(Get-DomainObject -Identity $accountName -ShowOwner @connectionParams)[0]
 
                         if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
 
                         if ($fullObj) {
+                            # An organizational unit has no sAMAccountName, and a Group
+                            # Policy object's name is its GUID while displayName is the one
+                            # a reader recognises.
+                            $shownName = if ($fullObj.sAMAccountName) { $fullObj.sAMAccountName }
+                                         elseif ($fullObj.displayName) { $fullObj.displayName }
+                                         elseif ($fullObj.name) { $fullObj.name }
+                                         else { $accountName }
+
                             $fullObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordInDescription' -Force
                             $fullObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue "$objectType - $bestAttrName attribute" -Force
                             if ($bestTier -eq 1) {
-                                Show-Line "Probable credential found in $bestAttrName of $objectType '$($fullObj.sAMAccountName)'" -Class Finding
+                                Show-Line "Probable credential found in $bestAttrName of $objectType '$shownName'" -Class Finding
                             } else {
-                                Show-Line "Possible credential mention in $bestAttrName of $objectType '$($fullObj.sAMAccountName)'" -Class Hint
+                                Show-Line "Possible credential mention in $bestAttrName of $objectType '$shownName'" -Class Hint
                             }
                             Show-Object $fullObj
                         }
                     }
-                }
+            }
 
-                # Clear progress bar for this object type
-                if ($totalCandidates -gt 50) {
-                    Show-Progress -Activity "Checking $objectType descriptions" -Completed
-                }
+            if ($totalCandidates -gt 50) {
+                Show-Progress -Activity "Checking free-text attributes" -Completed
             }
 
             if ($findingCount -eq 0 -and $hintCount -eq 0) {
-                Show-Line "No credentials found in description or info attributes" -Class Secure
+                Show-Line "No credentials found in the free-text attributes of any object" -Class Secure
             } else {
                 Write-Log "[Get-PasswordInDescription] Total: $findingCount finding(s), $hintCount hint(s)"
             }

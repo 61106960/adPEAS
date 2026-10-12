@@ -1150,16 +1150,17 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         TitleFormat = "Password in Description: {Name}"
         Module = "Creds"
         Category = "Credentials"
-        SectionTitle = "Passwords in Description/Info"
-        Summary = "Detects user and computer accounts with potential credentials in description or info attributes."
-        WhyItMatters = "Administrators sometimes store passwords directly in the description or info attributes of AD objects. These attributes are readable by all authenticated domain users, exposing credentials to anyone with basic domain access."
+        SectionTitle = "Passwords in Free-Text Attributes"
+        Summary = "Finds credentials typed into the free-text attributes of any directory object."
+        WhyItMatters = "Administrators store passwords in the attributes they type into: description, info, comment, adminDescription, and above all extensionAttribute1-15, which is where an initial password tends to end up. Every one of them is readable by any authenticated domain user, so a password there is a password handed to the whole domain - and it sits on groups, organizational units and service accounts as often as on user accounts."
         WhatWeCheck = @(
-            "Description and info attributes of user accounts"
-            "Description and info attributes of computer accounts"
+            "description, info, comment and adminDescription on every object class"
+            "extensionAttribute1-15, where the schema defines them"
+            "Groups, organizational units, contacts, managed service accounts and Group Policy objects, not only user and computer accounts"
             "High-confidence password assignments (e.g., password=value)"
             "Lower-confidence credential mentions for manual review"
         )
-        SecureMessage = "No credentials were found in description or info attributes. Account descriptions do not contain exposed passwords or credential patterns."
+        SecureMessage = "No credentials were found in the free-text attributes of any object. The attributes a password tends to be typed into - description, info, comment, adminDescription, extensionAttribute1-15 - carry none."
         PrimaryFindingId = 'CREDENTIAL_IN_DESCRIPTION'
     }
 
