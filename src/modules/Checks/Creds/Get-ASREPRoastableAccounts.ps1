@@ -69,7 +69,21 @@ function Get-ASREPRoastableAccounts {
             # -Enabled for the same reason Get-KerberoastableAccounts uses it: a disabled
             # account cannot be roasted, the KDC answers KDC_ERR_CLIENT_REVOKED, and
             # reporting it is noise that hides the accounts an attacker can actually use.
-            $asrepRoastableUsers = Get-DomainUser -PreauthNotRequired -Enabled -ShowOwner @connectionParams
+            $asrepRoastableUsers = @(Get-DomainUser -PreauthNotRequired -Enabled -ShowOwner @connectionParams)
+
+            # And the managed service accounts. objectCategory is single-valued and carries
+            # the most specific class, so an MSA is neither (objectCategory=person) nor
+            # (objectCategory=computer) and fell out of both base filters - while
+            # DONT_REQUIRE_PREAUTH on an MSA is the same AS-REP roast as on any account.
+            # Its password is 240 random bytes, which makes the hash impractical to crack
+            # and the row a hint rather than a finding; that is a judgement for the row, not
+            # a reason to leave the account out of a section whose secure line speaks for
+            # the domain.
+            $asrepRoastableMSAs = @(Get-DomainUser -GMSA -PreauthNotRequired -Enabled -ShowOwner @connectionParams)
+            foreach ($msa in $asrepRoastableMSAs) {
+                $msa | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
+            }
+            $asrepRoastableUsers = @($asrepRoastableUsers) + @($asrepRoastableMSAs)
 
             if (@($asrepRoastableUsers).Count -gt 0) {
                 Show-Line "Found $(@($asrepRoastableUsers).Count) AS-REP Roastable account(s):" -Class "Finding"

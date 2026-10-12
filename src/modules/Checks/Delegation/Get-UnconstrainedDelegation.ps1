@@ -54,7 +54,16 @@ function Get-UnconstrainedDelegation {
             $unconstrainedComputers = @(Get-DomainComputer -Unconstrained -Enabled -ShowOwner @PSBoundParameters)
             $unconstrainedUsers = @(Get-DomainUser -Unconstrained -Enabled -ShowOwner @PSBoundParameters)
 
-            $unconstrainedAccounts = $unconstrainedComputers + $unconstrainedUsers
+            # And the managed service accounts, which are neither of the above.
+            # objectCategory is single-valued and carries the most specific class, so a gMSA
+            # is CN=ms-DS-Group-Managed-Service-Account and an sMSA
+            # CN=ms-DS-Managed-Service-Account: neither matches (objectCategory=person) nor
+            # (objectCategory=computer), so both base filters drop them. A gMSA is exactly
+            # the kind of account an administrator configures delegation on, and the secure
+            # line below spoke for the whole domain while never having looked at one.
+            $unconstrainedMSAs = @(Get-DomainUser -GMSA -Unconstrained -Enabled -ShowOwner @PSBoundParameters)
+
+            $unconstrainedAccounts = $unconstrainedComputers + $unconstrainedUsers + $unconstrainedMSAs
 
             if (@($unconstrainedAccounts).Count -eq 0) {
                 Show-Line "No accounts with Unconstrained Delegation found (excluding Domain Controllers)" -Class "Secure"
@@ -63,13 +72,21 @@ function Get-UnconstrainedDelegation {
 
             $totalComputers = @($unconstrainedComputers).Count
             $totalUsers = @($unconstrainedUsers).Count
+            $totalMSAs = @($unconstrainedMSAs).Count
             $total = @($unconstrainedAccounts).Count
 
-            Show-Line "Found $total account(s) with Unconstrained Delegation ($totalComputers computers, $totalUsers users):" -Class "Finding"
+            $populations = "$totalComputers computers, $totalUsers users"
+            if ($totalMSAs -gt 0) { $populations = "$populations, $totalMSAs managed service accounts" }
+            Show-Line "Found $total account(s) with Unconstrained Delegation ($populations):" -Class "Finding"
 
             foreach ($account in $unconstrainedAccounts) {
                 # Add type marker for HTML report
                 $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'UnconstrainedDelegation' -Force
+                if (@($unconstrainedMSAs) -contains $account) {
+                    # Named on the row: a reader who sees a delegation finding on something
+                    # that is neither a server nor a user account needs to know which it is.
+                    $account | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
+                }
                 Show-Object $account
             }
 

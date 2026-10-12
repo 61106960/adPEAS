@@ -65991,17 +65991,24 @@ function Get-UnconstrainedDelegation {
             Show-SubHeader "Searching for accounts with Unconstrained Delegation..." -ObjectType "UnconstrainedDelegation"
             $unconstrainedComputers = @(Get-DomainComputer -Unconstrained -Enabled -ShowOwner @PSBoundParameters)
             $unconstrainedUsers = @(Get-DomainUser -Unconstrained -Enabled -ShowOwner @PSBoundParameters)
-            $unconstrainedAccounts = $unconstrainedComputers + $unconstrainedUsers
+            $unconstrainedMSAs = @(Get-DomainUser -GMSA -Unconstrained -Enabled -ShowOwner @PSBoundParameters)
+            $unconstrainedAccounts = $unconstrainedComputers + $unconstrainedUsers + $unconstrainedMSAs
             if (@($unconstrainedAccounts).Count -eq 0) {
                 Show-Line "No accounts with Unconstrained Delegation found (excluding Domain Controllers)" -Class "Secure"
                 return
             }
             $totalComputers = @($unconstrainedComputers).Count
             $totalUsers = @($unconstrainedUsers).Count
+            $totalMSAs = @($unconstrainedMSAs).Count
             $total = @($unconstrainedAccounts).Count
-            Show-Line "Found $total account(s) with Unconstrained Delegation ($totalComputers computers, $totalUsers users):" -Class "Finding"
+            $populations = "$totalComputers computers, $totalUsers users"
+            if ($totalMSAs -gt 0) { $populations = "$populations, $totalMSAs managed service accounts" }
+            Show-Line "Found $total account(s) with Unconstrained Delegation ($populations):" -Class "Finding"
             foreach ($account in $unconstrainedAccounts) {
                 $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'UnconstrainedDelegation' -Force
+                if (@($unconstrainedMSAs) -contains $account) {
+                    $account | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
+                }
                 Show-Object $account
             }
         } catch {
@@ -66051,15 +66058,21 @@ function Get-ConstrainedDelegation {
             Show-SubHeader "Searching for accounts with Constrained Delegation..." -ObjectType "ConstrainedDelegation"
             $constrainedComputers = @(Get-DomainComputer -Constrained -Enabled -ShowOwner @PSBoundParameters)
             $constrainedUsers = @(Get-DomainUser -Constrained -Enabled -ShowOwner @PSBoundParameters)
+            $constrainedMSAs = @(Get-DomainUser -GMSA -Constrained -Enabled -ShowOwner @PSBoundParameters)
             $noTargetFilter = '(&(!(msDS-AllowedToDelegateTo=*))(!(userAccountControl:1.2.840.113556.1.4.803:=67108864))(!(primaryGroupID=521)))'
             $transitionOnlyComputers = @(Get-DomainComputer -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
             $transitionOnlyUsers = @(Get-DomainUser -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
-            foreach ($account in ($transitionOnlyComputers + $transitionOnlyUsers)) {
+            $transitionOnlyMSAs = @(Get-DomainUser -GMSA -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
+            foreach ($account in ($transitionOnlyComputers + $transitionOnlyUsers + $transitionOnlyMSAs)) {
                 $account | Add-Member -NotePropertyName 'DelegationAnomaly' `
                     -NotePropertyValue 'Protocol transition enabled without any delegation target' -Force
             }
-            $constrainedAccounts = $constrainedComputers + $constrainedUsers +
-                                   $transitionOnlyComputers + $transitionOnlyUsers
+            foreach ($account in ($constrainedMSAs + $transitionOnlyMSAs)) {
+                $account | Add-Member -NotePropertyName 'accountKind' `
+                    -NotePropertyValue 'Managed service account' -Force
+            }
+            $constrainedAccounts = $constrainedComputers + $constrainedUsers + $constrainedMSAs +
+                                   $transitionOnlyComputers + $transitionOnlyUsers + $transitionOnlyMSAs
             if (@($constrainedAccounts).Count -eq 0) {
                 Show-Line "No accounts with Constrained Delegation found" -Class "Secure"
                 return
@@ -66161,17 +66174,24 @@ function Get-ResourceBasedConstrainedDelegation {
             Show-SubHeader "Searching for accounts with RBCD configured..." -ObjectType "RBCDelegation"
             $rbcdComputers = @(Get-DomainComputer -RBCD -Enabled -ShowOwner @PSBoundParameters)
             $rbcdUsers = @(Get-DomainUser -RBCD -Enabled -ShowOwner @PSBoundParameters)
-            $rbcdAccounts = $rbcdComputers + $rbcdUsers
+            $rbcdMSAs = @(Get-DomainUser -GMSA -RBCD -Enabled -ShowOwner @PSBoundParameters)
+            $rbcdAccounts = $rbcdComputers + $rbcdUsers + $rbcdMSAs
             if (@($rbcdAccounts).Count -eq 0) {
                 Show-Line "No accounts with Resource-Based Constrained Delegation found" -Class "Secure"
                 return
             }
             $totalComputers = @($rbcdComputers).Count
             $totalUsers = @($rbcdUsers).Count
+            $totalMSAs = @($rbcdMSAs).Count
             $total = @($rbcdAccounts).Count
-            Show-Line "Found $total account(s) with Resource-Based Constrained Delegation ($totalComputers computers, $totalUsers users):" -Class "Finding"
+            $populations = "$totalComputers computers, $totalUsers users"
+            if ($totalMSAs -gt 0) { $populations = "$populations, $totalMSAs managed service accounts" }
+            Show-Line "Found $total account(s) with Resource-Based Constrained Delegation ($populations):" -Class "Finding"
             foreach ($account in $rbcdAccounts) {
                 $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'RBCDelegation' -Force
+                if (@($rbcdMSAs) -contains $account) {
+                    $account | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
+                }
                 Show-Object $account
             }
         } catch {
@@ -74593,7 +74613,12 @@ function Get-ASREPRoastableAccounts {
                 return
             }
             Show-SubHeader "Searching for AS-REP Roastable accounts (DONT_REQ_PREAUTH)..." -ObjectType "ASREPRoastable"
-            $asrepRoastableUsers = Get-DomainUser -PreauthNotRequired -Enabled -ShowOwner @connectionParams
+            $asrepRoastableUsers = @(Get-DomainUser -PreauthNotRequired -Enabled -ShowOwner @connectionParams)
+            $asrepRoastableMSAs = @(Get-DomainUser -GMSA -PreauthNotRequired -Enabled -ShowOwner @connectionParams)
+            foreach ($msa in $asrepRoastableMSAs) {
+                $msa | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
+            }
+            $asrepRoastableUsers = @($asrepRoastableUsers) + @($asrepRoastableMSAs)
             if (@($asrepRoastableUsers).Count -gt 0) {
                 Show-Line "Found $(@($asrepRoastableUsers).Count) AS-REP Roastable account(s):" -Class "Finding"
                 $canTestASREPRoast = -not $OPSEC
@@ -86727,7 +86752,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261012-0802"
+$Script:adPEASVersion = "2.7.0+20261012-0830"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

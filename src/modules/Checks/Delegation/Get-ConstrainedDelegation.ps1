@@ -112,6 +112,10 @@ function Get-ConstrainedDelegation {
 
             $constrainedComputers = @(Get-DomainComputer -Constrained -Enabled -ShowOwner @PSBoundParameters)
             $constrainedUsers = @(Get-DomainUser -Constrained -Enabled -ShowOwner @PSBoundParameters)
+            # Managed service accounts fall out of both base filters - objectCategory is
+            # single-valued and theirs is ms-DS-Group-Managed-Service-Account - and a gMSA
+            # is exactly the kind of account delegation gets configured on.
+            $constrainedMSAs = @(Get-DomainUser -GMSA -Constrained -Enabled -ShowOwner @PSBoundParameters)
 
             # Protocol transition with no target list at all. Filtered on the server rather
             # than with Where-Object, and kept apart from the two queries above because
@@ -132,15 +136,23 @@ function Get-ConstrainedDelegation {
             $noTargetFilter = '(&(!(msDS-AllowedToDelegateTo=*))(!(userAccountControl:1.2.840.113556.1.4.803:=67108864))(!(primaryGroupID=521)))'
             $transitionOnlyComputers = @(Get-DomainComputer -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
             $transitionOnlyUsers = @(Get-DomainUser -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
+            $transitionOnlyMSAs = @(Get-DomainUser -GMSA -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
 
-            foreach ($account in ($transitionOnlyComputers + $transitionOnlyUsers)) {
+            foreach ($account in ($transitionOnlyComputers + $transitionOnlyUsers + $transitionOnlyMSAs)) {
                 $account | Add-Member -NotePropertyName 'DelegationAnomaly' `
                     -NotePropertyValue 'Protocol transition enabled without any delegation target' -Force
             }
 
+            # Named on the row, because a delegation finding on something that is neither a
+            # server nor a user account leaves a reader guessing which it is.
+            foreach ($account in ($constrainedMSAs + $transitionOnlyMSAs)) {
+                $account | Add-Member -NotePropertyName 'accountKind' `
+                    -NotePropertyValue 'Managed service account' -Force
+            }
+
             # Combine results
-            $constrainedAccounts = $constrainedComputers + $constrainedUsers +
-                                   $transitionOnlyComputers + $transitionOnlyUsers
+            $constrainedAccounts = $constrainedComputers + $constrainedUsers + $constrainedMSAs +
+                                   $transitionOnlyComputers + $transitionOnlyUsers + $transitionOnlyMSAs
 
             if (@($constrainedAccounts).Count -eq 0) {
                 Show-Line "No accounts with Constrained Delegation found" -Class "Secure"

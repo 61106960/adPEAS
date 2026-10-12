@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-12 08:02:38
-    Version: 2.7.0+20261012-0802
+    Build: 2026-10-12 08:30:58
+    Version: 2.7.0+20261012-0830
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -103851,7 +103851,16 @@ function Get-UnconstrainedDelegation {
             $unconstrainedComputers = @(Get-DomainComputer -Unconstrained -Enabled -ShowOwner @PSBoundParameters)
             $unconstrainedUsers = @(Get-DomainUser -Unconstrained -Enabled -ShowOwner @PSBoundParameters)
 
-            $unconstrainedAccounts = $unconstrainedComputers + $unconstrainedUsers
+            # And the managed service accounts, which are neither of the above.
+            # objectCategory is single-valued and carries the most specific class, so a gMSA
+            # is CN=ms-DS-Group-Managed-Service-Account and an sMSA
+            # CN=ms-DS-Managed-Service-Account: neither matches (objectCategory=person) nor
+            # (objectCategory=computer), so both base filters drop them. A gMSA is exactly
+            # the kind of account an administrator configures delegation on, and the secure
+            # line below spoke for the whole domain while never having looked at one.
+            $unconstrainedMSAs = @(Get-DomainUser -GMSA -Unconstrained -Enabled -ShowOwner @PSBoundParameters)
+
+            $unconstrainedAccounts = $unconstrainedComputers + $unconstrainedUsers + $unconstrainedMSAs
 
             if (@($unconstrainedAccounts).Count -eq 0) {
                 Show-Line "No accounts with Unconstrained Delegation found (excluding Domain Controllers)" -Class "Secure"
@@ -103860,13 +103869,21 @@ function Get-UnconstrainedDelegation {
 
             $totalComputers = @($unconstrainedComputers).Count
             $totalUsers = @($unconstrainedUsers).Count
+            $totalMSAs = @($unconstrainedMSAs).Count
             $total = @($unconstrainedAccounts).Count
 
-            Show-Line "Found $total account(s) with Unconstrained Delegation ($totalComputers computers, $totalUsers users):" -Class "Finding"
+            $populations = "$totalComputers computers, $totalUsers users"
+            if ($totalMSAs -gt 0) { $populations = "$populations, $totalMSAs managed service accounts" }
+            Show-Line "Found $total account(s) with Unconstrained Delegation ($populations):" -Class "Finding"
 
             foreach ($account in $unconstrainedAccounts) {
                 # Add type marker for HTML report
                 $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'UnconstrainedDelegation' -Force
+                if (@($unconstrainedMSAs) -contains $account) {
+                    # Named on the row: a reader who sees a delegation finding on something
+                    # that is neither a server nor a user account needs to know which it is.
+                    $account | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
+                }
                 Show-Object $account
             }
 
@@ -103998,6 +104015,10 @@ function Get-ConstrainedDelegation {
 
             $constrainedComputers = @(Get-DomainComputer -Constrained -Enabled -ShowOwner @PSBoundParameters)
             $constrainedUsers = @(Get-DomainUser -Constrained -Enabled -ShowOwner @PSBoundParameters)
+            # Managed service accounts fall out of both base filters - objectCategory is
+            # single-valued and theirs is ms-DS-Group-Managed-Service-Account - and a gMSA
+            # is exactly the kind of account delegation gets configured on.
+            $constrainedMSAs = @(Get-DomainUser -GMSA -Constrained -Enabled -ShowOwner @PSBoundParameters)
 
             # Protocol transition with no target list at all. Filtered on the server rather
             # than with Where-Object, and kept apart from the two queries above because
@@ -104018,15 +104039,23 @@ function Get-ConstrainedDelegation {
             $noTargetFilter = '(&(!(msDS-AllowedToDelegateTo=*))(!(userAccountControl:1.2.840.113556.1.4.803:=67108864))(!(primaryGroupID=521)))'
             $transitionOnlyComputers = @(Get-DomainComputer -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
             $transitionOnlyUsers = @(Get-DomainUser -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
+            $transitionOnlyMSAs = @(Get-DomainUser -GMSA -TrustedToAuth -Enabled -ShowOwner -LDAPFilter $noTargetFilter @PSBoundParameters)
 
-            foreach ($account in ($transitionOnlyComputers + $transitionOnlyUsers)) {
+            foreach ($account in ($transitionOnlyComputers + $transitionOnlyUsers + $transitionOnlyMSAs)) {
                 $account | Add-Member -NotePropertyName 'DelegationAnomaly' `
                     -NotePropertyValue 'Protocol transition enabled without any delegation target' -Force
             }
 
+            # Named on the row, because a delegation finding on something that is neither a
+            # server nor a user account leaves a reader guessing which it is.
+            foreach ($account in ($constrainedMSAs + $transitionOnlyMSAs)) {
+                $account | Add-Member -NotePropertyName 'accountKind' `
+                    -NotePropertyValue 'Managed service account' -Force
+            }
+
             # Combine results
-            $constrainedAccounts = $constrainedComputers + $constrainedUsers +
-                                   $transitionOnlyComputers + $transitionOnlyUsers
+            $constrainedAccounts = $constrainedComputers + $constrainedUsers + $constrainedMSAs +
+                                   $transitionOnlyComputers + $transitionOnlyUsers + $transitionOnlyMSAs
 
             if (@($constrainedAccounts).Count -eq 0) {
                 Show-Line "No accounts with Constrained Delegation found" -Class "Secure"
@@ -104196,9 +104225,13 @@ function Get-ResourceBasedConstrainedDelegation {
 
             $rbcdComputers = @(Get-DomainComputer -RBCD -Enabled -ShowOwner @PSBoundParameters)
             $rbcdUsers = @(Get-DomainUser -RBCD -Enabled -ShowOwner @PSBoundParameters)
+            # Neither person nor computer: a managed service account's objectCategory is its
+            # own class, so both base filters drop it - and msDS-AllowedToActOnBehalfOf-
+            # OtherIdentity on a gMSA is the same delegation as on any other account.
+            $rbcdMSAs = @(Get-DomainUser -GMSA -RBCD -Enabled -ShowOwner @PSBoundParameters)
 
             # Combine results
-            $rbcdAccounts = $rbcdComputers + $rbcdUsers
+            $rbcdAccounts = $rbcdComputers + $rbcdUsers + $rbcdMSAs
 
             if (@($rbcdAccounts).Count -eq 0) {
                 Show-Line "No accounts with Resource-Based Constrained Delegation found" -Class "Secure"
@@ -104207,13 +104240,19 @@ function Get-ResourceBasedConstrainedDelegation {
 
             $totalComputers = @($rbcdComputers).Count
             $totalUsers = @($rbcdUsers).Count
+            $totalMSAs = @($rbcdMSAs).Count
             $total = @($rbcdAccounts).Count
 
-            Show-Line "Found $total account(s) with Resource-Based Constrained Delegation ($totalComputers computers, $totalUsers users):" -Class "Finding"
+            $populations = "$totalComputers computers, $totalUsers users"
+            if ($totalMSAs -gt 0) { $populations = "$populations, $totalMSAs managed service accounts" }
+            Show-Line "Found $total account(s) with Resource-Based Constrained Delegation ($populations):" -Class "Finding"
 
             foreach ($account in $rbcdAccounts) {
                 # Add type marker for HTML report
                 $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'RBCDelegation' -Force
+                if (@($rbcdMSAs) -contains $account) {
+                    $account | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
+                }
                 Show-Object $account
             }
 
@@ -118975,7 +119014,21 @@ function Get-ASREPRoastableAccounts {
             # -Enabled for the same reason Get-KerberoastableAccounts uses it: a disabled
             # account cannot be roasted, the KDC answers KDC_ERR_CLIENT_REVOKED, and
             # reporting it is noise that hides the accounts an attacker can actually use.
-            $asrepRoastableUsers = Get-DomainUser -PreauthNotRequired -Enabled -ShowOwner @connectionParams
+            $asrepRoastableUsers = @(Get-DomainUser -PreauthNotRequired -Enabled -ShowOwner @connectionParams)
+
+            # And the managed service accounts. objectCategory is single-valued and carries
+            # the most specific class, so an MSA is neither (objectCategory=person) nor
+            # (objectCategory=computer) and fell out of both base filters - while
+            # DONT_REQUIRE_PREAUTH on an MSA is the same AS-REP roast as on any account.
+            # Its password is 240 random bytes, which makes the hash impractical to crack
+            # and the row a hint rather than a finding; that is a judgement for the row, not
+            # a reason to leave the account out of a section whose secure line speaks for
+            # the domain.
+            $asrepRoastableMSAs = @(Get-DomainUser -GMSA -PreauthNotRequired -Enabled -ShowOwner @connectionParams)
+            foreach ($msa in $asrepRoastableMSAs) {
+                $msa | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
+            }
+            $asrepRoastableUsers = @($asrepRoastableUsers) + @($asrepRoastableMSAs)
 
             if (@($asrepRoastableUsers).Count -gt 0) {
                 Show-Line "Found $(@($asrepRoastableUsers).Count) AS-REP Roastable account(s):" -Class "Finding"
@@ -134303,7 +134356,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261012-0802"
+$Script:adPEASVersion = "2.7.0+20261012-0830"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

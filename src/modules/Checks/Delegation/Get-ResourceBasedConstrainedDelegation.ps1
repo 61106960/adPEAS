@@ -59,9 +59,13 @@ function Get-ResourceBasedConstrainedDelegation {
 
             $rbcdComputers = @(Get-DomainComputer -RBCD -Enabled -ShowOwner @PSBoundParameters)
             $rbcdUsers = @(Get-DomainUser -RBCD -Enabled -ShowOwner @PSBoundParameters)
+            # Neither person nor computer: a managed service account's objectCategory is its
+            # own class, so both base filters drop it - and msDS-AllowedToActOnBehalfOf-
+            # OtherIdentity on a gMSA is the same delegation as on any other account.
+            $rbcdMSAs = @(Get-DomainUser -GMSA -RBCD -Enabled -ShowOwner @PSBoundParameters)
 
             # Combine results
-            $rbcdAccounts = $rbcdComputers + $rbcdUsers
+            $rbcdAccounts = $rbcdComputers + $rbcdUsers + $rbcdMSAs
 
             if (@($rbcdAccounts).Count -eq 0) {
                 Show-Line "No accounts with Resource-Based Constrained Delegation found" -Class "Secure"
@@ -70,13 +74,19 @@ function Get-ResourceBasedConstrainedDelegation {
 
             $totalComputers = @($rbcdComputers).Count
             $totalUsers = @($rbcdUsers).Count
+            $totalMSAs = @($rbcdMSAs).Count
             $total = @($rbcdAccounts).Count
 
-            Show-Line "Found $total account(s) with Resource-Based Constrained Delegation ($totalComputers computers, $totalUsers users):" -Class "Finding"
+            $populations = "$totalComputers computers, $totalUsers users"
+            if ($totalMSAs -gt 0) { $populations = "$populations, $totalMSAs managed service accounts" }
+            Show-Line "Found $total account(s) with Resource-Based Constrained Delegation ($populations):" -Class "Finding"
 
             foreach ($account in $rbcdAccounts) {
                 # Add type marker for HTML report
                 $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'RBCDelegation' -Force
+                if (@($rbcdMSAs) -contains $account) {
+                    $account | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
+                }
                 Show-Object $account
             }
 
