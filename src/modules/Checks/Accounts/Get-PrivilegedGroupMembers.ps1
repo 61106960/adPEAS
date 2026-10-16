@@ -1338,7 +1338,7 @@ function Get-PrivilegedGroupMembers {
                     -ConnectionParams $connectionParams -AccountOperatorMembers $accountOperatorMembers
             } catch {
                 Write-Log "[Get-PrivilegedGroupMembers] Group ACL analysis failed: $_" -Level Error
-                Show-Line "Error during the group ACL analysis - who may change the privileged groups AdminSDHolder does not protect could not be evaluated: $_" -Class Finding
+                Show-Line "Error during the group ACL analysis - the privileged groups AdminSDHolder does not protect could not be evaluated: $_" -Class Finding
             }
 
             # ===== STEP 6: Check Pre-Windows 2000 Compatible Access =====

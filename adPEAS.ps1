@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 00:27:34
-    Version: 2.7.0+20261017-0027
+    Build: 2026-10-17 00:48:04
+    Version: 2.7.0+20261017-0048
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -103101,7 +103101,7 @@ function Get-PrivilegedGroupMembers {
                     -ConnectionParams $connectionParams -AccountOperatorMembers $accountOperatorMembers
             } catch {
                 Write-Log "[Get-PrivilegedGroupMembers] Group ACL analysis failed: $_" -Level Error
-                Show-Line "Error during the group ACL analysis - who may change the privileged groups AdminSDHolder does not protect could not be evaluated: $_" -Class Finding
+                Show-Line "Error during the group ACL analysis - the privileged groups AdminSDHolder does not protect could not be evaluated: $_" -Class Finding
             }
 
             # ===== STEP 6: Check Pre-Windows 2000 Compatible Access =====
@@ -138651,7 +138651,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-0027"
+$Script:adPEASVersion = "2.7.0+20261017-0048"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

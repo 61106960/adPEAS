@@ -63132,7 +63132,7 @@ function Get-PrivilegedGroupMembers {
 	            Show-UnprotectedGroupACL -Groups @($GroupsForACLReview.Values) -IncludePrivileged:$IncludePrivileged `
 	                -ConnectionParams $connectionParams -AccountOperatorMembers $accountOperatorMembers
 	        } catch {
-	            Show-Line "Error during the group ACL analysis - who may change the privileged groups AdminSDHolder does not protect could not be evaluated: $_" -Class Finding
+	            Show-Line "Error during the group ACL analysis - the privileged groups AdminSDHolder does not protect could not be evaluated: $_" -Class Finding
 	        }
 	        Show-SubHeader "Checking Pre-Windows 2000 Compatible Access group..." -ObjectType "PreWindows2000Access"
 	        $PreWin2000Findings = @()
@@ -85939,7 +85939,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-0027"
+$Script:adPEASVersion = "2.7.0+20261017-0048"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
