@@ -152,6 +152,16 @@ function Get-ADCSVulnerabilities {
         }
 
         try {
+            # The Certificate Authorities, read once for two consumers: the NTAuth verdict in
+            # step 0 and the CA analysis of step 1. For the first, $null when the query
+            # failed - step 1 reports that failure, and an NTAuth row then says Unknown rather
+            # than "no Enterprise CA holds this certificate".
+            $caResults = @(Get-CertificateAuthority @CredParams)
+            $enterpriseCAs = $null
+            if (-not ($caResults | Where-Object { $_._QueryError -eq $true })) {
+                $enterpriseCAs = @($caResults)
+            }
+
             # Step 0: PKI Trust Infrastructure Overview (Root CAs, NTAuth Store)
             $configNC = $Script:LDAPContext.ConfigurationNamingContext
             Show-SubHeader "Checking PKI trust infrastructure..." -ObjectType "PKIInfrastructure"
@@ -214,15 +224,31 @@ function Get-ADCSVulnerabilities {
 
                     if (@($certList).Count -gt 0) {
                         Show-Line "NTAuth Store contains $(@($certList).Count) certificate(s) trusted for domain authentication (PKINIT)" -Class Note
+
+                        # Every issuer in this store may issue a certificate that logs on as
+                        # any account, and the store used to be listed without a word on any
+                        # of them (review ADCS 4). Judged per entry: does an Enterprise CA of
+                        # this forest hold it - an Enterprise CA publishes its own certificate
+                        # here, so anything else was added by some other means - has it
+                        # expired, is it signed with a weak hash. The rows are built first so
+                        # the lines that sum them up can come before them.
+                        $ntAuthRows = @()
+                        $ntAuthIssuers = @{}
+                        $foreignCount = 0
+                        $expiredCount = 0
+                        $weakCount = 0
                         foreach ($ntCert in $certList) {
                             if ($ntCert -and $ntCert.Subject) {
                                 # Extract CN from Subject for title display (e.g. "CN=Contoso-CA, DC=..." -> "Contoso-CA")
                                 $ntCertSubject = if ($ntCert.SubjectFull) { $ntCert.SubjectFull } elseif ($ntCert.Subject) { $ntCert.Subject } else { "" }
                                 $ntCertName = if ($ntCertSubject -match '^CN=([^,]+)') { $Matches[1] } else { "Unknown" }
 
+                                $issuerVerdict = Get-NTAuthIssuerVerdict -Certificate $ntCert -EnterpriseCAs $enterpriseCAs
+
                                 $ntAuthCertObj = [PSCustomObject]@{
                                     Name                   = $ntCertName
                                     Subject                = if ($ntCertSubject) { $ntCertSubject } else { "Unknown" }
+                                    EnterpriseCA           = $issuerVerdict.Text
                                     Issuer                 = if ($ntCert.IssuerFull) { $ntCert.IssuerFull } elseif ($ntCert.Issuer) { $ntCert.Issuer } else { "Unknown" }
                                     SerialNumber           = if ($ntCert.SerialNumber) { $ntCert.SerialNumber } else { $null }
                                     Thumbprint             = if ($ntCert.Thumbprint) { $ntCert.Thumbprint } else { "Unknown" }
@@ -236,8 +262,42 @@ function Get-ADCSVulnerabilities {
                                     AIAURLs                = if ($ntCert.AIAURLs -and @($ntCert.AIAURLs).Count -gt 0) { $ntCert.AIAURLs } else { $null }
                                 }
                                 $ntAuthCertObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NTAuthCertificate' -Force
-                                Show-Object $ntAuthCertObj -Class Note
+
+                                # The same tests the CA's own certificate gets in step 1.
+                                $isForeign = $issuerVerdict.Verdict -eq 'Foreign'
+                                $isExpired = [string]$ntCert.Status -eq 'EXPIRED'
+                                $isWeak    = [string]$ntCert.SignatureAlgorithm -match 'sha1|md5|md2'
+                                if ($isForeign) { $foreignCount++ }
+                                if ($isExpired) { $expiredCount++ }
+                                if ($isWeak)    { $weakCount++ }
+
+                                # Renewals keep the subject, so one CA is one issuer however
+                                # many of its certificates the store holds.
+                                if ($ntCertSubject) { $ntAuthIssuers[$ntCertSubject] = $true }
+
+                                $rowClass = 'Note'
+                                if ($isForeign -or $isExpired -or $isWeak) { $rowClass = 'Hint' }
+                                $ntAuthRows += [PSCustomObject]@{ Object = $ntAuthCertObj; Class = $rowClass }
                             }
+                        }
+
+                        if ($ntAuthIssuers.Count -gt 1) {
+                            Show-Line ("$($ntAuthIssuers.Count) different CAs are trusted to issue a certificate that logs " +
+                                       "on as any account - each one is a trust anchor for the whole forest") -Class Hint
+                        }
+                        if ($foreignCount -gt 0) {
+                            Show-Line ("$foreignCount NTAuth certificate(s) belong to no Enterprise CA of this forest - " +
+                                       "verify each was added on purpose, and who holds its key") -Class Hint -FindingId 'NTAUTH_FOREIGN_ISSUER'
+                        }
+                        if ($expiredCount -gt 0) {
+                            Show-Line "$expiredCount NTAuth certificate(s) have expired and can be removed from the store" -Class Hint -FindingId 'PKI_CERTIFICATE_EXPIRED'
+                        }
+                        if ($weakCount -gt 0) {
+                            Show-Line "$weakCount NTAuth certificate(s) are signed with a weak hash algorithm" -Class Hint -FindingId 'PKI_WEAK_SIGNATURE_ALGORITHM'
+                        }
+
+                        foreach ($ntAuthRow in $ntAuthRows) {
+                            Show-Object $ntAuthRow.Object -Class $ntAuthRow.Class
                         }
                     } else {
                         Show-Line "NTAuth Store exists but contains no certificates" -Class Hint
@@ -288,7 +348,6 @@ function Get-ADCSVulnerabilities {
 
             # Step 1: Enumerate Certificate Authorities (Infrastructure)
             Show-SubHeader "Searching for AD CS Infrastructure..." -ObjectType "CertificateAuthority"
-            $caResults = @(Get-CertificateAuthority @CredParams)
 
             # Check if query failed (auth error, network issue, etc.)
             $queryError = $caResults | Where-Object { $_._QueryError -eq $true }
@@ -1715,6 +1774,85 @@ function Get-ADCSVulnerabilities {
 
     end {
         Write-Log "[Get-ADCSVulnerabilities] AD CS vulnerability scan complete"
+    }
+}
+
+<#
+.SYNOPSIS
+    Says which Enterprise CA of this forest an NTAuth certificate belongs to, if any.
+
+.DESCRIPTION
+    Every issuer in the NTAuth store may issue a certificate that logs on as any account of
+    the forest. An Enterprise CA publishes its own certificate there when it is installed
+    (Microsoft: "Windows Enterprise domain joined CAs automatically publish their own CA
+    certificates to the NTAuth store"), so an entry that matches one is accounted for. An
+    entry that matches none was added some other way: a third-party or standalone CA
+    imported by hand - required for a smart card PKI run outside the forest - or the
+    leftover of a CA that was removed, whose key may still exist.
+
+    Matched by thumbprint against every certificate the Enterprise CA objects carry. An entry
+    whose subject is that of an Enterprise CA while its thumbprint is not is an earlier
+    certificate of that CA, renewed since: certificates issued under the old key still chain
+    to it, so it is accounted for as well.
+
+.PARAMETER Certificate
+    The NTAuth certificate as Invoke-LDAPSearch parses it (Thumbprint, SubjectFull, Subject).
+
+.PARAMETER EnterpriseCAs
+    The Get-CertificateAuthority results, or $null when they could not be read - which is
+    said as Unknown, never as "no Enterprise CA holds it".
+
+.OUTPUTS
+    [PSCustomObject] with Verdict (Enterprise, Renewed, Foreign or Unknown) and Text, the
+    value of the EnterpriseCA row.
+#>
+function Get-NTAuthIssuerVerdict {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Certificate,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $EnterpriseCAs
+    )
+
+    if ($null -eq $EnterpriseCAs) {
+        return [PSCustomObject]@{ Verdict = 'Unknown'; Text = 'Unknown - the Enterprise CAs of this forest could not be read' }
+    }
+
+    $thumbprint = [string]$Certificate.Thumbprint
+    $subject = [string]$Certificate.SubjectFull
+    if (-not $subject) { $subject = [string]$Certificate.Subject }
+
+    $renewedOf = $null
+    foreach ($ca in @($EnterpriseCAs)) {
+        if (-not $ca) { continue }
+        # A CA object can carry more than one certificate. A value that failed to parse
+        # arrives as a string, which has neither property below and so matches nothing.
+        foreach ($caCert in @($ca.CACertificate)) {
+            if (-not $caCert) { continue }
+
+            if ($thumbprint -and [string]::Equals([string]$caCert.Thumbprint, $thumbprint, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return [PSCustomObject]@{ Verdict = 'Enterprise'; Text = "Yes - the certificate of the Enterprise CA '$($ca.Name)'" }
+            }
+
+            $caSubject = [string]$caCert.SubjectFull
+            if (-not $caSubject) { $caSubject = [string]$caCert.Subject }
+            if ($subject -and [string]::Equals($caSubject, $subject, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $renewedOf = $ca.Name
+            }
+        }
+    }
+
+    if ($renewedOf) {
+        return [PSCustomObject]@{ Verdict = 'Renewed'; Text = "Yes - an earlier certificate of the Enterprise CA '$renewedOf', renewed since" }
+    }
+
+    return [PSCustomObject]@{
+        Verdict = 'Foreign'
+        Text    = 'No - no Enterprise CA of this forest holds this certificate: a third-party, standalone or removed CA, trusted to issue a logon certificate for any account'
     }
 }
 

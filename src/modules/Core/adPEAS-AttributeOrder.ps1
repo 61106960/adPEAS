@@ -264,7 +264,7 @@ $Script:PrimaryAttributes = @{
 
     # NTAuth Store certificate objects
     NTAuthCertificate = @(
-        'Subject', 'Issuer', 'SerialNumber', 'Thumbprint', 'Validity', 'Status',
+        'Subject', 'EnterpriseCA', 'Issuer', 'SerialNumber', 'Thumbprint', 'Validity', 'Status',
         'SignatureAlgorithm', 'KeySize', 'HasBasicConstraints',
         'CRLDistributionPoints', 'OCSPURLs', 'AIAURLs'
     )

@@ -60,6 +60,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   check type `BitLocker` for it; `Get-DangerousOUPermissions` leaves those rights to this
   check, as it does for LAPS and Credential Roaming.
 
+- **`Get-ADCSVulnerabilities` judges the NTAuth store instead of only listing it.** Every
+  issuer in `CN=NTAuthCertificates` may issue a certificate that logs on as any account.
+  Each entry now carries an `EnterpriseCA` row - the Enterprise CA of this forest that
+  holds the certificate, an earlier certificate of one that was renewed since, or none,
+  which an Enterprise CA never leaves behind on its own: a third-party smart card CA, a
+  standalone CA, or a removed one whose key may still exist. Such an entry, an expired
+  one and one signed with SHA1 or MD5 is a hint, each kind is summed up in a line, and the
+  section says when more than one CA is trusted. The Certificate Authorities are read
+  once for this and the CA analysis; where they could not be read the row says Unknown.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

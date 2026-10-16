@@ -9969,6 +9969,46 @@ foreach ($oid in $linkedOIDs) {
     # PKI INFRASTRUCTURE CERTIFICATE FINDINGS (Root CAs, NTAuth, AIA)
     # ============================================================================
 
+    'NTAUTH_FOREIGN_ISSUER' = @{
+        Title = "NTAuth Store - Issuer That Is No Enterprise CA of This Forest"
+        Risk = "Hint"
+        BaseScore = 45
+        Description = "Every certificate in the NTAuth store names an issuer the domain controllers accept for certificate logon: a certificate it issues can authenticate as any account of the forest, through Kerberos PKINIT and Schannel alike. An Enterprise CA publishes its own certificate there when it is installed, so an entry that matches one of the forest's Enterprise CAs is accounted for. This one matches none. That is how a third-party CA issuing smart card logon certificates has to be added, and then it is intended - and it is also what a removed CA leaves behind, whose key may still exist on an old server or in a backup, and what somebody who once held Enterprise Admin rights adds to keep a way back in."
+        Impact = @(
+            "Whoever holds the issuer's private key can issue a certificate that logs on as any account, domain admins included"
+            "The key of a removed CA often survives on a decommissioned server or in a backup that nobody watches any more"
+            "Publishing an issuer to the store is a known way to keep access to a forest after it was compromised"
+        )
+        Attack = @(
+            "1. Obtain the issuer's private key - from a retired CA server, a backup, or a CA the attacker set up and published"
+            "2. Issue a certificate for the target account, signed with that key"
+            "3. Authenticate with it through PKINIT and receive a TGT for the target account"
+        )
+        Remediation = @(
+            "Establish what the issuer is, whether it is meant to issue logon certificates, and who controls its key"
+            "Remove the entries of CAs that no longer exist or are not meant to be trusted: Enterprise PKI (pkiview.msc) > Manage AD Containers > NTAuthCertificates"
+            "Audit changes to CN=NTAuthCertificates in the Configuration partition (event 5136)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the NTAuth store as this machine has cached it from the directory"
+                Command = "certutil -enterprise -viewstore NTAuth"
+            }
+        )
+        References = @(
+            @{ Title = "Import third-party CAs into the Enterprise NTAuth store (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/certificates-and-public-key-infrastructure-pki/import-third-party-ca-to-enterprise-ntauth-store" }
+        )
+        Tools = @("certutil", "pkiview.msc", "Certipy")
+        MITRE = "T1649"
+        Triggers = @(
+            @{ Attribute = 'EnterpriseCA'; Pattern = '^No'; Severity = 'Hint' }
+            # Colour only: an unread CA list is open, and a matched entry is the clean case.
+            # Neither should open the card of an issuer nobody accounts for.
+            @{ Attribute = 'EnterpriseCA'; Pattern = '^Unknown'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'EnterpriseCA'; Pattern = '^Yes'; Severity = 'Secure'; SeverityOnly = $true }
+        )
+    }
+
     'PKI_WEAK_SIGNATURE_ALGORITHM' = @{
         Title = "PKI Certificate Uses Weak Signature Algorithm"
         Risk = "Finding"

@@ -726,6 +726,8 @@ any directory scan can see.
 
 Dangerous rights: GenericAll, WriteDacl, WriteOwner, GenericWrite. If unprivileged users have these permissions, they can manipulate the entire PKI infrastructure.
 
+**NTAuth Store**: Every certificate in `CN=NTAuthCertificates` names an issuer trusted to issue a certificate that logs on as any account. An Enterprise CA publishes its own certificate there, so each entry gets an `EnterpriseCA` row: the Enterprise CA of this forest that holds it, an earlier certificate of one (renewed since), or none - a third-party, standalone or removed CA, which is a *Hint* to verify. Expired and SHA1/MD5-signed entries are hints as well, and the section says when more than one CA is trusted. An issuer added on a single machine with `certutil -enterprise -addstore NTAuth` is not in the directory and cannot be seen.
+
 **Security Impact**: ADCS vulnerabilities can allow any domain user to obtain certificates for any other user, including Domain Admins, leading to full domain compromise.
 
 **Usage**:

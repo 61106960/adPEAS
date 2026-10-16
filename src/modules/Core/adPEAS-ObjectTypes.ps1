@@ -712,13 +712,15 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Category = "ADCS"
         SectionTitle = "NTAuth Store"
         Summary = "A certificate in the NTAuth Store, trusted for domain authentication via Kerberos PKINIT."
-        WhyItMatters = "Only certificates issued by CAs listed in the NTAuth Store are accepted for Kerberos PKINIT authentication. Unauthorized entries allow rogue CAs to issue domain authentication certificates."
+        WhyItMatters = "Only certificates issued by CAs listed in the NTAuth Store are accepted for Kerberos PKINIT authentication. Every issuer listed may issue a certificate that logs on as any account, so each entry should be one the forest knows: an Enterprise CA publishes its own certificate there, and anything else was added by other means - a third-party smart card CA, a CA that was removed, or a rogue one."
         WhatWeCheck = @(
-            "Certificate issuer and subject"
-            "Certificate thumbprint for identification"
+            "Whether an Enterprise CA of this forest holds the certificate, or an earlier certificate of one (renewed since)"
             "Certificate validity and expiration"
+            "Weak signature algorithms (SHA1, MD5)"
+            "How many different CAs the store trusts"
         )
-        SecureMessage = "NTAuth Store contains only legitimate CA certificates for domain authentication."
+        FilteringNote = "The store is read from the directory. An issuer added on a single machine with certutil -enterprise -addstore NTAuth is not in the directory and cannot be seen here."
+        SecureMessage = "NTAuth Store contains only certificates of this forest's Enterprise CAs."
     }
 
     'AIACA' = @{
