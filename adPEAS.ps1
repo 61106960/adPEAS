@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 19:31:05
-    Version: 2.7.0+20261016-1931
+    Build: 2026-10-16 19:37:57
+    Version: 2.7.0+20261016-1937
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -38742,7 +38742,8 @@ function Get-DomainComputer {
 
 .PARAMETER LAPS
     Computers with LAPS enabled (detected via expiration time attributes).
-    Searches for ms-Mcs-AdmPwdExpirationTime (Legacy LAPS) or msLAPS-PasswordExpirationTime (Windows LAPS).
+    Searches for ms-Mcs-AdmPwdExpirationTime (Legacy LAPS) or msLAPS-PasswordExpirationTime (Windows LAPS),
+    whichever the schema defines (Get-LAPSSchemaPresence); both where that cannot be determined.
 
 .PARAMETER Enabled
     Only enabled computers (ACCOUNTDISABLE flag not set).
@@ -38992,7 +38993,33 @@ function Get-DomainComputer {
                 # Computers with LAPS enabled (Legacy or Native)
                 # Legacy LAPS: ms-Mcs-AdmPwdExpirationTime
                 # Windows LAPS: msLAPS-PasswordExpirationTime
-                $Filter = "(&$Filter(|(ms-Mcs-AdmPwdExpirationTime=*)(msLAPS-PasswordExpirationTime=*)))"
+                #
+                # Only the attributes the schema defines. A domain that runs only Windows
+                # LAPS - every new installation - has no ms-Mcs-AdmPwdExpirationTime, and
+                # whether a DC reads an undefined attribute in a filter as Undefined or
+                # answers LDAP_FILTER_ERROR is not something this filter should rest on.
+                # Where the schema question has no answer - neither generation found, or
+                # the lookup itself failed - both are asked, as before.
+                $lapsSchemaParams = @{}
+                if ($Domain) { $lapsSchemaParams['Domain'] = $Domain }
+                if ($Server) { $lapsSchemaParams['Server'] = $Server }
+                if ($Credential) { $lapsSchemaParams['Credential'] = $Credential }
+
+                $lapsAttributes = @()
+                try {
+                    $lapsSchema = Get-LAPSSchemaPresence @lapsSchemaParams
+                    if ($lapsSchema.LegacyPresent) { $lapsAttributes += 'ms-Mcs-AdmPwdExpirationTime' }
+                    if ($lapsSchema.NativePresent) { $lapsAttributes += 'msLAPS-PasswordExpirationTime' }
+                } catch {
+                    Write-Log "[Get-DomainComputer] LAPS schema lookup failed, asking for both generations: $_"
+                }
+                if ($lapsAttributes.Count -eq 0) {
+                    $lapsAttributes = @('ms-Mcs-AdmPwdExpirationTime', 'msLAPS-PasswordExpirationTime')
+                }
+
+                $lapsClauses = ($lapsAttributes | ForEach-Object { "($_=*)" }) -join ''
+                if ($lapsAttributes.Count -gt 1) { $lapsClauses = "(|$lapsClauses)" }
+                $Filter = "(&$Filter$lapsClauses)"
             }
 
             # HighValueSPN: Computers running high-value/security-critical services
@@ -77776,17 +77803,26 @@ function Get-LAPSSchemaPresence {
         # Fallback: a deployed value proves the attribute exists.
         if (-not $legacyPresent -and -not $nativePresent) {
             Write-Log "[Get-LAPSSchemaPresence] Schema partition gave no answer, probing computer objects"
+
+            # One try per generation. In a domain without the Legacy schema the first probe
+            # names an attribute the schema does not define; should a DC answer that with
+            # an error rather than an empty result, it must not cost the Windows LAPS probe
+            # its turn.
             try {
                 if (@(Get-DomainComputer -LDAPFilter "(ms-Mcs-AdmPwdExpirationTime=*)" -Properties 'distinguishedName' -ResultLimit 1 @connectionParams).Count -gt 0) {
                     $legacyPresent = $true
                     Write-Log "[Get-LAPSSchemaPresence] Legacy LAPS detected on a computer object"
                 }
+            } catch {
+                Write-Log "[Get-LAPSSchemaPresence] Legacy LAPS computer probe error: $($_.Exception.Message)"
+            }
+            try {
                 if (@(Get-DomainComputer -LDAPFilter "(msLAPS-PasswordExpirationTime=*)" -Properties 'distinguishedName' -ResultLimit 1 @connectionParams).Count -gt 0) {
                     $nativePresent = $true
                     Write-Log "[Get-LAPSSchemaPresence] Windows LAPS detected on a computer object"
                 }
             } catch {
-                Write-Log "[Get-LAPSSchemaPresence] Computer probe error: $($_.Exception.Message)"
+                Write-Log "[Get-LAPSSchemaPresence] Windows LAPS computer probe error: $($_.Exception.Message)"
             }
         }
 
@@ -136291,7 +136327,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-1931"
+$Script:adPEASVersion = "2.7.0+20261016-1937"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -133,17 +133,26 @@ function Get-LAPSSchemaPresence {
         # Fallback: a deployed value proves the attribute exists.
         if (-not $legacyPresent -and -not $nativePresent) {
             Write-Log "[Get-LAPSSchemaPresence] Schema partition gave no answer, probing computer objects"
+
+            # One try per generation. In a domain without the Legacy schema the first probe
+            # names an attribute the schema does not define; should a DC answer that with
+            # an error rather than an empty result, it must not cost the Windows LAPS probe
+            # its turn.
             try {
                 if (@(Get-DomainComputer -LDAPFilter "(ms-Mcs-AdmPwdExpirationTime=*)" -Properties 'distinguishedName' -ResultLimit 1 @connectionParams).Count -gt 0) {
                     $legacyPresent = $true
                     Write-Log "[Get-LAPSSchemaPresence] Legacy LAPS detected on a computer object"
                 }
+            } catch {
+                Write-Log "[Get-LAPSSchemaPresence] Legacy LAPS computer probe error: $($_.Exception.Message)"
+            }
+            try {
                 if (@(Get-DomainComputer -LDAPFilter "(msLAPS-PasswordExpirationTime=*)" -Properties 'distinguishedName' -ResultLimit 1 @connectionParams).Count -gt 0) {
                     $nativePresent = $true
                     Write-Log "[Get-LAPSSchemaPresence] Windows LAPS detected on a computer object"
                 }
             } catch {
-                Write-Log "[Get-LAPSSchemaPresence] Computer probe error: $($_.Exception.Message)"
+                Write-Log "[Get-LAPSSchemaPresence] Windows LAPS computer probe error: $($_.Exception.Message)"
             }
         }
 

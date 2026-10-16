@@ -45,7 +45,8 @@ function Get-DomainComputer {
 
 .PARAMETER LAPS
     Computers with LAPS enabled (detected via expiration time attributes).
-    Searches for ms-Mcs-AdmPwdExpirationTime (Legacy LAPS) or msLAPS-PasswordExpirationTime (Windows LAPS).
+    Searches for ms-Mcs-AdmPwdExpirationTime (Legacy LAPS) or msLAPS-PasswordExpirationTime (Windows LAPS),
+    whichever the schema defines (Get-LAPSSchemaPresence); both where that cannot be determined.
 
 .PARAMETER Enabled
     Only enabled computers (ACCOUNTDISABLE flag not set).
@@ -295,7 +296,33 @@ function Get-DomainComputer {
                 # Computers with LAPS enabled (Legacy or Native)
                 # Legacy LAPS: ms-Mcs-AdmPwdExpirationTime
                 # Windows LAPS: msLAPS-PasswordExpirationTime
-                $Filter = "(&$Filter(|(ms-Mcs-AdmPwdExpirationTime=*)(msLAPS-PasswordExpirationTime=*)))"
+                #
+                # Only the attributes the schema defines. A domain that runs only Windows
+                # LAPS - every new installation - has no ms-Mcs-AdmPwdExpirationTime, and
+                # whether a DC reads an undefined attribute in a filter as Undefined or
+                # answers LDAP_FILTER_ERROR is not something this filter should rest on.
+                # Where the schema question has no answer - neither generation found, or
+                # the lookup itself failed - both are asked, as before.
+                $lapsSchemaParams = @{}
+                if ($Domain) { $lapsSchemaParams['Domain'] = $Domain }
+                if ($Server) { $lapsSchemaParams['Server'] = $Server }
+                if ($Credential) { $lapsSchemaParams['Credential'] = $Credential }
+
+                $lapsAttributes = @()
+                try {
+                    $lapsSchema = Get-LAPSSchemaPresence @lapsSchemaParams
+                    if ($lapsSchema.LegacyPresent) { $lapsAttributes += 'ms-Mcs-AdmPwdExpirationTime' }
+                    if ($lapsSchema.NativePresent) { $lapsAttributes += 'msLAPS-PasswordExpirationTime' }
+                } catch {
+                    Write-Log "[Get-DomainComputer] LAPS schema lookup failed, asking for both generations: $_"
+                }
+                if ($lapsAttributes.Count -eq 0) {
+                    $lapsAttributes = @('ms-Mcs-AdmPwdExpirationTime', 'msLAPS-PasswordExpirationTime')
+                }
+
+                $lapsClauses = ($lapsAttributes | ForEach-Object { "($_=*)" }) -join ''
+                if ($lapsAttributes.Count -gt 1) { $lapsClauses = "(|$lapsClauses)" }
+                $Filter = "(&$Filter$lapsClauses)"
             }
 
             # HighValueSPN: Computers running high-value/security-critical services

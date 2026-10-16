@@ -26509,7 +26509,23 @@ function Get-DomainComputer {
 	            $Filter = "(&$Filter$dcClause)"
 	        }
 	        if ($LAPS) {
-	            $Filter = "(&$Filter(|(ms-Mcs-AdmPwdExpirationTime=*)(msLAPS-PasswordExpirationTime=*)))"
+	            $lapsSchemaParams = @{}
+	            if ($Domain) { $lapsSchemaParams['Domain'] = $Domain }
+	            if ($Server) { $lapsSchemaParams['Server'] = $Server }
+	            if ($Credential) { $lapsSchemaParams['Credential'] = $Credential }
+	            $lapsAttributes = @()
+	            try {
+	                $lapsSchema = Get-LAPSSchemaPresence @lapsSchemaParams
+	                if ($lapsSchema.LegacyPresent) { $lapsAttributes += 'ms-Mcs-AdmPwdExpirationTime' }
+	                if ($lapsSchema.NativePresent) { $lapsAttributes += 'msLAPS-PasswordExpirationTime' }
+	            } catch {
+	            }
+	            if ($lapsAttributes.Count -eq 0) {
+	                $lapsAttributes = @('ms-Mcs-AdmPwdExpirationTime', 'msLAPS-PasswordExpirationTime')
+	            }
+	            $lapsClauses = ($lapsAttributes | ForEach-Object { "($_=*)" }) -join ''
+	            if ($lapsAttributes.Count -gt 1) { $lapsClauses = "(|$lapsClauses)" }
+	            $Filter = "(&$Filter$lapsClauses)"
 	        }
 	        if ($HighValueSPN) {
 	            $HighValueSPNFilter = "(|" +
@@ -48513,6 +48529,9 @@ function Get-LAPSSchemaPresence {
 	            if (@(Get-DomainComputer -LDAPFilter "(ms-Mcs-AdmPwdExpirationTime=*)" -Properties 'distinguishedName' -ResultLimit 1 @connectionParams).Count -gt 0) {
 	                $legacyPresent = $true
 	            }
+	        } catch {
+	        }
+	        try {
 	            if (@(Get-DomainComputer -LDAPFilter "(msLAPS-PasswordExpirationTime=*)" -Properties 'distinguishedName' -ResultLimit 1 @connectionParams).Count -gt 0) {
 	                $nativePresent = $true
 	            }
@@ -84536,7 +84555,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-1931"
+$Script:adPEASVersion = "2.7.0+20261016-1937"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

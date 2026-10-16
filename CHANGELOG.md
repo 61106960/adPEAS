@@ -77,6 +77,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object
   and its direct children only)" where the ACE applies to the OU itself as well.
 
+- **`Get-DomainComputer -LAPS` asks only for the LAPS attributes the schema defines.** The
+  filter named both generations' expiration attributes, also in a domain whose schema
+  has only Windows LAPS - every new installation. It is built from the schema answer
+  the LAPS checks already share now, and asks for both only where that answer is
+  missing. The fallback probe behind that answer asks each generation on its own, so a
+  failing Legacy query can no longer hide Windows LAPS.
+
 ---
 
 ## [2.7.0] - 2026-10-08
