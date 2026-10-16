@@ -1094,3 +1094,309 @@ function Get-DNParentChain {
     }
     return $chain
 }
+
+<#
+.SYNOPSIS
+    Files a GPO into the precedence contest for the domain controllers.
+
+.DESCRIPTION
+    Get-LDAPConfiguration and Get-SMBSigningStatus each carried this block, word for word.
+    It answers five ways, and the distinction between the last two is whether a policy
+    reaches a machine at all:
+
+      DomainControllers - linked at or below the Domain Controllers OU
+      Domain            - linked at the domain root
+      OtherOU           - actively linked, but to some ordinary OU
+      NotLinked         - linked nowhere, or every link disabled
+      Unknown           - the linkage could not be resolved
+
+    For the first two it also ranks the policy for the contest, by the link that ranks
+    highest. Group Policy applies the domain root before the OUs below it, so a link on the
+    Domain Controllers OU wins over one at the root - unless a link is enforced: enforced
+    links are applied last and cannot be overridden below, and among two enforced links the
+    one higher up wins. Order, highest first:
+
+      0  enforced, at the domain root
+      1  enforced, on the Domain Controllers OU
+      2  on the Domain Controllers OU
+      3  at the domain root
+
+    and within a rank by link order, 1 first. Enforcement used to be ignored, so an
+    enforced domain policy lost to a Domain Controllers policy it actually overrides.
+
+.PARAMETER Link
+    The policy's link records, three-valued: $null unresolved, @() linked nowhere.
+
+.OUTPUTS
+    PSCustomObject with Scope, Rank (99 outside the contest), Order (999 where unknown) and
+    HasAnyLink.
+#>
+function Get-GPODCPrecedence {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Link
+    )
+
+    $result = [PSCustomObject]@{
+        Scope      = 'Unknown'
+        Rank       = 99
+        Order      = 999
+        HasAnyLink = $false
+    }
+    if ($null -eq $Link) { return $result }
+
+    $records = @(@($Link) | Where-Object { $_ })
+    $result.HasAnyLink = ($records.Count -gt 0)
+    $result.Scope = 'NotLinked'
+
+    # A link that is switched off reaches nothing, so a policy whose every link is
+    # disabled stays NotLinked. A record with no IsDisabled counts as enabled - the
+    # conservative direction, as everywhere else.
+    $activeLinks = @($records | Where-Object { -not $_.IsDisabled })
+    if ($activeLinks.Count -eq 0) { return $result }
+
+    $dcLinks     = @($activeLinks | Where-Object { "$($_.DistinguishedName)" -match 'OU=Domain Controllers' })
+    $domainLinks = @($activeLinks | Where-Object { $_.Scope -eq 'Domain' })
+
+    if ($dcLinks.Count -eq 0 -and $domainLinks.Count -eq 0) {
+        $result.Scope = 'OtherOU'
+        return $result
+    }
+
+    # The scope names where the policy sits; the rank comes from the link that ranks
+    # highest, which for a policy linked at both places can be the enforced root link.
+    $result.Scope = if ($dcLinks.Count -gt 0) { 'DomainControllers' } else { 'Domain' }
+
+    $candidates = @()
+    foreach ($dcLink in $dcLinks) {
+        $candidates += [PSCustomObject]@{
+            Rank  = $(if ($dcLink.IsEnforced -eq $true) { 1 } else { 2 })
+            Order = $(if ($dcLink.LinkOrder) { [int]$dcLink.LinkOrder } else { 999 })
+        }
+    }
+    foreach ($domainLink in $domainLinks) {
+        $candidates += [PSCustomObject]@{
+            Rank  = $(if ($domainLink.IsEnforced -eq $true) { 0 } else { 3 })
+            Order = $(if ($domainLink.LinkOrder) { [int]$domainLink.LinkOrder } else { 999 })
+        }
+    }
+    $best = @($candidates | Sort-Object Rank, Order)[0]
+    $result.Rank  = $best.Rank
+    $result.Order = $best.Order
+    return $result
+}
+
+<#
+.SYNOPSIS
+    Decides, setting by setting, which policy's value is in force on the domain controllers.
+
+.DESCRIPTION
+    Group Policy precedence is per setting, not per policy. "Not configured" is the absence
+    of an instruction: a policy higher in the order that does not configure a value leaves
+    whatever a lower one wrote; it does not reset it. Each value therefore comes from the
+    highest-ranked policy that actually sets it.
+
+    Both signing checks used to elect one winner per policy and call every other policy
+    overridden. A Default Domain Policy that alone sets channel binding was reported as
+    overridden by a Domain Controllers policy that only sets LDAP signing - while its value
+    was the one in force. In the dangerous direction that made a weak value read as
+    ineffective: a false negative.
+
+    The contest is the policies Get-GPODCPrecedence filed as DomainControllers or Domain,
+    ordered by its rank, then link order, then display name - the last only so that a tie
+    the directory cannot produce does not come out by hashtable order.
+
+    Site links are not part of it: site policies are applied before the domain's and lose
+    to it unless enforced, and a policy hardening domain controllers is rarely linked there.
+
+.PARAMETER Finding
+    The GPO findings, carrying _PrecedenceScope, _PrecedenceRank and _PrecedenceOrder.
+
+.PARAMETER Setting
+    The settings to decide, each @{ Property = '<attribute>'; Label = '<words>' }.
+
+.OUTPUTS
+    [hashtable] Property -> the winning finding, for every setting some policy configures.
+#>
+function Resolve-GPOSettingPrecedence {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Finding,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable[]]$Setting
+    )
+
+    $contest = @(@($Finding) | Where-Object { $_ -and $_._PrecedenceScope -in @('DomainControllers', 'Domain') } |
+        Sort-Object @{ Expression = { [int]$_._PrecedenceRank } },
+                    @{ Expression = { [int]$_._PrecedenceOrder } },
+                    @{ Expression = { [string]$_.DisplayName } })
+
+    $winners = @{}
+    foreach ($entry in $Setting) {
+        foreach ($candidate in $contest) {
+            if (Test-GPOSettingConfigured -Value $candidate.($entry.Property)) {
+                $winners[$entry.Property] = $candidate
+                break
+            }
+        }
+    }
+    return $winners
+}
+
+<#
+.SYNOPSIS
+    Whether a decoded setting value says something, rather than "Not configured".
+
+.DESCRIPTION
+    The two checks write "Not Configured" and "Not configured", and the SMB check qualifies
+    the latter with the role the policy lands on ("Not configured - the Domain Controllers
+    default requires it"). All of them are the absence of an instruction.
+#>
+function Test-GPOSettingConfigured {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Value
+    )
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    return ($text -notmatch '^Not configured')
+}
+
+<#
+.SYNOPSIS
+    The EffectiveSetting sentence for a policy in the domain controllers' contest.
+
+.DESCRIPTION
+    Names which of this policy's settings are in force and which another policy overrides,
+    and by whom - the winner's name is what a reader needs to go and look, its link order
+    what decided it. Starts with Yes, Partly or No, like the other EffectiveSetting
+    sentences.
+
+.PARAMETER Finding
+    The policy.
+
+.PARAMETER Setting
+    The settings, as Resolve-GPOSettingPrecedence took them.
+
+.PARAMETER Winner
+    What Resolve-GPOSettingPrecedence returned.
+
+.OUTPUTS
+    [string]
+#>
+function Get-GPOSettingPrecedenceText {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Finding,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable[]]$Setting,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [hashtable]$Winner
+    )
+
+    if ($null -eq $Winner) { $Winner = @{} }
+
+    $inForce = @()
+    $overriddenByWinner = [ordered]@{}
+    foreach ($entry in $Setting) {
+        if (-not (Test-GPOSettingConfigured -Value $Finding.($entry.Property))) { continue }
+        $settingWinner = $Winner[$entry.Property]
+        if ($null -eq $settingWinner -or [object]::ReferenceEquals($settingWinner, $Finding)) {
+            $inForce += $entry.Label
+            continue
+        }
+
+        $order = $null
+        if ($null -ne $settingWinner._PrecedenceOrder -and "$($settingWinner._PrecedenceOrder)" -ne '999') {
+            $order = "$($settingWinner._PrecedenceOrder)"
+        }
+        $winnerLabel = if ($order) { "'$($settingWinner.DisplayName)' (link order $order)" } else { "'$($settingWinner.DisplayName)'" }
+        if (-not $overriddenByWinner.Contains($winnerLabel)) { $overriddenByWinner[$winnerLabel] = @() }
+        $overriddenByWinner[$winnerLabel] += $entry.Label
+    }
+
+    $overriddenParts = @()
+    foreach ($winnerLabel in $overriddenByWinner.Keys) {
+        $overriddenParts += "$(@($overriddenByWinner[$winnerLabel]) -join ' and ') by $winnerLabel"
+    }
+
+    if ($overriddenParts.Count -eq 0) {
+        return "Yes - in force on the domain controllers: $($inForce -join ', ')"
+    }
+    if ($inForce.Count -eq 0) {
+        return "No - overridden on the domain controllers: $($overriddenParts -join '; ')"
+    }
+    return "Partly - in force on the domain controllers: $($inForce -join ', '); overridden: $($overriddenParts -join '; ')"
+}
+
+<#
+.SYNOPSIS
+    Names the policy each in-force setting on the domain controllers comes from.
+
+.PARAMETER Setting
+    The settings, as Resolve-GPOSettingPrecedence took them.
+
+.PARAMETER Winner
+    What Resolve-GPOSettingPrecedence returned.
+
+.OUTPUTS
+    [string] "LDAP signing: 'DC Hardening'; channel binding: 'Default Domain Policy'"
+#>
+function Get-GPOSettingPostureSource {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [hashtable[]]$Setting,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [hashtable]$Winner
+    )
+
+    $parts = @()
+    foreach ($entry in $Setting) {
+        if ($Winner -and $Winner[$entry.Property]) {
+            $parts += "$($entry.Label): '$($Winner[$entry.Property].DisplayName)'"
+        }
+    }
+    if ($parts.Count -eq 0) {
+        return 'No policy linked to the Domain Controllers OU or the domain root configures any of these'
+    }
+    return ($parts -join '; ')
+}
+
+<#
+.SYNOPSIS
+    What a posture read from Group Policy does not know about the domain controllers.
+
+.DESCRIPTION
+    A value a policy wrote can stay on a machine after the policy stops applying -
+    Security Options from GptTmpl.inf do, and so do registry values outside the Policies
+    keys. So what the policies say and what sits on a domain controller can diverge, and
+    the domain controller's registry is the ground truth. Said once, in one wording, for
+    every posture built from policies.
+#>
+function Get-GPOPostureBasisNote {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    return 'Read from the policies, not from the domain controllers: a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing), so the registry of the domain controllers is the ground truth'
+}

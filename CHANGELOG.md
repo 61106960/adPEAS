@@ -103,6 +103,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   The distinction is bit 49 of `msExchRoleAssignmentFlags`, measured against
   `Get-ManagementRoleAssignment`; the "-Delegating" name suffix is cut at 64 characters.
 
+- **The LDAP and SMB signing checks decide GPO precedence per setting.** Both elected one
+  winning policy for the domain controllers and called every other policy overridden.
+  But a policy that leaves a value unset does not override another policy's value for
+  it: a Default Domain Policy that alone set channel binding to Never read as overridden
+  by a Domain Controllers policy that only set LDAP signing - while its Never was what
+  the domain controllers enforced. `EffectiveSetting` now names which of a policy's
+  settings are in force and who overrides the rest, enforced links rank as Group Policy
+  ranks them, and a new object below the policies shows what is in force on the domain
+  controllers, value by value, with the policy each value comes from. It is coloured by
+  its weakest value and says that it is read from the policies: a value can stay on a
+  domain controller after its policy stops applying.
+
 ---
 
 ## [2.7.0] - 2026-10-08

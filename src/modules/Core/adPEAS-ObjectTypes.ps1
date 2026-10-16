@@ -196,6 +196,36 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "SMB signing is required on both servers and clients via GPO. NTLM relay attacks targeting SMB file shares are blocked, preventing unauthorized access and lateral movement."
     }
 
+    # What is in force on the domain controllers, value by value, decided per setting by
+    # GPO precedence - shown under the GPO rows of the two signing checks above.
+    'EffectiveLDAPConfig' = @{
+        TitleFormat = "In force on the domain controllers"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "LDAP Signing Configuration"
+        Summary = "The LDAP security values in force on the domain controllers, each taken from the highest-ranked policy that sets it."
+        WhyItMatters = "Group Policy precedence is per setting: a policy that leaves a value unset does not override another policy's value for it. What the domain controllers enforce is therefore assembled from several policies, and reading one policy alone gives the wrong answer."
+        WhatWeCheck = @(
+            "Every policy linked to the Domain Controllers OU or the domain root"
+            "For each value, the highest-ranked policy that sets it - enforced links first, then the Domain Controllers OU, then the domain root, then link order"
+        )
+        SecureMessage = "The policies in force on the domain controllers require LDAP signing and channel binding."
+    }
+
+    'EffectiveSMBSigning' = @{
+        TitleFormat = "In force on the domain controllers"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "SMB Signing Configuration"
+        Summary = "The SMB signing values in force on the domain controllers, each taken from the highest-ranked policy that sets it."
+        WhyItMatters = "Group Policy precedence is per setting: a policy that leaves a value unset does not override another policy's value for it. What the domain controllers enforce is therefore assembled from several policies, and reading one policy alone gives the wrong answer."
+        WhatWeCheck = @(
+            "Every policy linked to the Domain Controllers OU or the domain root"
+            "For each value, the highest-ranked policy that sets it - enforced links first, then the Domain Controllers OU, then the domain root, then link order"
+        )
+        SecureMessage = "The policies in force on the domain controllers require SMB signing on both the server and the client side."
+    }
+
     # ============================================================================
     # INFRASTRUCTURE SERVERS
     # ============================================================================

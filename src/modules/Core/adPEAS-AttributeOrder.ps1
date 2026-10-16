@@ -322,9 +322,16 @@ $Script:PrimaryAttributes = @{
         'siteDomainControllers'
     )
 
-    # Effective LDAP Security Configuration
+    # Effective LDAP Security Configuration - what is in force on the domain controllers,
+    # value by value, by policy precedence (Get-LDAPConfiguration)
     EffectiveLDAPConfig = @(
-        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation'
+        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
+        'decidedBy', 'basis'
+    )
+
+    # The same for SMB signing (Get-SMBSigningStatus)
+    EffectiveSMBSigning = @(
+        'ServerSigning', 'ClientSigning', 'decidedBy', 'basis'
     )
 
     # Outdated Computer object
@@ -619,6 +626,7 @@ $Script:StrictAttributeTypes = @(
     'LDAPConfigGPO',
     'AddComputerGPO',
     'EffectiveLDAPConfig',
+    'EffectiveSMBSigning',
     'LDAPStatisticsModule',
     'LDAPStatisticsTotal',
     'DomainPasswordPolicy',

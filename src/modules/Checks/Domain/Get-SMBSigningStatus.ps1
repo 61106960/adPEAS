@@ -353,51 +353,25 @@ function Get-SMBSigningStatus {
             }
 
             if ($gpoFindings -and @($gpoFindings).Count -gt 0) {
-                # Determine effective GPO per scope:
-                # - DC OU / Domain scope: GPO with lowest LinkOrder (= highest priority) wins
-                # - Other OUs (Servers, Workstations, etc.): GPO is always effective for its own OU
                 $gpoLinkageForEff = Get-GPOLinkage
-                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2 }
 
-                # Four outcomes, and the distinction between the last two is what decides
-                # whether a policy reaches a machine at all:
-                #
-                #   DomainControllers - linked at or below the Domain Controllers OU
-                #   Domain            - linked at the domain root
-                #   OtherOU           - actively linked, but to some ordinary OU
-                #   NotLinked         - linked nowhere, or every link disabled
-                #
-                # OtherOU and NotLinked used to share the name "NotLinked", and the loop
-                # below declared that whole bucket effective on the argument that a policy
-                # is effective for its own OU. A policy linked nowhere has no own OU, so an
-                # unlinked GPO was reported as the setting in force.
+                # Where each policy sits in the contest for the domain controllers, and how
+                # it ranks there - see Get-GPODCPrecedence for the five scopes, including
+                # why Unknown and NotLinked have to stay apart.
                 foreach ($gpoFinding in $gpoFindings) {
                     $guid = $gpoFinding.Name.ToUpper()
-                    # Unknown is a scope of its own. Falling through to NotLinked made the
-                    # EffectiveSetting row assert "the policy is linked nowhere" on the
-                    # strength of a lookup that failed.
                     $linksEff = $null
                     if ($null -ne $gpoLinkageForEff) {
                         $linksEff = @()
                         if ($gpoLinkageForEff.ContainsKey($guid)) { $linksEff = @($gpoLinkageForEff[$guid]) }
                     }
-                    $precScope = if ($null -eq $linksEff) { "Unknown" } else { "NotLinked" }
-                    $precOrder = 999
-
-                    if ($linksEff) {
-                        $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
-                        $dcLink  = $activeLinksEff | Where-Object { $_.DistinguishedName -match 'OU=Domain Controllers' } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
-                        $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
-                        if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
-                        elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
-                        # A link that is switched off reaches nothing, so a policy whose
-                        # every link is disabled stays NotLinked.
-                        elseif ($activeLinksEff.Count -gt 0) { $precScope = "OtherOU" }
-                    }
+                    $precedence = Get-GPODCPrecedence -Link $linksEff
+                    $precScope = $precedence.Scope
 
                     $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
-                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
-                    $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue ([bool](@($linksEff | Where-Object { $_ }).Count)) -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceRank' -NotePropertyValue $precedence.Rank -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precedence.Order -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue $precedence.HasAnyLink -Force
                     $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
 
                     # A server-side value nobody set does not mean the same thing on a
@@ -424,35 +398,35 @@ function Get-SMBSigningStatus {
                     }
                 }
 
-                # For DC OU / Domain scope: mark the single highest-priority GPO as
-                # effective. Named explicitly rather than as "everything but NotLinked",
-                # so that adding a scope cannot silently enter this contest.
-                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
-                $effectiveDC = $null
-                if ($dcDomainGPOs.Count -gt 0) {
-                    $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
-                    if ($effectiveDC) { $effectiveDC._IsEffective = $true }
-                }
+                # Precedence is per setting, not per policy: each value comes from the
+                # highest-ranked policy that sets it, and a policy that leaves one unset
+                # does not override another policy's value for it. The contest used to elect
+                # one policy and call every other one overridden. Unset server values carry
+                # the role qualifier from above and still count as unset.
+                $smbSettings = @(
+                    @{ Property = 'ServerSigning'; Label = 'server signing' }
+                    @{ Property = 'ClientSigning'; Label = 'client signing' }
+                )
+                $settingWinners = Resolve-GPOSettingPrecedence -Finding $gpoFindings -Setting $smbSettings
 
-                # For other OUs (Servers, Workstations, etc.): each GPO is effective for its own OU
-                # since there are typically no competing SMB Signing GPOs in those OUs
-                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "OtherOU" })) {
-                    $gpoFinding._IsEffective = $true
-                }
-
-                # NotLinked keeps the $false it was initialised with: a policy that reaches
-                # no machine configures nothing, however its settings read.
-
-                # The verdict goes out as a sentence rather than True/False - see
-                # Get-GPOEffectiveSettingText for why a boolean could not carry it.
+                # The verdict goes out as a sentence. In the contest it names which of the
+                # policy's settings are in force and who overrides the rest; elsewhere it
+                # keeps the wording that tells "applies on its OUs", "linked nowhere" and
+                # "every link disabled" apart. A policy that reaches no machine is never in
+                # force, however its settings read.
                 foreach ($gpoFinding in $gpoFindings) {
-                    $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
-                        Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
-                            -IsEffective $gpoFinding._IsEffective `
-                            -WinnerName $(if ($effectiveDC) { [string]$effectiveDC.DisplayName } else { $null }) `
-                            -WinnerLinkOrder $(if ($effectiveDC) { $effectiveDC._PrecedenceOrder } else { $null }) `
-                            -HasAnyLink $gpoFinding._HasAnyLink
-                    ) -Force
+                    if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain')) {
+                        $winsSomething = @($smbSettings | Where-Object {
+                            [object]::ReferenceEquals($settingWinners[$_.Property], $gpoFinding)
+                        }).Count -gt 0
+                        $gpoFinding._IsEffective = $winsSomething
+                        $effectiveText = Get-GPOSettingPrecedenceText -Finding $gpoFinding -Setting $smbSettings -Winner $settingWinners
+                    } else {
+                        $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -eq 'OtherOU')
+                        $effectiveText = Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
+                            -IsEffective $gpoFinding._IsEffective -HasAnyLink $gpoFinding._HasAnyLink
+                    }
+                    $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue $effectiveText -Force
                 }
 
                 # A signing setting in a policy that is not linked or not enabled reaches no
@@ -486,6 +460,34 @@ function Get-SMBSigningStatus {
                     } else {
                         Show-Object $gpoFinding -Class Hint
                     }
+                }
+
+                # What is in force on the domain controllers, value by value, and which
+                # policy each comes from. Not without the linkage - every policy is then
+                # Unknown, and "Not configured" for both halves would be a claim the failed
+                # lookup cannot support. An unset server half stays plain "Not configured":
+                # nothing linked to the domain controllers sets it, so the role qualifier
+                # the rows above carry - the Domain Controllers default - is not in force.
+                if ($null -ne $gpoLinkageForEff) {
+                    $posture = [PSCustomObject]@{
+                        ServerSigning = $(if ($settingWinners['ServerSigning']) { $settingWinners['ServerSigning'].ServerSigning } else { 'Not configured' })
+                        ClientSigning = $(if ($settingWinners['ClientSigning']) { $settingWinners['ClientSigning'].ClientSigning } else { 'Not configured' })
+                        decidedBy     = Get-GPOSettingPostureSource -Setting $smbSettings -Winner $settingWinners
+                        basis         = Get-GPOPostureBasisNote
+                    }
+                    $posture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigning' -Force
+
+                    # The class of the worst value in force, on the scale the value
+                    # triggers use.
+                    $postureClasses = @(
+                        foreach ($postureValue in @($posture.ServerSigning, $posture.ClientSigning)) {
+                            switch ($postureValue) { 'Required' { 'Secure' } 'Disabled' { 'Finding' } default { 'Hint' } }
+                        }
+                    )
+                    $postureClass = if ($postureClasses -contains 'Finding') { 'Finding' } elseif ($postureClasses -contains 'Hint') { 'Hint' } else { 'Secure' }
+
+                    Show-Line "In force on the domain controllers, by policy precedence:" -Class $postureClass
+                    Show-Object $posture -Class $postureClass
                 }
 
                 # Check if SMB Signing is only configured for Domain Controllers

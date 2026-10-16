@@ -3260,7 +3260,11 @@ $Script:PrimaryAttributes = @{
 	    'siteDomainControllers'
 	)
 	EffectiveLDAPConfig = @(
-	    'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation'
+	    'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
+	    'decidedBy', 'basis'
+	)
+	EffectiveSMBSigning = @(
+	    'ServerSigning', 'ClientSigning', 'decidedBy', 'basis'
 	)
 	OutdatedComputer = @(
 	    'name', 'dNSHostName', 'operatingSystem', 'operatingSystemVersion', 'osRelease',
@@ -3418,6 +3422,7 @@ $Script:StrictAttributeTypes = @(
 	'LDAPConfigGPO',
 	'AddComputerGPO',
 	'EffectiveLDAPConfig',
+	'EffectiveSMBSigning',
 	'LDAPStatisticsModule',
 	'LDAPStatisticsTotal',
 	'DomainPasswordPolicy',
@@ -18348,6 +18353,32 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Systems that may not require signing"
 	    )
 	    SecureMessage = "SMB signing is required on both servers and clients via GPO. NTLM relay attacks targeting SMB file shares are blocked, preventing unauthorized access and lateral movement."
+	}
+	'EffectiveLDAPConfig' = @{
+	    TitleFormat = "In force on the domain controllers"
+	    Module = "Domain"
+	    Category = "Domain"
+	    SectionTitle = "LDAP Signing Configuration"
+	    Summary = "The LDAP security values in force on the domain controllers, each taken from the highest-ranked policy that sets it."
+	    WhyItMatters = "Group Policy precedence is per setting: a policy that leaves a value unset does not override another policy's value for it. What the domain controllers enforce is therefore assembled from several policies, and reading one policy alone gives the wrong answer."
+	    WhatWeCheck = @(
+	        "Every policy linked to the Domain Controllers OU or the domain root"
+	        "For each value, the highest-ranked policy that sets it - enforced links first, then the Domain Controllers OU, then the domain root, then link order"
+	    )
+	    SecureMessage = "The policies in force on the domain controllers require LDAP signing and channel binding."
+	}
+	'EffectiveSMBSigning' = @{
+	    TitleFormat = "In force on the domain controllers"
+	    Module = "Domain"
+	    Category = "Domain"
+	    SectionTitle = "SMB Signing Configuration"
+	    Summary = "The SMB signing values in force on the domain controllers, each taken from the highest-ranked policy that sets it."
+	    WhyItMatters = "Group Policy precedence is per setting: a policy that leaves a value unset does not override another policy's value for it. What the domain controllers enforce is therefore assembled from several policies, and reading one policy alone gives the wrong answer."
+	    WhatWeCheck = @(
+	        "Every policy linked to the Domain Controllers OU or the domain root"
+	        "For each value, the highest-ranked policy that sets it - enforced links first, then the Domain Controllers OU, then the domain root, then link order"
+	    )
+	    SecureMessage = "The policies in force on the domain controllers require SMB signing on both the server and the client side."
 	}
 	'DomainController' = @{
 	    TitleFormat = "Domain Controller: {Name}"
@@ -49152,6 +49183,157 @@ function Get-DNParentChain {
 	}
 	return $chain
 }
+function Get-GPODCPrecedence {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Link
+	)
+	$result = [PSCustomObject]@{
+	    Scope      = 'Unknown'
+	    Rank       = 99
+	    Order      = 999
+	    HasAnyLink = $false
+	}
+	if ($null -eq $Link) { return $result }
+	$records = @(@($Link) | Where-Object { $_ })
+	$result.HasAnyLink = ($records.Count -gt 0)
+	$result.Scope = 'NotLinked'
+	$activeLinks = @($records | Where-Object { -not $_.IsDisabled })
+	if ($activeLinks.Count -eq 0) { return $result }
+	$dcLinks     = @($activeLinks | Where-Object { "$($_.DistinguishedName)" -match 'OU=Domain Controllers' })
+	$domainLinks = @($activeLinks | Where-Object { $_.Scope -eq 'Domain' })
+	if ($dcLinks.Count -eq 0 -and $domainLinks.Count -eq 0) {
+	    $result.Scope = 'OtherOU'
+	    return $result
+	}
+	$result.Scope = if ($dcLinks.Count -gt 0) { 'DomainControllers' } else { 'Domain' }
+	$candidates = @()
+	foreach ($dcLink in $dcLinks) {
+	    $candidates += [PSCustomObject]@{
+	        Rank  = $(if ($dcLink.IsEnforced -eq $true) { 1 } else { 2 })
+	        Order = $(if ($dcLink.LinkOrder) { [int]$dcLink.LinkOrder } else { 999 })
+	    }
+	}
+	foreach ($domainLink in $domainLinks) {
+	    $candidates += [PSCustomObject]@{
+	        Rank  = $(if ($domainLink.IsEnforced -eq $true) { 0 } else { 3 })
+	        Order = $(if ($domainLink.LinkOrder) { [int]$domainLink.LinkOrder } else { 999 })
+	    }
+	}
+	$best = @($candidates | Sort-Object Rank, Order)[0]
+	$result.Rank  = $best.Rank
+	$result.Order = $best.Order
+	return $result
+}
+function Resolve-GPOSettingPrecedence {
+	[CmdletBinding()]
+	[OutputType([hashtable])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Finding,
+	    [Parameter(Mandatory=$true)]
+	    [hashtable[]]$Setting
+	)
+	$contest = @(@($Finding) | Where-Object { $_ -and $_._PrecedenceScope -in @('DomainControllers', 'Domain') } |
+	    Sort-Object @{ Expression = { [int]$_._PrecedenceRank } },
+	                @{ Expression = { [int]$_._PrecedenceOrder } },
+	                @{ Expression = { [string]$_.DisplayName } })
+	$winners = @{}
+	foreach ($entry in $Setting) {
+	    foreach ($candidate in $contest) {
+	        if (Test-GPOSettingConfigured -Value $candidate.($entry.Property)) {
+	            $winners[$entry.Property] = $candidate
+	            break
+	        }
+	    }
+	}
+	return $winners
+}
+function Test-GPOSettingConfigured {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Value
+	)
+	$text = [string]$Value
+	if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+	return ($text -notmatch '^Not configured')
+}
+function Get-GPOSettingPrecedenceText {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    $Finding,
+	    [Parameter(Mandatory=$true)]
+	    [hashtable[]]$Setting,
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    [hashtable]$Winner
+	)
+	if ($null -eq $Winner) { $Winner = @{} }
+	$inForce = @()
+	$overriddenByWinner = [ordered]@{}
+	foreach ($entry in $Setting) {
+	    if (-not (Test-GPOSettingConfigured -Value $Finding.($entry.Property))) { continue }
+	    $settingWinner = $Winner[$entry.Property]
+	    if ($null -eq $settingWinner -or [object]::ReferenceEquals($settingWinner, $Finding)) {
+	        $inForce += $entry.Label
+	        continue
+	    }
+	    $order = $null
+	    if ($null -ne $settingWinner._PrecedenceOrder -and "$($settingWinner._PrecedenceOrder)" -ne '999') {
+	        $order = "$($settingWinner._PrecedenceOrder)"
+	    }
+	    $winnerLabel = if ($order) { "'$($settingWinner.DisplayName)' (link order $order)" } else { "'$($settingWinner.DisplayName)'" }
+	    if (-not $overriddenByWinner.Contains($winnerLabel)) { $overriddenByWinner[$winnerLabel] = @() }
+	    $overriddenByWinner[$winnerLabel] += $entry.Label
+	}
+	$overriddenParts = @()
+	foreach ($winnerLabel in $overriddenByWinner.Keys) {
+	    $overriddenParts += "$(@($overriddenByWinner[$winnerLabel]) -join ' and ') by $winnerLabel"
+	}
+	if ($overriddenParts.Count -eq 0) {
+	    return "Yes - in force on the domain controllers: $($inForce -join ', ')"
+	}
+	if ($inForce.Count -eq 0) {
+	    return "No - overridden on the domain controllers: $($overriddenParts -join '; ')"
+	}
+	return "Partly - in force on the domain controllers: $($inForce -join ', '); overridden: $($overriddenParts -join '; ')"
+}
+function Get-GPOSettingPostureSource {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [hashtable[]]$Setting,
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    [hashtable]$Winner
+	)
+	$parts = @()
+	foreach ($entry in $Setting) {
+	    if ($Winner -and $Winner[$entry.Property]) {
+	        $parts += "$($entry.Label): '$($Winner[$entry.Property].DisplayName)'"
+	    }
+	}
+	if ($parts.Count -eq 0) {
+	    return 'No policy linked to the Domain Controllers OU or the domain root configures any of these'
+	}
+	return ($parts -join '; ')
+}
+function Get-GPOPostureBasisNote {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param()
+	return 'Read from the policies, not from the domain controllers: a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing), so the registry of the domain controllers is the ground truth'
+}
 function Get-DomainControllerGPOContext {
 	[CmdletBinding()]
 	[OutputType([PSCustomObject])]
@@ -61354,7 +61536,6 @@ function Get-LDAPConfiguration {
 	        }
 	        if ($gpoFindings -and $gpoFindings.Count -gt 0) {
 	            $gpoLinkage = Get-GPOLinkage
-	            $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2 }
 	            foreach ($gpoFinding in $gpoFindings) {
 	                $guid = $gpoFinding.Name.ToUpper()
 	                $linksEff = $null
@@ -61362,38 +61543,33 @@ function Get-LDAPConfiguration {
 	                    $linksEff = @()
 	                    if ($gpoLinkage.ContainsKey($guid)) { $linksEff = @($gpoLinkage[$guid]) }
 	                }
-	                $precScope = if ($null -eq $linksEff) { "Unknown" } else { "NotLinked" }
-	                $precOrder = 999
-	                if ($linksEff) {
-	                    $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
-	                    $dcLink  = $activeLinksEff | Where-Object { $_.DistinguishedName -match 'OU=Domain Controllers' } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
-	                    $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
-	                    if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
-	                    elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
-	                    elseif ($activeLinksEff.Count -gt 0) { $precScope = "OtherOU" }
-	                }
-	                $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
-	                $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
-	                $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue ([bool](@($linksEff | Where-Object { $_ }).Count)) -Force
+	                $precedence = Get-GPODCPrecedence -Link $linksEff
+	                $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precedence.Scope -Force
+	                $gpoFinding | Add-Member -NotePropertyName '_PrecedenceRank' -NotePropertyValue $precedence.Rank -Force
+	                $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precedence.Order -Force
+	                $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue $precedence.HasAnyLink -Force
 	                $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
 	            }
-	            $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
-	            $effectiveDC = $null
-	            if ($dcDomainGPOs.Count -gt 0) {
-	                $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
-	                if ($effectiveDC) { $effectiveDC._IsEffective = $true }
-	            }
-	            foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "OtherOU" })) {
-	                $gpoFinding._IsEffective = $true
-	            }
+	            $ldapSettings = @(
+	                @{ Property = 'LDAPSigning';                 Label = 'LDAP signing' }
+	                @{ Property = 'ChannelBinding';              Label = 'channel binding' }
+	                @{ Property = 'anonymousSamEnumeration';     Label = 'anonymous SAM enumeration' }
+	                @{ Property = 'anonymousSidNameTranslation'; Label = 'anonymous SID/name translation' }
+	            )
+	            $settingWinners = Resolve-GPOSettingPrecedence -Finding $gpoFindings -Setting $ldapSettings
 	            foreach ($gpoFinding in $gpoFindings) {
-	                $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
-	                    Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
-	                        -IsEffective $gpoFinding._IsEffective `
-	                        -WinnerName $(if ($effectiveDC) { [string]$effectiveDC.DisplayName } else { $null }) `
-	                        -WinnerLinkOrder $(if ($effectiveDC) { $effectiveDC._PrecedenceOrder } else { $null }) `
-	                        -HasAnyLink $gpoFinding._HasAnyLink
-	                ) -Force
+	                if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain')) {
+	                    $winsSomething = @($ldapSettings | Where-Object {
+	                        [object]::ReferenceEquals($settingWinners[$_.Property], $gpoFinding)
+	                    }).Count -gt 0
+	                    $gpoFinding._IsEffective = $winsSomething
+	                    $effectiveText = Get-GPOSettingPrecedenceText -Finding $gpoFinding -Setting $ldapSettings -Winner $settingWinners
+	                } else {
+	                    $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -eq 'OtherOU')
+	                    $effectiveText = Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
+	                        -IsEffective $gpoFinding._IsEffective -HasAnyLink $gpoFinding._HasAnyLink
+	                }
+	                $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue $effectiveText -Force
 	            }
 	            $split = Split-GPOFindingByReach -Finding $gpoFindings -GPOStatusMap $gpoStatusMap `
 	                -GPOLinkage $gpoLinkage -Scope 'Machine' -GuidProperty 'Name'
@@ -61412,6 +61588,26 @@ function Get-LDAPConfiguration {
 	                } else {
 	                    Show-Object $gpoFinding -Class Hint
 	                }
+	            }
+	            if ($null -ne $gpoLinkage) {
+	                $posture = [PSCustomObject]@{
+	                    LDAPSigning                 = $(if ($settingWinners['LDAPSigning']) { $settingWinners['LDAPSigning'].LDAPSigning } else { 'Not Configured' })
+	                    ChannelBinding              = $(if ($settingWinners['ChannelBinding']) { $settingWinners['ChannelBinding'].ChannelBinding } else { 'Not Configured' })
+	                    anonymousSamEnumeration     = $(if ($settingWinners['anonymousSamEnumeration']) { $settingWinners['anonymousSamEnumeration'].anonymousSamEnumeration } else { 'Not Configured' })
+	                    anonymousSidNameTranslation = $(if ($settingWinners['anonymousSidNameTranslation']) { $settingWinners['anonymousSidNameTranslation'].anonymousSidNameTranslation } else { 'Not Configured' })
+	                    decidedBy                   = Get-GPOSettingPostureSource -Setting $ldapSettings -Winner $settingWinners
+	                    basis                       = Get-GPOPostureBasisNote
+	                }
+	                $posture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveLDAPConfig' -Force
+	                $postureClasses = @(
+	                    $(switch ($posture.LDAPSigning) { 'Required' { 'Secure' } 'Optional' { 'Hint' } 'Not Configured' { 'Hint' } default { 'Finding' } })
+	                    $(switch ($posture.ChannelBinding) { 'Always' { 'Secure' } 'When Supported' { 'Hint' } 'Not Configured' { 'Hint' } default { 'Finding' } })
+	                    $(if ($posture.anonymousSamEnumeration -eq 'Allowed') { 'Hint' } else { 'Secure' })
+	                    $(if ($posture.anonymousSidNameTranslation -eq 'Allowed') { 'Hint' } else { 'Secure' })
+	                )
+	                $postureClass = if ($postureClasses -contains 'Finding') { 'Finding' } elseif ($postureClasses -contains 'Hint') { 'Hint' } else { 'Secure' }
+	                Show-Line "In force on the domain controllers, by policy precedence:" -Class $postureClass
+	                Show-Object $posture -Class $postureClass
 	            }
 	        } else {
 	            Show-Line "No LDAP Security configuration found in any GPO - all $dcCount DC(s) potentially vulnerable" -Class Finding
@@ -61620,7 +61816,6 @@ function Get-SMBSigningStatus {
 	        }
 	        if ($gpoFindings -and @($gpoFindings).Count -gt 0) {
 	            $gpoLinkageForEff = Get-GPOLinkage
-	            $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2 }
 	            foreach ($gpoFinding in $gpoFindings) {
 	                $guid = $gpoFinding.Name.ToUpper()
 	                $linksEff = $null
@@ -61628,19 +61823,12 @@ function Get-SMBSigningStatus {
 	                    $linksEff = @()
 	                    if ($gpoLinkageForEff.ContainsKey($guid)) { $linksEff = @($gpoLinkageForEff[$guid]) }
 	                }
-	                $precScope = if ($null -eq $linksEff) { "Unknown" } else { "NotLinked" }
-	                $precOrder = 999
-	                if ($linksEff) {
-	                    $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
-	                    $dcLink  = $activeLinksEff | Where-Object { $_.DistinguishedName -match 'OU=Domain Controllers' } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
-	                    $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
-	                    if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
-	                    elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
-	                    elseif ($activeLinksEff.Count -gt 0) { $precScope = "OtherOU" }
-	                }
+	                $precedence = Get-GPODCPrecedence -Link $linksEff
+	                $precScope = $precedence.Scope
 	                $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
-	                $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
-	                $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue ([bool](@($linksEff | Where-Object { $_ }).Count)) -Force
+	                $gpoFinding | Add-Member -NotePropertyName '_PrecedenceRank' -NotePropertyValue $precedence.Rank -Force
+	                $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precedence.Order -Force
+	                $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue $precedence.HasAnyLink -Force
 	                $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
 	                if ($gpoFinding.ServerSigning -eq 'Not configured') {
 	                    if ($precScope -eq 'DomainControllers') {
@@ -61650,23 +61838,24 @@ function Get-SMBSigningStatus {
 	                    }
 	                }
 	            }
-	            $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
-	            $effectiveDC = $null
-	            if ($dcDomainGPOs.Count -gt 0) {
-	                $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
-	                if ($effectiveDC) { $effectiveDC._IsEffective = $true }
-	            }
-	            foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "OtherOU" })) {
-	                $gpoFinding._IsEffective = $true
-	            }
+	            $smbSettings = @(
+	                @{ Property = 'ServerSigning'; Label = 'server signing' }
+	                @{ Property = 'ClientSigning'; Label = 'client signing' }
+	            )
+	            $settingWinners = Resolve-GPOSettingPrecedence -Finding $gpoFindings -Setting $smbSettings
 	            foreach ($gpoFinding in $gpoFindings) {
-	                $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
-	                    Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
-	                        -IsEffective $gpoFinding._IsEffective `
-	                        -WinnerName $(if ($effectiveDC) { [string]$effectiveDC.DisplayName } else { $null }) `
-	                        -WinnerLinkOrder $(if ($effectiveDC) { $effectiveDC._PrecedenceOrder } else { $null }) `
-	                        -HasAnyLink $gpoFinding._HasAnyLink
-	                ) -Force
+	                if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain')) {
+	                    $winsSomething = @($smbSettings | Where-Object {
+	                        [object]::ReferenceEquals($settingWinners[$_.Property], $gpoFinding)
+	                    }).Count -gt 0
+	                    $gpoFinding._IsEffective = $winsSomething
+	                    $effectiveText = Get-GPOSettingPrecedenceText -Finding $gpoFinding -Setting $smbSettings -Winner $settingWinners
+	                } else {
+	                    $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -eq 'OtherOU')
+	                    $effectiveText = Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
+	                        -IsEffective $gpoFinding._IsEffective -HasAnyLink $gpoFinding._HasAnyLink
+	                }
+	                $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue $effectiveText -Force
 	            }
 	            $split = Split-GPOFindingByReach -Finding $gpoFindings -GPOStatusMap $gpoStatusMap `
 	                -GPOLinkage $gpoLinkageForEff -Scope 'Machine' -GuidProperty 'Name'
@@ -61685,6 +61874,23 @@ function Get-SMBSigningStatus {
 	                } else {
 	                    Show-Object $gpoFinding -Class Hint
 	                }
+	            }
+	            if ($null -ne $gpoLinkageForEff) {
+	                $posture = [PSCustomObject]@{
+	                    ServerSigning = $(if ($settingWinners['ServerSigning']) { $settingWinners['ServerSigning'].ServerSigning } else { 'Not configured' })
+	                    ClientSigning = $(if ($settingWinners['ClientSigning']) { $settingWinners['ClientSigning'].ClientSigning } else { 'Not configured' })
+	                    decidedBy     = Get-GPOSettingPostureSource -Setting $smbSettings -Winner $settingWinners
+	                    basis         = Get-GPOPostureBasisNote
+	                }
+	                $posture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigning' -Force
+	                $postureClasses = @(
+	                    foreach ($postureValue in @($posture.ServerSigning, $posture.ClientSigning)) {
+	                        switch ($postureValue) { 'Required' { 'Secure' } 'Disabled' { 'Finding' } default { 'Hint' } }
+	                    }
+	                )
+	                $postureClass = if ($postureClasses -contains 'Finding') { 'Finding' } elseif ($postureClasses -contains 'Hint') { 'Hint' } else { 'Secure' }
+	                Show-Line "In force on the domain controllers, by policy precedence:" -Class $postureClass
+	                Show-Object $posture -Class $postureClass
 	            }
 	            $reaching = @($split.Active)
 	            $gpoLinkage = Get-GPOLinkage
@@ -84742,7 +84948,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-2017"
+$Script:adPEASVersion = "2.7.0+20261016-2049"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

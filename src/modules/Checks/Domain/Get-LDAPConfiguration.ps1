@@ -562,31 +562,11 @@ function Get-LDAPConfiguration {
             }
 
             if ($gpoFindings -and $gpoFindings.Count -gt 0) {
-                # Determine effective GPO per scope:
-                # - DC OU / Domain scope: GPO with lowest LinkOrder (= highest priority) wins
-                # - Other OUs: GPO is always effective for its own OU
                 $gpoLinkage = Get-GPOLinkage
-                $scopePriorityEff = @{ "DomainControllers" = 1; "Domain" = 2 }
 
-                # Four outcomes, and the distinction between the last two is what decides
-                # whether a policy reaches a machine at all:
-                #
-                #   DomainControllers - linked at or below the Domain Controllers OU
-                #   Domain            - linked at the domain root
-                #   OtherOU           - actively linked, but to some ordinary OU
-                #   NotLinked         - linked nowhere, or every link disabled
-                #   Unknown           - the linkage could not be resolved at all
-                #
-                # Unknown is the fifth and it has to be separate: falling through to
-                # NotLinked made the EffectiveSetting row assert "the policy is linked
-                # nowhere" on the strength of a lookup that failed, next to a LinkedOUs row
-                # that correctly said Unknown.
-                #
-                # OtherOU and NotLinked used to share the name "NotLinked", and the loop
-                # below declared that whole bucket effective on the argument that a policy
-                # is effective for its own OU. A policy linked nowhere has no own OU, so an
-                # unlinked GPO was reported as the setting in force - "LinkedOUs: Not
-                # linked" and "IsEffectiveSetting: True" on the same object.
+                # Where each policy sits in the contest for the domain controllers, and how
+                # it ranks there - see Get-GPODCPrecedence for the five scopes, including
+                # why Unknown and NotLinked have to stay apart.
                 foreach ($gpoFinding in $gpoFindings) {
                     $guid = $gpoFinding.Name.ToUpper()
                     $linksEff = $null
@@ -594,56 +574,46 @@ function Get-LDAPConfiguration {
                         $linksEff = @()
                         if ($gpoLinkage.ContainsKey($guid)) { $linksEff = @($gpoLinkage[$guid]) }
                     }
-                    $precScope = if ($null -eq $linksEff) { "Unknown" } else { "NotLinked" }
-                    $precOrder = 999
+                    $precedence = Get-GPODCPrecedence -Link $linksEff
 
-                    if ($linksEff) {
-                        $activeLinksEff = @($linksEff | Where-Object { -not $_.IsDisabled })
-                        $dcLink  = $activeLinksEff | Where-Object { $_.DistinguishedName -match 'OU=Domain Controllers' } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
-                        $domLink = $activeLinksEff | Where-Object { $_.Scope -eq "Domain" } | Sort-Object { if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 } } | Select-Object -First 1
-                        if ($dcLink)      { $precScope = "DomainControllers"; $precOrder = if ($dcLink.LinkOrder)  { [int]$dcLink.LinkOrder }  else { 999 } }
-                        elseif ($domLink) { $precScope = "Domain";            $precOrder = if ($domLink.LinkOrder) { [int]$domLink.LinkOrder } else { 999 } }
-                        # A link that is switched off reaches nothing, so a policy whose
-                        # every link is disabled stays NotLinked.
-                        elseif ($activeLinksEff.Count -gt 0) { $precScope = "OtherOU" }
-                    }
-
-                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precScope -Force
-                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precOrder -Force
-                    $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue ([bool](@($linksEff | Where-Object { $_ }).Count)) -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precedence.Scope -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceRank' -NotePropertyValue $precedence.Rank -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precedence.Order -Force
+                    $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue $precedence.HasAnyLink -Force
                     $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
                 }
 
-                # For DC OU / Domain scope: mark the single highest-priority GPO as
-                # effective. Named explicitly rather than as "everything but NotLinked",
-                # so that adding a scope cannot silently enter this contest.
-                $dcDomainGPOs = @($gpoFindings | Where-Object { $_._PrecedenceScope -in @('DomainControllers', 'Domain') })
-                $effectiveDC = $null
-                if ($dcDomainGPOs.Count -gt 0) {
-                    $effectiveDC = $dcDomainGPOs | Sort-Object @{Expression={$scopePriorityEff[$_._PrecedenceScope]}}, _PrecedenceOrder | Select-Object -First 1
-                    if ($effectiveDC) { $effectiveDC._IsEffective = $true }
-                }
+                # Precedence is per setting, not per policy. The contest used to elect one
+                # policy and call every other one overridden - so a Default Domain Policy
+                # that alone sets channel binding was "overridden" by a Domain Controllers
+                # policy that only sets LDAP signing, while its value was the one in force.
+                # Each value comes from the highest-ranked policy that sets it.
+                $ldapSettings = @(
+                    @{ Property = 'LDAPSigning';                 Label = 'LDAP signing' }
+                    @{ Property = 'ChannelBinding';              Label = 'channel binding' }
+                    @{ Property = 'anonymousSamEnumeration';     Label = 'anonymous SAM enumeration' }
+                    @{ Property = 'anonymousSidNameTranslation'; Label = 'anonymous SID/name translation' }
+                )
+                $settingWinners = Resolve-GPOSettingPrecedence -Finding $gpoFindings -Setting $ldapSettings
 
-                # For other OUs: each GPO is effective for its own OU
-                foreach ($gpoFinding in ($gpoFindings | Where-Object { $_._PrecedenceScope -eq "OtherOU" })) {
-                    $gpoFinding._IsEffective = $true
-                }
-
-                # NotLinked keeps the $false it was initialised with: a policy that reaches
-                # no machine configures nothing, however its settings read.
-
-                # The verdict goes out as a sentence rather than True/False. The boolean
-                # could not say which of the two reasons a False meant - overridden by a
-                # higher-priority policy, or linked nowhere at all - and those call for
-                # different work.
+                # The verdict goes out as a sentence. In the contest it names which of the
+                # policy's settings are in force and who overrides the rest; elsewhere it
+                # keeps the wording that tells "applies on its OUs", "linked nowhere" and
+                # "every link disabled" apart. A policy that reaches no machine is never in
+                # force, however its settings read.
                 foreach ($gpoFinding in $gpoFindings) {
-                    $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue (
-                        Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
-                            -IsEffective $gpoFinding._IsEffective `
-                            -WinnerName $(if ($effectiveDC) { [string]$effectiveDC.DisplayName } else { $null }) `
-                            -WinnerLinkOrder $(if ($effectiveDC) { $effectiveDC._PrecedenceOrder } else { $null }) `
-                            -HasAnyLink $gpoFinding._HasAnyLink
-                    ) -Force
+                    if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain')) {
+                        $winsSomething = @($ldapSettings | Where-Object {
+                            [object]::ReferenceEquals($settingWinners[$_.Property], $gpoFinding)
+                        }).Count -gt 0
+                        $gpoFinding._IsEffective = $winsSomething
+                        $effectiveText = Get-GPOSettingPrecedenceText -Finding $gpoFinding -Setting $ldapSettings -Winner $settingWinners
+                    } else {
+                        $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -eq 'OtherOU')
+                        $effectiveText = Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
+                            -IsEffective $gpoFinding._IsEffective -HasAnyLink $gpoFinding._HasAnyLink
+                    }
+                    $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue $effectiveText -Force
                 }
 
                 # A signing setting in a policy that is not linked or not enabled reaches no
@@ -683,6 +653,36 @@ function Get-LDAPConfiguration {
                     } else {
                         Show-Object $gpoFinding -Class Hint
                     }
+                }
+
+                # What is in force on the domain controllers, value by value, and which
+                # policy each comes from - the question a reader otherwise works out by
+                # hand from the rows above. Not without the linkage: every policy is then
+                # Unknown, nobody enters the contest, and "Not Configured" across the board
+                # would be a claim the failed lookup cannot support.
+                if ($null -ne $gpoLinkage) {
+                    $posture = [PSCustomObject]@{
+                        LDAPSigning                 = $(if ($settingWinners['LDAPSigning']) { $settingWinners['LDAPSigning'].LDAPSigning } else { 'Not Configured' })
+                        ChannelBinding              = $(if ($settingWinners['ChannelBinding']) { $settingWinners['ChannelBinding'].ChannelBinding } else { 'Not Configured' })
+                        anonymousSamEnumeration     = $(if ($settingWinners['anonymousSamEnumeration']) { $settingWinners['anonymousSamEnumeration'].anonymousSamEnumeration } else { 'Not Configured' })
+                        anonymousSidNameTranslation = $(if ($settingWinners['anonymousSidNameTranslation']) { $settingWinners['anonymousSidNameTranslation'].anonymousSidNameTranslation } else { 'Not Configured' })
+                        decidedBy                   = Get-GPOSettingPostureSource -Setting $ldapSettings -Winner $settingWinners
+                        basis                       = Get-GPOPostureBasisNote
+                    }
+                    $posture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveLDAPConfig' -Force
+
+                    # The class of the worst value in force, on the scale the value
+                    # triggers use. The two anonymous settings, unset, claim nothing.
+                    $postureClasses = @(
+                        $(switch ($posture.LDAPSigning) { 'Required' { 'Secure' } 'Optional' { 'Hint' } 'Not Configured' { 'Hint' } default { 'Finding' } })
+                        $(switch ($posture.ChannelBinding) { 'Always' { 'Secure' } 'When Supported' { 'Hint' } 'Not Configured' { 'Hint' } default { 'Finding' } })
+                        $(if ($posture.anonymousSamEnumeration -eq 'Allowed') { 'Hint' } else { 'Secure' })
+                        $(if ($posture.anonymousSidNameTranslation -eq 'Allowed') { 'Hint' } else { 'Secure' })
+                    )
+                    $postureClass = if ($postureClasses -contains 'Finding') { 'Finding' } elseif ($postureClasses -contains 'Hint') { 'Hint' } else { 'Secure' }
+
+                    Show-Line "In force on the domain controllers, by policy precedence:" -Class $postureClass
+                    Show-Object $posture -Class $postureClass
                 }
 
             } else {
