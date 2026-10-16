@@ -362,7 +362,7 @@ function Get-DangerousOUPermissions {
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                         }
                         $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousOUPermission' -Force
-                        Show-Object $adObject
+                        Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                     } else {
                         $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $principal }
                         $fallbackObject = [PSCustomObject]@{
@@ -378,7 +378,7 @@ function Get-DangerousOUPermissions {
                             $fallbackObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                         }
                         $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousOUPermission' -Force
-                        Show-Object $fallbackObject
+                        Show-Object $fallbackObject -Class $(if ([string]$fallbackObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                     }
                 }
             }

@@ -61996,7 +61996,7 @@ function Get-PrivilegedGroupMembers {
 	            if (@($dcPrimaryFindings).Count -gt 0) {
 	                Show-Line "$(@($dcPrimaryFindings).Count) account(s) that are not computers hold a domain controller group as their primary group:" -Class Finding
 	                foreach ($dcFinding in $dcPrimaryFindings) {
-	                    Show-Object $dcFinding
+	                    Show-Object $dcFinding -Class Finding
 	                }
 	            }
 	        } catch {
@@ -62083,7 +62083,7 @@ function Get-PrivilegedGroupMembers {
 	                    }
 	                    $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AdminSDHolderACL' -Force
 	                    $AdminSDHolderFindings += $finding
-	                    Show-Object $finding
+	                    Show-Object $finding -Class $(if ([string]$finding.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                }
 	                $inheritedControllers = @()
 	                $denyTrustees = @()
@@ -62549,7 +62549,7 @@ function Get-InactiveAdminAccounts {
 	            Show-Line "Found $(@($inactiveAccounts).Count) inactive privileged account(s) (>$InactiveDays days$orphanedInfo):" -Class Finding
 	            foreach ($account in $inactiveAccounts) {
 	                $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'InactiveAdmin' -Force
-	                Show-Object $account
+	                Show-Object $account -Class Finding
 	            }
 	        } else {
 	            Show-Line "No inactive privileged accounts found" -Class Secure
@@ -62630,7 +62630,7 @@ function Get-AdminPasswordNeverExpires {
 	            Show-Line "Found $(@($vulnerableAccounts).Count) privileged account(s) with password never expires (password > $PasswordAgeDays days old):" -Class Finding
 	            foreach ($user in $vulnerableAccounts) {
 	                $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
-	                Show-Object $user
+	                Show-Object $user -Class Finding
 	            }
 	        }
 	        if (@($recentAccounts).Count -gt 0) {
@@ -62688,7 +62688,7 @@ function Get-AdminReversibleEncryption {
 	                        -NotePropertyValue $privileged.Reason -Force
 	                }
 	                $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ReversibleEncryption' -Force
-	                Show-Object $user
+	                Show-Object $user -Class Finding
 	            }
 	            if ($totalAccounts -gt $Script:ProgressThreshold) {
 	                Show-Progress -Activity "Processing reversible encryption accounts" -Completed
@@ -63194,7 +63194,7 @@ function Get-SIDHistoryInjection {
 	            foreach ($finding in $privilegedFindings) {
 	                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
 	                $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Privileged' -Force
-	                Show-Object $finding
+	                Show-Object $finding -Class Finding
 	            }
 	        } else {
 	            Show-Line "No account holds a privileged SID in sIDHistory that did not come from a source domain" -Class Secure
@@ -63204,7 +63204,7 @@ function Get-SIDHistoryInjection {
 	            foreach ($finding in $ownDomainFindings) {
 	                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
 	                $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Local SID' -Force
-	                Show-Object $finding
+	                Show-Object $finding -Class Finding
 	            }
 	        }
 	        if (@($foreignPrivilegedFindings).Count -gt 0) {
@@ -63327,7 +63327,7 @@ function Get-NonDefaultUserOwners {
 	            Show-Line "Found $(@($nonDefaultOwnerUsers).Count) user(s) with non-default owners:" -Class Finding
 	            foreach ($user in $nonDefaultOwnerUsers) {
 	                $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultOwner' -Force
-	                Show-Object $user
+	                Show-Object $user -Class Finding
 	            }
 	        } else {
 	            if ($filteredHealthMailboxes -gt 0) {
@@ -63394,11 +63394,11 @@ function Get-PasswordNotRequired {
 	            if ($totalAccounts -gt $Script:ProgressThreshold) { Show-Progress -Activity "Processing accounts without password requirement" -Completed }
 	            if (@($emptyPassword).Count -gt 0) {
 	                Show-Line "$(@($emptyPassword).Count) account(s) carry the flag and have never had a password set" -Class Finding
-	                foreach ($user in $emptyPassword) { Show-Object $user }
+	                foreach ($user in $emptyPassword) { Show-Object $user -Class Finding }
 	            }
 	            if (@($privilegedAccounts).Count -gt 0) {
 	                Show-Line "$(@($privilegedAccounts).Count) privileged account(s) are exempt from the password policy" -Class Finding
-	                foreach ($user in $privilegedAccounts) { Show-Object $user }
+	                foreach ($user in $privilegedAccounts) { Show-Object $user -Class Finding }
 	            }
 	            if (@($ordinaryAccounts).Count -gt 0) {
 	                Show-Line "$(@($ordinaryAccounts).Count) further enabled account(s) carry the 'Password Not Required' flag" -Class Hint
@@ -63450,7 +63450,7 @@ function Get-UnconstrainedDelegation {
 	            if (@($unconstrainedMSAs) -contains $account) {
 	                $account | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
 	            }
-	            Show-Object $account
+	            Show-Object $account -Class Finding
 	        }
 	    } catch {
 	    }
@@ -63929,7 +63929,7 @@ function Get-DangerousACLs {
 	                    $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue $finding.Rights -Force
 	                    $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $finding.Severity -Force
 	                    $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousACL' -Force
-	                    Show-Object $adObject
+	                    Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                } else {
 	                    $syntheticObject = [PSCustomObject]@{
 	                        sAMAccountName = $finding.Name
@@ -63939,7 +63939,7 @@ function Get-DangerousACLs {
 	                        dangerousRightsSeverity = $finding.Severity
 	                    }
 	                    $syntheticObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousACL' -Force
-	                    Show-Object $syntheticObject
+	                    Show-Object $syntheticObject -Class $(if ([string]$syntheticObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                }
 	            }
 	        }
@@ -63956,7 +63956,7 @@ function Get-DangerousACLs {
 	                    $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue $finding.Rights -Force
 	                    $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $finding.Severity -Force
 	                    $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousACL' -Force
-	                    Show-Object $adObject
+	                    Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                } else {
 	                    $syntheticObject = [PSCustomObject]@{
 	                        sAMAccountName = $finding.Name
@@ -63966,7 +63966,7 @@ function Get-DangerousACLs {
 	                        dangerousRightsSeverity = $finding.Severity
 	                    }
 	                    $syntheticObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousACL' -Force
-	                    Show-Object $syntheticObject
+	                    Show-Object $syntheticObject -Class $(if ([string]$syntheticObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                }
 	            }
 	        }
@@ -64173,7 +64173,7 @@ function Get-DangerousOUPermissions {
 	                        $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
 	                    }
 	                    $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousOUPermission' -Force
-	                    Show-Object $adObject
+	                    Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                } else {
 	                    $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $principal }
 	                    $fallbackObject = [PSCustomObject]@{
@@ -64189,7 +64189,7 @@ function Get-DangerousOUPermissions {
 	                        $fallbackObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
 	                    }
 	                    $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousOUPermission' -Force
-	                    Show-Object $fallbackObject
+	                    Show-Object $fallbackObject -Class $(if ([string]$fallbackObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                }
 	            }
 	        }
@@ -64463,7 +64463,7 @@ function Get-PasswordResetRights {
 	                        $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
 	                    }
 	                    $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordResetRight' -Force
-	                    Show-Object $adObject
+	                    Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                } else {
 	                    $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $principal }
 	                    $fallbackObject = [PSCustomObject]@{
@@ -64479,7 +64479,7 @@ function Get-PasswordResetRights {
 	                        $fallbackObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
 	                    }
 	                    $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordResetRight' -Force
-	                    Show-Object $fallbackObject
+	                    Show-Object $fallbackObject -Class $(if ([string]$fallbackObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                }
 	            }
 	        }
@@ -64697,7 +64697,7 @@ function Get-AddComputerRights {
 	                        $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
 	                    }
 	                    $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerRight' -Force
-	                    Show-Object $adObject
+	                    Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                } else {
 	                    $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $account.SID } else { $account.Name }
 	                    $fallbackObject = [PSCustomObject]@{
@@ -64710,7 +64710,7 @@ function Get-AddComputerRights {
 	                        $fallbackObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
 	                    }
 	                    $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerRight' -Force
-	                    Show-Object $fallbackObject
+	                    Show-Object $fallbackObject -Class $(if ([string]$fallbackObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                }
 	            }
 	            $hasFindings = $true
@@ -65424,7 +65424,7 @@ function Get-LAPSPermissions {
 	                            $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $readerSeverity -Force
 	                        }
 	                        $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
-	                        Show-Object $adObject
+	                        Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                    } else {
 	                        $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $readerInfo.Principal }
 	                        $fallbackObject = [PSCustomObject]@{
@@ -65437,7 +65437,7 @@ function Get-LAPSPermissions {
 	                            $fallbackObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $readerSeverity -Force
 	                        }
 	                        $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
-	                        Show-Object $fallbackObject
+	                        Show-Object $fallbackObject -Class $(if ([string]$fallbackObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                    }
 	                }
 	            }
@@ -65786,7 +65786,7 @@ function Get-LAPSConfiguration {
 	            if ($lapsGPOHasLegacy -or $lapsGPOHasNative) {
 	                Show-Line "LAPS GPO settings found, but the LAPS schema is NOT present in AD - LAPS is configured but completely non-functional!" -Class "Finding"
 	                foreach ($gpoConfigObject in @(Get-LAPSGPOConfigObjects -LAPSGPOSettings $lapsGPOSettings)) {
-	                    Show-Object $gpoConfigObject
+	                    Show-Object $gpoConfigObject -Class Finding
 	                }
 	            } else {
 	                Show-Line "No LAPS schema found - LAPS is not deployed" -Class "Finding"
@@ -65822,7 +65822,7 @@ function Get-LAPSConfiguration {
 	                    $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
 	                }
 	                $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
-	                Show-Object $lapsFinding
+	                Show-Object $lapsFinding -Class $(if ($coverageCaveat) { 'Hint' } else { 'Finding' })
 	            }
 	            return
 	        }
@@ -65946,7 +65946,7 @@ function Get-LAPSConfiguration {
 	        if ($staleLAPSComputers.Count -gt 0) {
 	            Show-Line "$($staleLAPSComputers.Count) computer(s) have LAPS but their password stopped rotating - counted as protected above, and they are not" -Class "Finding"
 	            foreach ($staleObject in ($staleLAPSComputers | Sort-Object daysOverdue -Descending)) {
-	                Show-Object $staleObject
+	                Show-Object $staleObject -Class Finding
 	            }
 	        } elseif ($withAnyLAPS -gt 0 -and @($undatedExpiry).Count -eq 0) {
 	            Show-Line "Every computer with LAPS rotated its password on schedule" -Class "Secure"
@@ -65990,7 +65990,7 @@ function Get-LAPSConfiguration {
 	                    $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
 	                }
 	                $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
-	                Show-Object $lapsFinding
+	                Show-Object $lapsFinding -Class $(if ($coverageCaveat) { 'Hint' } else { 'Finding' })
 	            }
 	        } elseif ($activeCount -eq 0) {
 	            Show-Line "No active computer to measure - LAPS coverage was not evaluated" -Class "Note"
@@ -66984,7 +66984,13 @@ function Get-GPOPermissions {
 	            Show-Line $summary -Class Finding
 	            foreach ($gpo in $vulnerableGPOs) {
 	                $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOPermission' -Force
-	                Show-Object $gpo
+	                $gpoClass = 'Finding'
+	                if ([string]$gpo.dangerousRightsSeverity -eq 'Hint' -and
+	                    -not $gpo.PSObject.Properties['GPOOwner'] -and
+	                    -not $gpo.PSObject.Properties['SysvolPermissions']) {
+	                    $gpoClass = 'Hint'
+	                }
+	                Show-Object $gpo -Class $gpoClass
 	            }
 	        }
 	        else {
@@ -68548,7 +68554,7 @@ function Get-GPOPointAndPrint {
 	            if (@($split.Inactive) -contains $object) {
 	                Show-Object $object -Class Note
 	            } else {
-	                Show-Object $object
+	                Show-Object $object -Class $(if ($object.Exploitability -like 'Exploitable*') { 'Finding' } elseif ($object.Severity -eq 'Info') { 'Note' } else { 'Hint' })
 	            }
 	        }
 	    } catch {
@@ -69783,7 +69789,7 @@ function Get-ADCSVulnerabilities {
 	                        $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $severity -Force
 	                        $adObject | Add-Member -NotePropertyName 'pkiContainersAffected' -NotePropertyValue $allContainers -Force
 	                        $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PKIContainer' -Force
-	                        Show-Object $adObject
+	                        Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                    } else {
 	                        $resolvedName = ConvertFrom-SID -SID $sid
 	                        $syntheticObject = [PSCustomObject]@{
@@ -69795,7 +69801,7 @@ function Get-ADCSVulnerabilities {
 	                            pkiContainersAffected = $allContainers
 	                        }
 	                        $syntheticObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PKIContainer' -Force
-	                        Show-Object $syntheticObject
+	                        Show-Object $syntheticObject -Class $(if ([string]$syntheticObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                    }
 	                }
 	            } else {
@@ -71696,7 +71702,7 @@ function Get-SCCMInfrastructure {
 	                        $aceObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $containerFinding.Severity -Force
 	                        $aceObject | Add-Member -NotePropertyName 'sccmContainerWrite' -NotePropertyValue 'This principal can write to the container Configuration Manager publishes its management points in. A management point published here is trusted by every client that uses Active Directory site discovery.' -Force
 	                        $aceObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMContainerPermission' -Force
-	                        Show-Object $aceObject
+	                        Show-Object $aceObject -Class $(if ([string]$aceObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
 	                    }
 	                } else {
 	                    Show-Line "Only the site servers and the expected administrators can write to the System Management container" -Class Secure
@@ -72022,7 +72028,7 @@ function Get-KerberoastableAccounts {
 	                        -NotePropertyValue $privileged.Reason -Force
 	                }
 	                $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Kerberoastable' -Force
-	                Show-Object $user
+	                Show-Object $user -Class Finding
 	                Show-EmptyLine
 	            }
 	            if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing Kerberoastable accounts" -Completed }
@@ -72356,7 +72362,7 @@ function Get-CredentialExposure {
 	                                    Show-Line "Found GPP credential" -Class Finding
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'GPP Password' -Force
-	                                    Show-Object $credObj
+	                                    Show-Object $credObj -Class Finding
 	                                }
 	                            }
 	                        }
@@ -72380,7 +72386,7 @@ function Get-CredentialExposure {
 	                                Show-Line "Found AutoAdminLogon credential" -Class Finding
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
-	                                    Show-Object $credObj
+	                                    Show-Object $credObj -Class Finding
 	                            }
 	                        }
 	                    }
@@ -72425,7 +72431,7 @@ function Get-CredentialExposure {
 	                                Show-Line "Found net use credential" -Class Finding
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
-	                                    Show-Object $credObj
+	                                    Show-Object $credObj -Class Finding
 	                                $reportedLines[(Get-ReportedLineKey -Lines $lines -Match $match.Value)] = $true
 	                            }
 	                        }
@@ -72449,7 +72455,7 @@ function Get-CredentialExposure {
 	                                    Show-Line "Found credential pattern" -Class Finding
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-	                                    Show-Object $credObj
+	                                    Show-Object $credObj -Class Finding
 	                                    $reportedLines[$trimmedLine] = $true
 	                                    $tier1Match = $true
 	                                    break
@@ -72581,7 +72587,7 @@ function Get-CredentialExposure {
 	                                        Show-Line "Found GPP credential" -Class Finding
 	                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
 	                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'GPP Password' -Force
-	                                        Show-Object $credObj
+	                                        Show-Object $credObj -Class Finding
 	                                        $gppFindingsCount++
 	                                    }
 	                                }
@@ -72608,7 +72614,7 @@ function Get-CredentialExposure {
 	                                    Show-Line "Found AutoAdminLogon credential" -Class Finding
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
-	                                    Show-Object $credObj
+	                                    Show-Object $credObj -Class Finding
 	                                    $gppFindingsCount++
 	                                }
 	                            }
@@ -72733,7 +72739,7 @@ function Get-CredentialExposure {
 	                                    Show-Line "Found net use credential" -Class Finding
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
-	                                    Show-Object $credObj
+	                                    Show-Object $credObj -Class Finding
 	                                    $reportedLines[(Get-ReportedLineKey -Lines $lines -Match $match.Value)] = $true
 	                                    $sysvolFindingsCount++
 	                                }
@@ -72760,7 +72766,7 @@ function Get-CredentialExposure {
 	                                        Show-Line "Found credential pattern" -Class Finding
 	                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
 	                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-	                                        Show-Object $credObj
+	                                        Show-Object $credObj -Class Finding
 	                                        $reportedLines[$trimmedLine] = $true
 	                                        $tier1Match = $true
 	                                        $sysvolFindingsCount++
@@ -72978,7 +72984,7 @@ function Get-LAPSCredentialAccess {
 	                        "Expected - the account this scan runs as is privileged ($readerName)") -Force
 	                    Show-Object $computer -Class Hint
 	                } else {
-	                    Show-Object $computer
+	                    Show-Object $computer -Class Finding
 	                }
 	            }
 	            if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS credential access" -Completed }
@@ -84081,7 +84087,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-1125"
+$Script:adPEASVersion = "2.7.0+20261016-1145"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

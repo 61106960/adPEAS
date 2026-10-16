@@ -87,7 +87,7 @@ function Get-UnconstrainedDelegation {
                     # that is neither a server nor a user account needs to know which it is.
                     $account | Add-Member -NotePropertyName 'accountKind' -NotePropertyValue 'Managed service account' -Force
                 }
-                Show-Object $account
+                Show-Object $account -Class Finding
             }
 
         } catch {

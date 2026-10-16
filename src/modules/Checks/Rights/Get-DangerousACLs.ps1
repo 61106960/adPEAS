@@ -473,7 +473,7 @@ function Get-DangerousACLs {
                         $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue $finding.Rights -Force
                         $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $finding.Severity -Force
                         $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousACL' -Force
-                        Show-Object $adObject
+                        Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                     } else {
                         # Create synthetic object for unresolvable SIDs (e.g., foreign domain principals)
                         $syntheticObject = [PSCustomObject]@{
@@ -484,7 +484,7 @@ function Get-DangerousACLs {
                             dangerousRightsSeverity = $finding.Severity
                         }
                         $syntheticObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousACL' -Force
-                        Show-Object $syntheticObject
+                        Show-Object $syntheticObject -Class $(if ([string]$syntheticObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                     }
                 }
             }
@@ -507,7 +507,7 @@ function Get-DangerousACLs {
                         $adObject | Add-Member -NotePropertyName 'dangerousRights' -NotePropertyValue $finding.Rights -Force
                         $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $finding.Severity -Force
                         $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousACL' -Force
-                        Show-Object $adObject
+                        Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                     } else {
                         # Create synthetic object for unresolvable SIDs (e.g., foreign domain principals)
                         $syntheticObject = [PSCustomObject]@{
@@ -518,7 +518,7 @@ function Get-DangerousACLs {
                             dangerousRightsSeverity = $finding.Severity
                         }
                         $syntheticObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousACL' -Force
-                        Show-Object $syntheticObject
+                        Show-Object $syntheticObject -Class $(if ([string]$syntheticObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                     }
                 }
             }

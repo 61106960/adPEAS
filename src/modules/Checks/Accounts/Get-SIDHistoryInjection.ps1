@@ -263,7 +263,7 @@ function Get-SIDHistoryInjection {
                 foreach ($finding in $privilegedFindings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
                     $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Privileged' -Force
-                    Show-Object $finding
+                    Show-Object $finding -Class Finding
                 }
             } else {
                 Show-Line "No account holds a privileged SID in sIDHistory that did not come from a source domain" -Class Secure
@@ -278,7 +278,7 @@ function Get-SIDHistoryInjection {
                 foreach ($finding in $ownDomainFindings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
                     $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Local SID' -Force
-                    Show-Object $finding
+                    Show-Object $finding -Class Finding
                 }
             }
 

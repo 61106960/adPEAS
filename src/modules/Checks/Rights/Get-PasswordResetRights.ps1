@@ -428,7 +428,7 @@ function Get-PasswordResetRights {
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                         }
                         $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordResetRight' -Force
-                        Show-Object $adObject
+                        Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                     } else {
                         # Fallback for well-known SIDs, foreign/deleted principals
                         $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $principal }
@@ -445,7 +445,7 @@ function Get-PasswordResetRights {
                             $fallbackObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                         }
                         $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordResetRight' -Force
-                        Show-Object $fallbackObject
+                        Show-Object $fallbackObject -Class $(if ([string]$fallbackObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                     }
                 }
             }

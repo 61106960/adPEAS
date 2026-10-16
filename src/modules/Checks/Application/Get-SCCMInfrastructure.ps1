@@ -456,7 +456,7 @@ function Get-SCCMInfrastructure {
                             $aceObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $containerFinding.Severity -Force
                             $aceObject | Add-Member -NotePropertyName 'sccmContainerWrite' -NotePropertyValue 'This principal can write to the container Configuration Manager publishes its management points in. A management point published here is trusted by every client that uses Active Directory site discovery.' -Force
                             $aceObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMContainerPermission' -Force
-                            Show-Object $aceObject
+                            Show-Object $aceObject -Class $(if ([string]$aceObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                         }
                     } else {
                         Show-Line "Only the site servers and the expected administrators can write to the System Management container" -Class Secure

@@ -569,7 +569,7 @@ function Get-LAPSConfiguration {
                     Show-Line "LAPS GPO settings found, but the LAPS schema is NOT present in AD - LAPS is configured but completely non-functional!" -Class "Finding"
 
                     foreach ($gpoConfigObject in @(Get-LAPSGPOConfigObjects -LAPSGPOSettings $lapsGPOSettings)) {
-                        Show-Object $gpoConfigObject
+                        Show-Object $gpoConfigObject -Class Finding
                     }
                 } else {
                     Show-Line "No LAPS schema found - LAPS is not deployed" -Class "Finding"
@@ -612,7 +612,7 @@ function Get-LAPSConfiguration {
                         $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
                     }
                     $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
-                    Show-Object $lapsFinding
+                    Show-Object $lapsFinding -Class $(if ($coverageCaveat) { 'Hint' } else { 'Finding' })
                 }
                 return
             }
@@ -809,7 +809,7 @@ function Get-LAPSConfiguration {
             if ($staleLAPSComputers.Count -gt 0) {
                 Show-Line "$($staleLAPSComputers.Count) computer(s) have LAPS but their password stopped rotating - counted as protected above, and they are not" -Class "Finding"
                 foreach ($staleObject in ($staleLAPSComputers | Sort-Object daysOverdue -Descending)) {
-                    Show-Object $staleObject
+                    Show-Object $staleObject -Class Finding
                 }
             } elseif ($withAnyLAPS -gt 0 -and @($undatedExpiry).Count -eq 0) {
                 Show-Line "Every computer with LAPS rotated its password on schedule" -Class "Secure"
@@ -869,7 +869,7 @@ function Get-LAPSConfiguration {
                         $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
                     }
                     $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
-                    Show-Object $lapsFinding
+                    Show-Object $lapsFinding -Class $(if ($coverageCaveat) { 'Hint' } else { 'Finding' })
                 }
             } elseif ($activeCount -eq 0) {
                 # 0 of 0 is not 100 per cent. Coverage divides by the active computers, and

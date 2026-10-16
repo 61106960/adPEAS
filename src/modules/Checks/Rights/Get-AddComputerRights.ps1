@@ -349,7 +349,7 @@ function Get-AddComputerRights {
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                         }
                         $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerRight' -Force
-                        Show-Object $adObject
+                        Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                     } else {
                         # Fallback for well-known SIDs, foreign/deleted principals
                         # For well-known SIDs, resolve name via ConvertFrom-SID
@@ -364,7 +364,7 @@ function Get-AddComputerRights {
                             $fallbackObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                         }
                         $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerRight' -Force
-                        Show-Object $fallbackObject
+                        Show-Object $fallbackObject -Class $(if ([string]$fallbackObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                     }
                 }
                 $hasFindings = $true

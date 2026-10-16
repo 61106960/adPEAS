@@ -834,7 +834,20 @@ function Get-GPOPermissions {
 
                 foreach ($gpo in $vulnerableGPOs) {
                     $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOPermission' -Force
-                    Show-Object $gpo
+
+                    # The class the policy is filed under - the console ignores it, the JSON
+                    # export and the report diff do not. A finding, unless all the policy is
+                    # listed for is an ACE block this check rated a hint above: privileged
+                    # trustees under -IncludePrivileged, or a write that cannot reach the
+                    # policy content. A non-default owner or a writable policy folder is a
+                    # finding of its own.
+                    $gpoClass = 'Finding'
+                    if ([string]$gpo.dangerousRightsSeverity -eq 'Hint' -and
+                        -not $gpo.PSObject.Properties['GPOOwner'] -and
+                        -not $gpo.PSObject.Properties['SysvolPermissions']) {
+                        $gpoClass = 'Hint'
+                    }
+                    Show-Object $gpo -Class $gpoClass
                 }
             }
             else {

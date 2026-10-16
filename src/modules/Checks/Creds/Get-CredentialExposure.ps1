@@ -284,7 +284,7 @@ function Get-CredentialExposure {
                                         Show-Line "Found GPP credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'GPP Password' -Force
-                                        Show-Object $credObj
+                                        Show-Object $credObj -Class Finding
                                     }
                                 }
                             }
@@ -315,7 +315,7 @@ function Get-CredentialExposure {
                                     Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
-                                        Show-Object $credObj
+                                        Show-Object $credObj -Class Finding
                                 }
                             }
                         }
@@ -371,7 +371,7 @@ function Get-CredentialExposure {
                                     Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
-                                        Show-Object $credObj
+                                        Show-Object $credObj -Class Finding
                                     # The whole line, not the match. The guard below compares
                                     # lines, and a net use match covers only the command - as
                                     # a key it was a substring of any later line that
@@ -424,7 +424,7 @@ function Get-CredentialExposure {
                                         Show-Line "Found credential pattern" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-                                        Show-Object $credObj
+                                        Show-Object $credObj -Class Finding
                                         $reportedLines[$trimmedLine] = $true
                                         $tier1Match = $true
                                         break
@@ -618,7 +618,7 @@ function Get-CredentialExposure {
                                             Show-Line "Found GPP credential" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'GPP Password' -Force
-                                            Show-Object $credObj
+                                            Show-Object $credObj -Class Finding
                                             $gppFindingsCount++
                                         }
                                     }
@@ -654,7 +654,7 @@ function Get-CredentialExposure {
                                         Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
-                                        Show-Object $credObj
+                                        Show-Object $credObj -Class Finding
                                         $gppFindingsCount++
                                     }
                                 }
@@ -827,7 +827,7 @@ function Get-CredentialExposure {
                                         Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
-                                        Show-Object $credObj
+                                        Show-Object $credObj -Class Finding
                                         # The whole line rather than the match - see the
                                         # custom path above for what the difference cost.
                                         $reportedLines[(Get-ReportedLineKey -Lines $lines -Match $match.Value)] = $true
@@ -882,7 +882,7 @@ function Get-CredentialExposure {
                                             Show-Line "Found credential pattern" -Class Finding
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-                                            Show-Object $credObj
+                                            Show-Object $credObj -Class Finding
                                             $reportedLines[$trimmedLine] = $true
                                             $tier1Match = $true
                                             $sysvolFindingsCount++

@@ -88,7 +88,7 @@ function Get-AdminReversibleEncryption {
                     }
 
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ReversibleEncryption' -Force
-                    Show-Object $user
+                    Show-Object $user -Class Finding
                 }
 
                 # Clear progress bar

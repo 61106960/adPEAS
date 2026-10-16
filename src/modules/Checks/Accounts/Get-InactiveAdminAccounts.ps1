@@ -200,7 +200,7 @@ function Get-InactiveAdminAccounts {
 
                 foreach ($account in $inactiveAccounts) {
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'InactiveAdmin' -Force
-                    Show-Object $account
+                    Show-Object $account -Class Finding
                 }
             } else {
                 Show-Line "No inactive privileged accounts found" -Class Secure

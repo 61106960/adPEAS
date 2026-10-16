@@ -202,7 +202,7 @@ function Get-NonDefaultUserOwners {
 
                 foreach ($user in $nonDefaultOwnerUsers) {
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultOwner' -Force
-                    Show-Object $user
+                    Show-Object $user -Class Finding
                 }
 
             } else {

@@ -363,7 +363,7 @@ function Get-GPOPointAndPrint {
                 if (@($split.Inactive) -contains $object) {
                     Show-Object $object -Class Note
                 } else {
-                    Show-Object $object
+                    Show-Object $object -Class $(if ($object.Exploitability -like 'Exploitable*') { 'Finding' } elseif ($object.Severity -eq 'Info') { 'Note' } else { 'Hint' })
                 }
             }
 

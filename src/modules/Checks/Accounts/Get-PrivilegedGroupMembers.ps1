@@ -1015,7 +1015,7 @@ function Get-PrivilegedGroupMembers {
                 if (@($dcPrimaryFindings).Count -gt 0) {
                     Show-Line "$(@($dcPrimaryFindings).Count) account(s) that are not computers hold a domain controller group as their primary group:" -Class Finding
                     foreach ($dcFinding in $dcPrimaryFindings) {
-                        Show-Object $dcFinding
+                        Show-Object $dcFinding -Class Finding
                     }
                 }
             } catch {
@@ -1189,7 +1189,7 @@ function Get-PrivilegedGroupMembers {
                         $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AdminSDHolderACL' -Force
                         $AdminSDHolderFindings += $finding
 
-                        Show-Object $finding
+                        Show-Object $finding -Class $(if ([string]$finding.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                     }
 
                     # Two questions, and the loop above answers only the first.

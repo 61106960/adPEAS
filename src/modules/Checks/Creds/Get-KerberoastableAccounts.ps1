@@ -181,7 +181,7 @@ function Get-KerberoastableAccounts {
                     }
 
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Kerberoastable' -Force
-                    Show-Object $user
+                    Show-Object $user -Class Finding
 
                     # Blank line between accounts for readability
                     Show-EmptyLine

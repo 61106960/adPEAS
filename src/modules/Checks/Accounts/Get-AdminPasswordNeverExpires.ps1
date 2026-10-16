@@ -179,7 +179,7 @@ function Get-AdminPasswordNeverExpires {
 
                 foreach ($user in $vulnerableAccounts) {
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
-                    Show-Object $user
+                    Show-Object $user -Class Finding
                 }
             }
 

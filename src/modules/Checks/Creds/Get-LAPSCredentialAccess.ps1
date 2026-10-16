@@ -313,7 +313,7 @@ function Get-LAPSCredentialAccess {
                             "Expected - the account this scan runs as is privileged ($readerName)") -Force
                         Show-Object $computer -Class Hint
                     } else {
-                        Show-Object $computer
+                        Show-Object $computer -Class Finding
                     }
                 }
                 if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS credential access" -Completed }

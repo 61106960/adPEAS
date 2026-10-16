@@ -121,12 +121,12 @@ function Get-PasswordNotRequired {
 
                 if (@($emptyPassword).Count -gt 0) {
                     Show-Line "$(@($emptyPassword).Count) account(s) carry the flag and have never had a password set" -Class Finding
-                    foreach ($user in $emptyPassword) { Show-Object $user }
+                    foreach ($user in $emptyPassword) { Show-Object $user -Class Finding }
                 }
 
                 if (@($privilegedAccounts).Count -gt 0) {
                     Show-Line "$(@($privilegedAccounts).Count) privileged account(s) are exempt from the password policy" -Class Finding
-                    foreach ($user in $privilegedAccounts) { Show-Object $user }
+                    foreach ($user in $privilegedAccounts) { Show-Object $user -Class Finding }
                 }
 
                 if (@($ordinaryAccounts).Count -gt 0) {

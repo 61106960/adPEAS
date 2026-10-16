@@ -1038,7 +1038,7 @@ function Get-ADCSVulnerabilities {
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue $severity -Force
                             $adObject | Add-Member -NotePropertyName 'pkiContainersAffected' -NotePropertyValue $allContainers -Force
                             $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PKIContainer' -Force
-                            Show-Object $adObject
+                            Show-Object $adObject -Class $(if ([string]$adObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                         } else {
                             # Create synthetic object for unresolvable SIDs
                             $resolvedName = ConvertFrom-SID -SID $sid
@@ -1051,7 +1051,7 @@ function Get-ADCSVulnerabilities {
                                 pkiContainersAffected = $allContainers
                             }
                             $syntheticObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PKIContainer' -Force
-                            Show-Object $syntheticObject
+                            Show-Object $syntheticObject -Class $(if ([string]$syntheticObject.dangerousRightsSeverity -in @('Expected', 'Attention', 'Hint')) { 'Hint' } else { 'Finding' })
                         }
                     }
                 } else {
