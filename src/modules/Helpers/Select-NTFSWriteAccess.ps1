@@ -5,8 +5,8 @@
 
 .DESCRIPTION
     Shared by the two checks that read NTFS permissions over SMB: Get-GPOPermissions for the
-    policy folder in SYSVOL, and Get-GPOScheduledTasks for the program a SYSTEM task starts
-    from a share. Both ask the same question - who besides the accounts expected to
+    policy folder in SYSVOL, and Get-GPOScheduledTasks for the program a SYSTEM or privileged
+    task starts from a share. Both ask the same question - who besides the accounts expected to
     administer Group Policy can change what a policy makes every computer in scope run -
     and the evaluation used to exist only inside the first of them.
 

@@ -9062,24 +9062,25 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
     # ============================================================================
 
     'GPO_TASK_SYSTEM_UNC_PATH' = @{
-        Title = "GPO Scheduled Task Runs as SYSTEM from UNC Path"
+        Title = "GPO Scheduled Task Runs as SYSTEM or a Privileged Account from UNC Path"
         Risk = "Finding"
         BaseScore = 45
-        Description = "A GPO-deployed scheduled task runs as SYSTEM and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs as SYSTEM on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. Where the host is an enabled computer of the domain and -OPSEC is not set, adPEAS reads the NTFS permissions of the file and of the folder it is in and names every account beyond the expected administrators that can write them. A path only privileged accounts can write is a hint rather than a finding: the administrators of that server still decide what runs as SYSTEM everywhere the policy applies. The share permissions are not read - a share's security descriptor is returned to administrators of the file server only - and over the network they can narrow the NTFS rights reported here, never widen them."
+        Description = "A GPO-deployed scheduled task runs as SYSTEM or as a privileged account and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs in that account on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. Where the host is an enabled computer of the domain and -OPSEC is not set, adPEAS reads the NTFS permissions of the file and of the folder it is in and names every account beyond the expected administrators that can write them. For a SYSTEM task, a path only privileged accounts can write is a hint rather than a finding: the administrators of that server still decide what runs as SYSTEM everywhere the policy applies. For a privileged account the task stays a finding either way, because it runs that account on every computer in scope. The share permissions are not read - a share's security descriptor is returned to administrators of the file server only - and over the network they can narrow the NTFS rights reported here, never widen them."
         Impact = @(
-            "Task runs with SYSTEM privileges"
+            "Task runs with SYSTEM privileges, or as a privileged domain account"
             "What it runs is loaded from a network share at every run"
-            "Write access to the share = code execution as SYSTEM"
+            "Write access to the share = code execution in that account"
             "Affects all computers where the GPO is applied"
         )
         Attack = @(
             "1. Attacker reads the UNC path out of ScheduledTasks.xml in SYSVOL and checks the share's permissions"
             "2. Replaces the executable or script there with a malicious payload"
-            "3. Task executes the payload as SYSTEM on all affected hosts"
-            "4. Gains SYSTEM access on multiple computers"
+            "3. Task executes the payload as SYSTEM, or as the privileged account, on all affected hosts"
+            "4. Gains SYSTEM access on multiple computers - or the privileges of that account, which for a domain administrator is the domain"
         )
         Remediation = @(
             "Start SYSTEM-context tasks from a local path that only administrators can write"
+            "Do not run GPO-deployed tasks as a privileged domain account; give the task an account with only the rights it needs"
             "Ensure the share and the files on it are writable by administrators only - NTFS and share permissions both"
             "Implement code signing for scheduled task executables"
             "Review all GPO scheduled tasks for security"
@@ -9122,6 +9123,12 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
             # privileged accounts can write.
             @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM and uses UNC path'; Severity = 'Finding' }
             @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM from UNC path'; Severity = 'Hint' }
+            # The same two openings for a task that runs as a privileged account, both a
+            # finding: the account is one, whoever may write the share. Neither matches the
+            # risky-directory verdict "Task runs as the privileged account X from C:\...",
+            # which carries no UNC path.
+            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as the privileged account .+ and uses UNC path'; Severity = 'Finding' }
+            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as the privileged account .+ from UNC path'; Severity = 'Finding' }
             # One "path: Identity (Rights)" row per trustee that can write, written only
             # when there is one - a bare trigger, like SysvolPermissions on a GPO.
             @{ Attribute = 'UNCPathPermissions'; Severity = 'Finding' }

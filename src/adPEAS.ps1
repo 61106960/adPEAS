@@ -350,7 +350,7 @@ function Invoke-adPEAS {
 .PARAMETER OPSEC
     Skips OPSEC-critical and heavy-load checks (Kerberoast, ASREPRoast, BloodHound collection, PasswordInDescription, NonDefaultOwners, OutdatedComputers).
     These checks enumerate thousands of objects and generate significant LDAP traffic.
-    Also makes no SMB connection to the file servers a GPO scheduled task names: without -OPSEC, the NTFS permissions of a program a SYSTEM task starts from a share are read, on computers of the domain only.
+    Also makes no SMB connection to the file servers a GPO scheduled task names: without -OPSEC, the NTFS permissions of a program a task running as SYSTEM or a privileged account starts from a share are read, on computers of the domain only.
 
 .PARAMETER NoColor
     Disables colored console output. Useful for logging or terminals that don't support ANSI colors.

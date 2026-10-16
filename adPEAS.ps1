@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 16:30:05
-    Version: 2.7.0+20261016-1630
+    Build: 2026-10-16 17:59:27
+    Version: 2.7.0+20261016-1759
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -16928,24 +16928,25 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
     # ============================================================================
 
     'GPO_TASK_SYSTEM_UNC_PATH' = @{
-        Title = "GPO Scheduled Task Runs as SYSTEM from UNC Path"
+        Title = "GPO Scheduled Task Runs as SYSTEM or a Privileged Account from UNC Path"
         Risk = "Finding"
         BaseScore = 45
-        Description = "A GPO-deployed scheduled task runs as SYSTEM and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs as SYSTEM on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. Where the host is an enabled computer of the domain and -OPSEC is not set, adPEAS reads the NTFS permissions of the file and of the folder it is in and names every account beyond the expected administrators that can write them. A path only privileged accounts can write is a hint rather than a finding: the administrators of that server still decide what runs as SYSTEM everywhere the policy applies. The share permissions are not read - a share's security descriptor is returned to administrators of the file server only - and over the network they can narrow the NTFS rights reported here, never widen them."
+        Description = "A GPO-deployed scheduled task runs as SYSTEM or as a privileged account and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs in that account on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. Where the host is an enabled computer of the domain and -OPSEC is not set, adPEAS reads the NTFS permissions of the file and of the folder it is in and names every account beyond the expected administrators that can write them. For a SYSTEM task, a path only privileged accounts can write is a hint rather than a finding: the administrators of that server still decide what runs as SYSTEM everywhere the policy applies. For a privileged account the task stays a finding either way, because it runs that account on every computer in scope. The share permissions are not read - a share's security descriptor is returned to administrators of the file server only - and over the network they can narrow the NTFS rights reported here, never widen them."
         Impact = @(
-            "Task runs with SYSTEM privileges"
+            "Task runs with SYSTEM privileges, or as a privileged domain account"
             "What it runs is loaded from a network share at every run"
-            "Write access to the share = code execution as SYSTEM"
+            "Write access to the share = code execution in that account"
             "Affects all computers where the GPO is applied"
         )
         Attack = @(
             "1. Attacker reads the UNC path out of ScheduledTasks.xml in SYSVOL and checks the share's permissions"
             "2. Replaces the executable or script there with a malicious payload"
-            "3. Task executes the payload as SYSTEM on all affected hosts"
-            "4. Gains SYSTEM access on multiple computers"
+            "3. Task executes the payload as SYSTEM, or as the privileged account, on all affected hosts"
+            "4. Gains SYSTEM access on multiple computers - or the privileges of that account, which for a domain administrator is the domain"
         )
         Remediation = @(
             "Start SYSTEM-context tasks from a local path that only administrators can write"
+            "Do not run GPO-deployed tasks as a privileged domain account; give the task an account with only the rights it needs"
             "Ensure the share and the files on it are writable by administrators only - NTFS and share permissions both"
             "Implement code signing for scheduled task executables"
             "Review all GPO scheduled tasks for security"
@@ -16988,6 +16989,12 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
             # privileged accounts can write.
             @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM and uses UNC path'; Severity = 'Finding' }
             @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM from UNC path'; Severity = 'Hint' }
+            # The same two openings for a task that runs as a privileged account, both a
+            # finding: the account is one, whoever may write the share. Neither matches the
+            # risky-directory verdict "Task runs as the privileged account X from C:\...",
+            # which carries no UNC path.
+            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as the privileged account .+ and uses UNC path'; Severity = 'Finding' }
+            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as the privileged account .+ from UNC path'; Severity = 'Finding' }
             # One "path: Identity (Rights)" row per trustee that can write, written only
             # when there is one - a bare trigger, like SysvolPermissions on a GPO.
             @{ Attribute = 'UNCPathPermissions'; Severity = 'Finding' }
@@ -26229,7 +26236,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Execution context (SYSTEM, a privileged account, any other account)"
             "Whether a path lies in a directory where every user may change or add files by Windows default"
             "UNC paths, whose share decides what the task runs"
-            "For a SYSTEM task: the NTFS permissions of the UNC file and of the folder it is in, read over SMB on enabled computers of the domain only, and not under -OPSEC"
+            "For a task running as SYSTEM or a privileged account: the NTFS permissions of the UNC file and of the folder it is in, read over SMB on enabled computers of the domain only, and not under -OPSEC"
             "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
             "Not tested: the permissions on the hosts themselves, and the share permissions of a UNC path - they are returned to administrators of the file server only"
         )
@@ -60762,9 +60769,9 @@ function Get-DirectoryAccessRules {
     an array of rules, possibly empty, or $null when the path is not a file that could be
     read - a folder, a missing file, or one whose descriptor the caller may not read.
 
-    Get-GPOScheduledTasks reads with it the program a SYSTEM task starts from a share:
-    whoever can write that file controls what runs as SYSTEM on every computer the policy
-    reaches.
+    Get-GPOScheduledTasks reads with it the program a task running as SYSTEM or a
+    privileged account starts from a share: whoever can write that file controls what runs
+    in that account on every computer the policy reaches.
 
 .PARAMETER Path
     The file to read. Must be a path Invoke-SMBAccess has made reachable.
@@ -61276,8 +61283,8 @@ try {
 
 .DESCRIPTION
     Shared by the two checks that read NTFS permissions over SMB: Get-GPOPermissions for the
-    policy folder in SYSVOL, and Get-GPOScheduledTasks for the program a SYSTEM task starts
-    from a share. Both ask the same question - who besides the accounts expected to
+    policy folder in SYSVOL, and Get-GPOScheduledTasks for the program a SYSTEM or privileged
+    task starts from a share. Both ask the same question - who besides the accounts expected to
     administer Group Policy can change what a policy makes every computer in scope run -
     and the evaluation used to exist only inside the first of them.
 
@@ -110875,7 +110882,7 @@ function Get-GPOPermissions {
 
                     # Deny netting, the write mask and the two identity gates the directory
                     # half uses - see Select-NTFSWriteAccess, which Get-GPOScheduledTasks
-                    # shares for the program a SYSTEM task starts from a share.
+                    # shares for the program a SYSTEM or privileged task starts from a share.
                     #
                     # Inherit-only rules count here. The children of a policy folder are
                     # the policy, so a Modify that reaches only them still rewrites it.
@@ -111992,8 +111999,9 @@ function Get-GPOScheduledTasks {
     Focuses on security-critical configurations:
     - Tasks running as SYSTEM or privileged accounts
     - Tasks that name a UNC path (whoever can write the share controls what runs)
-    - For a SYSTEM task with a UNC path: the NTFS permissions of the file and of the
-      folder it is in, read over SMB where the host is a computer of the domain
+    - For a task with a UNC path that runs as SYSTEM or a privileged account: the NTFS
+      permissions of the file and of the folder it is in, read over SMB where the host is
+      a computer of the domain
     - Tasks starting code from a directory in which every user may change or add files
       by Windows default (the permissions on the hosts themselves are not read)
     - Every Exec action of a task, not only the first one
@@ -112014,9 +112022,9 @@ function Get-GPOScheduledTasks {
 
     .PARAMETER OPSEC
     Make no connection to the hosts a task names. Without it, the check reads the NTFS
-    permissions of a UNC path a SYSTEM task runs from - with the session's credentials, and
-    only on a host that is an enabled computer of the domain, by the DNS name the directory
-    records for it.
+    permissions of a UNC path a task running as SYSTEM or a privileged account starts from -
+    with the session's credentials, and only on a host that is an enabled computer of the
+    domain, by the DNS name the directory records for it.
 
     .EXAMPLE
     Get-GPOScheduledTasks
@@ -112572,14 +112580,16 @@ function Parse-ScheduledTasksXML {
                 }
             }
 
-            # A SYSTEM task with a UNC path: who may write there, where adPEAS may look.
-            # Three outcomes, and the ladder below keeps them apart - an account beyond the
-            # expected administrators can write it (a finding that names them), a path that
-            # could not be read in full (the finding as it always was, with the reason),
-            # and a path only privileged accounts can write (a hint: the administrators of
-            # that server still decide what runs as SYSTEM everywhere the policy applies).
+            # A task with a UNC path that runs as SYSTEM or as a privileged account: who may
+            # write there, where adPEAS may look. Three outcomes, and the ladder below keeps
+            # them apart - an account beyond the expected administrators can write it (a
+            # finding that names them), a path that could not be read in full (the finding as
+            # it always was, with the reason), and a path only privileged accounts can write.
+            # That last one is a hint for SYSTEM - the administrators of that server still
+            # decide what runs everywhere the policy applies - and stays a finding for a
+            # privileged account, which is a finding on its own.
             $uncAccess = $null
-            if ($isSystemAccount -and $hasUNCPath) {
+            if (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath) {
                 try {
                     $uncAccess = Get-TaskUNCWriteAccess -Path $uncPaths -OPSEC:$OPSEC
                 } catch {
@@ -112588,6 +112598,15 @@ function Parse-ScheduledTasksXML {
             }
             $uncWritable = ($null -ne $uncAccess) -and (@($uncAccess.Writers).Count -gt 0)
             $uncClean = ($null -ne $uncAccess) -and (-not $uncWritable) -and (@($uncAccess.Unchecked).Count -eq 0)
+
+            # Who the share's content runs as, in the words the UNC verdicts below use. The
+            # SYSTEM wording is the one the card's triggers have always matched.
+            $uncTaskSubject = 'SYSTEM'
+            $uncRunsAs = 'SYSTEM'
+            if (-not $isSystemAccount) {
+                $uncTaskSubject = "the privileged account $runAsLabel"
+                $uncRunsAs = 'that account'
+            }
 
             $isPowerShell = (@($allCommands) -join ' ') -match 'powershell|pwsh'
 
@@ -112600,16 +112619,16 @@ function Parse-ScheduledTasksXML {
             $isScript = $scriptPrograms.Count -gt 0
 
             # Severity Determination (using standard adPEAS severity values)
-            if ($isSystemAccount -and $uncWritable) {
+            if (($isSystemAccount -or $isPrivilegedAccount) -and $uncWritable) {
                 $severity = "Finding"
-                $risk = "Task runs as SYSTEM and uses UNC path - $(@($uncAccess.Writers) -join ', ') can change what it runs there by NTFS permission (see UNCPathPermissions), and so control what runs as SYSTEM on every computer in scope. The share permissions, which can narrow this over the network, were not read"
-            } elseif ($isSystemAccount -and $hasUNCPath -and -not $uncClean) {
+                $risk = "Task runs as $uncTaskSubject and uses UNC path - $(@($uncAccess.Writers) -join ', ') can change what it runs there by NTFS permission (see UNCPathPermissions), and so control what runs as $uncRunsAs on every computer in scope. The share permissions, which can narrow this over the network, were not read"
+            } elseif (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath -and -not $uncClean) {
                 $severity = "Finding"
                 $uncReason = ''
                 if ($null -ne $uncAccess -and @($uncAccess.Unchecked).Count -gt 0) {
                     $uncReason = ", because $(@($uncAccess.Unchecked)[0])"
                 }
-                $risk = "Task runs as SYSTEM and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as SYSTEM on every computer in scope. Who may write there was not checked$uncReason"
+                $risk = "Task runs as $uncTaskSubject and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as $uncRunsAs on every computer in scope. Who may write there was not checked$uncReason"
             } elseif ($isSystemAccount -and $riskyPathApplies) {
                 $severity = "Finding"
                 $risk = "Task runs as SYSTEM $riskyPathText as SYSTEM"
@@ -112627,6 +112646,12 @@ function Parse-ScheduledTasksXML {
             } elseif ($isPrivilegedAccount) {
                 $severity = "Finding"
                 $risk = "Task runs as privileged account"
+                if ($uncClean) {
+                    # Read in full, and only privileged accounts can write what it starts. Still
+                    # a finding: the task runs as a privileged account on every computer in
+                    # scope, whatever it starts - the row says the share is not the way in.
+                    $risk = "Task runs as the privileged account $runAsLabel from UNC path $([string]@($uncPaths)[0]) - by NTFS permission only privileged accounts can write what it runs there. The share permissions were not read"
+                }
             } elseif ($uncClean) {
                 # SYSTEM with a UNC path that was read in full and only privileged accounts
                 # can write. After the SYSTEM findings above, so a local script or a risky
@@ -112869,14 +112894,15 @@ function Get-TaskUNCPaths {
 
 <#
 .SYNOPSIS
-    Reads who may write the UNC paths a SYSTEM task runs from, where adPEAS may connect.
+    Reads who may write the UNC paths a task running as SYSTEM or a privileged account
+    starts from, where adPEAS may connect.
 
 .DESCRIPTION
-    Whoever can write the program a SYSTEM task starts from a share controls what runs as
-    SYSTEM on every computer the policy reaches. The NTFS permissions of that file and of
-    the folder it is in can be read by any account that can read the file - but reading
-    them takes an SMB connection, with the tester's credentials, to a host the policy
-    names. Get-TaskUNCHost decides whether that connection is made at all.
+    Whoever can write the program such a task starts from a share controls what runs in
+    that account on every computer the policy reaches. The NTFS permissions of that file
+    and of the folder it is in can be read by any account that can read the file - but
+    reading them takes an SMB connection, with the tester's credentials, to a host the
+    policy names. Get-TaskUNCHost decides whether that connection is made at all.
 
     The share permissions are not read: NetShareGetInfo returns a share's security
     descriptor to administrators of the file server only. Over the network they apply on
@@ -136158,7 +136184,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-1630"
+$Script:adPEASVersion = "2.7.0+20261016-1759"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -136260,7 +136286,7 @@ function Invoke-adPEAS {
 .PARAMETER OPSEC
     Skips OPSEC-critical and heavy-load checks (Kerberoast, ASREPRoast, BloodHound collection, PasswordInDescription, NonDefaultOwners, OutdatedComputers).
     These checks enumerate thousands of objects and generate significant LDAP traffic.
-    Also makes no SMB connection to the file servers a GPO scheduled task names: without -OPSEC, the NTFS permissions of a program a SYSTEM task starts from a share are read, on computers of the domain only.
+    Also makes no SMB connection to the file servers a GPO scheduled task names: without -OPSEC, the NTFS permissions of a program a task running as SYSTEM or a privileged account starts from a share are read, on computers of the domain only.
 
 .PARAMETER NoColor
     Disables colored console output. Useful for logging or terminals that don't support ANSI colors.

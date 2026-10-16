@@ -651,7 +651,7 @@ function Get-GPOPermissions {
 
                     # Deny netting, the write mask and the two identity gates the directory
                     # half uses - see Select-NTFSWriteAccess, which Get-GPOScheduledTasks
-                    # shares for the program a SYSTEM task starts from a share.
+                    # shares for the program a SYSTEM or privileged task starts from a share.
                     #
                     # Inherit-only rules count here. The children of a policy folder are
                     # the policy, so a Modify that reaches only them still rewrites it.

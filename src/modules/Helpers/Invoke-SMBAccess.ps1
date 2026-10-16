@@ -589,9 +589,9 @@ function Get-DirectoryAccessRules {
     an array of rules, possibly empty, or $null when the path is not a file that could be
     read - a folder, a missing file, or one whose descriptor the caller may not read.
 
-    Get-GPOScheduledTasks reads with it the program a SYSTEM task starts from a share:
-    whoever can write that file controls what runs as SYSTEM on every computer the policy
-    reaches.
+    Get-GPOScheduledTasks reads with it the program a task running as SYSTEM or a
+    privileged account starts from a share: whoever can write that file controls what runs
+    in that account on every computer the policy reaches.
 
 .PARAMETER Path
     The file to read. Must be a path Invoke-SMBAccess has made reachable.

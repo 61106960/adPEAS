@@ -405,7 +405,7 @@ When `-OPSEC` is specified:
 - Kerberoasting is skipped (no TGS requests)
 - AS-REP Roasting is skipped (no AS-REQ without pre-auth)
 - BloodHound collection is skipped (generates many LDAP queries)
-- No SMB connection is made to the file servers a GPO scheduled task names (the NTFS permissions of a SYSTEM task's UNC program are not read)
+- No SMB connection is made to the file servers a GPO scheduled task names (the NTFS permissions of the UNC program of a SYSTEM or privileged-account task are not read)
 - Only passive enumeration is performed
 
 ### Credential Handling

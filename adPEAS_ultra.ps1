@@ -12213,24 +12213,25 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
 	    )
 	}
 	'GPO_TASK_SYSTEM_UNC_PATH' = @{
-	    Title = "GPO Scheduled Task Runs as SYSTEM from UNC Path"
+	    Title = "GPO Scheduled Task Runs as SYSTEM or a Privileged Account from UNC Path"
 	    Risk = "Finding"
 	    BaseScore = 45
-	    Description = "A GPO-deployed scheduled task runs as SYSTEM and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs as SYSTEM on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. Where the host is an enabled computer of the domain and -OPSEC is not set, adPEAS reads the NTFS permissions of the file and of the folder it is in and names every account beyond the expected administrators that can write them. A path only privileged accounts can write is a hint rather than a finding: the administrators of that server still decide what runs as SYSTEM everywhere the policy applies. The share permissions are not read - a share's security descriptor is returned to administrators of the file server only - and over the network they can narrow the NTFS rights reported here, never widen them."
+	    Description = "A GPO-deployed scheduled task runs as SYSTEM or as a privileged account and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs in that account on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. Where the host is an enabled computer of the domain and -OPSEC is not set, adPEAS reads the NTFS permissions of the file and of the folder it is in and names every account beyond the expected administrators that can write them. For a SYSTEM task, a path only privileged accounts can write is a hint rather than a finding: the administrators of that server still decide what runs as SYSTEM everywhere the policy applies. For a privileged account the task stays a finding either way, because it runs that account on every computer in scope. The share permissions are not read - a share's security descriptor is returned to administrators of the file server only - and over the network they can narrow the NTFS rights reported here, never widen them."
 	    Impact = @(
-	        "Task runs with SYSTEM privileges"
+	        "Task runs with SYSTEM privileges, or as a privileged domain account"
 	        "What it runs is loaded from a network share at every run"
-	        "Write access to the share = code execution as SYSTEM"
+	        "Write access to the share = code execution in that account"
 	        "Affects all computers where the GPO is applied"
 	    )
 	    Attack = @(
 	        "1. Attacker reads the UNC path out of ScheduledTasks.xml in SYSVOL and checks the share's permissions"
 	        "2. Replaces the executable or script there with a malicious payload"
-	        "3. Task executes the payload as SYSTEM on all affected hosts"
-	        "4. Gains SYSTEM access on multiple computers"
+	        "3. Task executes the payload as SYSTEM, or as the privileged account, on all affected hosts"
+	        "4. Gains SYSTEM access on multiple computers - or the privileges of that account, which for a domain administrator is the domain"
 	    )
 	    Remediation = @(
 	        "Start SYSTEM-context tasks from a local path that only administrators can write"
+	        "Do not run GPO-deployed tasks as a privileged domain account; give the task an account with only the rights it needs"
 	        "Ensure the share and the files on it are writable by administrators only - NTFS and share permissions both"
 	        "Implement code signing for scheduled task executables"
 	        "Review all GPO scheduled tasks for security"
@@ -12263,6 +12264,8 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
 	    Triggers = @(
 	        @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM and uses UNC path'; Severity = 'Finding' }
 	        @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM from UNC path'; Severity = 'Hint' }
+	        @{ Attribute = 'RiskReason'; Pattern = '^Task runs as the privileged account .+ and uses UNC path'; Severity = 'Finding' }
+	        @{ Attribute = 'RiskReason'; Pattern = '^Task runs as the privileged account .+ from UNC path'; Severity = 'Finding' }
 	        @{ Attribute = 'UNCPathPermissions'; Severity = 'Finding' }
 	    )
 	}
@@ -19474,7 +19477,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Execution context (SYSTEM, a privileged account, any other account)"
 	        "Whether a path lies in a directory where every user may change or add files by Windows default"
 	        "UNC paths, whose share decides what the task runs"
-	        "For a SYSTEM task: the NTFS permissions of the UNC file and of the folder it is in, read over SMB on enabled computers of the domain only, and not under -OPSEC"
+	        "For a task running as SYSTEM or a privileged account: the NTFS permissions of the UNC file and of the folder it is in, read over SMB on enabled computers of the domain only, and not under -OPSEC"
 	        "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
 	        "Not tested: the permissions on the hosts themselves, and the share permissions of a UNC path - they are returned to administrators of the file server only"
 	    )
@@ -67928,7 +67931,7 @@ function Parse-ScheduledTasksXML {
 	            }
 	        }
 	        $uncAccess = $null
-	        if ($isSystemAccount -and $hasUNCPath) {
+	        if (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath) {
 	            try {
 	                $uncAccess = Get-TaskUNCWriteAccess -Path $uncPaths -OPSEC:$OPSEC
 	            } catch {
@@ -67936,22 +67939,28 @@ function Parse-ScheduledTasksXML {
 	        }
 	        $uncWritable = ($null -ne $uncAccess) -and (@($uncAccess.Writers).Count -gt 0)
 	        $uncClean = ($null -ne $uncAccess) -and (-not $uncWritable) -and (@($uncAccess.Unchecked).Count -eq 0)
+	        $uncTaskSubject = 'SYSTEM'
+	        $uncRunsAs = 'SYSTEM'
+	        if (-not $isSystemAccount) {
+	            $uncTaskSubject = "the privileged account $runAsLabel"
+	            $uncRunsAs = 'that account'
+	        }
 	        $isPowerShell = (@($allCommands) -join ' ') -match 'powershell|pwsh'
 	        $scriptPrograms = @($allCommands | Where-Object { $_ -match '\.(bat|cmd|vbs|vbe|ps1|wsf)$' })
 	        if ($uncClean) {
 	            $scriptPrograms = @($scriptPrograms | Where-Object { $_.Trim().Trim('"') -notmatch '^\\\\' })
 	        }
 	        $isScript = $scriptPrograms.Count -gt 0
-	        if ($isSystemAccount -and $uncWritable) {
+	        if (($isSystemAccount -or $isPrivilegedAccount) -and $uncWritable) {
 	            $severity = "Finding"
-	            $risk = "Task runs as SYSTEM and uses UNC path - $(@($uncAccess.Writers) -join ', ') can change what it runs there by NTFS permission (see UNCPathPermissions), and so control what runs as SYSTEM on every computer in scope. The share permissions, which can narrow this over the network, were not read"
-	        } elseif ($isSystemAccount -and $hasUNCPath -and -not $uncClean) {
+	            $risk = "Task runs as $uncTaskSubject and uses UNC path - $(@($uncAccess.Writers) -join ', ') can change what it runs there by NTFS permission (see UNCPathPermissions), and so control what runs as $uncRunsAs on every computer in scope. The share permissions, which can narrow this over the network, were not read"
+	        } elseif (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath -and -not $uncClean) {
 	            $severity = "Finding"
 	            $uncReason = ''
 	            if ($null -ne $uncAccess -and @($uncAccess.Unchecked).Count -gt 0) {
 	                $uncReason = ", because $(@($uncAccess.Unchecked)[0])"
 	            }
-	            $risk = "Task runs as SYSTEM and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as SYSTEM on every computer in scope. Who may write there was not checked$uncReason"
+	            $risk = "Task runs as $uncTaskSubject and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as $uncRunsAs on every computer in scope. Who may write there was not checked$uncReason"
 	        } elseif ($isSystemAccount -and $riskyPathApplies) {
 	            $severity = "Finding"
 	            $risk = "Task runs as SYSTEM $riskyPathText as SYSTEM"
@@ -67967,6 +67976,9 @@ function Parse-ScheduledTasksXML {
 	        } elseif ($isPrivilegedAccount) {
 	            $severity = "Finding"
 	            $risk = "Task runs as privileged account"
+	            if ($uncClean) {
+	                $risk = "Task runs as the privileged account $runAsLabel from UNC path $([string]@($uncPaths)[0]) - by NTFS permission only privileged accounts can write what it runs there. The share permissions were not read"
+	            }
 	        } elseif ($uncClean) {
 	            $uncFirst = [string]@($uncPaths)[0]
 	            $uncHostName = ($uncFirst -replace '^\\\\([^\\]+)\\.*$', '$1')
@@ -84475,7 +84487,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-1630"
+$Script:adPEASVersion = "2.7.0+20261016-1759"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

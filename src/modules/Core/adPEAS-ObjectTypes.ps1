@@ -1451,7 +1451,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Execution context (SYSTEM, a privileged account, any other account)"
             "Whether a path lies in a directory where every user may change or add files by Windows default"
             "UNC paths, whose share decides what the task runs"
-            "For a SYSTEM task: the NTFS permissions of the UNC file and of the folder it is in, read over SMB on enabled computers of the domain only, and not under -OPSEC"
+            "For a task running as SYSTEM or a privileged account: the NTFS permissions of the UNC file and of the folder it is in, read over SMB on enabled computers of the domain only, and not under -OPSEC"
             "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
             "Not tested: the permissions on the hosts themselves, and the share permissions of a UNC path - they are returned to administrators of the file server only"
         )
