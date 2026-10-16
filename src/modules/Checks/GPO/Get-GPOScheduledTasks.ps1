@@ -649,11 +649,18 @@ function Parse-ScheduledTasksXML {
                 $severity = "Finding"
                 $risk = "Task runs as the privileged account $runAsLabel $riskyPathText as that account"
             } elseif ($isSystemAccount -and $isScript) {
-                $severity = "Finding"
-                $risk = "Task runs script as SYSTEM - check if script is modifiable"
+                # A hint, by user decision 2026-10-16: the risk is real but unread. Who may
+                # change a local script sits in the file system of every computer in scope,
+                # which the directory does not show - and the risky directories and UNC paths
+                # this check can judge are rated above.
+                $severity = "Hint"
+                $risk = "Task runs a script as SYSTEM - whoever can change the script controls what runs as SYSTEM on every computer in scope. Its permissions on those computers were not checked"
             } elseif ($isSystemAccount -and $isPowerShell) {
-                $severity = "Finding"
-                $risk = "Task runs PowerShell as SYSTEM - check command for injection vulnerabilities"
+                # The command line itself sits in the policy and is protected by its
+                # permissions; what can change is a script it loads. "Check command for
+                # injection vulnerabilities" claimed a surface a static line does not have.
+                $severity = "Hint"
+                $risk = "Task runs PowerShell as SYSTEM - whoever can change a script it loads controls what runs as SYSTEM on every computer in scope. That was not checked"
             } elseif ($isPrivilegedAccount) {
                 $severity = "Finding"
                 $risk = "Task runs as privileged account"

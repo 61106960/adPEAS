@@ -46,6 +46,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   lists each key with its source and, on a computer, how long after the account it
   appeared.
 
+- **A GPO scheduled task that runs a local script or PowerShell as SYSTEM is a hint.** It
+  was a finding with "check if script is modifiable" and "check command for injection
+  vulnerabilities" - claims about permissions on the computers the directory does not
+  show, and about an injection surface a static command line does not have. The rows say
+  what was not checked. Risky directories and UNC paths, which the check can judge, stay
+  findings.
+
 ---
 
 ## [2.7.0] - 2026-10-08

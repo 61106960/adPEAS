@@ -70587,11 +70587,11 @@ function Parse-ScheduledTasksXML {
                 $severity = "Finding"
                 $risk = "Task runs as the privileged account $runAsLabel $riskyPathText as that account"
             } elseif ($isSystemAccount -and $isScript) {
-                $severity = "Finding"
-                $risk = "Task runs script as SYSTEM - check if script is modifiable"
+                $severity = "Hint"
+                $risk = "Task runs a script as SYSTEM - whoever can change the script controls what runs as SYSTEM on every computer in scope. Its permissions on those computers were not checked"
             } elseif ($isSystemAccount -and $isPowerShell) {
-                $severity = "Finding"
-                $risk = "Task runs PowerShell as SYSTEM - check command for injection vulnerabilities"
+                $severity = "Hint"
+                $risk = "Task runs PowerShell as SYSTEM - whoever can change a script it loads controls what runs as SYSTEM on every computer in scope. That was not checked"
             } elseif ($isPrivilegedAccount) {
                 $severity = "Finding"
                 $risk = "Task runs as privileged account"
@@ -87455,7 +87455,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261016-1856"
+$Script:adPEASVersion = "2.7.0+20261016-1900"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
