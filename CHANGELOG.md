@@ -72,6 +72,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   rows read "Unknown" now, as the minimum length and the maximum age already did, and
   count toward no weakness.
 
+- **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
+  stops one level down, at the direct children of the OU, and it read like a delegation
+  on the whole subtree. Its rights now carry "(direct children only)", or "(this object
+  and its direct children only)" where the ACE applies to the OU itself as well.
+
 ---
 
 ## [2.7.0] - 2026-10-08

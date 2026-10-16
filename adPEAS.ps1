@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 19:22:22
-    Version: 2.7.0+20261016-1922
+    Build: 2026-10-16 19:31:05
+    Version: 2.7.0+20261016-1931
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -80272,8 +80272,21 @@ function Get-OUPermissions {
                 # A right that is a takeover of the container and of its children alike is
                 # not suppressed, only located: GenericAll with InheritOnly is full control
                 # of every descendant and none of this OU, and used to read as the latter.
+                #
+                # NoPropagateInherit stops the inheritance one level down: the copy a
+                # direct child receives has its inheritance flags cleared. Such an ACE
+                # reaches this container's direct children and nothing below them, and it
+                # read like a delegation on the whole subtree. Rights on child objects
+                # reach children by definition, so for them only that limit is news.
+                # Without ContainerInherit or ObjectInherit the flag means nothing, and
+                # GetAccessRules reports it as None there even where the raw descriptor
+                # carries it (measured) - so the flag alone is the test.
+                $isNoPropagate = ([string]$ACE.PropagationFlags) -match 'NoPropagateInherit'
                 $inheritanceNote = ''
-                if (-not $AppliesToSelf) { $inheritanceNote = ' (descendants only)' }
+                if ($isNoPropagate -and $AppliesToSelf) { $inheritanceNote = ' (this object and its direct children only)' }
+                elseif ($isNoPropagate) { $inheritanceNote = ' (direct children only)' }
+                elseif (-not $AppliesToSelf) { $inheritanceNote = ' (descendants only)' }
+                $childReachNote = if ($isNoPropagate) { ' (direct children only)' } else { '' }
 
                 # If WriteProperty on ALL properties, create ONE generic finding instead of 6+ individual ones
                 # This prevents duplicate findings like: userAccountControl, member, SPN, scriptPath, Delegation x2, gPLink
@@ -80453,7 +80466,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "PasswordReset"
-                                Right         = "Reset Password (Extended Right)"
+                                Right         = "Reset Password (Extended Right)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80474,7 +80487,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "AccountControl"
-                                Right         = "WriteProperty (userAccountControl)"
+                                Right         = "WriteProperty (userAccountControl)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80486,7 +80499,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Critical" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "AccountControl"
-                                Right         = "WriteProperty (User-Account-Restrictions)"
+                                Right         = "WriteProperty (User-Account-Restrictions)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80505,7 +80518,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "GroupMembership"
-                                Right         = "WriteProperty (member)"
+                                Right         = "WriteProperty (member)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80526,7 +80539,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "GroupMembership"
-                                Right         = "Self (Self-Membership)"
+                                Right         = "Self (Self-Membership)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80547,7 +80560,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "SPNModification"
-                                Right         = "WriteProperty (servicePrincipalName)"
+                                Right         = "WriteProperty (servicePrincipalName)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80561,7 +80574,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "SPNModification"
-                                Right         = "WriteProperty (servicePrincipalName)"
+                                Right         = "WriteProperty (servicePrincipalName)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80576,7 +80589,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "SPNModification"
-                                Right         = "Self (Validated-SPN)"
+                                Right         = "Self (Validated-SPN)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80598,7 +80611,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "DNSHostName"
-                                Right         = "WriteProperty (dNSHostName)"
+                                Right         = "WriteProperty (dNSHostName)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80610,7 +80623,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "DNSHostName"
-                                Right         = "WriteProperty (DNS-Host-Name-Attributes)"
+                                Right         = "WriteProperty (DNS-Host-Name-Attributes)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80624,7 +80637,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "DNSHostName"
-                                Right         = "WriteProperty (dNSHostName)"
+                                Right         = "WriteProperty (dNSHostName)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80639,7 +80652,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "DNSHostName"
-                                Right         = "Self (Validated-DNS-Host-Name)"
+                                Right         = "Self (Validated-DNS-Host-Name)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80658,7 +80671,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "ScriptPath"
-                                Right         = "WriteProperty (scriptPath)"
+                                Right         = "WriteProperty (scriptPath)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80678,7 +80691,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "Delegation"
-                                Right         = "WriteProperty (msDS-AllowedToDelegateTo)"
+                                Right         = "WriteProperty (msDS-AllowedToDelegateTo)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80691,7 +80704,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "Delegation"
-                                Right         = "WriteProperty (msDS-AllowedToActOnBehalfOfOtherIdentity)"
+                                Right         = "WriteProperty (msDS-AllowedToActOnBehalfOfOtherIdentity)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80749,7 +80762,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "LAPS"
-                                Right         = "ReadProperty (ms-Mcs-AdmPwd - Legacy LAPS)"
+                                Right         = "ReadProperty (ms-Mcs-AdmPwd - Legacy LAPS)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80766,7 +80779,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "LAPS"
-                                Right         = "ReadProperty (msLAPS-EncryptedPassword - Windows LAPS)"
+                                Right         = "ReadProperty (msLAPS-EncryptedPassword - Windows LAPS)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80783,7 +80796,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "LAPS"
-                                Right         = "ReadProperty (msLAPS-EncryptedPasswordHistory - Windows LAPS)"
+                                Right         = "ReadProperty (msLAPS-EncryptedPasswordHistory - Windows LAPS)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80800,7 +80813,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "LAPS"
-                                Right         = "ReadProperty (msLAPS-Password - Windows LAPS)"
+                                Right         = "ReadProperty (msLAPS-Password - Windows LAPS)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80817,7 +80830,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Low" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "LAPS"
-                                Right         = "ReadProperty (msLAPS-CurrentPasswordVersion - Windows LAPS)"
+                                Right         = "ReadProperty (msLAPS-CurrentPasswordVersion - Windows LAPS)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80834,7 +80847,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Low" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "LAPS"
-                                Right         = "ReadProperty (msLAPS-PasswordExpirationTime - Windows LAPS)"
+                                Right         = "ReadProperty (msLAPS-PasswordExpirationTime - Windows LAPS)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -80950,7 +80963,7 @@ function Get-OUPermissions {
                                 $Severity = if ($IsPrivileged) { "Info" } else { $crAttribute.Severity }
                                 $Findings += [PSCustomObject]@{
                                     CheckType           = "CredentialRoaming"
-                                    Right               = "$crRightPrefix ($($crAttribute.Name) - $($crAttribute.Note))"
+                                    Right               = "$crRightPrefix ($($crAttribute.Name) - $($crAttribute.Note))$childReachNote"
                                     Principal           = $TrusteeName
                                     SID                 = $TrusteeSID
                                     Severity            = $Severity
@@ -80977,7 +80990,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "High" }
                             $Findings += [PSCustomObject]@{
                                 CheckType           = "CredentialRoaming"
-                                Right               = "$crRightPrefix (All Properties - includes the roaming attributes)"
+                                Right               = "$crRightPrefix (All Properties - includes the roaming attributes)$childReachNote"
                                 Principal           = $TrusteeName
                                 SID                 = $TrusteeSID
                                 Severity            = $Severity
@@ -81029,7 +81042,7 @@ function Get-OUPermissions {
 
                         $Findings += [PSCustomObject]@{
                             CheckType     = "ObjectCreation"
-                            Right         = "CreateChild ($createTarget)"
+                            Right         = "CreateChild ($createTarget)$inheritanceNote"
                             # The class itself, beside the sentence that names it. The
                             # caller decides whether a built-in may create it, and that
                             # decision must not come from parsing the text above.
@@ -81053,7 +81066,7 @@ function Get-OUPermissions {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "GPOLinking"
-                                Right         = "WriteProperty (gPLink)"
+                                Right         = "WriteProperty (gPLink)$inheritanceNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity
@@ -136278,7 +136291,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-1922"
+$Script:adPEASVersion = "2.7.0+20261016-1931"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
