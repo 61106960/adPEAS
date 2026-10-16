@@ -301,7 +301,8 @@ function Get-AddComputerRights {
                     'ms-DS-MachineAccountQuota' = $quotaValue
                 }
                 $quotaObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MachineAccountQuota' -Force
-                Show-Object $quotaObject
+                # The class of whichever of the three lines above announced it.
+                Show-Object $quotaObject -Class $(if ($effectiveGPO -and -not $effectiveIsDangerous) { 'Note' } else { 'Hint' })
                 $hasFindings = $true
             }
 

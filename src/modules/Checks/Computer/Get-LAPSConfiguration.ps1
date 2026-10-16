@@ -640,7 +640,7 @@ function Get-LAPSConfiguration {
                     Show-Line "Found $($gpoConfigObjects.Count) GPO(s) deploying LAPS settings" -Class "Hint"
 
                     foreach ($gpoConfigObject in $gpoConfigObjects) {
-                        Show-Object $gpoConfigObject
+                        Show-Object $gpoConfigObject -Class Hint
                     }
                 } else {
                     if ((Test-SysvolAccessible) -eq $false) {

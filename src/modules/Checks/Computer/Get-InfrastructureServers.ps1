@@ -213,7 +213,7 @@ function Get-InfrastructureServers {
                 Show-Line "Found $($domainControllers.Count) Domain Controller(s):" -Class "Hint"
                 foreach ($dc in $domainControllers) {
                     $dc | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainController' -Force
-                    $dc | Show-Object
+                    $dc | Show-Object -Class Hint
                 }
             } else {
                 Show-Line "No Domain Controllers found (unexpected)" -Class "Note"
@@ -273,7 +273,7 @@ function Get-InfrastructureServers {
                         $exch | Add-Member -NotePropertyName 'exchangeVersion' -NotePropertyValue $exchangeVersionByName[$exchKey] -Force
                     }
                     $exch | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeServerBasic' -Force
-                    $exch | Show-Object
+                    $exch | Show-Object -Class Hint
                 }
             } else {
                 Show-Line "No Exchange Servers found" -Class "Note"
@@ -293,7 +293,7 @@ function Get-InfrastructureServers {
                 Show-Line "Found $($mssqlServers.Count) MSSQL Server(s):" -Class "Hint"
                 foreach ($sql in $mssqlServers) {
                     $sql | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MSSQLServer' -Force
-                    $sql | Show-Object
+                    $sql | Show-Object -Class Hint
                 }
 
                 Show-SPNIdleServers -ServiceName 'MSSQL' -Server $mssqlServers
@@ -321,7 +321,7 @@ function Get-InfrastructureServers {
                 Show-Line "Found $($sccmServers.Count) SCCM/ConfigMgr Server(s):" -Class "Hint"
                 foreach ($sccm in $sccmServers) {
                     $sccm | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMServerBasic' -Force
-                    $sccm | Show-Object
+                    $sccm | Show-Object -Class Hint
                 }
 
                 Show-SPNIdleServers -ServiceName 'SCCM' -Server $sccmServers
@@ -349,7 +349,7 @@ function Get-InfrastructureServers {
                 Show-Line "Found $($scomServers.Count) SCOM Server(s):" -Class "Hint"
                 foreach ($scom in $scomServers) {
                     $scom | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServerBasic' -Force
-                    $scom | Show-Object
+                    $scom | Show-Object -Class Hint
                 }
 
                 Show-SPNIdleServers -ServiceName 'SCOM' -Server $scomServers
@@ -424,7 +424,7 @@ function Get-InfrastructureServers {
             if ($adfsIndicators.Count -gt 0) {
                 Show-Line "Found $($adfsIndicators.Count) AD FS indicator(s):" -Class "Hint"
                 foreach ($adfsIndicator in $adfsIndicators) {
-                    $adfsIndicator | Show-Object
+                    $adfsIndicator | Show-Object -Class Hint
                 }
             } else {
                 Show-Line "No AD FS deployment found" -Class "Note"
@@ -482,7 +482,7 @@ function Get-InfrastructureServers {
                     }
 
                     $indicator | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EntraConnect' -Force
-                    $indicator | Show-Object
+                    $indicator | Show-Object -Class Hint
                 }
             } else {
                 Show-Line "No Entra ID Connect servers found" -Class "Note"

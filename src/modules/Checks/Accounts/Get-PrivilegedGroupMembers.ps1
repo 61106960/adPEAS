@@ -1384,7 +1384,7 @@ function Get-PrivilegedGroupMembers {
                         # The object was built, counted and never shown, so it reached
                         # neither the console nor the HTML report: the only trace of this
                         # finding anywhere was the single line above.
-                        Show-Object $finding
+                        Show-Object $finding -Class $memberClass
                     }
                 }
 

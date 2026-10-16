@@ -132,7 +132,7 @@ function Get-SCOMInfrastructure {
 
                 foreach ($srv in $scomServers) {
                     $srv | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServer' -Force
-                    Show-Object $srv
+                    Show-Object $srv -Class Hint
                 }
             } else {
                 Show-Line "No SCOM management servers found via SPN detection" -Class Note
@@ -228,7 +228,7 @@ function Get-SCOMInfrastructure {
                     # per-DN SID resolution (Convert-DNsToMemberInfo -> ConvertTo-SID per member)
                     $group.PSObject.Properties.Remove('member')
                     $group | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMGroup' -Force
-                    Show-Object $group
+                    Show-Object $group -Class Hint
                 }
             } else {
                 Show-Line "No SCOM-related groups found" -Class Note

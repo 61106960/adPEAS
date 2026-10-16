@@ -131,7 +131,7 @@ function Get-PasswordNotRequired {
 
                 if (@($ordinaryAccounts).Count -gt 0) {
                     Show-Line "$(@($ordinaryAccounts).Count) further enabled account(s) carry the 'Password Not Required' flag" -Class Hint
-                    foreach ($user in $ordinaryAccounts) { Show-Object $user }
+                    foreach ($user in $ordinaryAccounts) { Show-Object $user -Class Hint }
                 }
 
                 if (@($trustAccounts).Count -gt 0) {

@@ -188,7 +188,7 @@ function Get-AdminPasswordNeverExpires {
 
                 foreach ($user in $recentAccounts) {
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
-                    Show-Object $user
+                    Show-Object $user -Class Hint
                 }
             }
 
@@ -197,7 +197,7 @@ function Get-AdminPasswordNeverExpires {
 
                 foreach ($user in $smartcardAccounts) {
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
-                    Show-Object $user
+                    Show-Object $user -Class Hint
                 }
             }
 

@@ -290,7 +290,7 @@ function Get-SIDHistoryInjection {
                 foreach ($finding in $foreignPrivilegedFindings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
                     $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Migrated privileged SID' -Force
-                    Show-Object $finding
+                    Show-Object $finding -Class Hint
                 }
             }
 
@@ -302,7 +302,7 @@ function Get-SIDHistoryInjection {
                 foreach ($finding in $nonPrivilegedFindings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
                     $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Migration' -Force
-                    Show-Object $finding
+                    Show-Object $finding -Class Hint
                 }
             }
 

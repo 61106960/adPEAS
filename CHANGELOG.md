@@ -23,17 +23,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
-- **Finding objects carry their severity into the JSON export and the report diff.**
-  50 places in 28 checks handed a finding object to the output without a class - among
+- **Every object a check shows carries its severity into the JSON export and the report
+  diff.** 109 places in 36 checks handed an object to the output without a class - among
   them every credential found in SYSVOL, every kerberoastable and AS-REP roastable
   account, every constrained delegation, every outdated computer and every dangerous ACL
   on the domain root. The console and the HTML card were unaffected, because they colour
-  an object by its attributes, but the JSON export and `Compare-adPEASReport` filed these
-  findings as `Standard`. They are filed as `Finding`, or as `Hint` or `Secure` where the
-  check itself rates the object so. **The first `Compare-adPEASReport` run against a scan
-  made with an earlier version therefore lists these findings once as a severity change
-  (`Standard -> Finding`, `Standard -> Hint` or `Standard -> Secure`).** That is the
-  correction, not a change in the domain.
+  an object by its attributes, but the JSON export and `Compare-adPEASReport` filed all of
+  them as `Standard`. Each object now has the class of the line that announces it -
+  `Finding`, `Hint`, `Note` or `Secure` - and an unprotected Tier-0 account is a `Finding`
+  even where the Protected Users coverage line above it is not. **The first
+  `Compare-adPEASReport` run against a scan made with an earlier version therefore lists
+  these objects once as a severity change (`Standard -> ...`).** That is the correction,
+  not a change in the domain.
 
 ---
 

@@ -166,7 +166,7 @@ function Get-SCCMInfrastructure {
                             DistinguishedName = $site.distinguishedName
                         }
                         $siteObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMSite' -Force
-                        Show-Object $siteObj
+                        Show-Object $siteObj -Class Hint
                     }
                 } elseif (-not $systemMgmt) {
                     Show-Line "The System Management container does not exist - no site object could be read" -Class Note
@@ -268,7 +268,7 @@ function Get-SCCMInfrastructure {
                             $mpObj | Add-Member -NotePropertyName 'Forest' -NotePropertyValue $forest -Force
                         }
                         $mpObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMManagementPoint' -Force
-                        Show-Object $mpObj
+                        Show-Object $mpObj -Class Hint
                     }
 
                     # CAS Finding
@@ -316,7 +316,7 @@ function Get-SCCMInfrastructure {
 
                 foreach ($srv in $sccmServers) {
                     $srv | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMServer' -Force
-                    Show-Object $srv
+                    Show-Object $srv -Class Hint
                 }
             } else {
                 Show-Line "No SCCM servers found via SPN detection" -Class Note
@@ -495,7 +495,7 @@ function Get-SCCMInfrastructure {
                             ParentObject = $parentDN
                         }
                         $pxeObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMPXEServer' -Force
-                        Show-Object $pxeObj
+                        Show-Object $pxeObj -Class Hint
                     }
                 }
             } catch {
@@ -521,7 +521,7 @@ function Get-SCCMInfrastructure {
                             $wdsObj | Add-Member -NotePropertyName 'BindingInfo' -NotePropertyValue $wds.serviceBindingInformation -Force
                         }
                         $wdsObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMPXEServer' -Force
-                        Show-Object $wdsObj
+                        Show-Object $wdsObj -Class Hint
                     }
                 }
             } catch {
@@ -544,7 +544,7 @@ function Get-SCCMInfrastructure {
 
                 foreach ($account in $serviceAccounts) {
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMServiceAccount' -Force
-                    Show-Object $account
+                    Show-Object $account -Class Hint
                 }
             } else {
                 Show-Line "No SCCM service accounts found" -Class Secure
@@ -585,7 +585,7 @@ function Get-SCCMInfrastructure {
                     # per-DN SID resolution (Convert-DNsToMemberInfo -> ConvertTo-SID per member)
                     $group.PSObject.Properties.Remove('member')
                     $group | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMGroup' -Force
-                    Show-Object $group
+                    Show-Object $group -Class Hint
                 }
             } else {
                 Show-Line "No SCCM-related groups found" -Class Note

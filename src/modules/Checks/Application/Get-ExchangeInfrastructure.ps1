@@ -228,7 +228,7 @@ function Get-ExchangeInfrastructure {
 
             $orgObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeOrganization' -Force
             Show-Line "Exchange Organization found in Configuration partition" -Class Hint
-            Show-Object $orgObj
+            Show-Object $orgObj -Class Hint
 
             # --- Phase 3: Per-Server Config Cards ---
             #
@@ -332,7 +332,7 @@ function Get-ExchangeInfrastructure {
                 }
 
                 $srvObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeConfigServer' -Force
-                Show-Object $srvObj
+                Show-Object $srvObj -Class Hint
             }
 
             # ===== Step 2: Enumerate Exchange Servers (Domain Partition - detailed) =====
@@ -630,7 +630,7 @@ function Get-ExchangeInfrastructure {
                         }
 
                         # Output the enriched server object via Show-Object
-                        Show-Object $serverObject
+                        Show-Object $serverObject -Class Hint
                     } else {
                         # Fallback: show basic info if RawObject not available
                         Show-KeyValue "ComputerName" -Value $exServer.ComputerName
@@ -1248,7 +1248,7 @@ function Get-ExchangeInfrastructure {
 
                     $groupObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
                     $groupObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue $serviceGroup.ObjectType -Force
-                    Show-Object $groupObject
+                    Show-Object $groupObject -Class Hint
                 }
                 catch {
                     Write-Log "[Get-ExchangeInfrastructure] Error checking $($serviceGroup.Name): $_" -Level Error

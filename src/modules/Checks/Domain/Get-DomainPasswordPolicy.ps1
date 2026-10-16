@@ -229,7 +229,7 @@ function Get-DomainPasswordPolicy {
 
             Show-Line "Found password policy:" -Class $policySeverity
             $passwordPolicyObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainPasswordPolicy' -Force
-            Show-Object $passwordPolicyObj
+            Show-Object $passwordPolicyObj -Class $policySeverity
 
             # ===== Fine-Grained Password Policies (FGPP/PSO) Analysis =====
             Show-SubHeader "Checking for Fine-Grained Password Policies (FGPP)..." -ObjectType "FineGrainedPasswordPolicy"
@@ -325,7 +325,7 @@ function Get-DomainPasswordPolicy {
                             }
 
                             $psoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'FineGrainedPasswordPolicy' -Force
-                            Show-Object $psoObj
+                            Show-Object $psoObj -Class Hint
                         }
 
                         # Output FGPP findings summary.

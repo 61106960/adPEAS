@@ -491,7 +491,7 @@ function Get-PasswordResetRights {
                             $adObject | Add-Member -NotePropertyName 'targetablePrivilegedUsers' -NotePropertyValue $targetableUsers -Force
                         }
                         $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordResetRight' -Force
-                        Show-Object $adObject
+                        Show-Object $adObject -Class Hint
                     } else {
                         # Fallback for well-known SIDs, foreign/deleted principals
                         $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $principal }
@@ -507,7 +507,7 @@ function Get-PasswordResetRights {
                         }
                         $fallbackObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
                         $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordResetRight' -Force
-                        Show-Object $fallbackObject
+                        Show-Object $fallbackObject -Class Hint
                     }
                 }
             }

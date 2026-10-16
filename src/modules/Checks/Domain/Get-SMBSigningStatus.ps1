@@ -484,7 +484,7 @@ function Get-SMBSigningStatus {
                     if (@($split.Inactive) -contains $gpoFinding) {
                         Show-Object $gpoFinding -Class Note
                     } else {
-                        Show-Object $gpoFinding
+                        Show-Object $gpoFinding -Class Hint
                     }
                 }
 

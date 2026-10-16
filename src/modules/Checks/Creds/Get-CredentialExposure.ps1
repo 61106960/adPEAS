@@ -452,7 +452,7 @@ function Get-CredentialExposure {
                                         Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-                                            Show-Object $credObj
+                                            Show-Object $credObj -Class Hint
                                         $reportedLines[$trimmedLine] = $true
                                         break
                                     }
@@ -916,7 +916,7 @@ function Get-CredentialExposure {
                                             Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-                                            Show-Object $credObj
+                                            Show-Object $credObj -Class Hint
                                             $reportedLines[$trimmedLine] = $true
                                             $sysvolFindingsCount++
                                             break

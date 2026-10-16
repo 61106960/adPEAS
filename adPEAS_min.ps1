@@ -62520,7 +62520,7 @@ function Get-DomainInformation {
             }
             Show-Line "Found domain information:" -Class $domainInfoSeverity
             $domainInfoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainBasicInfo' -Force
-            Show-Object $domainInfoObj
+            Show-Object $domainInfoObj -Class $domainInfoSeverity
             Show-SubHeader "Analyzing Kerberos policy..." -ObjectType "KerberosPolicy"
             $maxTicketAgeText = "Unknown - the domain Kerberos policy could not be read"
             $maxRenewalAgeText = $maxTicketAgeText
@@ -62600,7 +62600,7 @@ function Get-DomainInformation {
             }
             Show-Line "Found Kerberos policy:" -Class $kerberosSeverity
             $kerberosObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'KerberosPolicy' -Force
-            Show-Object $kerberosObj
+            Show-Object $kerberosObj -Class $kerberosSeverity
             Show-SubHeader "Checking Guest Account Status..." -ObjectType "GuestAccount"
             if ($GuestInfo) {
                 $statusText = if ($GuestInfo.Enabled) { "ENABLED" } else { "Disabled" }
@@ -62624,7 +62624,7 @@ function Get-DomainInformation {
                 }
                 Show-Line "Found $($statusText.ToLower()) Guest account" -Class $guestClass
                 $guestObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GuestAccount' -Force
-                Show-Object $guestObj
+                Show-Object $guestObj -Class $guestClass
             } else {
                 Show-Line "Guest account not found (unusual - RID 501 should always exist)" -Class Hint
             }
@@ -62688,7 +62688,7 @@ function Get-DomainInformation {
                 }
                 Show-Line "Found $(@($DomainControllers).Count) domain controller(s):" -Class Note
                 $dcObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainControllers' -Force
-                Show-Object $dcObj
+                Show-Object $dcObj -Class Note
             } else {
                 Show-Line "No domain controllers found" -Class Note
             }
@@ -62714,7 +62714,7 @@ function Get-DomainInformation {
                         siteDomainControllers = $dcDisplay
                     }
                     $siteObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SitesAndSubnets' -Force
-                    Show-Object $siteObj
+                    Show-Object $siteObj -Class Note
                 }
             } else {
                 Show-Line "No AD sites found" -Class Hint
@@ -62831,7 +62831,7 @@ function Get-DomainPasswordPolicy {
             }
             Show-Line "Found password policy:" -Class $policySeverity
             $passwordPolicyObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainPasswordPolicy' -Force
-            Show-Object $passwordPolicyObj
+            Show-Object $passwordPolicyObj -Class $policySeverity
             Show-SubHeader "Checking for Fine-Grained Password Policies (FGPP)..." -ObjectType "FineGrainedPasswordPolicy"
             $domainFunctionalLevel = 0
             if ($Script:LDAPContext.DomainFunctionality) {
@@ -62901,7 +62901,7 @@ function Get-DomainPasswordPolicy {
                                     'PRIVILEGED - ' + (@($appliesToPrivileged) -join ', ')) -Force
                             }
                             $psoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'FineGrainedPasswordPolicy' -Force
-                            Show-Object $psoObj
+                            Show-Object $psoObj -Class Hint
                         }
                         $unassignedPSOs = @()
                         $weakPSOs = @()
@@ -63461,7 +63461,7 @@ function Get-LDAPConfiguration {
                     if (@($split.Inactive) -contains $gpoFinding) {
                         Show-Object $gpoFinding -Class Note
                     } else {
-                        Show-Object $gpoFinding
+                        Show-Object $gpoFinding -Class Hint
                     }
                 }
             } else {
@@ -63744,7 +63744,7 @@ function Get-SMBSigningStatus {
                     if (@($split.Inactive) -contains $gpoFinding) {
                         Show-Object $gpoFinding -Class Note
                     } else {
-                        Show-Object $gpoFinding
+                        Show-Object $gpoFinding -Class Hint
                     }
                 }
                 $reaching = @($split.Active)
@@ -64656,7 +64656,7 @@ function Get-PrivilegedGroupMembers {
                         $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PreWindows2000Access' -Force
                         $PreWin2000Findings += $finding
                         Show-Line "$MemberName is a member" -Class $memberClass
-                        Show-Object $finding
+                        Show-Object $finding -Class $memberClass
                     }
                 }
                 if (-not $preWin2000Read) {
@@ -64870,7 +64870,7 @@ function Get-ProtectedUsersStatus {
                     $account | Add-Member -NotePropertyName 'protectedUsersStatus' -NotePropertyValue 'NOT PROTECTED' -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Unprotected' -Force
-                    Show-Object $account
+                    Show-Object $account -Class Finding
                 }
             } else {
                 $summaryText = "Found $totalEligible Tier-0 account(s) - all in Protected Users ($coveragePercent%)"
@@ -64884,7 +64884,7 @@ function Get-ProtectedUsersStatus {
                     $account | Add-Member -NotePropertyName 'protectedUsersStatus' -NotePropertyValue 'Protected' -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Protected' -Force
-                    Show-Object $account
+                    Show-Object $account -Class Secure
                 }
             }
             if (@($excludedAccounts.Keys).Count -gt 0) {
@@ -64895,7 +64895,7 @@ function Get-ProtectedUsersStatus {
                     $account | Add-Member -NotePropertyName 'excludedReason' -NotePropertyValue $info.Reason -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Excluded' -Force
-                    Show-Object $account
+                    Show-Object $account -Class Note
                 }
             }
             $operatorFindings = @()
@@ -64935,7 +64935,7 @@ function Get-ProtectedUsersStatus {
                 Show-Line "Operator groups with members (consider for Protected Users):" -Class Hint
                 foreach ($finding in $operatorFindings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'OperatorGroup' -Force
-                    Show-Object $finding
+                    Show-Object $finding -Class Hint
                 }
             }
         } catch {
@@ -65137,14 +65137,14 @@ function Get-AdminPasswordNeverExpires {
                 Show-Line "$(@($recentAccounts).Count) further privileged account(s) carry the flag with a password newer than $PasswordAgeDays days:" -Class Hint
                 foreach ($user in $recentAccounts) {
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
-                    Show-Object $user
+                    Show-Object $user -Class Hint
                 }
             }
             if (@($smartcardAccounts).Count -gt 0) {
                 Show-Line "$(@($smartcardAccounts).Count) privileged account(s) carry the flag but require a smart card to log on:" -Class Hint
                 foreach ($user in $smartcardAccounts) {
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNeverExpires' -Force
-                    Show-Object $user
+                    Show-Object $user -Class Hint
                 }
             }
             if (@($vulnerableAccounts).Count -eq 0 -and @($recentAccounts).Count -eq 0 -and @($smartcardAccounts).Count -eq 0) {
@@ -65555,7 +65555,7 @@ function Get-ManagedServiceAccountSecurity {
                         if ($readerVerdictsByGMSA.ContainsKey([string]$gmsa.sAMAccountName)) {
                             $gmsa | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[[string]$gmsa.sAMAccountName] -Force
                         }
-                        Show-Object $gmsa
+                        Show-Object $gmsa -Class Secure
                     }
                 }
             } else {
@@ -65572,7 +65572,7 @@ function Get-ManagedServiceAccountSecurity {
                 Show-Line "Found $($standaloneMSAs.Count) standalone MSA(s) (legacy, tied to one host):" -Class Hint
                 foreach ($msa in $standaloneMSAs) {
                     $msa | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MSA' -Force
-                    Show-Object $msa
+                    Show-Object $msa -Class Hint
                 }
                 Show-Line "Recommendation: Migrate standalone MSAs to gMSAs for improved security" -Class Hint
             } else {
@@ -65755,7 +65755,7 @@ function Get-SIDHistoryInjection {
                 foreach ($finding in $foreignPrivilegedFindings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
                     $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Migrated privileged SID' -Force
-                    Show-Object $finding
+                    Show-Object $finding -Class Hint
                 }
             }
             if ($IncludeNonPrivileged -and @($nonPrivilegedFindings).Count -gt 0) {
@@ -65764,7 +65764,7 @@ function Get-SIDHistoryInjection {
                 foreach ($finding in $nonPrivilegedFindings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SIDHistory' -Force
                     $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Migration' -Force
-                    Show-Object $finding
+                    Show-Object $finding -Class Hint
                 }
             }
         } catch {
@@ -65963,7 +65963,7 @@ function Get-PasswordNotRequired {
                 }
                 if (@($ordinaryAccounts).Count -gt 0) {
                     Show-Line "$(@($ordinaryAccounts).Count) further enabled account(s) carry the 'Password Not Required' flag" -Class Hint
-                    foreach ($user in $ordinaryAccounts) { Show-Object $user }
+                    foreach ($user in $ordinaryAccounts) { Show-Object $user -Class Hint }
                 }
                 if (@($trustAccounts).Count -gt 0) {
                     Show-Line "Trust account(s) carrying the flag by design, not assessed: $(($trustAccounts | ForEach-Object { $_.sAMAccountName }) -join ', ')" -Class Note
@@ -66840,7 +66840,7 @@ function Get-DangerousOUPermissions {
                         $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                         $adObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
                         $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousOUPermission' -Force
-                        Show-Object $adObject
+                        Show-Object $adObject -Class Hint
                     } else {
                         $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $principal }
                         $fallbackObject = [PSCustomObject]@{
@@ -66855,7 +66855,7 @@ function Get-DangerousOUPermissions {
                         }
                         $fallbackObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
                         $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DangerousOUPermission' -Force
-                        Show-Object $fallbackObject
+                        Show-Object $fallbackObject -Class Hint
                     }
                 }
             }
@@ -67144,7 +67144,7 @@ function Get-PasswordResetRights {
                             $adObject | Add-Member -NotePropertyName 'targetablePrivilegedUsers' -NotePropertyValue $targetableUsers -Force
                         }
                         $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordResetRight' -Force
-                        Show-Object $adObject
+                        Show-Object $adObject -Class Hint
                     } else {
                         $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $principal }
                         $fallbackObject = [PSCustomObject]@{
@@ -67159,7 +67159,7 @@ function Get-PasswordResetRights {
                         }
                         $fallbackObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
                         $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordResetRight' -Force
-                        Show-Object $fallbackObject
+                        Show-Object $fallbackObject -Class Hint
                     }
                 }
             }
@@ -67321,7 +67321,7 @@ function Get-AddComputerRights {
                     'ms-DS-MachineAccountQuota' = $quotaValue
                 }
                 $quotaObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MachineAccountQuota' -Force
-                Show-Object $quotaObject
+                Show-Object $quotaObject -Class $(if ($effectiveGPO -and -not $effectiveIsDangerous) { 'Note' } else { 'Hint' })
                 $hasFindings = $true
             }
             if (@($createComputerAccounts).Count -gt 0) {
@@ -68125,7 +68125,7 @@ function Get-LAPSPermissions {
                             $adObject | Add-Member -NotePropertyName 'affectedOUs' -NotePropertyValue $readerInfo.OUs -Force
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                             $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
-                            Show-Object $adObject
+                            Show-Object $adObject -Class Hint
                         } else {
                             $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $readerInfo.Principal }
                             $fallbackObject = [PSCustomObject]@{
@@ -68136,7 +68136,7 @@ function Get-LAPSPermissions {
                                 dangerousRightsSeverity = 'Hint'
                             }
                             $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
-                            Show-Object $fallbackObject
+                            Show-Object $fallbackObject -Class Hint
                         }
                     }
                 }
@@ -68152,7 +68152,7 @@ function Get-LAPSPermissions {
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                             $adObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
                             $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
-                            Show-Object $adObject
+                            Show-Object $adObject -Class Hint
                         } else {
                             $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $readerInfo.Principal }
                             $fallbackObject = [PSCustomObject]@{
@@ -68164,7 +68164,7 @@ function Get-LAPSPermissions {
                             }
                             $fallbackObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
                             $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
-                            Show-Object $fallbackObject
+                            Show-Object $fallbackObject -Class Hint
                         }
                     }
                 }
@@ -68522,7 +68522,7 @@ function Get-LAPSConfiguration {
                     $gpoConfigObjects = @(Get-LAPSGPOConfigObjects -LAPSGPOSettings $lapsGPOSettings)
                     Show-Line "Found $($gpoConfigObjects.Count) GPO(s) deploying LAPS settings" -Class "Hint"
                     foreach ($gpoConfigObject in $gpoConfigObjects) {
-                        Show-Object $gpoConfigObject
+                        Show-Object $gpoConfigObject -Class Hint
                     }
                 } else {
                     if ((Test-SysvolAccessible) -eq $false) {
@@ -68898,7 +68898,7 @@ function Get-InfrastructureServers {
                 Show-Line "Found $($domainControllers.Count) Domain Controller(s):" -Class "Hint"
                 foreach ($dc in $domainControllers) {
                     $dc | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainController' -Force
-                    $dc | Show-Object
+                    $dc | Show-Object -Class Hint
                 }
             } else {
                 Show-Line "No Domain Controllers found (unexpected)" -Class "Note"
@@ -68940,7 +68940,7 @@ function Get-InfrastructureServers {
                         $exch | Add-Member -NotePropertyName 'exchangeVersion' -NotePropertyValue $exchangeVersionByName[$exchKey] -Force
                     }
                     $exch | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeServerBasic' -Force
-                    $exch | Show-Object
+                    $exch | Show-Object -Class Hint
                 }
             } else {
                 Show-Line "No Exchange Servers found" -Class "Note"
@@ -68956,7 +68956,7 @@ function Get-InfrastructureServers {
                 Show-Line "Found $($mssqlServers.Count) MSSQL Server(s):" -Class "Hint"
                 foreach ($sql in $mssqlServers) {
                     $sql | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MSSQLServer' -Force
-                    $sql | Show-Object
+                    $sql | Show-Object -Class Hint
                 }
                 Show-SPNIdleServers -ServiceName 'MSSQL' -Server $mssqlServers
             } else {
@@ -68975,7 +68975,7 @@ function Get-InfrastructureServers {
                 Show-Line "Found $($sccmServers.Count) SCCM/ConfigMgr Server(s):" -Class "Hint"
                 foreach ($sccm in $sccmServers) {
                     $sccm | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMServerBasic' -Force
-                    $sccm | Show-Object
+                    $sccm | Show-Object -Class Hint
                 }
                 Show-SPNIdleServers -ServiceName 'SCCM' -Server $sccmServers
             } else {
@@ -68994,7 +68994,7 @@ function Get-InfrastructureServers {
                 Show-Line "Found $($scomServers.Count) SCOM Server(s):" -Class "Hint"
                 foreach ($scom in $scomServers) {
                     $scom | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServerBasic' -Force
-                    $scom | Show-Object
+                    $scom | Show-Object -Class Hint
                 }
                 Show-SPNIdleServers -ServiceName 'SCOM' -Server $scomServers
             } else {
@@ -69041,7 +69041,7 @@ function Get-InfrastructureServers {
             if ($adfsIndicators.Count -gt 0) {
                 Show-Line "Found $($adfsIndicators.Count) AD FS indicator(s):" -Class "Hint"
                 foreach ($adfsIndicator in $adfsIndicators) {
-                    $adfsIndicator | Show-Object
+                    $adfsIndicator | Show-Object -Class Hint
                 }
             } else {
                 Show-Line "No AD FS deployment found" -Class "Note"
@@ -69076,7 +69076,7 @@ function Get-InfrastructureServers {
                         $indicator | Add-Member -NotePropertyName 'entraM365Tenant' -NotePropertyValue $entraTenant -Force
                     }
                     $indicator | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EntraConnect' -Force
-                    $indicator | Show-Object
+                    $indicator | Show-Object -Class Hint
                 }
             } else {
                 Show-Line "No Entra ID Connect servers found" -Class "Note"
@@ -72306,7 +72306,7 @@ function Get-ADCSVulnerabilities {
                             AIAURLs                = if ($rootCert.AIAURLs -and @($rootCert.AIAURLs).Count -gt 0) { $rootCert.AIAURLs } else { $null }
                         }
                         $rootCAObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'RootCA' -Force
-                        Show-Object $rootCAObj
+                        Show-Object $rootCAObj -Class Note
                     }
                 } else {
                     Show-Line "No trusted Root CAs found in AD configuration" -Class Note
@@ -72349,7 +72349,7 @@ function Get-ADCSVulnerabilities {
                                     AIAURLs                = if ($ntCert.AIAURLs -and @($ntCert.AIAURLs).Count -gt 0) { $ntCert.AIAURLs } else { $null }
                                 }
                                 $ntAuthCertObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NTAuthCertificate' -Force
-                                Show-Object $ntAuthCertObj
+                                Show-Object $ntAuthCertObj -Class Note
                             }
                         }
                     } else {
@@ -72387,7 +72387,7 @@ function Get-ADCSVulnerabilities {
                             AIAURLs                = if ($aiaCert -and $aiaCert.AIAURLs -and @($aiaCert.AIAURLs).Count -gt 0) { $aiaCert.AIAURLs } else { $null }
                         }
                         $aiaCAObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AIACA' -Force
-                        Show-Object $aiaCAObj
+                        Show-Object $aiaCAObj -Class Note
                     }
                 }
             }
@@ -72624,7 +72624,7 @@ function Get-ADCSVulnerabilities {
                             $caComputer | Add-Member -NotePropertyName 'CALastModified' -NotePropertyValue (Format-adPEASDate $ca.Modified 'yyyy-MM-dd HH:mm:ss') -Force
                         }
                         $caComputer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CertificateAuthority' -Force
-                        Show-Object $caComputer
+                        Show-Object $caComputer -Class Hint
                     } else {
                         Write-Log "[Get-ADCSVulnerabilities] CA computer '$($ca.DNSHostName)' not found in current domain - using Configuration Partition data"
                         $syntheticTemplates = $null
@@ -72713,7 +72713,7 @@ function Get-ADCSVulnerabilities {
                             }
                         }
                         $syntheticCA | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CertificateAuthority' -Force
-                        Show-Object $syntheticCA
+                        Show-Object $syntheticCA -Class Hint
                     }
                     if (-not $skipHttpCheck) {
                         Show-WebEndpointUnreachable -ProbeResult $webEnrollmentResult -Hostname $ca.DNSHostName -CheckLabel 'Web enrollment check'
@@ -73750,7 +73750,7 @@ function Get-ExchangeInfrastructure {
             }
             $orgObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeOrganization' -Force
             Show-Line "Exchange Organization found in Configuration partition" -Class Hint
-            Show-Object $orgObj
+            Show-Object $orgObj -Class Hint
             $configVersionByName = @{}
             foreach ($srv in $realServers) {
                 $srvName = $srv.name
@@ -73830,7 +73830,7 @@ function Get-ExchangeInfrastructure {
                     }
                 }
                 $srvObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeConfigServer' -Force
-                Show-Object $srvObj
+                Show-Object $srvObj -Class Hint
             }
             Show-SubHeader "Searching for Exchange servers..." -ObjectType "ExchangeServer"
             $exchangeServers = @()
@@ -74019,7 +74019,7 @@ function Get-ExchangeInfrastructure {
                         if ($displayVersion -and $displayVersion -ne "Unknown Exchange Version") {
                             $serverObject | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $displayVersion -Force
                         }
-                        Show-Object $serverObject
+                        Show-Object $serverObject -Class Hint
                     } else {
                         Show-KeyValue "ComputerName" -Value $exServer.ComputerName
                         if ($exServer.DNSHostName -and $exServer.DNSHostName -ne "Unknown") {
@@ -74391,7 +74391,7 @@ function Get-ExchangeInfrastructure {
                     Show-Line "Found $(@($groupMembers).Count) member(s) in $($serviceGroup.Name):" -Class Hint
                     $groupObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
                     $groupObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue $serviceGroup.ObjectType -Force
-                    Show-Object $groupObject
+                    Show-Object $groupObject -Class Hint
                 }
                 catch {
                     Write-Log "[Get-ExchangeInfrastructure] Error checking $($serviceGroup.Name): $_" -Level Error
@@ -74705,7 +74705,7 @@ function Get-SCCMInfrastructure {
                             DistinguishedName = $site.distinguishedName
                         }
                         $siteObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMSite' -Force
-                        Show-Object $siteObj
+                        Show-Object $siteObj -Class Hint
                     }
                 } elseif (-not $systemMgmt) {
                     Show-Line "The System Management container does not exist - no site object could be read" -Class Note
@@ -74777,7 +74777,7 @@ function Get-SCCMInfrastructure {
                             $mpObj | Add-Member -NotePropertyName 'Forest' -NotePropertyValue $forest -Force
                         }
                         $mpObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMManagementPoint' -Force
-                        Show-Object $mpObj
+                        Show-Object $mpObj -Class Hint
                     }
                     if ($casDetected) {
                         Show-Line "Central Administration Site (CAS) detected - multi-site SCCM hierarchy" -Class Hint -FindingId "SCCM_SITE_HIERARCHY"
@@ -74807,7 +74807,7 @@ function Get-SCCMInfrastructure {
                 Show-Line "Found $($sccmServers.Count) SCCM server(s)" -Class Hint
                 foreach ($srv in $sccmServers) {
                     $srv | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMServer' -Force
-                    Show-Object $srv
+                    Show-Object $srv -Class Hint
                 }
             } else {
                 Show-Line "No SCCM servers found via SPN detection" -Class Note
@@ -74914,7 +74914,7 @@ function Get-SCCMInfrastructure {
                             ParentObject = $parentDN
                         }
                         $pxeObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMPXEServer' -Force
-                        Show-Object $pxeObj
+                        Show-Object $pxeObj -Class Hint
                     }
                 }
             } catch {
@@ -74936,7 +74936,7 @@ function Get-SCCMInfrastructure {
                             $wdsObj | Add-Member -NotePropertyName 'BindingInfo' -NotePropertyValue $wds.serviceBindingInformation -Force
                         }
                         $wdsObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMPXEServer' -Force
-                        Show-Object $wdsObj
+                        Show-Object $wdsObj -Class Hint
                     }
                 }
             } catch {
@@ -74953,7 +74953,7 @@ function Get-SCCMInfrastructure {
                 Show-Line "Found $(@($serviceAccounts).Count) SCCM service account(s) with SMS* SPN" -Class Hint -FindingId "SCCM_SERVICE_ACCOUNT"
                 foreach ($account in $serviceAccounts) {
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMServiceAccount' -Force
-                    Show-Object $account
+                    Show-Object $account -Class Hint
                 }
             } else {
                 Show-Line "No SCCM service accounts found" -Class Secure
@@ -74981,7 +74981,7 @@ function Get-SCCMInfrastructure {
                     $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue $memberCount -Force
                     $group.PSObject.Properties.Remove('member')
                     $group | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMGroup' -Force
-                    Show-Object $group
+                    Show-Object $group -Class Hint
                 }
             } else {
                 Show-Line "No SCCM-related groups found" -Class Note
@@ -75059,7 +75059,7 @@ function Get-SCOMInfrastructure {
                 Show-Line "Found $(@($scomServers).Count) SCOM management server(s)" -Class Hint
                 foreach ($srv in $scomServers) {
                     $srv | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServer' -Force
-                    Show-Object $srv
+                    Show-Object $srv -Class Hint
                 }
             } else {
                 Show-Line "No SCOM management servers found via SPN detection" -Class Note
@@ -75125,7 +75125,7 @@ function Get-SCOMInfrastructure {
                     $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue $memberCount -Force
                     $group.PSObject.Properties.Remove('member')
                     $group | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMGroup' -Force
-                    Show-Object $group
+                    Show-Object $group -Class Hint
                 }
             } else {
                 Show-Line "No SCOM-related groups found" -Class Note
@@ -75711,7 +75711,7 @@ function Get-CredentialExposure {
                                         Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-                                            Show-Object $credObj
+                                            Show-Object $credObj -Class Hint
                                         $reportedLines[$trimmedLine] = $true
                                         break
                                     }
@@ -76042,7 +76042,7 @@ function Get-CredentialExposure {
                                             Show-Line "Found possible sensitive information" -Class Hint
                                             $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
                                             $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-                                            Show-Object $credObj
+                                            Show-Object $credObj -Class Hint
                                             $reportedLines[$trimmedLine] = $true
                                             $sysvolFindingsCount++
                                             break
@@ -76370,7 +76370,7 @@ function Get-BitLockerRecoveryKeyAccess {
                         }
                     }
                     $recoveryObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'BitLockerRecoveryKey' -Force
-                    Show-Object $recoveryObject
+                    Show-Object $recoveryObject -Class Hint
                 }
                 if ($totalObjects -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking BitLocker recovery key access" -Completed }
             } else {
@@ -87448,7 +87448,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261016-1555"
+$Script:adPEASVersion = "2.7.0+20261016-1630"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

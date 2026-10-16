@@ -614,7 +614,9 @@ function Get-ManagedServiceAccountSecurity {
                         if ($readerVerdictsByGMSA.ContainsKey([string]$gmsa.sAMAccountName)) {
                             $gmsa | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[[string]$gmsa.sAMAccountName] -Force
                         }
-                        Show-Object $gmsa
+                        # Secure: the sub header is the statement about these objects, and
+                        # it says their password access is configured properly.
+                        Show-Object $gmsa -Class Secure
                     }
                 }
             } else {
@@ -646,7 +648,7 @@ function Get-ManagedServiceAccountSecurity {
 
                 foreach ($msa in $standaloneMSAs) {
                     $msa | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MSA' -Force
-                    Show-Object $msa
+                    Show-Object $msa -Class Hint
                 }
 
                 Show-Line "Recommendation: Migrate standalone MSAs to gMSAs for improved security" -Class Hint

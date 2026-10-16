@@ -455,7 +455,7 @@ function Get-DomainInformation {
             # Output domain info object
             Show-Line "Found domain information:" -Class $domainInfoSeverity
             $domainInfoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainBasicInfo' -Force
-            Show-Object $domainInfoObj
+            Show-Object $domainInfoObj -Class $domainInfoSeverity
 
             # ===================================================================
             # SubCheck 2: Kerberos Policy
@@ -578,7 +578,7 @@ function Get-DomainInformation {
             # Output Kerberos policy object
             Show-Line "Found Kerberos policy:" -Class $kerberosSeverity
             $kerberosObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'KerberosPolicy' -Force
-            Show-Object $kerberosObj
+            Show-Object $kerberosObj -Class $kerberosSeverity
 
             # ===================================================================
             # SubCheck 3: Guest Account Status
@@ -615,7 +615,7 @@ function Get-DomainInformation {
 
                 Show-Line "Found $($statusText.ToLower()) Guest account" -Class $guestClass
                 $guestObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GuestAccount' -Force
-                Show-Object $guestObj
+                Show-Object $guestObj -Class $guestClass
 
             } else {
                 Show-Line "Guest account not found (unusual - RID 501 should always exist)" -Class Hint
@@ -708,7 +708,7 @@ function Get-DomainInformation {
                 }
                 Show-Line "Found $(@($DomainControllers).Count) domain controller(s):" -Class Note
                 $dcObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainControllers' -Force
-                Show-Object $dcObj
+                Show-Object $dcObj -Class Note
             } else {
                 Show-Line "No domain controllers found" -Class Note
             }
@@ -746,7 +746,7 @@ function Get-DomainInformation {
                         siteDomainControllers = $dcDisplay
                     }
                     $siteObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SitesAndSubnets' -Force
-                    Show-Object $siteObj
+                    Show-Object $siteObj -Class Note
                 }
             } else {
                 Show-Line "No AD sites found" -Class Hint

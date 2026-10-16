@@ -185,7 +185,7 @@ function Get-ADCSVulnerabilities {
                             AIAURLs                = if ($rootCert.AIAURLs -and @($rootCert.AIAURLs).Count -gt 0) { $rootCert.AIAURLs } else { $null }
                         }
                         $rootCAObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'RootCA' -Force
-                        Show-Object $rootCAObj
+                        Show-Object $rootCAObj -Class Note
                     }
                 } else {
                     Show-Line "No trusted Root CAs found in AD configuration" -Class Note
@@ -236,7 +236,7 @@ function Get-ADCSVulnerabilities {
                                     AIAURLs                = if ($ntCert.AIAURLs -and @($ntCert.AIAURLs).Count -gt 0) { $ntCert.AIAURLs } else { $null }
                                 }
                                 $ntAuthCertObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NTAuthCertificate' -Force
-                                Show-Object $ntAuthCertObj
+                                Show-Object $ntAuthCertObj -Class Note
                             }
                         }
                     } else {
@@ -278,7 +278,7 @@ function Get-ADCSVulnerabilities {
                             AIAURLs                = if ($aiaCert -and $aiaCert.AIAURLs -and @($aiaCert.AIAURLs).Count -gt 0) { $aiaCert.AIAURLs } else { $null }
                         }
                         $aiaCAObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AIACA' -Force
-                        Show-Object $aiaCAObj
+                        Show-Object $aiaCAObj -Class Note
                     }
                 }
             }
@@ -673,7 +673,7 @@ function Get-ADCSVulnerabilities {
                         # Add type marker for HTML report
                         $caComputer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CertificateAuthority' -Force
 
-                        Show-Object $caComputer
+                        Show-Object $caComputer -Class Hint
                     } else {
                         # Computer object not found in current domain partition
                         # (e.g., CA server is in root domain but we query from sub-domain)
@@ -782,7 +782,7 @@ function Get-ADCSVulnerabilities {
                         }
 
                         $syntheticCA | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CertificateAuthority' -Force
-                        Show-Object $syntheticCA
+                        Show-Object $syntheticCA -Class Hint
                     }
 
                     # The web enrollment attributes (HttpAvailable / WebEnrollmentEndpoints,

@@ -500,7 +500,7 @@ function Get-LAPSPermissions {
                             $adObject | Add-Member -NotePropertyName 'affectedOUs' -NotePropertyValue $readerInfo.OUs -Force
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                             $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
-                            Show-Object $adObject
+                            Show-Object $adObject -Class Hint
                         } else {
                             $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $readerInfo.Principal }
                             $fallbackObject = [PSCustomObject]@{
@@ -511,7 +511,7 @@ function Get-LAPSPermissions {
                                 dangerousRightsSeverity = 'Hint'
                             }
                             $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
-                            Show-Object $fallbackObject
+                            Show-Object $fallbackObject -Class Hint
                         }
                     }
                 }
@@ -532,7 +532,7 @@ function Get-LAPSPermissions {
                             $adObject | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
                             $adObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
                             $adObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
-                            Show-Object $adObject
+                            Show-Object $adObject -Class Hint
                         } else {
                             $resolvedName = if ($isWellKnownSID) { ConvertFrom-SID -SID $sid } else { $readerInfo.Principal }
                             $fallbackObject = [PSCustomObject]@{
@@ -544,7 +544,7 @@ function Get-LAPSPermissions {
                             }
                             $fallbackObject | Add-Member -NotePropertyName '_isExchangeGroup' -NotePropertyValue $true -Force
                             $fallbackObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSPermission' -Force
-                            Show-Object $fallbackObject
+                            Show-Object $fallbackObject -Class Hint
                         }
                     }
                 }

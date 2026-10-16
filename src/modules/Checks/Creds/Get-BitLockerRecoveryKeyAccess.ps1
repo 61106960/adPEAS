@@ -194,7 +194,7 @@ function Get-BitLockerRecoveryKeyAccess {
                     }
 
                     $recoveryObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'BitLockerRecoveryKey' -Force
-                    Show-Object $recoveryObject
+                    Show-Object $recoveryObject -Class Hint
                 }
                 if ($totalObjects -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking BitLocker recovery key access" -Completed }
             } else {

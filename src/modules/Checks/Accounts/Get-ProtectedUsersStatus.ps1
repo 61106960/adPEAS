@@ -354,7 +354,10 @@ function Get-ProtectedUsersStatus {
                     $account | Add-Member -NotePropertyName 'protectedUsersStatus' -NotePropertyValue 'NOT PROTECTED' -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Unprotected' -Force
-                    Show-Object $account
+                    # Finding, whatever the coverage line above says. That line rates the
+                    # domain's posture and turns Secure above 80 percent; this object is one
+                    # account outside Protected Users, and its NOT PROTECTED row is red.
+                    Show-Object $account -Class Finding
                 }
             } else {
                 # All accounts are protected (100% coverage)
@@ -372,7 +375,7 @@ function Get-ProtectedUsersStatus {
                     $account | Add-Member -NotePropertyName 'protectedUsersStatus' -NotePropertyValue 'Protected' -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Protected' -Force
-                    Show-Object $account
+                    Show-Object $account -Class Secure
                 }
             }
 
@@ -386,7 +389,7 @@ function Get-ProtectedUsersStatus {
                     $account | Add-Member -NotePropertyName 'excludedReason' -NotePropertyValue $info.Reason -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Excluded' -Force
-                    Show-Object $account
+                    Show-Object $account -Class Note
                 }
             }
 
@@ -445,7 +448,7 @@ function Get-ProtectedUsersStatus {
 
                 foreach ($finding in $operatorFindings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'OperatorGroup' -Force
-                    Show-Object $finding
+                    Show-Object $finding -Class Hint
                 }
             }
 
