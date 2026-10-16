@@ -1183,8 +1183,11 @@ function Convert-KeyCredentialLinkToRenderValues {
                 $display = $display -replace '(created \d{4}-\d{2}-\d{2} \d{2}:\d{2})', "`$1 ($gap after computer)"
             }
         }
+        # Note: a key credential is information - Windows Hello for Business, FIDO2 and
+        # hybrid join write them in normal operation. The gap above is what tells a
+        # join-time device key from one added later; the reader judges it.
         $renderValues += New-RenderValue -Display $display `
-            -Severity 'Hint' -FindingId 'SHADOW_CREDENTIALS' `
+            -Severity 'Note' -FindingId 'SHADOW_CREDENTIALS' `
             -RawValue $display
     }
     $maxSev = Get-MaxSeverityFromValues -Values $renderValues

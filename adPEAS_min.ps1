@@ -9886,30 +9886,25 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
     'SHADOW_CREDENTIALS' = @{
-        Title = "Shadow Credentials (msDS-KeyCredentialLink)"
-        Risk = "Finding"
-        BaseScore = 60
-        Description = "The msDS-KeyCredentialLink attribute contains key credentials that allow certificate-based authentication. If an attacker can write to this attribute, they can add their own key and authenticate as the target."
+        Title = "Key Credential Present (msDS-KeyCredentialLink)"
+        Risk = "Note"
+        BaseScore = 5
+        Description = "The account carries one or more key credentials in msDS-KeyCredentialLink. Windows Hello for Business, FIDO2 security keys and Entra hybrid join write them in normal operation, so a populated attribute is information, not a finding. The Shadow Credentials attack needs write access to the attribute, and that is what the ACL checks report - a right on msDS-KeyCredentialLink, GenericWrite or GenericAll on the account. The row lists each key with its source and, on a computer, how long after the account it appeared: a device key registers within minutes of the join, so one added days or weeks later on a computer that does not use Windows Hello is worth a look."
         Impact = @(
-            "Allows certificate-based authentication without knowing the password"
-            "Attacker with write access can add their own credentials"
-            "Enables persistent access that survives password resets"
-            "Very stealthy - no password change required"
-            "Works on any Windows Server 2016+ domain"
+            "A key credential lets its holder authenticate with PKINIT without the password"
+            "Expected on accounts enrolled in Windows Hello for Business or FIDO2, and on hybrid-joined computers"
+            "A key nobody can account for is persistence that survives password resets"
         )
         Attack = @(
-            "1. Attacker identifies target with writable msDS-KeyCredentialLink"
-            "2. Generates a new key pair"
-            "3. Adds their public key to the target's KeyCredentialLink"
-            "4. Uses the private key for PKINIT authentication as the target"
-            "5. Maintains access even after password changes"
+            "1. Shadow Credentials needs write access to msDS-KeyCredentialLink on the target - reported by the ACL checks, not by this row"
+            "2. With it, an attacker adds a key pair of their own to the attribute"
+            "3. The private key authenticates as the target with PKINIT"
+            "4. The planted key stays valid across password changes until it is removed"
         )
         Remediation = @(
-            "Audit permissions on msDS-KeyCredentialLink attribute"
-            "Remove unnecessary write access to this attribute"
-            "Monitor changes to KeyCredentialLink (Event ID 5136)"
-            "Review existing KeyCredentialLink entries for unexpected keys"
-            "Consider using Credential Guard to protect against key theft"
+            "Account for the keys on privileged accounts - an administrator who does not use Windows Hello or FIDO2 should carry none"
+            "Remove write access to msDS-KeyCredentialLink from principals that do not need it (see the ACL findings)"
+            "Monitor changes to msDS-KeyCredentialLink (Event ID 5136)"
         )
         RemediationCommands = @(
             @{
@@ -9939,7 +9934,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Tools = @("Whisker", "Certipy", "PyWhisker", "DSInternals")
         MITRE = "T1556.006"
         Triggers = @(
-            @{ Attribute = 'msDS-KeyCredentialLink'; Severity = 'Finding' }
+            @{ Attribute = 'msDS-KeyCredentialLink'; Severity = 'Note' }
         )
     }
     'TRUST_SID_FILTERING_DISABLED' = @{
@@ -17642,7 +17637,7 @@ function Convert-KeyCredentialLinkToRenderValues {
             }
         }
         $renderValues += New-RenderValue -Display $display `
-            -Severity 'Hint' -FindingId 'SHADOW_CREDENTIALS' `
+            -Severity 'Note' -FindingId 'SHADOW_CREDENTIALS' `
             -RawValue $display
     }
     $maxSev = Get-MaxSeverityFromValues -Values $renderValues
@@ -87460,7 +87455,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261016-1759"
+$Script:adPEASVersion = "2.7.0+20261016-1856"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

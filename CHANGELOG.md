@@ -38,6 +38,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   these objects once as a severity change (`Standard -> ...`).** That is the correction,
   not a change in the domain.
 
+- **A populated `msDS-KeyCredentialLink` is information, not a Shadow Credentials
+  finding.** Windows Hello for Business, FIDO2 keys and Entra hybrid join fill the
+  attribute in normal operation; the card was a Finding with a base score of 60 and put
+  that score on every such account. It is a note now, and its text says where the attack
+  is reported: the write right on the attribute, which the ACL checks find. The row still
+  lists each key with its source and, on a computer, how long after the account it
+  appeared.
+
 ---
 
 ## [2.7.0] - 2026-10-08
