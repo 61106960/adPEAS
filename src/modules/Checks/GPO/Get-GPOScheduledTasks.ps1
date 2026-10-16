@@ -532,6 +532,33 @@ function Parse-ScheduledTasksXML {
 
             $runAsLabel = if ($runAs -and $runAs -ne 'Unknown') { $runAs } else { 'an account the file does not name' }
 
+            # cmd.exe /c handed an unquoted program path with a space - the one place a
+            # task's command line is split after all. See Get-CmdUnquotedTruncation.
+            $cmdTruncation = $null
+            foreach ($pair in $execPairs) {
+                $cmdTruncation = Get-CmdUnquotedTruncation -Command $pair.Command -Arguments $pair.Arguments
+                if ($cmdTruncation) { break }
+            }
+
+            # Who may create the truncated program where cmd.exe looks for it. The root of
+            # the system drive is measured: ordinary users may create folders there, not
+            # files. A directory of $Script:RiskyPaths carries its own right. Anything else
+            # was not checked and is left $null.
+            $cmdTruncationAccess = $null
+            if ($cmdTruncation) {
+                if ($cmdTruncation.Directory -ieq 'C:\') {
+                    $cmdTruncationAccess = 'None'
+                } else {
+                    foreach ($entry in $Script:RiskyPaths) {
+                        $entryPrefix = ([string]$entry.Path).TrimEnd([char]0x5C) + [char]0x5C
+                        if ($cmdTruncation.Directory.StartsWith($entryPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                            $cmdTruncationAccess = [string]$entry.Access
+                            break
+                        }
+                    }
+                }
+            }
+
             $isPowerShell = (@($allCommands) -join ' ') -match 'powershell|pwsh'
             $isScript = @($allCommands | Where-Object { $_ -match '\.(bat|cmd|vbs|vbe|ps1|wsf)$' }).Count -gt 0
 
@@ -566,6 +593,11 @@ function Parse-ScheduledTasksXML {
             } elseif ($hasUNCPath) {
                 $severity = "Hint"
                 $risk = "Task uses UNC path - whoever can write that share, or answer for its server name, controls what runs as the account the task uses. The permissions of the share were not checked"
+            } elseif ($cmdTruncation -and $cmdTruncationAccess -ne 'None') {
+                # A directory of $Script:RiskyPaths is reported by the branches above, which
+                # name the right; what reaches this one is a directory nobody measured.
+                $severity = "Hint"
+                $risk = "Task hands cmd.exe the unquoted path $($cmdTruncation.Program) - cmd.exe starts $($cmdTruncation.Candidate).exe, .bat or .cmd if one exists, as $runAsLabel. Who may create files in $($cmdTruncation.Directory) was not checked"
             } elseif ($isSystemAccount) {
                 $severity = "Hint"
                 $risk = "Task runs as SYSTEM"
@@ -623,6 +655,22 @@ function Parse-ScheduledTasksXML {
                 $taskProps['gpoTaskUnquotedPath'] = 'The program path contains a space and is not quoted. The Task Scheduler quotes the program path itself when it starts the task, so this is not the truncation hijack of an unquoted service ImagePath - it only matters where the same string is handed to a shell, for example copied into a cmd.exe command line or a service definition'
             }
 
+            # The case where it is handed to a shell: cmd.exe /c with such a path. Written
+            # whatever the severity ladder chose as the headline, like the statement above,
+            # and with the right a user holds where the truncated program would have to go -
+            # GPO_TASK_CMD_UNQUOTED_PATH reads the colour off that wording.
+            if ($cmdTruncation) {
+                $cmdWhere = "who may create files in $($cmdTruncation.Directory) was not checked"
+                if ($cmdTruncationAccess -eq 'None') {
+                    $cmdWhere = "only administrators can create files in $($cmdTruncation.Directory) by Windows default"
+                } elseif ($cmdTruncationAccess -eq 'Change') {
+                    $cmdWhere = "every user may change files in $($cmdTruncation.Directory) by Windows default"
+                } elseif ($cmdTruncationAccess -eq 'Add') {
+                    $cmdWhere = "every user may add files in $($cmdTruncation.Directory) by Windows default"
+                }
+                $taskProps['gpoTaskCmdUnquotedPath'] = "cmd.exe is handed $($cmdTruncation.Program) without quotes and splits it at the first space: it starts $($cmdTruncation.Candidate).exe, .bat or .cmd if one exists - $cmdWhere"
+            }
+
             $task = [PSCustomObject]$taskProps
 
             $tasks += $task
@@ -632,5 +680,60 @@ function Parse-ScheduledTasksXML {
     } catch {
         Write-Log "[Parse-ScheduledTasksXML] Error parsing $FilePath : $_"
         return $null
+    }
+}
+
+<#
+.SYNOPSIS
+    Returns what cmd.exe /c (or /k) starts when it is handed a program path with a space
+    and no quotes, or $null.
+
+.DESCRIPTION
+    The program field of an Exec action is quoted by the Task Scheduler itself (measured on
+    Windows 11, 2026-10-16), so a space there splits nothing. A command line handed to
+    cmd.exe is different: cmd.exe splits it at the first space and starts the first token,
+    trying the executable extensions in turn. "cmd.exe /c C:\Tools\My App\run.bat" starts
+    C:\Tools\My.exe, .bat or .cmd if one exists - in the account the task runs as.
+
+    Only an absolute program path counts: a bare name is looked up through PATH and has no
+    truncated form. The intended program is the shortest prefix that ends in an executable
+    extension and is followed by a blank or the end of the line.
+
+.OUTPUTS
+    [PSCustomObject] with Program (the intended path), Candidate (the truncated path
+    cmd.exe tries) and Directory (where the candidate would have to be created), or $null.
+#>
+function Get-CmdUnquotedTruncation {
+    [CmdletBinding()]
+    param(
+        [string]$Command,
+        [string]$Arguments
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Command) -or [string]::IsNullOrWhiteSpace($Arguments)) { return $null }
+
+    # cmd.exe in any of its spellings, quoted or not
+    $program = $Command.Trim().Trim('"')
+    if ($program -notmatch '(?i)(^|\\)cmd(\.exe)?$' -and $program -notmatch '(?i)^%ComSpec%$') { return $null }
+
+    if ($Arguments -notmatch '(?i)^\s*/[ck]\s+(?<line>\S.*)$') { return $null }
+    $line = $Matches['line']
+
+    # Quoted, cmd.exe takes the path whole
+    if ($line.StartsWith('"')) { return $null }
+
+    if ($line -notmatch '(?i)^(?<prog>(?:[a-z]:|\\\\)[^"]*?\.(?:exe|bat|cmd|com|vbs|vbe|js|jse|wsf|ps1))(?:\s|$)') { return $null }
+    $intended = $Matches['prog']
+    $firstBlank = $intended.IndexOf(' ')
+    if ($firstBlank -lt 0) { return $null }
+
+    $candidate = $intended.Substring(0, $firstBlank)
+    $lastSeparator = $candidate.LastIndexOf([char]0x5C)
+    if ($lastSeparator -lt 0) { return $null }
+
+    return [PSCustomObject]@{
+        Program   = $intended
+        Candidate = $candidate
+        Directory = $candidate.Substring(0, $lastSeparator + 1)
     }
 }

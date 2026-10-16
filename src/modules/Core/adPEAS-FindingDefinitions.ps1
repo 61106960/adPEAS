@@ -9163,6 +9163,48 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         )
     }
 
+    'GPO_TASK_CMD_UNQUOTED_PATH' = @{
+        Title = "GPO Scheduled Task Hands cmd.exe an Unquoted Path"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A GPO-deployed scheduled task starts cmd.exe /c (or /k) with a program path that contains a space and is not quoted. Unlike the program field of the task, which the Task Scheduler quotes on its own, this is a command line that cmd.exe splits at the first space: for C:\Tools\My App\run.bat it starts C:\Tools\My.exe, .bat or .cmd if one exists, in the account the task runs as. Whether that is exploitable depends on who may create a file where the truncated path points. In the root of the system drive ordinary users may create folders but not files by Windows default; a folder an administrator created in that root inherits Modify for Authenticated Users."
+        Impact = @(
+            "Whoever can create the truncated program runs code in the task's account on every computer the policy reaches"
+            "As SYSTEM, that is a local privilege escalation on each of them"
+            "Until such a file exists, the task fails at every run - which usually goes unnoticed"
+        )
+        Attack = @(
+            "1. Read the task out of ScheduledTasks.xml in SYSVOL as any domain user"
+            "2. Check whether the directory of the truncated path is writable on a target - for C:\Tools\My App\run.bat that is C:\Tools"
+            "3. Create C:\Tools\My.exe there"
+            "4. The next run of the task starts it in the task's account"
+        )
+        Remediation = @(
+            "Quote the program path inside the cmd.exe line, or make the program itself the task's program instead of starting it through cmd.exe"
+            "Do not run scheduled tasks from a folder created in the root of a drive without hardening its permissions"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List every scheduled task in SYSVOL that hands cmd.exe a command line (replace the domain name)"
+                Command = "Get-ChildItem '\\contoso.com\SYSVOL\contoso.com\Policies' -Recurse -Filter ScheduledTasks.xml | ForEach-Object { `$file = `$_.FullName; `$xml = New-Object System.Xml.XmlDocument; `$xml.Load(`$file); `$xml.SelectNodes('//Exec') | Where-Object { `$_.Command -match 'cmd(\.exe)?`"?`$' } | ForEach-Object { [PSCustomObject]@{ File = `$file; Command = `$_.Command; Arguments = `$_.Arguments } } }"
+            }
+        )
+        References = @(
+            @{ Title = "cmd - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd" }
+            @{ Title = "Hijack Execution Flow: Path Interception by Unquoted Path - MITRE"; Url = "https://attack.mitre.org/techniques/T1574/009/" }
+        )
+        Tools = @("GPO analysis")
+        MITRE = "T1574.009"
+        Triggers = @(
+            # On the statement Get-GPOScheduledTasks writes only when cmd.exe is handed such
+            # a path. Where the truncated program would have to go into the root of the
+            # system drive, ordinary users cannot create it by Windows default (measured),
+            # and the row is a note; anywhere else it is a hint.
+            @{ Attribute = 'gpoTaskCmdUnquotedPath'; Pattern = 'only administrators can create files'; Severity = 'Note' }
+            @{ Attribute = 'gpoTaskCmdUnquotedPath'; ExcludePattern = 'only administrators can create files'; Severity = 'Hint' }
+        )
+    }
+
     # ============================================================================
     # ESC15 - NEW ADCS VARIANT
     # ============================================================================

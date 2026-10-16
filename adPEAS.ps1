@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 11:45:24
-    Version: 2.7.0+20261016-1145
+    Build: 2026-10-16 12:04:56
+    Version: 2.7.0+20261016-1204
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -17029,6 +17029,48 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         )
     }
 
+    'GPO_TASK_CMD_UNQUOTED_PATH' = @{
+        Title = "GPO Scheduled Task Hands cmd.exe an Unquoted Path"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A GPO-deployed scheduled task starts cmd.exe /c (or /k) with a program path that contains a space and is not quoted. Unlike the program field of the task, which the Task Scheduler quotes on its own, this is a command line that cmd.exe splits at the first space: for C:\Tools\My App\run.bat it starts C:\Tools\My.exe, .bat or .cmd if one exists, in the account the task runs as. Whether that is exploitable depends on who may create a file where the truncated path points. In the root of the system drive ordinary users may create folders but not files by Windows default; a folder an administrator created in that root inherits Modify for Authenticated Users."
+        Impact = @(
+            "Whoever can create the truncated program runs code in the task's account on every computer the policy reaches"
+            "As SYSTEM, that is a local privilege escalation on each of them"
+            "Until such a file exists, the task fails at every run - which usually goes unnoticed"
+        )
+        Attack = @(
+            "1. Read the task out of ScheduledTasks.xml in SYSVOL as any domain user"
+            "2. Check whether the directory of the truncated path is writable on a target - for C:\Tools\My App\run.bat that is C:\Tools"
+            "3. Create C:\Tools\My.exe there"
+            "4. The next run of the task starts it in the task's account"
+        )
+        Remediation = @(
+            "Quote the program path inside the cmd.exe line, or make the program itself the task's program instead of starting it through cmd.exe"
+            "Do not run scheduled tasks from a folder created in the root of a drive without hardening its permissions"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List every scheduled task in SYSVOL that hands cmd.exe a command line (replace the domain name)"
+                Command = "Get-ChildItem '\\contoso.com\SYSVOL\contoso.com\Policies' -Recurse -Filter ScheduledTasks.xml | ForEach-Object { `$file = `$_.FullName; `$xml = New-Object System.Xml.XmlDocument; `$xml.Load(`$file); `$xml.SelectNodes('//Exec') | Where-Object { `$_.Command -match 'cmd(\.exe)?`"?`$' } | ForEach-Object { [PSCustomObject]@{ File = `$file; Command = `$_.Command; Arguments = `$_.Arguments } } }"
+            }
+        )
+        References = @(
+            @{ Title = "cmd - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd" }
+            @{ Title = "Hijack Execution Flow: Path Interception by Unquoted Path - MITRE"; Url = "https://attack.mitre.org/techniques/T1574/009/" }
+        )
+        Tools = @("GPO analysis")
+        MITRE = "T1574.009"
+        Triggers = @(
+            # On the statement Get-GPOScheduledTasks writes only when cmd.exe is handed such
+            # a path. Where the truncated program would have to go into the root of the
+            # system drive, ordinary users cannot create it by Windows default (measured),
+            # and the row is a note; anywhere else it is a hint.
+            @{ Attribute = 'gpoTaskCmdUnquotedPath'; Pattern = 'only administrators can create files'; Severity = 'Note' }
+            @{ Attribute = 'gpoTaskCmdUnquotedPath'; ExcludePattern = 'only administrators can create files'; Severity = 'Hint' }
+        )
+    }
+
     # ============================================================================
     # ESC15 - NEW ADCS VARIANT
     # ============================================================================
@@ -26175,6 +26217,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Execution context (SYSTEM, a privileged account, any other account)"
             "Whether a path lies in a directory where every user may change or add files by Windows default"
             "UNC paths, whose share decides what the task runs"
+            "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
             "Not tested: the permissions on the hosts and on the shares - they are not in the directory"
         )
         SecureMessage = "No vulnerable GPO scheduled tasks found. No task starts code from a UNC path or from a directory that ordinary users can write by Windows default."
@@ -112289,6 +112332,33 @@ function Parse-ScheduledTasksXML {
 
             $runAsLabel = if ($runAs -and $runAs -ne 'Unknown') { $runAs } else { 'an account the file does not name' }
 
+            # cmd.exe /c handed an unquoted program path with a space - the one place a
+            # task's command line is split after all. See Get-CmdUnquotedTruncation.
+            $cmdTruncation = $null
+            foreach ($pair in $execPairs) {
+                $cmdTruncation = Get-CmdUnquotedTruncation -Command $pair.Command -Arguments $pair.Arguments
+                if ($cmdTruncation) { break }
+            }
+
+            # Who may create the truncated program where cmd.exe looks for it. The root of
+            # the system drive is measured: ordinary users may create folders there, not
+            # files. A directory of $Script:RiskyPaths carries its own right. Anything else
+            # was not checked and is left $null.
+            $cmdTruncationAccess = $null
+            if ($cmdTruncation) {
+                if ($cmdTruncation.Directory -ieq 'C:\') {
+                    $cmdTruncationAccess = 'None'
+                } else {
+                    foreach ($entry in $Script:RiskyPaths) {
+                        $entryPrefix = ([string]$entry.Path).TrimEnd([char]0x5C) + [char]0x5C
+                        if ($cmdTruncation.Directory.StartsWith($entryPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                            $cmdTruncationAccess = [string]$entry.Access
+                            break
+                        }
+                    }
+                }
+            }
+
             $isPowerShell = (@($allCommands) -join ' ') -match 'powershell|pwsh'
             $isScript = @($allCommands | Where-Object { $_ -match '\.(bat|cmd|vbs|vbe|ps1|wsf)$' }).Count -gt 0
 
@@ -112323,6 +112393,11 @@ function Parse-ScheduledTasksXML {
             } elseif ($hasUNCPath) {
                 $severity = "Hint"
                 $risk = "Task uses UNC path - whoever can write that share, or answer for its server name, controls what runs as the account the task uses. The permissions of the share were not checked"
+            } elseif ($cmdTruncation -and $cmdTruncationAccess -ne 'None') {
+                # A directory of $Script:RiskyPaths is reported by the branches above, which
+                # name the right; what reaches this one is a directory nobody measured.
+                $severity = "Hint"
+                $risk = "Task hands cmd.exe the unquoted path $($cmdTruncation.Program) - cmd.exe starts $($cmdTruncation.Candidate).exe, .bat or .cmd if one exists, as $runAsLabel. Who may create files in $($cmdTruncation.Directory) was not checked"
             } elseif ($isSystemAccount) {
                 $severity = "Hint"
                 $risk = "Task runs as SYSTEM"
@@ -112380,6 +112455,22 @@ function Parse-ScheduledTasksXML {
                 $taskProps['gpoTaskUnquotedPath'] = 'The program path contains a space and is not quoted. The Task Scheduler quotes the program path itself when it starts the task, so this is not the truncation hijack of an unquoted service ImagePath - it only matters where the same string is handed to a shell, for example copied into a cmd.exe command line or a service definition'
             }
 
+            # The case where it is handed to a shell: cmd.exe /c with such a path. Written
+            # whatever the severity ladder chose as the headline, like the statement above,
+            # and with the right a user holds where the truncated program would have to go -
+            # GPO_TASK_CMD_UNQUOTED_PATH reads the colour off that wording.
+            if ($cmdTruncation) {
+                $cmdWhere = "who may create files in $($cmdTruncation.Directory) was not checked"
+                if ($cmdTruncationAccess -eq 'None') {
+                    $cmdWhere = "only administrators can create files in $($cmdTruncation.Directory) by Windows default"
+                } elseif ($cmdTruncationAccess -eq 'Change') {
+                    $cmdWhere = "every user may change files in $($cmdTruncation.Directory) by Windows default"
+                } elseif ($cmdTruncationAccess -eq 'Add') {
+                    $cmdWhere = "every user may add files in $($cmdTruncation.Directory) by Windows default"
+                }
+                $taskProps['gpoTaskCmdUnquotedPath'] = "cmd.exe is handed $($cmdTruncation.Program) without quotes and splits it at the first space: it starts $($cmdTruncation.Candidate).exe, .bat or .cmd if one exists - $cmdWhere"
+            }
+
             $task = [PSCustomObject]$taskProps
 
             $tasks += $task
@@ -112389,6 +112480,61 @@ function Parse-ScheduledTasksXML {
     } catch {
         Write-Log "[Parse-ScheduledTasksXML] Error parsing $FilePath : $_"
         return $null
+    }
+}
+
+<#
+.SYNOPSIS
+    Returns what cmd.exe /c (or /k) starts when it is handed a program path with a space
+    and no quotes, or $null.
+
+.DESCRIPTION
+    The program field of an Exec action is quoted by the Task Scheduler itself (measured on
+    Windows 11, 2026-10-16), so a space there splits nothing. A command line handed to
+    cmd.exe is different: cmd.exe splits it at the first space and starts the first token,
+    trying the executable extensions in turn. "cmd.exe /c C:\Tools\My App\run.bat" starts
+    C:\Tools\My.exe, .bat or .cmd if one exists - in the account the task runs as.
+
+    Only an absolute program path counts: a bare name is looked up through PATH and has no
+    truncated form. The intended program is the shortest prefix that ends in an executable
+    extension and is followed by a blank or the end of the line.
+
+.OUTPUTS
+    [PSCustomObject] with Program (the intended path), Candidate (the truncated path
+    cmd.exe tries) and Directory (where the candidate would have to be created), or $null.
+#>
+function Get-CmdUnquotedTruncation {
+    [CmdletBinding()]
+    param(
+        [string]$Command,
+        [string]$Arguments
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Command) -or [string]::IsNullOrWhiteSpace($Arguments)) { return $null }
+
+    # cmd.exe in any of its spellings, quoted or not
+    $program = $Command.Trim().Trim('"')
+    if ($program -notmatch '(?i)(^|\\)cmd(\.exe)?$' -and $program -notmatch '(?i)^%ComSpec%$') { return $null }
+
+    if ($Arguments -notmatch '(?i)^\s*/[ck]\s+(?<line>\S.*)$') { return $null }
+    $line = $Matches['line']
+
+    # Quoted, cmd.exe takes the path whole
+    if ($line.StartsWith('"')) { return $null }
+
+    if ($line -notmatch '(?i)^(?<prog>(?:[a-z]:|\\\\)[^"]*?\.(?:exe|bat|cmd|com|vbs|vbe|js|jse|wsf|ps1))(?:\s|$)') { return $null }
+    $intended = $Matches['prog']
+    $firstBlank = $intended.IndexOf(' ')
+    if ($firstBlank -lt 0) { return $null }
+
+    $candidate = $intended.Substring(0, $firstBlank)
+    $lastSeparator = $candidate.LastIndexOf([char]0x5C)
+    if ($lastSeparator -lt 0) { return $null }
+
+    return [PSCustomObject]@{
+        Program   = $intended
+        Candidate = $candidate
+        Directory = $candidate.Substring(0, $lastSeparator + 1)
     }
 }
 
@@ -135407,7 +135553,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-1145"
+$Script:adPEASVersion = "2.7.0+20261016-1204"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

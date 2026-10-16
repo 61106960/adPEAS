@@ -1451,6 +1451,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Execution context (SYSTEM, a privileged account, any other account)"
             "Whether a path lies in a directory where every user may change or add files by Windows default"
             "UNC paths, whose share decides what the task runs"
+            "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
             "Not tested: the permissions on the hosts and on the shares - they are not in the directory"
         )
         SecureMessage = "No vulnerable GPO scheduled tasks found. No task starts code from a UNC path or from a directory that ordinary users can write by Windows default."
