@@ -60532,9 +60532,13 @@ function Get-DomainPasswordPolicy {
 	                        (-not [string]::IsNullOrWhiteSpace([string]$rawMaxPwdAge))
 	        $maxPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMaxPwdAge
 	        $maxPwdAge = if ($maxPwdAgeSpan) { [Math]::Round($maxPwdAgeSpan.TotalDays) } else { 0 }
-	        $lockoutThreshold = if ($domainPolicy.lockoutThreshold -and $domainPolicy.lockoutThreshold -notmatch "Not set") {
-	            try { [int]$domainPolicy.lockoutThreshold } catch { 0 }
-	        } else { 0 }
+	        $rawLockoutThreshold = $domainPolicy.lockoutThreshold
+	        $hasLockoutThreshold = ($null -ne $rawLockoutThreshold) -and
+	                               (-not [string]::IsNullOrWhiteSpace([string]$rawLockoutThreshold))
+	        $lockoutThreshold = 0
+	        if ($hasLockoutThreshold -and [string]$rawLockoutThreshold -notmatch 'Not set') {
+	            try { $lockoutThreshold = [int]$rawLockoutThreshold } catch { $hasLockoutThreshold = $false }
+	        }
 	        $rawLockoutDuration = $domainPolicy.lockoutDuration
 	        $hasLockoutDuration = ($null -ne $rawLockoutDuration) -and
 	                              (-not [string]::IsNullOrWhiteSpace([string]$rawLockoutDuration))
@@ -60544,6 +60548,8 @@ function Get-DomainPasswordPolicy {
 	        if ($hasLockoutDuration) {
 	            if ($lockoutDuration -gt 0) {
 	                $lockoutDurationText = "$lockoutDuration minutes"
+	            } elseif (-not $hasLockoutThreshold) {
+	                $lockoutDurationText = 'Until manually unlocked - the lockout threshold could not be read'
 	            } elseif ($lockoutThreshold -eq 0) {
 	                $lockoutDurationText = 'N/A - no lockout is configured'
 	            } else {
@@ -60561,19 +60567,26 @@ function Get-DomainPasswordPolicy {
 	            @{ Name = 'DOMAIN_REFUSE_PASSWORD_CHANGE';   Bit = 32; Text = 'reserved - MS-SAMR gives it no effect on the password policy' }
 	        )
 	        $pwdPropsValue = $domainPolicy.pwdProperties
+	        $hasPwdProperties = ($null -ne $pwdPropsValue) -and
+	                            (-not [string]::IsNullOrWhiteSpace([string]$pwdPropsValue))
 	        $pwdPropsSet = @()
-	        if ($pwdPropsValue -is [array] -or ($pwdPropsValue -is [string] -and $pwdPropsValue -match "DOMAIN_")) {
-	            $pwdPropsArray = @($pwdPropsValue)
-	            $complexityEnabled = $pwdPropsArray -contains "DOMAIN_PASSWORD_COMPLEX"
-	            $reversibleEncryption = $pwdPropsArray -contains "DOMAIN_PASSWORD_STORE_CLEARTEXT"
-	            $pwdPropsSet = @($pwdPropertyFlags | Where-Object { $pwdPropsArray -contains $_.Name })
-	        } else {
-	            $pwdPropsInt = if ($pwdPropsValue) { try { [int]$pwdPropsValue } catch { 0 } } else { 0 }
-	            $complexityEnabled = ($pwdPropsInt -band 1) -ne 0
-	            $reversibleEncryption = ($pwdPropsInt -band 16) -ne 0
-	            $pwdPropsSet = @($pwdPropertyFlags | Where-Object { ($pwdPropsInt -band $_.Bit) -ne 0 })
+	        if ($hasPwdProperties) {
+	            if ($pwdPropsValue -is [array] -or ($pwdPropsValue -is [string] -and $pwdPropsValue -match 'DOMAIN_|^NONE$')) {
+	                $pwdPropsArray = @($pwdPropsValue)
+	                $pwdPropsSet = @($pwdPropertyFlags | Where-Object { $pwdPropsArray -contains $_.Name })
+	            } else {
+	                try {
+	                    $pwdPropsInt = [int]$pwdPropsValue
+	                    $pwdPropsSet = @($pwdPropertyFlags | Where-Object { ($pwdPropsInt -band $_.Bit) -ne 0 })
+	                } catch {
+	                    $hasPwdProperties = $false
+	                }
+	            }
 	        }
-	        $adminLockoutApplies = @($pwdPropsSet | Where-Object { $_.Name -eq 'DOMAIN_LOCKOUT_ADMINS' }).Count -gt 0
+	        $pwdPropsNames        = @($pwdPropsSet | ForEach-Object { $_.Name })
+	        $complexityEnabled    = $pwdPropsNames -contains 'DOMAIN_PASSWORD_COMPLEX'
+	        $reversibleEncryption = $pwdPropsNames -contains 'DOMAIN_PASSWORD_STORE_CLEARTEXT'
+	        $adminLockoutApplies  = $pwdPropsNames -contains 'DOMAIN_LOCKOUT_ADMINS'
 	        $passwordPolicyObj = [PSCustomObject]@{
 	            minPwdLength = if (-not $hasMinPwdLength) { "Unknown - the value could not be read" }
 	                           elseif ($minPwdLength -eq 0) { "Disabled" } else { "$minPwdLength characters" }
@@ -60581,26 +60594,29 @@ function Get-DomainPasswordPolicy {
 	                        elseif ($minPwdAge -eq 0) { "Disabled" } else { "$minPwdAge days" }
 	            maxPwdAge = if (-not $hasMaxPwdAge) { "Unknown - the value could not be read" }
 	                        elseif ($maxPwdAge -eq 0) { "Disabled (Never expires)" } else { "$maxPwdAge days" }
-	            passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
-	            reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
-	            lockoutThreshold = if ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
+	            passwordComplexity = if (-not $hasPwdProperties) { "Unknown - the value could not be read" }
+	                                 elseif ($complexityEnabled) { "Enabled" } else { "Disabled" }
+	            reversibleEncryption = if (-not $hasPwdProperties) { "Unknown - the value could not be read" }
+	                                   elseif ($reversibleEncryption) { "Enabled" } else { "Disabled" }
+	            lockoutThreshold = if (-not $hasLockoutThreshold) { "Unknown - the value could not be read" }
+	                               elseif ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
 	            lockoutDuration = $lockoutDurationText
 	            lockoutObservationWindow = if ($lockoutWindow -gt 0) { "$lockoutWindow minutes" } else { "N/A" }
 	        }
-	        if ($null -ne $pwdPropsValue) {
+	        if ($hasPwdProperties) {
 	            $pwdPropsDisplay = @($pwdPropsSet | ForEach-Object { "$($_.Name) - $($_.Text)" })
 	            if ($pwdPropsDisplay.Count -eq 0) { $pwdPropsDisplay = @('None set') }
 	            $passwordPolicyObj | Add-Member -NotePropertyName 'passwordProperties' -NotePropertyValue $pwdPropsDisplay -Force
 	        }
-	        if ($null -ne $pwdPropsValue -and $lockoutThreshold -gt 0 -and -not $adminLockoutApplies) {
+	        if ($hasPwdProperties -and $lockoutThreshold -gt 0 -and -not $adminLockoutApplies) {
 	            $passwordPolicyObj | Add-Member -NotePropertyName 'builtinAdministratorLockout' `
 	                -NotePropertyValue 'the built-in Administrator is exempt from account lockout - DOMAIN_LOCKOUT_ADMINS is not set' -Force
 	        }
 	        $policyWeaknesses = @()
 	        if ($hasMinPwdLength -and $minPwdLength -lt 8) { $policyWeaknesses += "short_password" }
-	        if (-not $complexityEnabled) { $policyWeaknesses += "no_complexity" }
+	        if ($hasPwdProperties -and -not $complexityEnabled) { $policyWeaknesses += "no_complexity" }
 	        if ($reversibleEncryption) { $policyWeaknesses += "reversible_encryption" }
-	        if ($lockoutThreshold -eq 0) { $policyWeaknesses += "no_lockout" }
+	        if ($hasLockoutThreshold -and $lockoutThreshold -eq 0) { $policyWeaknesses += "no_lockout" }
 	        $moderateWeaknesses = @()
 	        if ($hasMinPwdLength -and $minPwdLength -ge 8 -and $minPwdLength -lt 14) { $moderateWeaknesses += "moderate_password_length" }
 	        if ($lockoutThreshold -gt 10) { $moderateWeaknesses += "high_lockout_threshold" }
@@ -84516,7 +84532,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-1913"
+$Script:adPEASVersion = "2.7.0+20261016-1922"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

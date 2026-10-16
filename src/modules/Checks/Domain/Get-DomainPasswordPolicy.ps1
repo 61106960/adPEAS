@@ -114,9 +114,16 @@ function Get-DomainPasswordPolicy {
             $maxPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMaxPwdAge
             $maxPwdAge = if ($maxPwdAgeSpan) { [Math]::Round($maxPwdAgeSpan.TotalDays) } else { 0 }
 
-            $lockoutThreshold = if ($domainPolicy.lockoutThreshold -and $domainPolicy.lockoutThreshold -notmatch "Not set") {
-                try { [int]$domainPolicy.lockoutThreshold } catch { 0 }
-            } else { 0 }
+            # The same split for the lockout threshold. Its 0 carries the no_lockout
+            # verdict, and an absent attribute became that 0 - "Account lockout disabled"
+            # about a threshold nobody had read. "Not set" is a read value and means 0.
+            $rawLockoutThreshold = $domainPolicy.lockoutThreshold
+            $hasLockoutThreshold = ($null -ne $rawLockoutThreshold) -and
+                                   (-not [string]::IsNullOrWhiteSpace([string]$rawLockoutThreshold))
+            $lockoutThreshold = 0
+            if ($hasLockoutThreshold -and [string]$rawLockoutThreshold -notmatch 'Not set') {
+                try { $lockoutThreshold = [int]$rawLockoutThreshold } catch { $hasLockoutThreshold = $false }
+            }
 
             # Three states, and they used to collapse into one. ConvertFrom-ADInterval
             # answers [TimeSpan]::Zero for a configured 0 and $null for three different
@@ -142,6 +149,9 @@ function Get-DomainPasswordPolicy {
             if ($hasLockoutDuration) {
                 if ($lockoutDuration -gt 0) {
                     $lockoutDurationText = "$lockoutDuration minutes"
+                } elseif (-not $hasLockoutThreshold) {
+                    # Whether there is a lockout to stay in is the threshold's to say.
+                    $lockoutDurationText = 'Until manually unlocked - the lockout threshold could not be read'
                 } elseif ($lockoutThreshold -eq 0) {
                     $lockoutDurationText = 'N/A - no lockout is configured'
                 } else {
@@ -153,8 +163,9 @@ function Get-DomainPasswordPolicy {
             $lockoutWindowSpan = ConvertFrom-ADInterval -Value $domainPolicy.lockOutObservationWindow
             $lockoutWindow = if ($lockoutWindowSpan) { $lockoutWindowSpan.TotalMinutes } else { 0 }
 
-            # Password Properties - Invoke-LDAPSearch returns flag array (e.g., @("DOMAIN_PASSWORD_COMPLEX"))
-            # Check for flags by name instead of bitwise operations
+            # Password Properties - Invoke-LDAPSearch returns a flag array (e.g.,
+            # @("DOMAIN_PASSWORD_COMPLEX")), the raw integer is the fallback; both are
+            # read through the table below, by name or by bit.
             #
             # All six flags, by name and bit. The texts follow MS-SAMR (Domain Fields,
             # PasswordProperties), which calls three of them reserved, with no effect on the
@@ -171,22 +182,33 @@ function Get-DomainPasswordPolicy {
                 @{ Name = 'DOMAIN_PASSWORD_STORE_CLEARTEXT'; Bit = 16; Text = 'passwords are stored with reversible encryption' }
                 @{ Name = 'DOMAIN_REFUSE_PASSWORD_CHANGE';   Bit = 32; Text = 'reserved - MS-SAMR gives it no effect on the password policy' }
             )
+
+            # And the read/unread split once more: complexity and reversible encryption
+            # come from here, and an absent or unparseable attribute used to become 0 - a
+            # no_complexity finding about flags nobody had read.
             $pwdPropsValue = $domainPolicy.pwdProperties
+            $hasPwdProperties = ($null -ne $pwdPropsValue) -and
+                                (-not [string]::IsNullOrWhiteSpace([string]$pwdPropsValue))
             $pwdPropsSet = @()
-            if ($pwdPropsValue -is [array] -or ($pwdPropsValue -is [string] -and $pwdPropsValue -match "DOMAIN_")) {
-                # Pre-converted flag names from Invoke-LDAPSearch
-                $pwdPropsArray = @($pwdPropsValue)
-                $complexityEnabled = $pwdPropsArray -contains "DOMAIN_PASSWORD_COMPLEX"
-                $reversibleEncryption = $pwdPropsArray -contains "DOMAIN_PASSWORD_STORE_CLEARTEXT"
-                $pwdPropsSet = @($pwdPropertyFlags | Where-Object { $pwdPropsArray -contains $_.Name })
-            } else {
-                # Raw integer value (fallback)
-                $pwdPropsInt = if ($pwdPropsValue) { try { [int]$pwdPropsValue } catch { 0 } } else { 0 }
-                $complexityEnabled = ($pwdPropsInt -band 1) -ne 0
-                $reversibleEncryption = ($pwdPropsInt -band 16) -ne 0
-                $pwdPropsSet = @($pwdPropertyFlags | Where-Object { ($pwdPropsInt -band $_.Bit) -ne 0 })
+            if ($hasPwdProperties) {
+                if ($pwdPropsValue -is [array] -or ($pwdPropsValue -is [string] -and $pwdPropsValue -match 'DOMAIN_|^NONE$')) {
+                    # Pre-converted flag names from Invoke-LDAPSearch; it writes NONE for 0
+                    $pwdPropsArray = @($pwdPropsValue)
+                    $pwdPropsSet = @($pwdPropertyFlags | Where-Object { $pwdPropsArray -contains $_.Name })
+                } else {
+                    # Raw integer value (fallback)
+                    try {
+                        $pwdPropsInt = [int]$pwdPropsValue
+                        $pwdPropsSet = @($pwdPropertyFlags | Where-Object { ($pwdPropsInt -band $_.Bit) -ne 0 })
+                    } catch {
+                        $hasPwdProperties = $false
+                    }
+                }
             }
-            $adminLockoutApplies = @($pwdPropsSet | Where-Object { $_.Name -eq 'DOMAIN_LOCKOUT_ADMINS' }).Count -gt 0
+            $pwdPropsNames        = @($pwdPropsSet | ForEach-Object { $_.Name })
+            $complexityEnabled    = $pwdPropsNames -contains 'DOMAIN_PASSWORD_COMPLEX'
+            $reversibleEncryption = $pwdPropsNames -contains 'DOMAIN_PASSWORD_STORE_CLEARTEXT'
+            $adminLockoutApplies  = $pwdPropsNames -contains 'DOMAIN_LOCKOUT_ADMINS'
 
             # Create password policy object for consistent display.
             #
@@ -201,9 +223,12 @@ function Get-DomainPasswordPolicy {
                             elseif ($minPwdAge -eq 0) { "Disabled" } else { "$minPwdAge days" }
                 maxPwdAge = if (-not $hasMaxPwdAge) { "Unknown - the value could not be read" }
                             elseif ($maxPwdAge -eq 0) { "Disabled (Never expires)" } else { "$maxPwdAge days" }
-                passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
-                reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
-                lockoutThreshold = if ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
+                passwordComplexity = if (-not $hasPwdProperties) { "Unknown - the value could not be read" }
+                                     elseif ($complexityEnabled) { "Enabled" } else { "Disabled" }
+                reversibleEncryption = if (-not $hasPwdProperties) { "Unknown - the value could not be read" }
+                                       elseif ($reversibleEncryption) { "Enabled" } else { "Disabled" }
+                lockoutThreshold = if (-not $hasLockoutThreshold) { "Unknown - the value could not be read" }
+                                   elseif ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
                 lockoutDuration = $lockoutDurationText
                 lockoutObservationWindow = if ($lockoutWindow -gt 0) { "$lockoutWindow minutes" } else { "N/A" }
             }
@@ -211,7 +236,7 @@ function Get-DomainPasswordPolicy {
             # Every flag that is set, named and read out - so a reader sees the whole
             # attribute, not the two flags the verdict uses. Only where the attribute
             # arrived; an absent one says nothing about any flag.
-            if ($null -ne $pwdPropsValue) {
+            if ($hasPwdProperties) {
                 $pwdPropsDisplay = @($pwdPropsSet | ForEach-Object { "$($_.Name) - $($_.Text)" })
                 if ($pwdPropsDisplay.Count -eq 0) { $pwdPropsDisplay = @('None set') }
                 $passwordPolicyObj | Add-Member -NotePropertyName 'passwordProperties' -NotePropertyValue $pwdPropsDisplay -Force
@@ -221,7 +246,7 @@ function Get-DomainPasswordPolicy {
             # the built-in Administrator (RID 500) out, so the lockout above does not slow
             # down guessing its password. Information, not a verdict: it is the state every
             # domain ships in. Said only where there is a lockout to be exempt from.
-            if ($null -ne $pwdPropsValue -and $lockoutThreshold -gt 0 -and -not $adminLockoutApplies) {
+            if ($hasPwdProperties -and $lockoutThreshold -gt 0 -and -not $adminLockoutApplies) {
                 $passwordPolicyObj | Add-Member -NotePropertyName 'builtinAdministratorLockout' `
                     -NotePropertyValue 'the built-in Administrator is exempt from account lockout - DOMAIN_LOCKOUT_ADMINS is not set' -Force
             }
@@ -239,14 +264,14 @@ function Get-DomainPasswordPolicy {
             # which made the hardest verdict this check has the default answer for a
             # policy nobody had seen. The row says Unknown now, and this list skips it.
             if ($hasMinPwdLength -and $minPwdLength -lt 8) { $policyWeaknesses += "short_password" }
-            if (-not $complexityEnabled) { $policyWeaknesses += "no_complexity" }
+            if ($hasPwdProperties -and -not $complexityEnabled) { $policyWeaknesses += "no_complexity" }
             if ($reversibleEncryption) { $policyWeaknesses += "reversible_encryption" }
 
             # A threshold of 0 disables account lockout outright: an attacker may guess
             # without limit against every account in the domain, which is the precondition
             # that makes password spraying work. That is not a moderate weakness - it ranks
             # with a short minimum length, not below it.
-            if ($lockoutThreshold -eq 0) { $policyWeaknesses += "no_lockout" }
+            if ($hasLockoutThreshold -and $lockoutThreshold -eq 0) { $policyWeaknesses += "no_lockout" }
 
             # Check for moderate weaknesses (Hint)
             $moderateWeaknesses = @()

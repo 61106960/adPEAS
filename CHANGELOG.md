@@ -66,6 +66,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   built-in Administrator is exempt from the lockout - the default, so it is information
   and changes no severity.
 
+- **An unread lockout threshold or `pwdProperties` is no longer reported as disabled.**
+  Both became 0 when the attribute did not arrive or could not be parsed, and 0 carries
+  the hardest verdicts the password policy has: no account lockout, no complexity. The
+  rows read "Unknown" now, as the minimum length and the maximum age already did, and
+  count toward no weakness.
+
 ---
 
 ## [2.7.0] - 2026-10-08
