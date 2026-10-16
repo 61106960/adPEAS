@@ -3366,7 +3366,8 @@ $Script:PrimaryAttributes = @{
 	    'distinguishedName'
 	)
 	ExchangePermissionsModel = @(
-	    'PermissionsModel', 'EffectiveDomainACEs', 'InheritOnlyDomainACEs', 'ADSplitPermissions'
+	    'PermissionsModel', 'EffectiveDomainACEs', 'InheritOnlyDomainACEs', 'ADSplitPermissions',
+	    'ExchangeGroupsFrom'
 	)
 	ExchangeRoleAssignment = @(
 	    'RoleName', 'Assignee', 'AssigneeType', 'AssignmentType', 'RiskVerdict',
@@ -34714,6 +34715,48 @@ function Get-GCConnection {
 	Show-Line ("Global Catalog (port 3268) is not reachable on $($targets -join ', ') - identities from " +
 	           'another domain cannot be resolved and are reported as unresolved') -Class Note
 	return $null
+}
+function Get-ForestRootExchangeGroup {
+	[CmdletBinding()]
+	[OutputType([hashtable])]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [string[]]$Name
+	)
+	$rootNC = $null
+	if ($Script:LDAPContext -is [hashtable] -and $Script:LDAPContext.ContainsKey('RootDomainNamingContext')) {
+	    $rootNC = [string]$Script:LDAPContext['RootDomainNamingContext']
+	}
+	if (-not $rootNC) {
+	    return $null
+	}
+	try {
+	    $gcConn = Get-GCConnection
+	    if (-not $gcConn) { return $null }
+	    $nameClauses = ($Name | ForEach-Object { "(sAMAccountName=$(Escape-LDAPFilterValue -Value $_))" }) -join ''
+	    $searchBase = "OU=Microsoft Exchange Security Groups,$rootNC"
+	    $gcResults = @(Invoke-LDAPSearch -Filter "(&(objectClass=group)(|$nameClauses))" -SearchBase $searchBase `
+	        -Properties @('sAMAccountName', 'objectSid', 'distinguishedName') -LdapConnection $gcConn -Raw)
+	    $found = @{}
+	    foreach ($gcResult in $gcResults) {
+	        $groupName = [string]$gcResult.sAMAccountName
+	        if (-not $groupName -or $null -eq $gcResult.objectSid) { continue }
+	        $sidValue = $gcResult.objectSid
+	        if ($sidValue -is [array] -and $sidValue.Count -gt 0 -and $sidValue[0] -is [byte[]]) { $sidValue = $sidValue[0] }
+	        $sidText = if ($sidValue -is [byte[]]) {
+	            (New-Object System.Security.Principal.SecurityIdentifier($sidValue, 0)).Value
+	        } else {
+	            [string]$sidValue
+	        }
+	        $found[$groupName] = [PSCustomObject]@{
+	            SID               = $sidText
+	            DistinguishedName = [string]$gcResult.distinguishedName
+	        }
+	    }
+	    return $found
+	} catch {
+	    return $null
+	}
 }
 function Resolve-SIDViaGC {
 	[CmdletBinding()]
@@ -71951,6 +71994,26 @@ function Get-ExchangeInfrastructure {
 	            catch {
 	            }
 	        }
+	        $modelGroupsFromRoot = $false
+	        $forestRootAsked = $false
+	        $rootNC = [string]$Script:LDAPContext.RootDomainNamingContext
+	        if (@($modelGroups).Count -eq 0 -and $rootNC -and $rootNC -ne $domainDN) {
+	            $forestRootAsked = $true
+	            $rootGroups = Get-ForestRootExchangeGroup -Name @('Exchange Windows Permissions', 'Exchange Trusted Subsystem')
+	            if ($null -eq $rootGroups) {
+	                $forestRootAsked = $false
+	            } else {
+	                foreach ($modelGroupName in @('Exchange Windows Permissions', 'Exchange Trusted Subsystem')) {
+	                    if ($rootGroups.ContainsKey($modelGroupName) -and $rootGroups[$modelGroupName].SID) {
+	                        $modelGroups += [PSCustomObject]@{
+	                            Name = $modelGroupName
+	                            SID  = [string]$rootGroups[$modelGroupName].SID
+	                        }
+	                    }
+	                }
+	                $modelGroupsFromRoot = (@($modelGroups).Count -gt 0)
+	            }
+	        }
 	        $protectedGroupsOU = $null
 	        try {
 	            $protectedGroupsOU = @(Get-DomainObject -Identity "OU=Microsoft Exchange Protected Groups,$domainDN" @PSBoundParameters)[0]
@@ -71958,7 +72021,10 @@ function Get-ExchangeInfrastructure {
 	        catch {
 	        }
 	        if (@($modelGroups).Count -eq 0) {
-	            Show-Line "Neither Exchange Windows Permissions nor Exchange Trusted Subsystem exists - the permissions model is unknown" -Class Note
+	            $absentScope = if ($rootNC -and $rootNC -ne $domainDN) {
+	                if ($forestRootAsked) { ' in this domain or in the forest root' } else { ' in this domain, and the forest root could not be asked through the Global Catalog' }
+	            } else { '' }
+	            Show-Line "Neither Exchange Windows Permissions nor Exchange Trusted Subsystem exists$absentScope - the permissions model is unknown" -Class Note
 	        }
 	        else {
 	            $domainACEs = @()
@@ -72045,6 +72111,10 @@ function Get-ExchangeInfrastructure {
 	                    'Not enabled - shared permissions model'
 	                }
 	                $modelObj | Add-Member -NotePropertyName 'ADSplitPermissions' -NotePropertyValue $splitPermissionsText -Force
+	                if ($modelGroupsFromRoot) {
+	                    $modelObj | Add-Member -NotePropertyName 'ExchangeGroupsFrom' `
+	                        -NotePropertyValue "the forest root domain ($rootNC), through the Global Catalog - Exchange creates its groups there once" -Force
+	                }
 	                $modelObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangePermissionsModel' -Force
 	                Show-Line "Found Exchange permissions model:" -Class $modelConsoleClass
 	                Show-Object $modelObj -Class $modelConsoleClass
@@ -72061,11 +72131,23 @@ function Get-ExchangeInfrastructure {
 	               ObjectType = 'ExchangeOrganizationManagement'
 	               Title      = 'Checking Organization Management group...' }
 	        )
+	        $rootServiceGroups = $null
+	        $rootServiceGroupsAsked = $false
 	        foreach ($serviceGroup in $exchangeServiceGroups) {
 	            Show-SubHeader $serviceGroup.Title -ObjectType $serviceGroup.ObjectType
 	            try {
 	                $groupObject = @(Get-DomainGroup -Identity $serviceGroup.Name @PSBoundParameters)[0]
 	                if (-not $groupObject) {
+	                    if ($rootNC -and $rootNC -ne $domainDN) {
+	                        if (-not $rootServiceGroupsAsked) {
+	                            $rootServiceGroupsAsked = $true
+	                            $rootServiceGroups = Get-ForestRootExchangeGroup -Name @($exchangeServiceGroups | ForEach-Object { $_.Name })
+	                        }
+	                        if ($rootServiceGroups -and $rootServiceGroups.ContainsKey($serviceGroup.Name)) {
+	                            Show-Line "$($serviceGroup.Name) is in the forest root domain ($($rootServiceGroups[$serviceGroup.Name].DistinguishedName)) - a scan of that domain reports its members" -Class Note
+	                            continue
+	                        }
+	                    }
 	                    Show-Line "$($serviceGroup.Name) group not found" -Class Note
 	                    continue
 	                }
@@ -84948,7 +85030,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-2049"
+$Script:adPEASVersion = "2.7.0+20261016-2101"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

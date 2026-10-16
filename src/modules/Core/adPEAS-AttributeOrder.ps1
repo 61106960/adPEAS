@@ -522,7 +522,8 @@ $Script:PrimaryAttributes = @{
     # the finding, the other is the mitigated shape Microsoft's guidance produces, and in
     # a single list the reader could not tell which line drove the verdict.
     ExchangePermissionsModel = @(
-        'PermissionsModel', 'EffectiveDomainACEs', 'InheritOnlyDomainACEs', 'ADSplitPermissions'
+        'PermissionsModel', 'EffectiveDomainACEs', 'InheritOnlyDomainACEs', 'ADSplitPermissions',
+        'ExchangeGroupsFrom'
     )
 
     # Exchange RBAC role assignments (Get-ExchangeRBACAssignments).

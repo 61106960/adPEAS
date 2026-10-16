@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 20:49:09
-    Version: 2.7.0+20261016-2049
+    Build: 2026-10-16 21:01:39
+    Version: 2.7.0+20261016-2101
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6751,7 +6751,8 @@ $Script:PrimaryAttributes = @{
     # the finding, the other is the mitigated shape Microsoft's guidance produces, and in
     # a single list the reader could not tell which line drove the verdict.
     ExchangePermissionsModel = @(
-        'PermissionsModel', 'EffectiveDomainACEs', 'InheritOnlyDomainACEs', 'ADSplitPermissions'
+        'PermissionsModel', 'EffectiveDomainACEs', 'InheritOnlyDomainACEs', 'ADSplitPermissions',
+        'ExchangeGroupsFrom'
     )
 
     # Exchange RBAC role assignments (Get-ExchangeRBACAssignments).
@@ -52973,6 +52974,88 @@ function Get-GCConnection {
     Show-Line ("Global Catalog (port 3268) is not reachable on $($targets -join ', ') - identities from " +
                'another domain cannot be resolved and are reported as unresolved') -Class Note
     return $null
+}
+
+
+function Get-ForestRootExchangeGroup {
+    <#
+    .SYNOPSIS
+        Finds Exchange's universal security groups in the forest root domain, through the
+        Global Catalog.
+
+    .DESCRIPTION
+        Exchange setup creates its groups once, in OU=Microsoft Exchange Security Groups of
+        the forest root domain, and Setup /PrepareDomain grants them their rights on the
+        domain object of every other domain. A check that reads a child domain therefore
+        finds the ACEs naming those groups and not the groups: Get-DomainGroup searches the
+        domain it is connected to. Get-ExchangeInfrastructure reported the permissions
+        model of every child domain as undeterminable for that reason - while the ACE that
+        decides it was right there.
+
+        Asked by name, in the one OU Exchange setup creates them in, so that a group of the
+        same name somewhere else in the forest does not stand in for it.
+
+    .PARAMETER Name
+        The group names (sAMAccountName) to look for.
+
+    .OUTPUTS
+        Hashtable of name -> PSCustomObject with SID and DistinguishedName, for the groups
+        found. Empty when the forest root holds none of them; $null when the Global Catalog
+        could not be asked at all - the two are different answers.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string[]]$Name
+    )
+
+    $rootNC = $null
+    if ($Script:LDAPContext -is [hashtable] -and $Script:LDAPContext.ContainsKey('RootDomainNamingContext')) {
+        $rootNC = [string]$Script:LDAPContext['RootDomainNamingContext']
+    }
+    if (-not $rootNC) {
+        Write-Log "[Get-ForestRootExchangeGroup] No forest root naming context in the session"
+        return $null
+    }
+
+    try {
+        $gcConn = Get-GCConnection
+        if (-not $gcConn) { return $null }
+
+        $nameClauses = ($Name | ForEach-Object { "(sAMAccountName=$(Escape-LDAPFilterValue -Value $_))" }) -join ''
+        $searchBase = "OU=Microsoft Exchange Security Groups,$rootNC"
+
+        # -Raw, like Resolve-SIDViaGC: the explicit attribute list then works on the GC
+        # port, and objectSid comes back as the bytes it is.
+        $gcResults = @(Invoke-LDAPSearch -Filter "(&(objectClass=group)(|$nameClauses))" -SearchBase $searchBase `
+            -Properties @('sAMAccountName', 'objectSid', 'distinguishedName') -LdapConnection $gcConn -Raw)
+
+        $found = @{}
+        foreach ($gcResult in $gcResults) {
+            $groupName = [string]$gcResult.sAMAccountName
+            if (-not $groupName -or $null -eq $gcResult.objectSid) { continue }
+
+            $sidValue = $gcResult.objectSid
+            if ($sidValue -is [array] -and $sidValue.Count -gt 0 -and $sidValue[0] -is [byte[]]) { $sidValue = $sidValue[0] }
+            $sidText = if ($sidValue -is [byte[]]) {
+                (New-Object System.Security.Principal.SecurityIdentifier($sidValue, 0)).Value
+            } else {
+                [string]$sidValue
+            }
+
+            $found[$groupName] = [PSCustomObject]@{
+                SID               = $sidText
+                DistinguishedName = [string]$gcResult.distinguishedName
+            }
+        }
+
+        Write-Log "[Get-ForestRootExchangeGroup] Found $($found.Count) of $(@($Name).Count) group(s) in $searchBase"
+        return $found
+    } catch {
+        Write-Log "[Get-ForestRootExchangeGroup] Global Catalog lookup failed: $($_.Exception.Message)"
+        return $null
+    }
 }
 
 
@@ -119881,6 +119964,33 @@ function Get-ExchangeInfrastructure {
                 }
             }
 
+            # Not in this domain is not the same as not in this forest. Exchange creates
+            # its groups once, in the forest root domain, and Setup /PrepareDomain grants
+            # them their rights on every other domain object - so in a child domain the
+            # ACEs are there and the groups are not, and the model of every child domain
+            # read as undeterminable. Asked of the Global Catalog, by name, in the OU
+            # Exchange setup creates them in.
+            $modelGroupsFromRoot = $false
+            $forestRootAsked = $false
+            $rootNC = [string]$Script:LDAPContext.RootDomainNamingContext
+            if (@($modelGroups).Count -eq 0 -and $rootNC -and $rootNC -ne $domainDN) {
+                $forestRootAsked = $true
+                $rootGroups = Get-ForestRootExchangeGroup -Name @('Exchange Windows Permissions', 'Exchange Trusted Subsystem')
+                if ($null -eq $rootGroups) {
+                    $forestRootAsked = $false
+                } else {
+                    foreach ($modelGroupName in @('Exchange Windows Permissions', 'Exchange Trusted Subsystem')) {
+                        if ($rootGroups.ContainsKey($modelGroupName) -and $rootGroups[$modelGroupName].SID) {
+                            $modelGroups += [PSCustomObject]@{
+                                Name = $modelGroupName
+                                SID  = [string]$rootGroups[$modelGroupName].SID
+                            }
+                        }
+                    }
+                    $modelGroupsFromRoot = (@($modelGroups).Count -gt 0)
+                }
+            }
+
             # Split permissions creates this OU and moves the Exchange groups out of reach
             # of Exchange itself. Its presence corroborates the ACE reading below.
             $protectedGroupsOU = $null
@@ -119893,8 +120003,12 @@ function Get-ExchangeInfrastructure {
 
             if (@($modelGroups).Count -eq 0) {
                 # Not the same as "no ACE". Exchange prepares each domain separately, and a
-                # domain that was never prepared has no groups here to compare against.
-                Show-Line "Neither Exchange Windows Permissions nor Exchange Trusted Subsystem exists - the permissions model is unknown" -Class Note
+                # domain that was never prepared has no groups here to compare against. In
+                # a child domain the line says how far the search went.
+                $absentScope = if ($rootNC -and $rootNC -ne $domainDN) {
+                    if ($forestRootAsked) { ' in this domain or in the forest root' } else { ' in this domain, and the forest root could not be asked through the Global Catalog' }
+                } else { '' }
+                Show-Line "Neither Exchange Windows Permissions nor Exchange Trusted Subsystem exists$absentScope - the permissions model is unknown" -Class Note
             }
             else {
                 $domainACEs = @()
@@ -120034,6 +120148,12 @@ function Get-ExchangeInfrastructure {
                         'Not enabled - shared permissions model'
                     }
                     $modelObj | Add-Member -NotePropertyName 'ADSplitPermissions' -NotePropertyValue $splitPermissionsText -Force
+
+                    # Where the groups behind the ACEs were found, when it was not here.
+                    if ($modelGroupsFromRoot) {
+                        $modelObj | Add-Member -NotePropertyName 'ExchangeGroupsFrom' `
+                            -NotePropertyValue "the forest root domain ($rootNC), through the Global Catalog - Exchange creates its groups there once" -Force
+                    }
                     $modelObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangePermissionsModel' -Force
 
                     # "Found <thing>:" with the severity as colour, the way every other
@@ -120078,6 +120198,11 @@ function Get-ExchangeInfrastructure {
                    Title      = 'Checking Organization Management group...' }
             )
 
+            # Asked of the forest root at most once, for all three, and only where a group
+            # is missing from a domain that is not the root.
+            $rootServiceGroups = $null
+            $rootServiceGroupsAsked = $false
+
             foreach ($serviceGroup in $exchangeServiceGroups) {
                 Show-SubHeader $serviceGroup.Title -ObjectType $serviceGroup.ObjectType
 
@@ -120087,7 +120212,19 @@ function Get-ExchangeInfrastructure {
                     if (-not $groupObject) {
                         # Exchange creates these groups at install time, so in an
                         # organization that exists their absence is worth a line rather
-                        # than a silent log entry.
+                        # than a silent log entry. In a child domain they are not absent:
+                        # Exchange creates them once, in the forest root, and a scan of
+                        # that domain is where their members are read.
+                        if ($rootNC -and $rootNC -ne $domainDN) {
+                            if (-not $rootServiceGroupsAsked) {
+                                $rootServiceGroupsAsked = $true
+                                $rootServiceGroups = Get-ForestRootExchangeGroup -Name @($exchangeServiceGroups | ForEach-Object { $_.Name })
+                            }
+                            if ($rootServiceGroups -and $rootServiceGroups.ContainsKey($serviceGroup.Name)) {
+                                Show-Line "$($serviceGroup.Name) is in the forest root domain ($($rootServiceGroups[$serviceGroup.Name].DistinguishedName)) - a scan of that domain reports its members" -Class Note
+                                continue
+                            }
+                        }
                         Show-Line "$($serviceGroup.Name) group not found" -Class Note
                         continue
                     }
@@ -137065,7 +137202,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-2049"
+$Script:adPEASVersion = "2.7.0+20261016-2101"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

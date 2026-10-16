@@ -143,6 +143,88 @@ function Get-GCConnection {
 }
 
 
+function Get-ForestRootExchangeGroup {
+    <#
+    .SYNOPSIS
+        Finds Exchange's universal security groups in the forest root domain, through the
+        Global Catalog.
+
+    .DESCRIPTION
+        Exchange setup creates its groups once, in OU=Microsoft Exchange Security Groups of
+        the forest root domain, and Setup /PrepareDomain grants them their rights on the
+        domain object of every other domain. A check that reads a child domain therefore
+        finds the ACEs naming those groups and not the groups: Get-DomainGroup searches the
+        domain it is connected to. Get-ExchangeInfrastructure reported the permissions
+        model of every child domain as undeterminable for that reason - while the ACE that
+        decides it was right there.
+
+        Asked by name, in the one OU Exchange setup creates them in, so that a group of the
+        same name somewhere else in the forest does not stand in for it.
+
+    .PARAMETER Name
+        The group names (sAMAccountName) to look for.
+
+    .OUTPUTS
+        Hashtable of name -> PSCustomObject with SID and DistinguishedName, for the groups
+        found. Empty when the forest root holds none of them; $null when the Global Catalog
+        could not be asked at all - the two are different answers.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string[]]$Name
+    )
+
+    $rootNC = $null
+    if ($Script:LDAPContext -is [hashtable] -and $Script:LDAPContext.ContainsKey('RootDomainNamingContext')) {
+        $rootNC = [string]$Script:LDAPContext['RootDomainNamingContext']
+    }
+    if (-not $rootNC) {
+        Write-Log "[Get-ForestRootExchangeGroup] No forest root naming context in the session"
+        return $null
+    }
+
+    try {
+        $gcConn = Get-GCConnection
+        if (-not $gcConn) { return $null }
+
+        $nameClauses = ($Name | ForEach-Object { "(sAMAccountName=$(Escape-LDAPFilterValue -Value $_))" }) -join ''
+        $searchBase = "OU=Microsoft Exchange Security Groups,$rootNC"
+
+        # -Raw, like Resolve-SIDViaGC: the explicit attribute list then works on the GC
+        # port, and objectSid comes back as the bytes it is.
+        $gcResults = @(Invoke-LDAPSearch -Filter "(&(objectClass=group)(|$nameClauses))" -SearchBase $searchBase `
+            -Properties @('sAMAccountName', 'objectSid', 'distinguishedName') -LdapConnection $gcConn -Raw)
+
+        $found = @{}
+        foreach ($gcResult in $gcResults) {
+            $groupName = [string]$gcResult.sAMAccountName
+            if (-not $groupName -or $null -eq $gcResult.objectSid) { continue }
+
+            $sidValue = $gcResult.objectSid
+            if ($sidValue -is [array] -and $sidValue.Count -gt 0 -and $sidValue[0] -is [byte[]]) { $sidValue = $sidValue[0] }
+            $sidText = if ($sidValue -is [byte[]]) {
+                (New-Object System.Security.Principal.SecurityIdentifier($sidValue, 0)).Value
+            } else {
+                [string]$sidValue
+            }
+
+            $found[$groupName] = [PSCustomObject]@{
+                SID               = $sidText
+                DistinguishedName = [string]$gcResult.distinguishedName
+            }
+        }
+
+        Write-Log "[Get-ForestRootExchangeGroup] Found $($found.Count) of $(@($Name).Count) group(s) in $searchBase"
+        return $found
+    } catch {
+        Write-Log "[Get-ForestRootExchangeGroup] Global Catalog lookup failed: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+
 function Resolve-SIDViaGC {
     <#
     .SYNOPSIS

@@ -115,6 +115,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   its weakest value and says that it is read from the policies: a value can stay on a
   domain controller after its policy stops applying.
 
+- **The Exchange permissions model is determined in child domains too.** Exchange creates
+  its groups once, in the forest root domain, and grants them their rights on every other
+  domain object. `Get-ExchangeInfrastructure` looked for Exchange Windows Permissions and
+  Exchange Trusted Subsystem in the domain it scanned, found neither in a child domain,
+  and reported the model as undeterminable - while the WriteDACL ACE that decides it was
+  on the domain object. Where the groups are missing, the check now asks the Global
+  Catalog for them in the forest root and says where it found them; the group cards say
+  that the group lives in the forest root instead of "not found".
+
 ---
 
 ## [2.7.0] - 2026-10-08
