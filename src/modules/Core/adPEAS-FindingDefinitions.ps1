@@ -1664,83 +1664,6 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
         )
     }
 
-    'ESC6_CA' = @{
-        Title = "ESC6 - CA with EDITF_ATTRIBUTESUBJECTALTNAME2"
-        Risk = "Finding"
-        BaseScore = 65
-        Description = "The Certificate Authority has the EDITF_ATTRIBUTESUBJECTALTNAME2 flag enabled, allowing ANY certificate request to include an arbitrary Subject Alternative Name, regardless of template settings."
-        Impact = @(
-            "All certificate templates become effectively ESC1-vulnerable"
-            "Any user who can enroll for ANY certificate can impersonate any user"
-            "Template-level SAN restrictions are completely bypassed"
-            "Enables domain-wide privilege escalation"
-        )
-        Attack = @(
-            "1. Attacker finds any template they can enroll for"
-            "2. Requests certificate and adds Domain Admin UPN as SAN in the request"
-            "3. CA accepts the SAN due to the flag"
-            "4. Uses certificate to authenticate as Domain Admin"
-        )
-        Remediation = @(
-            "Disable EDITF_ATTRIBUTESUBJECTALTNAME2 on the CA"
-            "Run: certutil -setreg policy\\EditFlags -EDITF_ATTRIBUTESUBJECTALTNAME2"
-            "Restart the CA service after making changes"
-            "Audit all existing certificates for suspicious SANs"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "Check if EDITF_ATTRIBUTESUBJECTALTNAME2 flag is enabled (run on CA server)"
-                Command = @'
-# Query current EditFlags setting
-certutil -getreg policy\EditFlags
-
-# Look for EDITF_ATTRIBUTESUBJECTALTNAME2 (0x40000) in output
-# If present, flag is enabled and vulnerable
-'@
-            }
-            @{
-                Description = "Disable EDITF_ATTRIBUTESUBJECTALTNAME2 flag (run on CA server, requires CA Admin)"
-                Command = @'
-# Disable the vulnerable flag
-certutil -setreg policy\EditFlags -EDITF_ATTRIBUTESUBJECTALTNAME2
-
-# Restart CA service to apply changes
-net stop certsvc
-net start certsvc
-
-# Verify flag is disabled
-certutil -getreg policy\EditFlags
-'@
-            }
-            @{
-                Description = "Audit issued certificates for suspicious Subject Alternative Names"
-                Command = @'
-# Export all issued certificates from CA database
-certutil -view -restrict "Disposition=20" -out "SubjectAlternativeName,Request.RequesterName,NotAfter" csv > IssuedCerts.csv
-
-# Review IssuedCerts.csv for:
-# - SANs containing privileged usernames (administrator, domain admins, etc.)
-# - SANs not matching the requester name
-# - SANs with UPNs from different security groups
-
-# Optional: Import CSV for analysis
-$certs = Import-Csv IssuedCerts.csv
-$certs | Where-Object { $_.'Request.RequesterName' -notmatch $_.SubjectAlternativeName } | Format-Table -AutoSize
-'@
-            }
-        )
-        References = @(
-            @{ Title = "Certified Pre-Owned - SpecterOps"; Url = "https://posts.specterops.io/certified-pre-owned-d95910965cd2" }
-            @{ Title = "AD CS ESC6 - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/ad-certificates/domain-escalation.html#esc6" }
-            @{ Title = "EDITF_ATTRIBUTESUBJECTALTNAME2 - Microsoft"; Url = "https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/dn786426(v=ws.11)" }
-        )
-        Tools = @("Certify", "Certipy", "certutil")
-        MITRE = "T1649"
-        Triggers = @(
-            @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC6'; Severity = 'Finding' }
-        )
-    }
-
     'ESC8_WEB_ENROLLMENT' = @{
         Title = "ESC8 - NTLM Relay to Web Enrollment"
         Risk = "Finding"
@@ -6147,7 +6070,6 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1552.006"
         Triggers = @(
             @{ Attribute = 'credentialType'; Pattern = 'GPP Password'; Severity = 'Finding' }
-            @{ Attribute = 'cpassword'; Severity = 'Finding' }
         )
     }
 
@@ -6546,11 +6468,8 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1552"
         Triggers = @(
             @{ Attribute = 'msDS-ManagedPassword'; Severity = 'Finding' }
-            @{ Attribute = 'gMSAPassword'; Severity = 'Finding' }
             @{ Attribute = 'ntHash'; Severity = 'Finding' }
             @{ Attribute = 'previousNTHash'; Severity = 'Finding' }
-            # SID-based: Broad groups (Everyone, Auth Users, Domain Users) can retrieve gMSA password
-            @{ Attribute = 'PrincipalsAllowedToRetrievePassword'; Custom = 'is_broad_group_sid'; Severity = 'Finding' }
         )
     }
 
@@ -8099,63 +8018,6 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
     }
 
     # ============================================================================
-    # NTLM SECURITY FINDINGS
-    # ============================================================================
-
-    'NTLM_NOT_RESTRICTED' = @{
-        Title = "NTLM Authentication Not Restricted"
-        Risk = "Finding"
-        BaseScore = 30
-        Description = "NTLM authentication is not restricted in the domain. NTLM is vulnerable to relay attacks and should be limited or disabled in favor of Kerberos authentication."
-        Impact = @(
-            "NTLM authentication subject to relay attacks"
-            "Credentials can be captured and cracked offline"
-            "Pass-the-Hash attacks remain effective"
-            "Legacy protocol lacks modern security features"
-        )
-        Attack = @(
-            "1. Attacker captures or relays NTLM authentication"
-            "2. Relays to systems accepting NTLM"
-            "3. Or cracks NTLM hashes offline"
-            "4. Gains access without knowing passwords"
-        )
-        Remediation = @(
-            "Enable NTLM auditing to identify NTLM usage"
-            "Progressively restrict NTLM via GPO"
-            "Configure 'Network security: Restrict NTLM' policies"
-            "Block NTLM for sensitive accounts (Protected Users group)"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "Enable NTLM auditing via Group Policy (Computer Configuration > Policies > Windows Settings > Security Settings > Local Policies > Security Options)"
-                Command = "# Set 'Network security: Restrict NTLM: Audit NTLM authentication in this domain' = Enable all; Set 'Network security: Restrict NTLM: Audit Incoming NTLM Traffic' = Enable auditing for all accounts; Set 'Network security: Restrict NTLM: Outgoing NTLM traffic to remote servers' = Audit all"
-            }
-            @{
-                Description = "View NTLM authentication events on Domain Controller (Event ID 8004 for NTLM usage)"
-                Command = "Get-WinEvent -LogName 'Microsoft-Windows-NTLM/Operational' -FilterXPath '*[System[EventID=8004]]' -MaxEvents 100 | Select-Object TimeCreated,Message | Format-Table -Wrap"
-            }
-            @{
-                Description = "Restrict NTLM authentication in domain via Group Policy"
-                Command = "# In Group Policy: Computer Configuration > Policies > Windows Settings > Security Settings > Local Policies > Security Options > 'Network security: Restrict NTLM: NTLM authentication in this domain' = Deny all OR Deny for domain accounts to domain servers"
-            }
-            @{
-                Description = "Add privileged accounts to Protected Users group (blocks NTLM automatically)"
-                Command = "Add-ADGroupMember -Identity 'Protected Users' -Members 'ADMIN_ACCOUNT'"
-            }
-        )
-        References = @(
-            @{ Title = "Network security: Restrict NTLM: Audit NTLM authentication in this domain"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-restrict-ntlm-audit-ntlm-authentication-in-this-domain" }
-            @{ Title = "Network security: Restrict NTLM: NTLM authentication in this domain"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-restrict-ntlm-ntlm-authentication-in-this-domain" }
-            @{ Title = "NTLM Relay Attacks"; Url = "https://en.hackndo.com/ntlm-relay/" }
-        )
-        Tools = @("ntlmrelayx", "Responder", "Inveigh")
-        MITRE = "T1557.001"
-        Triggers = @(
-            @{ Attribute = 'NTLMEnabled'; Severity = 'Finding' }
-        )
-    }
-
-    # ============================================================================
     # PASSWORD POLICY FINDINGS
     # ============================================================================
 
@@ -8476,125 +8338,6 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
     # ADCS ADDITIONAL FINDINGS
     # ============================================================================
 
-    'ESC7_CA_PERMISSIONS' = @{
-        Title = "ESC7 - Dangerous CA Permissions"
-        Risk = "Finding"
-        BaseScore = 65
-        Description = "The Certificate Authority has dangerous permissions that allow non-privileged users to manage the CA. This can be abused to approve pending requests, enable vulnerable templates, or change CA configuration."
-        Impact = @(
-            "Attackers can approve their own certificate requests"
-            "Can enable disabled vulnerable templates"
-            "Can modify CA configuration settings"
-            "Complete ADCS compromise possible"
-        )
-        Attack = @(
-            "1. Attacker identifies CA management permissions"
-            "2. Submits request for certificate with privileged SAN"
-            "3. Approves their own pending request"
-            "4. Uses certificate to authenticate as any user"
-        )
-        Remediation = @(
-            "Audit CA permissions (ManageCA, ManageCertificates)"
-            "Remove unnecessary permissions from non-admin users"
-            "Only CA Admins should have ManageCA rights"
-            "Monitor CA administrative actions"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "Audit CA permissions using PowerShell (requires PSPKI module)"
-                Command = @'
-# Install PSPKI module if not present
-# Install-Module -Name PSPKI -Force
-
-# Get CA object from Active Directory
-$configNC = (Get-ADRootDSE).configurationNamingContext
-$caName = "CA-SERVER-NAME"  # Replace with your CA name
-$caDN = "CN=$caName,CN=Enrollment Services,CN=Public Key Services,CN=Services,$configNC"
-
-# Get CA ACL
-$caACL = Get-Acl -Path "AD:\$caDN"
-
-# List all permissions
-$caACL.Access | Select-Object IdentityReference, ActiveDirectoryRights, AccessControlType | Format-Table -AutoSize
-
-# Find dangerous permissions for non-admin users
-$caACL.Access | Where-Object {
-    $sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier])
-    $isAdmin = ($sid.Value -match '-512$|-519$') -or ($sid.Value -eq 'S-1-5-18')  # Domain/Enterprise Admins or SYSTEM
-
-    -not $isAdmin -and (
-        $_.ActiveDirectoryRights -match "GenericAll|WriteDacl|WriteOwner"
-    )
-} | Format-Table -AutoSize
-'@
-            }
-            @{
-                Description = "Remove dangerous CA permissions from AD CA object (requires Enterprise Admin)"
-                Command = @'
-$configNC = (Get-ADRootDSE).configurationNamingContext
-$caName = "CA-SERVER-NAME"  # Replace with your CA name
-$caDN = "CN=$caName,CN=Enrollment Services,CN=Public Key Services,CN=Services,$configNC"
-
-# Get current ACL
-$acl = Get-Acl -Path "AD:\$caDN"
-
-# Remove dangerous rights for non-admin users
-$acl.Access | Where-Object {
-    $sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier])
-    # Keep only Domain Admins (512), Enterprise Admins (519), and SYSTEM
-    $isAdmin = ($sid.Value -match '-512$|-519$') -or ($sid.Value -eq 'S-1-5-18')
-
-    -not $isAdmin -and (
-        $_.ActiveDirectoryRights -match "GenericAll|WriteDacl|WriteOwner"
-    )
-} | ForEach-Object {
-    $acl.RemoveAccessRule($_) | Out-Null
-}
-
-Set-Acl -Path "AD:\$caDN" -AclObject $acl
-'@
-            }
-            @{
-                Description = "Remove ManageCA and ManageCertificates rights using PSPKI (run on CA server or remotely)"
-                Command = @'
-# Install PSPKI module if not present
-# Install-Module -Name PSPKI -Force
-
-# Connect to CA
-$ca = Get-CertificationAuthority -ComputerName "CA-SERVER-NAME"
-
-# Get current CA ACL
-$caACL = Get-CertificationAuthorityAcl -CertificationAuthority $ca
-
-# Remove specific user/group ManageCA permission
-Remove-CAAccessControlEntry -InputObject $caACL -Identity "DOMAIN\User" -AccessType Allow
-
-# Remove specific user/group ManageCertificates permission
-Remove-CAAccessControlEntry -InputObject $caACL -Identity "DOMAIN\User" -AccessType Allow
-
-# Apply modified ACL (requires CA service restart)
-$caACL | Set-CertificationAuthorityAcl -RestartCA
-
-# Verify permissions
-Get-CertificationAuthorityAcl -CertificationAuthority $ca | Format-Table -AutoSize
-'@
-            }
-        )
-        References = @(
-            @{ Title = "Certified Pre-Owned - SpecterOps"; Url = "https://posts.specterops.io/certified-pre-owned-d95910965cd2" }
-            @{ Title = "AD CS ESC7 - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/ad-certificates/domain-escalation.html#esc7" }
-            @{ Title = "ESC7 Attack"; Url = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc7-dangerous-permissions-on-ca" }
-            @{ Title = "CA Role-Based Administration - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/certificate-template-concepts" }
-        )
-        Tools = @("Certify", "Certipy", "PSPKI")
-        MITRE = "T1649"
-        Triggers = @(
-            @{ Attribute = 'ESC7'; Severity = 'Finding' }
-            @{ Attribute = 'ManageCA'; Severity = 'Finding' }
-            @{ Attribute = 'ManageCertificates'; Severity = 'Finding' }
-        )
-    }
-
     'ESC9_CT_NO_SECURITY_EXTENSION' = @{
         Title = "ESC9 - Certificate Template Without Security Extension"
         Risk = "Finding"
@@ -8683,64 +8426,6 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
     # ============================================================================
     # SCCM / MECM FINDINGS
     # ============================================================================
-
-    'SCCM_ADMIN_HIERARCHY' = @{
-        Title = "SCCM Hierarchy Takeover Risk"
-        Risk = "Finding"
-        BaseScore = 40
-        Description = "The SCCM hierarchy configuration allows potential takeover attacks. SCCM admins can execute code on all managed systems, making SCCM a high-value target."
-        Impact = @(
-            "SCCM Full Administrators can execute code on all clients"
-            "Hierarchy can be hijacked via various techniques"
-            "Access to SCCM = Access to all managed endpoints"
-            "Often includes Domain Controllers"
-        )
-        Attack = @(
-            "1. Attacker compromises SCCM admin account"
-            "2. Deploys malicious application or script to all systems"
-            "3. Gains code execution on entire managed environment"
-            "4. Including servers and Domain Controllers"
-        )
-        Remediation = @(
-            "Implement SCCM role-based access control"
-            "Limit Full Administrator role to minimal accounts"
-            "Enable SCCM admin audit logging"
-            "Separate SCCM infrastructure from domain admin access"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "List all SCCM administrative users and their assigned security roles"
-                Command = "Get-WmiObject -Namespace 'root\SMS\site_<SITECODE>' -Class SMS_Admin | Select-Object AdminSID,LogonName,SourceSite,@{Name='Roles';Expression={(Get-WmiObject -Namespace 'root\SMS\site_<SITECODE>' -Query `"SELECT * FROM SMS_ARole WHERE RoleID IN (SELECT RoleID FROM SMS_AdminRole WHERE AdminID='`$(`$_.AdminID)')`").RoleName}} | Format-Table -AutoSize"
-            }
-            @{
-                Description = "View all security roles defined in SCCM"
-                Command = "Get-WmiObject -Namespace 'root\SMS\site_<SITECODE>' -Class SMS_ARole | Select-Object RoleID,RoleName,RoleDescription,IsBuiltIn | Format-Table -AutoSize"
-            }
-            @{
-                Description = "Create custom security role with limited permissions (via SCCM Console)"
-                Command = "# In SCCM Console: Administration > Security > Security Roles > Create Security Role, then grant only required permissions instead of Full Administrator"
-            }
-            @{
-                Description = "Enable audit logging for administrative actions (review SMS_StatusMessage for admin changes)"
-                Command = "Get-WmiObject -Namespace 'root\SMS\site_<SITECODE>' -Query `"SELECT * FROM SMS_StatusMessage WHERE MessageType=768 AND MessageID>=30000 AND MessageID<=40000 AND Time > '`$((Get-Date).AddDays(-7).ToString('yyyyMMddHHmmss.000000+000'))' ORDER BY Time DESC`" | Select-Object MachineName,InsStrings,Time | Format-List"
-            }
-            @{
-                Description = "Remove Full Administrator role from specific user (replace with more restrictive role)"
-                Command = "# In SCCM Console: Administration > Security > Administrative Users > Select User > Properties > Security Roles tab > Remove Full Administrator > Add appropriate limited role instead"
-            }
-        )
-        References = @(
-            @{ Title = "SCCM Hierarchy Attacks"; Url = "https://posts.specterops.io/sccm-hierarchy-takeover-with-high-availability-7dcbd3696b43" }
-            @{ Title = "MECM Role-Based Administration - Microsoft"; Url = "https://learn.microsoft.com/en-us/mem/configmgr/core/understand/fundamentals-of-role-based-administration" }
-            @{ Title = "Configure role-based administration"; Url = "https://learn.microsoft.com/en-us/intune/configmgr/core/servers/deploy/configure/configure-role-based-administration" }
-            @{ Title = "Enhanced Audit Status Message Queries"; Url = "https://techcommunity.microsoft.com/blog/coreinfrastructureandsecurityblog/enhanced-audit-status-message-queries/884897" }
-        )
-        Tools = @("SharpSCCM", "sccmhunter")
-        MITRE = "T1072"
-        Triggers = @(
-            @{ Attribute = 'SCCMServer'; Severity = 'Finding' }
-        )
-    }
 
     'SCCM_SYSTEM_MANAGEMENT_ACL' = @{
         Title = "Write Access to the SCCM System Management Container"
@@ -9475,66 +9160,6 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
             # who had no way to reach it. A Note, not a Hint: the Task Scheduler quotes the
             # program path itself, which was measured, so the row is hygiene, not a risk.
             @{ Attribute = 'gpoTaskUnquotedPath'; Severity = 'Note' }
-        )
-    }
-
-    # ============================================================================
-    # GPO LOCAL GROUP MEMBERSHIP FINDINGS
-    # ============================================================================
-
-    'GPO_RESTRICTED_GROUPS_DANGEROUS' = @{
-        Title = "Restricted Groups GPO Modifies Local Admins"
-        Risk = "Finding"
-        BaseScore = 45
-        Description = "A GPO uses Restricted Groups to modify local Administrators or other privileged local groups. While this can be legitimate, misconfigurations can lead to privilege escalation."
-        Impact = @(
-            "Defines who is in local Administrators group"
-            "Applies to all computers where GPO is linked"
-            "Incorrect configuration grants admin access"
-            "May add unintended principals to admin groups"
-        )
-        Attack = @(
-            "1. Attacker identifies GPO managing Restricted Groups"
-            "2. If GPO is writable, modifies group membership"
-            "3. Adds attacker-controlled account to Administrators"
-            "4. Gains local admin on all affected computers"
-        )
-        Remediation = @(
-            "Audit Restricted Groups GPO configurations"
-            "Ensure only intended accounts are granted admin"
-            "Protect GPOs with proper ACLs"
-            "Monitor for GPO modifications"
-        )
-        RemediationCommands = @(
-            @{
-                Description = "Find all GPOs with Restricted Groups configured"
-                Command = "Get-GPO -All | ForEach-Object { `$gpo = `$_; [xml]`$report = Get-GPOReport -Guid `$gpo.Id -ReportType Xml; `$restricted = `$report.GPO.Computer.ExtensionData.Extension.RestrictedGroups; if (`$restricted) { [PSCustomObject]@{ GPOName = `$gpo.DisplayName; RestrictedGroups = (`$restricted.RestrictedGroup.GroupName.Name.'#text' -join ', '); Members = (`$restricted.RestrictedGroup.Member.Name.'#text' -join ', ') } } }"
-            }
-            @{
-                Description = "Review specific GPO Restricted Groups configuration in detail"
-                Command = "[xml]`$report = Get-GPOReport -Name 'GPO_NAME' -ReportType Xml; `$report.GPO.Computer.ExtensionData.Extension.RestrictedGroups.RestrictedGroup | Select-Object @{Name='GroupName';Expression={`$_.GroupName.Name.'#text'}},@{Name='Members';Expression={(`$_.Member.Name.'#text' -join '; ')}}"
-            }
-            @{
-                Description = "Check GPO permissions to ensure only authorized admins can modify it"
-                Command = "Get-GPPermission -Name 'GPO_NAME' -All | Where-Object {`$_.Permission -match 'GpoEdit|GpoEditDeleteModifySecurity'} | Select-Object Trustee,Permission,Inherited | Format-Table -AutoSize"
-            }
-            @{
-                Description = "Set GPO permissions to deny GpoEdit for unauthorized users"
-                Command = "Set-GPPermission -Name 'GPO_NAME' -TargetName 'DOMAIN\\UnauthorizedUser' -TargetType User -PermissionLevel None"
-            }
-            @{
-                Description = "Enable auditing for GPO modifications (Event ID 5136 in Security log)"
-                Command = "# Configure via Group Policy: Computer Configuration > Policies > Windows Settings > Security Settings > Advanced Audit Policy > DS Access > Audit Directory Service Changes = Success, Failure"
-            }
-        )
-        References = @(
-            @{ Title = "Restricted Groups"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-f--securing-domain-admins-groups-in-active-directory" }
-            @{ Title = "Get-GPOReport - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/powershell/module/grouppolicy/get-gporeport" }
-        )
-        Tools = @("GPO analysis", "PowerView", "BloodHound")
-        MITRE = "T1484.001"
-        Triggers = @(
-            @{ Attribute = 'restrictedGroups'; Severity = 'Finding' }
         )
     }
 
@@ -11834,8 +11459,6 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "T1078"
         Triggers = @(
             @{ Attribute = 'msds-groupmsamembership'; Severity = 'Hint' }
-            # Catch-all for PrincipalsAllowedToRetrievePassword: non-broad groups = Hint
-            @{ Attribute = 'PrincipalsAllowedToRetrievePassword'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -11997,8 +11620,6 @@ foreach ($oid in $linkedOIDs) {
         Triggers = @(
             @{ Attribute = 'ManagerApprovalRequired'; Pattern = '^(True|Required)$'; Severity = 'Secure' }
             @{ Attribute = 'ManagerApprovalRequired'; Pattern = '^(False|Not Required)$'; Severity = 'Hint' }
-            @{ Attribute = 'ManagerApproval'; Pattern = '^(True|Required)$'; Severity = 'Secure' }
-            @{ Attribute = 'ManagerApproval'; Pattern = '^(False|Not Required)$'; Severity = 'Hint' }
         )
     }
 
@@ -12089,29 +11710,6 @@ foreach ($oid in $linkedOIDs) {
             # and kept the "NTLM endpoints are vulnerable to relay" write-up, while the
             # Secure definition that fits it was reachable from the AD CS attribute only.
             @{ Attribute = 'WebEndpoints'; Pattern = 'NTLM'; ExcludePattern = '\[EPA:\s*Enabled\]'; Severity = 'Finding' }
-        )
-    }
-
-    # AllowedToActOnBehalfOfOtherIdentity alias
-    'RBCD_ENABLED' = @{
-        Title = "Resource-Based Constrained Delegation Configured"
-        Risk = "Finding"
-        BaseScore = 55
-        Description = "Resource-Based Constrained Delegation (RBCD) is configured on this object. Principals in the RBCD list can impersonate any user to this resource."
-        Impact = @(
-            "Listed principals can impersonate any user to this computer"
-            "Enables lateral movement through S4U2Proxy abuse"
-        )
-        Remediation = @(
-            "Audit RBCD configurations and remove unnecessary entries"
-        )
-        References = @(
-            @{ Title = "RBCD Attack"; Url = "https://www.thehacker.recipes/ad/movement/kerberos/delegations/rbcd" }
-        )
-        Tools = @("Rubeus", "Impacket")
-        MITRE = "T1550.003"
-        Triggers = @(
-            @{ Attribute = 'AllowedToActOnBehalfOfOtherIdentity'; Severity = 'Finding' }
         )
     }
 
@@ -12251,17 +11849,6 @@ foreach ($oid in $linkedOIDs) {
             @{ Attribute = 'status'; Pattern = '^Secure$'; Severity = 'Secure'; SeverityOnly = $true }
             @{ Attribute = 'status'; Pattern = '(?i)^EXPIRED$'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'status'; Pattern = '(?i)not yet valid'; Severity = 'Hint'; SeverityOnly = $true }
-        )
-    }
-
-    # isDefault attribute: True = using defaults = Hint
-    'META_DEFAULT_INDICATOR' = @{
-        Title = "Default Configuration Indicator"
-        Risk = "Hint"
-        BaseScore = 0
-        Description = "Boolean attribute indicating whether a default configuration value is in use."
-        Triggers = @(
-            @{ Attribute = 'isDefault'; Pattern = '^True$'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
