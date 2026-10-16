@@ -521,7 +521,7 @@ $Script:PrimaryAttributes = @{
     # Exchange RBAC role assignments (Get-ExchangeRBACAssignments).
     # Role and assignee first - the pair is the finding; the verdict explains it.
     ExchangeRoleAssignment = @(
-        'RoleName', 'Assignee', 'AssigneeType', 'RiskVerdict',
+        'RoleName', 'Assignee', 'AssigneeType', 'AssignmentType', 'RiskVerdict',
         'AssignmentScope', 'AssigneeDN', 'distinguishedName'
     )
 

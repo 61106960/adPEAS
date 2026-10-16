@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 19:37:57
-    Version: 2.7.0+20261016-1937
+    Build: 2026-10-16 19:48:55
+    Version: 2.7.0+20261016-1948
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6750,7 +6750,7 @@ $Script:PrimaryAttributes = @{
     # Exchange RBAC role assignments (Get-ExchangeRBACAssignments).
     # Role and assignee first - the pair is the finding; the verdict explains it.
     ExchangeRoleAssignment = @(
-        'RoleName', 'Assignee', 'AssigneeType', 'RiskVerdict',
+        'RoleName', 'Assignee', 'AssigneeType', 'AssignmentType', 'RiskVerdict',
         'AssignmentScope', 'AssigneeDN', 'distinguishedName'
     )
 
@@ -15367,7 +15367,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "Mailbox Import Export Role Assigned"
         Risk = "Finding"
         BaseScore = 65
-        Description = "The Mailbox Import Export role lets its holder export the contents of any mailbox in the organization to a PST file, and import one back. Exchange ships this role assigned to nobody, not even Organization Management, so every assignment of it was made deliberately by someone."
+        Description = "The Mailbox Import Export role lets its holder export the contents of any mailbox in the organization to a PST file, and import one back. Exchange ships this role held by nobody, not even Organization Management - that group may only assign it, through a delegating assignment - so every assignment of it was made deliberately by someone. A delegating assignment elsewhere is one step short of the role: its holder can assign it, to an account of its own as well."
         Impact = @(
             "The complete contents of any mailbox can be written to a file and taken away"
             "No mailbox owner is notified and no mailbox permission is changed"
@@ -15421,7 +15421,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "ApplicationImpersonation Role Assigned"
         Risk = "Finding"
         BaseScore = 70
-        Description = "The ApplicationImpersonation role lets its holder act as any mailbox in the organization over Exchange Web Services. Exchange ships this role assigned to nobody. It is normally granted to an integration service account, and it is the single most useful Exchange role an attacker can inherit: one account, every mailbox, over a protocol that needs no special client."
+        Description = "The ApplicationImpersonation role lets its holder act as any mailbox in the organization over Exchange Web Services. Exchange ships it on the Hygiene Management role group only, for the anti-spam integration, and lets Organization Management assign it; every other assignment was made by someone. It is normally granted to an integration service account, and it is the single most useful Exchange role an attacker can inherit: one account, every mailbox, over a protocol that needs no special client. A delegating assignment is one step short of the role: its holder can assign it, to an account of its own as well."
         Impact = @(
             "Read, send and delete mail as any user in the organization"
             "Search every mailbox for credentials, contracts or security documentation"
@@ -15509,7 +15509,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "Unscoped Role Management Role Assigned"
         Risk = "Finding"
         BaseScore = 75
-        Description = "The Unscoped Top Level Role Management role lets its holder create unscoped management roles, which may contain arbitrary scripts and cmdlets rather than only Exchange ones. Exchange ships this role assigned to nobody, and it converts Exchange administration into code execution."
+        Description = "The Unscoped Top Level Role Management role lets its holder create unscoped management roles, which may contain arbitrary scripts and cmdlets rather than only Exchange ones. Exchange ships this role held by nobody - Organization Management may only assign it - and it converts Exchange administration into code execution. A delegating assignment elsewhere is one step short of the role: its holder can assign it, to an account of its own as well."
         Impact = @(
             "Arbitrary script execution in the Exchange management context"
             "Code runs on the Exchange server, which is a domain member with far-reaching AD permissions"
@@ -15631,7 +15631,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "High-Value Exchange Role on Its Shipped Role Group"
         Risk = "Hint"
         BaseScore = 20
-        Description = "This high-value role sits on the role group Exchange assigns it to out of the box, so the assignment itself is expected. What is not automatically fine is who is in that group: the role group's membership is the real holder list, and compromising any member yields the role."
+        Description = "This high-value role sits on the role group Exchange assigns it to out of the box, or Organization Management may assign it to others through the delegating assignment Exchange setup creates for practically every role. Either way the assignment itself is expected. What is not automatically fine is who is in that group: the role group's membership is the real holder list, and compromising any member yields the role or the power to grant it."
         Impact = @(
             "Every member of the role group holds this capability"
             "Role groups such as Organization Management are frequently larger than anyone intends"
@@ -119467,12 +119467,17 @@ function Get-ExchangeRBACAssignments {
     Assignments that match the role group Exchange ships them on are reported as expected;
     everything else is a finding.
 
+    A delegating assignment does not give the assignee the role - it gives the right to
+    assign the role to others. Exchange setup creates one for Organization Management on
+    practically every role, and those are expected; a delegating assignment anywhere else
+    is a finding on the role it hands out. Delegating is bit 49 of
+    msExchRoleAssignmentFlags. Microsoft does not document the bit; it was measured against
+    Get-ManagementRoleAssignment on an Exchange organization (set on all 87 delegating
+    assignments, on none of the 122 regular ones).
+
     Known limitations:
     - Roles are matched by name, so a custom role derived from one of the parents above
       carries a different name and is not matched.
-    - Whether an assignment is delegating (the assignee may pass the role on) is held in
-      msExchRoleAssignmentFlags, whose bit values Microsoft does not publish. It is not
-      reported rather than reported wrongly.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -119540,7 +119545,11 @@ function Get-ExchangeRBACAssignments {
 
             # The roles worth reporting, with the role group Exchange assigns them to out of
             # the box. An empty default list means Exchange ships the role unassigned, so
-            # every assignment of it was made by someone.
+            # every assignment of it was made by someone. These are regular assignments;
+            # the delegating ones Exchange ships all sit on Organization Management (below).
+            #
+            # ApplicationImpersonation ships on Hygiene Management, for the anti-spam
+            # integration - measured, and listed in the built-in role groups.
             #
             # Verdict text: each entry starts with its own distinct word. The finding table
             # is an unordered hashtable, so when two triggers on one attribute can both
@@ -119552,7 +119561,7 @@ function Get-ExchangeRBACAssignments {
                     Verdict  = 'Mailbox export - the assignee can export the contents of any mailbox to a file'
                 }
                 'applicationimpersonation' = @{
-                    Defaults = @()
+                    Defaults = @('Hygiene Management')
                     Verdict  = 'Mailbox impersonation - the assignee can act as any mailbox over EWS'
                 }
                 'role management' = @{
@@ -119681,8 +119690,41 @@ function Get-ExchangeRBACAssignments {
                     $assigneeRDN = $Matches[1] -replace '\\(.)', '$1'
                 }
 
-                $isDefaultAssignment = ($assigneeType -eq 'Exchange role group') -and
-                                       (@($roleInfo.Defaults) -contains $assigneeRDN)
+                # Delegating or regular. A delegating assignment does not give its holder the
+                # role, only the right to assign it, and Exchange setup creates one for
+                # Organization Management on practically every role. Read as role holders,
+                # they made findings of every standard installation: ApplicationImpersonation,
+                # Unscoped Role Management and Mailbox Import Export, each "assigned" to
+                # Organization Management.
+                #
+                # Bit 49 of msExchRoleAssignmentFlags, measured against
+                # Get-ManagementRoleAssignment: set on all 87 delegating assignments of an
+                # organization and on none of its 122 regular ones. Bit 50 behaved the same;
+                # nothing measured tells the two apart, so 49 is a choice, not a finding. The
+                # "-Delegating" name suffix is no substitute - Exchange cuts the name at 64
+                # characters, and four of the 87 had lost it. A value that cannot be read
+                # counts as regular, which is what every assignment was taken for before.
+                $isDelegating = $false
+                $rawRoleFlags = $assignment.msExchRoleAssignmentFlags
+                $parsedRoleFlags = [int64]0
+                if ($null -ne $rawRoleFlags -and [int64]::TryParse([string]@($rawRoleFlags)[0], [ref]$parsedRoleFlags)) {
+                    $isDelegating = ($parsedRoleFlags -band ([int64]1 -shl 49)) -ne 0
+                }
+
+                $isDefaultAssignment = if ($isDelegating) {
+                    ($assigneeType -eq 'Exchange role group') -and ($assigneeRDN -eq 'Organization Management')
+                } else {
+                    ($assigneeType -eq 'Exchange role group') -and (@($roleInfo.Defaults) -contains $assigneeRDN)
+                }
+
+                # The verdict for a delegating assignment keeps the role's own first words,
+                # so it opens the role's card: the capability at stake is the role's, one
+                # assignment away.
+                $roleVerdict = if ($isDelegating) {
+                    "$(($roleInfo.Verdict -split ' - ', 2)[0]) by delegation - the assignee does not hold the role but can assign it to any principal, an account it controls included"
+                } else {
+                    $roleInfo.Verdict
+                }
 
                 # What the assignee already holds. A Domain Admin with Mailbox Import Export
                 # gains nothing from the assignment - that account reaches every mailbox
@@ -119702,23 +119744,29 @@ function Get-ExchangeRBACAssignments {
                     }
                 }
 
-                if ($isDefaultAssignment) {
+                if ($isDefaultAssignment -and $isDelegating) {
+                    $verdict = "Default assignment - Organization Management can assign $roleName to others as shipped by Exchange; the delegating assignment does not give it the role"
+                    $consoleClass = 'Hint'
+                } elseif ($isDefaultAssignment) {
                     $verdict = "Default assignment - $roleName is assigned to $assigneeRDN as shipped by Exchange"
                     $consoleClass = 'Hint'
                 } elseif ($assigneePrivileged -and $assigneePrivileged.IsPrivileged -eq $true) {
-                    $verdict = "$($roleInfo.Verdict) The assignee is already privileged ($($assigneePrivileged.Reason)), so the role grants it nothing it could not reach anyway - the assignment is worth removing as hygiene, not as an escalation path."
+                    $verdict = "$roleVerdict The assignee is already privileged ($($assigneePrivileged.Reason)), so the role grants it nothing it could not reach anyway - the assignment is worth removing as hygiene, not as an escalation path."
                     $consoleClass = 'Hint'
                 } else {
-                    $verdict = $roleInfo.Verdict
+                    $verdict = $roleVerdict
                     $consoleClass = 'Finding'
                 }
 
+                # Organization Management holds Role Management both ways, so the name says
+                # which of the two rows this is.
                 $resultObj = [PSCustomObject]@{
-                    Name         = "$roleName -> $assigneeName"
-                    RoleName     = $roleName
-                    Assignee     = $assigneeName
-                    AssigneeType = $assigneeType
-                    RiskVerdict  = $verdict
+                    Name           = "$roleName -> $assigneeName$(if ($isDelegating) { ' (delegating)' })"
+                    RoleName       = $roleName
+                    Assignee       = $assigneeName
+                    AssigneeType   = $assigneeType
+                    AssignmentType = if ($isDelegating) { 'Delegating - may assign the role, does not hold it' } else { 'Regular' }
+                    RiskVerdict    = $verdict
                 }
 
                 if ($assigneePrivileged -and $assigneePrivileged.IsPrivileged -eq $true) {
@@ -136327,7 +136375,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-1937"
+$Script:adPEASVersion = "2.7.0+20261016-1948"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

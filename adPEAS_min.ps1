@@ -3385,7 +3385,7 @@ $Script:PrimaryAttributes = @{
         'PermissionsModel', 'EffectiveDomainACEs', 'InheritOnlyDomainACEs', 'ADSplitPermissions'
     )
     ExchangeRoleAssignment = @(
-        'RoleName', 'Assignee', 'AssigneeType', 'RiskVerdict',
+        'RoleName', 'Assignee', 'AssigneeType', 'AssignmentType', 'RiskVerdict',
         'AssignmentScope', 'AssigneeDN', 'distinguishedName'
     )
     ExchangeTrustedSubsystem = @(
@@ -10780,7 +10780,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "Mailbox Import Export Role Assigned"
         Risk = "Finding"
         BaseScore = 65
-        Description = "The Mailbox Import Export role lets its holder export the contents of any mailbox in the organization to a PST file, and import one back. Exchange ships this role assigned to nobody, not even Organization Management, so every assignment of it was made deliberately by someone."
+        Description = "The Mailbox Import Export role lets its holder export the contents of any mailbox in the organization to a PST file, and import one back. Exchange ships this role held by nobody, not even Organization Management - that group may only assign it, through a delegating assignment - so every assignment of it was made deliberately by someone. A delegating assignment elsewhere is one step short of the role: its holder can assign it, to an account of its own as well."
         Impact = @(
             "The complete contents of any mailbox can be written to a file and taken away"
             "No mailbox owner is notified and no mailbox permission is changed"
@@ -10826,7 +10826,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "ApplicationImpersonation Role Assigned"
         Risk = "Finding"
         BaseScore = 70
-        Description = "The ApplicationImpersonation role lets its holder act as any mailbox in the organization over Exchange Web Services. Exchange ships this role assigned to nobody. It is normally granted to an integration service account, and it is the single most useful Exchange role an attacker can inherit: one account, every mailbox, over a protocol that needs no special client."
+        Description = "The ApplicationImpersonation role lets its holder act as any mailbox in the organization over Exchange Web Services. Exchange ships it on the Hygiene Management role group only, for the anti-spam integration, and lets Organization Management assign it; every other assignment was made by someone. It is normally granted to an integration service account, and it is the single most useful Exchange role an attacker can inherit: one account, every mailbox, over a protocol that needs no special client. A delegating assignment is one step short of the role: its holder can assign it, to an account of its own as well."
         Impact = @(
             "Read, send and delete mail as any user in the organization"
             "Search every mailbox for credentials, contracts or security documentation"
@@ -10912,7 +10912,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "Unscoped Role Management Role Assigned"
         Risk = "Finding"
         BaseScore = 75
-        Description = "The Unscoped Top Level Role Management role lets its holder create unscoped management roles, which may contain arbitrary scripts and cmdlets rather than only Exchange ones. Exchange ships this role assigned to nobody, and it converts Exchange administration into code execution."
+        Description = "The Unscoped Top Level Role Management role lets its holder create unscoped management roles, which may contain arbitrary scripts and cmdlets rather than only Exchange ones. Exchange ships this role held by nobody - Organization Management may only assign it - and it converts Exchange administration into code execution. A delegating assignment elsewhere is one step short of the role: its holder can assign it, to an account of its own as well."
         Impact = @(
             "Arbitrary script execution in the Exchange management context"
             "Code runs on the Exchange server, which is a domain member with far-reaching AD permissions"
@@ -11031,7 +11031,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "High-Value Exchange Role on Its Shipped Role Group"
         Risk = "Hint"
         BaseScore = 20
-        Description = "This high-value role sits on the role group Exchange assigns it to out of the box, so the assignment itself is expected. What is not automatically fine is who is in that group: the role group's membership is the real holder list, and compromising any member yields the role."
+        Description = "This high-value role sits on the role group Exchange assigns it to out of the box, or Organization Management may assign it to others through the delegating assignment Exchange setup creates for practically every role. Either way the assignment itself is expected. What is not automatically fine is who is in that group: the role group's membership is the real holder list, and compromising any member yields the role or the power to grant it."
         Impact = @(
             "Every member of the role group holds this capability"
             "Role groups such as Organization Management are frequently larger than anyone intends"
@@ -74527,7 +74527,7 @@ function Get-ExchangeRBACAssignments {
                     Verdict  = 'Mailbox export - the assignee can export the contents of any mailbox to a file'
                 }
                 'applicationimpersonation' = @{
-                    Defaults = @()
+                    Defaults = @('Hygiene Management')
                     Verdict  = 'Mailbox impersonation - the assignee can act as any mailbox over EWS'
                 }
                 'role management' = @{
@@ -74626,8 +74626,22 @@ function Get-ExchangeRBACAssignments {
                 if ($userDN -match '^CN=((?:[^,\\]|\\.)+),') {
                     $assigneeRDN = $Matches[1] -replace '\\(.)', '$1'
                 }
-                $isDefaultAssignment = ($assigneeType -eq 'Exchange role group') -and
-                                       (@($roleInfo.Defaults) -contains $assigneeRDN)
+                $isDelegating = $false
+                $rawRoleFlags = $assignment.msExchRoleAssignmentFlags
+                $parsedRoleFlags = [int64]0
+                if ($null -ne $rawRoleFlags -and [int64]::TryParse([string]@($rawRoleFlags)[0], [ref]$parsedRoleFlags)) {
+                    $isDelegating = ($parsedRoleFlags -band ([int64]1 -shl 49)) -ne 0
+                }
+                $isDefaultAssignment = if ($isDelegating) {
+                    ($assigneeType -eq 'Exchange role group') -and ($assigneeRDN -eq 'Organization Management')
+                } else {
+                    ($assigneeType -eq 'Exchange role group') -and (@($roleInfo.Defaults) -contains $assigneeRDN)
+                }
+                $roleVerdict = if ($isDelegating) {
+                    "$(($roleInfo.Verdict -split ' - ', 2)[0]) by delegation - the assignee does not hold the role but can assign it to any principal, an account it controls included"
+                } else {
+                    $roleInfo.Verdict
+                }
                 $assigneePrivileged = $null
                 if ($assigneeObject -and $assigneeObject.objectSid) {
                     try {
@@ -74636,22 +74650,26 @@ function Get-ExchangeRBACAssignments {
                         Write-Log "[Get-ExchangeRBACAssignments] Privilege check failed for '$assigneeName': $_"
                     }
                 }
-                if ($isDefaultAssignment) {
+                if ($isDefaultAssignment -and $isDelegating) {
+                    $verdict = "Default assignment - Organization Management can assign $roleName to others as shipped by Exchange; the delegating assignment does not give it the role"
+                    $consoleClass = 'Hint'
+                } elseif ($isDefaultAssignment) {
                     $verdict = "Default assignment - $roleName is assigned to $assigneeRDN as shipped by Exchange"
                     $consoleClass = 'Hint'
                 } elseif ($assigneePrivileged -and $assigneePrivileged.IsPrivileged -eq $true) {
-                    $verdict = "$($roleInfo.Verdict) The assignee is already privileged ($($assigneePrivileged.Reason)), so the role grants it nothing it could not reach anyway - the assignment is worth removing as hygiene, not as an escalation path."
+                    $verdict = "$roleVerdict The assignee is already privileged ($($assigneePrivileged.Reason)), so the role grants it nothing it could not reach anyway - the assignment is worth removing as hygiene, not as an escalation path."
                     $consoleClass = 'Hint'
                 } else {
-                    $verdict = $roleInfo.Verdict
+                    $verdict = $roleVerdict
                     $consoleClass = 'Finding'
                 }
                 $resultObj = [PSCustomObject]@{
-                    Name         = "$roleName -> $assigneeName"
-                    RoleName     = $roleName
-                    Assignee     = $assigneeName
-                    AssigneeType = $assigneeType
-                    RiskVerdict  = $verdict
+                    Name           = "$roleName -> $assigneeName$(if ($isDelegating) { ' (delegating)' })"
+                    RoleName       = $roleName
+                    Assignee       = $assigneeName
+                    AssigneeType   = $assigneeType
+                    AssignmentType = if ($isDelegating) { 'Delegating - may assign the role, does not hold it' } else { 'Regular' }
+                    RiskVerdict    = $verdict
                 }
                 if ($assigneePrivileged -and $assigneePrivileged.IsPrivileged -eq $true) {
                     $resultObj | Add-Member -NotePropertyName 'assigneePrivilege' -NotePropertyValue (
@@ -87530,7 +87548,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261016-1937"
+$Script:adPEASVersion = "2.7.0+20261016-1948"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

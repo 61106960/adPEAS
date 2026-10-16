@@ -84,6 +84,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   missing. The fallback probe behind that answer asks each generation on its own, so a
   failing Legacy query can no longer hide Windows LAPS.
 
+- **Exchange role assignments tell delegating from regular.** A delegating assignment
+  does not give its holder the role, only the right to assign it, and Exchange setup
+  creates one for Organization Management on practically every role. Counted as role
+  holders, they made findings of every standard installation - ApplicationImpersonation,
+  Unscoped Role Management and Mailbox Import Export on Organization Management. Those
+  are shipped defaults now, and so is ApplicationImpersonation on Hygiene Management. A
+  delegating assignment anywhere else is a finding on the card of the role it hands out.
+  The distinction is bit 49 of `msExchRoleAssignmentFlags`, measured against
+  `Get-ManagementRoleAssignment`; the "-Delegating" name suffix is cut at 64 characters.
+
 ---
 
 ## [2.7.0] - 2026-10-08

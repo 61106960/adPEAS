@@ -7500,7 +7500,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "Mailbox Import Export Role Assigned"
         Risk = "Finding"
         BaseScore = 65
-        Description = "The Mailbox Import Export role lets its holder export the contents of any mailbox in the organization to a PST file, and import one back. Exchange ships this role assigned to nobody, not even Organization Management, so every assignment of it was made deliberately by someone."
+        Description = "The Mailbox Import Export role lets its holder export the contents of any mailbox in the organization to a PST file, and import one back. Exchange ships this role held by nobody, not even Organization Management - that group may only assign it, through a delegating assignment - so every assignment of it was made deliberately by someone. A delegating assignment elsewhere is one step short of the role: its holder can assign it, to an account of its own as well."
         Impact = @(
             "The complete contents of any mailbox can be written to a file and taken away"
             "No mailbox owner is notified and no mailbox permission is changed"
@@ -7554,7 +7554,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "ApplicationImpersonation Role Assigned"
         Risk = "Finding"
         BaseScore = 70
-        Description = "The ApplicationImpersonation role lets its holder act as any mailbox in the organization over Exchange Web Services. Exchange ships this role assigned to nobody. It is normally granted to an integration service account, and it is the single most useful Exchange role an attacker can inherit: one account, every mailbox, over a protocol that needs no special client."
+        Description = "The ApplicationImpersonation role lets its holder act as any mailbox in the organization over Exchange Web Services. Exchange ships it on the Hygiene Management role group only, for the anti-spam integration, and lets Organization Management assign it; every other assignment was made by someone. It is normally granted to an integration service account, and it is the single most useful Exchange role an attacker can inherit: one account, every mailbox, over a protocol that needs no special client. A delegating assignment is one step short of the role: its holder can assign it, to an account of its own as well."
         Impact = @(
             "Read, send and delete mail as any user in the organization"
             "Search every mailbox for credentials, contracts or security documentation"
@@ -7642,7 +7642,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "Unscoped Role Management Role Assigned"
         Risk = "Finding"
         BaseScore = 75
-        Description = "The Unscoped Top Level Role Management role lets its holder create unscoped management roles, which may contain arbitrary scripts and cmdlets rather than only Exchange ones. Exchange ships this role assigned to nobody, and it converts Exchange administration into code execution."
+        Description = "The Unscoped Top Level Role Management role lets its holder create unscoped management roles, which may contain arbitrary scripts and cmdlets rather than only Exchange ones. Exchange ships this role held by nobody - Organization Management may only assign it - and it converts Exchange administration into code execution. A delegating assignment elsewhere is one step short of the role: its holder can assign it, to an account of its own as well."
         Impact = @(
             "Arbitrary script execution in the Exchange management context"
             "Code runs on the Exchange server, which is a domain member with far-reaching AD permissions"
@@ -7764,7 +7764,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "High-Value Exchange Role on Its Shipped Role Group"
         Risk = "Hint"
         BaseScore = 20
-        Description = "This high-value role sits on the role group Exchange assigns it to out of the box, so the assignment itself is expected. What is not automatically fine is who is in that group: the role group's membership is the real holder list, and compromising any member yields the role."
+        Description = "This high-value role sits on the role group Exchange assigns it to out of the box, or Organization Management may assign it to others through the delegating assignment Exchange setup creates for practically every role. Either way the assignment itself is expected. What is not automatically fine is who is in that group: the role group's membership is the real holder list, and compromising any member yields the role or the power to grant it."
         Impact = @(
             "Every member of the role group holds this capability"
             "Role groups such as Organization Management are frequently larger than anyone intends"
