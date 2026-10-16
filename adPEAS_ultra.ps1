@@ -4251,7 +4251,7 @@ $Script:FindingDefinitions = @{
 	        }
 	        @{
 	            Description = "Check for permissions explicitly granted to Guest account"
-	            Command = "(Get-Acl 'AD:\\DC=domain,DC=com').Access | Where-Object {`$_.IdentityReference -like '*Guest*'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\DC=domain,DC=com').Access | Where-Object {`$_.IdentityReference -like '*Guest*'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
 	        }
 	    )
 	    References = @(
@@ -5668,11 +5668,11 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "Remove GenericAll ACE from object (replace values)"
-	            Command = "`$Acl = Get-Acl 'AD:\\CN=TARGET,DC=domain,DC=com'; `$Acl.RemoveAccessRule((`$Acl.Access | Where-Object { `$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -eq 'GenericAll' })); Set-Acl -AclObject `$Acl 'AD:\\CN=TARGET,DC=domain,DC=com'"
+	            Command = "`$Acl = Get-Acl 'AD:\CN=TARGET,DC=domain,DC=com'; `$Acl.RemoveAccessRule((`$Acl.Access | Where-Object { `$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -eq 'GenericAll' })); Set-Acl -AclObject `$Acl 'AD:\CN=TARGET,DC=domain,DC=com'"
 	        }
 	        @{
 	            Description = "View current ACL of the object"
-	            Command = "(Get-Acl 'AD:\\CN=TARGET,DC=domain,DC=com').Access | Format-Table IdentityReference, ActiveDirectoryRights, AccessControlType"
+	            Command = "(Get-Acl 'AD:\CN=TARGET,DC=domain,DC=com').Access | Format-Table IdentityReference, ActiveDirectoryRights, AccessControlType"
 	        }
 	    )
 	    References = @(
@@ -5714,11 +5714,11 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL of the object"
-	            Command = "(Get-Acl 'AD:\\CN=TARGET,DC=domain,DC=com').Access | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\CN=TARGET,DC=domain,DC=com').Access | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove GenericWrite ACE from Active Directory object"
-	            Command = "`$acl = Get-Acl 'AD:\\CN=TARGET,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'GenericWrite'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\CN=TARGET,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\CN=TARGET,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'GenericWrite'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\CN=TARGET,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Enable auditing for attribute changes on sensitive objects (Event ID 5136)"
@@ -5759,11 +5759,11 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "View who has WriteDACL on the object"
-	            Command = "(Get-Acl 'AD:\\CN=TARGET,DC=domain,DC=com').Access | Where-Object { `$_.ActiveDirectoryRights -match 'WriteDacl' } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\CN=TARGET,DC=domain,DC=com').Access | Where-Object { `$_.ActiveDirectoryRights -match 'WriteDacl' } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove WriteDACL ACE from Active Directory object"
-	            Command = "`$acl = Get-Acl 'AD:\\CN=TARGET,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'WriteDacl'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\CN=TARGET,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\CN=TARGET,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'WriteDacl'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\CN=TARGET,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Enable auditing for DACL modifications (Event ID 4670)"
@@ -5804,15 +5804,15 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "View who has WriteOwner on the object"
-	            Command = "(Get-Acl 'AD:\\CN=TARGET,DC=domain,DC=com').Access | Where-Object { `$_.ActiveDirectoryRights -match 'WriteOwner' } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\CN=TARGET,DC=domain,DC=com').Access | Where-Object { `$_.ActiveDirectoryRights -match 'WriteOwner' } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove WriteOwner ACE from Active Directory object"
-	            Command = "`$acl = Get-Acl 'AD:\\CN=TARGET,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'WriteOwner'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\CN=TARGET,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\CN=TARGET,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'WriteOwner'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\CN=TARGET,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Check current owner of the object"
-	            Command = "(Get-Acl 'AD:\\CN=TARGET,DC=domain,DC=com').Owner"
+	            Command = "(Get-Acl 'AD:\CN=TARGET,DC=domain,DC=com').Owner"
 	        }
 	        @{
 	            Description = "Enable auditing for ownership changes (Event ID 4780)"
@@ -5856,7 +5856,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL of the GPO object"
-	            Command = "(Get-Acl 'AD:\\CN=<GUID>,CN=Policies,CN=System,DC=domain,DC=com').Access | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\CN=<GUID>,CN=Policies,CN=System,DC=domain,DC=com').Access | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
 	        }
 	    )
 	    References = @(
@@ -5960,7 +5960,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    Description = "A principal that is not expected to administer Group Policy can write to this policy's folder under \\<domain>\SYSVOL\<domain>\Policies\{GUID}\. That folder holds the policy's actual content - Registry.pol, GptTmpl.inf, the Scripts folder, ScheduledTasks.xml and GPT.ini - so write access there rewrites what every machine in the policy's scope applies, without any permission on the directory object and without touching Active Directory at all."
 	    Impact = @(
 	        "Replacing Registry.pol or GptTmpl.inf changes the settings every machine in scope applies at its next refresh"
-	        "Writing into Scripts\\Startup or Scripts\\Shutdown runs code as SYSTEM on every machine in scope"
+	        "Writing into Scripts\Startup or Scripts\Shutdown runs code as SYSTEM on every machine in scope"
 	        "A Scheduled Tasks or Group Policy Preferences file placed here is applied with the privileges the policy configures"
 	        "Raising the version counter in GPT.ini makes clients treat the policy as changed and reapply it immediately, rather than waiting for the next cycle"
 	        "None of this is visible in the GPO's delegation tab, which shows the directory object's permissions only"
@@ -6572,7 +6572,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "View accounts with replication rights on domain"
-	            Command = "(Get-Acl 'AD:\\DC=domain,DC=com').Access | Where-Object { `$_.ObjectType -in @('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2','1131f6ad-9c07-11d1-f79f-00c04fc2dcd2') } | Format-Table IdentityReference, ObjectType"
+	            Command = "(Get-Acl 'AD:\DC=domain,DC=com').Access | Where-Object { `$_.ObjectType -in @('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2','1131f6ad-9c07-11d1-f79f-00c04fc2dcd2') } | Format-Table IdentityReference, ObjectType"
 	        }
 	        @{
 	            Description = "Remove replication rights from user (replace values)"
@@ -6673,7 +6673,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "View who has password reset rights on OU"
-	            Command = "(Get-Acl 'AD:\\OU=Users,DC=domain,DC=com').Access | Where-Object { `$_.ObjectType -eq '00299570-246d-11d0-a768-00aa006e0529' } | Format-Table IdentityReference"
+	            Command = "(Get-Acl 'AD:\OU=Users,DC=domain,DC=com').Access | Where-Object { `$_.ObjectType -eq '00299570-246d-11d0-a768-00aa006e0529' } | Format-Table IdentityReference"
 	        }
 	    )
 	    References = @(
@@ -6714,11 +6714,11 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL on OU to identify principals with WriteProperty on userAccountControl"
-	            Command = "(Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf967a68-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf967a68-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove WriteProperty permission on userAccountControl attribute from specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf967a68-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf967a68-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Enable auditing for userAccountControl modifications (Event ID 4738)"
@@ -6768,11 +6768,11 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL on OU to identify principals with WriteProperty on User-Account-Restrictions property set"
-	            Command = "(Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '4c164200-20c0-11d0-a768-00aa006e0529'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '4c164200-20c0-11d0-a768-00aa006e0529'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove WriteProperty permission on User-Account-Restrictions property set from specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '4c164200-20c0-11d0-a768-00aa006e0529'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '4c164200-20c0-11d0-a768-00aa006e0529'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "List all attributes included in User-Account-Restrictions property set"
@@ -6821,11 +6821,11 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL on OU to identify principals with WriteProperty on member attribute"
-	            Command = "(Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove WriteProperty permission on member attribute from specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Identify privileged groups in the OU that are vulnerable"
@@ -6919,11 +6919,11 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL on OU to identify principals with the Self right on the member attribute"
-	            Command = "(Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'Self' -and `$_.ObjectType -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'Self' -and `$_.ObjectType -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove the Self-Membership permission from a specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'Self' -and `$_.ObjectType -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'Self' -and `$_.ObjectType -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Identify privileged groups in the OU that the right can be used against"
@@ -6973,11 +6973,11 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL on OU to identify principals with WriteProperty on servicePrincipalName"
-	            Command = "(Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'f3a64788-5306-11d1-a9c5-0000f80367c1'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'f3a64788-5306-11d1-a9c5-0000f80367c1'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove WriteProperty permission on servicePrincipalName from specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'f3a64788-5306-11d1-a9c5-0000f80367c1'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'f3a64788-5306-11d1-a9c5-0000f80367c1'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Find all user accounts with SPNs in the OU (potential Kerberoasting targets)"
@@ -7026,16 +7026,16 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    RemediationCommands = @(
 	        @{
 	            Description = "Find who has Validated-SPN rights on OU"
-	            Command = "(Get-Acl 'AD:\\OU=Users,DC=domain,DC=com').Access | Where-Object { `$_.ObjectType -eq 'f3a64788-5306-11d1-a9c5-0000f80367c1' }"
+	            Command = "(Get-Acl 'AD:\OU=Users,DC=domain,DC=com').Access | Where-Object { `$_.ObjectType -eq 'f3a64788-5306-11d1-a9c5-0000f80367c1' }"
 	        }
 	        @{
 	            Description = "Remove Validated-SPN ACE from OU (replace PRINCIPAL_SID with actual SID)"
 	            Command = @'
 `$ou = 'OU=Users,DC=domain,DC=com'
-`$acl = Get-Acl "AD:\\`$ou"
+`$acl = Get-Acl "AD:\`$ou"
 `$ace = `$acl.Access | Where-Object { `$_.IdentityReference -match 'PRINCIPAL_SID' -and `$_.ObjectType -eq 'f3a64788-5306-11d1-a9c5-0000f80367c1' }
 `$acl.RemoveAccessRule(`$ace)
-Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
+Set-Acl -Path "AD:\`$ou" -AclObject `$acl
 '@
 	        }
 	        @{
@@ -7080,11 +7080,11 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL for dNSHostName attribute on OU"
-	            Command = "(Get-Acl 'AD:\\OU=Computers,DC=domain,DC=com').Access | Where-Object {`$_.ObjectType -eq 'bf967953-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=Computers,DC=domain,DC=com').Access | Where-Object {`$_.ObjectType -eq 'bf967953-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove WriteProperty permission for dNSHostName from specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=Computers,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\User' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf967953-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=Computers,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=Computers,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\User' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf967953-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=Computers,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Monitor dNSHostName changes via Event ID 5136 (Directory Service Changes)"
@@ -7092,7 +7092,7 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
 	        }
 	        @{
 	            Description = "Grant SELF permission to allow computers to update their own dNSHostName"
-	            Command = "`$ouPath = 'AD:\\OU=Computers,DC=domain,DC=com'; `$acl = Get-Acl `$ouPath; `$sid = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-10'; `$ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(`$sid, 'WriteProperty', 'Allow', 'bf967953-0de6-11d0-a285-00aa003049e2', 'Descendents', '00000000-0000-0000-0000-000000000000'); `$acl.AddAccessRule(`$ace); Set-Acl -Path `$ouPath -AclObject `$acl"
+	            Command = "`$ouPath = 'AD:\OU=Computers,DC=domain,DC=com'; `$acl = Get-Acl `$ouPath; `$sid = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-10'; `$ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(`$sid, 'WriteProperty', 'Allow', 'bf967953-0de6-11d0-a285-00aa003049e2', 'Descendents', '00000000-0000-0000-0000-000000000000'); `$acl.AddAccessRule(`$ace); Set-Acl -Path `$ouPath -AclObject `$acl"
 	        }
 	    )
 	    References = @(
@@ -7134,15 +7134,15 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL for DNS-Host-Name-Attributes property set on OU"
-	            Command = "(Get-Acl 'AD:\\OU=Computers,DC=domain,DC=com').Access | Where-Object {`$_.ObjectType -eq '72e39547-7b18-11d1-adef-00c04fd8d5cd'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=Computers,DC=domain,DC=com').Access | Where-Object {`$_.ObjectType -eq '72e39547-7b18-11d1-adef-00c04fd8d5cd'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove WriteProperty permission for DNS-Host-Name-Attributes property set from specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=Computers,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\User' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '72e39547-7b18-11d1-adef-00c04fd8d5cd'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=Computers,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=Computers,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\User' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '72e39547-7b18-11d1-adef-00c04fd8d5cd'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=Computers,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Grant Validated-DNS-Host-Name extended right instead (GUID: f0f8ffab-1191-11d0-a060-00aa006c33ed)"
-	            Command = "`$ouPath = 'AD:\\OU=Computers,DC=domain,DC=com'; `$acl = Get-Acl `$ouPath; `$sid = (Get-ADGroup 'DOMAIN\\GroupName').SID; `$ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(`$sid, 'ExtendedRight', 'Allow', 'f0f8ffab-1191-11d0-a060-00aa006c33ed', 'Descendents', 'bf967a86-0de6-11d0-a285-00aa003049e2'); `$acl.AddAccessRule(`$ace); Set-Acl -Path `$ouPath -AclObject `$acl"
+	            Command = "`$ouPath = 'AD:\OU=Computers,DC=domain,DC=com'; `$acl = Get-Acl `$ouPath; `$sid = (Get-ADGroup 'DOMAIN\GroupName').SID; `$ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(`$sid, 'ExtendedRight', 'Allow', 'f0f8ffab-1191-11d0-a060-00aa006c33ed', 'Descendents', 'bf967a86-0de6-11d0-a285-00aa003049e2'); `$acl.AddAccessRule(`$ace); Set-Acl -Path `$ouPath -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Find all computers with non-default dNSHostName values (potential indicators of modification)"
@@ -7218,11 +7218,11 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL on OU to identify principals with WriteProperty on scriptPath"
-	            Command = "(Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679f1-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679f1-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove WriteProperty permission on scriptPath from specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679f1-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679f1-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Find all users in OU with scriptPath configured"
@@ -7271,16 +7271,16 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
 	    RemediationCommands = @(
 	        @{
 	            Description = "Find who can write msDS-AllowedToDelegateTo on OU"
-	            Command = "(Get-Acl 'AD:\\OU=Servers,DC=domain,DC=com').Access | Where-Object { `$_.ObjectType -eq '800d94d7-b7a1-42a1-b14d-7cae1423d07f' -and `$_.ActiveDirectoryRights -match 'WriteProperty' }"
+	            Command = "(Get-Acl 'AD:\OU=Servers,DC=domain,DC=com').Access | Where-Object { `$_.ObjectType -eq '800d94d7-b7a1-42a1-b14d-7cae1423d07f' -and `$_.ActiveDirectoryRights -match 'WriteProperty' }"
 	        }
 	        @{
 	            Description = "Remove dangerous ACE from OU (replace PRINCIPAL_SID with actual SID)"
 	            Command = @'
 `$ou = 'OU=Servers,DC=domain,DC=com'
-`$acl = Get-Acl "AD:\\`$ou"
+`$acl = Get-Acl "AD:\`$ou"
 `$ace = `$acl.Access | Where-Object { `$_.IdentityReference -match 'PRINCIPAL_SID' -and `$_.ObjectType -eq '800d94d7-b7a1-42a1-b14d-7cae1423d07f' }
 `$acl.RemoveAccessRule(`$ace)
-Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
+Set-Acl -Path "AD:\`$ou" -AclObject `$acl
 '@
 	        }
 	        @{
@@ -7326,11 +7326,11 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL on OU to identify principals with WriteProperty on msDS-AllowedToActOnBehalfOfOtherIdentity"
-	            Command = "(Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '3f78c3e5-f79a-46bd-a0b8-9d18116ddc79'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '3f78c3e5-f79a-46bd-a0b8-9d18116ddc79'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove WriteProperty permission on msDS-AllowedToActOnBehalfOfOtherIdentity from specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '3f78c3e5-f79a-46bd-a0b8-9d18116ddc79'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '3f78c3e5-f79a-46bd-a0b8-9d18116ddc79'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Find all computers with RBCD configured in the OU"
@@ -7412,11 +7412,11 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL on OU to identify principals with CreateChild rights"
-	            Command = "(Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'CreateChild'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'CreateChild'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove CreateChild permission from specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'CreateChild'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'CreateChild'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Check current ms-DS-MachineAccountQuota (default is 10)"
@@ -7465,11 +7465,11 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL on OU to identify principals with WriteProperty on gPLink"
-	            Command = "(Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'f30e3bbe-9ff0-11d1-b603-0000f80367c1'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'f30e3bbe-9ff0-11d1-b603-0000f80367c1'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove WriteProperty permission on gPLink from specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'f30e3bbe-9ff0-11d1-b603-0000f80367c1'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'f30e3bbe-9ff0-11d1-b603-0000f80367c1'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "View GPOs currently linked to OU"
@@ -7519,11 +7519,11 @@ Set-Acl -Path "AD:\\`$ou" -AclObject `$acl
 	    RemediationCommands = @(
 	        @{
 	            Description = "View current ACL on OU to identify principals with GenericWrite"
-	            Command = "(Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'GenericWrite'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'GenericWrite'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Remove GenericWrite permission from specific principal"
-	            Command = "`$acl = Get-Acl 'AD:\\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\\USER' -and `$_.ActiveDirectoryRights -match 'GenericWrite'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'GenericWrite'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
 	        }
 	        @{
 	            Description = "Delegate specific task using Delegation of Control Wizard (safer than GenericWrite)"
@@ -7975,7 +7975,7 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
 	    )
 	    Remediation = @(
 	        "Enable LDAP channel binding on Domain Controllers"
-	        "Set registry: HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\NTDS\\Parameters\\LdapEnforceChannelBinding = 2"
+	        "Set registry: HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\NTDS\Parameters\LdapEnforceChannelBinding = 2"
 	        "Best practice: Deploy via GPO Preferences for consistent configuration"
 	        "Go through 1 (When supported) first: it demands the token only from clients that announce they can supply one, which leaves the rest working while they are found. 2 (Always) once the audit is quiet"
 	        "The audit in between: with 16 LDAP Interface Events at 2, the Directory Service log writes 3039 per client, and 3040 and 3041 as the 24-hour summary. The clients named there are the ones that stop working at 2"
@@ -8303,7 +8303,7 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
 	    RemediationCommands = @(
 	        @{
 	            Description = "List all GPOs linked at domain root"
-	            Command = "Get-ADDomain | Select-Object -ExpandProperty LinkedGroupPolicyObjects | ForEach-Object { Get-GPO -Guid (`$_ -replace '.*\\{|\\}.*') } | Select-Object DisplayName,Id,GpoStatus"
+	            Command = "Get-ADDomain | Select-Object -ExpandProperty LinkedGroupPolicyObjects | ForEach-Object { Get-GPO -Guid (`$_ -replace '.*\{|\}.*') } | Select-Object DisplayName,Id,GpoStatus"
 	        }
 	        @{
 	            Description = "Unlink a GPO from the domain root"
@@ -9454,11 +9454,11 @@ Get-ADObject -SearchBase $schema `
 	    RemediationCommands = @(
 	        @{
 	            Description = "Find all XML files in SYSVOL containing cpassword attributes (recursively)"
-	            Command = "Get-ChildItem -Path '\\\\domain.com\\SYSVOL\\domain.com\\Policies' -Recurse -Include *.xml | Select-String -Pattern 'cpassword' | Select-Object Path,LineNumber"
+	            Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com\Policies' -Recurse -Include *.xml | Select-String -Pattern 'cpassword' | Select-Object Path,LineNumber"
 	        }
 	        @{
 	            Description = "Find specific GPP files that commonly contain passwords (Groups.xml, ScheduledTasks.xml, Services.xml, DataSources.xml)"
-	            Command = "`$gpoPath = '\\\\domain.com\\SYSVOL\\domain.com\\Policies'; Get-ChildItem -Path `$gpoPath -Recurse -Include Groups.xml,ScheduledTasks.xml,Services.xml,DataSources.xml,Printers.xml,Drives.xml | ForEach-Object { if (Select-String -Path `$_.FullName -Pattern 'cpassword' -Quiet) { `$_ } }"
+	            Command = "`$gpoPath = '\\domain.com\SYSVOL\domain.com\Policies'; Get-ChildItem -Path `$gpoPath -Recurse -Include Groups.xml,ScheduledTasks.xml,Services.xml,DataSources.xml,Printers.xml,Drives.xml | ForEach-Object { if (Select-String -Path `$_.FullName -Pattern 'cpassword' -Quiet) { `$_ } }"
 	        }
 	        @{
 	            Description = "Remove cpassword from GPP via GPMC (recommended method - opens GPO for manual cleanup)"
@@ -9521,7 +9521,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    RemediationCommands = @(
 	        @{
 	            Description = "Search SYSVOL for Registry.xml files containing AutoAdminLogon settings"
-	            Command = "Get-ChildItem -Path '\\\\domain.com\\SYSVOL\\domain.com\\Policies' -Recurse -Include Registry.xml | Select-String -Pattern 'AutoAdminLogon|DefaultUserName|DefaultPassword' | Select-Object Path,LineNumber"
+	            Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com\Policies' -Recurse -Include Registry.xml | Select-String -Pattern 'AutoAdminLogon|DefaultUserName|DefaultPassword' | Select-Object Path,LineNumber"
 	        }
 	        @{
 	            Description = "Remove the preference item in GPMC - this finding comes from Registry.xml, which is Group Policy Preferences"
@@ -9542,7 +9542,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        }
 	        @{
 	            Description = "Find the Registry.xml items in a GPO folder, to know which GPO to open"
-	            Command = "Get-ChildItem -Path '\\\\domain.com\\SYSVOL\\domain.com\\Policies' -Recurse -Include Registry.xml | Where-Object { Select-String -Path `$_.FullName -Pattern 'AutoAdminLogon' -Quiet } | Select-Object FullName"
+	            Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com\Policies' -Recurse -Include Registry.xml | Where-Object { Select-String -Path `$_.FullName -Pattern 'AutoAdminLogon' -Quiet } | Select-Object FullName"
 	        }
 	        @{
 	            Description = "Disable AutoAdminLogon locally on a specific computer"
@@ -9589,11 +9589,11 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    RemediationCommands = @(
 	        @{
 	            Description = "Search SYSVOL for login scripts containing 'net use' with passwords"
-	            Command = "Get-ChildItem -Path '\\\\domain.com\\SYSVOL\\domain.com\\' -Recurse -Include *.bat,*.cmd,*.vbs,*.ps1 | Select-String -Pattern 'net use.*\/user:.*' | Select-Object Path,LineNumber,Line"
+	            Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com\' -Recurse -Include *.bat,*.cmd,*.vbs,*.ps1 | Select-String -Pattern 'net use.*\/user:.*' | Select-Object Path,LineNumber,Line"
 	        }
 	        @{
 	            Description = "Find specific patterns for net use commands with embedded credentials"
-	            Command = "`$patterns = 'net use .* \/user:', 'net use .* /user:', 'password'; Get-ChildItem '\\\\domain.com\\SYSVOL' -Recurse -Include *.bat,*.cmd | ForEach-Object { Select-String -Path `$_.FullName -Pattern `$patterns }"
+	            Command = "`$patterns = 'net use .* \/user:', 'net use .* /user:', 'password'; Get-ChildItem '\\domain.com\SYSVOL' -Recurse -Include *.bat,*.cmd | ForEach-Object { Select-String -Path `$_.FullName -Pattern `$patterns }"
 	        }
 	        @{
 	            Description = "Remove login script path from all users in a specific OU"
@@ -9642,7 +9642,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    RemediationCommands = @(
 	        @{
 	            Description = "Search SYSVOL for script files with common password patterns"
-	            Command = "`$patterns = 'password\s*=', 'pwd\s*=', 'passwd\s*=', 'credential', 'SecureString', 'ConvertTo-SecureString', '-AsPlainText'; Get-ChildItem '\\\\domain.com\\SYSVOL' -Recurse -Include *.ps1,*.vbs,*.bat,*.cmd,*.ini,*.config | Select-String -Pattern `$patterns | Select-Object Path,LineNumber,Line"
+	            Command = "`$patterns = 'password\s*=', 'pwd\s*=', 'passwd\s*=', 'credential', 'SecureString', 'ConvertTo-SecureString', '-AsPlainText'; Get-ChildItem '\\domain.com\SYSVOL' -Recurse -Include *.ps1,*.vbs,*.bat,*.cmd,*.ini,*.config | Select-String -Pattern `$patterns | Select-Object Path,LineNumber,Line"
 	        }
 	        @{
 	            Description = "Install PowerShell SecretManagement module for secure credential storage"
@@ -9654,7 +9654,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        }
 	        @{
 	            Description = "Retrieve credentials from SecretStore vault in scripts instead of hardcoding"
-	            Command = "`$password = Get-Secret -Name 'ServiceAccountPassword' -AsPlainText; `$credential = New-Object System.Management.Automation.PSCredential('domain\\user', (Get-Secret -Name 'ServiceAccountPassword'))"
+	            Command = "`$password = Get-Secret -Name 'ServiceAccountPassword' -AsPlainText; `$credential = New-Object System.Management.Automation.PSCredential('domain\user', (Get-Secret -Name 'ServiceAccountPassword'))"
 	        }
 	    )
 	    References = @(
@@ -9697,7 +9697,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    RemediationCommands = @(
 	        @{
 	            Description = "Search SYSVOL for files containing database connection strings"
-	            Command = "`$patterns = 'Server=', 'Data Source=', 'Initial Catalog=', 'User ID=', 'Password=', 'connection\s*string'; Get-ChildItem '\\\\domain.com\\SYSVOL' -Recurse -Include *.config,*.xml,*.ini,*.ps1,*.vbs | Select-String -Pattern `$patterns | Select-Object Path,LineNumber,Line"
+	            Command = "`$patterns = 'Server=', 'Data Source=', 'Initial Catalog=', 'User ID=', 'Password=', 'connection\s*string'; Get-ChildItem '\\domain.com\SYSVOL' -Recurse -Include *.config,*.xml,*.ini,*.ps1,*.vbs | Select-String -Pattern `$patterns | Select-Object Path,LineNumber,Line"
 	        }
 	        @{
 	            Description = "Convert SQL Server connection string to Windows Integrated Authentication (remove credentials)"
@@ -9705,7 +9705,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        }
 	        @{
 	            Description = "Find all connection strings with embedded credentials in configuration files"
-	            Command = "Get-ChildItem -Path '\\\\domain.com\\SYSVOL' -Recurse -Include *.config | ForEach-Object { Select-Xml -Path `$_.FullName -XPath '//connectionStrings/add[@connectionString]' | Where-Object { `$_.Node.connectionString -match 'password=|pwd=' } | Select-Object @{Name='File';Expression={`$_.Path}}, @{Name='Name';Expression={`$_.Node.name}}, @{Name='ConnectionString';Expression={`$_.Node.connectionString}} }"
+	            Command = "Get-ChildItem -Path '\\domain.com\SYSVOL' -Recurse -Include *.config | ForEach-Object { Select-Xml -Path `$_.FullName -XPath '//connectionStrings/add[@connectionString]' | Where-Object { `$_.Node.connectionString -match 'password=|pwd=' } | Select-Object @{Name='File';Expression={`$_.Path}}, @{Name='Name';Expression={`$_.Node.name}}, @{Name='ConnectionString';Expression={`$_.Node.connectionString}} }"
 	        }
 	        @{
 	            Description = "Store database credentials securely in Azure Key Vault (alternative to hardcoded connection strings)"
@@ -10661,7 +10661,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        "4. The recipient sees an ordinary internal mail from a colleague"
 	    )
 	    Remediation = @(
-	        "Remove ms-Exch-SMTP-Accept-Authoritative-Domain-Sender and ms-Exch-SMTP-Accept-Any-Sender from the broad principal: Remove-ADPermission -Identity 'CONNECTOR' -User 'DOMAIN\\Domain Users' -ExtendedRights ms-Exch-SMTP-Accept-Authoritative-Domain-Sender"
+	        "Remove ms-Exch-SMTP-Accept-Authoritative-Domain-Sender and ms-Exch-SMTP-Accept-Any-Sender from the broad principal: Remove-ADPermission -Identity 'CONNECTOR' -User 'DOMAIN\Domain Users' -ExtendedRights ms-Exch-SMTP-Accept-Authoritative-Domain-Sender"
 	        "Where an application needs to send as an internal address, give that application its own account and grant the right to it alone, on a connector that only it can reach"
 	        "Restrict the connector's RemoteIPRanges to the hosts that are meant to use it"
 	        "Check the other connectors too: the grant is often copied from one to the next"
@@ -11846,7 +11846,7 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
 	        }
 	        @{
 	            Description = "Review MSOL account DCSync permissions on domain root"
-	            Command = "(Get-Acl 'AD:\\DC=contoso,DC=com').Access | Where-Object {`$_.IdentityReference -like '*MSOL*' -and (`$_.ActiveDirectoryRights -match 'GenericAll|Replicating Directory Changes')} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+	            Command = "(Get-Acl 'AD:\DC=contoso,DC=com').Access | Where-Object {`$_.IdentityReference -like '*MSOL*' -and (`$_.ActiveDirectoryRights -match 'GenericAll|Replicating Directory Changes')} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
 	        }
 	        @{
 	            Description = "Enable Entra Connect audit logging (requires 250MB-500MB log size)"
@@ -13038,11 +13038,11 @@ foreach ($oid in $linkedOIDs) {
 	    RemediationCommands = @(
 	        @{
 	            Description = "Show who may create child objects in the computer container"
-	            Command = "(Get-Acl 'AD:\\CN=Computers,DC=domain,DC=com').Access | Where-Object { `$_.ActiveDirectoryRights -match 'CreateChild' } | Format-Table IdentityReference, ObjectType"
+	            Command = "(Get-Acl 'AD:\CN=Computers,DC=domain,DC=com').Access | Where-Object { `$_.ActiveDirectoryRights -match 'CreateChild' } | Format-Table IdentityReference, ObjectType"
 	        }
 	        @{
 	            Description = "Remove the broad group's entry (replace the identity, then verify)"
-	            Command = "`$acl = Get-Acl 'AD:\\CN=Computers,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object { `$_.IdentityReference -like '*Domain Users*' }; `$acl.RemoveAccessRule(`$ace); Set-Acl 'AD:\\CN=Computers,DC=domain,DC=com' `$acl"
+	            Command = "`$acl = Get-Acl 'AD:\CN=Computers,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object { `$_.IdentityReference -like '*Domain Users*' }; `$acl.RemoveAccessRule(`$ace); Set-Acl 'AD:\CN=Computers,DC=domain,DC=com' `$acl"
 	        }
 	    )
 	    References = @(
@@ -16061,7 +16061,7 @@ foreach ($oid in $linkedOIDs) {
 	        }
 	        @{
 	            Description = "Show who may write the script file"
-	            Command = "(Get-Acl '\\\\SERVER\\SHARE\\script.bat').Access | Format-Table IdentityReference, FileSystemRights, AccessControlType -AutoSize"
+	            Command = "(Get-Acl '\\SERVER\SHARE\script.bat').Access | Format-Table IdentityReference, FileSystemRights, AccessControlType -AutoSize"
 	        }
 	    )
 	    References = @(
@@ -84081,7 +84081,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-1003"
+$Script:adPEASVersion = "2.7.0+20261016-1125"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
