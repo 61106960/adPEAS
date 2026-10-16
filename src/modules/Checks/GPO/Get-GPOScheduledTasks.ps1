@@ -9,9 +9,10 @@ function Get-GPOScheduledTasks {
 
     Focuses on security-critical configurations:
     - Tasks running as SYSTEM or privileged accounts
-    - Tasks executing from UNC paths (credential theft vector)
-    - Tasks executing from world-writable locations (privilege escalation)
-    - Command injection vulnerabilities
+    - Tasks that name a UNC path (whoever can write the share controls what runs)
+    - Tasks starting code from a directory in which every user may change or add files
+      by Windows default (the permissions on the hosts themselves are not read)
+    - Every Exec action of a task, not only the first one
 
     Requires SMB access to \\domain\SYSVOL.
 
@@ -55,27 +56,50 @@ function Get-GPOScheduledTasks {
     begin {
         Write-Log "[Get-GPOScheduledTasks] Starting check"
 
-        # Risky paths (world-writable or commonly exploitable by standard users)
+        # Directories in which an ordinary user can put a file that a task then runs, as
+        # measured with icacls on a default Windows 11 install (2026-10-16). Two different
+        # rights, and which one it is decides what the attack looks like:
+        #
+        #   Change - files there are writable for every user, so the file the task starts
+        #            can be replaced
+        #   Add    - every user may create files but not change anyone else's, so the file
+        #            the task starts stays intact; a DLL planted beside a program, or the
+        #            file itself while it is missing, is what runs
+        #
+        # C:\Temp and C:\Scripts are not part of Windows: a folder an administrator creates
+        # in the root of the system drive inherits "Authenticated Users: Modify" from it.
+        # C:\ProgramData gives Users "create files / create folders" on itself and on every
+        # subfolder that keeps inheriting, so a vendor directory below it is Add - not the
+        # harmless case it is often taken for.
+        #
+        # Removed, because a default install gives ordinary users read access at most:
+        # C:\Users\Default, C:\Windows\Installer, C:\Windows\System32\LogFiles,
+        # C:\Windows\Downloaded Program Files, C:\PerfLogs and C:\inetpub. Of
+        # C:\Windows\debug and C:\Windows\System32\spool\drivers only the subfolder named
+        # below is writable. Listing them made a finding out of permissions nobody had
+        # read - and for those directories, wrong ones.
+        #
+        # The first entry that matches decides the text, so Change comes before Add.
+        # PerAccount marks the two variables that resolve into the profile of the account
+        # the task runs as - see Parse-ScheduledTasksXML.
         $Script:RiskyPaths = @(
-            'C:\Temp',
-            'C:\Windows\Temp',
-            '%TEMP%',
-            '%TMP%',
-            'C:\Users\Public',
-            'C:\Users\Default',
-            'C:\ProgramData',
-            'C:\Windows\Tasks',
-            'C:\Windows\System32\spool\drivers',
-            'C:\Windows\debug',
-            'C:\Windows\tracing',
-            'C:\Windows\System32\LogFiles',
-            'C:\Windows\Registration\CRMLog',
-            'C:\Windows\Installer',
-            'C:\Windows\Downloaded Program Files',
-            'C:\inetpub\wwwroot',
-            'C:\inetpub\temp',
-            'C:\Scripts',
-            'C:\PerfLogs'
+            @{ Path = 'C:\Temp';                                  Access = 'Change'; PerAccount = $false }
+            @{ Path = 'C:\Scripts';                               Access = 'Change'; PerAccount = $false }
+            @{ Path = 'C:\Users\Public';                          Access = 'Change'; PerAccount = $false }
+            @{ Path = '%PUBLIC%';                                 Access = 'Change'; PerAccount = $false }
+            @{ Path = 'C:\Windows\tracing';                       Access = 'Change'; PerAccount = $false }
+            @{ Path = 'C:\Windows\Registration\CRMLog';           Access = 'Change'; PerAccount = $false }
+            @{ Path = 'C:\Windows\debug\WIA';                     Access = 'Change'; PerAccount = $false }
+            @{ Path = 'C:\Windows\System32\spool\drivers\color';  Access = 'Change'; PerAccount = $false }
+            @{ Path = 'C:\ProgramData';                           Access = 'Add';    PerAccount = $false }
+            @{ Path = '%ProgramData%';                            Access = 'Add';    PerAccount = $false }
+            @{ Path = '%ALLUSERSPROFILE%';                        Access = 'Add';    PerAccount = $false }
+            @{ Path = 'C:\Windows\Temp';                          Access = 'Add';    PerAccount = $false }
+            @{ Path = '%SystemRoot%\Temp';                        Access = 'Add';    PerAccount = $false }
+            @{ Path = '%windir%\Temp';                            Access = 'Add';    PerAccount = $false }
+            @{ Path = 'C:\Windows\Tasks';                         Access = 'Add';    PerAccount = $false }
+            @{ Path = '%TEMP%';                                   Access = 'Add';    PerAccount = $true }
+            @{ Path = '%TMP%';                                    Access = 'Add';    PerAccount = $true }
         )
     }
 
@@ -356,31 +380,66 @@ function Parse-ScheduledTasksXML {
             $runAs = if ($taskNode.Properties.runAs) { $taskNode.Properties.runAs } else { "Unknown" }
             $action = if ($taskNode.Properties.action) { $taskNode.Properties.action } else { "Unknown" }
 
-            $command = ""
-            $arguments = ""
+            # Every Exec action, not the first one. A task may carry several, and
+            # $taskXml.Actions.Exec then hands over all of them at once: taking .Command off
+            # that collection yields an array, and "$command $arguments" glued the programs
+            # and the argument lines into a single string that reads like one command line -
+            # with the severity decided on the concatenation.
+            $execPairs = @()
 
             if ($taskNode.Properties.Task) {
                 $taskXml = $taskNode.Properties.Task
 
                 if ($taskXml.Actions) {
-                    $execAction = $taskXml.Actions.Exec
-                    if ($execAction) {
-                        $command = if ($execAction.Command) { $execAction.Command } else { "" }
-                        $arguments = if ($execAction.Arguments) { $execAction.Arguments } else { "" }
+                    foreach ($execAction in @($taskXml.Actions.Exec)) {
+                        if (-not $execAction) { continue }
+                        $execCommand = if ($execAction.Command) { [string]$execAction.Command } else { "" }
+                        if ([string]::IsNullOrWhiteSpace($execCommand)) { continue }
+                        $execPairs += [PSCustomObject]@{
+                            Command   = $execCommand
+                            Arguments = if ($execAction.Arguments) { [string]$execAction.Arguments } else { "" }
+                        }
+                    }
+                }
+
+                # The account the inner task names, where the Preferences wrapper says
+                # nothing. A v2 task carries it in Principals/Principal/UserId, and without
+                # this fallback runAs stayed "Unknown": a task running as SYSTEM through its
+                # inner principal was rated neither as SYSTEM nor as privileged, and the row
+                # said the account was unknown while the file names it.
+                if (($runAs -eq 'Unknown' -or [string]::IsNullOrWhiteSpace($runAs)) -and $taskXml.Principals) {
+                    $innerPrincipal = @($taskXml.Principals.Principal)[0]
+                    if ($innerPrincipal) {
+                        $innerId = [string]$innerPrincipal.UserId
+                        if ([string]::IsNullOrWhiteSpace($innerId)) { $innerId = [string]$innerPrincipal.GroupId }
+                        if (-not [string]::IsNullOrWhiteSpace($innerId)) { $runAs = $innerId }
                     }
                 }
             }
 
-            if ([string]::IsNullOrEmpty($command)) {
-                $command = if ($taskNode.Properties.appName) { $taskNode.Properties.appName } else { "" }
-                $arguments = if ($taskNode.Properties.args) { $taskNode.Properties.args } else { "" }
+            if (@($execPairs).Count -eq 0) {
+                # The v1 shape, where the wrapper carries appName and args - two separate
+                # fields there as well.
+                $legacyCommand = if ($taskNode.Properties.appName) { [string]$taskNode.Properties.appName } else { "" }
+                if (-not [string]::IsNullOrWhiteSpace($legacyCommand)) {
+                    $execPairs += [PSCustomObject]@{
+                        Command   = $legacyCommand
+                        Arguments = if ($taskNode.Properties.args) { [string]$taskNode.Properties.args } else { "" }
+                    }
+                }
             }
 
-            $fullCommand = if ($arguments) { "$command $arguments" } else { $command }
-
-            if ([string]::IsNullOrEmpty($fullCommand)) {
+            if (@($execPairs).Count -eq 0) {
                 continue
             }
+
+            # The joined line is what the path tests read and what the row prints. The
+            # separator is the point: two actions are two programs, not one command with
+            # arguments.
+            $allCommands = @($execPairs | ForEach-Object { [string]$_.Command })
+            $fullCommand = (@($execPairs | ForEach-Object {
+                if ($_.Arguments) { "$($_.Command) $($_.Arguments)" } else { [string]$_.Command }
+            }) -join ' ; ')
 
             # Security Analysis
             $severity = "Note"
@@ -394,11 +453,16 @@ function Parse-ScheduledTasksXML {
             # called svc-LocalSystemBackup, and '\\SYSTEM$' on its own would take any
             # domain account named SYSTEM for the machine account. Both would have filed a
             # user task as running with full machine rights.
+            #
+            # SYSTEM itself is kept apart from the two service accounts for one question
+            # only: %TEMP% is C:\Windows\Temp for SYSTEM, and a profile of their own for
+            # LOCAL SERVICE and NETWORK SERVICE.
+            $isLocalSystem = ($runAs -match '^S-1-5-18$' -or                        # SYSTEM SID directly
+                              $runAs -match '^(NT[ -]AUTHORITY|[^\\]+)\\SYSTEM$' -or # DOMAIN\SYSTEM, any language
+                              $runAs -match '^SYSTEM$' -or                           # Just SYSTEM
+                              $runAs -match '^LocalSystem$')                         # LocalSystem
             $isSystemAccount = $false
-            if ($runAs -match '^S-1-5-18$' -or                           # SYSTEM SID directly
-                $runAs -match '^(NT[ -]AUTHORITY|[^\\]+)\\SYSTEM$' -or    # DOMAIN\SYSTEM, any language
-                $runAs -match '^SYSTEM$' -or                              # Just SYSTEM
-                $runAs -match '^LocalSystem$' -or                         # LocalSystem
+            if ($isLocalSystem -or
                 $runAs -match '^S-1-5-19$' -or                            # LOCAL SERVICE
                 $runAs -match '^(NT[ -]AUTHORITY|[^\\]+)\\LOCAL SERVICE$' -or
                 $runAs -match '^S-1-5-20$' -or                            # NETWORK SERVICE
@@ -434,26 +498,55 @@ function Parse-ScheduledTasksXML {
             }
 
             $hasUNCPath = $fullCommand -match '\\\\[^\\]+\\'
-            $hasRiskyPath = $false
+            $riskyPath = $null
 
-            foreach ($riskyPath in $Script:RiskyPaths) {
-                if ($fullCommand -match [regex]::Escape($riskyPath)) {
-                    $hasRiskyPath = $true
+            # At a path boundary, not anywhere in the string. Unanchored, "C:\Temp" matched
+            # C:\TempBackup and "C:\Scripts" matched C:\Scriptsammlung - and the severity
+            # that followed claimed a writable directory about a path that is not in the
+            # list at all. The prefix has to end at a separator, and start at a boundary of
+            # its own so that "D:\Data\C:\Temp" is not a hit either.
+            foreach ($candidate in $Script:RiskyPaths) {
+                $escapedRisky = [regex]::Escape([string]$candidate.Path)
+                if ($fullCommand -match ('(?i)(^|["'' =,;])' + $escapedRisky + '($|[\\"''\s,;])')) {
+                    $riskyPath = $candidate
                     break
                 }
             }
 
-            $hasUnquotedPath = ($command -match '\s' -and $command -notmatch '^".*"$')
-            $isPowerShell = $command -match 'powershell|pwsh'
-            $isScript = $command -match '\.(bat|cmd|vbs|vbe|ps1|wsf)$'
+            # %TEMP% and %TMP% are C:\Windows\Temp for SYSTEM, and the account's own profile
+            # for anyone else - which nobody but that account can write.
+            $riskyPathApplies = ($null -ne $riskyPath) -and ($isLocalSystem -or -not $riskyPath.PerAccount)
+
+            # Named, and with the right a user really holds there. The old text said
+            # "world-writable location" for every entry: a claim about an ACL nobody had
+            # read, and not even true of C:\Windows\Temp, the most common case - a user may
+            # add files there but not change the ones an administrator put down.
+            $riskyPathText = ''
+            if ($riskyPathApplies) {
+                if ($riskyPath.Access -eq 'Change') {
+                    $riskyPathText = "from $($riskyPath.Path), where every user may change files by Windows default - replacing the file the task starts runs code"
+                } else {
+                    $riskyPathText = "from $($riskyPath.Path), where every user may add files by Windows default - a DLL planted beside the program, or the file itself while it is missing, runs code"
+                }
+            }
+
+            $runAsLabel = if ($runAs -and $runAs -ne 'Unknown') { $runAs } else { 'an account the file does not name' }
+
+            $isPowerShell = (@($allCommands) -join ' ') -match 'powershell|pwsh'
+            $isScript = @($allCommands | Where-Object { $_ -match '\.(bat|cmd|vbs|vbe|ps1|wsf)$' }).Count -gt 0
 
             # Severity Determination (using standard adPEAS severity values)
             if ($isSystemAccount -and $hasUNCPath) {
                 $severity = "Finding"
-                $risk = "Task runs as SYSTEM and uses UNC path - SMB credential relay attack vector"
-            } elseif ($isSystemAccount -and $hasRiskyPath) {
+                $risk = "Task runs as SYSTEM and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as SYSTEM on every computer in scope. The permissions of the share were not checked"
+            } elseif ($isSystemAccount -and $riskyPathApplies) {
                 $severity = "Finding"
-                $risk = "Task runs as SYSTEM from world-writable location - privilege escalation via file modification"
+                $risk = "Task runs as SYSTEM $riskyPathText as SYSTEM"
+            } elseif ($isPrivilegedAccount -and $riskyPathApplies) {
+                # Ahead of the plain privileged case, which would otherwise take the headline
+                # and leave the way in unsaid.
+                $severity = "Finding"
+                $risk = "Task runs as the privileged account $runAsLabel $riskyPathText as that account"
             } elseif ($isSystemAccount -and $isScript) {
                 $severity = "Finding"
                 $risk = "Task runs script as SYSTEM - check if script is modifiable"
@@ -463,12 +556,16 @@ function Parse-ScheduledTasksXML {
             } elseif ($isPrivilegedAccount) {
                 $severity = "Finding"
                 $risk = "Task runs as privileged account"
+            } elseif ($riskyPathApplies) {
+                # Any other account. A task running as a named account out of C:\Temp fell
+                # through every branch to a Note with an empty reason, although whoever puts
+                # a file there runs code as that account on every computer in scope - and as
+                # whoever logs on, for a task that runs as the user.
+                $severity = "Hint"
+                $risk = "Task runs as $runAsLabel $riskyPathText as that account"
             } elseif ($hasUNCPath) {
                 $severity = "Hint"
-                $risk = "Task uses UNC path - potential SMB credential exposure"
-            } elseif ($hasUnquotedPath) {
-                $severity = "Hint"
-                $risk = "Unquoted path with spaces - potential command injection"
+                $risk = "Task uses UNC path - whoever can write that share, or answer for its server name, controls what runs as the account the task uses. The permissions of the share were not checked"
             } elseif ($isSystemAccount) {
                 $severity = "Hint"
                 $risk = "Task runs as SYSTEM"
@@ -509,19 +606,21 @@ function Parse-ScheduledTasksXML {
                 _Risk      = $risk
             }
 
-            # $hasUnquotedPath was computed above and used only to pick a severity, so the
-            # fact never reached the object and GPO_TASK_UNQUOTED_PATH - a full write-up
-            # about exactly this - could never be named by anything. The statement is
-            # written only when it holds, so the attribute is absent on every other task
-            # and the card cannot attach itself to one.
+            # A fact about the program path, and no longer a severity. Measured on Windows 11
+            # (2026-10-16): the Task Scheduler service quotes the program path itself when it
+            # builds the command line. A task whose Exec action named "...\a b\real.exe"
+            # without quotes started real.exe with the command line "...\a b\real.exe", with
+            # and without arguments, and an a.exe planted at the truncated path never ran. The
+            # truncation hijack of an unquoted service ImagePath does not happen here, so this
+            # used to colour practically every vendor task under C:\Program Files yellow with
+            # "potential command injection".
             #
-            # Written whenever the condition is true, not only when it decides the
-            # severity. The severity ladder above picks one headline per task, and a task
-            # that runs as SYSTEM from a world-writable path gets that one - but the
-            # quoting is a separate fact about the same command line, and a card is
-            # resolved per row, so stating it costs the stronger finding nothing.
-            if ($hasUnquotedPath) {
-                $taskProps['gpoTaskUnquotedPath'] = 'The command line contains a space and is not quoted, so Windows tries each truncation of the path in turn - C:\Program.exe before C:\Program Files\...'
+            # The statement is written only when it holds, so the attribute is absent on every
+            # other task and the card cannot attach itself to one. Every action is asked, not
+            # the first one.
+            $unquotedPrograms = @($allCommands | Where-Object { $_ -match '\s' -and $_ -notmatch '^".*"$' })
+            if ($unquotedPrograms.Count -gt 0) {
+                $taskProps['gpoTaskUnquotedPath'] = 'The program path contains a space and is not quoted. The Task Scheduler quotes the program path itself when it starts the task, so this is not the truncation hijack of an unquoted service ImagePath - it only matters where the same string is handed to a shell, for example copied into a cmd.exe command line or a service definition'
             }
 
             $task = [PSCustomObject]$taskProps

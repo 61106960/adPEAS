@@ -1447,12 +1447,13 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Summary = "Analyzes scheduled tasks deployed via Group Policy."
         WhyItMatters = "GPO scheduled tasks run with specified privileges on target systems. Tasks running as SYSTEM from writable paths or UNC shares enable privilege escalation."
         WhatWeCheck = @(
-            "Scheduled tasks in GPO configurations"
-            "Execution context (SYSTEM, user, etc.)"
-            "Executable paths and whether they're writable"
-            "UNC paths that could enable relay attacks"
+            "Scheduled tasks in GPO configurations, every Exec action of each"
+            "Execution context (SYSTEM, a privileged account, any other account)"
+            "Whether a path lies in a directory where every user may change or add files by Windows default"
+            "UNC paths, whose share decides what the task runs"
+            "Not tested: the permissions on the hosts and on the shares - they are not in the directory"
         )
-        SecureMessage = "No vulnerable GPO scheduled tasks found. All scheduled tasks use secure local paths and do not expose systems to privilege escalation through writable paths or UNC relay attacks."
+        SecureMessage = "No vulnerable GPO scheduled tasks found. No task starts code from a UNC path or from a directory that ordinary users can write by Windows default."
     }
 
     'GPOScriptPath' = @{

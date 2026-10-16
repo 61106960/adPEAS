@@ -9380,41 +9380,41 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Title = "GPO Scheduled Task Runs as SYSTEM from UNC Path"
         Risk = "Finding"
         BaseScore = 45
-        Description = "A GPO-deployed scheduled task runs as SYSTEM and executes from a UNC network path. If the UNC path is writable, attackers can replace the executable to gain SYSTEM access on all affected computers."
+        Description = "A GPO-deployed scheduled task runs as SYSTEM and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs as SYSTEM on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. adPEAS does not read the permissions of the share."
         Impact = @(
             "Task runs with SYSTEM privileges"
-            "Executable loaded from network share"
-            "Writable share = code execution as SYSTEM"
-            "Affects all computers where GPO is applied"
+            "What it runs is loaded from a network share at every run"
+            "Write access to the share = code execution as SYSTEM"
+            "Affects all computers where the GPO is applied"
         )
         Attack = @(
-            "1. Attacker identifies writable UNC path in task"
-            "2. Replaces executable with malicious payload"
-            "3. Task executes payload as SYSTEM on all affected hosts"
+            "1. Attacker reads the UNC path out of ScheduledTasks.xml in SYSVOL and checks the share's permissions"
+            "2. Replaces the executable or script there with a malicious payload"
+            "3. Task executes the payload as SYSTEM on all affected hosts"
             "4. Gains SYSTEM access on multiple computers"
         )
         Remediation = @(
-            "Use local paths for SYSTEM-context tasks"
-            "Ensure UNC paths are only writable by admins"
+            "Start SYSTEM-context tasks from a local path that only administrators can write"
+            "Ensure the share and the files on it are writable by administrators only - NTFS and share permissions both"
             "Implement code signing for scheduled task executables"
             "Review all GPO scheduled tasks for security"
         )
         RemediationCommands = @(
             @{
-                Description = "Review all scheduled tasks in GPO to identify UNC paths"
-                Command = "Get-GPO -All | ForEach-Object { `$gpo = `$_; [xml]`$report = Get-GPOReport -Guid `$gpo.Id -ReportType Xml; `$tasks = `$report.GPO.Computer.ExtensionData | Where-Object {`$_.Name -eq 'Scheduled Tasks'}; if (`$tasks) { Write-Host `"GPO: `$(`$gpo.DisplayName)`"; `$tasks.Extension.ScheduledTasks.Task | Where-Object {`$_.Properties.Command -match '^\\\\\\\\' -or `$_.Properties.Arguments -match '^\\\\\\\\'}  | Select-Object @{Name='TaskName';Expression={`$_.Name}},@{Name='Command';Expression={`$_.Properties.Command}},@{Name='Arguments';Expression={`$_.Properties.Arguments}} } }"
+                Description = "List every UNC path a scheduled task in SYSVOL names (replace the domain name)"
+                Command = "Get-ChildItem '\\contoso.com\SYSVOL\contoso.com\Policies' -Recurse -Filter ScheduledTasks.xml | ForEach-Object { `$file = `$_.FullName; `$xml = New-Object System.Xml.XmlDocument; `$xml.Load(`$file); `$xml.SelectNodes('//Exec/Command | //Exec/Arguments | //Properties/@appName | //Properties/@args') | Where-Object { `$_.InnerText -match '\\\\' } | ForEach-Object { [PSCustomObject]@{ File = `$file; Value = `$_.InnerText } } }"
             }
             @{
-                Description = "Check NTFS permissions on UNC path to verify only admins have write access"
-                Command = "Get-Acl '\\\\server\\share\\path' | Select-Object -ExpandProperty Access | Where-Object {`$_.FileSystemRights -match 'Write|Modify|FullControl' -and `$_.IdentityReference -notmatch 'BUILTIN\\\\Administrators|NT AUTHORITY\\\\SYSTEM'} | Format-Table IdentityReference,FileSystemRights,AccessControlType -AutoSize"
+                Description = "Show who besides Administrators and SYSTEM may write the file or folder (NTFS; the share permissions apply on top and are read with Get-SmbShareAccess on the file server)"
+                Command = "(Get-Acl '\\server\share\path').Access | Where-Object { `$_.AccessControlType -eq 'Allow' -and `$_.FileSystemRights -match 'Write|Modify|FullControl|CreateFiles' -and `$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -notmatch '^S-1-5-32-544`$|^S-1-5-18`$' } | Format-Table IdentityReference,FileSystemRights,IsInherited -AutoSize"
             }
             @{
-                Description = "Restrict write access on UNC share to Administrators only"
-                Command = "`$acl = Get-Acl '\\\\server\\share\\path'; `$rule = New-Object System.Security.AccessControl.FileSystemAccessRule('Domain Users','Write','Deny'); `$acl.SetAccessRule(`$rule); Set-Acl -Path '\\\\server\\share\\path' -AclObject `$acl"
+                Description = "Remove explicit write access of Everyone, Authenticated Users, Users and Domain Users. Inherited entries have to be changed where they are defined. Do not add a Deny entry for Domain Users instead: every administrator account is a member of that group too, and the Deny would lock the administrators out"
+                Command = "`$path = '\\server\share\path'; `$acl = Get-Acl `$path; `$acl.Access | Where-Object { -not `$_.IsInherited -and `$_.AccessControlType -eq 'Allow' -and `$_.FileSystemRights -match 'Write|Modify|FullControl|CreateFiles' -and `$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -match '^S-1-1-0`$|^S-1-5-11`$|^S-1-5-32-545`$|-513`$' } | ForEach-Object { [void]`$acl.RemoveAccessRule(`$_) }; Set-Acl -Path `$path -AclObject `$acl"
             }
             @{
-                Description = "Modify GPO scheduled task to use local path instead of UNC (requires Group Policy Editor or XML editing)"
-                Command = "# Edit GPO via Group Policy Management Console: Computer Configuration > Preferences > Control Panel Settings > Scheduled Tasks > [Task] > Edit Actions > Change path from UNC to local (e.g., C:\Scripts\script.ps1)"
+                Description = "Modify the GPO scheduled task to use a local path instead of UNC (requires Group Policy Editor or XML editing)"
+                Command = "# Edit GPO via Group Policy Management Console: Computer Configuration > Preferences > Control Panel Settings > Scheduled Tasks > [Task] > Actions > replace the UNC path with a local path only administrators can write, for example a folder below C:\Program Files - not a new folder in the root of C:, which inherits write access for Authenticated Users"
             }
         )
         References = @(
@@ -9425,48 +9425,42 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Tools = @("SharpGPOAbuse", "PowerView", "GPO analysis")
         MITRE = "T1053.005"
         Triggers = @(
-            @{ Attribute = 'scheduledTasks'; Severity = 'Finding' }
+            # On the verdict Get-GPOScheduledTasks writes into RiskReason. The trigger named
+            # an attribute 'scheduledTasks' that no module has ever produced, so this card
+            # could not appear on any row - while the check reported exactly this case.
+            # Anchored on the verdict's opening words, because RiskReason is shared with the
+            # registry settings check.
+            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM and uses UNC path'; Severity = 'Finding' }
         )
     }
 
     'GPO_TASK_UNQUOTED_PATH' = @{
-        Title = "GPO Scheduled Task with Unquoted Path"
-        Risk = "Finding"
-        BaseScore = 40
-        Description = "A GPO-deployed scheduled task has an unquoted executable path containing spaces. This can be exploited for privilege escalation via path injection."
+        Title = "GPO Scheduled Task with an Unquoted Program Path"
+        Risk = "Note"
+        BaseScore = 5
+        Description = "A GPO-deployed scheduled task names a program whose path contains a space and is not quoted. That is the shape of the unquoted service path hijack, where Windows tries C:\Program.exe before C:\Program Files\..., but a scheduled task is not that case: the Task Scheduler service puts the program path in quotes itself when it starts the task. Measured on Windows 11, an unquoted Exec action started the intended program with and without arguments, and a program planted at the truncated path never ran. The path only matters where the same string is handed on to something that does split a command line - a cmd.exe /c line, a batch file, or a service definition built from the same value."
         Impact = @(
-            "Unquoted path with spaces enables injection"
-            "Attacker can place executable in parent directory"
-            "Task will execute attacker's binary instead"
-            "Leads to privilege escalation"
+            "No hijack through the task itself: the Task Scheduler quotes the program path when it starts it"
+            "It becomes one where the string reaches a shell - cmd.exe /c, a batch file, or a service ImagePath built from the same value"
+            "Planting C:\Program.exe needs the right to create files in the root of the system drive, which ordinary users do not have by default"
         )
         Attack = @(
-            "1. Task path: C:\\Program Files\\App Folder\\task.exe"
-            "2. Attacker places C:\\Program.exe"
-            "3. Windows executes C:\\Program.exe instead"
-            "4. Attacker code runs with task privileges"
+            "1. The same unquoted path is copied into a command line that gets split, such as cmd.exe /c or a service ImagePath"
+            "2. There Windows tries each truncation in turn - C:\Program.exe before C:\Program Files\App Folder\task.exe"
+            "3. An attacker who can create a file at the truncated location runs code in that context"
         )
         Remediation = @(
-            "Quote all paths with spaces in scheduled tasks"
-            "Audit GPO scheduled tasks for unquoted paths"
-            "Restrict write access to root of drives"
+            "Quote program paths that contain spaces, as hygiene - the task itself is not exploitable through this"
+            "Keep the root of the system drive free of create-file rights for ordinary users"
         )
         RemediationCommands = @(
             @{
-                Description = "Find all GPO scheduled tasks with paths containing spaces (check manually for missing quotes)"
-                Command = "Get-GPO -All | ForEach-Object { `$gpo = `$_; [xml]`$report = Get-GPOReport -Guid `$gpo.Id -ReportType Xml; `$tasks = `$report.GPO.Computer.ExtensionData | Where-Object {`$_.Name -eq 'Scheduled Tasks'}; if (`$tasks) { `$tasks.Extension.ScheduledTasks.Task | Where-Object {`$_.Properties.Command -match ' '} | Select-Object @{Name='GPO';Expression={`$gpo.DisplayName}},@{Name='TaskName';Expression={`$_.Name}},@{Name='Path';Expression={`$_.Properties.Command}} } }"
+                Description = "List every scheduled task program in SYSVOL whose path contains a space and is not quoted (replace the domain name)"
+                Command = "Get-ChildItem '\\contoso.com\SYSVOL\contoso.com\Policies' -Recurse -Filter ScheduledTasks.xml | ForEach-Object { `$file = `$_.FullName; `$xml = New-Object System.Xml.XmlDocument; `$xml.Load(`$file); `$xml.SelectNodes('//Exec/Command | //Properties/@appName') | Where-Object { `$_.InnerText -match '\s' -and `$_.InnerText -notmatch '^`".*`"`$' } | ForEach-Object { [PSCustomObject]@{ File = `$file; Program = `$_.InnerText } } }"
             }
             @{
-                Description = "Check write permissions on C:\\ drive root to prevent C:\\Program.exe injection"
-                Command = "Get-Acl 'C:\\' | Select-Object -ExpandProperty Access | Where-Object {`$_.FileSystemRights -match 'Write|Modify|FullControl' -and `$_.IdentityReference -notmatch 'BUILTIN\\\\Administrators|NT AUTHORITY\\\\SYSTEM'} | Format-Table IdentityReference,FileSystemRights,AccessControlType -AutoSize"
-            }
-            @{
-                Description = "Check write permissions on Program Files directory"
-                Command = "Get-Acl 'C:\\Program Files' | Select-Object -ExpandProperty Access | Where-Object {`$_.FileSystemRights -match 'Write|Modify|FullControl' -and `$_.IdentityReference -notmatch 'BUILTIN\\\\Administrators|NT AUTHORITY\\\\SYSTEM|TrustedInstaller'} | Format-Table IdentityReference,FileSystemRights,AccessControlType -AutoSize"
-            }
-            @{
-                Description = "Modify GPO scheduled task to add quotes around path (requires Group Policy Editor)"
-                Command = "# Edit GPO via Group Policy Management Console: Computer Configuration > Preferences > Control Panel Settings > Scheduled Tasks > [Task] > Edit Actions > Wrap executable path in double quotes to prevent path injection"
+                Description = "Show who besides Administrators and SYSTEM may create files in the root of the system drive - what planting C:\Program.exe would need"
+                Command = "(Get-Acl 'C:\').Access | Where-Object { `$_.AccessControlType -eq 'Allow' -and `$_.PropagationFlags -notmatch 'InheritOnly' -and `$_.FileSystemRights -match 'Write|Modify|FullControl|CreateFiles' -and `$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -notmatch '^S-1-5-32-544`$|^S-1-5-18`$' } | Format-Table IdentityReference,FileSystemRights -AutoSize"
             }
         )
         References = @(
@@ -9478,8 +9472,9 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Triggers = @(
             # On an attribute Get-GPOScheduledTasks writes only when the condition holds.
             # The definition had no triggers at all, so this write-up existed for a reader
-            # who had no way to reach it.
-            @{ Attribute = 'gpoTaskUnquotedPath'; Severity = 'Hint' }
+            # who had no way to reach it. A Note, not a Hint: the Task Scheduler quotes the
+            # program path itself, which was measured, so the row is hygiene, not a risk.
+            @{ Attribute = 'gpoTaskUnquotedPath'; Severity = 'Note' }
         )
     }
 
