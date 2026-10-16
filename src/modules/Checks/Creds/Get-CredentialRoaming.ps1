@@ -502,12 +502,15 @@ function Show-CredentialRoamingDelegation {
         # than wrong. A dormant right is a warning, not a finding. Everything else is live.
         $isFinding = (-not $entry.IsPrivileged) -and ($isLive -eq $true)
 
+        # PrivilegedPrincipal, not PrivilegedAccount: that name carries the "affected account
+        # is privileged" card, which reads as an aggravation. On this row a privileged holder
+        # is the expected case and the row is a hint.
         $row = [PSCustomObject]@{
             sAMAccountName          = $(if ($entry.Principal) { $entry.Principal } else { ConvertFrom-SID -SID $sid })
             objectSid               = $sid
             dangerousRights         = (@($entry.Rights) -join ', ')
             EffectiveToday          = $effectiveText
-            PrivilegedAccount       = $(if ($entry.IsPrivileged) { 'Yes' } else { 'No' })
+            PrivilegedPrincipal     = $(if ($entry.IsPrivileged) { 'Yes' } else { 'No' })
             affectedOUs             = @($entry.Containers)
         }
         if (-not $isFinding) {

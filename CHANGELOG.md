@@ -152,6 +152,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Catalog for them in the forest root and says where it found them; the group cards say
   that the group lives in the forest root instead of "not found".
 
+- **A Credential Roaming row that says `PrivilegedAccount: No` no longer carries the
+  privileged-account card.** The card "The Affected Account Is Privileged" hangs off any
+  value of `PrivilegedAccount`, because the check it was written for sets that attribute
+  on privileged accounts only; `Get-CredentialRoaming` writes Yes or No on every row, so
+  every account and delegated principal that is not privileged was shown red with the
+  claim that it is. A `No` now carries no card. The delegation rows call their column
+  `PrivilegedPrincipal`: a privileged holder of a delegated read is the expected case
+  there, and the card describes an aggravation.
+
 ---
 
 ## [2.7.0] - 2026-10-08

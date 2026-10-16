@@ -426,7 +426,7 @@ $Script:PrimaryAttributes = @{
     # another.
     CredentialRoamingPermission = @(
         'sAMAccountName', 'objectSid', 'dangerousRights', 'EffectiveToday',
-        'PrivilegedAccount', 'affectedOUs'
+        'PrivilegedPrincipal', 'affectedOUs'
     )
     BitLockerRecoveryPermission = @(
         'sAMAccountName', 'objectSid', 'dangerousRights', 'ReadableToday',

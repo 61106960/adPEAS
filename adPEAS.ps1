@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 23:37:51
-    Version: 2.7.0+20261016-2337
+    Build: 2026-10-16 23:43:45
+    Version: 2.7.0+20261016-2343
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6667,7 +6667,7 @@ $Script:PrimaryAttributes = @{
     # another.
     CredentialRoamingPermission = @(
         'sAMAccountName', 'objectSid', 'dangerousRights', 'EffectiveToday',
-        'PrivilegedAccount', 'affectedOUs'
+        'PrivilegedPrincipal', 'affectedOUs'
     )
     BitLockerRecoveryPermission = @(
         'sAMAccountName', 'objectSid', 'dangerousRights', 'ReadableToday',
@@ -8571,7 +8571,11 @@ $Script:FindingDefinitions = @{
         Tools = @("PowerView", "BloodHound")
         MITRE = "T1078.002"
         Triggers = @(
-            @{ Attribute = 'PrivilegedAccount'; Severity = 'Finding' }
+            # Written for checks that set PrivilegedAccount on a privileged account only,
+            # with the reason as its value. Get-CredentialRoaming writes Yes or No on every
+            # row, and without the exclusion this pattern-less trigger put the red
+            # "affected account is privileged" card on every No.
+            @{ Attribute = 'PrivilegedAccount'; ExcludePattern = '^No$'; Severity = 'Finding' }
         )
     }
 
@@ -124991,12 +124995,15 @@ function Show-CredentialRoamingDelegation {
         # than wrong. A dormant right is a warning, not a finding. Everything else is live.
         $isFinding = (-not $entry.IsPrivileged) -and ($isLive -eq $true)
 
+        # PrivilegedPrincipal, not PrivilegedAccount: that name carries the "affected account
+        # is privileged" card, which reads as an aggravation. On this row a privileged holder
+        # is the expected case and the row is a hint.
         $row = [PSCustomObject]@{
             sAMAccountName          = $(if ($entry.Principal) { $entry.Principal } else { ConvertFrom-SID -SID $sid })
             objectSid               = $sid
             dangerousRights         = (@($entry.Rights) -join ', ')
             EffectiveToday          = $effectiveText
-            PrivilegedAccount       = $(if ($entry.IsPrivileged) { 'Yes' } else { 'No' })
+            PrivilegedPrincipal     = $(if ($entry.IsPrivileged) { 'Yes' } else { 'No' })
             affectedOUs             = @($entry.Containers)
         }
         if (-not $isFinding) {
@@ -138023,7 +138030,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-2337"
+$Script:adPEASVersion = "2.7.0+20261016-2343"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

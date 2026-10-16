@@ -3312,7 +3312,7 @@ $Script:PrimaryAttributes = @{
 	)
 	CredentialRoamingPermission = @(
 	    'sAMAccountName', 'objectSid', 'dangerousRights', 'EffectiveToday',
-	    'PrivilegedAccount', 'affectedOUs'
+	    'PrivilegedPrincipal', 'affectedOUs'
 	)
 	BitLockerRecoveryPermission = @(
 	    'sAMAccountName', 'objectSid', 'dangerousRights', 'ReadableToday',
@@ -4522,7 +4522,7 @@ $Script:FindingDefinitions = @{
 	    Tools = @("PowerView", "BloodHound")
 	    MITRE = "T1078.002"
 	    Triggers = @(
-	        @{ Attribute = 'PrivilegedAccount'; Severity = 'Finding' }
+	        @{ Attribute = 'PrivilegedAccount'; ExcludePattern = '^No$'; Severity = 'Finding' }
 	    )
 	}
 	'ROASTABLE_PRIVILEGED_ACCOUNT' = @{
@@ -74750,7 +74750,7 @@ function Show-CredentialRoamingDelegation {
 	        objectSid               = $sid
 	        dangerousRights         = (@($entry.Rights) -join ', ')
 	        EffectiveToday          = $effectiveText
-	        PrivilegedAccount       = $(if ($entry.IsPrivileged) { 'Yes' } else { 'No' })
+	        PrivilegedPrincipal     = $(if ($entry.IsPrivileged) { 'Yes' } else { 'No' })
 	        affectedOUs             = @($entry.Containers)
 	    }
 	    if (-not $isFinding) {
@@ -85514,7 +85514,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-2337"
+$Script:adPEASVersion = "2.7.0+20261016-2343"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

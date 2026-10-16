@@ -679,7 +679,11 @@ $Script:FindingDefinitions = @{
         Tools = @("PowerView", "BloodHound")
         MITRE = "T1078.002"
         Triggers = @(
-            @{ Attribute = 'PrivilegedAccount'; Severity = 'Finding' }
+            # Written for checks that set PrivilegedAccount on a privileged account only,
+            # with the reason as its value. Get-CredentialRoaming writes Yes or No on every
+            # row, and without the exclusion this pattern-less trigger put the red
+            # "affected account is privileged" card on every No.
+            @{ Attribute = 'PrivilegedAccount'; ExcludePattern = '^No$'; Severity = 'Finding' }
         )
     }
 
