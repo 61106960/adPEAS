@@ -767,6 +767,8 @@ Analyzes privileged account security.
 
 **Security Impact**: Identifies all accounts with elevated privileges. Large numbers of privileged accounts increase attack surface.
 
+**Groups AdminSDHolder does not protect**: SDProp resets the DACL of the protected groups (Microsoft's list: Account Operators, Administrators, Backup Operators, Domain Admins, Domain Controllers, Enterprise Admins, Enterprise Key Admins, Key Admins, Print Operators, Read-only Domain Controllers, Replicator, Schema Admins, Server Operators) from the AdminSDHolder template, which the check reads. Every other privileged group keeps its own ACEs, so the check also reads the DACL and the owner of each privileged group without `adminCount=1`, of every group nested into one, and of the Exchange groups in `OU=Microsoft Exchange Security Groups`. It reports who may write the `member` attribute (or every attribute), use the Self-Membership validated write, change the DACL or owner, holds full control, or owns the group - explicit and inherited ACEs alike - through the same identity gate as the AdminSDHolder analysis. Account Operators control every unprotected group through the default security descriptor of the group class; that is said in one line - a *Hint* while Account Operators has members - rather than once per group. A group that was protected once keeps a stale `adminCount=1` and is not read; groups in another domain are not read.
+
 **Usage**:
 ```powershell
 # Show non-privileged accounts with group membership (default)

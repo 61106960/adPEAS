@@ -9969,6 +9969,56 @@ foreach ($oid in $linkedOIDs) {
     # PKI INFRASTRUCTURE CERTIFICATE FINDINGS (Root CAs, NTAuth, AIA)
     # ============================================================================
 
+    'PRIVILEGED_GROUP_ACL' = @{
+        Title = "Control Over a Privileged Group That AdminSDHolder Does Not Protect"
+        Risk = "Finding"
+        BaseScore = 75
+        Description = "A principal may change a privileged group that AdminSDHolder does not protect. SDProp resets the DACL of the protected groups every hour - Microsoft lists Account Operators, Administrators, Backup Operators, Domain Admins, Domain Controllers, Enterprise Admins, Enterprise Key Admins, Key Admins, Print Operators, Read-only Domain Controllers, Replicator, Schema Admins and Server Operators - and leaves every other group with whatever ACEs it is given. Several of those are privileged in all but name: DnsAdmins can load code into the DNS service on the domain controllers, Group Policy Creator Owners create policy, the Exchange groups hold rights on the domain, and a group nested into one of them passes its membership on. Whoever may write the member attribute, use the Self-Membership validated write, rewrite the DACL, take ownership or already owns the group can make any account a member - their own included - and with it gets what the group can do."
+        Impact = @(
+            "The holder adds an account of its choosing to the group, and that account receives the group's rights at its next logon"
+            "DnsAdmins membership leads to code execution as SYSTEM on the domain controllers that run DNS"
+            "A right on a nested group is a right on every group it is nested into"
+            "Nothing resets the ACE: unlike a protected group, this one keeps it until somebody removes it"
+        )
+        Attack = @(
+            "1. As the holder, add a controlled account to the group with an LDAP write of its member attribute"
+            "2. Sign in again so the new membership is in the token"
+            "3. Use the group's rights - DnsAdmins: configure a plugin DLL for the DNS service (dnscmd /config /serverlevelplugindll), which it loads as SYSTEM when it next starts"
+        )
+        Remediation = @(
+            "Remove the ACE unless the principal is meant to manage this group; an inherited one has to go at the container it comes from"
+            "Move privileged groups into an OU that only Tier 0 administrators control, so no delegation on an ordinary OU reaches them"
+            "Keep Account Operators empty - the group class gives them full control over every group AdminSDHolder does not protect"
+            "Audit changes to the member attribute of these groups (event 4728/4732/4756, or 5136 on the object)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who may change the membership, the permissions or the owner of a group"
+                Command = @'
+$acl = Get-Acl "AD:\<group DN>"
+$acl.Owner
+$acl.Access | Where-Object {
+    $_.AccessControlType -eq 'Allow' -and
+    $_.ActiveDirectoryRights -match 'GenericAll|GenericWrite|WriteDacl|WriteOwner|WriteProperty|Self'
+} | Select-Object IdentityReference, ActiveDirectoryRights, ObjectType, IsInherited
+'@
+            }
+        )
+        References = @(
+            @{ Title = "Appendix C - Protected Accounts and Groups in Active Directory (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory" }
+            @{ Title = "Group class - default security descriptor (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/c-group" }
+        )
+        Tools = @("BloodHound", "PowerView", "dnscmd")
+        MITRE = "T1098"
+        Triggers = @(
+            # The labels only this check writes. GenericAll, WriteDacl and WriteOwner keep the
+            # generic cards they reach everywhere else.
+            @{ Attribute = 'dangerousRights'; Pattern = 'may add a member to the group$|may add itself to the group$|^Owner of the group - '; Severity = 'Finding' }
+            @{ Attribute = 'affectedGroups'; Custom = 'dangerous_rights_expected'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'affectedGroups'; Severity = 'Finding' }
+        )
+    }
+
     'NTAUTH_FOREIGN_ISSUER' = @{
         Title = "NTAuth Store - Issuer That Is No Enterprise CA of This Forest"
         Risk = "Hint"

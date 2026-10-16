@@ -70,6 +70,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   section says when more than one CA is trusted. The Certificate Authorities are read
   once for this and the CA analysis; where they could not be read the row says Unknown.
 
+- **`Get-PrivilegedGroupMembers` reads the DACL of the privileged groups AdminSDHolder does
+  not protect.** It read the AdminSDHolder template, which SDProp writes onto the
+  protected groups - and nothing read the groups SDProp leaves alone: DnsAdmins, Group
+  Policy Creator Owners, Cert Publishers, the Exchange groups, and every group nested into
+  a privileged group. A new section reports who may write their `member` attribute, use
+  the Self-Membership validated write, change their DACL or owner, holds full control or
+  owns them, with the same identity gate as the AdminSDHolder analysis. Which groups are
+  unprotected is read from `adminCount`, not from a list - Microsoft counts Key Admins and
+  Enterprise Key Admins among the protected groups. Account Operators control every
+  unprotected group through the default security descriptor of the group class; that is
+  said once, as a hint while Account Operators has members.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

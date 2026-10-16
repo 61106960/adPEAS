@@ -1015,6 +1015,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "The AdminSDHolder container has only default ACLs. No unauthorized permissions were found that could be used for privilege escalation or persistence."
     }
 
+    'PrivilegedGroupACL' = @{
+        TitleFormat = "Privileged Group ACL: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Privileged Groups Outside AdminSDHolder"
+        Summary = "Analyzes who may change the privileged groups that AdminSDHolder does not protect."
+        WhyItMatters = "SDProp resets only the groups AdminSDHolder protects. Every other group keeps whatever ACEs it is given, and several are privileged in all but name - DnsAdmins load code into the DNS service on the domain controllers, Group Policy Creator Owners create policy, the Exchange groups hold rights on the domain, and a group nested into one of them passes its membership on. Whoever may add a member to such a group, or rewrite its DACL or owner, can make any account a member."
+        WhatWeCheck = @(
+            "Every privileged group without adminCount=1, the groups nested into them, and the Exchange groups"
+            "WriteProperty on member, the Self-Membership validated write, WriteDacl, WriteOwner, GenericAll and GenericWrite - explicit and inherited"
+            "The owner of each group"
+            "The same identity gate as the AdminSDHolder check; Exchange service groups count as by design"
+        )
+        FilteringNote = "Which groups are unprotected is read from adminCount, which SDProp sets and never clears: a group protected once and no longer keeps a stale 1 and is not read. Account Operators control every unprotected group through the default security descriptor of the group class; that is said once, as a hint while the group has members, instead of once per group. Expected and privileged holders are hidden unless -IncludePrivileged. Groups in another domain of the forest are not read."
+        SecureMessage = "No principal beyond the expected ones can change the privileged groups AdminSDHolder does not protect."
+        PrimaryFindingId = 'PRIVILEGED_GROUP_ACL'
+    }
+
     'PreWindows2000Access' = @{
         TitleFormat = "Pre-Windows 2000 Compatible Access: {Name}"
         Module = "Accounts"
