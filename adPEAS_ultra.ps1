@@ -3192,7 +3192,8 @@ $Script:PrimaryAttributes = @{
 	    'minPwdLength', 'passwordComplexity',
 	    'minPwdAge', 'maxPwdAge',
 	    'reversibleEncryption',
-	    'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow'
+	    'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow',
+	    'builtinAdministratorLockout', 'passwordProperties'
 	)
 	FineGrainedPasswordPolicy = @(
 	    'psoName', 'precedence',
@@ -60551,16 +60552,28 @@ function Get-DomainPasswordPolicy {
 	        }
 	        $lockoutWindowSpan = ConvertFrom-ADInterval -Value $domainPolicy.lockOutObservationWindow
 	        $lockoutWindow = if ($lockoutWindowSpan) { $lockoutWindowSpan.TotalMinutes } else { 0 }
+	        $pwdPropertyFlags = @(
+	            @{ Name = 'DOMAIN_PASSWORD_COMPLEX';         Bit = 1;  Text = 'complexity required' }
+	            @{ Name = 'DOMAIN_PASSWORD_NO_ANON_CHANGE';  Bit = 2;  Text = 'reserved - MS-SAMR gives it no effect on the password policy' }
+	            @{ Name = 'DOMAIN_PASSWORD_NO_CLEAR_CHANGE'; Bit = 4;  Text = 'password change methods that hand the DC the cleartext password are refused' }
+	            @{ Name = 'DOMAIN_LOCKOUT_ADMINS';           Bit = 8;  Text = 'the built-in Administrator can be locked out from network logons' }
+	            @{ Name = 'DOMAIN_PASSWORD_STORE_CLEARTEXT'; Bit = 16; Text = 'passwords are stored with reversible encryption' }
+	            @{ Name = 'DOMAIN_REFUSE_PASSWORD_CHANGE';   Bit = 32; Text = 'reserved - MS-SAMR gives it no effect on the password policy' }
+	        )
 	        $pwdPropsValue = $domainPolicy.pwdProperties
+	        $pwdPropsSet = @()
 	        if ($pwdPropsValue -is [array] -or ($pwdPropsValue -is [string] -and $pwdPropsValue -match "DOMAIN_")) {
 	            $pwdPropsArray = @($pwdPropsValue)
 	            $complexityEnabled = $pwdPropsArray -contains "DOMAIN_PASSWORD_COMPLEX"
 	            $reversibleEncryption = $pwdPropsArray -contains "DOMAIN_PASSWORD_STORE_CLEARTEXT"
+	            $pwdPropsSet = @($pwdPropertyFlags | Where-Object { $pwdPropsArray -contains $_.Name })
 	        } else {
 	            $pwdPropsInt = if ($pwdPropsValue) { try { [int]$pwdPropsValue } catch { 0 } } else { 0 }
 	            $complexityEnabled = ($pwdPropsInt -band 1) -ne 0
 	            $reversibleEncryption = ($pwdPropsInt -band 16) -ne 0
+	            $pwdPropsSet = @($pwdPropertyFlags | Where-Object { ($pwdPropsInt -band $_.Bit) -ne 0 })
 	        }
+	        $adminLockoutApplies = @($pwdPropsSet | Where-Object { $_.Name -eq 'DOMAIN_LOCKOUT_ADMINS' }).Count -gt 0
 	        $passwordPolicyObj = [PSCustomObject]@{
 	            minPwdLength = if (-not $hasMinPwdLength) { "Unknown - the value could not be read" }
 	                           elseif ($minPwdLength -eq 0) { "Disabled" } else { "$minPwdLength characters" }
@@ -60573,6 +60586,15 @@ function Get-DomainPasswordPolicy {
 	            lockoutThreshold = if ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
 	            lockoutDuration = $lockoutDurationText
 	            lockoutObservationWindow = if ($lockoutWindow -gt 0) { "$lockoutWindow minutes" } else { "N/A" }
+	        }
+	        if ($null -ne $pwdPropsValue) {
+	            $pwdPropsDisplay = @($pwdPropsSet | ForEach-Object { "$($_.Name) - $($_.Text)" })
+	            if ($pwdPropsDisplay.Count -eq 0) { $pwdPropsDisplay = @('None set') }
+	            $passwordPolicyObj | Add-Member -NotePropertyName 'passwordProperties' -NotePropertyValue $pwdPropsDisplay -Force
+	        }
+	        if ($null -ne $pwdPropsValue -and $lockoutThreshold -gt 0 -and -not $adminLockoutApplies) {
+	            $passwordPolicyObj | Add-Member -NotePropertyName 'builtinAdministratorLockout' `
+	                -NotePropertyValue 'the built-in Administrator is exempt from account lockout - DOMAIN_LOCKOUT_ADMINS is not set' -Force
 	        }
 	        $policyWeaknesses = @()
 	        if ($hasMinPwdLength -and $minPwdLength -lt 8) { $policyWeaknesses += "short_password" }
@@ -84494,7 +84516,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-1904"
+$Script:adPEASVersion = "2.7.0+20261016-1913"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -59,6 +59,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   only link the count reads "unknown"; beside OU links the number stands as a lower bound
   and a row next to it says so.
 
+- **The domain password policy shows every `pwdProperties` flag.** Two of the six fed the
+  verdict and the other four were never shown. Each flag that is set is now listed by
+  name and meaning; three of them MS-SAMR calls reserved, and the row says so. Where a
+  lockout threshold exists and `DOMAIN_LOCKOUT_ADMINS` is not set, a row says that the
+  built-in Administrator is exempt from the lockout - the default, so it is information
+  and changes no severity.
+
 ---
 
 ## [2.7.0] - 2026-10-08

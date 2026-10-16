@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 19:04:03
-    Version: 2.7.0+20261016-1904
+    Build: 2026-10-16 19:13:41
+    Version: 2.7.0+20261016-1913
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6442,7 +6442,8 @@ $Script:PrimaryAttributes = @{
         'minPwdLength', 'passwordComplexity',
         'minPwdAge', 'maxPwdAge',
         'reversibleEncryption',
-        'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow'
+        'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow',
+        'builtinAdministratorLockout', 'passwordProperties'
     )
 
     # Fine-Grained Password Policy (PSO)
@@ -98590,18 +98591,38 @@ function Get-DomainPasswordPolicy {
 
             # Password Properties - Invoke-LDAPSearch returns flag array (e.g., @("DOMAIN_PASSWORD_COMPLEX"))
             # Check for flags by name instead of bitwise operations
+            #
+            # All six flags, by name and bit. The texts follow MS-SAMR (Domain Fields,
+            # PasswordProperties), which calls three of them reserved, with no effect on the
+            # password policy. DOMAIN_LOCKOUT_ADMINS is one of the three, but what it changes
+            # is the lockout, not the password policy: DOMAIN_PASSWORD_INFORMATION (ntsecapi.h)
+            # documents it as letting network logons lock out the built-in Administrator, who
+            # is exempt without it. Two flags carry a verdict below; the rest are shown as
+            # they are, and the exemption gets a sentence of its own.
+            $pwdPropertyFlags = @(
+                @{ Name = 'DOMAIN_PASSWORD_COMPLEX';         Bit = 1;  Text = 'complexity required' }
+                @{ Name = 'DOMAIN_PASSWORD_NO_ANON_CHANGE';  Bit = 2;  Text = 'reserved - MS-SAMR gives it no effect on the password policy' }
+                @{ Name = 'DOMAIN_PASSWORD_NO_CLEAR_CHANGE'; Bit = 4;  Text = 'password change methods that hand the DC the cleartext password are refused' }
+                @{ Name = 'DOMAIN_LOCKOUT_ADMINS';           Bit = 8;  Text = 'the built-in Administrator can be locked out from network logons' }
+                @{ Name = 'DOMAIN_PASSWORD_STORE_CLEARTEXT'; Bit = 16; Text = 'passwords are stored with reversible encryption' }
+                @{ Name = 'DOMAIN_REFUSE_PASSWORD_CHANGE';   Bit = 32; Text = 'reserved - MS-SAMR gives it no effect on the password policy' }
+            )
             $pwdPropsValue = $domainPolicy.pwdProperties
+            $pwdPropsSet = @()
             if ($pwdPropsValue -is [array] -or ($pwdPropsValue -is [string] -and $pwdPropsValue -match "DOMAIN_")) {
                 # Pre-converted flag names from Invoke-LDAPSearch
                 $pwdPropsArray = @($pwdPropsValue)
                 $complexityEnabled = $pwdPropsArray -contains "DOMAIN_PASSWORD_COMPLEX"
                 $reversibleEncryption = $pwdPropsArray -contains "DOMAIN_PASSWORD_STORE_CLEARTEXT"
+                $pwdPropsSet = @($pwdPropertyFlags | Where-Object { $pwdPropsArray -contains $_.Name })
             } else {
                 # Raw integer value (fallback)
                 $pwdPropsInt = if ($pwdPropsValue) { try { [int]$pwdPropsValue } catch { 0 } } else { 0 }
                 $complexityEnabled = ($pwdPropsInt -band 1) -ne 0
                 $reversibleEncryption = ($pwdPropsInt -band 16) -ne 0
+                $pwdPropsSet = @($pwdPropertyFlags | Where-Object { ($pwdPropsInt -band $_.Bit) -ne 0 })
             }
+            $adminLockoutApplies = @($pwdPropsSet | Where-Object { $_.Name -eq 'DOMAIN_LOCKOUT_ADMINS' }).Count -gt 0
 
             # Create password policy object for consistent display.
             #
@@ -98621,6 +98642,24 @@ function Get-DomainPasswordPolicy {
                 lockoutThreshold = if ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
                 lockoutDuration = $lockoutDurationText
                 lockoutObservationWindow = if ($lockoutWindow -gt 0) { "$lockoutWindow minutes" } else { "N/A" }
+            }
+
+            # Every flag that is set, named and read out - so a reader sees the whole
+            # attribute, not the two flags the verdict uses. Only where the attribute
+            # arrived; an absent one says nothing about any flag.
+            if ($null -ne $pwdPropsValue) {
+                $pwdPropsDisplay = @($pwdPropsSet | ForEach-Object { "$($_.Name) - $($_.Text)" })
+                if ($pwdPropsDisplay.Count -eq 0) { $pwdPropsDisplay = @('None set') }
+                $passwordPolicyObj | Add-Member -NotePropertyName 'passwordProperties' -NotePropertyValue $pwdPropsDisplay -Force
+            }
+
+            # Without DOMAIN_LOCKOUT_ADMINS - the default - failed network logons never lock
+            # the built-in Administrator (RID 500) out, so the lockout above does not slow
+            # down guessing its password. Information, not a verdict: it is the state every
+            # domain ships in. Said only where there is a lockout to be exempt from.
+            if ($null -ne $pwdPropsValue -and $lockoutThreshold -gt 0 -and -not $adminLockoutApplies) {
+                $passwordPolicyObj | Add-Member -NotePropertyName 'builtinAdministratorLockout' `
+                    -NotePropertyValue 'the built-in Administrator is exempt from account lockout - DOMAIN_LOCKOUT_ADMINS is not set' -Force
             }
 
             # Determine severity based on policy weaknesses
@@ -136214,7 +136253,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-1904"
+$Script:adPEASVersion = "2.7.0+20261016-1913"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
