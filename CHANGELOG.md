@@ -53,6 +53,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   what was not checked. Risky directories and UNC paths, which the check can judge, stay
   findings.
 
+- **A GPO linked to a site no longer claims to affect 0 computers.** Site membership
+  follows the IP subnet a computer starts in, which the directory does not record per
+  computer, so `Get-GPOPermissions` never counted a site's computers. Where a site is the
+  only link the count reads "unknown"; beside OU links the number stands as a lower bound
+  and a row next to it says so.
+
 ---
 
 ## [2.7.0] - 2026-10-08

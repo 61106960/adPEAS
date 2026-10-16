@@ -3171,7 +3171,7 @@ $Script:PrimaryAttributes = @{
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'ServerSigning', 'ClientSigning',
         'DangerousPermissions', 'SysvolPermissions', 'GPOOwner', 'DangerousSettings',
-        'LinkedOUs', 'GPOStatus', 'AffectedComputers'
+        'LinkedOUs', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
     )
     SMBSigning = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
@@ -69532,6 +69532,15 @@ function Get-GPOPermissions {
                                 }
                             }
                         }
+                        $affectedComputersNote = $null
+                        $hasSiteLink = @($activeLinks | Where-Object { $_.Scope -eq 'Site' }).Count -gt 0
+                        if ($hasSiteLink -and -not $isDomainWide) {
+                            if ($affectedComputerCount -eq 0) {
+                                $affectedComputerCount = 'unknown - site membership follows IP subnets, not the directory'
+                            } else {
+                                $affectedComputersNote = 'plus the computers of the linked site(s), which the directory does not record - site membership follows IP subnets'
+                            }
+                        }
                         $linkedOUsDisplay = $links
                         if ($null -eq $links) {
                             $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
@@ -69559,6 +69568,9 @@ function Get-GPOPermissions {
                             $enrichedGPO | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                         }
                         $enrichedGPO | Add-Member -NotePropertyName "affectedComputerCount" -NotePropertyValue $affectedComputerCount -Force
+                        if ($affectedComputersNote) {
+                            $enrichedGPO | Add-Member -NotePropertyName "affectedComputersNote" -NotePropertyValue $affectedComputersNote -Force
+                        }
                         $enrichedGPO | Add-Member -NotePropertyName "IsDomainWide" -NotePropertyValue $isDomainWide -Force
                         $vulnerableGPOsHash[$gpoGUID] = $enrichedGPO
                     }
@@ -87455,7 +87467,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261016-1900"
+$Script:adPEASVersion = "2.7.0+20261016-1904"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

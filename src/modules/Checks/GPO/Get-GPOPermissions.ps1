@@ -502,6 +502,23 @@ function Get-GPOPermissions {
                             }
                         }
 
+                        # A site link applies to whichever computers sit in that site, and
+                        # site membership follows the IP subnet a computer is in when it
+                        # starts - nothing the directory records per computer. The OU walk
+                        # above therefore never counts one, and "0" next to a site link read
+                        # as "affects nothing". Unknown when the site is all there is; with
+                        # OU links beside it the count stands as what it is, a lower bound,
+                        # and the row next to it says so.
+                        $affectedComputersNote = $null
+                        $hasSiteLink = @($activeLinks | Where-Object { $_.Scope -eq 'Site' }).Count -gt 0
+                        if ($hasSiteLink -and -not $isDomainWide) {
+                            if ($affectedComputerCount -eq 0) {
+                                $affectedComputerCount = 'unknown - site membership follows IP subnets, not the directory'
+                            } else {
+                                $affectedComputersNote = 'plus the computers of the linked site(s), which the directory does not record - site membership follows IP subnets'
+                            }
+                        }
+
                         # Where the policy applies. The full link records, disabled ones
                         # included - the LinkedOUs transformer marks those and renders an
                         # empty list as "Not linked". Handed over as an array rather than a
@@ -584,6 +601,9 @@ function Get-GPOPermissions {
                             $enrichedGPO | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
                         }
                         $enrichedGPO | Add-Member -NotePropertyName "affectedComputerCount" -NotePropertyValue $affectedComputerCount -Force
+                        if ($affectedComputersNote) {
+                            $enrichedGPO | Add-Member -NotePropertyName "affectedComputersNote" -NotePropertyValue $affectedComputersNote -Force
+                        }
                         $enrichedGPO | Add-Member -NotePropertyName "IsDomainWide" -NotePropertyValue $isDomainWide -Force
 
                         $vulnerableGPOsHash[$gpoGUID] = $enrichedGPO
