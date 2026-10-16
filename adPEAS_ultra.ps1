@@ -3443,6 +3443,7 @@ $Script:ExcludeAttributes = @(
 	'RiskyMembers',
 	'MemberCount', 'ProtectedCount',
 	'_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
+	'_gmsaReaderVerdicts',
 	'_IsEffective', '_HasAnyLink',
 	'_ReachScope', '_ReachInactive', '_ReachUnlinked',
 	'msPKIAccountCredentials', 'msPKIDPAPIMasterKeys',
@@ -17188,19 +17189,38 @@ function Convert-GMSAToRenderValues {
 	    }
 	}
 	if ($gmsaPrincipals.Count -eq 0) { return $null }
+	$readerVerdicts = $null
+	$sourceObject = $Context.SourceObject
+	if ($sourceObject -and $sourceObject.PSObject.Properties['_gmsaReaderVerdicts']) {
+	    $readerVerdicts = $sourceObject._gmsaReaderVerdicts
+	}
 	$renderValues = @()
 	foreach ($principal in $gmsaPrincipals) {
 	    $severity = 'Hint'
 	    $findingId = 'GMSA_MEMBERSHIP_INFO'
-	    if ($principal.SID) {
-	        $privResult = Test-IsPrivileged -Identity $principal.SID
-	        if ($privResult.Category -eq 'Privileged') {
-	            $severity = 'Finding'
-	            $findingId = 'GMSA_PASSWORD_READABLE'
+	    $principalSID = [string]$principal.SID
+	    if ($readerVerdicts -and $principalSID) {
+	        $verdict = 'NotReader'
+	        if ($readerVerdicts -is [System.Collections.IDictionary]) {
+	            if ($readerVerdicts.Contains($principalSID)) { $verdict = [string]$readerVerdicts[$principalSID] }
+	        } elseif ($readerVerdicts.PSObject.Properties[$principalSID]) {
+	            $verdict = [string]$readerVerdicts.PSObject.Properties[$principalSID].Value
 	        }
-	        elseif ($privResult.Category -in @('Operator', 'BroadGroup')) {
+	        if ($verdict -in @('Broad', 'Unexpected')) {
 	            $severity = 'Finding'
 	            $findingId = 'GMSA_PASSWORD_READABLE'
+	        } else {
+	            $severity = 'Standard'
+	            $findingId = $null
+	        }
+	    } elseif ($principalSID) {
+	        $category = (Test-IsPrivileged -Identity $principalSID).Category
+	        if ($category -eq 'BroadGroup') {
+	            $severity = 'Finding'
+	            $findingId = 'GMSA_PASSWORD_READABLE'
+	        } elseif ($category -in @('Privileged', 'Operator')) {
+	            $severity = 'Standard'
+	            $findingId = $null
 	        }
 	    }
 	    $renderValues += New-RenderValue -Display $principal.Name -Severity $severity `
@@ -62852,6 +62872,7 @@ function Get-ManagedServiceAccountSecurity {
 	                }
 	                $readerKinds[$readerSID] = $readerKind
 	            }
+	            $readerVerdictsByGMSA = @{}
 	            foreach ($gmsa in $gmsaAccounts) {
 	                $gmsaName = $gmsa.sAMAccountName
 	                if (-not $gmsaReaderSIDs.ContainsKey($gmsaName)) { continue }
@@ -62880,6 +62901,13 @@ function Get-ManagedServiceAccountSecurity {
 	                    }
 	                }
 	                $unexpectedReaders = @($passwordReaders | Where-Object { -not $_.IsExpected })
+	                $verdictMap = @{}
+	                foreach ($reader in $passwordReaders) {
+	                    $verdict = 'Unexpected'
+	                    if ($reader.IsBroadGroup) { $verdict = 'Broad' } elseif ($reader.IsExpected) { $verdict = 'Expected' }
+	                    $verdictMap[[string]$reader.SID] = $verdict
+	                }
+	                $readerVerdictsByGMSA[$gmsaName] = $verdictMap
 	                if ($unexpectedReaders.Count -gt 0) {
 	                    $nonPrivilegedAccessFindings += [PSCustomObject]@{
 	                        gMSA = $gmsaName
@@ -62913,7 +62941,10 @@ function Get-ManagedServiceAccountSecurity {
 	                    $gmsaObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'gMSA' -Force
 	                    $contextText = if ($finding.HasBroadGroupAccess) { 'CRITICAL: Broad group access' } else { 'Non-privileged access' }
 	                    $gmsaObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $contextText -Force
-	                    Show-Object $gmsaObj
+	                    if ($readerVerdictsByGMSA.ContainsKey($finding.gMSA)) {
+	                        $gmsaObj | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[$finding.gMSA] -Force
+	                    }
+	                    Show-Object $gmsaObj -Class Finding
 	                    $readerList = ($finding.NonPrivilegedReaders | ForEach-Object {
 	                        $prefix = if ($_.IsBroadGroup) { "[CRITICAL] " } else { "" }
 	                        "$prefix$($_.Principal) ($($_.SID))"
@@ -62941,7 +62972,7 @@ function Get-ManagedServiceAccountSecurity {
 	                Show-Line "msDS-GroupMSAMembership is owned by a principal that is not privileged: $ownerList" -Class Finding -FindingId 'GMSA_MEMBERSHIP_OWNER'
 	                foreach ($ownerFinding in $descriptorOwnerFindings) {
 	                    if ($reportedGMSANames -contains $ownerFinding.gMSA) { continue }
-	                    Show-Object $ownerFinding.Object
+	                    Show-Object $ownerFinding.Object -Class Finding
 	                }
 	            }
 	            $longIntervals = @()
@@ -63006,7 +63037,7 @@ function Get-ManagedServiceAccountSecurity {
 	                                $gmsaPasswordObj | Add-Member -NotePropertyName 'queryInterval' -NotePropertyValue "$queryHours hours"
 	                                $gmsaPasswordObj | Add-Member -NotePropertyName 'unchangedInterval' -NotePropertyValue "$unchangedHours hours"
 	                                $gmsaPasswordObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'gMSAPassword' -Force
-	                                Show-Object $gmsaPasswordObj
+	                                Show-Object $gmsaPasswordObj -Class Finding
 	                                Show-Line "Use NT hash with: Pass-the-Hash, Overpass-the-Hash, or DCSync impersonation" -Class Hint
 	                                Show-EmptyLine
 	                            } else {
@@ -63043,13 +63074,18 @@ function Get-ManagedServiceAccountSecurity {
 	            } else {
 	                Show-Line "Retrieved $passwordsRetrieved of $($gmsaAccounts.Count) gMSA password(s)" -Class Finding
 	            }
+	            $ownerFindingNames = @($descriptorOwnerFindings | ForEach-Object { $_.gMSA })
 	            $gmsasWithoutFindings = @($gmsaAccounts | Where-Object {
-	                $_.sAMAccountName -notin ($nonPrivilegedAccessFindings | ForEach-Object { $_.gMSA })
+	                $_.sAMAccountName -notin ($nonPrivilegedAccessFindings | ForEach-Object { $_.gMSA }) -and
+	                $_.sAMAccountName -notin $ownerFindingNames
 	            })
 	            if ($gmsasWithoutFindings.Count -gt 0) {
 	                Show-SubHeader "gMSA accounts with proper password access configuration:" -ObjectType "gMSAPassword"
 	                foreach ($gmsa in $gmsasWithoutFindings) {
 	                    $gmsa | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'gMSA' -Force
+	                    if ($readerVerdictsByGMSA.ContainsKey([string]$gmsa.sAMAccountName)) {
+	                        $gmsa | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[[string]$gmsa.sAMAccountName] -Force
+	                    }
 	                    Show-Object $gmsa
 	                }
 	            }
@@ -84104,7 +84140,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-0930"
+$Script:adPEASVersion = "2.7.0+20261016-0949"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

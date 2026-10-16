@@ -691,6 +691,9 @@ $Script:ExcludeAttributes = @(
     # an Exchange service group rather than against privilege; it is read from the source
     # object by Get-RenderModel and has no business being a row.
     '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
+    # The gMSA check's verdict per password reader, keyed by SID. Read by the transformer of
+    # msDS-GroupMSAMembership, which colours each reader by it; the reader sees the colours.
+    '_gmsaReaderVerdicts',
     # Precedence bookkeeping behind the EffectiveSetting sentence. _IsEffective is the
     # boolean the row colouring still needs; the sentence is what a reader gets.
     '_IsEffective', '_HasAnyLink',

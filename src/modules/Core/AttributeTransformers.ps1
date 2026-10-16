@@ -576,19 +576,56 @@ function Convert-GMSAToRenderValues {
 
     if ($gmsaPrincipals.Count -eq 0) { return $null }
 
+    # Get-ManagedServiceAccountSecurity leaves its verdict per reader SID on the object it
+    # shows - a broad group, an expected reader (privileged, operator, or a host that runs
+    # the service), or a principal that should not hold the password - and where it is
+    # there, it decides. This used to ask Test-IsPrivileged alone and rate a privileged
+    # reader a finding: Domain Admins came out red with "gMSA Password Retrievable", the
+    # reader the check had just called expected, while the user account that made the gMSA
+    # a finding came out yellow, because a category cannot tell a user from a service host.
+    $readerVerdicts = $null
+    $sourceObject = $Context.SourceObject
+    if ($sourceObject -and $sourceObject.PSObject.Properties['_gmsaReaderVerdicts']) {
+        $readerVerdicts = $sourceObject._gmsaReaderVerdicts
+    }
+
     $renderValues = @()
     foreach ($principal in $gmsaPrincipals) {
         $severity = 'Hint'
         $findingId = 'GMSA_MEMBERSHIP_INFO'
-        if ($principal.SID) {
-            $privResult = Test-IsPrivileged -Identity $principal.SID
-            if ($privResult.Category -eq 'Privileged') {
-                $severity = 'Finding'
-                $findingId = 'GMSA_PASSWORD_READABLE'
+        $principalSID = [string]$principal.SID
+
+        if ($readerVerdicts -and $principalSID) {
+            # A SID the check has no verdict for is named by the descriptor without being
+            # granted ReadProperty - a ReadControl ACE, say - and cannot retrieve anything.
+            $verdict = 'NotReader'
+            if ($readerVerdicts -is [System.Collections.IDictionary]) {
+                if ($readerVerdicts.Contains($principalSID)) { $verdict = [string]$readerVerdicts[$principalSID] }
+            } elseif ($readerVerdicts.PSObject.Properties[$principalSID]) {
+                # The same map after a round trip through the JSON cache, which turns the
+                # hashtable into an object with one property per SID.
+                $verdict = [string]$readerVerdicts.PSObject.Properties[$principalSID].Value
             }
-            elseif ($privResult.Category -in @('Operator', 'BroadGroup')) {
+
+            if ($verdict -in @('Broad', 'Unexpected')) {
                 $severity = 'Finding'
                 $findingId = 'GMSA_PASSWORD_READABLE'
+            } else {
+                $severity = 'Standard'
+                $findingId = $null
+            }
+        } elseif ($principalSID) {
+            # No verdict on the object: something other than the gMSA check rendered it, and
+            # the category is all there is. A broad group is still the finding, a privileged
+            # principal or an operator is expected, and anything else may be the host the
+            # attribute exists for - so it stays a hint.
+            $category = (Test-IsPrivileged -Identity $principalSID).Category
+            if ($category -eq 'BroadGroup') {
+                $severity = 'Finding'
+                $findingId = 'GMSA_PASSWORD_READABLE'
+            } elseif ($category -in @('Privileged', 'Operator')) {
+                $severity = 'Standard'
+                $findingId = $null
             }
         }
         $renderValues += New-RenderValue -Display $principal.Name -Severity $severity `

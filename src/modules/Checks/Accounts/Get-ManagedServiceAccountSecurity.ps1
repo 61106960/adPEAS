@@ -259,6 +259,10 @@ function Get-ManagedServiceAccountSecurity {
                 }
 
                 # ----- Phase 3: verdict per gMSA -----
+                #
+                # The verdict per reader is kept for every analyzed gMSA, flagged or not, and
+                # handed to the row that lists the readers - see the output below.
+                $readerVerdictsByGMSA = @{}
                 foreach ($gmsa in $gmsaAccounts) {
                     $gmsaName = $gmsa.sAMAccountName
                     if (-not $gmsaReaderSIDs.ContainsKey($gmsaName)) { continue }
@@ -304,6 +308,16 @@ function Get-ManagedServiceAccountSecurity {
                     }
 
                     $unexpectedReaders = @($passwordReaders | Where-Object { -not $_.IsExpected })
+
+                    # Keyed by SID, so a principal the descriptor names without granting
+                    # ReadProperty finds no entry and reads as no reader at all.
+                    $verdictMap = @{}
+                    foreach ($reader in $passwordReaders) {
+                        $verdict = 'Unexpected'
+                        if ($reader.IsBroadGroup) { $verdict = 'Broad' } elseif ($reader.IsExpected) { $verdict = 'Expected' }
+                        $verdictMap[[string]$reader.SID] = $verdict
+                    }
+                    $readerVerdictsByGMSA[$gmsaName] = $verdictMap
 
                     if ($unexpectedReaders.Count -gt 0) {
                         $nonPrivilegedAccessFindings += [PSCustomObject]@{
@@ -360,7 +374,19 @@ function Get-ManagedServiceAccountSecurity {
                         # Context depends on whether broad group access exists
                         $contextText = if ($finding.HasBroadGroupAccess) { 'CRITICAL: Broad group access' } else { 'Non-privileged access' }
                         $gmsaObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $contextText -Force
-                        Show-Object $gmsaObj
+
+                        # The verdict per reader, for the row that lists them. The transformer
+                        # that renders msDS-GroupMSAMembership could only ask Test-IsPrivileged,
+                        # which cannot tell a service host from a user account: it coloured
+                        # Domain Admins red - the reader this check calls expected - and the
+                        # user account that makes the gMSA a finding yellow.
+                        if ($readerVerdictsByGMSA.ContainsKey($finding.gMSA)) {
+                            $gmsaObj | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[$finding.gMSA] -Force
+                        }
+
+                        # A finding, printed as one. Show-Object defaults to Standard, so the
+                        # gMSA sat under a red headline in the renderer's neutral class.
+                        Show-Object $gmsaObj -Class Finding
 
                         # Additional context about password readers - highlight broad groups
                         $readerList = ($finding.NonPrivilegedReaders | ForEach-Object {
@@ -403,7 +429,9 @@ function Get-ManagedServiceAccountSecurity {
                     Show-Line "msDS-GroupMSAMembership is owned by a principal that is not privileged: $ownerList" -Class Finding -FindingId 'GMSA_MEMBERSHIP_OWNER'
                     foreach ($ownerFinding in $descriptorOwnerFindings) {
                         if ($reportedGMSANames -contains $ownerFinding.gMSA) { continue }
-                        Show-Object $ownerFinding.Object
+                        # Printed as the finding the line above announces, not at
+                        # Show-Object's neutral default.
+                        Show-Object $ownerFinding.Object -Class Finding
                     }
                 }
 
@@ -506,7 +534,9 @@ function Get-ManagedServiceAccountSecurity {
                                     $gmsaPasswordObj | Add-Member -NotePropertyName 'unchangedInterval' -NotePropertyValue "$unchangedHours hours"
                                     $gmsaPasswordObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'gMSAPassword' -Force
 
-                                    Show-Object $gmsaPasswordObj
+                                    # The hash itself, under "Successfully retrieved password".
+                                    # It was printed at Show-Object's neutral default.
+                                    Show-Object $gmsaPasswordObj -Class Finding
 
                                     Show-Line "Use NT hash with: Pass-the-Hash, Overpass-the-Hash, or DCSync impersonation" -Class Hint
                                     Show-EmptyLine
@@ -563,14 +593,27 @@ function Get-ManagedServiceAccountSecurity {
                 }
 
                 # Output all gMSAs for visibility (they will show adminCount, delegation, SPNs via Show-Object)
+                # Neither kind of finding belongs under "proper password access
+                # configuration". The owner findings were left out of this filter, so a gMSA
+                # whose only problem is the owner of its descriptor was printed twice - as
+                # the finding, and again as properly configured.
+                $ownerFindingNames = @($descriptorOwnerFindings | ForEach-Object { $_.gMSA })
                 $gmsasWithoutFindings = @($gmsaAccounts | Where-Object {
-                    $_.sAMAccountName -notin ($nonPrivilegedAccessFindings | ForEach-Object { $_.gMSA })
+                    $_.sAMAccountName -notin ($nonPrivilegedAccessFindings | ForEach-Object { $_.gMSA }) -and
+                    $_.sAMAccountName -notin $ownerFindingNames
                 })
 
                 if ($gmsasWithoutFindings.Count -gt 0) {
                     Show-SubHeader "gMSA accounts with proper password access configuration:" -ObjectType "gMSAPassword"
                     foreach ($gmsa in $gmsasWithoutFindings) {
                         $gmsa | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'gMSA' -Force
+
+                        # The same verdicts as for a flagged gMSA. Without them the row under
+                        # this "proper configuration" heading coloured its Domain Admins entry
+                        # red and its service host yellow.
+                        if ($readerVerdictsByGMSA.ContainsKey([string]$gmsa.sAMAccountName)) {
+                            $gmsa | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[[string]$gmsa.sAMAccountName] -Force
+                        }
                         Show-Object $gmsa
                     }
                 }
