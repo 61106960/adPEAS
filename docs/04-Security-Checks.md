@@ -1175,19 +1175,48 @@ Get-GPOLocalGroupMembership
 
 ### Get-GPOScheduledTasks
 
-**Purpose**: Finds scheduled tasks configured via GPO.
+**Purpose**: Rates the scheduled tasks Group Policy Preferences deploy (`ScheduledTasks.xml` in SYSVOL) by what each task starts and as which account.
 
 **What it checks**:
-- Immediate scheduled tasks in GPOs
-- Scheduled task run-as accounts
-- Embedded credentials in tasks
+- Every Exec action of a task - regular and immediate tasks, both file formats - and the account it runs as, from the Preferences item or from the task's own principal
+- Tasks running as SYSTEM, LOCAL SERVICE, NETWORK SERVICE or a privileged account
+- Programs started from a directory in which every user may change files (`C:\Temp`, `C:\Users\Public`, ...) or add files (`C:\ProgramData`, `C:\Windows\Temp`, ...) by Windows default
+- UNC paths: whoever can write the share, or answer for its server name, controls what the task runs
+- For a SYSTEM task with a UNC path: the NTFS permissions of the file and of the folder it is in (see below)
+- `cmd.exe /c` lines with an unquoted program path containing a space, which cmd.exe splits at the first space. The program field of a task is not affected: the Task Scheduler quotes it itself
+- Tasks of policies that are not linked or not enabled are held back and summarized
 
-**Security Impact**: Scheduled tasks may run with elevated privileges or contain cleartext credentials. Attackers can modify tasks for persistence.
+A password stored in a task (`cpassword`) is reported by `Get-CredentialExposure`.
+
+**NTFS permissions of a UNC path**: For a SYSTEM task, adPEAS connects over SMB with the session's credentials and reads the permissions of the program and of its folder. It connects only to an enabled computer of the domain - by the DNS name the directory records for it, never by a short name - or to the domain's own name (NETLOGON, domain-based DFS). An IP address or a host the domain does not know is not contacted, and `-OPSEC` connects to nothing.
+
+| Result | Severity |
+|--------|----------|
+| An account beyond the expected administrators can write the file or folder - listed in `UNCPathPermissions` | Finding |
+| Only privileged accounts can write it - the administrators of that server still decide what runs as SYSTEM in scope | Hint |
+| Not read: unknown host, address, unreadable path, or `-OPSEC` - the row says which | Finding |
+
+The share permissions are not read: Windows returns a share's security descriptor to administrators of the file server only. Over the network they apply on top of the NTFS permissions and can only narrow them.
+
+**Security Impact**: A task runs on every computer the policy reaches. Whoever can replace what a SYSTEM task starts runs code as SYSTEM on all of them.
 
 **Usage**:
 ```powershell
 Get-GPOScheduledTasks
+
+# Also list the tasks of policies that are not linked or not enabled
+Get-GPOScheduledTasks -IncludeInactive
+
+# Make no SMB connection to the file servers a task names
+Get-GPOScheduledTasks -OPSEC
 ```
+
+**Parameters**:
+
+| Parameter | Description |
+|-----------|-------------|
+| `-IncludeInactive` | Also list the tasks of policies that are not linked or not enabled |
+| `-OPSEC` | Connect to no host a task names; UNC paths are reported as not checked |
 
 ---
 

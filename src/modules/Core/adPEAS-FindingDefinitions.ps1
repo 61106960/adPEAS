@@ -9065,7 +9065,7 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Title = "GPO Scheduled Task Runs as SYSTEM from UNC Path"
         Risk = "Finding"
         BaseScore = 45
-        Description = "A GPO-deployed scheduled task runs as SYSTEM and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs as SYSTEM on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. adPEAS does not read the permissions of the share."
+        Description = "A GPO-deployed scheduled task runs as SYSTEM and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs as SYSTEM on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. Where the host is an enabled computer of the domain and -OPSEC is not set, adPEAS reads the NTFS permissions of the file and of the folder it is in and names every account beyond the expected administrators that can write them. A path only privileged accounts can write is a hint rather than a finding: the administrators of that server still decide what runs as SYSTEM everywhere the policy applies. The share permissions are not read - a share's security descriptor is returned to administrators of the file server only - and over the network they can narrow the NTFS rights reported here, never widen them."
         Impact = @(
             "Task runs with SYSTEM privileges"
             "What it runs is loaded from a network share at every run"
@@ -9115,7 +9115,16 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
             # could not appear on any row - while the check reported exactly this case.
             # Anchored on the verdict's opening words, because RiskReason is shared with the
             # registry settings check.
+            #
+            # Two openings, two severities. "and uses UNC path" is the finding: an account
+            # beyond the expected administrators can write the path, or it could not be
+            # read. "from UNC path" is the hint for a path read in full that only
+            # privileged accounts can write.
             @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM and uses UNC path'; Severity = 'Finding' }
+            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM from UNC path'; Severity = 'Hint' }
+            # One "path: Identity (Rights)" row per trustee that can write, written only
+            # when there is one - a bare trigger, like SysvolPermissions on a GPO.
+            @{ Attribute = 'UNCPathPermissions'; Severity = 'Finding' }
         )
     }
 

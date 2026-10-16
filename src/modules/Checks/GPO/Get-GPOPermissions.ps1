@@ -90,23 +90,6 @@ function Get-GPOPermissions {
         # attribute-scoped bits - WriteProperty, ReadProperty, Self, ExtendedRight - and
         # nothing else, so an ACE that also grants one of these is not limited by the
         # attribute it names.
-        # The NTFS rights that let their holder rewrite the content of a policy folder.
-        # A mask rather than a list of names, because FileSystemRights is a flag field and
-        # the combinations that occur in practice - FullControl, Modify, Write - do not
-        # decompose into a fixed set of names.
-        #
-        # WriteAttributes and WriteExtendedAttributes are deliberately not in it: they
-        # change timestamps and metadata, not file content, and including them would put a
-        # finding on the default ACL of every policy folder in the domain.
-        $Script:SysvolWriteRights = [int](
-            [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor
-            [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
-            [System.Security.AccessControl.FileSystemRights]::Delete -bor
-            [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-            [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-            [System.Security.AccessControl.FileSystemRights]::TakeOwnership
-        )
-
         $Script:UnscopedGPORights = @(
             'GenericAll',
             'GenericWrite',
@@ -666,63 +649,15 @@ function Get-GPOPermissions {
                         continue
                     }
 
-                    # Deny first and per trustee, the same way the DACL half does it: a
-                    # Deny rule wins the access check, so an Allow it covers grants
-                    # nothing. Masks rather than names, because FileSystemRights is a flag
-                    # field and the combinations do not all have names.
-                    $deniedMask = @{}
-                    foreach ($rule in $rules) {
-                        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Deny) { continue }
-                        $denySID = [string]$rule.IdentityReference.Value
-                        if (-not $denySID) { continue }
-                        if (-not $deniedMask.ContainsKey($denySID)) { $deniedMask[$denySID] = 0 }
-                        $deniedMask[$denySID] = $deniedMask[$denySID] -bor [int]$rule.FileSystemRights
-                    }
-
-                    $folderRows = @()
-                    foreach ($rule in $rules) {
-                        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-
-                        $ruleSID = [string]$rule.IdentityReference.Value
-                        if (-not $ruleSID) { continue }
-
-                        $effective = [int]$rule.FileSystemRights
-                        if ($deniedMask.ContainsKey($ruleSID)) {
-                            $effective = $effective -band (-bnot $deniedMask[$ruleSID])
-                        }
-
-                        $writeBits = $effective -band $Script:SysvolWriteRights
-                        if ($writeBits -eq 0) { continue }
-
-                        # The same two gates the directory half uses, so one identity is
-                        # not expected on the object and a finding on its folder.
-                        $sysvolExpected = Test-IsExpectedACLIdentity -SID $ruleSID -Context 'GPO'
-                        if ($sysvolExpected.Skip) { continue }
-
-                        $sysvolScope = Test-IsExpectedInScope -Identity $ruleSID -Scope 'GPO' -ReturnDetails
-                        if ($sysvolScope.Severity -eq 'Expected') { continue }
-                        if (-not $IncludePrivileged -and $sysvolScope.Severity -eq 'Attention') {
-                            Write-Log "[Get-GPOPermissions] Attention: $ruleSID can write the SYSVOL folder of $($sysvolGPO.DisplayName) - $($sysvolScope.Reason) - skipped (use -IncludePrivileged to include)"
-                            continue
-                        }
-
-                        $ruleIdentity = ConvertFrom-SID -SID $ruleSID
-                        if (-not $ruleIdentity) { $ruleIdentity = $ruleSID }
-
-                        # The effective rights, not the write bits of them: an admin reads
-                        # "FullControl" in Explorer, not the six flags it decomposes into.
-                        # Where a Deny took something away the name changes with it, which
-                        # is the point. Synchronize sits on every rule and says nothing.
-                        $rightsText = ([System.Security.AccessControl.FileSystemRights]$effective).ToString() -replace '(,\s*)?Synchronize', ''
-                        if (-not $rightsText) { $rightsText = "$writeBits" }
-
-                        $row = "$ruleIdentity ($rightsText)"
-                        if ($rule.IsInherited) {
-                            $row = "$row [inherited - remove it at the parent folder]"
-                        }
-                        $folderRows += $row
-                        Write-Log "[Get-GPOPermissions] FINDING: $ruleIdentity can write $gpoFolder ($rightsText)"
-                    }
+                    # Deny netting, the write mask and the two identity gates the directory
+                    # half uses - see Select-NTFSWriteAccess, which Get-GPOScheduledTasks
+                    # shares for the program a SYSTEM task starts from a share.
+                    #
+                    # Inherit-only rules count here. The children of a policy folder are
+                    # the policy, so a Modify that reaches only them still rewrites it.
+                    $folderRows = @(Select-NTFSWriteAccess -Rules $rules -Target $gpoFolder `
+                        -Caller 'Get-GPOPermissions' -IncludePrivileged:$IncludePrivileged |
+                        ForEach-Object { $_.Row })
 
                     if (@($folderRows).Count -gt 0) {
                         $Script:_gpoSysvolRows[$sysvolGUID] = @($folderRows)

@@ -582,6 +582,66 @@ function Get-DirectoryAccessRules {
 
 <#
 .SYNOPSIS
+    Returns the NTFS access rules of a file, keyed by SID.
+
+.DESCRIPTION
+    The file counterpart of Get-DirectoryAccessRules, with the same three return states:
+    an array of rules, possibly empty, or $null when the path is not a file that could be
+    read - a folder, a missing file, or one whose descriptor the caller may not read.
+
+    Get-GPOScheduledTasks reads with it the program a SYSTEM task starts from a share:
+    whoever can write that file controls what runs as SYSTEM on every computer the policy
+    reaches.
+
+.PARAMETER Path
+    The file to read. Must be a path Invoke-SMBAccess has made reachable.
+
+.OUTPUTS
+    [System.Security.AccessControl.FileSystemAccessRule[]] or $null.
+
+.NOTES
+    Internal helper, beside Get-DirectoryAccessRules for the same reason: a suite that
+    stubs the file system reach of this file gets a stub for this too. The same two
+    runtimes as well - FileInfo.GetAccessControl() in Windows PowerShell 5.1, the
+    FileSystemAclExtensions fallback in PowerShell 7.
+#>
+function Get-FileAccessRules {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    try {
+        $fileInfo = New-Object System.IO.FileInfo($Path)
+        if (-not $fileInfo.Exists) {
+            Write-Log "[Get-FileAccessRules] '$Path' is not a file that exists and is reachable"
+            return $null
+        }
+
+        $security = $null
+        try {
+            $security = $fileInfo.GetAccessControl()
+        } catch {
+            $security = [System.IO.FileSystemAclExtensions]::GetAccessControl($fileInfo)
+        }
+
+        if (-not $security) {
+            Write-Log "[Get-FileAccessRules] No security descriptor returned for '$Path'"
+            return $null
+        }
+
+        # Inherited rules included, and the unary comma for the reason given in
+        # Get-DirectoryAccessRules: an empty rule set must not arrive as $null.
+        return ,@($security.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+    } catch {
+        Write-Log "[Get-FileAccessRules] Could not read the NTFS permissions of '$Path': $_"
+        return $null
+    }
+}
+
+<#
+.SYNOPSIS
     Resets the SMB share access cache.
 .DESCRIPTION
     Clears the cache of failed SMB share access attempts,

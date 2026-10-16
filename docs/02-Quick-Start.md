@@ -125,6 +125,7 @@ OPSEC mode skips:
 - Kerberoasting (TGS ticket requests)
 - AS-REP Roasting (AS-REQ without pre-auth)
 - BloodHound collection (many LDAP queries)
+- SMB connections to the file servers a GPO scheduled task names (the NTFS permissions of a SYSTEM task's UNC program are not read)
 
 ### Scenario 5b: Include Privileged Accounts
 

@@ -170,6 +170,7 @@ OPSEC mode skips checks that generate active traffic or request tickets:
 - **Kerberoasting** - Requests TGS tickets for service accounts
 - **AS-REP Roasting** - Requests AS-REP without pre-authentication
 - **BloodHound Collection** - Generates many LDAP queries across the domain
+- **File servers named by GPO scheduled tasks** - No SMB connection to read the NTFS permissions of a SYSTEM task's UNC program
 
 All other enumeration continues normally. OPSEC mode is recommended when stealth is critical.
 

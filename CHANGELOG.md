@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`Get-GPOScheduledTasks` reads who may write the UNC path a SYSTEM task runs from.**
+  **This is a new outgoing connection: adPEAS now connects over SMB, with the session's
+  credentials, to the file servers such tasks name** - only to enabled computers of the
+  domain, by the DNS name the directory records for them, or to the domain's own name.
+  Addresses and hosts the domain does not know are never contacted, and `-OPSEC` (on the
+  check and on `Invoke-adPEAS`) suppresses the connection entirely. An account beyond the
+  expected administrators that can write the file or its folder makes the task a finding
+  and is listed in the new `UNCPathPermissions` row; a path only privileged accounts can
+  write is reported as a hint. The share permissions are not read - Windows returns them
+  to administrators of the file server only.
+
 ### Changed
 
 - **Finding objects carry their severity into the JSON export and the report diff.**

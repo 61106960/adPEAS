@@ -3294,8 +3294,8 @@ $Script:PrimaryAttributes = @{
         'ms-DS-MachineAccountQuota'
     )
     GPOScheduledTask = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'RunAs', 'Context',
-        'Action', 'Trigger', 'LinkedOUs', 'GPOStatus'
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'UNCPathPermissions',
+        'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'GPOStatus'
     )
     GPOScriptPath = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
@@ -12236,7 +12236,7 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Title = "GPO Scheduled Task Runs as SYSTEM from UNC Path"
         Risk = "Finding"
         BaseScore = 45
-        Description = "A GPO-deployed scheduled task runs as SYSTEM and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs as SYSTEM on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. adPEAS does not read the permissions of the share."
+        Description = "A GPO-deployed scheduled task runs as SYSTEM and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs as SYSTEM on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. Where the host is an enabled computer of the domain and -OPSEC is not set, adPEAS reads the NTFS permissions of the file and of the folder it is in and names every account beyond the expected administrators that can write them. A path only privileged accounts can write is a hint rather than a finding: the administrators of that server still decide what runs as SYSTEM everywhere the policy applies. The share permissions are not read - a share's security descriptor is returned to administrators of the file server only - and over the network they can narrow the NTFS rights reported here, never widen them."
         Impact = @(
             "Task runs with SYSTEM privileges"
             "What it runs is loaded from a network share at every run"
@@ -12282,6 +12282,8 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         MITRE = "T1053.005"
         Triggers = @(
             @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM and uses UNC path'; Severity = 'Finding' }
+            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM from UNC path'; Severity = 'Hint' }
+            @{ Attribute = 'UNCPathPermissions'; Severity = 'Finding' }
         )
     }
     'GPO_TASK_UNQUOTED_PATH' = @{
@@ -17760,6 +17762,7 @@ $Script:AttributeTransformers['MembersAdded']               = ${function:Convert
 $Script:AttributeTransformers['TemplateACL']                 = ${function:Convert-TemplateACLToRenderValues}
 $Script:AttributeTransformers['DangerousPermissions']        = ${function:Convert-DangerousPermToRenderValues}
 $Script:AttributeTransformers['SysvolPermissions']           = ${function:Convert-DangerousPermToRenderValues}
+$Script:AttributeTransformers['UNCPathPermissions']          = ${function:Convert-DangerousPermToRenderValues}
 $Script:AttributeTransformers['EnrollmentPrincipals']        = ${function:Convert-EnrollPrincipalsToRenderValues}
 $Script:AttributeTransformers['ExtendedKeyUsage']            = ${function:Convert-EKUToRenderValues}
 $Script:AttributeTransformers['CertificateNameFlagDisplay']  = ${function:Convert-CertNameFlagToRenderValues}
@@ -19491,8 +19494,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Execution context (SYSTEM, a privileged account, any other account)"
             "Whether a path lies in a directory where every user may change or add files by Windows default"
             "UNC paths, whose share decides what the task runs"
+            "For a SYSTEM task: the NTFS permissions of the UNC file and of the folder it is in, read over SMB on enabled computers of the domain only, and not under -OPSEC"
             "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
-            "Not tested: the permissions on the hosts and on the shares - they are not in the directory"
+            "Not tested: the permissions on the hosts themselves, and the share permissions of a UNC path - they are returned to administrators of the file server only"
         )
         SecureMessage = "No vulnerable GPO scheduled tasks found. No task starts code from a UNC path or from a directory that ordinary users can write by Windows default."
     }
@@ -23755,10 +23759,10 @@ function Clear-SessionState {
     $Script:RiskySIDs = $null
     $Script:GroupSeverityConfig = $null
     $Script:RiskyPaths = $null
+    $Script:_gpoTaskUNCAccess = $null
     $Script:DangerousGPOAccessRights = $null
     $Script:CriticalGPOAttributes = $null
     $Script:UnscopedGPORights = $null
-    $Script:SysvolWriteRights = $null
     $Script:_gpoSysvolRows = $null
     $Script:_gpoSysvolUnread = $null
     $Script:_gpoSysvolScanned = $null
@@ -39956,6 +39960,34 @@ function Get-DirectoryAccessRules {
         return $null
     }
 }
+function Get-FileAccessRules {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+    try {
+        $fileInfo = New-Object System.IO.FileInfo($Path)
+        if (-not $fileInfo.Exists) {
+            Write-Log "[Get-FileAccessRules] '$Path' is not a file that exists and is reachable"
+            return $null
+        }
+        $security = $null
+        try {
+            $security = $fileInfo.GetAccessControl()
+        } catch {
+            $security = [System.IO.FileSystemAclExtensions]::GetAccessControl($fileInfo)
+        }
+        if (-not $security) {
+            Write-Log "[Get-FileAccessRules] No security descriptor returned for '$Path'"
+            return $null
+        }
+        return ,@($security.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+    } catch {
+        Write-Log "[Get-FileAccessRules] Could not read the NTFS permissions of '$Path': $_"
+        return $null
+    }
+}
 function Reset-SMBShareAccessCache {
     [CmdletBinding()]
     param()
@@ -40266,6 +40298,85 @@ try {
     end {
         Write-Log "[Invoke-SMBAccess] Completed: $operationDesc"
     }
+}
+function Select-NTFSWriteAccess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Rules,
+        [Parameter(Mandatory = $false)]
+        [string]$Target,
+        [Parameter(Mandatory = $false)]
+        [string]$Caller = 'Select-NTFSWriteAccess',
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludePrivileged,
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipInheritOnly
+    )
+    $writeMask = [int](
+        [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor
+        [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+        [System.Security.AccessControl.FileSystemRights]::Delete -bor
+        [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    )
+    $inheritOnly = [int][System.Security.AccessControl.PropagationFlags]::InheritOnly
+    $applicable = @()
+    foreach ($rule in @($Rules)) {
+        if ($null -eq $rule) { continue }
+        if ($SkipInheritOnly -and $rule.PSObject.Properties['PropagationFlags'] -and
+            (([int]$rule.PropagationFlags) -band $inheritOnly)) {
+            continue
+        }
+        $applicable += $rule
+    }
+    $deniedMask = @{}
+    foreach ($rule in $applicable) {
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Deny) { continue }
+        $denySID = [string]$rule.IdentityReference.Value
+        if (-not $denySID) { continue }
+        if (-not $deniedMask.ContainsKey($denySID)) { $deniedMask[$denySID] = 0 }
+        $deniedMask[$denySID] = $deniedMask[$denySID] -bor [int]$rule.FileSystemRights
+    }
+    $result = @()
+    foreach ($rule in $applicable) {
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+        $ruleSID = [string]$rule.IdentityReference.Value
+        if (-not $ruleSID) { continue }
+        $effective = [int]$rule.FileSystemRights
+        if ($deniedMask.ContainsKey($ruleSID)) {
+            $effective = $effective -band (-bnot $deniedMask[$ruleSID])
+        }
+        $writeBits = $effective -band $writeMask
+        if ($writeBits -eq 0) { continue }
+        $expected = Test-IsExpectedACLIdentity -SID $ruleSID -Context 'GPO'
+        if ($expected.Skip) { continue }
+        $scope = Test-IsExpectedInScope -Identity $ruleSID -Scope 'GPO' -ReturnDetails
+        if ($scope.Severity -eq 'Expected') { continue }
+        if (-not $IncludePrivileged -and $scope.Severity -eq 'Attention') {
+            Write-Log "[$Caller] Attention: $ruleSID can write $Target - $($scope.Reason) - skipped (use -IncludePrivileged to include)"
+            continue
+        }
+        $identity = ConvertFrom-SID -SID $ruleSID
+        if (-not $identity) { $identity = $ruleSID }
+        $rightsText = ([System.Security.AccessControl.FileSystemRights]$effective).ToString() -replace '(,\s*)?Synchronize', ''
+        if (-not $rightsText) { $rightsText = "$writeBits" }
+        $row = "$identity ($rightsText)"
+        if ($rule.IsInherited) {
+            $row = "$row [inherited - remove it at the parent folder]"
+        }
+        Write-Log "[$Caller] FINDING: $identity can write $Target ($rightsText)"
+        $result += [PSCustomObject]@{
+            SID         = $ruleSID
+            Identity    = [string]$identity
+            Rights      = $rightsText
+            IsInherited = [bool]$rule.IsInherited
+            Row         = $row
+        }
+    }
+    return $result
 }
 if (-not $Script:ProgressThreshold) {
     $Script:ProgressThreshold = 30
@@ -69188,14 +69299,6 @@ function Get-GPOPermissions {
             'gPCUserExtensionNames',
             'versionNumber'
         )
-        $Script:SysvolWriteRights = [int](
-            [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor
-            [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
-            [System.Security.AccessControl.FileSystemRights]::Delete -bor
-            [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-            [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-            [System.Security.AccessControl.FileSystemRights]::TakeOwnership
-        )
         $Script:UnscopedGPORights = @(
             'GenericAll',
             'GenericWrite',
@@ -69492,44 +69595,9 @@ function Get-GPOPermissions {
                         $Script:_gpoSysvolUnread += ([string]$sysvolGPO.DisplayName)
                         continue
                     }
-                    $deniedMask = @{}
-                    foreach ($rule in $rules) {
-                        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Deny) { continue }
-                        $denySID = [string]$rule.IdentityReference.Value
-                        if (-not $denySID) { continue }
-                        if (-not $deniedMask.ContainsKey($denySID)) { $deniedMask[$denySID] = 0 }
-                        $deniedMask[$denySID] = $deniedMask[$denySID] -bor [int]$rule.FileSystemRights
-                    }
-                    $folderRows = @()
-                    foreach ($rule in $rules) {
-                        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-                        $ruleSID = [string]$rule.IdentityReference.Value
-                        if (-not $ruleSID) { continue }
-                        $effective = [int]$rule.FileSystemRights
-                        if ($deniedMask.ContainsKey($ruleSID)) {
-                            $effective = $effective -band (-bnot $deniedMask[$ruleSID])
-                        }
-                        $writeBits = $effective -band $Script:SysvolWriteRights
-                        if ($writeBits -eq 0) { continue }
-                        $sysvolExpected = Test-IsExpectedACLIdentity -SID $ruleSID -Context 'GPO'
-                        if ($sysvolExpected.Skip) { continue }
-                        $sysvolScope = Test-IsExpectedInScope -Identity $ruleSID -Scope 'GPO' -ReturnDetails
-                        if ($sysvolScope.Severity -eq 'Expected') { continue }
-                        if (-not $IncludePrivileged -and $sysvolScope.Severity -eq 'Attention') {
-                            Write-Log "[Get-GPOPermissions] Attention: $ruleSID can write the SYSVOL folder of $($sysvolGPO.DisplayName) - $($sysvolScope.Reason) - skipped (use -IncludePrivileged to include)"
-                            continue
-                        }
-                        $ruleIdentity = ConvertFrom-SID -SID $ruleSID
-                        if (-not $ruleIdentity) { $ruleIdentity = $ruleSID }
-                        $rightsText = ([System.Security.AccessControl.FileSystemRights]$effective).ToString() -replace '(,\s*)?Synchronize', ''
-                        if (-not $rightsText) { $rightsText = "$writeBits" }
-                        $row = "$ruleIdentity ($rightsText)"
-                        if ($rule.IsInherited) {
-                            $row = "$row [inherited - remove it at the parent folder]"
-                        }
-                        $folderRows += $row
-                        Write-Log "[Get-GPOPermissions] FINDING: $ruleIdentity can write $gpoFolder ($rightsText)"
-                    }
+                    $folderRows = @(Select-NTFSWriteAccess -Rules $rules -Target $gpoFolder `
+                        -Caller 'Get-GPOPermissions' -IncludePrivileged:$IncludePrivileged |
+                        ForEach-Object { $_.Row })
                     if (@($folderRows).Count -gt 0) {
                         $Script:_gpoSysvolRows[$sysvolGUID] = @($folderRows)
                     }
@@ -70179,7 +70247,9 @@ function Get-GPOScheduledTasks {
         [Parameter(Mandatory=$false)]
         [System.Management.Automation.PSCredential]$Credential,
         [Parameter(Mandatory=$false)]
-        [switch]$IncludeInactive
+        [switch]$IncludeInactive,
+        [Parameter(Mandatory=$false)]
+        [switch]$OPSEC
     )
     begin {
         Write-Log "[Get-GPOScheduledTasks] Starting check"
@@ -70214,6 +70284,7 @@ function Get-GPOScheduledTasks {
             }
             $domainFQDN = $Script:LDAPContext.Domain
             $Script:_gpoScheduledTasks = [System.Collections.ArrayList]::new()
+            $Script:_gpoTaskUNCAccess = @{ Hosts = @{}; Paths = @{} }
             Show-SubHeader "Searching for GPO scheduled tasks..." -ObjectType "GPOScheduledTask"
             $gpos = Get-DomainGPO @connectionParams
             if (-not $gpos) {
@@ -70250,7 +70321,7 @@ function Get-GPOScheduledTasks {
                         $gpoName = if ($gpoNameMap.ContainsKey($gpoGUID)) { $gpoNameMap[$gpoGUID] } else { $gpoGUID }
                         try {
                             Write-Log "[Get-GPOScheduledTasks] Reading: $($file.FullName)"
-                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
+                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()] -OPSEC:$OPSEC
                             if ($taskFindings) {
                                 $linkedOUs = $null
                                 if ($null -ne $gpoLinkage) {
@@ -70286,6 +70357,7 @@ function Get-GPOScheduledTasks {
             $sysvolAccessible = $Script:sysvolAccessible
             $Script:_gpoScheduledTasks = $null
             $Script:sysvolAccessible = $null
+            $Script:_gpoTaskUNCAccess = $null
             if (-not $sysvolAccessible) {
                 if ((Test-SysvolAccessible) -eq $false) {
                     Show-Line "Skipped - SYSVOL not accessible" -Class Hint
@@ -70354,7 +70426,9 @@ function Parse-ScheduledTasksXML {
         [Parameter(Mandatory=$true)]
         [string]$GPOGUID,
         [Parameter(Mandatory=$false)]
-        [string]$GPOPath
+        [string]$GPOPath,
+        [Parameter(Mandatory=$false)]
+        [switch]$OPSEC
     )
     try {
         $xmlContent = New-Object System.Xml.XmlDocument
@@ -70437,7 +70511,8 @@ function Parse-ScheduledTasksXML {
                     Write-Log "[Parse-ScheduledTasksXML] Could not resolve account '$runAs' to SID: $_"
                 }
             }
-            $hasUNCPath = $fullCommand -match '\\\\[^\\]+\\'
+            $uncPaths = @(Get-TaskUNCPaths -Pairs $execPairs)
+            $hasUNCPath = $uncPaths.Count -gt 0
             $riskyPath = $null
             foreach ($candidate in $Script:RiskyPaths) {
                 $escapedRisky = [regex]::Escape([string]$candidate.Path)
@@ -70475,11 +70550,32 @@ function Parse-ScheduledTasksXML {
                     }
                 }
             }
-            $isPowerShell = (@($allCommands) -join ' ') -match 'powershell|pwsh'
-            $isScript = @($allCommands | Where-Object { $_ -match '\.(bat|cmd|vbs|vbe|ps1|wsf)$' }).Count -gt 0
+            $uncAccess = $null
             if ($isSystemAccount -and $hasUNCPath) {
+                try {
+                    $uncAccess = Get-TaskUNCWriteAccess -Path $uncPaths -OPSEC:$OPSEC
+                } catch {
+                    Write-Log "[Parse-ScheduledTasksXML] Could not assess the UNC paths of '$taskName': $_"
+                }
+            }
+            $uncWritable = ($null -ne $uncAccess) -and (@($uncAccess.Writers).Count -gt 0)
+            $uncClean = ($null -ne $uncAccess) -and (-not $uncWritable) -and (@($uncAccess.Unchecked).Count -eq 0)
+            $isPowerShell = (@($allCommands) -join ' ') -match 'powershell|pwsh'
+            $scriptPrograms = @($allCommands | Where-Object { $_ -match '\.(bat|cmd|vbs|vbe|ps1|wsf)$' })
+            if ($uncClean) {
+                $scriptPrograms = @($scriptPrograms | Where-Object { $_.Trim().Trim('"') -notmatch '^\\\\' })
+            }
+            $isScript = $scriptPrograms.Count -gt 0
+            if ($isSystemAccount -and $uncWritable) {
                 $severity = "Finding"
-                $risk = "Task runs as SYSTEM and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as SYSTEM on every computer in scope. The permissions of the share were not checked"
+                $risk = "Task runs as SYSTEM and uses UNC path - $(@($uncAccess.Writers) -join ', ') can change what it runs there by NTFS permission (see UNCPathPermissions), and so control what runs as SYSTEM on every computer in scope. The share permissions, which can narrow this over the network, were not read"
+            } elseif ($isSystemAccount -and $hasUNCPath -and -not $uncClean) {
+                $severity = "Finding"
+                $uncReason = ''
+                if ($null -ne $uncAccess -and @($uncAccess.Unchecked).Count -gt 0) {
+                    $uncReason = ", because $(@($uncAccess.Unchecked)[0])"
+                }
+                $risk = "Task runs as SYSTEM and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as SYSTEM on every computer in scope. Who may write there was not checked$uncReason"
             } elseif ($isSystemAccount -and $riskyPathApplies) {
                 $severity = "Finding"
                 $risk = "Task runs as SYSTEM $riskyPathText as SYSTEM"
@@ -70495,6 +70591,11 @@ function Parse-ScheduledTasksXML {
             } elseif ($isPrivilegedAccount) {
                 $severity = "Finding"
                 $risk = "Task runs as privileged account"
+            } elseif ($uncClean) {
+                $uncFirst = [string]@($uncPaths)[0]
+                $uncHostName = ($uncFirst -replace '^\\\\([^\\]+)\\.*$', '$1')
+                $severity = "Hint"
+                $risk = "Task runs as SYSTEM from UNC path $uncFirst - by NTFS permission only privileged accounts can write what it runs there, so whoever administers $uncHostName still controls what runs as SYSTEM on every computer in scope. The share permissions were not read"
             } elseif ($riskyPathApplies) {
                 $severity = "Hint"
                 $risk = "Task runs as $runAsLabel $riskyPathText as that account"
@@ -70534,6 +70635,9 @@ function Parse-ScheduledTasksXML {
                 Trigger    = $trigger
                 _Severity  = $severity
                 _Risk      = $risk
+            }
+            if ($uncWritable) {
+                $taskProps['UNCPathPermissions'] = (@($uncAccess.Rows) -join "`n")
             }
             $unquotedPrograms = @($allCommands | Where-Object { $_ -match '\s' -and $_ -notmatch '^".*"$' })
             if ($unquotedPrograms.Count -gt 0) {
@@ -70583,6 +70687,200 @@ function Get-CmdUnquotedTruncation {
         Candidate = $candidate
         Directory = $candidate.Substring(0, $lastSeparator + 1)
     }
+}
+function Get-TaskUNCPaths {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Pairs
+    )
+    $candidates = @()
+    foreach ($pair in @($Pairs)) {
+        if ($null -eq $pair) { continue }
+        $program = ([string]$pair.Command).Trim().Trim('"')
+        if ($program) { $candidates += $program }
+        $argumentLine = [string]$pair.Arguments
+        if ($argumentLine) {
+            foreach ($token in [regex]::Matches($argumentLine, '"([^"]*)"|''([^'']*)''|(\S+)')) {
+                $candidates += ($token.Groups[1].Value + $token.Groups[2].Value + $token.Groups[3].Value)
+            }
+        }
+    }
+    $seen = @{}
+    foreach ($candidate in $candidates) {
+        $at = $candidate.IndexOf('\\')
+        if ($at -lt 0) { continue }
+        $uncPath = $candidate.Substring($at).TrimEnd(',', ';')
+        if ($uncPath -match '^\\\\\?\\UNC\\(.+)$') {
+            $uncPath = '\\' + $Matches[1]
+        } elseif ($uncPath -match '^\\\\[?.]\\') {
+            continue
+        }
+        if ($uncPath -notmatch '^\\\\[^\\]+\\[^\\]+') { continue }
+        $pathKey = $uncPath.ToLowerInvariant()
+        if ($seen.ContainsKey($pathKey)) { continue }
+        $seen[$pathKey] = $true
+        $uncPath
+    }
+}
+function Get-TaskUNCWriteAccess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$Path,
+        [Parameter(Mandatory = $false)]
+        [switch]$OPSEC
+    )
+    if ($null -eq $Script:_gpoTaskUNCAccess) {
+        $Script:_gpoTaskUNCAccess = @{ Hosts = @{}; Paths = @{} }
+    }
+    $rows = @()
+    $writers = @()
+    $unchecked = @()
+    foreach ($uncPath in @($Path)) {
+        if (-not $uncPath) { continue }
+        $pathKey = $uncPath.ToLowerInvariant()
+        if (-not $Script:_gpoTaskUNCAccess.Paths.ContainsKey($pathKey)) {
+            $Script:_gpoTaskUNCAccess.Paths[$pathKey] = Read-TaskUNCPathAccess -Path $uncPath -OPSEC:$OPSEC
+        }
+        $entry = $Script:_gpoTaskUNCAccess.Paths[$pathKey]
+        foreach ($writer in @($entry.Findings)) {
+            $rows += "$($writer.Object): $($writer.Row)"
+            if ($writers -notcontains $writer.Identity) { $writers += $writer.Identity }
+        }
+        if ($entry.Reason) { $unchecked += [string]$entry.Reason }
+    }
+    [PSCustomObject]@{
+        Rows      = @($rows)
+        Writers   = @($writers)
+        Unchecked = @($unchecked)
+    }
+}
+function Read-TaskUNCPathAccess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $false)]
+        [switch]$OPSEC
+    )
+    $findings = @()
+    try {
+        if ($OPSEC) {
+            return [PSCustomObject]@{ Findings = @(); Reason = '-OPSEC connects to no host a policy names' }
+        }
+        if ($Path -match '%') {
+            return [PSCustomObject]@{ Findings = @(); Reason = "$Path contains an environment variable, which only the computer running the task resolves" }
+        }
+        if ($Path -notmatch '^\\\\([^\\]+)\\([^\\]+)(.*)$') {
+            return [PSCustomObject]@{ Findings = @(); Reason = "$Path could not be read" }
+        }
+        $uncHost = $Matches[1]
+        $share = $Matches[2]
+        $taskRest = ([string]$Matches[3]).TrimEnd([char]0x5C)
+        $target = Get-TaskUNCHost -HostName $uncHost
+        if (-not $target.Host) {
+            return [PSCustomObject]@{ Findings = @(); Reason = [string]$target.Reason }
+        }
+        $taskParentRest = ''
+        if ($taskRest) { $taskParentRest = $taskRest.Substring(0, $taskRest.LastIndexOf([char]0x5C)) }
+        $taskShareRoot = "\\$($target.Host)\$share"
+        $read = @(Invoke-SMBAccess -UNCPath $taskShareRoot -RetryCount 0 -Description "Reading the NTFS permissions of $Path" -ScriptBlock {
+            $taskMountedRoot = $taskShareRoot
+            if ($args.Count -gt 0 -and $args[0]) { $taskMountedRoot = [string]$args[0] }
+            $fileRules = $null
+            if ($taskRest) { $fileRules = Get-FileAccessRules -Path ($taskMountedRoot + $taskRest) }
+            if ($null -ne $fileRules) {
+                [PSCustomObject]@{
+                    Kind        = 'File'
+                    FileRules   = $fileRules
+                    FolderRules = (Get-DirectoryAccessRules -Path ($taskMountedRoot + $taskParentRest))
+                }
+            } else {
+                $folderRules = Get-DirectoryAccessRules -Path ($taskMountedRoot + $taskRest)
+                if ($null -ne $folderRules) {
+                    [PSCustomObject]@{ Kind = 'Folder'; FileRules = $null; FolderRules = $folderRules }
+                } elseif ($taskRest) {
+                    [PSCustomObject]@{
+                        Kind        = 'Missing'
+                        FileRules   = $null
+                        FolderRules = (Get-DirectoryAccessRules -Path ($taskMountedRoot + $taskParentRest))
+                    }
+                }
+            }
+        } | Where-Object { $_ -and $_.PSObject.Properties['Kind'] })
+        if ($read.Count -eq 0) {
+            return [PSCustomObject]@{ Findings = @(); Reason = "$Path could not be read" }
+        }
+        $read = $read[0]
+        $originalRoot = "\\$uncHost\$share"
+        $folderObject = $originalRoot + $taskParentRest
+        if ($read.Kind -eq 'Folder') { $folderObject = $originalRoot + $taskRest }
+        if ($read.Kind -eq 'File') {
+            foreach ($writer in @(Select-NTFSWriteAccess -Rules @($read.FileRules) -Target $Path -Caller 'Get-GPOScheduledTasks')) {
+                $findings += [PSCustomObject]@{ Object = $Path; Identity = $writer.Identity; Row = $writer.Row }
+            }
+        }
+        $reason = $null
+        if ($null -ne $read.FolderRules) {
+            foreach ($writer in @(Select-NTFSWriteAccess -Rules @($read.FolderRules) -Target $folderObject -Caller 'Get-GPOScheduledTasks' -SkipInheritOnly)) {
+                $findings += [PSCustomObject]@{ Object = $folderObject; Identity = $writer.Identity; Row = $writer.Row }
+            }
+        } elseif ($read.Kind -eq 'Missing') {
+            $reason = "$Path could not be read"
+        } else {
+            $reason = "the folder $folderObject could not be read"
+        }
+        return [PSCustomObject]@{ Findings = @($findings); Reason = $reason }
+    } catch {
+        Write-Log "[Get-GPOScheduledTasks] Could not read the permissions of $Path : $_"
+        return [PSCustomObject]@{ Findings = @($findings); Reason = "$Path could not be read" }
+    }
+}
+function Get-TaskUNCHost {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HostName
+    )
+    if ($null -eq $Script:_gpoTaskUNCAccess) {
+        $Script:_gpoTaskUNCAccess = @{ Hosts = @{}; Paths = @{} }
+    }
+    $hostKey = $HostName.ToLowerInvariant()
+    if ($Script:_gpoTaskUNCAccess.Hosts.ContainsKey($hostKey)) {
+        return $Script:_gpoTaskUNCAccess.Hosts[$hostKey]
+    }
+    $notADomainComputer = "$HostName is not an enabled computer of this domain, and adPEAS connects to no other host"
+    $answer = [PSCustomObject]@{ Host = $null; Reason = $notADomainComputer }
+    $domainFQDN = [string]$Script:LDAPContext.Domain
+    $domainNetBIOS = [string]$Script:LDAPContext.DomainNetBIOS
+    $address = $null
+    if ($domainFQDN -and ($HostName -ieq $domainFQDN -or ($domainNetBIOS -and $HostName -ieq $domainNetBIOS))) {
+        $answer = [PSCustomObject]@{ Host = $domainFQDN; Reason = $null }
+    } elseif ([System.Net.IPAddress]::TryParse($HostName, [ref]$address)) {
+        $answer = [PSCustomObject]@{ Host = $null; Reason = "$HostName is an address rather than a computer of this domain, and adPEAS connects to no other host" }
+    } elseif ($HostName -match '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$') {
+        $filter = "(sAMAccountName=$HostName`$)"
+        if ($HostName.Contains('.')) { $filter = "(dNSHostName=$HostName)" }
+        try {
+            $computer = @(Get-DomainComputer -LDAPFilter $filter -Enabled -Properties 'dNSHostName')[0]
+            if ($computer) {
+                $dnsName = [string]$computer.dNSHostName
+                if ($dnsName) {
+                    $answer = [PSCustomObject]@{ Host = $dnsName; Reason = $null }
+                } else {
+                    $answer = [PSCustomObject]@{ Host = $null; Reason = "the computer $HostName has no DNS host name in the directory, and adPEAS connects by no other name" }
+                }
+            }
+        } catch {
+            Write-Log "[Get-GPOScheduledTasks] Could not look up the computer $HostName : $_"
+            $answer = [PSCustomObject]@{ Host = $null; Reason = "the computer $HostName could not be looked up in the directory" }
+        }
+    }
+    $Script:_gpoTaskUNCAccess.Hosts[$hostKey] = $answer
+    return $answer
 }
 function Get-GPOScriptPaths {
     [CmdletBinding()]
@@ -87150,7 +87448,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261016-1204"
+$Script:adPEASVersion = "2.7.0+20261016-1453"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -87659,7 +87957,7 @@ try {
         try {
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPermissions' -Title 'GPO Permissions' -Check { Get-GPOPermissions -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOLocalGroupMembership' -Title 'GPO Local Group Membership' -Check { Get-GPOLocalGroupMembership }
-            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks }
+            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScriptPaths' -Title 'GPO Script Paths' -Check { Get-GPOScriptPaths }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPORegistrySettings' -Title 'GPO Registry Settings' -Check { Get-GPORegistrySettings }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPointAndPrint' -Title 'Point and Print Policies' -Check { Get-GPOPointAndPrint -IncludeDefaults:$IncludePrivileged }

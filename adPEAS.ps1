@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 12:04:56
-    Version: 2.7.0+20261016-1204
+    Build: 2026-10-16 14:53:30
+    Version: 2.7.0+20261016-1453
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6592,8 +6592,8 @@ $Script:PrimaryAttributes = @{
 
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'RunAs', 'Context',
-        'Action', 'Trigger', 'LinkedOUs', 'GPOStatus'
+        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'UNCPathPermissions',
+        'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'GPOStatus'
     )
 
     # GPO Script Paths (custom PSCustomObject from Get-GPOScriptPaths)
@@ -16931,7 +16931,7 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Title = "GPO Scheduled Task Runs as SYSTEM from UNC Path"
         Risk = "Finding"
         BaseScore = 45
-        Description = "A GPO-deployed scheduled task runs as SYSTEM and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs as SYSTEM on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. adPEAS does not read the permissions of the share."
+        Description = "A GPO-deployed scheduled task runs as SYSTEM and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs as SYSTEM on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. Where the host is an enabled computer of the domain and -OPSEC is not set, adPEAS reads the NTFS permissions of the file and of the folder it is in and names every account beyond the expected administrators that can write them. A path only privileged accounts can write is a hint rather than a finding: the administrators of that server still decide what runs as SYSTEM everywhere the policy applies. The share permissions are not read - a share's security descriptor is returned to administrators of the file server only - and over the network they can narrow the NTFS rights reported here, never widen them."
         Impact = @(
             "Task runs with SYSTEM privileges"
             "What it runs is loaded from a network share at every run"
@@ -16981,7 +16981,16 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
             # could not appear on any row - while the check reported exactly this case.
             # Anchored on the verdict's opening words, because RiskReason is shared with the
             # registry settings check.
+            #
+            # Two openings, two severities. "and uses UNC path" is the finding: an account
+            # beyond the expected administrators can write the path, or it could not be
+            # read. "from UNC path" is the hint for a path read in full that only
+            # privileged accounts can write.
             @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM and uses UNC path'; Severity = 'Finding' }
+            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM from UNC path'; Severity = 'Hint' }
+            # One "path: Identity (Rights)" row per trustee that can write, written only
+            # when there is one - a bare trigger, like SysvolPermissions on a GPO.
+            @{ Attribute = 'UNCPathPermissions'; Severity = 'Finding' }
         )
     }
 
@@ -23965,6 +23974,9 @@ $Script:AttributeTransformers['DangerousPermissions']        = ${function:Conver
 # naming one attribute. The rows here hold file system rights, so they must not reach the
 # AD-rights triggers of DangerousPermissions.
 $Script:AttributeTransformers['SysvolPermissions']           = ${function:Convert-DangerousPermToRenderValues}
+# The same NTFS rows for the program a SYSTEM scheduled task starts from a share, each
+# prefixed with the file or folder it is about.
+$Script:AttributeTransformers['UNCPathPermissions']          = ${function:Convert-DangerousPermToRenderValues}
 $Script:AttributeTransformers['EnrollmentPrincipals']        = ${function:Convert-EnrollPrincipalsToRenderValues}
 $Script:AttributeTransformers['ExtendedKeyUsage']            = ${function:Convert-EKUToRenderValues}
 $Script:AttributeTransformers['CertificateNameFlagDisplay']  = ${function:Convert-CertNameFlagToRenderValues}
@@ -26217,8 +26229,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Execution context (SYSTEM, a privileged account, any other account)"
             "Whether a path lies in a directory where every user may change or add files by Windows default"
             "UNC paths, whose share decides what the task runs"
+            "For a SYSTEM task: the NTFS permissions of the UNC file and of the folder it is in, read over SMB on enabled computers of the domain only, and not under -OPSEC"
             "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
-            "Not tested: the permissions on the hosts and on the shares - they are not in the directory"
+            "Not tested: the permissions on the hosts themselves, and the share permissions of a UNC path - they are returned to administrators of the file server only"
         )
         SecureMessage = "No vulnerable GPO scheduled tasks found. No task starts code from a UNC path or from a directory that ordinary users can write by Windows default."
     }
@@ -33696,10 +33709,10 @@ function Clear-SessionState {
     $Script:RiskySIDs = $null
     $Script:GroupSeverityConfig = $null
     $Script:RiskyPaths = $null
+    $Script:_gpoTaskUNCAccess = $null
     $Script:DangerousGPOAccessRights = $null
     $Script:CriticalGPOAttributes = $null
     $Script:UnscopedGPORights = $null
-    $Script:SysvolWriteRights = $null
     $Script:_gpoSysvolRows = $null
     $Script:_gpoSysvolUnread = $null
     $Script:_gpoSysvolScanned = $null
@@ -60742,6 +60755,66 @@ function Get-DirectoryAccessRules {
 
 <#
 .SYNOPSIS
+    Returns the NTFS access rules of a file, keyed by SID.
+
+.DESCRIPTION
+    The file counterpart of Get-DirectoryAccessRules, with the same three return states:
+    an array of rules, possibly empty, or $null when the path is not a file that could be
+    read - a folder, a missing file, or one whose descriptor the caller may not read.
+
+    Get-GPOScheduledTasks reads with it the program a SYSTEM task starts from a share:
+    whoever can write that file controls what runs as SYSTEM on every computer the policy
+    reaches.
+
+.PARAMETER Path
+    The file to read. Must be a path Invoke-SMBAccess has made reachable.
+
+.OUTPUTS
+    [System.Security.AccessControl.FileSystemAccessRule[]] or $null.
+
+.NOTES
+    Internal helper, beside Get-DirectoryAccessRules for the same reason: a suite that
+    stubs the file system reach of this file gets a stub for this too. The same two
+    runtimes as well - FileInfo.GetAccessControl() in Windows PowerShell 5.1, the
+    FileSystemAclExtensions fallback in PowerShell 7.
+#>
+function Get-FileAccessRules {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    try {
+        $fileInfo = New-Object System.IO.FileInfo($Path)
+        if (-not $fileInfo.Exists) {
+            Write-Log "[Get-FileAccessRules] '$Path' is not a file that exists and is reachable"
+            return $null
+        }
+
+        $security = $null
+        try {
+            $security = $fileInfo.GetAccessControl()
+        } catch {
+            $security = [System.IO.FileSystemAclExtensions]::GetAccessControl($fileInfo)
+        }
+
+        if (-not $security) {
+            Write-Log "[Get-FileAccessRules] No security descriptor returned for '$Path'"
+            return $null
+        }
+
+        # Inherited rules included, and the unary comma for the reason given in
+        # Get-DirectoryAccessRules: an empty rule set must not arrive as $null.
+        return ,@($security.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+    } catch {
+        Write-Log "[Get-FileAccessRules] Could not read the NTFS permissions of '$Path': $_"
+        return $null
+    }
+}
+
+<#
+.SYNOPSIS
     Resets the SMB share access cache.
 .DESCRIPTION
     Clears the cache of failed SMB share access attempts,
@@ -61190,6 +61263,172 @@ try {
     end {
         Write-Log "[Invoke-SMBAccess] Completed: $operationDesc"
     }
+}
+
+
+
+# ----- Select-NTFSWriteAccess.ps1 -----
+
+<#
+.SYNOPSIS
+    Returns the trustees an NTFS rule list lets write a file or folder, past the two
+    identity gates a GPO is judged by.
+
+.DESCRIPTION
+    Shared by the two checks that read NTFS permissions over SMB: Get-GPOPermissions for the
+    policy folder in SYSVOL, and Get-GPOScheduledTasks for the program a SYSTEM task starts
+    from a share. Both ask the same question - who besides the accounts expected to
+    administer Group Policy can change what a policy makes every computer in scope run -
+    and the evaluation used to exist only inside the first of them.
+
+    Deny first and per trustee: a Deny rule wins the access check, so an Allow it covers
+    grants nothing. Masks rather than names, because FileSystemRights is a flag field and
+    the combinations that occur in practice - FullControl, Modify, Write - do not decompose
+    into a fixed set of names.
+
+    The same two gates the directory half of Get-GPOPermissions uses, so one identity is not
+    expected on the object and a finding on its folder:
+      Test-IsExpectedACLIdentity -Context 'GPO'   skips the default administrators
+      Test-IsExpectedInScope -Scope 'GPO'         skips Expected, and Attention unless
+                                                  -IncludePrivileged is set
+
+.PARAMETER Rules
+    The access rules, as Get-DirectoryAccessRules or Get-FileAccessRules return them. The
+    function reads IdentityReference.Value, FileSystemRights, AccessControlType and
+    IsInherited, and PropagationFlags under -SkipInheritOnly - rule-shaped objects work too.
+
+.PARAMETER Target
+    The path the rules belong to. Used in the log only.
+
+.PARAMETER Caller
+    The name the log lines carry.
+
+.PARAMETER IncludePrivileged
+    Keep the trustees Test-IsExpectedInScope rates Attention instead of skipping them.
+
+.PARAMETER SkipInheritOnly
+    Ignore rules that only reach the children of a folder. Right for a folder read for its
+    own sake - who may create a file in it - and wrong for a policy folder, whose children
+    are the policy: an inherit-only Modify on it reaches every file the policy consists of.
+
+.OUTPUTS
+    [PSCustomObject] per trustee, with SID, Identity, Rights, IsInherited and Row - Row
+    being the "Identity (Rights)" line the reports print, with the inheritance note behind
+    it. Nothing when no rule passes.
+
+.NOTES
+    Internal helper. Pure: it reads nothing but its arguments and the identity classifiers,
+    so a unit test can drive it with rule-shaped objects.
+#>
+function Select-NTFSWriteAccess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Rules,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Target,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Caller = 'Select-NTFSWriteAccess',
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludePrivileged,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipInheritOnly
+    )
+
+    # The NTFS rights that let their holder rewrite the content of a file or folder.
+    #
+    # WriteAttributes and WriteExtendedAttributes are deliberately not in it: they change
+    # timestamps and metadata, not content, and including them would put a finding on the
+    # default ACL of every policy folder in the domain. On a file, CreateFiles and
+    # CreateDirectories are the same bits as WriteData and AppendData.
+    $writeMask = [int](
+        [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor
+        [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+        [System.Security.AccessControl.FileSystemRights]::Delete -bor
+        [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    )
+    $inheritOnly = [int][System.Security.AccessControl.PropagationFlags]::InheritOnly
+
+    $applicable = @()
+    foreach ($rule in @($Rules)) {
+        if ($null -eq $rule) { continue }
+        if ($SkipInheritOnly -and $rule.PSObject.Properties['PropagationFlags'] -and
+            (([int]$rule.PropagationFlags) -band $inheritOnly)) {
+            continue
+        }
+        $applicable += $rule
+    }
+
+    $deniedMask = @{}
+    foreach ($rule in $applicable) {
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Deny) { continue }
+        $denySID = [string]$rule.IdentityReference.Value
+        if (-not $denySID) { continue }
+        if (-not $deniedMask.ContainsKey($denySID)) { $deniedMask[$denySID] = 0 }
+        $deniedMask[$denySID] = $deniedMask[$denySID] -bor [int]$rule.FileSystemRights
+    }
+
+    $result = @()
+    foreach ($rule in $applicable) {
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+
+        $ruleSID = [string]$rule.IdentityReference.Value
+        if (-not $ruleSID) { continue }
+
+        $effective = [int]$rule.FileSystemRights
+        if ($deniedMask.ContainsKey($ruleSID)) {
+            $effective = $effective -band (-bnot $deniedMask[$ruleSID])
+        }
+
+        $writeBits = $effective -band $writeMask
+        if ($writeBits -eq 0) { continue }
+
+        $expected = Test-IsExpectedACLIdentity -SID $ruleSID -Context 'GPO'
+        if ($expected.Skip) { continue }
+
+        $scope = Test-IsExpectedInScope -Identity $ruleSID -Scope 'GPO' -ReturnDetails
+        if ($scope.Severity -eq 'Expected') { continue }
+        if (-not $IncludePrivileged -and $scope.Severity -eq 'Attention') {
+            Write-Log "[$Caller] Attention: $ruleSID can write $Target - $($scope.Reason) - skipped (use -IncludePrivileged to include)"
+            continue
+        }
+
+        $identity = ConvertFrom-SID -SID $ruleSID
+        if (-not $identity) { $identity = $ruleSID }
+
+        # The effective rights, not the write bits of them: an admin reads "FullControl" in
+        # Explorer, not the six flags it decomposes into. Where a Deny took something away
+        # the name changes with it, which is the point. Synchronize sits on every rule and
+        # says nothing.
+        $rightsText = ([System.Security.AccessControl.FileSystemRights]$effective).ToString() -replace '(,\s*)?Synchronize', ''
+        if (-not $rightsText) { $rightsText = "$writeBits" }
+
+        $row = "$identity ($rightsText)"
+        if ($rule.IsInherited) {
+            $row = "$row [inherited - remove it at the parent folder]"
+        }
+
+        Write-Log "[$Caller] FINDING: $identity can write $Target ($rightsText)"
+        $result += [PSCustomObject]@{
+            SID         = $ruleSID
+            Identity    = [string]$identity
+            Rights      = $rightsText
+            IsInherited = [bool]$rule.IsInherited
+            Row         = $row
+        }
+    }
+
+    # Unrolled into the pipeline: nothing to report arrives as nothing, and the callers
+    # collect with @(). Unlike Get-DirectoryAccessRules there is no third state to keep
+    # apart - an unreadable list never reaches this function.
+    return $result
 }
 
 
@@ -110067,23 +110306,6 @@ function Get-GPOPermissions {
         # attribute-scoped bits - WriteProperty, ReadProperty, Self, ExtendedRight - and
         # nothing else, so an ACE that also grants one of these is not limited by the
         # attribute it names.
-        # The NTFS rights that let their holder rewrite the content of a policy folder.
-        # A mask rather than a list of names, because FileSystemRights is a flag field and
-        # the combinations that occur in practice - FullControl, Modify, Write - do not
-        # decompose into a fixed set of names.
-        #
-        # WriteAttributes and WriteExtendedAttributes are deliberately not in it: they
-        # change timestamps and metadata, not file content, and including them would put a
-        # finding on the default ACL of every policy folder in the domain.
-        $Script:SysvolWriteRights = [int](
-            [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor
-            [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
-            [System.Security.AccessControl.FileSystemRights]::Delete -bor
-            [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-            [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-            [System.Security.AccessControl.FileSystemRights]::TakeOwnership
-        )
-
         $Script:UnscopedGPORights = @(
             'GenericAll',
             'GenericWrite',
@@ -110643,63 +110865,15 @@ function Get-GPOPermissions {
                         continue
                     }
 
-                    # Deny first and per trustee, the same way the DACL half does it: a
-                    # Deny rule wins the access check, so an Allow it covers grants
-                    # nothing. Masks rather than names, because FileSystemRights is a flag
-                    # field and the combinations do not all have names.
-                    $deniedMask = @{}
-                    foreach ($rule in $rules) {
-                        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Deny) { continue }
-                        $denySID = [string]$rule.IdentityReference.Value
-                        if (-not $denySID) { continue }
-                        if (-not $deniedMask.ContainsKey($denySID)) { $deniedMask[$denySID] = 0 }
-                        $deniedMask[$denySID] = $deniedMask[$denySID] -bor [int]$rule.FileSystemRights
-                    }
-
-                    $folderRows = @()
-                    foreach ($rule in $rules) {
-                        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-
-                        $ruleSID = [string]$rule.IdentityReference.Value
-                        if (-not $ruleSID) { continue }
-
-                        $effective = [int]$rule.FileSystemRights
-                        if ($deniedMask.ContainsKey($ruleSID)) {
-                            $effective = $effective -band (-bnot $deniedMask[$ruleSID])
-                        }
-
-                        $writeBits = $effective -band $Script:SysvolWriteRights
-                        if ($writeBits -eq 0) { continue }
-
-                        # The same two gates the directory half uses, so one identity is
-                        # not expected on the object and a finding on its folder.
-                        $sysvolExpected = Test-IsExpectedACLIdentity -SID $ruleSID -Context 'GPO'
-                        if ($sysvolExpected.Skip) { continue }
-
-                        $sysvolScope = Test-IsExpectedInScope -Identity $ruleSID -Scope 'GPO' -ReturnDetails
-                        if ($sysvolScope.Severity -eq 'Expected') { continue }
-                        if (-not $IncludePrivileged -and $sysvolScope.Severity -eq 'Attention') {
-                            Write-Log "[Get-GPOPermissions] Attention: $ruleSID can write the SYSVOL folder of $($sysvolGPO.DisplayName) - $($sysvolScope.Reason) - skipped (use -IncludePrivileged to include)"
-                            continue
-                        }
-
-                        $ruleIdentity = ConvertFrom-SID -SID $ruleSID
-                        if (-not $ruleIdentity) { $ruleIdentity = $ruleSID }
-
-                        # The effective rights, not the write bits of them: an admin reads
-                        # "FullControl" in Explorer, not the six flags it decomposes into.
-                        # Where a Deny took something away the name changes with it, which
-                        # is the point. Synchronize sits on every rule and says nothing.
-                        $rightsText = ([System.Security.AccessControl.FileSystemRights]$effective).ToString() -replace '(,\s*)?Synchronize', ''
-                        if (-not $rightsText) { $rightsText = "$writeBits" }
-
-                        $row = "$ruleIdentity ($rightsText)"
-                        if ($rule.IsInherited) {
-                            $row = "$row [inherited - remove it at the parent folder]"
-                        }
-                        $folderRows += $row
-                        Write-Log "[Get-GPOPermissions] FINDING: $ruleIdentity can write $gpoFolder ($rightsText)"
-                    }
+                    # Deny netting, the write mask and the two identity gates the directory
+                    # half uses - see Select-NTFSWriteAccess, which Get-GPOScheduledTasks
+                    # shares for the program a SYSTEM task starts from a share.
+                    #
+                    # Inherit-only rules count here. The children of a policy folder are
+                    # the policy, so a Modify that reaches only them still rewrites it.
+                    $folderRows = @(Select-NTFSWriteAccess -Rules $rules -Target $gpoFolder `
+                        -Caller 'Get-GPOPermissions' -IncludePrivileged:$IncludePrivileged |
+                        ForEach-Object { $_.Row })
 
                     if (@($folderRows).Count -gt 0) {
                         $Script:_gpoSysvolRows[$sysvolGUID] = @($folderRows)
@@ -111810,6 +111984,8 @@ function Get-GPOScheduledTasks {
     Focuses on security-critical configurations:
     - Tasks running as SYSTEM or privileged accounts
     - Tasks that name a UNC path (whoever can write the share controls what runs)
+    - For a SYSTEM task with a UNC path: the NTFS permissions of the file and of the
+      folder it is in, read over SMB where the host is a computer of the domain
     - Tasks starting code from a directory in which every user may change or add files
       by Windows default (the permissions on the hosts themselves are not read)
     - Every Exec action of a task, not only the first one
@@ -111825,11 +112001,23 @@ function Get-GPOScheduledTasks {
     .PARAMETER Credential
     PSCredential object for authentication (optional, uses current user if not specified)
 
+    .PARAMETER IncludeInactive
+    Also list the tasks of policies that are not linked or not enabled.
+
+    .PARAMETER OPSEC
+    Make no connection to the hosts a task names. Without it, the check reads the NTFS
+    permissions of a UNC path a SYSTEM task runs from - with the session's credentials, and
+    only on a host that is an enabled computer of the domain, by the DNS name the directory
+    records for it.
+
     .EXAMPLE
     Get-GPOScheduledTasks
 
     .EXAMPLE
     Get-GPOScheduledTasks -Domain "contoso.com" -Credential (Get-Credential)
+
+    .EXAMPLE
+    Get-GPOScheduledTasks -OPSEC
 
     .NOTES
     Category: GPO
@@ -111850,7 +112038,10 @@ function Get-GPOScheduledTasks {
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory=$false)]
-        [switch]$IncludeInactive
+        [switch]$IncludeInactive,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$OPSEC
     )
 
     begin {
@@ -111905,8 +112096,8 @@ function Get-GPOScheduledTasks {
 
     process {
         try {
-            # Connection parameters only. -IncludeInactive belongs to this check and
-            # neither of the two callees below has a parameter by that name, so splatting
+            # Connection parameters only. -IncludeInactive and -OPSEC belong to this check
+            # and neither of the two callees below has a parameter by those names, so splatting
             # $PSBoundParameters failed to bind - a terminating error before the first line
             # of output, which showed up as a check that silently produced nothing.
             $connectionParams = @{}
@@ -111921,6 +112112,11 @@ function Get-GPOScheduledTasks {
 
             $domainFQDN = $Script:LDAPContext.Domain
             $Script:_gpoScheduledTasks = [System.Collections.ArrayList]::new()
+
+            # What the hosts and UNC paths of this run turned out to be - see
+            # Get-TaskUNCWriteAccess. Fresh per run: permissions read in an earlier one may
+            # have changed since.
+            $Script:_gpoTaskUNCAccess = @{ Hosts = @{}; Paths = @{} }
 
             Show-SubHeader "Searching for GPO scheduled tasks..." -ObjectType "GPOScheduledTask"
 
@@ -111979,7 +112175,7 @@ function Get-GPOScheduledTasks {
 
                         try {
                             Write-Log "[Get-GPOScheduledTasks] Reading: $($file.FullName)"
-                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
+                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()] -OPSEC:$OPSEC
 
                             if ($taskFindings) {
                                 # $null-guarded, and three-valued. Get-GPOLinkage returns $null
@@ -112042,6 +112238,7 @@ function Get-GPOScheduledTasks {
             $sysvolAccessible = $Script:sysvolAccessible
             $Script:_gpoScheduledTasks = $null
             $Script:sysvolAccessible = $null
+            $Script:_gpoTaskUNCAccess = $null
 
             if (-not $sysvolAccessible) {
                 if ((Test-SysvolAccessible) -eq $false) {
@@ -112156,7 +112353,11 @@ function Parse-ScheduledTasksXML {
         # Optional: a GPO whose gPCFileSysPath the directory does not record yields an
         # empty string here, and an empty row is skipped rather than printed blank.
         [Parameter(Mandatory=$false)]
-        [string]$GPOPath
+        [string]$GPOPath,
+
+        # Passed on to Get-TaskUNCWriteAccess: connect to no host a task names.
+        [Parameter(Mandatory=$false)]
+        [switch]$OPSEC
     )
 
     try {
@@ -112297,7 +112498,11 @@ function Parse-ScheduledTasksXML {
                 }
             }
 
-            $hasUNCPath = $fullCommand -match '\\\\[^\\]+\\'
+            # Every UNC path of every action, from the program field and out of the
+            # arguments. The test used to be a pattern on the joined line, which also took
+            # \\?\C:\... and \\.\pipe\... - a local file and a pipe - for a share.
+            $uncPaths = @(Get-TaskUNCPaths -Pairs $execPairs)
+            $hasUNCPath = $uncPaths.Count -gt 0
             $riskyPath = $null
 
             # At a path boundary, not anywhere in the string. Unanchored, "C:\Temp" matched
@@ -112359,13 +112564,44 @@ function Parse-ScheduledTasksXML {
                 }
             }
 
+            # A SYSTEM task with a UNC path: who may write there, where adPEAS may look.
+            # Three outcomes, and the ladder below keeps them apart - an account beyond the
+            # expected administrators can write it (a finding that names them), a path that
+            # could not be read in full (the finding as it always was, with the reason),
+            # and a path only privileged accounts can write (a hint: the administrators of
+            # that server still decide what runs as SYSTEM everywhere the policy applies).
+            $uncAccess = $null
+            if ($isSystemAccount -and $hasUNCPath) {
+                try {
+                    $uncAccess = Get-TaskUNCWriteAccess -Path $uncPaths -OPSEC:$OPSEC
+                } catch {
+                    Write-Log "[Parse-ScheduledTasksXML] Could not assess the UNC paths of '$taskName': $_"
+                }
+            }
+            $uncWritable = ($null -ne $uncAccess) -and (@($uncAccess.Writers).Count -gt 0)
+            $uncClean = ($null -ne $uncAccess) -and (-not $uncWritable) -and (@($uncAccess.Unchecked).Count -eq 0)
+
             $isPowerShell = (@($allCommands) -join ' ') -match 'powershell|pwsh'
-            $isScript = @($allCommands | Where-Object { $_ -match '\.(bat|cmd|vbs|vbe|ps1|wsf)$' }).Count -gt 0
+
+            # A script started from a share whose permissions were just read is not the open
+            # question "check if script is modifiable" asks - the answer is on the row.
+            $scriptPrograms = @($allCommands | Where-Object { $_ -match '\.(bat|cmd|vbs|vbe|ps1|wsf)$' })
+            if ($uncClean) {
+                $scriptPrograms = @($scriptPrograms | Where-Object { $_.Trim().Trim('"') -notmatch '^\\\\' })
+            }
+            $isScript = $scriptPrograms.Count -gt 0
 
             # Severity Determination (using standard adPEAS severity values)
-            if ($isSystemAccount -and $hasUNCPath) {
+            if ($isSystemAccount -and $uncWritable) {
                 $severity = "Finding"
-                $risk = "Task runs as SYSTEM and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as SYSTEM on every computer in scope. The permissions of the share were not checked"
+                $risk = "Task runs as SYSTEM and uses UNC path - $(@($uncAccess.Writers) -join ', ') can change what it runs there by NTFS permission (see UNCPathPermissions), and so control what runs as SYSTEM on every computer in scope. The share permissions, which can narrow this over the network, were not read"
+            } elseif ($isSystemAccount -and $hasUNCPath -and -not $uncClean) {
+                $severity = "Finding"
+                $uncReason = ''
+                if ($null -ne $uncAccess -and @($uncAccess.Unchecked).Count -gt 0) {
+                    $uncReason = ", because $(@($uncAccess.Unchecked)[0])"
+                }
+                $risk = "Task runs as SYSTEM and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as SYSTEM on every computer in scope. Who may write there was not checked$uncReason"
             } elseif ($isSystemAccount -and $riskyPathApplies) {
                 $severity = "Finding"
                 $risk = "Task runs as SYSTEM $riskyPathText as SYSTEM"
@@ -112383,6 +112619,14 @@ function Parse-ScheduledTasksXML {
             } elseif ($isPrivilegedAccount) {
                 $severity = "Finding"
                 $risk = "Task runs as privileged account"
+            } elseif ($uncClean) {
+                # SYSTEM with a UNC path that was read in full and only privileged accounts
+                # can write. After the SYSTEM findings above, so a local script or a risky
+                # directory in another action of the same task keeps its finding.
+                $uncFirst = [string]@($uncPaths)[0]
+                $uncHostName = ($uncFirst -replace '^\\\\([^\\]+)\\.*$', '$1')
+                $severity = "Hint"
+                $risk = "Task runs as SYSTEM from UNC path $uncFirst - by NTFS permission only privileged accounts can write what it runs there, so whoever administers $uncHostName still controls what runs as SYSTEM on every computer in scope. The share permissions were not read"
             } elseif ($riskyPathApplies) {
                 # Any other account. A task running as a named account out of C:\Temp fell
                 # through every branch to a Note with an empty reason, although whoever puts
@@ -112436,6 +112680,13 @@ function Parse-ScheduledTasksXML {
                 Trigger    = $trigger
                 _Severity  = $severity
                 _Risk      = $risk
+            }
+
+            # The rows behind the UNC finding: which file or folder, who, and the rights an
+            # administrator sees in Explorer. Written only where somebody can write, like
+            # SysvolPermissions on a GPO, so every row on it is a finding.
+            if ($uncWritable) {
+                $taskProps['UNCPathPermissions'] = (@($uncAccess.Rows) -join "`n")
             }
 
             # A fact about the program path, and no longer a severity. Measured on Windows 11
@@ -112536,6 +112787,350 @@ function Get-CmdUnquotedTruncation {
         Candidate = $candidate
         Directory = $candidate.Substring(0, $lastSeparator + 1)
     }
+}
+
+<#
+.SYNOPSIS
+    Returns the UNC paths a task's Exec actions name - the program and whatever is handed
+    to it.
+
+.DESCRIPTION
+    The program field is one path. The Task Scheduler quotes it itself, so a UNC program
+    with a space in its name is still a single path. The argument line is split the way a
+    command line is: a quoted run stays together, and a UNC path inside a token such as
+    -File:\\fs01\x.ps1 or /config=\\fs01\x.xml is cut out of it.
+
+    Device paths are not network paths. \\?\C:\... names a local file and \\.\pipe\... a
+    pipe; both used to count as a UNC path, which put a SYSTEM task with a long local path
+    under the share-write finding. \\?\UNC\server\share\... is the long form of
+    \\server\share\... and comes back in the short one.
+
+.PARAMETER Pairs
+    The Exec actions of a task, as Parse-ScheduledTasksXML collects them: objects with
+    Command and Arguments.
+
+.OUTPUTS
+    [string] per distinct path, each naming at least \\host\share. Nothing if there is no
+    UNC path.
+#>
+function Get-TaskUNCPaths {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Pairs
+    )
+
+    $candidates = @()
+    foreach ($pair in @($Pairs)) {
+        if ($null -eq $pair) { continue }
+
+        $program = ([string]$pair.Command).Trim().Trim('"')
+        if ($program) { $candidates += $program }
+
+        $argumentLine = [string]$pair.Arguments
+        if ($argumentLine) {
+            foreach ($token in [regex]::Matches($argumentLine, '"([^"]*)"|''([^'']*)''|(\S+)')) {
+                # Exactly one of the three groups takes part in a match; the others are
+                # empty strings.
+                $candidates += ($token.Groups[1].Value + $token.Groups[2].Value + $token.Groups[3].Value)
+            }
+        }
+    }
+
+    $seen = @{}
+    foreach ($candidate in $candidates) {
+        $at = $candidate.IndexOf('\\')
+        if ($at -lt 0) { continue }
+        $uncPath = $candidate.Substring($at).TrimEnd(',', ';')
+
+        if ($uncPath -match '^\\\\\?\\UNC\\(.+)$') {
+            $uncPath = '\\' + $Matches[1]
+        } elseif ($uncPath -match '^\\\\[?.]\\') {
+            continue
+        }
+
+        if ($uncPath -notmatch '^\\\\[^\\]+\\[^\\]+') { continue }
+
+        $pathKey = $uncPath.ToLowerInvariant()
+        if ($seen.ContainsKey($pathKey)) { continue }
+        $seen[$pathKey] = $true
+        $uncPath
+    }
+}
+
+<#
+.SYNOPSIS
+    Reads who may write the UNC paths a SYSTEM task runs from, where adPEAS may connect.
+
+.DESCRIPTION
+    Whoever can write the program a SYSTEM task starts from a share controls what runs as
+    SYSTEM on every computer the policy reaches. The NTFS permissions of that file and of
+    the folder it is in can be read by any account that can read the file - but reading
+    them takes an SMB connection, with the tester's credentials, to a host the policy
+    names. Get-TaskUNCHost decides whether that connection is made at all.
+
+    The share permissions are not read: NetShareGetInfo returns a share's security
+    descriptor to administrators of the file server only. Over the network they apply on
+    top of NTFS, so they can narrow what is reported here and never widen it.
+
+    One read per path for a whole run of the check, cached in $Script:_gpoTaskUNCAccess -
+    the same deployment share tends to sit in a dozen policies.
+
+.PARAMETER Path
+    The UNC paths of one task, as Get-TaskUNCPaths returns them.
+
+.PARAMETER OPSEC
+    Connect to nothing; every path is reported as not checked.
+
+.OUTPUTS
+    [PSCustomObject] with
+      Rows      - "<path>: Identity (Rights)" per trustee that can write, across all paths
+      Writers   - the distinct identities behind those rows
+      Unchecked - per path that could not be read in full, a clause that completes "Who
+                  may write there was not checked, because ..."
+#>
+function Get-TaskUNCWriteAccess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$Path,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$OPSEC
+    )
+
+    if ($null -eq $Script:_gpoTaskUNCAccess) {
+        $Script:_gpoTaskUNCAccess = @{ Hosts = @{}; Paths = @{} }
+    }
+
+    $rows = @()
+    $writers = @()
+    $unchecked = @()
+
+    foreach ($uncPath in @($Path)) {
+        if (-not $uncPath) { continue }
+
+        $pathKey = $uncPath.ToLowerInvariant()
+        if (-not $Script:_gpoTaskUNCAccess.Paths.ContainsKey($pathKey)) {
+            $Script:_gpoTaskUNCAccess.Paths[$pathKey] = Read-TaskUNCPathAccess -Path $uncPath -OPSEC:$OPSEC
+        }
+        $entry = $Script:_gpoTaskUNCAccess.Paths[$pathKey]
+
+        foreach ($writer in @($entry.Findings)) {
+            $rows += "$($writer.Object): $($writer.Row)"
+            if ($writers -notcontains $writer.Identity) { $writers += $writer.Identity }
+        }
+        if ($entry.Reason) { $unchecked += [string]$entry.Reason }
+    }
+
+    [PSCustomObject]@{
+        Rows      = @($rows)
+        Writers   = @($writers)
+        Unchecked = @($unchecked)
+    }
+}
+
+<#
+.SYNOPSIS
+    Reads the NTFS permissions of one UNC path and the folder it is in. The uncached half
+    of Get-TaskUNCWriteAccess.
+
+.DESCRIPTION
+    Three shapes of path, told apart by what can be read rather than by a Test-Path probe:
+
+      a file     - the file and the folder it is in. Writing the file replaces the
+                   program; creating files in the folder plants a DLL beside it, or the
+                   program itself once it is deleted.
+      a folder   - the folder. A share root, or a folder handed to a program such as
+                   robocopy.
+      neither    - the folder it would be in. A program that is missing runs from the
+                   moment someone creates it, which makes that folder the whole question.
+
+    Inherit-only rules on a folder are skipped: they reach the files below it, and the
+    file is read on its own.
+
+.OUTPUTS
+    [PSCustomObject] with Findings (Object, Identity, Row per trustee) and Reason ($null, or
+    the clause Get-TaskUNCWriteAccess reports for a path it could not read in full).
+#>
+function Read-TaskUNCPathAccess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$OPSEC
+    )
+
+    $findings = @()
+
+    try {
+        if ($OPSEC) {
+            return [PSCustomObject]@{ Findings = @(); Reason = '-OPSEC connects to no host a policy names' }
+        }
+
+        # Resolved on the computer that runs the task, and nowhere else.
+        if ($Path -match '%') {
+            return [PSCustomObject]@{ Findings = @(); Reason = "$Path contains an environment variable, which only the computer running the task resolves" }
+        }
+
+        if ($Path -notmatch '^\\\\([^\\]+)\\([^\\]+)(.*)$') {
+            return [PSCustomObject]@{ Findings = @(); Reason = "$Path could not be read" }
+        }
+        $uncHost = $Matches[1]
+        $share = $Matches[2]
+        $taskRest = ([string]$Matches[3]).TrimEnd([char]0x5C)
+
+        $target = Get-TaskUNCHost -HostName $uncHost
+        if (-not $target.Host) {
+            return [PSCustomObject]@{ Findings = @(); Reason = [string]$target.Reason }
+        }
+
+        # The folder a file is in, as a path below the share. Empty for the share root.
+        $taskParentRest = ''
+        if ($taskRest) { $taskParentRest = $taskRest.Substring(0, $taskRest.LastIndexOf([char]0x5C)) }
+
+        $taskShareRoot = "\\$($target.Host)\$share"
+
+        # The scriptblock gets the root Invoke-SMBAccess mounted, which is not always the
+        # one it was given: a SimpleBind session with its own DNS server swaps the host
+        # name for an address the local resolver does not know.
+        $read = @(Invoke-SMBAccess -UNCPath $taskShareRoot -RetryCount 0 -Description "Reading the NTFS permissions of $Path" -ScriptBlock {
+            $taskMountedRoot = $taskShareRoot
+            if ($args.Count -gt 0 -and $args[0]) { $taskMountedRoot = [string]$args[0] }
+
+            $fileRules = $null
+            if ($taskRest) { $fileRules = Get-FileAccessRules -Path ($taskMountedRoot + $taskRest) }
+
+            if ($null -ne $fileRules) {
+                [PSCustomObject]@{
+                    Kind        = 'File'
+                    FileRules   = $fileRules
+                    FolderRules = (Get-DirectoryAccessRules -Path ($taskMountedRoot + $taskParentRest))
+                }
+            } else {
+                $folderRules = Get-DirectoryAccessRules -Path ($taskMountedRoot + $taskRest)
+                if ($null -ne $folderRules) {
+                    [PSCustomObject]@{ Kind = 'Folder'; FileRules = $null; FolderRules = $folderRules }
+                } elseif ($taskRest) {
+                    [PSCustomObject]@{
+                        Kind        = 'Missing'
+                        FileRules   = $null
+                        FolderRules = (Get-DirectoryAccessRules -Path ($taskMountedRoot + $taskParentRest))
+                    }
+                }
+            }
+        } | Where-Object { $_ -and $_.PSObject.Properties['Kind'] })
+
+        if ($read.Count -eq 0) {
+            return [PSCustomObject]@{ Findings = @(); Reason = "$Path could not be read" }
+        }
+        $read = $read[0]
+
+        # Rows name the path as the task does, not by the host name the connection used.
+        $originalRoot = "\\$uncHost\$share"
+        $folderObject = $originalRoot + $taskParentRest
+        if ($read.Kind -eq 'Folder') { $folderObject = $originalRoot + $taskRest }
+
+        if ($read.Kind -eq 'File') {
+            foreach ($writer in @(Select-NTFSWriteAccess -Rules @($read.FileRules) -Target $Path -Caller 'Get-GPOScheduledTasks')) {
+                $findings += [PSCustomObject]@{ Object = $Path; Identity = $writer.Identity; Row = $writer.Row }
+            }
+        }
+
+        $reason = $null
+        if ($null -ne $read.FolderRules) {
+            foreach ($writer in @(Select-NTFSWriteAccess -Rules @($read.FolderRules) -Target $folderObject -Caller 'Get-GPOScheduledTasks' -SkipInheritOnly)) {
+                $findings += [PSCustomObject]@{ Object = $folderObject; Identity = $writer.Identity; Row = $writer.Row }
+            }
+        } elseif ($read.Kind -eq 'Missing') {
+            $reason = "$Path could not be read"
+        } else {
+            $reason = "the folder $folderObject could not be read"
+        }
+
+        return [PSCustomObject]@{ Findings = @($findings); Reason = $reason }
+    } catch {
+        Write-Log "[Get-GPOScheduledTasks] Could not read the permissions of $Path : $_"
+        return [PSCustomObject]@{ Findings = @($findings); Reason = "$Path could not be read" }
+    }
+}
+
+<#
+.SYNOPSIS
+    Decides whether adPEAS connects to the host a task's UNC path names, and by which name.
+
+.DESCRIPTION
+    The connection carries the tester's credentials. A host name that is stale, or that
+    something else on the network answers for, would receive that authentication - which
+    is exactly the risk the finding describes for the computers running the task. So only
+    a host the directory vouches for is connected to:
+
+      the domain's own name, DNS or NetBIOS - a domain controller, and the namespace a
+        domain-based DFS share and NETLOGON live in
+      an enabled computer of the domain - looked up by dNSHostName for a dotted name and
+        by sAMAccountName for a short one, and connected to by the dNSHostName the
+        directory records, so that a short name is never left to LLMNR or NetBIOS
+        broadcast resolution
+
+    An address, a name the domain does not know, a disabled computer and a computer
+    without a DNS name are not connected to.
+
+.OUTPUTS
+    [PSCustomObject] with Host (the name to connect to, or $null) and Reason (why not).
+#>
+function Get-TaskUNCHost {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HostName
+    )
+
+    if ($null -eq $Script:_gpoTaskUNCAccess) {
+        $Script:_gpoTaskUNCAccess = @{ Hosts = @{}; Paths = @{} }
+    }
+    $hostKey = $HostName.ToLowerInvariant()
+    if ($Script:_gpoTaskUNCAccess.Hosts.ContainsKey($hostKey)) {
+        return $Script:_gpoTaskUNCAccess.Hosts[$hostKey]
+    }
+
+    $notADomainComputer = "$HostName is not an enabled computer of this domain, and adPEAS connects to no other host"
+    $answer = [PSCustomObject]@{ Host = $null; Reason = $notADomainComputer }
+
+    $domainFQDN = [string]$Script:LDAPContext.Domain
+    $domainNetBIOS = [string]$Script:LDAPContext.DomainNetBIOS
+    $address = $null
+
+    if ($domainFQDN -and ($HostName -ieq $domainFQDN -or ($domainNetBIOS -and $HostName -ieq $domainNetBIOS))) {
+        $answer = [PSCustomObject]@{ Host = $domainFQDN; Reason = $null }
+    } elseif ([System.Net.IPAddress]::TryParse($HostName, [ref]$address)) {
+        $answer = [PSCustomObject]@{ Host = $null; Reason = "$HostName is an address rather than a computer of this domain, and adPEAS connects to no other host" }
+    } elseif ($HostName -match '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$') {
+        # The pattern is also what keeps the name safe inside the filter below.
+        $filter = "(sAMAccountName=$HostName`$)"
+        if ($HostName.Contains('.')) { $filter = "(dNSHostName=$HostName)" }
+
+        try {
+            $computer = @(Get-DomainComputer -LDAPFilter $filter -Enabled -Properties 'dNSHostName')[0]
+            if ($computer) {
+                $dnsName = [string]$computer.dNSHostName
+                if ($dnsName) {
+                    $answer = [PSCustomObject]@{ Host = $dnsName; Reason = $null }
+                } else {
+                    $answer = [PSCustomObject]@{ Host = $null; Reason = "the computer $HostName has no DNS host name in the directory, and adPEAS connects by no other name" }
+                }
+            }
+        } catch {
+            Write-Log "[Get-GPOScheduledTasks] Could not look up the computer $HostName : $_"
+            $answer = [PSCustomObject]@{ Host = $null; Reason = "the computer $HostName could not be looked up in the directory" }
+        }
+    }
+
+    $Script:_gpoTaskUNCAccess.Hosts[$hostKey] = $answer
+    return $answer
 }
 
 
@@ -135553,7 +136148,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-1204"
+$Script:adPEASVersion = "2.7.0+20261016-1453"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -135655,6 +136250,7 @@ function Invoke-adPEAS {
 .PARAMETER OPSEC
     Skips OPSEC-critical and heavy-load checks (Kerberoast, ASREPRoast, BloodHound collection, PasswordInDescription, NonDefaultOwners, OutdatedComputers).
     These checks enumerate thousands of objects and generate significant LDAP traffic.
+    Also makes no SMB connection to the file servers a GPO scheduled task names: without -OPSEC, the NTFS permissions of a program a SYSTEM task starts from a share are read, on computers of the domain only.
 
 .PARAMETER NoColor
     Disables colored console output. Useful for logging or terminals that don't support ANSI colors.
@@ -136491,7 +137087,7 @@ try {
         try {
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPermissions' -Title 'GPO Permissions' -Check { Get-GPOPermissions -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOLocalGroupMembership' -Title 'GPO Local Group Membership' -Check { Get-GPOLocalGroupMembership }
-            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks }
+            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScriptPaths' -Title 'GPO Script Paths' -Check { Get-GPOScriptPaths }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPORegistrySettings' -Title 'GPO Registry Settings' -Check { Get-GPORegistrySettings }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPointAndPrint' -Title 'Point and Print Policies' -Check { Get-GPOPointAndPrint -IncludeDefaults:$IncludePrivileged }

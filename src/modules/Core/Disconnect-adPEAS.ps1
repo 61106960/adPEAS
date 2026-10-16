@@ -325,10 +325,10 @@ function Clear-SessionState {
     $Script:RiskySIDs = $null
     $Script:GroupSeverityConfig = $null
     $Script:RiskyPaths = $null
+    $Script:_gpoTaskUNCAccess = $null
     $Script:DangerousGPOAccessRights = $null
     $Script:CriticalGPOAttributes = $null
     $Script:UnscopedGPORights = $null
-    $Script:SysvolWriteRights = $null
     $Script:_gpoSysvolRows = $null
     $Script:_gpoSysvolUnread = $null
     $Script:_gpoSysvolScanned = $null

@@ -41,7 +41,7 @@ adPEAS is a PowerShell-based security assessment tool that identifies misconfigu
 | **Reporting** | Console (color-coded), plain text, interactive HTML, JSON export |
 | **Offensive Ops** | Kerberoasting, AS-REP Roasting, Golden/Silver/Diamond Tickets, RBCD, Shadow Credentials, Pass-the-Ticket |
 | **BloodHound** | Built-in BloodHound CE collector (ZIP export) |
-| **OPSEC Mode** | Skip active testing (Kerberoast, ASREPRoast, BloodHound) |
+| **OPSEC Mode** | Skip active testing (Kerberoast, ASREPRoast, BloodHound, SMB to file servers named by GPO scheduled tasks) |
 | **Deployment** | Single `.ps1` file, no RSAT, no external modules, works offline and air-gapped |
 
 ---

@@ -1368,6 +1368,9 @@ $Script:AttributeTransformers['DangerousPermissions']        = ${function:Conver
 # naming one attribute. The rows here hold file system rights, so they must not reach the
 # AD-rights triggers of DangerousPermissions.
 $Script:AttributeTransformers['SysvolPermissions']           = ${function:Convert-DangerousPermToRenderValues}
+# The same NTFS rows for the program a SYSTEM scheduled task starts from a share, each
+# prefixed with the file or folder it is about.
+$Script:AttributeTransformers['UNCPathPermissions']          = ${function:Convert-DangerousPermToRenderValues}
 $Script:AttributeTransformers['EnrollmentPrincipals']        = ${function:Convert-EnrollPrincipalsToRenderValues}
 $Script:AttributeTransformers['ExtendedKeyUsage']            = ${function:Convert-EKUToRenderValues}
 $Script:AttributeTransformers['CertificateNameFlagDisplay']  = ${function:Convert-CertNameFlagToRenderValues}
