@@ -586,6 +586,11 @@ function Get-GPOPermissions {
                             $enrichedGPO | Add-Member -NotePropertyName "GPOOwner" -NotePropertyValue $ownerFinding.Owner -Force
                         }
                         $enrichedGPO | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
+                        # Whether those links put a domain controller in the policy's scope -
+                        # whoever can edit this policy then runs code there. A fact beside
+                        # LinkedOUs, no verdict.
+                        $enrichedGPO | Add-Member -NotePropertyName "reachesDomainControllers" `
+                            -NotePropertyValue (Get-GPODomainControllerReach -Link $links) -Force
 
                         # The object is a copy of the GPO and already carries GPOStatus from
                         # Get-DomainGPO; the transformer hides it when it says "Enabled".
@@ -741,6 +746,8 @@ function Get-GPOPermissions {
                     $extraLinksDisplay = 'Unknown - linkage could not be resolved'
                 }
                 $extraCard | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $extraLinksDisplay -Force
+                $extraCard | Add-Member -NotePropertyName "reachesDomainControllers" `
+                    -NotePropertyValue (Get-GPODomainControllerReach -Link $extraLinks) -Force
 
                 $extraStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$extraGUID] -Scope 'Any' -Link $extraLinks
                 if ($extraStatus) {

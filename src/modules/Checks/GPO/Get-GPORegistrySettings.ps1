@@ -293,6 +293,10 @@ function Get-GPORegistrySettings {
                         $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                     }
                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                    # Whether those links put a domain controller in the policy's scope - a
+                    # fact beside LinkedOUs, no verdict.
+                    $finding | Add-Member -NotePropertyName 'reachesDomainControllers' `
+                        -NotePropertyValue (Get-GPODomainControllerReach -Link $linkedOUs) -Force
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 
                     # A value in a policy whose relevant half is switched off reaches no

@@ -211,8 +211,13 @@ function Get-GPOLocalGroupMembership {
                                     -StatusEntry $gpoStatusMap[$gpoGUID] -Scope 'Machine' `
                                     -Link $linkedOUs
 
+                                # Whether those links put a domain controller in the
+                                # policy's scope - a fact beside LinkedOUs, no verdict.
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+
                                 foreach ($finding in $restrictedGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                    $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
                                     # Restricted Groups is a computer-side section, so the
                                     # half is Machine - stated per finding because the
                                     # suppression decision reads it from the row now, and
@@ -277,8 +282,11 @@ function Get-GPOLocalGroupMembership {
                                     -Scope $(if ($file.FullName -match '\\Machine\\') { 'Machine' } else { 'User' }) `
                                     -Link $linkedOUs
 
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+
                                 foreach ($finding in $gppGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                    $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
                                     # And here the file's path decides, the same way the
                                     # GPOStatus line above is computed.
                                     $finding | Add-Member -NotePropertyName '_ReachScope' `

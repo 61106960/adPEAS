@@ -377,6 +377,9 @@ function Get-GPOUserRightsAssignment {
                             GrantedBeyondDefault = $addedNames
                             RemovedFromDefault   = $removedNames
                             LinkedOUs            = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
+                            # Beside LinkedOUs, a fact without a verdict. The baseline above
+                            # keeps its own, coarser reading of where the policy applies.
+                            reachesDomainControllers = (Get-GPODomainControllerReach -Link $links)
                             _severity            = $severity
                         }
 

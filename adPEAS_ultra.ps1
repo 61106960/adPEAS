@@ -3151,7 +3151,7 @@ $Script:PrimaryAttributes = @{
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
 	    'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'ServerSigning', 'ClientSigning',
 	    'DangerousPermissions', 'SysvolPermissions', 'GPOOwner', 'DangerousSettings',
-	    'LinkedOUs', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
+	    'LinkedOUs', 'reachesDomainControllers', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
 	)
 	SMBSigning = @(
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
@@ -3167,7 +3167,7 @@ $Script:PrimaryAttributes = @{
 	GPORegistrySetting = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'RegistryKey', 'ConfiguredValue',
 	    'VulnerabilityName', 'RiskReason',
-	    'LinkedOUs', 'GPOStatus'
+	    'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
 	)
 	PointAndPrintPolicy = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'Scope', 'SourceFile',
@@ -3177,7 +3177,7 @@ $Script:PrimaryAttributes = @{
 	    'ApprovedDriverSource', 'ApprovedServerList',
 	    'SpoolerClientConnections', 'QueueSpecificFiles',
 	    'WebDriverDownload', 'HTTPPrinting', 'InstallDriversSecurityOption',
-	    'LinkedOUs', 'GPOStatus'
+	    'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
 	)
 	LAPSGPOConfig = @(
 	    'lapsGpoNotLinked',
@@ -3269,23 +3269,23 @@ $Script:PrimaryAttributes = @{
 	GPOUserRights = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
 	    'GrantedBeyondDefault', 'RemovedFromDefault', 'BaselineUnknown',
-	    'AppliesTo', 'LinkedOUs', 'GPOStatus'
+	    'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
 	)
 	MachineAccountQuota = @(
 	    'ms-DS-MachineAccountQuota'
 	)
 	GPOScheduledTask = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'UNCPathPermissions',
-	    'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'GPOStatus'
+	    'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
 	)
 	GPOScriptPath = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
-	    'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'GPOStatus'
+	    'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
 	)
 	GPOLocalGroup = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'Mode',
 	    'MembersAdded', 'MembersRemoved', 'groupEmptied',
-	    'LinkedOUs', 'GPOStatus'
+	    'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
 	)
 	AddComputerGPO = @(
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
@@ -23475,6 +23475,7 @@ function Clear-SessionState {
 	$Script:FilterAccountExpired = $null
 	$Script:CachedAllGPOs = $null
 	$Script:CachedGPOLinkage = $null
+	$Script:DomainControllerGPOContext = $null
 	$Script:KerberoastCredParams = $null
 	$Script:UseInMemoryMethod = $null
 	$Script:LastProgressUpdate = $null
@@ -49056,6 +49057,155 @@ function Get-GPOPolicySummary {
 	    if ([string]::IsNullOrWhiteSpace($_.GPOName)) { $_.GPOGUID } else { $_.GPOName }
 	}}
 }
+function Get-GPODomainControllerReach {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Link,
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Context
+	)
+	if ($null -eq $Link) { return 'Unknown - the linkage could not be resolved' }
+	try {
+	    $linkItems = @(@($Link) | Where-Object { $_ })
+	    $records = @($linkItems | Where-Object { $_.PSObject.Properties['DistinguishedName'] })
+	    if ($records.Count -ne $linkItems.Count) { return 'Unknown - the linkage could not be resolved' }
+	    if ($records.Count -eq 0) { return 'No - the policy is linked nowhere' }
+	    $activeLinks = @($records | Where-Object { $_.LinkStatus -ne 'Disabled' })
+	    if ($activeLinks.Count -eq 0) { return 'No - every link is disabled' }
+	    if ($null -eq $Context) { $Context = Get-DomainControllerGPOContext }
+	    if ($null -eq $Context -or @($Context.DomainControllers).Count -eq 0) {
+	        return 'Unknown - the domain controllers could not be read'
+	    }
+	    $domainDN = [string]$Context.DomainDN
+	    $blocked  = $Context.BlockedContainers
+	    if ($null -eq $blocked) { $blocked = @{} }
+	    $reachingLabels = New-Object System.Collections.Generic.List[string]
+	    $sawBlocked     = $false
+	    $sawUnknownSite = $false
+	    foreach ($activeLink in $activeLinks) {
+	        $linkDN = [string]$activeLink.DistinguishedName
+	        $isEnforced = ($activeLink.IsEnforced -eq $true) -or ($activeLink.LinkStatus -eq 'Enforced')
+	        $isSite = ($activeLink.Scope -eq 'Site') -or ($linkDN -match '(?i),CN=Sites,CN=Configuration,')
+	        foreach ($dc in @($Context.DomainControllers)) {
+	            $chain = @(Get-DNParentChain -DistinguishedName ([string]$dc.DistinguishedName) -StopAt $domainDN)
+	            $passes = @()
+	            if ($isSite) {
+	                if ($null -eq $dc.SiteDN) { $sawUnknownSite = $true; continue }
+	                if (-not [string]::Equals([string]$dc.SiteDN, $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+	                $passes = $chain
+	            } else {
+	                $linkIndex = -1
+	                for ($chainIndex = 0; $chainIndex -lt $chain.Count; $chainIndex++) {
+	                    if ([string]::Equals($chain[$chainIndex], $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) {
+	                        $linkIndex = $chainIndex
+	                        break
+	                    }
+	                }
+	                if ($linkIndex -lt 0) { continue }
+	                if ($linkIndex -gt 0) { $passes = @($chain[0..($linkIndex - 1)]) }
+	            }
+	            if (-not $isEnforced) {
+	                $blockedOnTheWay = @($passes | Where-Object { $blocked.ContainsKey($_.ToLowerInvariant()) })
+	                if ($blockedOnTheWay.Count -gt 0) { $sawBlocked = $true; continue }
+	            }
+	            $label = if ($isSite) {
+	                "site $(if ($activeLink.Name) { $activeLink.Name } else { $linkDN })"
+	            } elseif ($domainDN -and [string]::Equals($linkDN, $domainDN, [System.StringComparison]::OrdinalIgnoreCase)) {
+	                'the domain root'
+	            } else {
+	                $linkDN
+	            }
+	            if (-not $reachingLabels.Contains($label)) { $reachingLabels.Add($label) }
+	            break
+	        }
+	    }
+	    if ($reachingLabels.Count -eq 1) { return "Yes - by its link on $($reachingLabels[0])" }
+	    if ($reachingLabels.Count -gt 1) { return "Yes - by its links on $($reachingLabels -join ' and ')" }
+	    if ($sawUnknownSite) { return 'Unknown - the site of a domain controller could not be read' }
+	    if ($sawBlocked) {
+	        return 'No - inheritance is blocked between its links and the domain controllers, and none of those links is enforced'
+	    }
+	    return 'No - none of its links is above a domain controller'
+	} catch {
+	    return 'Unknown - the links could not be evaluated'
+	}
+}
+function Get-DNParentChain {
+	[CmdletBinding()]
+	[OutputType([string[]])]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [string]$DistinguishedName,
+	    [Parameter(Mandatory=$false)]
+	    [string]$StopAt
+	)
+	$components = @([regex]::Matches($DistinguishedName, '(?:[^,\\]|\\.)+') | ForEach-Object { $_.Value })
+	$chain = @()
+	for ($index = 1; $index -lt $components.Count; $index++) {
+	    $parentDN = ($components[$index..($components.Count - 1)]) -join ','
+	    $chain += $parentDN
+	    if ($StopAt -and [string]::Equals($parentDN, $StopAt, [System.StringComparison]::OrdinalIgnoreCase)) { break }
+	}
+	return $chain
+}
+function Get-DomainControllerGPOContext {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param()
+	process {
+	    if ($Script:DomainControllerGPOContext) {
+	        return $Script:DomainControllerGPOContext
+	    }
+	    $domainDN = $Script:LDAPContext.DomainDN
+	    if (-not $domainDN) {
+	        return $null
+	    }
+	    $dcObjects = @()
+	    try {
+	        $dcObjects = @(Get-DomainComputer -DomainController -Properties 'distinguishedName', 'serverReferenceBL')
+	    } catch {
+	        return $null
+	    }
+	    if ($dcObjects.Count -eq 0) {
+	        return $null
+	    }
+	    $dcEntries = @()
+	    foreach ($dcObject in $dcObjects) {
+	        $dcDN = [string]$dcObject.distinguishedName
+	        if (-not $dcDN) { continue }
+	        $siteDN = $null
+	        foreach ($backLink in @($dcObject.serverReferenceBL)) {
+	            if ("$backLink" -match '^CN=(?:[^,\\]|\\.)+,CN=Servers,(CN=(?:[^,\\]|\\.)+,CN=Sites,.+)$') {
+	                $siteDN = $Matches[1]
+	                break
+	            }
+	        }
+	        $dcEntries += [PSCustomObject]@{
+	            DistinguishedName = $dcDN
+	            SiteDN            = $siteDN
+	        }
+	    }
+	    $blockedContainers = @{}
+	    try {
+	        foreach ($container in @(Get-DomainObject -LDAPFilter '(gPOptions:1.2.840.113556.1.4.803:=1)' -Properties 'distinguishedName')) {
+	            $containerDN = [string]$container.distinguishedName
+	            if ($containerDN) { $blockedContainers[$containerDN.ToLowerInvariant()] = $true }
+	        }
+	    } catch {
+	        return $null
+	    }
+	    $Script:DomainControllerGPOContext = [PSCustomObject]@{
+	        DomainControllers = $dcEntries
+	        BlockedContainers = $blockedContainers
+	        DomainDN          = $domainDN
+	    }
+	    return $Script:DomainControllerGPOContext
+	}
+}
 function Get-GPORelativePath {
 	[CmdletBinding()]
 	param(
@@ -65297,6 +65447,7 @@ function Get-GPOUserRightsAssignment {
 	                        GrantedBeyondDefault = $addedNames
 	                        RemovedFromDefault   = $removedNames
 	                        LinkedOUs            = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
+	                        reachesDomainControllers = (Get-GPODomainControllerReach -Link $links)
 	                        _severity            = $severity
 	                    }
 	                    if (-not $comparison.HasBaseline) {
@@ -67033,6 +67184,8 @@ function Get-GPOPermissions {
 	                        $enrichedGPO | Add-Member -NotePropertyName "GPOOwner" -NotePropertyValue $ownerFinding.Owner -Force
 	                    }
 	                    $enrichedGPO | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
+	                    $enrichedGPO | Add-Member -NotePropertyName "reachesDomainControllers" `
+	                        -NotePropertyValue (Get-GPODomainControllerReach -Link $links) -Force
 	                    $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUID] `
 	                        -Scope 'Any' -Link $links
 	                    if ($gpoStatus) {
@@ -67123,6 +67276,8 @@ function Get-GPOPermissions {
 	                $extraLinksDisplay = 'Unknown - linkage could not be resolved'
 	            }
 	            $extraCard | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $extraLinksDisplay -Force
+	            $extraCard | Add-Member -NotePropertyName "reachesDomainControllers" `
+	                -NotePropertyValue (Get-GPODomainControllerReach -Link $extraLinks) -Force
 	            $extraStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$extraGUID] -Scope 'Any' -Link $extraLinks
 	            if ($extraStatus) {
 	                $extraCard | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $extraStatus -Force
@@ -67283,8 +67438,10 @@ function Get-GPOLocalGroupMembership {
 	                            $gpoStatus = Get-GPOEffectiveStatus `
 	                                -StatusEntry $gpoStatusMap[$gpoGUID] -Scope 'Machine' `
 	                                -Link $linkedOUs
+	                            $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
 	                            foreach ($finding in $restrictedGroupsFindings) {
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+	                                $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
 	                                $finding | Add-Member -NotePropertyName '_ReachScope' -NotePropertyValue 'Machine' -Force
 	                                if ($gpoStatus) {
 	                                    $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
@@ -67324,8 +67481,10 @@ function Get-GPOLocalGroupMembership {
 	                                -StatusEntry $gpoStatusMap[$gpoGUID] `
 	                                -Scope $(if ($file.FullName -match '\\Machine\\') { 'Machine' } else { 'User' }) `
 	                                -Link $linkedOUs
+	                            $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
 	                            foreach ($finding in $gppGroupsFindings) {
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+	                                $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
 	                                $finding | Add-Member -NotePropertyName '_ReachScope' `
 	                                    -NotePropertyValue (Get-GPOHalfFromSource -SourceFile (Get-GPORelativePath -Path $file.FullName)) -Force
 	                                if ($gpoStatus) {
@@ -67788,8 +67947,10 @@ function Get-GPOScheduledTasks {
 	                            if ($null -eq $linkedOUs) {
 	                                $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
 	                            }
+	                            $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
 	                            foreach ($task in $taskFindings) {
 	                                $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+	                                $task | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
 	                                $gpoStatus = Get-GPOEffectiveStatus `
 	                                    -StatusEntry $gpoStatusMap[$gpoGUID] `
 	                                    -Scope $(if ($task.Context -eq 'Machine') { 'Machine' } else { 'User' }) `
@@ -68409,8 +68570,10 @@ function Get-GPOScriptPaths {
 	                            if ($null -eq $linkedOUs) {
 	                                $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
 	                            }
+	                            $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
 	                            foreach ($finding in $findings) {
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+	                                $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
 	                                if ($gpoStatus) {
 	                                    $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
 	                                }
@@ -68730,6 +68893,8 @@ function Get-GPORegistrySettings {
 	                    $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
 	                }
 	                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+	                $finding | Add-Member -NotePropertyName 'reachesDomainControllers' `
+	                    -NotePropertyValue (Get-GPODomainControllerReach -Link $linkedOUs) -Force
 	                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 	                $gpoStatus = Get-GPOEffectiveStatus `
 	                    -StatusEntry $gpoStatusMap[$finding.GPOGUID] `
@@ -69383,6 +69548,10 @@ function New-PointAndPrintObject {
 	} else {
 	    $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
 	}
+	$dcReachLinks = $linkedOUs
+	if ($null -eq $GPOLinkage) { $dcReachLinks = $null }
+	$obj | Add-Member -NotePropertyName 'reachesDomainControllers' `
+	    -NotePropertyValue (Get-GPODomainControllerReach -Link $dcReachLinks) -Force
 	$gpoStatus = Get-GPOEffectiveStatus `
 	    -StatusEntry $(if ($GPOStatusMap -and $gpoGuid) { $GPOStatusMap[$gpoGuid] } else { $null }) `
 	    -Scope 'Machine' `
@@ -84573,7 +84742,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-1948"
+$Script:adPEASVersion = "2.7.0+20261016-2017"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

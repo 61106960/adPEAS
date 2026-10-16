@@ -179,8 +179,13 @@ function Get-GPOScriptPaths {
                                     $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
+                                # Whether those links put a domain controller in the
+                                # policy's scope - a fact beside LinkedOUs, no verdict.
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+
                                 foreach ($finding in $findings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                    $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }

@@ -23,6 +23,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   permissions are not read - Windows returns them to administrators of the file server
   only.
 
+- **GPO findings say whether the policy reaches a domain controller.** A new
+  `reachesDomainControllers` row beside `LinkedOUs` in the seven GPO checks names the
+  link that puts a domain controller in the policy's scope - the Domain Controllers OU,
+  an OU above a domain controller, the domain root or the domain controller's site - or
+  says why none does. Domain controllers are found where their computer objects are, and
+  a container that blocks inheritance stops every link above it that is not enforced.
+  Security filtering and WMI filters are not read, so the row speaks of links only. It is
+  information and changes no severity.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

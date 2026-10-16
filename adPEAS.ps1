@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 19:48:55
-    Version: 2.7.0+20261016-1948
+    Build: 2026-10-16 20:17:22
+    Version: 2.7.0+20261016-2017
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6381,7 +6381,7 @@ $Script:PrimaryAttributes = @{
         # Security findings
         'DangerousPermissions', 'SysvolPermissions', 'GPOOwner', 'DangerousSettings',
         # Linkage
-        'LinkedOUs', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
+        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
     )
 
     # SMB Signing GPO (only SMB-relevant attributes, no LDAP)
@@ -6403,7 +6403,7 @@ $Script:PrimaryAttributes = @{
     GPORegistrySetting = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'RegistryKey', 'ConfiguredValue',
         'VulnerabilityName', 'RiskReason',
-        'LinkedOUs', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # Point and Print printer driver policy per GPO (Get-GPOPointAndPrint).
@@ -6419,7 +6419,7 @@ $Script:PrimaryAttributes = @{
         'ApprovedDriverSource', 'ApprovedServerList',
         'SpoolerClientConnections', 'QueueSpecificFiles',
         'WebDriverDownload', 'HTTPPrinting', 'InstallDriversSecurityOption',
-        'LinkedOUs', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # LAPS policy settings deployed via GPO (Get-LAPSConfiguration, Step 3)
@@ -6583,7 +6583,7 @@ $Script:PrimaryAttributes = @{
     GPOUserRights = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
         'GrantedBeyondDefault', 'RemovedFromDefault', 'BaselineUnknown',
-        'AppliesTo', 'LinkedOUs', 'GPOStatus'
+        'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # Machine Account Quota setting
@@ -6594,13 +6594,13 @@ $Script:PrimaryAttributes = @{
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'UNCPathPermissions',
-        'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'GPOStatus'
+        'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # GPO Script Paths (custom PSCustomObject from Get-GPOScriptPaths)
     GPOScriptPath = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
-        'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'GPOStatus'
+        'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # GPO Local Group Membership (custom PSCustomObject from Get-GPOLocalGroupMembership)
@@ -6613,7 +6613,7 @@ $Script:PrimaryAttributes = @{
     GPOLocalGroup = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'Mode',
         'MembersAdded', 'MembersRemoved', 'groupEmptied',
-        'LinkedOUs', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # GPO granting SeMachineAccountPrivilege (enriched native GPO object, same pattern as LDAPConfigGPO/SMBSigning)
@@ -33743,6 +33743,7 @@ function Clear-SessionState {
     # GPO caches (Get-DomainGPO and Get-GPOLinkage)
     $Script:CachedAllGPOs = $null
     $Script:CachedGPOLinkage = $null
+    $Script:DomainControllerGPOContext = $null
 
     # Kerberoast run state (Invoke-Kerberoast)
     # KerberoastCredParams is a splat table that carries the PSCredential the caller
@@ -79196,6 +79197,309 @@ function Get-GPOPolicySummary {
     }}
 }
 
+<#
+.SYNOPSIS
+    Says whether a GPO reaches a domain controller through its links, and by which link.
+
+.DESCRIPTION
+    A fact for the reader, not a verdict: a writable policy, a startup script or a
+    privilege assignment that reaches a domain controller reaches tier 0, and a reader
+    scanning a list of GPO findings could only work that out by reading every LinkedOUs row
+    against the directory layout. The row changes no severity (user decision 2026-10-16).
+
+    What it reads, link by link (disabled links do not count):
+
+      - a link on a container above a domain controller's computer object - the Domain
+        Controllers OU, an OU above it, the domain root - reaches it, unless a container
+        between the link and the domain controller blocks inheritance and the link is not
+        enforced;
+      - a link on a site reaches the domain controllers in that site, unless a container
+        from the domain root down to the domain controller blocks inheritance and the link
+        is not enforced.
+
+    WHAT IT DOES NOT READ, which is why every answer says "by its link": security filtering,
+    WMI filters, and whether the policy's computer half is switched on - GPOStatus is that
+    row's subject. "Yes" therefore means the links put a domain controller in the policy's
+    scope, not that RSoP on it lists the policy.
+
+.PARAMETER Link
+    The policy's link records as Get-GPOLinkage returns them. $null means the linkage could
+    not be resolved, @() that the policy is linked nowhere - the convention every GPO check
+    uses. Anything that is not a link record (a display string) counts as unresolved.
+
+.PARAMETER Context
+    From Get-DomainControllerGPOContext. Read from there when not given.
+
+.OUTPUTS
+    [string] beginning with Yes, No or Unknown.
+
+.EXAMPLE
+    Get-GPODomainControllerReach -Link $links
+    Yes - by its link on OU=Domain Controllers,DC=contoso,DC=com
+#>
+function Get-GPODomainControllerReach {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Link,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Context
+    )
+
+    if ($null -eq $Link) { return 'Unknown - the linkage could not be resolved' }
+
+    # Every GPO check calls this from inside its SYSVOL block, and an exception escaping
+    # that block marks the share as failed for the rest of the session - every later SYSVOL
+    # check would go blind over a display row. So nothing leaves here but a sentence.
+    try {
+        # Link records only. A display string such as "Unknown - linkage could not be
+        # resolved" is not a link, and neither is a $null slot in an array built from a
+        # missing key.
+        $linkItems = @(@($Link) | Where-Object { $_ })
+        $records = @($linkItems | Where-Object { $_.PSObject.Properties['DistinguishedName'] })
+        if ($records.Count -ne $linkItems.Count) { return 'Unknown - the linkage could not be resolved' }
+
+        if ($records.Count -eq 0) { return 'No - the policy is linked nowhere' }
+
+        # A record with no LinkStatus counts as enabled, the conservative direction - the
+        # same rule as Get-GPOReach.
+        $activeLinks = @($records | Where-Object { $_.LinkStatus -ne 'Disabled' })
+        if ($activeLinks.Count -eq 0) { return 'No - every link is disabled' }
+
+        if ($null -eq $Context) { $Context = Get-DomainControllerGPOContext }
+        if ($null -eq $Context -or @($Context.DomainControllers).Count -eq 0) {
+            return 'Unknown - the domain controllers could not be read'
+        }
+
+        $domainDN = [string]$Context.DomainDN
+        $blocked  = $Context.BlockedContainers
+        if ($null -eq $blocked) { $blocked = @{} }
+
+        $reachingLabels = New-Object System.Collections.Generic.List[string]
+        $sawBlocked     = $false
+        $sawUnknownSite = $false
+
+        foreach ($activeLink in $activeLinks) {
+            $linkDN = [string]$activeLink.DistinguishedName
+            $isEnforced = ($activeLink.IsEnforced -eq $true) -or ($activeLink.LinkStatus -eq 'Enforced')
+            $isSite = ($activeLink.Scope -eq 'Site') -or ($linkDN -match '(?i),CN=Sites,CN=Configuration,')
+
+            foreach ($dc in @($Context.DomainControllers)) {
+                # The containers above the domain controller, nearest first, up to the
+                # domain root - compared component by component, so an OU whose name only
+                # ends like the linked one is not mistaken for it.
+                $chain = @(Get-DNParentChain -DistinguishedName ([string]$dc.DistinguishedName) -StopAt $domainDN)
+
+                # The containers a link that is not enforced has to pass on its way down:
+                # for a link on a container, the ones strictly below it; for a site link,
+                # every one from the domain root down, because site policies are applied
+                # before the domain's.
+                $passes = @()
+                if ($isSite) {
+                    if ($null -eq $dc.SiteDN) { $sawUnknownSite = $true; continue }
+                    if (-not [string]::Equals([string]$dc.SiteDN, $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                    $passes = $chain
+                } else {
+                    $linkIndex = -1
+                    for ($chainIndex = 0; $chainIndex -lt $chain.Count; $chainIndex++) {
+                        if ([string]::Equals($chain[$chainIndex], $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $linkIndex = $chainIndex
+                            break
+                        }
+                    }
+                    if ($linkIndex -lt 0) { continue }
+                    if ($linkIndex -gt 0) { $passes = @($chain[0..($linkIndex - 1)]) }
+                }
+
+                if (-not $isEnforced) {
+                    $blockedOnTheWay = @($passes | Where-Object { $blocked.ContainsKey($_.ToLowerInvariant()) })
+                    if ($blockedOnTheWay.Count -gt 0) { $sawBlocked = $true; continue }
+                }
+
+                $label = if ($isSite) {
+                    "site $(if ($activeLink.Name) { $activeLink.Name } else { $linkDN })"
+                } elseif ($domainDN -and [string]::Equals($linkDN, $domainDN, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    'the domain root'
+                } else {
+                    $linkDN
+                }
+                if (-not $reachingLabels.Contains($label)) { $reachingLabels.Add($label) }
+                break
+            }
+        }
+
+        if ($reachingLabels.Count -eq 1) { return "Yes - by its link on $($reachingLabels[0])" }
+        if ($reachingLabels.Count -gt 1) { return "Yes - by its links on $($reachingLabels -join ' and ')" }
+
+        # Unknown outranks No: the site whose membership could not be read may be exactly
+        # the one this policy is linked to.
+        if ($sawUnknownSite) { return 'Unknown - the site of a domain controller could not be read' }
+        if ($sawBlocked) {
+            return 'No - inheritance is blocked between its links and the domain controllers, and none of those links is enforced'
+        }
+        return 'No - none of its links is above a domain controller'
+    } catch {
+        Write-Log "[Get-GPODomainControllerReach] Could not evaluate the links: $_"
+        return 'Unknown - the links could not be evaluated'
+    }
+}
+
+<#
+.SYNOPSIS
+    The containers above an object, nearest first, ending at a given DN.
+
+.DESCRIPTION
+    Escape-aware, like every DN split in adPEAS: a comma inside an RDN is written as "\,"
+    and is not a separator.
+
+.PARAMETER DistinguishedName
+    The object whose parents are wanted. The object itself is not part of the result.
+
+.PARAMETER StopAt
+    The last container to return, normally the domain root. When the object is not below
+    it, the walk runs to the top.
+
+.OUTPUTS
+    [string[]]
+#>
+function Get-DNParentChain {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$DistinguishedName,
+
+        [Parameter(Mandatory=$false)]
+        [string]$StopAt
+    )
+
+    $components = @([regex]::Matches($DistinguishedName, '(?:[^,\\]|\\.)+') | ForEach-Object { $_.Value })
+    $chain = @()
+    for ($index = 1; $index -lt $components.Count; $index++) {
+        $parentDN = ($components[$index..($components.Count - 1)]) -join ','
+        $chain += $parentDN
+        if ($StopAt -and [string]::Equals($parentDN, $StopAt, [System.StringComparison]::OrdinalIgnoreCase)) { break }
+    }
+    return $chain
+}
+
+
+
+# ----- Get-DomainControllerGPOContext.ps1 -----
+
+function Get-DomainControllerGPOContext {
+    <#
+    .SYNOPSIS
+    Collects what decides whether a Group Policy link reaches a domain controller: where
+    the domain controllers sit, which site each one is in, and which containers block
+    inheritance.
+
+    .DESCRIPTION
+    A GPO reaches a domain controller through a link on a container above its computer
+    object - the Domain Controllers OU, an OU above it, the domain root - or through a link
+    on the site the domain controller is in. A container that blocks inheritance (gPOptions
+    bit 0) stops every link above it that is not enforced, site links included; that is how
+    a domain-root policy can reach every member computer and no domain controller.
+
+    Read from the directory once per session and cached in
+    $Script:DomainControllerGPOContext; Disconnect-adPEAS clears it.
+
+    The domain controllers are taken from where their computer objects actually are, not
+    from the name of the OU they are expected in: a domain controller moved out of the
+    Domain Controllers OU is reached by the policies above its real location. The site comes
+    from serverReferenceBL, the back link from the server object under CN=Sites.
+
+    .OUTPUTS
+    PSCustomObject with
+      DomainControllers  - one entry per domain controller: DistinguishedName, SiteDN
+                           ($null where the site could not be read)
+      BlockedContainers  - hashtable of lower-case DNs whose gPOptions blocks inheritance
+      DomainDN           - the domain root, where the walk up from a domain controller ends
+
+    $null when the domain controllers or the blocking containers could not be read - the
+    question then has no answer, and a caller must say Unknown rather than No.
+
+    .NOTES
+    Author: Alexander Sturz (@_61106960_)
+    #>
+
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param()
+
+    process {
+        if ($Script:DomainControllerGPOContext) {
+            return $Script:DomainControllerGPOContext
+        }
+
+        $domainDN = $Script:LDAPContext.DomainDN
+        if (-not $domainDN) {
+            Write-Log "[Get-DomainControllerGPOContext] No domain DN in the session context"
+            return $null
+        }
+
+        # Every domain has a domain controller; none read means none could be read.
+        $dcObjects = @()
+        try {
+            $dcObjects = @(Get-DomainComputer -DomainController -Properties 'distinguishedName', 'serverReferenceBL')
+        } catch {
+            Write-Log "[Get-DomainControllerGPOContext] Could not read the domain controllers: $_"
+            return $null
+        }
+        if ($dcObjects.Count -eq 0) {
+            Write-Log "[Get-DomainControllerGPOContext] No domain controller object was returned"
+            return $null
+        }
+
+        $dcEntries = @()
+        foreach ($dcObject in $dcObjects) {
+            $dcDN = [string]$dcObject.distinguishedName
+            if (-not $dcDN) { continue }
+
+            # CN=<server>,CN=Servers,CN=<site>,CN=Sites,CN=Configuration,... - the site is
+            # what follows CN=Servers. Escape-aware, like every other DN split here.
+            $siteDN = $null
+            foreach ($backLink in @($dcObject.serverReferenceBL)) {
+                if ("$backLink" -match '^CN=(?:[^,\\]|\\.)+,CN=Servers,(CN=(?:[^,\\]|\\.)+,CN=Sites,.+)$') {
+                    $siteDN = $Matches[1]
+                    break
+                }
+            }
+
+            $dcEntries += [PSCustomObject]@{
+                DistinguishedName = $dcDN
+                SiteDN            = $siteDN
+            }
+        }
+
+        # One query for every container that blocks inheritance, the domain object
+        # included - which blocks site-linked policies.
+        $blockedContainers = @{}
+        try {
+            foreach ($container in @(Get-DomainObject -LDAPFilter '(gPOptions:1.2.840.113556.1.4.803:=1)' -Properties 'distinguishedName')) {
+                $containerDN = [string]$container.distinguishedName
+                if ($containerDN) { $blockedContainers[$containerDN.ToLowerInvariant()] = $true }
+            }
+        } catch {
+            # Without it a policy blocked on its way down would be reported as reaching the
+            # domain controllers. No answer is better than that one.
+            Write-Log "[Get-DomainControllerGPOContext] Could not read the containers that block inheritance: $_"
+            return $null
+        }
+
+        $Script:DomainControllerGPOContext = [PSCustomObject]@{
+            DomainControllers = $dcEntries
+            BlockedContainers = $blockedContainers
+            DomainDN          = $domainDN
+        }
+        return $Script:DomainControllerGPOContext
+    }
+}
+
 
 
 # ----- Get-GPORelativePath.ps1 -----
@@ -107606,6 +107910,9 @@ function Get-GPOUserRightsAssignment {
                             GrantedBeyondDefault = $addedNames
                             RemovedFromDefault   = $removedNames
                             LinkedOUs            = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
+                            # Beside LinkedOUs, a fact without a verdict. The baseline above
+                            # keeps its own, coarser reading of where the policy applies.
+                            reachesDomainControllers = (Get-GPODomainControllerReach -Link $links)
                             _severity            = $severity
                         }
 
@@ -110933,6 +111240,11 @@ function Get-GPOPermissions {
                             $enrichedGPO | Add-Member -NotePropertyName "GPOOwner" -NotePropertyValue $ownerFinding.Owner -Force
                         }
                         $enrichedGPO | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
+                        # Whether those links put a domain controller in the policy's scope -
+                        # whoever can edit this policy then runs code there. A fact beside
+                        # LinkedOUs, no verdict.
+                        $enrichedGPO | Add-Member -NotePropertyName "reachesDomainControllers" `
+                            -NotePropertyValue (Get-GPODomainControllerReach -Link $links) -Force
 
                         # The object is a copy of the GPO and already carries GPOStatus from
                         # Get-DomainGPO; the transformer hides it when it says "Enabled".
@@ -111088,6 +111400,8 @@ function Get-GPOPermissions {
                     $extraLinksDisplay = 'Unknown - linkage could not be resolved'
                 }
                 $extraCard | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $extraLinksDisplay -Force
+                $extraCard | Add-Member -NotePropertyName "reachesDomainControllers" `
+                    -NotePropertyValue (Get-GPODomainControllerReach -Link $extraLinks) -Force
 
                 $extraStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$extraGUID] -Scope 'Any' -Link $extraLinks
                 if ($extraStatus) {
@@ -111390,8 +111704,13 @@ function Get-GPOLocalGroupMembership {
                                     -StatusEntry $gpoStatusMap[$gpoGUID] -Scope 'Machine' `
                                     -Link $linkedOUs
 
+                                # Whether those links put a domain controller in the
+                                # policy's scope - a fact beside LinkedOUs, no verdict.
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+
                                 foreach ($finding in $restrictedGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                    $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
                                     # Restricted Groups is a computer-side section, so the
                                     # half is Machine - stated per finding because the
                                     # suppression decision reads it from the row now, and
@@ -111456,8 +111775,11 @@ function Get-GPOLocalGroupMembership {
                                     -Scope $(if ($file.FullName -match '\\Machine\\') { 'Machine' } else { 'User' }) `
                                     -Link $linkedOUs
 
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+
                                 foreach ($finding in $gppGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                    $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
                                     # And here the file's path decides, the same way the
                                     # GPOStatus line above is computed.
                                     $finding | Add-Member -NotePropertyName '_ReachScope' `
@@ -112355,12 +112677,17 @@ function Get-GPOScheduledTasks {
                                     $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
+                                # Whether those links put a domain controller in the
+                                # policy's scope - a fact beside LinkedOUs, no verdict.
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+
                                 foreach ($task in $taskFindings) {
                                     # Set unconditionally, including when the list is empty:
                                     # the transformer turns that into an explicit "Not
                                     # linked" row, and a policy that runs nowhere is a
                                     # statement rather than an absence.
                                     $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                    $task | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
 
                                     # A task in a policy whose relevant half is switched off
                                     # does not run, and it used to read exactly like one that
@@ -113495,8 +113822,13 @@ function Get-GPOScriptPaths {
                                     $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
+                                # Whether those links put a domain controller in the
+                                # policy's scope - a fact beside LinkedOUs, no verdict.
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+
                                 foreach ($finding in $findings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                                    $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
@@ -114082,6 +114414,10 @@ function Get-GPORegistrySettings {
                         $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                     }
                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
+                    # Whether those links put a domain controller in the policy's scope - a
+                    # fact beside LinkedOUs, no verdict.
+                    $finding | Add-Member -NotePropertyName 'reachesDomainControllers' `
+                        -NotePropertyValue (Get-GPODomainControllerReach -Link $linkedOUs) -Force
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 
                     # A value in a policy whose relevant half is switched off reaches no
@@ -115251,6 +115587,14 @@ function New-PointAndPrintObject {
     } else {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
     }
+
+    # Whether those links put a domain controller in the policy's scope - a fact beside
+    # LinkedOUs, no verdict. Plain assignment, then an override: an if-expression whose
+    # branch yields @() lands as $null, and $null here means "unresolved".
+    $dcReachLinks = $linkedOUs
+    if ($null -eq $GPOLinkage) { $dcReachLinks = $null }
+    $obj | Add-Member -NotePropertyName 'reachesDomainControllers' `
+        -NotePropertyValue (Get-GPODomainControllerReach -Link $dcReachLinks) -Force
 
     # Point and Print lives under HKLM, so the computer half of the GPO is the one that has
     # to be switched on. $null for the links when the linkage could not be resolved at all.
@@ -136375,7 +136719,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-1948"
+$Script:adPEASVersion = "2.7.0+20261016-2017"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

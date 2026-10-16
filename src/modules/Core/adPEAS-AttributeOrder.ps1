@@ -152,7 +152,7 @@ $Script:PrimaryAttributes = @{
         # Security findings
         'DangerousPermissions', 'SysvolPermissions', 'GPOOwner', 'DangerousSettings',
         # Linkage
-        'LinkedOUs', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
+        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
     )
 
     # SMB Signing GPO (only SMB-relevant attributes, no LDAP)
@@ -174,7 +174,7 @@ $Script:PrimaryAttributes = @{
     GPORegistrySetting = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'RegistryKey', 'ConfiguredValue',
         'VulnerabilityName', 'RiskReason',
-        'LinkedOUs', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # Point and Print printer driver policy per GPO (Get-GPOPointAndPrint).
@@ -190,7 +190,7 @@ $Script:PrimaryAttributes = @{
         'ApprovedDriverSource', 'ApprovedServerList',
         'SpoolerClientConnections', 'QueueSpecificFiles',
         'WebDriverDownload', 'HTTPPrinting', 'InstallDriversSecurityOption',
-        'LinkedOUs', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # LAPS policy settings deployed via GPO (Get-LAPSConfiguration, Step 3)
@@ -354,7 +354,7 @@ $Script:PrimaryAttributes = @{
     GPOUserRights = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
         'GrantedBeyondDefault', 'RemovedFromDefault', 'BaselineUnknown',
-        'AppliesTo', 'LinkedOUs', 'GPOStatus'
+        'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # Machine Account Quota setting
@@ -365,13 +365,13 @@ $Script:PrimaryAttributes = @{
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'UNCPathPermissions',
-        'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'GPOStatus'
+        'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # GPO Script Paths (custom PSCustomObject from Get-GPOScriptPaths)
     GPOScriptPath = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
-        'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'GPOStatus'
+        'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # GPO Local Group Membership (custom PSCustomObject from Get-GPOLocalGroupMembership)
@@ -384,7 +384,7 @@ $Script:PrimaryAttributes = @{
     GPOLocalGroup = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'Mode',
         'MembersAdded', 'MembersRemoved', 'groupEmptied',
-        'LinkedOUs', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
     )
 
     # GPO granting SeMachineAccountPrivilege (enriched native GPO object, same pattern as LDAPConfigGPO/SMBSigning)

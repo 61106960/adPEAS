@@ -963,6 +963,14 @@ function New-PointAndPrintObject {
         $obj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUs -Force
     }
 
+    # Whether those links put a domain controller in the policy's scope - a fact beside
+    # LinkedOUs, no verdict. Plain assignment, then an override: an if-expression whose
+    # branch yields @() lands as $null, and $null here means "unresolved".
+    $dcReachLinks = $linkedOUs
+    if ($null -eq $GPOLinkage) { $dcReachLinks = $null }
+    $obj | Add-Member -NotePropertyName 'reachesDomainControllers' `
+        -NotePropertyValue (Get-GPODomainControllerReach -Link $dcReachLinks) -Force
+
     # Point and Print lives under HKLM, so the computer half of the GPO is the one that has
     # to be switched on. $null for the links when the linkage could not be resolved at all.
     $gpoStatus = Get-GPOEffectiveStatus `
