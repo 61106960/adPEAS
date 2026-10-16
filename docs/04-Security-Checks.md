@@ -314,6 +314,8 @@ Get-CredentialRoaming -IncludePrivileged
 
 **Security Impact**: GPP passwords use a published Microsoft AES key and are trivially decryptable. Credentials in SYSVOL scripts are readable by all authenticated domain users.
 
+**The account behind a credential**: GPP passwords, AutoAdminLogon values and `net use` credentials carry an `accountInAD` row. It says whether a domain account of that name exists, whether it is enabled and privileged, and whether its password was changed after the file was last written. Variables, local and built-in accounts, names qualified with another domain or a computer, and the accounts of a `Groups.xml` (local accounts by definition) are named as such instead of being looked up. Without a directory session the row is left out.
+
 **Usage**:
 ```powershell
 # Domain-based scan (SYSVOL/NETLOGON)

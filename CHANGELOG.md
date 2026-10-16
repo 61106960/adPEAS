@@ -32,6 +32,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Security filtering and WMI filters are not read, so the row speaks of links only. It is
   information and changes no severity.
 
+- **Credentials found in SYSVOL say what their account is in the directory.** A new
+  `accountInAD` row on every GPP password, AutoAdminLogon and `net use` credential says
+  whether a domain account of that name exists, whether it is enabled, whether it is
+  privileged and through which group, and whether its password was changed after the file
+  was last written - which separates a password that may still work from one that is
+  probably outdated. Names whose domain account is not the account they mean are named as
+  what they are instead of being looked up: variables such as `%USERNAME%`, local and
+  built-in accounts, names qualified with another domain or a computer, and every account
+  in a `Groups.xml`, which sets local accounts on the computers. Without a directory
+  session - a custom path scanned without `Connect-adPEAS` - the row is left out. It is
+  information and changes no severity.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

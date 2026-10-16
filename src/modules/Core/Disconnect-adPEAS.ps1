@@ -334,6 +334,7 @@ function Clear-SessionState {
     $Script:_gpoSysvolScanned = $null
 
     $Script:LAPSSchemaInfo = $null
+    $Script:CredentialAccountCache = $null
     $Script:PrivilegedAccountFilterCache = $null
     $Script:PrincipalContainerCache = $null
     $Script:PrincipalContainerCache = $null

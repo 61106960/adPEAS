@@ -3336,10 +3336,10 @@ $Script:PrimaryAttributes = @{
         'Group', 'Reason', 'Count', 'Policies'
     )
     GPPCredential = @(
-        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
     )
     SYSVOLCredential = @(
-        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
     )
     ACLFinding = @(
         'sAMAccountName', 'userPrincipalName', 'distinguishedName', 'objectSid',
@@ -23798,6 +23798,7 @@ function Clear-SessionState {
     $Script:_gpoSysvolUnread = $null
     $Script:_gpoSysvolScanned = $null
     $Script:LAPSSchemaInfo = $null
+    $Script:CredentialAccountCache = $null
     $Script:PrivilegedAccountFilterCache = $null
     $Script:PrincipalContainerCache = $null
     $Script:PrincipalContainerCache = $null
@@ -37590,6 +37591,120 @@ function ConvertFrom-VBE {
     }
     end {
         Write-Log "[ConvertFrom-VBE] VBE decoding completed"
+    }
+}
+function Resolve-CredentialAccount {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$UserName,
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$FileName,
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $FileTime
+    )
+    try {
+        $name = "$UserName".Trim().Trim([char[]]@('"', "'")).Trim()
+        if (-not $name) { return $null }
+        if (-not $Script:LdapConnection) { return $null }
+        if ($FileName -match '^Groups\.xml$') {
+            return 'Not looked up - Groups.xml sets local accounts on the computers the policy applies to, not domain accounts'
+        }
+        if ($name -match '%[^%]+%|^\$') {
+            return 'Not looked up - the name is a variable, filled in on the computer at run time'
+        }
+        $domainPart  = $null
+        $accountPart = $name
+        $upnSuffix   = $null
+        if ($name -match '^(?<domainName>[^\\]+)\\(?<accountName>[^\\]+)$') {
+            $domainPart  = $Matches['domainName']
+            $accountPart = $Matches['accountName']
+        } elseif ($name -match '^(?<accountName>[^@\\]+)@(?<upnSuffix>[^@\\]+)$') {
+            $accountPart = $Matches['accountName']
+            $upnSuffix   = $Matches['upnSuffix']
+        }
+        if ($null -ne $domainPart) {
+            if ($domainPart -in @('.', 'localhost', 'BUILTIN', 'NT AUTHORITY', 'NT SERVICE')) {
+                return 'Not looked up - a local or built-in account of the computer, not a domain account'
+            }
+            $isOwnDomain = $false
+            foreach ($ownName in @("$($Script:LDAPContext.DomainNetBIOS)", "$($Script:LDAPContext.Domain)")) {
+                if ($ownName -and [string]::Equals($ownName, $domainPart, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $isOwnDomain = $true
+                }
+            }
+            if (-not $isOwnDomain) {
+                return "Not looked up - qualified with $domainPart, which is not this domain: another domain, or a computer's local accounts"
+            }
+        }
+        if ($accountPart -match '["/\\\[\]:;|=,+*?<>]') {
+            return 'Not looked up - the name holds characters an account name cannot have'
+        }
+        $filters = @()
+        if ($upnSuffix) {
+            $filters += "(userPrincipalName=$(Escape-LDAPFilterValue -Value $name))"
+            if ([string]::Equals($upnSuffix, "$($Script:LDAPContext.Domain)", [System.StringComparison]::OrdinalIgnoreCase)) {
+                $filters += "(sAMAccountName=$(Escape-LDAPFilterValue -Value $accountPart))"
+            }
+        } else {
+            $filters += "(sAMAccountName=$(Escape-LDAPFilterValue -Value $accountPart))"
+        }
+        if ($null -eq $Script:CredentialAccountCache) { $Script:CredentialAccountCache = @{} }
+        $account = $null
+        foreach ($filter in $filters) {
+            if (-not $Script:CredentialAccountCache.ContainsKey($filter)) {
+                $Script:CredentialAccountCache[$filter] = @(Get-DomainUser -LDAPFilter $filter -Properties 'sAMAccountName', 'userAccountControl', 'pwdLastSet', 'objectSid')[0]
+            }
+            $account = $Script:CredentialAccountCache[$filter]
+            if ($account) { break }
+        }
+        if (-not $account) {
+            return 'No domain account of this name - the password may belong to a local account, an account outside the directory, or one that was deleted or renamed'
+        }
+        $isDisabled = @($account.userAccountControl) -contains 'ACCOUNTDISABLE'
+        $text = if ($isDisabled) { 'Domain account of this name: disabled' } else { 'Domain account of this name: enabled' }
+        $accountSid = "$($account.objectSid)"
+        if ($accountSid) {
+            $privilege = $null
+            try { $privilege = Test-IsPrivileged -Identity $accountSid -IncludeOperators } catch { $privilege = $null }
+            if ($privilege -and $privilege.IsPrivileged -eq $true) {
+                $via = "$($privilege.Reason)"
+                if ($privilege.MatchedGroup) {
+                    $via = "member of $($privilege.MatchedGroup)"
+                } elseif ($via -match 'sIDHistory') {
+                    $via = 'through its sIDHistory'
+                } elseif ($accountSid -match '-500$') {
+                    $via = "the domain's built-in Administrator"
+                }
+                $text += ", privileged ($via)"
+            }
+        }
+        $pwdLastSet = $account.pwdLastSet
+        if ($pwdLastSet -is [datetime]) {
+            $setText = Format-adPEASDate $pwdLastSet 'yyyy-MM-dd'
+            if ($FileTime -is [datetime]) {
+                $fileText = Format-adPEASDate $FileTime 'yyyy-MM-dd'
+                if ($pwdLastSet -gt $FileTime) {
+                    $text += "; password changed $setText, after the file was last written ($fileText) - the password found is probably outdated"
+                } else {
+                    $text += "; password unchanged since $setText, before the file was last written ($fileText) - the password found may still be valid"
+                }
+            } else {
+                $text += "; password last set $setText"
+            }
+        } elseif ("$pwdLastSet" -eq '0') {
+            $text += '; the password must be changed at next logon'
+        }
+        return $text
+    } catch {
+        Write-Log "[Resolve-CredentialAccount] Lookup of '$UserName' failed: $_"
+        return 'Unknown - the directory lookup failed'
     }
 }
 function ConvertFrom-Base64OrFile {
@@ -76154,6 +76269,8 @@ function Get-CredentialExposure {
                                             UserName = $username
                                             Password = $decryptedPassword
                                         }
+                                        $accountInAD = Resolve-CredentialAccount -UserName $username -FileName $fileName -FileTime $xmlFile.LastWriteTime
+                                        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                         Show-Line "Found GPP credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'GPP Password' -Force
@@ -76178,6 +76295,8 @@ function Get-CredentialExposure {
                                         UserName = $fullUsername
                                         Password = $autoLogonPassword
                                     }
+                                    $accountInAD = Resolve-CredentialAccount -UserName $fullUsername -FileName $fileName -FileTime $xmlFile.LastWriteTime
+                                    if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                     Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
@@ -76227,6 +76346,8 @@ function Get-CredentialExposure {
                                         UserName = $fullUser
                                         Password = $foundPassword
                                     }
+                                    $accountInAD = Resolve-CredentialAccount -UserName $fullUser -FileName $file.Name -FileTime $file.LastWriteTime
+                                    if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                     Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
@@ -76389,6 +76510,8 @@ function Get-CredentialExposure {
                                                 UserName = $username
                                                 Password = $decryptedPassword
                                             }
+                                            $accountInAD = Resolve-CredentialAccount -UserName $username -FileName $fileName -FileTime $xmlFile.LastWriteTime
+                                            if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                             if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                             if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                             Show-Line "Found GPP credential" -Class Finding
@@ -76416,6 +76539,8 @@ function Get-CredentialExposure {
                                             UserName = $fullUsername
                                             Password = $autoLogonPassword
                                         }
+                                        $accountInAD = Resolve-CredentialAccount -UserName $fullUsername -FileName $fileName -FileTime $xmlFile.LastWriteTime
+                                        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                         if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                         if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                         Show-Line "Found AutoAdminLogon credential" -Class Finding
@@ -76546,6 +76671,8 @@ function Get-CredentialExposure {
                                             UserName = $fullUser
                                             Password = $foundPassword
                                         }
+                                        $accountInAD = Resolve-CredentialAccount -UserName $fullUser -FileName $file.Name -FileTime $file.LastWriteTime
+                                        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                         if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                         if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                         Show-Line "Found net use credential" -Class Finding
@@ -88013,7 +88140,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261016-2101"
+$Script:adPEASVersion = "2.7.0+20261016-2256"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

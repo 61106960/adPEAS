@@ -281,6 +281,9 @@ function Get-CredentialExposure {
                                             UserName = $username
                                             Password = $decryptedPassword
                                         }
+                                        # What the name stands for in the directory - see the domain scan below.
+                                        $accountInAD = Resolve-CredentialAccount -UserName $username -FileName $fileName -FileTime $xmlFile.LastWriteTime
+                                        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                         Show-Line "Found GPP credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'GPP Password' -Force
@@ -312,6 +315,8 @@ function Get-CredentialExposure {
                                         UserName = $fullUsername
                                         Password = $autoLogonPassword
                                     }
+                                    $accountInAD = Resolve-CredentialAccount -UserName $fullUsername -FileName $fileName -FileTime $xmlFile.LastWriteTime
+                                    if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                     Show-Line "Found AutoAdminLogon credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
@@ -368,6 +373,8 @@ function Get-CredentialExposure {
                                         UserName = $fullUser
                                         Password = $foundPassword
                                     }
+                                    $accountInAD = Resolve-CredentialAccount -UserName $fullUser -FileName $file.Name -FileTime $file.LastWriteTime
+                                    if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                     Show-Line "Found net use credential" -Class Finding
                                         $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
                                         $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
@@ -613,6 +620,13 @@ function Get-CredentialExposure {
                                                 UserName = $username
                                                 Password = $decryptedPassword
                                             }
+                                            # What the name stands for in the directory. The
+                                            # password of an account that is gone, disabled or
+                                            # changed since the file was written is history,
+                                            # and the finding alone could not tell it from one
+                                            # that still works.
+                                            $accountInAD = Resolve-CredentialAccount -UserName $username -FileName $fileName -FileTime $xmlFile.LastWriteTime
+                                            if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                             if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                             if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                             Show-Line "Found GPP credential" -Class Finding
@@ -649,6 +663,8 @@ function Get-CredentialExposure {
                                             UserName = $fullUsername
                                             Password = $autoLogonPassword
                                         }
+                                        $accountInAD = Resolve-CredentialAccount -UserName $fullUsername -FileName $fileName -FileTime $xmlFile.LastWriteTime
+                                        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                         if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                         if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                         Show-Line "Found AutoAdminLogon credential" -Class Finding
@@ -822,6 +838,8 @@ function Get-CredentialExposure {
                                             UserName = $fullUser
                                             Password = $foundPassword
                                         }
+                                        $accountInAD = Resolve-CredentialAccount -UserName $fullUser -FileName $file.Name -FileTime $file.LastWriteTime
+                                        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                         if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                         if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
                                         Show-Line "Found net use credential" -Class Finding

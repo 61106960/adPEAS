@@ -443,10 +443,10 @@ $Script:PrimaryAttributes = @{
     # a caller-supplied -Path, where there is no GPO folder to be relative to, and for a
     # finding that does come from a GPO the full path already contains the GUID.
     GPPCredential = @(
-        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
     )
     SYSVOLCredential = @(
-        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'Password', 'MatchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
     )
 
     # ACL findings (users/computers/groups with dangerous permissions)
