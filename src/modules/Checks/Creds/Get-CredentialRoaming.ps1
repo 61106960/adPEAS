@@ -308,6 +308,10 @@ function Get-CredentialRoaming {
                           without               dormant until the flag is cleared  Hint
       unknown           cannot be decided                                         Hint
 
+    The verdict is taken per container, because control access delegated on one container
+    does nothing for the users below another; the row carries the strongest, and a container
+    whose verdict differs from it says so.
+
     The dormant case is reported rather than dropped because the delegation is still there:
     the day somebody clears the flag, every one of those rights becomes live at once.
 
@@ -369,10 +373,11 @@ function Show-CredentialRoamingDelegation {
     # a credential. Info is what Get-OUPermissions assigns a privileged principal.
     $allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Medium', 'Info') } else { @('Critical', 'High', 'Medium') }
 
-    # Aggregated per principal, not per ACE. A principal can hold the right on several
-    # containers and on several attributes, and the two halves of the confidential-attribute
-    # requirement can sit in two separate ACEs - ORing GrantsControlAccess across them is
-    # the only way to judge that combination correctly.
+    # Aggregated per principal, and within it per container. The two halves of the
+    # confidential-attribute requirement can sit in two separate ACEs, so GrantsControlAccess
+    # is ORed over a container's findings - but not across containers: control access
+    # delegated on one container does nothing for the users below another, and ORing it over
+    # the principal listed a container whose read the flag blocks as readable today.
     $byPrincipal = @{}
 
     # Counted rather than assumed. The closing note used to be printed whenever anything was
@@ -417,12 +422,11 @@ function Show-CredentialRoamingDelegation {
 
             if (-not $byPrincipal.ContainsKey($sid)) {
                 $byPrincipal[$sid] = [PSCustomObject]@{
-                    Principal           = $aclFinding.Principal
-                    SID                 = $sid
-                    Rights              = New-Object System.Collections.Generic.List[string]
-                    Containers          = New-Object System.Collections.Generic.List[string]
-                    GrantsControlAccess = $false
-                    IsPrivileged        = ($aclFinding.Severity -eq 'Info')
+                    Principal    = $aclFinding.Principal
+                    SID          = $sid
+                    Rights       = New-Object System.Collections.Generic.List[string]
+                    Containers   = @{}
+                    IsPrivileged = ($aclFinding.Severity -eq 'Info')
                 }
             }
 
@@ -431,12 +435,10 @@ function Show-CredentialRoamingDelegation {
                 $entry.Rights.Add([string]$aclFinding.Right)
             }
 
-            $containerEntry = "$containerDN ($($usersByContainer[$containerDN]) user(s) with material)"
-            if (-not $entry.Containers.Contains($containerEntry)) {
-                $entry.Containers.Add($containerEntry)
+            if (-not $entry.Containers.ContainsKey($containerDN)) {
+                $entry.Containers[$containerDN] = [PSCustomObject]@{ ControlAccess = $false }
             }
-
-            if ($aclFinding.GrantsControlAccess -eq $true) { $entry.GrantsControlAccess = $true }
+            if ($aclFinding.GrantsControlAccess -eq $true) { $entry.Containers[$containerDN].ControlAccess = $true }
         }
     }
     if ($totalContainers -gt $Script:ProgressThreshold) {
@@ -472,22 +474,46 @@ function Show-CredentialRoamingDelegation {
     foreach ($sid in @($byPrincipal.Keys | Sort-Object)) {
         $entry = $byPrincipal[$sid]
 
-        # CONTROL_ACCESS is tested first and on its own, because it satisfies the stricter of
-        # the two schema states. A principal holding it reads the attribute whether the flag
-        # is set or not, so the schema answer does not enter into it - including when that
-        # answer is unknown, where asking the flag first would have downgraded a live right
-        # to "cannot tell".
+        # One verdict per container. CONTROL_ACCESS is tested first and on its own, because
+        # it satisfies the stricter of the two schema states. A principal holding it reads
+        # the attribute whether the flag is set or not, so the schema answer does not enter
+        # into it - including when that answer is unknown, where asking the flag first would
+        # have downgraded a live right to "cannot tell".
         #
         # Only read-without-control depends on the flag, and there the test is -eq $false
         # rather than -not: $null is falsy in PowerShell, and unknown must not read as
         # "not confidential".
+        $verdicts = @()
+        foreach ($containerDN in @($entry.Containers.Keys | Sort-Object)) {
+            $verdict = 'unknown'
+            if ($entry.Containers[$containerDN].ControlAccess) {
+                $verdict = 'live'
+            } elseif ($Confidentiality.Confidential -eq $false) {
+                $verdict = 'live'
+            } elseif ($Confidentiality.Confidential -eq $true) {
+                $verdict = 'dormant'
+            }
+            $verdicts += [PSCustomObject]@{ Container = $containerDN; Verdict = $verdict }
+        }
+
+        # The row takes the strongest: a principal that can read the material below one
+        # container can read it today.
         $isLive = $null
-        if ($entry.GrantsControlAccess) {
+        if (@($verdicts | Where-Object { $_.Verdict -eq 'live' }).Count -gt 0) {
             $isLive = $true
-        } elseif ($Confidentiality.Confidential -eq $false) {
-            $isLive = $true
-        } elseif ($Confidentiality.Confidential -eq $true) {
+        } elseif (@($verdicts | Where-Object { $_.Verdict -eq 'dormant' }).Count -gt 0) {
             $isLive = $false
+        }
+
+        # A container whose verdict differs from the row's says so; when they all agree the
+        # row already says it once.
+        $mixed = @($verdicts | ForEach-Object { $_.Verdict } | Sort-Object -Unique).Count -gt 1
+        $containerTexts = @()
+        foreach ($item in $verdicts) {
+            $suffix = ''
+            if ($mixed -and $item.Verdict -eq 'dormant') { $suffix = ', blocked by the confidential flag' }
+            if ($mixed -and $item.Verdict -eq 'unknown') { $suffix = ', not decidable - the schema could not be read' }
+            $containerTexts += "$($item.Container) ($($usersByContainer[$item.Container]) user(s) with material$suffix)"
         }
 
         $effectiveText = if ($isLive -eq $true) {
@@ -511,7 +537,7 @@ function Show-CredentialRoamingDelegation {
             dangerousRights         = (@($entry.Rights) -join ', ')
             EffectiveToday          = $effectiveText
             PrivilegedPrincipal     = $(if ($entry.IsPrivileged) { 'Yes' } else { 'No' })
-            affectedOUs             = @($entry.Containers)
+            affectedOUs             = @($containerTexts)
         }
         if (-not $isFinding) {
             $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force

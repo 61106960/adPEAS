@@ -74687,23 +74687,21 @@ function Show-CredentialRoamingDelegation {
 	        }
 	        if (-not $byPrincipal.ContainsKey($sid)) {
 	            $byPrincipal[$sid] = [PSCustomObject]@{
-	                Principal           = $aclFinding.Principal
-	                SID                 = $sid
-	                Rights              = New-Object System.Collections.Generic.List[string]
-	                Containers          = New-Object System.Collections.Generic.List[string]
-	                GrantsControlAccess = $false
-	                IsPrivileged        = ($aclFinding.Severity -eq 'Info')
+	                Principal    = $aclFinding.Principal
+	                SID          = $sid
+	                Rights       = New-Object System.Collections.Generic.List[string]
+	                Containers   = @{}
+	                IsPrivileged = ($aclFinding.Severity -eq 'Info')
 	            }
 	        }
 	        $entry = $byPrincipal[$sid]
 	        if (-not $entry.Rights.Contains([string]$aclFinding.Right)) {
 	            $entry.Rights.Add([string]$aclFinding.Right)
 	        }
-	        $containerEntry = "$containerDN ($($usersByContainer[$containerDN]) user(s) with material)"
-	        if (-not $entry.Containers.Contains($containerEntry)) {
-	            $entry.Containers.Add($containerEntry)
+	        if (-not $entry.Containers.ContainsKey($containerDN)) {
+	            $entry.Containers[$containerDN] = [PSCustomObject]@{ ControlAccess = $false }
 	        }
-	        if ($aclFinding.GrantsControlAccess -eq $true) { $entry.GrantsControlAccess = $true }
+	        if ($aclFinding.GrantsControlAccess -eq $true) { $entry.Containers[$containerDN].ControlAccess = $true }
 	    }
 	}
 	if ($totalContainers -gt $Script:ProgressThreshold) {
@@ -74729,13 +74727,31 @@ function Show-CredentialRoamingDelegation {
 	$rows = New-Object System.Collections.Generic.List[object]
 	foreach ($sid in @($byPrincipal.Keys | Sort-Object)) {
 	    $entry = $byPrincipal[$sid]
+	    $verdicts = @()
+	    foreach ($containerDN in @($entry.Containers.Keys | Sort-Object)) {
+	        $verdict = 'unknown'
+	        if ($entry.Containers[$containerDN].ControlAccess) {
+	            $verdict = 'live'
+	        } elseif ($Confidentiality.Confidential -eq $false) {
+	            $verdict = 'live'
+	        } elseif ($Confidentiality.Confidential -eq $true) {
+	            $verdict = 'dormant'
+	        }
+	        $verdicts += [PSCustomObject]@{ Container = $containerDN; Verdict = $verdict }
+	    }
 	    $isLive = $null
-	    if ($entry.GrantsControlAccess) {
+	    if (@($verdicts | Where-Object { $_.Verdict -eq 'live' }).Count -gt 0) {
 	        $isLive = $true
-	    } elseif ($Confidentiality.Confidential -eq $false) {
-	        $isLive = $true
-	    } elseif ($Confidentiality.Confidential -eq $true) {
+	    } elseif (@($verdicts | Where-Object { $_.Verdict -eq 'dormant' }).Count -gt 0) {
 	        $isLive = $false
+	    }
+	    $mixed = @($verdicts | ForEach-Object { $_.Verdict } | Sort-Object -Unique).Count -gt 1
+	    $containerTexts = @()
+	    foreach ($item in $verdicts) {
+	        $suffix = ''
+	        if ($mixed -and $item.Verdict -eq 'dormant') { $suffix = ', blocked by the confidential flag' }
+	        if ($mixed -and $item.Verdict -eq 'unknown') { $suffix = ', not decidable - the schema could not be read' }
+	        $containerTexts += "$($item.Container) ($($usersByContainer[$item.Container]) user(s) with material$suffix)"
 	    }
 	    $effectiveText = if ($isLive -eq $true) {
 	        'Yes - the principal can read the material today'
@@ -74751,7 +74767,7 @@ function Show-CredentialRoamingDelegation {
 	        dangerousRights         = (@($entry.Rights) -join ', ')
 	        EffectiveToday          = $effectiveText
 	        PrivilegedPrincipal     = $(if ($entry.IsPrivileged) { 'Yes' } else { 'No' })
-	        affectedOUs             = @($entry.Containers)
+	        affectedOUs             = @($containerTexts)
 	    }
 	    if (-not $isFinding) {
 	        $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
@@ -85514,7 +85530,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-2343"
+$Script:adPEASVersion = "2.7.0+20261016-2347"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

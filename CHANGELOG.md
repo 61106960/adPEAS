@@ -161,6 +161,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `PrivilegedPrincipal`: a privileged holder of a delegated read is the expected case
   there, and the card describes an aggravation.
 
+- **A Credential Roaming delegation judges control access per container.** The two
+  halves of the confidential-attribute read were combined over the whole principal, so
+  control access delegated on one container made a read on another, which the
+  confidential flag blocks, look readable today. The row's verdict is the strongest of
+  its containers as before, and a container whose verdict differs from it now says so
+  (`blocked by the confidential flag`).
+
 ---
 
 ## [2.7.0] - 2026-10-08
