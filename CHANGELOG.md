@@ -44,6 +44,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   session - a custom path scanned without `Connect-adPEAS` - the row is left out. It is
   information and changes no severity.
 
+- **`Get-BitLockerRecoveryKeyAccess` says who else may read the recovery passwords.** The
+  check answered for the account running the scan only, so a scan as an ordinary user
+  ended with "No readable BitLocker recovery keys found" whatever a helpdesk group could
+  read. A second section, *Delegated BitLocker Recovery Read*, now lists every principal
+  holding a delegated read of `msFVE-RecoveryPassword` on the containers that hold
+  computers - disabled ones included, since a recovery password stays valid for its disk -
+  with the number of computers it reaches. The schema ships the attribute confidential and
+  grants the recovery objects to Domain Admins and SYSTEM only, so a read takes
+  `ReadProperty` and `ControlAccess` on the same objects; the two halves are combined per
+  container, and the row says whether the read works today, is blocked by the confidential
+  flag (a hint: live the moment the flag is cleared), or cannot be decided because the
+  schema could not be read. Privileged principals are hidden unless `-IncludePrivileged`,
+  which the check now takes and `Invoke-adPEAS` passes on. `Get-OUPermissions` has a new
+  check type `BitLocker` for it; `Get-DangerousOUPermissions` leaves those rights to this
+  check, as it does for LAPS and Credential Roaming.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

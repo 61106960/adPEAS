@@ -216,6 +216,7 @@ $Script:PropertyGUIDs = @{
     'ms-PKI-AccountCredentials'      = [GUID]'b8dfa744-31dc-4ef1-ac7c-84baf7ef9da7'
     'ms-PKI-DPAPIMasterKeys'         = [GUID]'b3f93023-9239-4f7c-b99c-6745d87adbc2'
     'ms-PKI-RoamingTimeStamp'        = [GUID]'91e647de-d96f-4b70-9557-d63ff4f3ccd8'
+    'msFVE-RecoveryPassword'         = [GUID]'43061ac1-c8ad-4ccc-b785-2bfac20fc60a'
     'msDS-KeyCredentialLink'         = [GUID]'5b47d60f-6090-40b2-9f37-2a4de88f3063'
     'altSecurityIdentities'          = [GUID]'00fbf30c-91fe-11d1-aebc-0000f80367c1'
 }
@@ -251,6 +252,7 @@ $Script:SchemaClassGUIDs = @{
     'groupPolicyContainer'           = [GUID]'f30e3bc2-9ff0-11d1-b603-0000f80367c1'
     'trustedDomain'                  = [GUID]'bf967ab8-0de6-11d0-a285-00aa003049e2'
     'contact'                        = [GUID]'5cb41ed0-0e4c-11d0-a286-00aa003049e2'
+    'msFVE-RecoveryInformation'      = [GUID]'ea715d30-8f53-40d0-bd1e-6109186d782c'
 }
 function Get-ExtendedRightName {
     [CmdletBinding()]
@@ -3331,6 +3333,10 @@ $Script:PrimaryAttributes = @{
     CredentialRoamingPermission = @(
         'sAMAccountName', 'objectSid', 'dangerousRights', 'EffectiveToday',
         'PrivilegedAccount', 'affectedOUs'
+    )
+    BitLockerRecoveryPermission = @(
+        'sAMAccountName', 'objectSid', 'dangerousRights', 'ReadableToday',
+        'PrivilegedPrincipal', 'affectedOUs'
     )
     GPOSuppressedGroup = @(
         'Group', 'Reason', 'Count', 'Policies'
@@ -8525,6 +8531,72 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
         MITRE = "T1552"
         Triggers = @(
             @{ Attribute = 'msFVE-RecoveryPassword'; Severity = 'Hint' }
+        )
+    }
+    'BITLOCKER_RECOVERY_DELEGATED' = @{
+        Title = "BitLocker Recovery Password - Read Delegated to a Principal"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "A principal holds a read of the BitLocker recovery password on a container holding computers. The password sits on an msFVE-RecoveryInformation object below each computer, and the schema grants that object to Domain Admins and SYSTEM only, so every other reader was given the right by somebody - usually through the delegation wizard, for a helpdesk or recovery role. That can be intended, and the question to put to the owner of the delegation is whether this principal is that role. The 48-digit password unlocks the volume of every computer below the container offline, given the disk or an image of it. Whether the right works today depends on the schema: the attribute is confidential, so a read takes READ_PROPERTY and CONTROL_ACCESS on the same objects, and the row says which applies."
+        Impact = @(
+            "The holder reads the recovery password of every computer below the container with a plain LDAP query"
+            "With the disk or an image of it - a stolen laptop, a retired drive, a virtual machine's disk file - the volume opens offline"
+            "Disabling the computer account does not change the recovery password; it stays valid for the disk wherever the disk went"
+            "An opened system volume yields the computer's local secrets, and on a domain controller the directory database"
+            "A right the confidential flag currently blocks becomes live the moment somebody clears the flag"
+        )
+        Attack = @(
+            "1. As the delegated principal, read msFVE-RecoveryPassword from the msFVE-RecoveryInformation objects below the computers in scope"
+            "2. Obtain the disk of one of those computers, or an image of it"
+            "3. Unlock the volume with the 48-digit recovery password (manage-bde -unlock -RecoveryPassword, or dislocker)"
+            "4. Read the volume offline: SAM and LSA secrets, DPAPI material, and on a domain controller ntds.dit"
+        )
+        Remediation = @(
+            "Confirm the principal is the recovery or helpdesk role the delegation was meant for; remove the ACE otherwise"
+            "Scope the delegation to the containers whose computers that role supports, and keep servers and domain controllers out of it"
+            "Keep the confidential flag on msFVE-RecoveryPassword - it is what makes a plain read of all properties insufficient"
+            "Audit reads of recovery passwords (event 4662 on msFVE-RecoveryInformation objects)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the ACEs on a container that reach the recovery passwords below its computers"
+                Command = @'
+$recoveryInformation = [guid]'ea715d30-8f53-40d0-bd1e-6109186d782c'
+$recoveryPassword    = [guid]'43061ac1-c8ad-4ccc-b785-2bfac20fc60a'
+(Get-Acl "AD:\<container DN>").Access |
+    Where-Object {
+        ($_.InheritedObjectType -in @($recoveryInformation, [guid]::Empty)) -and
+        ($_.ObjectType -in @($recoveryPassword, [guid]::Empty)) -and
+        ($_.ActiveDirectoryRights -match 'GenericAll|ReadProperty|ExtendedRight')
+    } |
+    Select-Object IdentityReference, ActiveDirectoryRights, ObjectType, InheritedObjectType, IsInherited
+'@
+            }
+            @{
+                Description = "Remove one delegated read. Check the output above first - the ACE may be inherited, in which case it has to go from the container it is inherited from"
+                Command = @'
+$acl = Get-Acl "AD:\<container DN>"
+$ace = $acl.Access | Where-Object {
+    $_.IdentityReference -eq '<DOMAIN\principal>' -and
+    $_.InheritedObjectType -eq 'ea715d30-8f53-40d0-bd1e-6109186d782c'
+}
+$null = $acl.RemoveAccessRule($ace)
+Set-Acl -Path "AD:\<container DN>" -AclObject $acl
+'@
+            }
+        )
+        References = @(
+            @{ Title = "ms-FVE-RecoveryInformation class - default security descriptor (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/c-msfve-recoveryinformation" }
+            @{ Title = "ms-FVE-RecoveryPassword attribute - searchFlags (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-msfve-recoverypassword" }
+            @{ Title = "Confidential attributes - READ_PROPERTY plus CONTROL_ACCESS"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/mark-attribute-as-confidential" }
+        )
+        Tools = @("adPEAS", "PowerView", "manage-bde", "dislocker")
+        MITRE = "T1552"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'msFVE-RecoveryPassword|includes the recovery password'; Severity = 'Finding' }
+            @{ Attribute = 'ReadableToday'; Pattern = '^Yes'; Severity = 'Finding' }
+            @{ Attribute = 'ReadableToday'; Pattern = '^No'; Severity = 'Secure' }
+            @{ Attribute = 'ReadableToday'; Pattern = '^Unknown'; Severity = 'Hint' }
         )
     }
     'GPO_USERRIGHT_SEDEBUG' = @{
@@ -19261,8 +19333,25 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "The 48-digit recovery password, recovery/volume GUID and escrow time"
             "The computer each recovery key belongs to"
         )
-        SecureMessage = "No readable BitLocker recovery keys found. The current user cannot read any escrowed BitLocker recovery passwords, indicating proper access controls are in place."
+        SecureMessage = "No readable BitLocker recovery keys found. The account running the scan cannot read any escrowed BitLocker recovery password - which says nothing about other principals; their delegated reads are the next section."
         PrimaryFindingId = 'BITLOCKER_KEY_READABLE'
+    }
+    'BitLockerRecoveryPermission' = @{
+        TitleFormat = "Recovery Read Delegated: {Name}"
+        Module = "Creds"
+        Category = "Credentials"
+        SectionTitle = "Delegated BitLocker Recovery Read"
+        Summary = "Finds principals that may read the BitLocker recovery passwords of the computers below a container."
+        WhyItMatters = "A recovery password unlocks its volume offline, given the disk or an image of it - a stolen laptop, a retired drive, a virtual machine's disk file. The schema grants the recovery objects to Domain Admins and SYSTEM only, so every other reader was given the right by somebody, usually through the delegation wizard for a helpdesk or recovery role. That can be intended; the row says who holds it, on how many computers, and whether the confidential flag on the attribute lets it work today."
+        WhatWeCheck = @(
+            "ReadProperty and ControlAccess on msFVE-RecoveryPassword reaching the msFVE-RecoveryInformation objects below the computers"
+            "Reads granted through all properties, all extended rights or full control"
+            "Whether both halves of the confidential-attribute read reach the same computers, and whether the confidential flag is set"
+            "Whether the holder is privileged, and reads the recovery passwords anyway"
+        )
+        FilteringNote = "Scoped to the containers that hold computer objects, disabled ones included - a recovery password stays valid for its disk after the computer account is disabled. The account running a scan normally cannot see the recovery objects themselves, since the schema grants them to Domain Admins and SYSTEM only, so whether a computer has a key escrowed is not known here and the row counts computers. The containers are read once each, because a container's DACL already carries what it inherits from above; an ACE set directly on one computer or one recovery object is not seen. Privileged principals are hidden unless -IncludePrivileged. A right the confidential flag currently blocks is reported as a hint rather than dropped, since clearing the flag makes every one of them live at once. Control access without any read of the recovery objects reads nothing and is not listed."
+        SecureMessage = "No principal holds a delegated read of the BitLocker recovery passwords on the containers holding computers."
+        PrimaryFindingId = 'BITLOCKER_RECOVERY_DELEGATED'
     }
     'PasswordInDescription' = @{
         TitleFormat = "Password in Description: {Name}"
@@ -51606,6 +51695,7 @@ function Get-OUPermissions {
             'Delegation',
             'LAPS',
             'CredentialRoaming',
+            'BitLocker',
             'ObjectCreation',
             'GPOLinking',
             'Ownership'
@@ -51624,7 +51714,7 @@ function Get-OUPermissions {
                 'GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner',
                 'PasswordReset', 'AccountControl', 'GroupMembership',
                 'SPNModification', 'DNSHostName', 'ScriptPath', 'Delegation', 'LAPS',
-                'CredentialRoaming', 'ObjectCreation', 'GPOLinking', 'Ownership'
+                'CredentialRoaming', 'BitLocker', 'ObjectCreation', 'GPOLinking', 'Ownership'
             )
         }
     }
@@ -52228,6 +52318,46 @@ function Get-OUPermissions {
                                 Severity            = $Severity
                                 InheritedFrom       = $InheritedFrom
                                 GrantsControlAccess = $crControlAccess
+                            }
+                        }
+                    }
+                }
+                if ($CheckType -contains 'BitLocker') {
+                    $blHasRead          = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty)
+                    $blHasGenericAll    = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)
+                    $blHasControlAccess = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
+                    $blAppliesToRecovery = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['msFVE-RecoveryInformation'])
+                    if (($blHasRead -or $blHasControlAccess) -and
+                        $blAppliesToRecovery -and $AppliesToChildren -and -not $isNoPropagate) {
+                        $blTarget = $null
+                        $blPasswordGuid = $PropertyGUIDs['msFVE-RecoveryPassword']
+                        if ($ACE.ObjectType -and $blPasswordGuid -and $ACE.ObjectType.Guid -eq $blPasswordGuid.Guid) {
+                            $blTarget = 'msFVE-RecoveryPassword'
+                        } elseif ($IsAllProperties) {
+                            $blTarget = 'all extended rights - includes the recovery password'
+                            if ($blHasRead) {
+                                $blTarget = 'all properties - includes the recovery password'
+                            }
+                        }
+                        if ($blTarget) {
+                            $blRightPrefix = 'ControlAccess'
+                            if ($blHasGenericAll) {
+                                $blRightPrefix = 'Full control'
+                            } elseif ($blHasRead -and $blHasControlAccess) {
+                                $blRightPrefix = 'ReadProperty + ControlAccess'
+                            } elseif ($blHasRead) {
+                                $blRightPrefix = 'ReadProperty'
+                            }
+                            $Severity = if ($IsPrivileged) { "Info" } else { "High" }
+                            $Findings += [PSCustomObject]@{
+                                CheckType           = "BitLocker"
+                                Right               = "$blRightPrefix ($blTarget)"
+                                Principal           = $TrusteeName
+                                SID                 = $TrusteeSID
+                                Severity            = $Severity
+                                InheritedFrom       = $InheritedFrom
+                                GrantsRead          = $blHasRead
+                                GrantsControlAccess = $blHasControlAccess
                             }
                         }
                     }
@@ -67262,7 +67392,7 @@ function Get-DangerousOUPermissions {
                     continue
                 }
                 $allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Medium', 'Info') } else { @('Critical', 'High', 'Medium') }
-                $ownModuleCheckTypes = @('LAPS', 'CredentialRoaming')
+                $ownModuleCheckTypes = @('LAPS', 'CredentialRoaming', 'BitLocker')
                 $dangerousFindings = $ouPermissions.Findings | Where-Object {
                     $_.Severity -in $allowedSeverities -and
                     $_.CheckType -notin $ownModuleCheckTypes -and
@@ -76970,14 +77100,20 @@ function Get-BitLockerRecoveryKeyAccess {
         [Parameter(Mandatory=$false)]
         [string]$Server,
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludePrivileged
     )
     begin {
         Write-Log "[Get-BitLockerRecoveryKeyAccess] Starting check"
     }
     process {
         try {
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
             Show-SubHeader "Testing BitLocker recovery key read access for current user..." -ObjectType "BitLockerRecoveryKey"
@@ -76990,7 +77126,7 @@ function Get-BitLockerRecoveryKeyAccess {
                 if ($schemaDN) {
                     try {
                         $schemaFilter = "(&(objectClass=classSchema)(|(lDAPDisplayName=msFVE-RecoveryInformation)(cn=ms-FVE-RecoveryInformation)))"
-                        $schemaResult = @(Get-DomainObject -LDAPFilter $schemaFilter -SearchBase $schemaDN -Properties 'cn' -ResultLimit 1 @PSBoundParameters)
+                        $schemaResult = @(Get-DomainObject -LDAPFilter $schemaFilter -SearchBase $schemaDN -Properties 'cn' -ResultLimit 1 @connectionParams)
                         if ($schemaResult.Count -gt 0) {
                             $bitLockerPresent = $true
                             Write-Log "[Get-BitLockerRecoveryKeyAccess] msFVE-RecoveryInformation schema class found"
@@ -77000,7 +77136,7 @@ function Get-BitLockerRecoveryKeyAccess {
                     }
                 }
                 if (-not $bitLockerPresent) {
-                    $existsCheck = @(Get-DomainObject -LDAPFilter "(objectClass=msFVE-RecoveryInformation)" -Properties 'distinguishedName' -ResultLimit 1 @PSBoundParameters)
+                    $existsCheck = @(Get-DomainObject -LDAPFilter "(objectClass=msFVE-RecoveryInformation)" -Properties 'distinguishedName' -ResultLimit 1 @connectionParams)
                     if ($existsCheck.Count -gt 0) {
                         $bitLockerPresent = $true
                         Write-Log "[Get-BitLockerRecoveryKeyAccess] msFVE-RecoveryInformation objects detected"
@@ -77019,7 +77155,7 @@ function Get-BitLockerRecoveryKeyAccess {
                 'msFVE-VolumeGuid',
                 'whenCreated'
             )
-            $recoveryObjects = @(Get-DomainObject -LDAPFilter "(&(objectClass=msFVE-RecoveryInformation)(msFVE-RecoveryPassword=*))" -Properties $recoveryProperties -Raw @PSBoundParameters)
+            $recoveryObjects = @(Get-DomainObject -LDAPFilter "(&(objectClass=msFVE-RecoveryInformation)(msFVE-RecoveryPassword=*))" -Properties $recoveryProperties -Raw @connectionParams)
             Write-Log "[Get-BitLockerRecoveryKeyAccess] Found $($recoveryObjects.Count) readable recovery key(s)"
             $withheldObjects = @($recoveryObjects | Where-Object {
                 [string]::IsNullOrWhiteSpace([string]$_.'msFVE-RecoveryPassword')
@@ -77071,6 +77207,12 @@ function Get-BitLockerRecoveryKeyAccess {
             if ($withheldObjects.Count -gt 0) {
                 Show-Line "$($withheldObjects.Count) escrowed recovery key(s) exist that this account may not read" -Class "Note"
             }
+            try {
+                Show-BitLockerRecoveryDelegation -IncludePrivileged:$IncludePrivileged -ConnectionParams $connectionParams
+            } catch {
+                Write-Log "[Get-BitLockerRecoveryKeyAccess] Delegation analysis failed: $_" -Level Error
+                Show-Line "Error during the delegation analysis - who may read the recovery passwords could not be evaluated: $_" -Class Finding
+            }
         } catch {
             Write-Log "[Get-BitLockerRecoveryKeyAccess] Error: $_" -Level Error
         }
@@ -77078,6 +77220,228 @@ function Get-BitLockerRecoveryKeyAccess {
     end {
         Write-Log "[Get-BitLockerRecoveryKeyAccess] Check completed"
     }
+}
+function Show-BitLockerRecoveryDelegation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludePrivileged,
+        [Parameter(Mandatory=$false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+    Show-SubHeader "Analyzing who may read BitLocker recovery passwords..." -ObjectType "BitLockerRecoveryPermission"
+    $computersByContainer = @{}
+    foreach ($computer in @(Get-DomainComputer -Properties 'distinguishedName' @ConnectionParams)) {
+        $computerDN = [string]$computer.distinguishedName
+        if ($computerDN -match '^[A-Za-z][A-Za-z0-9-]*=(?:[^,\\]|\\.)+,(.+)$') {
+            $containerDN = $Matches[1]
+            if (-not $computersByContainer.ContainsKey($containerDN)) { $computersByContainer[$containerDN] = 0 }
+            $computersByContainer[$containerDN]++
+        }
+    }
+    if ($computersByContainer.Count -eq 0) {
+        Show-Line "No computer object found - there is no container whose recovery passwords could be delegated" -Class Note
+        return
+    }
+    $allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Medium', 'Info') } else { @('Critical', 'High', 'Medium') }
+    $byPrincipal = @{}
+    $suppressedPrivileged = @{}
+    $unreadContainers = @()
+    $totalContainers = $computersByContainer.Keys.Count
+    $currentIndex = 0
+    foreach ($containerDN in @($computersByContainer.Keys)) {
+        $currentIndex++
+        if ($totalContainers -gt $Script:ProgressThreshold) {
+            Show-Progress -Activity "Checking BitLocker recovery delegations" -Current $currentIndex -Total $totalContainers -ObjectName $containerDN
+        }
+        try {
+            $perms = Get-OUPermissions -DistinguishedName $containerDN -CheckType 'BitLocker'
+        }
+        catch {
+            $unreadContainers += $containerDN
+            Write-Log "[Get-BitLockerRecoveryKeyAccess] Failed to read permissions for '$containerDN': $($_.Exception.Message)"
+            continue
+        }
+        if (-not $perms -or $perms.Read -eq $false) { $unreadContainers += $containerDN }
+        if (-not $perms -or -not $perms.Findings) { continue }
+        foreach ($aclFinding in @($perms.Findings)) {
+            $sid = [string]$aclFinding.SID
+            if ([string]::IsNullOrEmpty($sid)) { continue }
+            if ($aclFinding.Severity -notin $allowedSeverities) {
+                if ($aclFinding.Severity -eq 'Info') { $suppressedPrivileged[$sid] = $true }
+                continue
+            }
+            if (-not $byPrincipal.ContainsKey($sid)) {
+                $byPrincipal[$sid] = [PSCustomObject]@{
+                    Principal    = $aclFinding.Principal
+                    Containers   = @{}
+                    IsPrivileged = ($aclFinding.Severity -eq 'Info')
+                }
+            }
+            $containers = $byPrincipal[$sid].Containers
+            if (-not $containers.ContainsKey($containerDN)) {
+                $containers[$containerDN] = [PSCustomObject]@{
+                    Read          = $false
+                    ControlAccess = $false
+                    Rights        = New-Object System.Collections.Generic.List[string]
+                }
+            }
+            $state = $containers[$containerDN]
+            if ($aclFinding.GrantsRead -eq $true)          { $state.Read = $true }
+            if ($aclFinding.GrantsControlAccess -eq $true) { $state.ControlAccess = $true }
+            if (-not $state.Rights.Contains([string]$aclFinding.Right)) {
+                $state.Rights.Add([string]$aclFinding.Right)
+            }
+        }
+    }
+    if ($totalContainers -gt $Script:ProgressThreshold) {
+        Show-Progress -Activity "Checking BitLocker recovery delegations" -Completed
+    }
+    $readContainers = $totalContainers - @($unreadContainers).Count
+    $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadContainers -TotalOUs $totalContainers
+    $needsSchema = $false
+    foreach ($principalEntry in $byPrincipal.Values) {
+        foreach ($state in $principalEntry.Containers.Values) {
+            if ($state.Read -and -not $state.ControlAccess) { $needsSchema = $true }
+        }
+    }
+    $confidential = $null
+    if ($needsSchema) {
+        $confidential = (Get-BitLockerRecoveryConfidentiality @ConnectionParams).Confidential
+    }
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($sid in @($byPrincipal.Keys | Sort-Object)) {
+        $entry = $byPrincipal[$sid]
+        $verdicts = @()
+        foreach ($containerDN in @($entry.Containers.Keys | Sort-Object)) {
+            $state = $entry.Containers[$containerDN]
+            $verdict = $null
+            if ($state.Read -and $state.ControlAccess) {
+                $verdict = 'live'
+            } elseif ($state.Read) {
+                if ($confidential -eq $false) {
+                    $verdict = 'live'
+                } elseif ($confidential -eq $true) {
+                    $verdict = 'dormant'
+                } else {
+                    $verdict = 'unknown'
+                }
+            }
+            if ($verdict) {
+                $verdicts += [PSCustomObject]@{ Container = $containerDN; Verdict = $verdict; Rights = $state.Rights }
+            }
+        }
+        if ($verdicts.Count -eq 0) {
+            Write-Log "[Get-BitLockerRecoveryKeyAccess] $($entry.Principal) holds control access but no read of the recovery objects - not listed"
+            continue
+        }
+        $isLive    = @($verdicts | Where-Object { $_.Verdict -eq 'live' }).Count -gt 0
+        $isUnknown = @($verdicts | Where-Object { $_.Verdict -eq 'unknown' }).Count -gt 0
+        $readableText = 'No - blocked by the confidential flag on msFVE-RecoveryPassword, live the moment it is cleared'
+        if ($isLive) {
+            $readableText = 'Yes - the principal can read these recovery passwords today'
+        } elseif ($isUnknown) {
+            $readableText = 'Unknown - the schema could not be read, so whether the confidential flag blocks the read is open'
+        }
+        $mixed = @($verdicts | ForEach-Object { $_.Verdict } | Sort-Object -Unique).Count -gt 1
+        $rights = New-Object System.Collections.Generic.List[string]
+        $containerTexts = New-Object System.Collections.Generic.List[string]
+        foreach ($item in $verdicts) {
+            foreach ($right in $item.Rights) {
+                if (-not $rights.Contains($right)) { $rights.Add($right) }
+            }
+            $suffix = ''
+            if ($mixed -and $item.Verdict -eq 'dormant') { $suffix = ', blocked by the confidential flag' }
+            if ($mixed -and $item.Verdict -eq 'unknown') { $suffix = ', not decidable - the schema could not be read' }
+            $containerTexts.Add("$($item.Container) ($($computersByContainer[$item.Container]) computer(s)$suffix)")
+        }
+        $isFinding = (-not $entry.IsPrivileged) -and $isLive
+        $row = [PSCustomObject]@{
+            sAMAccountName      = $(if ($entry.Principal) { $entry.Principal } else { ConvertFrom-SID -SID $sid })
+            objectSid           = $sid
+            dangerousRights     = (@($rights) -join ', ')
+            ReadableToday       = $readableText
+            PrivilegedPrincipal = $(if ($entry.IsPrivileged) { 'Yes' } else { 'No' })
+            affectedOUs         = @($containerTexts)
+        }
+        if (-not $isFinding) {
+            $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
+        }
+        $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'BitLockerRecoveryPermission' -Force
+        $row | Add-Member -NotePropertyName '_IsFinding' -NotePropertyValue $isFinding -Force
+        $rows.Add($row)
+    }
+    if ($rows.Count -eq 0) {
+        if ($suppressedPrivileged.Count -gt 0) {
+            Show-Line ("No non-privileged principal holds a delegated read of the BitLocker recovery passwords, but " +
+                       "$($suppressedPrivileged.Count) privileged one(s) hold a right on them - use -IncludePrivileged to see them") -Class Note
+        } elseif ($readContainers -le 0) {
+            Show-Line ("The delegations on the $totalContainers container(s) holding computers were not evaluated - " +
+                       "no security descriptor could be read") -Class Note
+        } else {
+            $delegationClass = 'Secure'
+            if ($coverageIncomplete) { $delegationClass = 'Note' }
+            Show-Line ("No principal holds a delegated read of the BitLocker recovery passwords on the $readContainers " +
+                       "container(s) holding computers") -Class $delegationClass
+        }
+        return
+    }
+    $findingRows = @($rows | Where-Object { $_._IsFinding })
+    $hintRows    = @($rows | Where-Object { -not $_._IsFinding })
+    if ($findingRows.Count -gt 0) {
+        Show-Line ("Found $($findingRows.Count) non-privileged principal(s) who can read BitLocker recovery " +
+                   "passwords") -Class Finding -FindingId 'BITLOCKER_RECOVERY_DELEGATED'
+        foreach ($row in $findingRows) { Show-Object $row -Class Finding }
+    }
+    if ($hintRows.Count -gt 0) {
+        Show-Line ("Found $($hintRows.Count) further delegated read(s) of the BitLocker recovery passwords that " +
+                   "do not work today or belong to a privileged principal") -Class Hint -FindingId 'BITLOCKER_RECOVERY_DELEGATED'
+        foreach ($row in $hintRows) { Show-Object $row -Class Hint }
+    }
+    if ($suppressedPrivileged.Count -gt 0) {
+        Show-Line ("$($suppressedPrivileged.Count) privileged principal(s) hold a right on the recovery passwords " +
+                   "and are not listed - they read them regardless. Use -IncludePrivileged to see them") -Class Note
+    }
+}
+function Get-BitLockerRecoveryConfidentiality {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    $CredParams = @{}
+    if ($Domain)     { $CredParams['Domain']     = $Domain }
+    if ($Server)     { $CredParams['Server']     = $Server }
+    if ($Credential) { $CredParams['Credential'] = $Credential }
+    $unknown = [PSCustomObject]@{ Confidential = $null }
+    $schemaDN = $null
+    if ($Script:LDAPContext) { $schemaDN = $Script:LDAPContext.SchemaNamingContext }
+    if ([string]::IsNullOrWhiteSpace($schemaDN)) {
+        Write-Log "[Get-BitLockerRecoveryConfidentiality] No SchemaNamingContext - answer stays unknown"
+        return $unknown
+    }
+    $filter = '(&(objectClass=attributeSchema)' +
+              '(|(lDAPDisplayName=msFVE-RecoveryPassword)(cn=ms-FVE-RecoveryPassword)))'
+    try {
+        $attribute = @(Get-DomainObject -LDAPFilter $filter -SearchBase $schemaDN `
+            -Properties 'lDAPDisplayName', 'cn', 'searchFlags' @CredParams)[0]
+    }
+    catch {
+        Write-Log "[Get-BitLockerRecoveryConfidentiality] Schema query failed: $($_.Exception.Message)"
+        return $unknown
+    }
+    if (-not $attribute) {
+        Write-Log "[Get-BitLockerRecoveryConfidentiality] msFVE-RecoveryPassword not found in the schema"
+        return $unknown
+    }
+    $flags = 0
+    if ($null -ne $attribute.searchFlags) { $flags = [int]$attribute.searchFlags }
+    return [PSCustomObject]@{ Confidential = (($flags -band 128) -ne 0) }
 }
 function Get-CredentialRoaming {
     [CmdletBinding()]
@@ -88140,7 +88504,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261016-2256"
+$Script:adPEASVersion = "2.7.0+20261016-2337"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -88565,7 +88929,7 @@ try {
         Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['Creds'])"
         try {
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-LAPSCredentialAccess' -Title 'LAPS Credential Access' -Check { Get-LAPSCredentialAccess }
-            Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-BitLockerRecoveryKeyAccess' -Title 'BitLocker Recovery Key Access' -Check { Get-BitLockerRecoveryKeyAccess }
+            Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-BitLockerRecoveryKeyAccess' -Title 'BitLocker Recovery Key Access' -Check { Get-BitLockerRecoveryKeyAccess -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialRoaming' -Title 'Credential Roaming' -Check { Get-CredentialRoaming -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialExposure' -Title 'Credential Exposure' -Check { Get-CredentialExposure }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-PasswordInDescription' -Title 'Passwords in Description/Info' -Check { Get-PasswordInDescription -OPSEC:$OPSEC }

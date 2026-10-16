@@ -5002,6 +5002,80 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
         )
     }
 
+    'BITLOCKER_RECOVERY_DELEGATED' = @{
+        Title = "BitLocker Recovery Password - Read Delegated to a Principal"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "A principal holds a read of the BitLocker recovery password on a container holding computers. The password sits on an msFVE-RecoveryInformation object below each computer, and the schema grants that object to Domain Admins and SYSTEM only, so every other reader was given the right by somebody - usually through the delegation wizard, for a helpdesk or recovery role. That can be intended, and the question to put to the owner of the delegation is whether this principal is that role. The 48-digit password unlocks the volume of every computer below the container offline, given the disk or an image of it. Whether the right works today depends on the schema: the attribute is confidential, so a read takes READ_PROPERTY and CONTROL_ACCESS on the same objects, and the row says which applies."
+        Impact = @(
+            "The holder reads the recovery password of every computer below the container with a plain LDAP query"
+            "With the disk or an image of it - a stolen laptop, a retired drive, a virtual machine's disk file - the volume opens offline"
+            "Disabling the computer account does not change the recovery password; it stays valid for the disk wherever the disk went"
+            "An opened system volume yields the computer's local secrets, and on a domain controller the directory database"
+            "A right the confidential flag currently blocks becomes live the moment somebody clears the flag"
+        )
+        Attack = @(
+            "1. As the delegated principal, read msFVE-RecoveryPassword from the msFVE-RecoveryInformation objects below the computers in scope"
+            "2. Obtain the disk of one of those computers, or an image of it"
+            "3. Unlock the volume with the 48-digit recovery password (manage-bde -unlock -RecoveryPassword, or dislocker)"
+            "4. Read the volume offline: SAM and LSA secrets, DPAPI material, and on a domain controller ntds.dit"
+        )
+        Remediation = @(
+            "Confirm the principal is the recovery or helpdesk role the delegation was meant for; remove the ACE otherwise"
+            "Scope the delegation to the containers whose computers that role supports, and keep servers and domain controllers out of it"
+            "Keep the confidential flag on msFVE-RecoveryPassword - it is what makes a plain read of all properties insufficient"
+            "Audit reads of recovery passwords (event 4662 on msFVE-RecoveryInformation objects)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the ACEs on a container that reach the recovery passwords below its computers"
+                Command = @'
+$recoveryInformation = [guid]'ea715d30-8f53-40d0-bd1e-6109186d782c'
+$recoveryPassword    = [guid]'43061ac1-c8ad-4ccc-b785-2bfac20fc60a'
+(Get-Acl "AD:\<container DN>").Access |
+    Where-Object {
+        ($_.InheritedObjectType -in @($recoveryInformation, [guid]::Empty)) -and
+        ($_.ObjectType -in @($recoveryPassword, [guid]::Empty)) -and
+        ($_.ActiveDirectoryRights -match 'GenericAll|ReadProperty|ExtendedRight')
+    } |
+    Select-Object IdentityReference, ActiveDirectoryRights, ObjectType, InheritedObjectType, IsInherited
+'@
+            }
+            @{
+                Description = "Remove one delegated read. Check the output above first - the ACE may be inherited, in which case it has to go from the container it is inherited from"
+                Command = @'
+$acl = Get-Acl "AD:\<container DN>"
+$ace = $acl.Access | Where-Object {
+    $_.IdentityReference -eq '<DOMAIN\principal>' -and
+    $_.InheritedObjectType -eq 'ea715d30-8f53-40d0-bd1e-6109186d782c'
+}
+$null = $acl.RemoveAccessRule($ace)
+Set-Acl -Path "AD:\<container DN>" -AclObject $acl
+'@
+            }
+        )
+        References = @(
+            @{ Title = "ms-FVE-RecoveryInformation class - default security descriptor (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/c-msfve-recoveryinformation" }
+            @{ Title = "ms-FVE-RecoveryPassword attribute - searchFlags (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-msfve-recoverypassword" }
+            @{ Title = "Confidential attributes - READ_PROPERTY plus CONTROL_ACCESS"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/mark-attribute-as-confidential" }
+        )
+        Tools = @("adPEAS", "PowerView", "manage-bde", "dislocker")
+        MITRE = "T1552"
+        Triggers = @(
+            # Both label shapes Get-OUPermissions writes for this check type: the attribute
+            # named, or an unscoped right that includes it. Neither phrase occurs in another
+            # check's rights strings.
+            @{ Attribute = 'dangerousRights'; Pattern = 'msFVE-RecoveryPassword|includes the recovery password'; Severity = 'Finding' }
+
+            # The verdict row, an attribute of its own rather than EffectiveToday: those
+            # three patterns belong to the Credential Roaming card, and two definitions
+            # matching one value pick their card by score, not by check.
+            @{ Attribute = 'ReadableToday'; Pattern = '^Yes'; Severity = 'Finding' }
+            @{ Attribute = 'ReadableToday'; Pattern = '^No'; Severity = 'Secure' }
+            @{ Attribute = 'ReadableToday'; Pattern = '^Unknown'; Severity = 'Hint' }
+        )
+    }
+
     # =========================================================================
     # GPO USER RIGHTS - one definition per right (Get-GPOUserRightsAssignment)
     # =========================================================================

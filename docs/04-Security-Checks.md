@@ -21,6 +21,7 @@ The following checks filter high-privileged accounts by default:
 | **Get-GPOPermissions** | Group Policy Creator Owners, Domain Admins with GPO modification rights | `-IncludePrivileged` |
 | **Get-ADCSVulnerabilities** | Domain Admins, Enterprise Admins with certificate enrollment | `-IncludePrivileged` |
 | **Get-AddComputerRights** | Domain Admins, Account Operators with computer creation rights | `-IncludePrivileged` |
+| **Get-BitLockerRecoveryKeyAccess** | Privileged principals with a delegated read of the recovery passwords - Domain Admins read them by default | `-IncludePrivileged` |
 
 ### How Filtering Works
 
@@ -250,9 +251,14 @@ Get-LAPSCredentialAccess
 
 **Security Impact**: Reading a recovery key is often legitimate (recovery/helpdesk roles) and is reported as a *Hint*, not a Finding. A readable key lets the holder unlock the computer's BitLocker-protected volume offline (given physical access or a disk image), so unexpectedly broad read access can indicate over-permissive delegation on the computer OUs.
 
+**Who else may read them**: A second section lists the principals holding a delegated read of `msFVE-RecoveryPassword` on the containers that hold computers (disabled computers included - a recovery password stays valid for its disk), via `Get-OUPermissions -CheckType BitLocker`. The schema ships the attribute confidential and grants the `msFVE-RecoveryInformation` objects to Domain Admins and SYSTEM only, so a read takes `ReadProperty` **and** `ControlAccess` on the same objects; both halves are combined per container, and the row says whether the right works today, is blocked by the confidential flag (a *Hint*, live the moment the flag is cleared), or cannot be decided because the schema could not be read. `ControlAccess` alone reads nothing and is not listed. An ACE set directly on one computer or recovery object is not seen. Privileged principals are hidden unless `-IncludePrivileged`.
+
 **Usage**:
 ```powershell
 Get-BitLockerRecoveryKeyAccess
+
+# Also list privileged principals holding a delegated read
+Get-BitLockerRecoveryKeyAccess -IncludePrivileged
 ```
 
 ---

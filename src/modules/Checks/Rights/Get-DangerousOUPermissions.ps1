@@ -205,12 +205,13 @@ function Get-DangerousOUPermissions {
                 # execution on every machine below the OU; creating an account in a
                 # privileged OU is the other half of that loss.
                 #
-                # LAPS and CredentialRoaming are Medium too, and they are taken out
-                # instead: both have a module of their own - Get-LAPSPermissions and
-                # Get-CredentialRoaming - which reports them with the context this one
-                # cannot give.
+                # LAPS, CredentialRoaming and BitLocker are taken out instead: each has a
+                # module of its own - Get-LAPSPermissions, Get-CredentialRoaming and
+                # Get-BitLockerRecoveryKeyAccess - which reports them with the context this
+                # one cannot give, above all whether the confidential flag lets the right
+                # work at all.
                 $allowedSeverities = if ($IncludePrivileged) { @('Critical', 'High', 'Medium', 'Info') } else { @('Critical', 'High', 'Medium') }
-                $ownModuleCheckTypes = @('LAPS', 'CredentialRoaming')
+                $ownModuleCheckTypes = @('LAPS', 'CredentialRoaming', 'BitLocker')
 
                 # Account Operators hold CreateChild and DeleteChild on user, group and
                 # computer by default, inherited from the domain root. That one

@@ -185,6 +185,9 @@ function Get-ACEInheritanceSource {
       findings additionally carry GrantsControlAccess, because a confidential attribute
       needs READ_PROPERTY and CONTROL_ACCESS while a non-confidential one needs only the
       former - and only the caller knows which the schema says.
+    - BitLocker: read access to msFVE-RecoveryPassword on the msFVE-RecoveryInformation
+      objects below the computers. These findings carry GrantsRead and GrantsControlAccess,
+      for the same reason as CredentialRoaming, and an ACE carrying either half is reported.
     - ObjectCreation: CreateChild rights
     - GPOLinking: gPLink write access
 
@@ -305,6 +308,7 @@ function Get-OUPermissions {
             'Delegation',
             'LAPS',
             'CredentialRoaming',
+            'BitLocker',
             'ObjectCreation',
             'GPOLinking',
             'Ownership'
@@ -340,7 +344,7 @@ function Get-OUPermissions {
                 'GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner',
                 'PasswordReset', 'AccountControl', 'GroupMembership',
                 'SPNModification', 'DNSHostName', 'ScriptPath', 'Delegation', 'LAPS',
-                'CredentialRoaming', 'ObjectCreation', 'GPOLinking', 'Ownership'
+                'CredentialRoaming', 'BitLocker', 'ObjectCreation', 'GPOLinking', 'Ownership'
             )
         }
     }
@@ -1289,6 +1293,89 @@ function Get-OUPermissions {
                                 Severity            = $Severity
                                 InheritedFrom       = $InheritedFrom
                                 GrantsControlAccess = $crControlAccess
+                            }
+                        }
+                    }
+                }
+
+                # Check 8c: read rights on the BitLocker recovery password
+                #
+                # The recovery password is not an attribute of the computer. It sits on an
+                # msFVE-RecoveryInformation object below the computer, two levels under the
+                # container whose descriptor this reads, so an ACE reaches it only when it is
+                # inherited (ContainerInherit), is not stopped at the computers
+                # (NoPropagateInherit leaves the computer a copy without inheritance flags),
+                # and is not limited to another class: InheritedObjectType empty or
+                # msFVE-RecoveryInformation. An ACE limited to the computer class becomes
+                # effective on the computer and never on the object below it.
+                #
+                # The attribute is confidential in the shipped schema (searchFlags 0x298), so
+                # a read needs READ_PROPERTY *and* CONTROL_ACCESS. Whether the flag is still
+                # set is the caller's question, and the two halves can sit in two ACEs, so
+                # each finding says which half it carries instead of a verdict. Unlike the
+                # Credential Roaming block, CONTROL_ACCESS alone is reported in the
+                # all-extended-rights case as well: the shipped default security descriptor
+                # of the class grants the object to Domain Admins and SYSTEM only, so nobody
+                # else holds the read half by default, and the caller needs both halves of a
+                # principal to decide anything.
+                #
+                # Nor are the broad groups exempted from the all-properties case, as they are
+                # there and for LAPS. A blanket read is the default ACL of a user object; on a
+                # recovery object it is not, so a broad read reaching one was granted by
+                # somebody - and only the confidential flag then stands between every user
+                # and every recovery password.
+                if ($CheckType -contains 'BitLocker') {
+
+                    # Test-ADRightsMask rather than -band, for the reason given in the LAPS
+                    # block above. It also expands GenericAll - written as a GA generic bit or
+                    # as the full mask - into the bits it contains, so full control answers
+                    # yes to both halves on its own and needs no term of its own below; it
+                    # only decides the label.
+                    $blHasRead          = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty)
+                    $blHasGenericAll    = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)
+                    $blHasControlAccess = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
+
+                    $blAppliesToRecovery = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['msFVE-RecoveryInformation'])
+
+                    if (($blHasRead -or $blHasControlAccess) -and
+                        $blAppliesToRecovery -and $AppliesToChildren -and -not $isNoPropagate) {
+
+                        $blTarget = $null
+                        $blPasswordGuid = $PropertyGUIDs['msFVE-RecoveryPassword']
+                        if ($ACE.ObjectType -and $blPasswordGuid -and $ACE.ObjectType.Guid -eq $blPasswordGuid.Guid) {
+                            $blTarget = 'msFVE-RecoveryPassword'
+                        } elseif ($IsAllProperties) {
+                            # No ObjectType: every property for the read half, every extended
+                            # right for the control half - the recovery password among them.
+                            $blTarget = 'all extended rights - includes the recovery password'
+                            if ($blHasRead) {
+                                $blTarget = 'all properties - includes the recovery password'
+                            }
+                        }
+
+                        if ($blTarget) {
+                            # Named after what the ACE carries. "GenericAll" is avoided on
+                            # purpose: a dangerousRights value containing it takes the
+                            # GenericAll card, and "Full control" tells a reader the same.
+                            $blRightPrefix = 'ControlAccess'
+                            if ($blHasGenericAll) {
+                                $blRightPrefix = 'Full control'
+                            } elseif ($blHasRead -and $blHasControlAccess) {
+                                $blRightPrefix = 'ReadProperty + ControlAccess'
+                            } elseif ($blHasRead) {
+                                $blRightPrefix = 'ReadProperty'
+                            }
+
+                            $Severity = if ($IsPrivileged) { "Info" } else { "High" }
+                            $Findings += [PSCustomObject]@{
+                                CheckType           = "BitLocker"
+                                Right               = "$blRightPrefix ($blTarget)"
+                                Principal           = $TrusteeName
+                                SID                 = $TrusteeSID
+                                Severity            = $Severity
+                                InheritedFrom       = $InheritedFrom
+                                GrantsRead          = $blHasRead
+                                GrantsControlAccess = $blHasControlAccess
                             }
                         }
                     }

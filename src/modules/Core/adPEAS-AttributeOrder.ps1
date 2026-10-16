@@ -428,6 +428,10 @@ $Script:PrimaryAttributes = @{
         'sAMAccountName', 'objectSid', 'dangerousRights', 'EffectiveToday',
         'PrivilegedAccount', 'affectedOUs'
     )
+    BitLockerRecoveryPermission = @(
+        'sAMAccountName', 'objectSid', 'dangerousRights', 'ReadableToday',
+        'PrivilegedPrincipal', 'affectedOUs'
+    )
 
     # One card per group of held-back policies (Get-GPOEffectiveness Show-GPOSuppressedGroup).
     # Group is first so it reads as the heading of the card in the console, where an object has

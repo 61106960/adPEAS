@@ -1176,8 +1176,26 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "The 48-digit recovery password, recovery/volume GUID and escrow time"
             "The computer each recovery key belongs to"
         )
-        SecureMessage = "No readable BitLocker recovery keys found. The current user cannot read any escrowed BitLocker recovery passwords, indicating proper access controls are in place."
+        SecureMessage = "No readable BitLocker recovery keys found. The account running the scan cannot read any escrowed BitLocker recovery password - which says nothing about other principals; their delegated reads are the next section."
         PrimaryFindingId = 'BITLOCKER_KEY_READABLE'
+    }
+
+    'BitLockerRecoveryPermission' = @{
+        TitleFormat = "Recovery Read Delegated: {Name}"
+        Module = "Creds"
+        Category = "Credentials"
+        SectionTitle = "Delegated BitLocker Recovery Read"
+        Summary = "Finds principals that may read the BitLocker recovery passwords of the computers below a container."
+        WhyItMatters = "A recovery password unlocks its volume offline, given the disk or an image of it - a stolen laptop, a retired drive, a virtual machine's disk file. The schema grants the recovery objects to Domain Admins and SYSTEM only, so every other reader was given the right by somebody, usually through the delegation wizard for a helpdesk or recovery role. That can be intended; the row says who holds it, on how many computers, and whether the confidential flag on the attribute lets it work today."
+        WhatWeCheck = @(
+            "ReadProperty and ControlAccess on msFVE-RecoveryPassword reaching the msFVE-RecoveryInformation objects below the computers"
+            "Reads granted through all properties, all extended rights or full control"
+            "Whether both halves of the confidential-attribute read reach the same computers, and whether the confidential flag is set"
+            "Whether the holder is privileged, and reads the recovery passwords anyway"
+        )
+        FilteringNote = "Scoped to the containers that hold computer objects, disabled ones included - a recovery password stays valid for its disk after the computer account is disabled. The account running a scan normally cannot see the recovery objects themselves, since the schema grants them to Domain Admins and SYSTEM only, so whether a computer has a key escrowed is not known here and the row counts computers. The containers are read once each, because a container's DACL already carries what it inherits from above; an ACE set directly on one computer or one recovery object is not seen. Privileged principals are hidden unless -IncludePrivileged. A right the confidential flag currently blocks is reported as a hint rather than dropped, since clearing the flag makes every one of them live at once. Control access without any read of the recovery objects reads nothing and is not listed."
+        SecureMessage = "No principal holds a delegated read of the BitLocker recovery passwords on the containers holding computers."
+        PrimaryFindingId = 'BITLOCKER_RECOVERY_DELEGATED'
     }
 
     'PasswordInDescription' = @{

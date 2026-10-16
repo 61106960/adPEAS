@@ -372,12 +372,12 @@ function Invoke-adPEAS {
     By default, these expected privileged accounts are hidden from output.
     When enabled, privileged accounts are shown in yellow (Hint) instead of red (Finding).
 
-    Affects twelve checks - the list named five of them, and how much a default run
+    Affects thirteen checks - the list named five of them, and how much a default run
     hides is part of what this switch means:
       Get-DangerousACLs, Get-DangerousOUPermissions, Get-PasswordResetRights,
       Get-AddComputerRights, Get-LAPSPermissions, Get-GPOPermissions,
       Get-PrivilegedGroupMembers, Get-ADCSVulnerabilities, Get-WeakCertificateMapping,
-      Get-CredentialRoaming.
+      Get-CredentialRoaming, Get-BitLockerRecoveryKeyAccess.
 
     Two of them read it as something else, which is worth knowing before setting it:
     Get-GPOUserRightsAssignment and Get-GPOPointAndPrint take it as -IncludeDefaults,
@@ -1095,7 +1095,7 @@ try {
         Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['Creds'])"
         try {
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-LAPSCredentialAccess' -Title 'LAPS Credential Access' -Check { Get-LAPSCredentialAccess }
-            Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-BitLockerRecoveryKeyAccess' -Title 'BitLocker Recovery Key Access' -Check { Get-BitLockerRecoveryKeyAccess }
+            Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-BitLockerRecoveryKeyAccess' -Title 'BitLocker Recovery Key Access' -Check { Get-BitLockerRecoveryKeyAccess -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialRoaming' -Title 'Credential Roaming' -Check { Get-CredentialRoaming -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialExposure' -Title 'Credential Exposure' -Check { Get-CredentialExposure }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-PasswordInDescription' -Title 'Passwords in Description/Info' -Check { Get-PasswordInDescription -OPSEC:$OPSEC }

@@ -198,6 +198,13 @@ $Script:PropertyGUIDs = @{
     'ms-PKI-DPAPIMasterKeys'         = [GUID]'b3f93023-9239-4f7c-b99c-6745d87adbc2'
     'ms-PKI-RoamingTimeStamp'        = [GUID]'91e647de-d96f-4b70-9557-d63ff4f3ccd8'
 
+    # BitLocker recovery password, on the msFVE-RecoveryInformation object below each
+    # computer. System-Id-Guid from learn.microsoft.com/windows/win32/adschema
+    # (a-msfve-recoverypassword), Attribute-Id 1.2.840.113556.1.4.1964. The same value is in
+    # $Script:ReadPropertyAliases for Set-DomainObject; this entry lets Get-OUPermissions
+    # recognise a delegated read.
+    'msFVE-RecoveryPassword'         = [GUID]'43061ac1-c8ad-4ccc-b785-2bfac20fc60a'
+
     # Shadow Credentials (CVE-2022-26923, Key Trust attack)
     # schemaIdGuid per MS-ADA2: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-ada2/45916e5b-d66f-444e-b1e5-5b0666ed4d66
     'msDS-KeyCredentialLink'         = [GUID]'5b47d60f-6090-40b2-9f37-2a4de88f3063'
@@ -298,6 +305,11 @@ $Script:SchemaClassGUIDs = @{
 
     # Contact (non-security principal)
     'contact'                        = [GUID]'5cb41ed0-0e4c-11d0-a286-00aa003049e2'
+
+    # BitLocker recovery information, the child object of a computer that carries the
+    # recovery password. Schema-Id-Guid from learn.microsoft.com/windows/win32/adschema
+    # (c-msfve-recoveryinformation), Governs-Id 1.2.840.113556.1.5.253.
+    'msFVE-RecoveryInformation'      = [GUID]'ea715d30-8f53-40d0-bd1e-6109186d782c'
 }
 
 # ============================================================================
