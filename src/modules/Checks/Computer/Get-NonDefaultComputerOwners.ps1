@@ -295,7 +295,7 @@ function Get-NonDefaultComputerOwners {
 
                 foreach ($computer in $nonDefaultOwnerComputers) {
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultComputerOwner' -Force
-                    Show-Object $computer
+                    Show-Object $computer -Class Finding
                 }
             } elseif ($unreadableOwners -ge $totalComputers -and $totalComputers -gt 0) {
                 Show-Line "Computer ownership was not evaluated - no security descriptor carried an owner" -Class "Note"

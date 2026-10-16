@@ -60917,7 +60917,7 @@ function Get-LDAPConfiguration {
 	                        anonymousLDAPAccess = if ($anonChar -eq '2') { 'ENABLED - Security Risk!' } else { 'Restricted' }
 	                    }
 	                    $heuristicsObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
-	                    Show-Object $heuristicsObj
+	                    Show-Object $heuristicsObj -Class $(if ($anonChar -eq '2') { 'Finding' } else { 'Secure' })
 	                }
 	            } catch {
 	                Show-Line "The Directory Service object could not be read - whether anonymous LDAP operations are allowed is unknown" -Class Note
@@ -63719,7 +63719,7 @@ function Get-ConstrainedDelegation {
 	            $currentIndex++
 	            if ($totalAccounts -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing constrained delegation" -Current $currentIndex -Total $totalAccounts -ObjectName $account.sAMAccountName }
 	            $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ConstrainedDelegation' -Force
-	            Show-Object $account
+	            Show-Object $account -Class Finding
 	        }
 	        if ($totalAccounts -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing constrained delegation" -Completed }
 	    } catch {
@@ -66258,7 +66258,7 @@ function Get-OutdatedComputers {
 	                        }
 	                    }
 	                    $fullComputer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'OutdatedComputer' -Force
-	                    Show-Object $fullComputer
+	                    Show-Object $fullComputer -Class $(if ($eolCheck.SupportState -eq 'ESUOnly') { 'Hint' } else { 'Finding' })
 	                }
 	            }
 	        } elseif ($notAssessableCount -eq 0 -and $inactiveFilteredCount -gt 0) {
@@ -66675,7 +66675,7 @@ function Get-NonDefaultComputerOwners {
 	            }
 	            foreach ($computer in $nonDefaultOwnerComputers) {
 	                $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultComputerOwner' -Force
-	                Show-Object $computer
+	                Show-Object $computer -Class Finding
 	            }
 	        } elseif ($unreadableOwners -ge $totalComputers -and $totalComputers -gt 0) {
 	            Show-Line "Computer ownership was not evaluated - no security descriptor carried an owner" -Class "Note"
@@ -70561,7 +70561,7 @@ function Get-ADCSVulnerabilities {
 	            }
 	            foreach ($tmpl in $interestingTemplates) {
 	                $tmpl | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CertificateTemplate' -Force
-	                Show-Object $tmpl
+	                Show-Object $tmpl -Class $(if ($tmpl.PSObject.Properties['Vulnerabilities']) { 'Finding' } else { 'Hint' })
 	            }
 	        } else {
 	            $totalFindings = $totalVulnerabilities + $caVulnerabilityCount
@@ -72294,7 +72294,7 @@ function Get-SCOMInfrastructure {
 	            }
 	            foreach ($account in $serviceAccounts) {
 	                $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServiceAccount' -Force
-	                Show-Object $account
+	                Show-Object $account -Class $(if ($account.PSObject.Properties['privilegedServiceAccount']) { 'Finding' } else { 'Hint' })
 	            }
 	        } else {
 	            Show-Line "No SCOM service accounts found" -Class Note
@@ -72526,7 +72526,7 @@ function Get-ASREPRoastableAccounts {
 	                        'Yes - RC4 is refused for members, so the AS-REP is AES-encrypted and far slower to crack') -Force
 	                }
 	                $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ASREPRoastable' -Force
-	                Show-Object $user
+	                Show-Object $user -Class Finding
 	                Show-EmptyLine
 	            }
 	            if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing AS-REP Roastable accounts" -Completed }
@@ -73970,7 +73970,7 @@ function Get-PasswordInDescription {
 	                        } else {
 	                            Show-Line "Possible credential mention in $bestAttrName of $objectType '$shownName'" -Class Hint
 	                        }
-	                        Show-Object $fullObj
+	                        Show-Object $fullObj -Class $(if ($bestTier -eq 1) { 'Finding' } else { 'Hint' })
 	                        if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
 	                    } else {
 	                        $unreadableCount++
@@ -84475,7 +84475,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261016-1453"
+$Script:adPEASVersion = "2.7.0+20261016-1555"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

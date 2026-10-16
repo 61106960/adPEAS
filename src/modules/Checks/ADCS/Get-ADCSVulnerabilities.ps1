@@ -1695,7 +1695,9 @@ function Get-ADCSVulnerabilities {
                 foreach ($tmpl in $interestingTemplates) {
                     # Add type marker for HTML report
                     $tmpl | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CertificateTemplate' -Force
-                    Show-Object $tmpl
+                    # A template with an ESC finding is a finding; one listed for its
+                    # non-privileged enrollment alone is the hint the other headline calls it.
+                    Show-Object $tmpl -Class $(if ($tmpl.PSObject.Properties['Vulnerabilities']) { 'Finding' } else { 'Hint' })
                 }
             } else {
                 # No interesting templates found

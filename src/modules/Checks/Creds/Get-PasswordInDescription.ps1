@@ -359,7 +359,7 @@ function Get-PasswordInDescription {
                             } else {
                                 Show-Line "Possible credential mention in $bestAttrName of $objectType '$shownName'" -Class Hint
                             }
-                            Show-Object $fullObj
+                            Show-Object $fullObj -Class $(if ($bestTier -eq 1) { 'Finding' } else { 'Hint' })
                             if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
                         } else {
                             # Named, because the reader can go and look: the object matched

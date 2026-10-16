@@ -189,7 +189,7 @@ function Get-SCOMInfrastructure {
 
                 foreach ($account in $serviceAccounts) {
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServiceAccount' -Force
-                    Show-Object $account
+                    Show-Object $account -Class $(if ($account.PSObject.Properties['privilegedServiceAccount']) { 'Finding' } else { 'Hint' })
                 }
             } else {
                 Show-Line "No SCOM service accounts found" -Class Note

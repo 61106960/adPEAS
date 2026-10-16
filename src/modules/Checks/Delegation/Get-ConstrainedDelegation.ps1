@@ -243,7 +243,7 @@ function Get-ConstrainedDelegation {
                 if ($totalAccounts -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing constrained delegation" -Current $currentIndex -Total $totalAccounts -ObjectName $account.sAMAccountName }
                 # Add type marker for HTML report
                 $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ConstrainedDelegation' -Force
-                Show-Object $account
+                Show-Object $account -Class Finding
             }
             if ($totalAccounts -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing constrained delegation" -Completed }
 

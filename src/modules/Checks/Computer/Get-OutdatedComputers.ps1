@@ -238,7 +238,9 @@ function Get-OutdatedComputers {
                             }
                         }
                         $fullComputer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'OutdatedComputer' -Force
-                        Show-Object $fullComputer
+                        # The class of the line that announced it: past general support is
+                        # the finding, inside the paid ESU window the hint.
+                        Show-Object $fullComputer -Class $(if ($eolCheck.SupportState -eq 'ESUOnly') { 'Hint' } else { 'Finding' })
                     }
                 }
             } elseif ($notAssessableCount -eq 0 -and $inactiveFilteredCount -gt 0) {

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 14:53:30
-    Version: 2.7.0+20261016-1453
+    Build: 2026-10-16 15:55:02
+    Version: 2.7.0+20261016-1555
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -99289,7 +99289,7 @@ function Get-LDAPConfiguration {
                             anonymousLDAPAccess = if ($anonChar -eq '2') { 'ENABLED - Security Risk!' } else { 'Restricted' }
                         }
                         $heuristicsObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
-                        Show-Object $heuristicsObj
+                        Show-Object $heuristicsObj -Class $(if ($anonChar -eq '2') { 'Finding' } else { 'Secure' })
                     }
                 } catch {
                     Write-Log "[Get-LDAPConfiguration] Could not read dsHeuristics: $_" -Level Warning
@@ -104565,7 +104565,7 @@ function Get-ConstrainedDelegation {
                 if ($totalAccounts -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing constrained delegation" -Current $currentIndex -Total $totalAccounts -ObjectName $account.sAMAccountName }
                 # Add type marker for HTML report
                 $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ConstrainedDelegation' -Force
-                Show-Object $account
+                Show-Object $account -Class Finding
             }
             if ($totalAccounts -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing constrained delegation" -Completed }
 
@@ -109354,7 +109354,9 @@ function Get-OutdatedComputers {
                             }
                         }
                         $fullComputer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'OutdatedComputer' -Force
-                        Show-Object $fullComputer
+                        # The class of the line that announced it: past general support is
+                        # the finding, inside the paid ESU window the hint.
+                        Show-Object $fullComputer -Class $(if ($eolCheck.SupportState -eq 'ESUOnly') { 'Hint' } else { 'Finding' })
                     }
                 }
             } elseif ($notAssessableCount -eq 0 -and $inactiveFilteredCount -gt 0) {
@@ -110180,7 +110182,7 @@ function Get-NonDefaultComputerOwners {
 
                 foreach ($computer in $nonDefaultOwnerComputers) {
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultComputerOwner' -Force
-                    Show-Object $computer
+                    Show-Object $computer -Class Finding
                 }
             } elseif ($unreadableOwners -ge $totalComputers -and $totalComputers -gt 0) {
                 Show-Line "Computer ownership was not evaluated - no security descriptor carried an owner" -Class "Note"
@@ -117316,7 +117318,9 @@ function Get-ADCSVulnerabilities {
                 foreach ($tmpl in $interestingTemplates) {
                     # Add type marker for HTML report
                     $tmpl | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CertificateTemplate' -Force
-                    Show-Object $tmpl
+                    # A template with an ESC finding is a finding; one listed for its
+                    # non-privileged enrollment alone is the hint the other headline calls it.
+                    Show-Object $tmpl -Class $(if ($tmpl.PSObject.Properties['Vulnerabilities']) { 'Finding' } else { 'Hint' })
                 }
             } else {
                 # No interesting templates found
@@ -120408,7 +120412,7 @@ function Get-SCOMInfrastructure {
 
                 foreach ($account in $serviceAccounts) {
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCOMServiceAccount' -Force
-                    Show-Object $account
+                    Show-Object $account -Class $(if ($account.PSObject.Properties['privilegedServiceAccount']) { 'Finding' } else { 'Hint' })
                 }
             } else {
                 Show-Line "No SCOM service accounts found" -Class Note
@@ -120881,7 +120885,7 @@ function Get-ASREPRoastableAccounts {
                     }
 
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ASREPRoastable' -Force
-                    Show-Object $user
+                    Show-Object $user -Class Finding
 
                     # Blank line between accounts for readability
                     Show-EmptyLine
@@ -123632,7 +123636,7 @@ function Get-PasswordInDescription {
                             } else {
                                 Show-Line "Possible credential mention in $bestAttrName of $objectType '$shownName'" -Class Hint
                             }
-                            Show-Object $fullObj
+                            Show-Object $fullObj -Class $(if ($bestTier -eq 1) { 'Finding' } else { 'Hint' })
                             if ($bestTier -eq 1) { $findingCount++ } else { $hintCount++ }
                         } else {
                             # Named, because the reader can go and look: the object matched
@@ -136148,7 +136152,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-1453"
+$Script:adPEASVersion = "2.7.0+20261016-1555"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -200,7 +200,7 @@ function Get-ASREPRoastableAccounts {
                     }
 
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ASREPRoastable' -Force
-                    Show-Object $user
+                    Show-Object $user -Class Finding
 
                     # Blank line between accounts for readability
                     Show-EmptyLine

@@ -173,7 +173,7 @@ function Get-LDAPConfiguration {
                             anonymousLDAPAccess = if ($anonChar -eq '2') { 'ENABLED - Security Risk!' } else { 'Restricted' }
                         }
                         $heuristicsObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
-                        Show-Object $heuristicsObj
+                        Show-Object $heuristicsObj -Class $(if ($anonChar -eq '2') { 'Finding' } else { 'Secure' })
                     }
                 } catch {
                     Write-Log "[Get-LDAPConfiguration] Could not read dsHeuristics: $_" -Level Warning
