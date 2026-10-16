@@ -4,8 +4,10 @@ function Get-GPOLinkage {
     Retrieves GPO linkage information (which OUs/Domains/Sites link to which GPOs).
 
     .DESCRIPTION
-    Queries LDAP for all objects with gPLink attribute to determine where GPOs are applied.
-    Returns a hashtable mapping GPO GUIDs to their linked locations.
+    Queries LDAP for all objects with gPLink attribute to determine where GPOs are applied:
+    the domain partition for the domain root and the OUs, and the Sites container of the
+    Configuration partition for the sites. Returns a hashtable mapping GPO GUIDs to their
+    linked locations.
 
     GPO Links in Active Directory:
     - Stored in 'gPLink' attribute on OU/Domain/Site objects
@@ -73,9 +75,32 @@ function Get-GPOLinkage {
 
             Write-Log "[Get-GPOLinkage] Searching for objects with gPLink attribute..."
 
-            $results = Invoke-LDAPSearch -Filter "(gPLink=*)" -Properties "distinguishedName","gPLink","name","objectClass"
+            $results = @(Invoke-LDAPSearch -Filter "(gPLink=*)" -Properties "distinguishedName","gPLink","name","objectClass")
 
-            if (-not $results) {
+            # And the sites, which are not in the domain partition. A search without
+            # -SearchBase runs against the domain NC, so CN=Sites,CN=Configuration was out
+            # of reach: $configDN was read, logged and never used, and the $scope = "Site"
+            # branch below was dead code. Every site-linked GPO therefore counted as linked
+            # nowhere - which makes Get-GPOReach report "the policy is linked nowhere", and
+            # the GPO checks hold such a finding back as a dormant policy unless
+            # -IncludeInactive is given.
+            if ($configDN) {
+                try {
+                    $siteResults = @(Invoke-LDAPSearch -Filter "(gPLink=*)" -SearchBase "CN=Sites,$configDN" `
+                        -Properties "distinguishedName","gPLink","name","objectClass")
+                    if ($siteResults.Count -gt 0) {
+                        Write-Log "[Get-GPOLinkage] Found $($siteResults.Count) site(s) with GPO links"
+                        $results += $siteResults
+                    }
+                } catch {
+                    # A failed site search is not a failed linkage map: the domain half
+                    # carries almost every link, and answering "unknown" for all of them
+                    # would lift the dampening of every GPO check at once.
+                    Write-Log "[Get-GPOLinkage] Site link search failed: $_" -Level Warning
+                }
+            }
+
+            if ($results.Count -eq 0) {
                 Write-Log "[Get-GPOLinkage] No objects with GPO links found"
                 return $gpoLinkage
             }

@@ -52109,8 +52109,20 @@ function Get-GPOLinkage {
         $gpoLinkage = @{}
         try {
             Write-Log "[Get-GPOLinkage] Searching for objects with gPLink attribute..."
-            $results = Invoke-LDAPSearch -Filter "(gPLink=*)" -Properties "distinguishedName","gPLink","name","objectClass"
-            if (-not $results) {
+            $results = @(Invoke-LDAPSearch -Filter "(gPLink=*)" -Properties "distinguishedName","gPLink","name","objectClass")
+            if ($configDN) {
+                try {
+                    $siteResults = @(Invoke-LDAPSearch -Filter "(gPLink=*)" -SearchBase "CN=Sites,$configDN" `
+                        -Properties "distinguishedName","gPLink","name","objectClass")
+                    if ($siteResults.Count -gt 0) {
+                        Write-Log "[Get-GPOLinkage] Found $($siteResults.Count) site(s) with GPO links"
+                        $results += $siteResults
+                    }
+                } catch {
+                    Write-Log "[Get-GPOLinkage] Site link search failed: $_" -Level Warning
+                }
+            }
+            if ($results.Count -eq 0) {
                 Write-Log "[Get-GPOLinkage] No objects with GPO links found"
                 return $gpoLinkage
             }
@@ -70182,17 +70194,35 @@ function Get-GPOLocalGroupMembership {
                 $shown = if ($IncludeInactive) { @($vulnerableGPOs) } else { @($split.Active) }
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
                     -Dormant $split.Dormant -Listed:$IncludeInactive
+                $severityRank = @{ 'Note' = 1; 'Hint' = 2; 'Finding' = 3 }
+                $headlineClass = 'Note'
+                foreach ($candidate in @($shown | Where-Object { @($split.Inactive) -notcontains $_ })) {
+                    $candidateSeverity = [string]$candidate.Severity
+                    if ($severityRank.ContainsKey($candidateSeverity) -and
+                        $severityRank[$candidateSeverity] -gt $severityRank[$headlineClass]) {
+                        $headlineClass = $candidateSeverity
+                    }
+                }
                 if (@($shown).Count -gt 0) {
-                    Show-Line "Found $(@($shown).Count) vulnerable GPO local group assignment(s)" -Class Finding
+                    if ($headlineClass -eq 'Finding') {
+                        Show-Line "Found $(@($shown).Count) vulnerable GPO local group assignment(s)" -Class Finding
+                    } else {
+                        Show-Line "Found $(@($shown).Count) GPO local group assignment(s)" -Class $headlineClass
+                    }
                 } else {
                     Show-Line "No local group assignment is made by a policy that is linked and enabled" -Class Note
                 }
                 foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOLocalGroup' -Force
+                    if ($finding.Risk) {
+                        $finding | Add-Member -NotePropertyName 'RiskReason' -NotePropertyValue ([string]$finding.Risk) -Force
+                    }
                     if (@($split.Inactive) -contains $finding) {
                         Show-Object $finding -Class Note
                     } else {
-                        Show-Object $finding
+                        $assignmentClass = [string]$finding.Severity
+                        if (-not $severityRank.ContainsKey($assignmentClass)) { $assignmentClass = 'Hint' }
+                        Show-Object $finding -Class $assignmentClass
                     }
                 }
             } else {
@@ -87435,7 +87465,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261016-0852"
+$Script:adPEASVersion = "2.7.0+20261016-0911"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

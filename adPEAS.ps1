@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-16 08:52:14
-    Version: 2.7.0+20261016-0852
+    Build: 2026-10-16 09:11:46
+    Version: 2.7.0+20261016-0911
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -81303,8 +81303,10 @@ function Get-GPOLinkage {
     Retrieves GPO linkage information (which OUs/Domains/Sites link to which GPOs).
 
     .DESCRIPTION
-    Queries LDAP for all objects with gPLink attribute to determine where GPOs are applied.
-    Returns a hashtable mapping GPO GUIDs to their linked locations.
+    Queries LDAP for all objects with gPLink attribute to determine where GPOs are applied:
+    the domain partition for the domain root and the OUs, and the Sites container of the
+    Configuration partition for the sites. Returns a hashtable mapping GPO GUIDs to their
+    linked locations.
 
     GPO Links in Active Directory:
     - Stored in 'gPLink' attribute on OU/Domain/Site objects
@@ -81372,9 +81374,32 @@ function Get-GPOLinkage {
 
             Write-Log "[Get-GPOLinkage] Searching for objects with gPLink attribute..."
 
-            $results = Invoke-LDAPSearch -Filter "(gPLink=*)" -Properties "distinguishedName","gPLink","name","objectClass"
+            $results = @(Invoke-LDAPSearch -Filter "(gPLink=*)" -Properties "distinguishedName","gPLink","name","objectClass")
 
-            if (-not $results) {
+            # And the sites, which are not in the domain partition. A search without
+            # -SearchBase runs against the domain NC, so CN=Sites,CN=Configuration was out
+            # of reach: $configDN was read, logged and never used, and the $scope = "Site"
+            # branch below was dead code. Every site-linked GPO therefore counted as linked
+            # nowhere - which makes Get-GPOReach report "the policy is linked nowhere", and
+            # the GPO checks hold such a finding back as a dormant policy unless
+            # -IncludeInactive is given.
+            if ($configDN) {
+                try {
+                    $siteResults = @(Invoke-LDAPSearch -Filter "(gPLink=*)" -SearchBase "CN=Sites,$configDN" `
+                        -Properties "distinguishedName","gPLink","name","objectClass")
+                    if ($siteResults.Count -gt 0) {
+                        Write-Log "[Get-GPOLinkage] Found $($siteResults.Count) site(s) with GPO links"
+                        $results += $siteResults
+                    }
+                } catch {
+                    # A failed site search is not a failed linkage map: the domain half
+                    # carries almost every link, and answering "unknown" for all of them
+                    # would lift the dampening of every GPO check at once.
+                    Write-Log "[Get-GPOLinkage] Site link search failed: $_" -Level Warning
+                }
+            }
+
+            if ($results.Count -eq 0) {
                 Write-Log "[Get-GPOLinkage] No objects with GPO links found"
                 return $gpoLinkage
             }
@@ -111505,8 +111530,26 @@ function Get-GPOLocalGroupMembership {
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
                     -Dormant $split.Dormant -Listed:$IncludeInactive
 
+                # The headline takes the most severe assignment that applies, not Finding
+                # whatever the rows say. Three assignments to Power Users, each rated Note by
+                # this check itself, were announced in red as "vulnerable" - and the HTML
+                # card takes its colour from that line.
+                $severityRank = @{ 'Note' = 1; 'Hint' = 2; 'Finding' = 3 }
+                $headlineClass = 'Note'
+                foreach ($candidate in @($shown | Where-Object { @($split.Inactive) -notcontains $_ })) {
+                    $candidateSeverity = [string]$candidate.Severity
+                    if ($severityRank.ContainsKey($candidateSeverity) -and
+                        $severityRank[$candidateSeverity] -gt $severityRank[$headlineClass]) {
+                        $headlineClass = $candidateSeverity
+                    }
+                }
+
                 if (@($shown).Count -gt 0) {
-                    Show-Line "Found $(@($shown).Count) vulnerable GPO local group assignment(s)" -Class Finding
+                    if ($headlineClass -eq 'Finding') {
+                        Show-Line "Found $(@($shown).Count) vulnerable GPO local group assignment(s)" -Class Finding
+                    } else {
+                        Show-Line "Found $(@($shown).Count) GPO local group assignment(s)" -Class $headlineClass
+                    }
                 } else {
                     # Not Secure: the assignments exist, they just apply nowhere. Calling
                     # the domain clean here would be a different statement.
@@ -111516,10 +111559,26 @@ function Get-GPOLocalGroupMembership {
                 foreach ($finding in $shown) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOLocalGroup' -Force
 
+                    # The reason the row is there, on the row. Get-GroupAssignmentSeverity
+                    # computes it per target group and names a broad member in it, and it went
+                    # to Risk - which $Script:ExcludeAttributes drops, so it reached neither
+                    # the console nor a report row. RiskReason is what the scheduled task rows
+                    # carry for the same purpose.
+                    if ($finding.Risk) {
+                        $finding | Add-Member -NotePropertyName 'RiskReason' -NotePropertyValue ([string]$finding.Risk) -Force
+                    }
+
                     if (@($split.Inactive) -contains $finding) {
                         Show-Object $finding -Class Note
                     } else {
-                        Show-Object $finding
+                        # The computed severity decides the class. Show-Object defaults to
+                        # Standard, so the whole severity pipeline of this module - Finding for
+                        # Administrators and the operator groups, Hint for the rest, escalated
+                        # by a broad member - ended at the renderer's default, and every
+                        # assignment looked alike.
+                        $assignmentClass = [string]$finding.Severity
+                        if (-not $severityRank.ContainsKey($assignmentClass)) { $assignmentClass = 'Hint' }
+                        Show-Object $finding -Class $assignmentClass
                     }
                 }
             } else {
@@ -135729,7 +135788,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261016-0852"
+$Script:adPEASVersion = "2.7.0+20261016-0911"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
