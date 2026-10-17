@@ -178,6 +178,13 @@ function Get-ExchangeGroupMemberClass {
         return "Hint"
     }
 
+    # And the group setup /PrepareDomain creates outside that OU: Exchange Install Domain
+    # Servers, directly in CN=Microsoft Exchange System Objects, which setup makes a member
+    # of Exchange Servers in every prepared domain.
+    if ($dn -and $dn -match '^CN=(?:[^,\\]|\\.)+,CN=Microsoft Exchange System Objects,DC=') {
+        return "Hint"
+    }
+
     # Check if this is an Exchange Server by SPN
     if ($Script:LdapConnection -and $sid) {
         try {

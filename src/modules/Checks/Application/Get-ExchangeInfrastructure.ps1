@@ -1284,6 +1284,13 @@ function Get-ExchangeInfrastructure {
                 @{ Name       = 'Organization Management'
                    ObjectType = 'ExchangeOrganizationManagement'
                    Title      = 'Checking Organization Management group...' }
+
+                # Step 2 reads it to find the servers and never judged it. It is meant to
+                # hold the Exchange servers' computer accounts and holds their rights on the
+                # Exchange organization, so a user in it holds them too.
+                @{ Name       = 'Exchange Servers'
+                   ObjectType = 'ExchangeServersGroup'
+                   Title      = 'Checking Exchange Servers group...' }
             )
 
             # Asked of the forest root at most once, for all three, and only where a group

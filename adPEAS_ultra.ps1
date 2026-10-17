@@ -3388,7 +3388,7 @@ $Script:PrimaryAttributes = @{
 	    'ExchangeGroupsFrom'
 	)
 	ExchangeRoleAssignment = @(
-	    'RoleName', 'Assignee', 'AssigneeType', 'AssignmentType', 'RiskVerdict',
+	    'RoleName', 'Assignee', 'AssigneeType', 'assigneeMembers', 'AssignmentType', 'RiskVerdict',
 	    'AssignmentScope', 'AssigneeDN', 'distinguishedName'
 	)
 	ExchangeTrustedSubsystem = @(
@@ -3400,6 +3400,10 @@ $Script:PrimaryAttributes = @{
 	    'member', 'memberOf', 'description'
 	)
 	ExchangeOrganizationManagement = @(
+	    'sAMAccountName', 'distinguishedName', 'objectSid',
+	    'member', 'memberOf', 'description'
+	)
+	ExchangeServersGroup = @(
 	    'sAMAccountName', 'distinguishedName', 'objectSid',
 	    'member', 'memberOf', 'description'
 	)
@@ -17481,6 +17485,9 @@ function Get-ExchangeGroupMemberClass {
 	if ($dn -and $dn -match 'OU=Microsoft Exchange Security Groups') {
 	    return "Hint"
 	}
+	if ($dn -and $dn -match '^CN=(?:[^,\\]|\\.)+,CN=Microsoft Exchange System Objects,DC=') {
+	    return "Hint"
+	}
 	if ($Script:LdapConnection -and $sid) {
 	    try {
 	        $exchangeCheck = Test-IsExchangeServer -Identity $sid
@@ -19324,6 +19331,19 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Service accounts or unexpected members"
 	    )
 	    SecureMessage = "Organization Management contains only designated Exchange administrators."
+	}
+	'ExchangeServersGroup' = @{
+	    TitleFormat = "Exchange Group: Exchange Servers"
+	    Module = "Application"
+	    Category = "Exchange"
+	    SectionTitle = "Exchange Servers Group"
+	    Summary = "Shows the Exchange Servers group and judges each member against what belongs in it."
+	    WhyItMatters = "Exchange Servers holds the computer accounts of the Exchange servers and with them their rights on the Exchange organization. A user account in it holds those rights as well."
+	    WhatWeCheck = @(
+	        "Members of Exchange Servers"
+	        "Members that are neither Exchange servers, computer accounts, nested Exchange groups nor privileged principals"
+	    )
+	    SecureMessage = "Exchange Servers contains only Exchange server computer accounts and Exchange groups."
 	}
 	'CertificateAuthority' = @{
 	    TitleFormat = "Certificate Authority: {CAName}"
@@ -73858,6 +73878,9 @@ function Get-ExchangeInfrastructure {
 	            @{ Name       = 'Organization Management'
 	               ObjectType = 'ExchangeOrganizationManagement'
 	               Title      = 'Checking Organization Management group...' }
+	            @{ Name       = 'Exchange Servers'
+	               ObjectType = 'ExchangeServersGroup'
+	               Title      = 'Checking Exchange Servers group...' }
 	        )
 	        $rootServiceGroups = $null
 	        $rootServiceGroupsAsked = $false
@@ -74077,6 +74100,19 @@ function Get-ExchangeRBACAssignments {
 	            if ($assigneePrivileged -and $assigneePrivileged.IsPrivileged -eq $true) {
 	                $resultObj | Add-Member -NotePropertyName 'assigneePrivilege' -NotePropertyValue (
 	                    "Already privileged: $($assigneePrivileged.Reason)") -Force
+	            }
+	            if ($assigneeObject -and @($assigneeObject.objectClass) -icontains 'group' -and -not $isDelegating) {
+	                $memberNames = @(@($assigneeObject.member) | Where-Object { $_ } | ForEach-Object {
+	                    if ("$_" -match '^CN=((?:[^,\\]|\\.)+),') { $Matches[1] -replace '\\(.)', '$1' } else { "$_" }
+	                } | Sort-Object)
+	                $membersText = if ($memberNames.Count -eq 0) {
+	                    'No direct members'
+	                } else {
+	                    $shownMembers = @($memberNames | Select-Object -First 20) -join ', '
+	                    if ($memberNames.Count -gt 20) { $shownMembers = "$shownMembers, ... and $($memberNames.Count - 20) more" }
+	                    "$($memberNames.Count) direct member(s): $shownMembers"
+	                }
+	                $resultObj | Add-Member -NotePropertyName 'assigneeMembers' -NotePropertyValue $membersText -Force
 	            }
 	            $recipientScope = [string]$assignment.msExchRecipientWriteScopeLink
 	            $configScope = [string]$assignment.msExchConfigWriteScopeLink
@@ -87077,7 +87113,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1614"
+$Script:adPEASVersion = "2.7.0+20261017-1619"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

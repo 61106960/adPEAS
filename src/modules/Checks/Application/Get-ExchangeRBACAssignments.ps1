@@ -335,6 +335,25 @@ function Get-ExchangeRBACAssignments {
                         "Already privileged: $($assigneePrivileged.Reason)") -Force
                 }
 
+                # Who holds a role assigned to a group: its members. For the role groups
+                # Exchange ships these roles on - Discovery Management with Mailbox Search,
+                # Hygiene Management with ApplicationImpersonation - the assignment is the
+                # expected one, and only the membership says who reads every mailbox in
+                # this organization. Direct members, by name; a nested group is named as one.
+                if ($assigneeObject -and @($assigneeObject.objectClass) -icontains 'group' -and -not $isDelegating) {
+                    $memberNames = @(@($assigneeObject.member) | Where-Object { $_ } | ForEach-Object {
+                        if ("$_" -match '^CN=((?:[^,\\]|\\.)+),') { $Matches[1] -replace '\\(.)', '$1' } else { "$_" }
+                    } | Sort-Object)
+                    $membersText = if ($memberNames.Count -eq 0) {
+                        'No direct members'
+                    } else {
+                        $shownMembers = @($memberNames | Select-Object -First 20) -join ', '
+                        if ($memberNames.Count -gt 20) { $shownMembers = "$shownMembers, ... and $($memberNames.Count - 20) more" }
+                        "$($memberNames.Count) direct member(s): $shownMembers"
+                    }
+                    $resultObj | Add-Member -NotePropertyName 'assigneeMembers' -NotePropertyValue $membersText -Force
+                }
+
                 # Scope is reported only from a scope object that actually exists. Exchange
                 # also encodes implicit scopes in attributes whose values are not published,
                 # so the absent case is stated as "no custom scope object", which is what

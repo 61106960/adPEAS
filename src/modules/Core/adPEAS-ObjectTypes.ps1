@@ -618,6 +618,20 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "Organization Management contains only designated Exchange administrators."
     }
 
+    'ExchangeServersGroup' = @{
+        TitleFormat = "Exchange Group: Exchange Servers"
+        Module = "Application"
+        Category = "Exchange"
+        SectionTitle = "Exchange Servers Group"
+        Summary = "Shows the Exchange Servers group and judges each member against what belongs in it."
+        WhyItMatters = "Exchange Servers holds the computer accounts of the Exchange servers and with them their rights on the Exchange organization. A user account in it holds those rights as well."
+        WhatWeCheck = @(
+            "Members of Exchange Servers"
+            "Members that are neither Exchange servers, computer accounts, nested Exchange groups nor privileged principals"
+        )
+        SecureMessage = "Exchange Servers contains only Exchange server computer accounts and Exchange groups."
+    }
+
     # ============================================================================
     # ADCS (CERTIFICATE SERVICES)
     # ============================================================================

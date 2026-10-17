@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 16:14:25
-    Version: 2.7.0+20261017-1614
+    Build: 2026-10-17 16:19:03
+    Version: 2.7.0+20261017-1619
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6821,7 +6821,7 @@ $Script:PrimaryAttributes = @{
     # Exchange RBAC role assignments (Get-ExchangeRBACAssignments).
     # Role and assignee first - the pair is the finding; the verdict explains it.
     ExchangeRoleAssignment = @(
-        'RoleName', 'Assignee', 'AssigneeType', 'AssignmentType', 'RiskVerdict',
+        'RoleName', 'Assignee', 'AssigneeType', 'assigneeMembers', 'AssignmentType', 'RiskVerdict',
         'AssignmentScope', 'AssigneeDN', 'distinguishedName'
     )
 
@@ -6851,6 +6851,11 @@ $Script:PrimaryAttributes = @{
     )
 
     ExchangeOrganizationManagement = @(
+        'sAMAccountName', 'distinguishedName', 'objectSid',
+        'member', 'memberOf', 'description'
+    )
+
+    ExchangeServersGroup = @(
         'sAMAccountName', 'distinguishedName', 'objectSid',
         'member', 'memberOf', 'description'
     )
@@ -23493,6 +23498,13 @@ function Get-ExchangeGroupMemberClass {
         return "Hint"
     }
 
+    # And the group setup /PrepareDomain creates outside that OU: Exchange Install Domain
+    # Servers, directly in CN=Microsoft Exchange System Objects, which setup makes a member
+    # of Exchange Servers in every prepared domain.
+    if ($dn -and $dn -match '^CN=(?:[^,\\]|\\.)+,CN=Microsoft Exchange System Objects,DC=') {
+        return "Hint"
+    }
+
     # Check if this is an Exchange Server by SPN
     if ($Script:LdapConnection -and $sid) {
         try {
@@ -26106,6 +26118,20 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Service accounts or unexpected members"
         )
         SecureMessage = "Organization Management contains only designated Exchange administrators."
+    }
+
+    'ExchangeServersGroup' = @{
+        TitleFormat = "Exchange Group: Exchange Servers"
+        Module = "Application"
+        Category = "Exchange"
+        SectionTitle = "Exchange Servers Group"
+        Summary = "Shows the Exchange Servers group and judges each member against what belongs in it."
+        WhyItMatters = "Exchange Servers holds the computer accounts of the Exchange servers and with them their rights on the Exchange organization. A user account in it holds those rights as well."
+        WhatWeCheck = @(
+            "Members of Exchange Servers"
+            "Members that are neither Exchange servers, computer accounts, nested Exchange groups nor privileged principals"
+        )
+        SecureMessage = "Exchange Servers contains only Exchange server computer accounts and Exchange groups."
     }
 
     # ============================================================================
@@ -122831,6 +122857,13 @@ function Get-ExchangeInfrastructure {
                 @{ Name       = 'Organization Management'
                    ObjectType = 'ExchangeOrganizationManagement'
                    Title      = 'Checking Organization Management group...' }
+
+                # Step 2 reads it to find the servers and never judged it. It is meant to
+                # hold the Exchange servers' computer accounts and holds their rights on the
+                # Exchange organization, so a user in it holds them too.
+                @{ Name       = 'Exchange Servers'
+                   ObjectType = 'ExchangeServersGroup'
+                   Title      = 'Checking Exchange Servers group...' }
             )
 
             # Asked of the forest root at most once, for all three, and only where a group
@@ -123239,6 +123272,25 @@ function Get-ExchangeRBACAssignments {
                 if ($assigneePrivileged -and $assigneePrivileged.IsPrivileged -eq $true) {
                     $resultObj | Add-Member -NotePropertyName 'assigneePrivilege' -NotePropertyValue (
                         "Already privileged: $($assigneePrivileged.Reason)") -Force
+                }
+
+                # Who holds a role assigned to a group: its members. For the role groups
+                # Exchange ships these roles on - Discovery Management with Mailbox Search,
+                # Hygiene Management with ApplicationImpersonation - the assignment is the
+                # expected one, and only the membership says who reads every mailbox in
+                # this organization. Direct members, by name; a nested group is named as one.
+                if ($assigneeObject -and @($assigneeObject.objectClass) -icontains 'group' -and -not $isDelegating) {
+                    $memberNames = @(@($assigneeObject.member) | Where-Object { $_ } | ForEach-Object {
+                        if ("$_" -match '^CN=((?:[^,\\]|\\.)+),') { $Matches[1] -replace '\\(.)', '$1' } else { "$_" }
+                    } | Sort-Object)
+                    $membersText = if ($memberNames.Count -eq 0) {
+                        'No direct members'
+                    } else {
+                        $shownMembers = @($memberNames | Select-Object -First 20) -join ', '
+                        if ($memberNames.Count -gt 20) { $shownMembers = "$shownMembers, ... and $($memberNames.Count - 20) more" }
+                        "$($memberNames.Count) direct member(s): $shownMembers"
+                    }
+                    $resultObj | Add-Member -NotePropertyName 'assigneeMembers' -NotePropertyValue $membersText -Force
                 }
 
                 # Scope is reported only from a scope object that actually exists. Exchange
@@ -140414,7 +140466,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1614"
+$Script:adPEASVersion = "2.7.0+20261017-1619"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

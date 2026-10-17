@@ -158,6 +158,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   (`msDS-RevealedUsers`), and a deny list that has lost the Denied RODC Password
   Replication Group. It runs in the Accounts module.
 
+- **The Exchange Servers group is judged, and a role held through a group names its
+  members.** `Get-ExchangeInfrastructure` read Exchange Servers only to find the servers;
+  it now shows the group like the other Exchange service groups, so a member that is
+  neither an Exchange server, a computer account, an Exchange group nor a privileged
+  principal is a finding. Exchange Install Domain Servers, which setup puts into Exchange
+  Servers from `CN=Microsoft Exchange System Objects`, counts as an Exchange group.
+  `Get-ExchangeRBACAssignments` names the direct members of a group that holds one of the
+  watched roles - for the role groups Exchange ships them on, such as Discovery
+  Management with Mailbox Search, the membership is who actually holds the role.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
