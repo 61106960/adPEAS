@@ -747,6 +747,10 @@ function Get-ExchangeInfrastructure {
                     'ms-exch-bypass-anti-spam'                        = 'bypass anti-spam filtering'
                     'ms-exch-smtp-submit'                             = 'submit messages'
                     'ms-exch-accept-headers-routing'                  = 'keep routing headers'
+                    # "Controls whether messages ... are treated as authenticated"
+                    # (Microsoft, Receive connector permissions). Only the Exchange server
+                    # permission groups carry it by default, never Anonymous users.
+                    'ms-exch-smtp-accept-authentication-flag'         = 'have messages treated as authenticated'
                 }
 
                 try {
@@ -887,6 +891,14 @@ function Get-ExchangeInfrastructure {
                     elseif (($anonymousRights -contains 'ms-exch-smtp-accept-authoritative-domain-sender') -or
                             ($anonymousRights -contains 'ms-exch-smtp-accept-any-sender')) {
                         $verdict = 'Sender spoofing - unauthenticated senders can claim an internal sender address'
+                        $consoleClass = 'Finding'
+                    }
+                    elseif ($anonymousRights -contains 'ms-exch-smtp-accept-authentication-flag') {
+                        # The rights above were the only anonymous ones read. Granted to an
+                        # unauthenticated session, this one has Exchange treat its mail as
+                        # authenticated: it reaches distribution groups that accept internal
+                        # senders only, and loses the marking as external.
+                        $verdict = 'Unauthenticated mail treated as authenticated - anonymous senders reach recipients that accept internal senders only'
                         $consoleClass = 'Finding'
                     }
                     elseif ($broadRights -contains 'ms-exch-smtp-accept-any-recipient') {

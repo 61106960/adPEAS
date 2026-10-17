@@ -11423,6 +11423,41 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        @{ Attribute = 'RelayStatus'; Pattern = '^Broad relay'; Severity = 'Hint' }
 	    )
 	}
+	'EXCHANGE_SMTP_ANONYMOUS_AUTHENTICATED' = @{
+	    Title = "SMTP Receive Connector Treats Unauthenticated Mail as Authenticated"
+	    Risk = "Finding"
+	    BaseScore = 45
+	    Description = "This receive connector grants ms-Exch-SMTP-Accept-Authentication-Flag to an anonymous principal. The permission 'controls whether messages from SMTP clients or servers are treated as authenticated' (Microsoft): without it, unauthenticated mail is identified as external. With it, a message from anyone who reaches the connector counts as authenticated - it is accepted by distribution groups that take mail from internal senders only (RequireSenderAuthenticationEnabled), and it loses the marking that tells a recipient it came from outside. Only the Exchange server permission groups carry this right by default; the Anonymous users group never does."
+	    Impact = @(
+	        "Anonymous senders reach distribution groups restricted to internal senders"
+	        "Mail from outside is not marked as external, so recipients and transport rules take it for internal mail"
+	        "Combined with a spoofed internal sender address, phishing that looks entirely internal"
+	    )
+	    Attack = @(
+	        "1. Attacker finds the connector that accepts anonymous sessions"
+	        "2. Submits a message to a distribution group that accepts internal senders only"
+	        "3. The message is treated as authenticated and delivered without an external marking"
+	    )
+	    Remediation = @(
+	        "Remove ms-Exch-SMTP-Accept-Authentication-Flag from the anonymous principal: Remove-ADPermission -Identity 'CONNECTOR' -User 'NT AUTHORITY\ANONYMOUS LOGON' -ExtendedRights ms-Exch-SMTP-Accept-Authentication-Flag"
+	        "Where a trusted relay host needs it, give that host its own connector restricted by RemoteIPRanges and authenticate it"
+	        "Check whether the connector uses 'Externally secured' authentication on a network that is not actually secured"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show the anonymous grants on the connector"
+	            Command = "Get-ADPermission -Identity 'CONNECTOR' -User 'NT AUTHORITY\ANONYMOUS LOGON' | Format-Table ExtendedRights -AutoSize"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Receive connectors - permission groups and permissions (Microsoft)"; Url = "https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors" }
+	    )
+	    Tools = @("swaks", "Exchange Management Shell")
+	    MITRE = "T1566"
+	    Triggers = @(
+	        @{ Attribute = 'RelayStatus'; Pattern = '^Unauthenticated mail treated as authenticated'; Severity = 'Finding' }
+	    )
+	}
 	'EXCHANGE_SMTP_ANONYMOUS_BYPASS_ANTISPAM' = @{
 	    Title = "SMTP Receive Connector Lets Unauthenticated Mail Bypass Anti-Spam"
 	    Risk = "Finding"
@@ -75862,6 +75897,7 @@ function Get-ExchangeInfrastructure {
 	                'ms-exch-bypass-anti-spam'                        = 'bypass anti-spam filtering'
 	                'ms-exch-smtp-submit'                             = 'submit messages'
 	                'ms-exch-accept-headers-routing'                  = 'keep routing headers'
+	                'ms-exch-smtp-accept-authentication-flag'         = 'have messages treated as authenticated'
 	            }
 	            try {
 	                $rightNameFilters = @($smtpRightMeaning.Keys | ForEach-Object { "(displayName=$_)" })
@@ -75948,6 +75984,10 @@ function Get-ExchangeInfrastructure {
 	                elseif (($anonymousRights -contains 'ms-exch-smtp-accept-authoritative-domain-sender') -or
 	                        ($anonymousRights -contains 'ms-exch-smtp-accept-any-sender')) {
 	                    $verdict = 'Sender spoofing - unauthenticated senders can claim an internal sender address'
+	                    $consoleClass = 'Finding'
+	                }
+	                elseif ($anonymousRights -contains 'ms-exch-smtp-accept-authentication-flag') {
+	                    $verdict = 'Unauthenticated mail treated as authenticated - anonymous senders reach recipients that accept internal senders only'
 	                    $consoleClass = 'Finding'
 	                }
 	                elseif ($broadRights -contains 'ms-exch-smtp-accept-any-recipient') {
@@ -89543,7 +89583,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-2042"
+$Script:adPEASVersion = "2.7.0+20261017-2048"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

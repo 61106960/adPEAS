@@ -378,6 +378,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   controller since the July 13, 2021 update. The patch level is not readable over LDAP,
   so the card says so and links Microsoft's deployment guidance.
 
+- **The card for SeEnableDelegationPrivilege no longer claims it bypasses the sensitive
+  flag.** It said the holder bypasses 'Account is sensitive and cannot be delegated' and
+  recommended that very flag as a second layer. The flag does not depend on who
+  configured the delegation; the card now names whom the holder can impersonate - every
+  account neither marked sensitive nor in Protected Users.
+
+- **`Get-ExchangeInfrastructure` reads ms-Exch-SMTP-Accept-Authentication-Flag on receive
+  connectors.** The permission decides whether a session's mail is treated as
+  authenticated, and only the Exchange server permission groups carry it by default.
+  Granted to an anonymous principal it was not read - the connector came out as
+  "Anonymous submission only - expected". It is now the verdict *Unauthenticated mail
+  treated as authenticated*, a finding with a card of its own: such mail reaches
+  distribution groups that accept internal senders only and loses its external marking.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
