@@ -14666,11 +14666,11 @@ $acl.Access | Where-Object {
         Title = "Account Is Sensitive and Cannot Be Delegated"
         Risk = "Secure"
         BaseScore = 0
-        Description = "This account has the NOT_DELEGATED flag set, meaning it cannot be impersonated through Kerberos delegation. This protects the account from delegation-based attacks including unconstrained, constrained, and resource-based constrained delegation."
+        Description = "This account has the NOT_DELEGATED flag set, meaning it cannot be impersonated through Kerberos delegation. This protects the account from delegation-based attacks including unconstrained, constrained, and resource-based constrained delegation. One condition: the domain controllers must carry the fix for CVE-2020-17049 ('Bronze Bit'). Before it, an attacker holding the key of a service with constrained delegation could alter a service ticket that was not valid for delegation - which is what this flag produces - and the KDC accepted it, so the flag did not stop that path. Microsoft shipped the fix with the December 8, 2020 update and enforces it on every domain controller since the July 13, 2021 update. adPEAS cannot read the patch level of a domain controller over LDAP."
         Impact = @(
-            "Account is protected from all Kerberos delegation attacks"
+            "Account is protected from Kerberos delegation attacks - on domain controllers that enforce the CVE-2020-17049 fix"
             "Cannot be impersonated via unconstrained delegation"
-            "Protected from constrained delegation abuse"
+            "Protected from constrained delegation abuse, unless a domain controller still accepts the Bronze Bit alteration"
             "RBCD attacks cannot target this account"
         )
         Attack = @(
@@ -14682,6 +14682,7 @@ $acl.Access | Where-Object {
         )
         Remediation = @(
             "This is a secure configuration - no remediation needed"
+            "Keep every domain controller on Windows updates from July 13, 2021 or later: before them, Bronze Bit (CVE-2020-17049) bypasses this flag and Protected Users alike"
             "Consider adding all privileged accounts to Protected Users group"
             "Document which accounts have this protection"
             "Regularly audit that this flag remains set on sensitive accounts"
@@ -14689,6 +14690,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Protected Accounts - Microsoft"; Url = "https://docs.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group" }
             @{ Title = "Delegation Protection"; Url = "https://adsecurity.org/?p=1667" }
+            @{ Title = "Managing deployment of Kerberos S4U changes for CVE-2020-17049 - Microsoft"; Url = "https://support.microsoft.com/en-us/topic/managing-deployment-of-kerberos-s4u-changes-for-cve-2020-17049-569d60b7-3267-e2b0-7d9b-e46d770332ab" }
         )
         Tools = @()
         MITRE = "M1026"
@@ -92586,7 +92588,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-2037"
+$Script:adPEASVersion = "2.7.0+20261017-2040"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

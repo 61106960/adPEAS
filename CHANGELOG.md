@@ -370,6 +370,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   every logon and honoured by every ACL that names it. When the Global Catalog or the
   trusts cannot be read, the row says unknown and nothing is counted.
 
+- **The card for 'Account is sensitive and cannot be delegated' names the condition it
+  depends on.** It promised protection from every delegation attack. Before the fix for
+  CVE-2020-17049 ("Bronze Bit") a service with constrained delegation could alter a
+  ticket that was not valid for delegation and the KDC accepted it, so neither the flag
+  nor Protected Users stopped that path; Microsoft enforces the fix on every domain
+  controller since the July 13, 2021 update. The patch level is not readable over LDAP,
+  so the card says so and links Microsoft's deployment guidance.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
