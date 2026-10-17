@@ -1399,6 +1399,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
     # COMPUTERS
     # ============================================================================
 
+    'ComputerPasswordAge' = @{
+        TitleFormat = "Machine Password Not Rotated: {Name}"
+        Module = "Computer"
+        Category = "Computers"
+        SectionTitle = "Machine Account Password Age"
+        Summary = "Finds active computers whose machine account password is not rotated."
+        WhyItMatters = "A domain member changes its machine account password itself, every 30 days by default. One that does not keeps a key that never ages out: whoever extracted it once can forge service tickets to the host, and for a Domain Controller the key replicates the whole directory."
+        WhatWeCheck = @(
+            "Enabled computers that logged on within the last 30 days and whose machine account password is 90 days old or older"
+            "Whether the computer is a Domain Controller, which is reported as a finding"
+            "Not tested: the cause on the computer itself - a policy, a non-Windows join tool or a clone - which needs access to the host"
+        )
+        SecureMessage = "Every computer that logged on in the last 30 days has changed its machine account password within 90 days."
+        PrimaryFindingId = 'COMPUTER_PASSWORD_NOT_ROTATED'
+    }
+
     'OutdatedComputer' = @{
         TitleFormat = "Outdated Computer: {Name}"
         Module = "Computer"

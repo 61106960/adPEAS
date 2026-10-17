@@ -8092,6 +8092,82 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
     # COMPUTER ACCOUNT FINDINGS
     # ============================================================================
 
+    'COMPUTER_PASSWORD_NOT_ROTATED' = @{
+        Title = "Machine Account Password Not Rotated"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "This computer has logged on recently but has not changed its machine account password for far longer than a domain member does on its own - every 30 days by default. The change is switched off: by the policy 'Domain member: Disable machine account password changes', by a join tool on a non-Windows system that does not rotate, or on a cloned machine. A machine account key that does not change never ages out, so whoever extracted it once keeps the access it gives."
+        Impact = @(
+            "A once-extracted machine account key stays valid - from the host's LSA secrets, a backup or a disk image"
+            "With it, service tickets to every service of the host can be forged (silver tickets), and the computer's own domain access can be used"
+            "Microsoft names non-persistent VDI and embedded devices as the cases for switching the change off - with a change planned for each maintenance window"
+        )
+        Attack = @(
+            "1. Attacker extracts the machine account key of the host once"
+            "2. Forges service tickets to its services, or authenticates as the computer"
+            "3. Keeps that access for as long as the password does not change"
+        )
+        Remediation = @(
+            "Find out why the computer does not change its password: DisablePasswordChange or a long MaximumPasswordAge under the Netlogon parameters, a non-Windows join tool, or a clone"
+            "Turn the change back on; on a non-Windows member configure the join tool to renew the machine password"
+            "Where the change has to stay off, change the password in each maintenance window"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Read the rotation settings on the computer"
+                Command = "Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' | Select-Object DisablePasswordChange,MaximumPasswordAge"
+            }
+            @{
+                Description = "Change the machine account password now (run on the computer)"
+                Command = "Nltest /sc_change_pwd:DOMAIN_NAME"
+            }
+        )
+        References = @(
+            @{ Title = "Domain member: Maximum machine account password age - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-member-maximum-machine-account-password-age" }
+            @{ Title = "Domain member: Disable machine account password changes - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-member-disable-machine-account-password-changes" }
+        )
+        Tools = @("Mimikatz", "Rubeus", "Impacket")
+        MITRE = "T1558.002"
+        Triggers = @(
+            @{ Attribute = 'machinePasswordAge'; Pattern = '^Not rotated'; Severity = 'Hint' }
+        )
+    }
+
+    'DC_PASSWORD_NOT_ROTATED' = @{
+        Title = "Domain Controller Machine Account Password Not Rotated"
+        Risk = "Finding"
+        BaseScore = 30
+        Description = "This Domain Controller has logged on recently but has not changed its machine account password for far longer than it does on its own - every 30 days by default, like any domain member. A Domain Controller's machine account replicates the directory, so its key is a DCSync credential, and one that does not change keeps working for whoever obtained it once: from a system state backup, a snapshot of a virtual Domain Controller, or its memory."
+        Impact = @(
+            "A once-extracted Domain Controller key replicates every password hash of the domain (DCSync) for as long as it stays"
+            "Service tickets to the Domain Controller's own services - LDAP, CIFS, HOST - can be forged with it"
+        )
+        Attack = @(
+            "1. Attacker obtains the Domain Controller's machine account key once - from a backup, a VM snapshot or memory"
+            "2. Replicates the domain's secrets with it (DCSync), or forges service tickets to the Domain Controller"
+            "3. Keeps that access until the Domain Controller changes its password"
+        )
+        Remediation = @(
+            "Find out why the Domain Controller does not change its password: 'Domain member: Disable machine account password changes' or a long maximum age applied to the Domain Controllers, or a restored or cloned Domain Controller"
+            "Turn the change back on, so the Domain Controller changes its password at its next check"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Read the rotation settings on the Domain Controller"
+                Command = "Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' | Select-Object DisablePasswordChange,MaximumPasswordAge"
+            }
+        )
+        References = @(
+            @{ Title = "Domain member: Maximum machine account password age - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-member-maximum-machine-account-password-age" }
+            @{ Title = "Domain member: Disable machine account password changes - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-member-disable-machine-account-password-changes" }
+        )
+        Tools = @("Mimikatz", "Impacket")
+        MITRE = "T1003.006"
+        Triggers = @(
+            @{ Attribute = 'machinePasswordAge'; Pattern = '^DOMAIN CONTROLLER'; Severity = 'Finding' }
+        )
+    }
+
     'MACHINE_QUOTA_UNRESTRICTED' = @{
         Title = "Unrestricted Machine Account Quota"
         Risk = "Hint"

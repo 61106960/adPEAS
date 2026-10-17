@@ -248,6 +248,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Computer\Get-OutdatedComputers.ps1"
     . "$Script:ScriptPath\modules\Checks\Computer\Get-InfrastructureServers.ps1"
     . "$Script:ScriptPath\modules\Checks\Computer\Get-NonDefaultComputerOwners.ps1"
+    . "$Script:ScriptPath\modules\Checks\Computer\Get-ComputerPasswordAge.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOPermissions.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOLocalGroupMembership.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOScheduledTasks.ps1"
@@ -1210,6 +1211,7 @@ try {
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-NonDefaultComputerOwners' -Title 'Non-Default Computer Owners' -Check { Get-NonDefaultComputerOwners -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-LAPSConfiguration' -Title 'LAPS Configuration' -Check { Get-LAPSConfiguration -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-OutdatedComputers' -Title 'Outdated Computers' -Check { Get-OutdatedComputers -OPSEC:$OPSEC }
+            Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-ComputerPasswordAge' -Title 'Machine Account Password Age' -Check { Get-ComputerPasswordAge }
         } catch {
             Write-Warning "[adPEAS] Error executing Computer Module: $_"
         }

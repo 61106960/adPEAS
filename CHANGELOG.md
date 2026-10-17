@@ -131,6 +131,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   have never logged on are now a finding with a card of its own; one that has logged on
   is a hint.
 
+- **New check `Get-ComputerPasswordAge`: active computers that do not rotate their machine
+  account password.** A domain member and a Domain Controller change it every 30 days by
+  default. An enabled computer that logged on within the last 30 days (`-ActiveDays`) but
+  whose password is 90 days old or older (`-PasswordAgeDays`) has the change switched
+  off - by policy, by a non-Windows join tool or as a clone - and its machine account key
+  never ages out. Domain Controllers are a finding, since their key replicates the
+  directory; other computers are a hint. It runs in the Computer module.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

@@ -11328,6 +11328,80 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        @{ Attribute = 'RiskVerdict'; Pattern = '^Default assignment'; Severity = 'Hint' }
 	    )
 	}
+	'COMPUTER_PASSWORD_NOT_ROTATED' = @{
+	    Title = "Machine Account Password Not Rotated"
+	    Risk = "Hint"
+	    BaseScore = 10
+	    Description = "This computer has logged on recently but has not changed its machine account password for far longer than a domain member does on its own - every 30 days by default. The change is switched off: by the policy 'Domain member: Disable machine account password changes', by a join tool on a non-Windows system that does not rotate, or on a cloned machine. A machine account key that does not change never ages out, so whoever extracted it once keeps the access it gives."
+	    Impact = @(
+	        "A once-extracted machine account key stays valid - from the host's LSA secrets, a backup or a disk image"
+	        "With it, service tickets to every service of the host can be forged (silver tickets), and the computer's own domain access can be used"
+	        "Microsoft names non-persistent VDI and embedded devices as the cases for switching the change off - with a change planned for each maintenance window"
+	    )
+	    Attack = @(
+	        "1. Attacker extracts the machine account key of the host once"
+	        "2. Forges service tickets to its services, or authenticates as the computer"
+	        "3. Keeps that access for as long as the password does not change"
+	    )
+	    Remediation = @(
+	        "Find out why the computer does not change its password: DisablePasswordChange or a long MaximumPasswordAge under the Netlogon parameters, a non-Windows join tool, or a clone"
+	        "Turn the change back on; on a non-Windows member configure the join tool to renew the machine password"
+	        "Where the change has to stay off, change the password in each maintenance window"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Read the rotation settings on the computer"
+	            Command = "Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' | Select-Object DisablePasswordChange,MaximumPasswordAge"
+	        }
+	        @{
+	            Description = "Change the machine account password now (run on the computer)"
+	            Command = "Nltest /sc_change_pwd:DOMAIN_NAME"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Domain member: Maximum machine account password age - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-member-maximum-machine-account-password-age" }
+	        @{ Title = "Domain member: Disable machine account password changes - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-member-disable-machine-account-password-changes" }
+	    )
+	    Tools = @("Mimikatz", "Rubeus", "Impacket")
+	    MITRE = "T1558.002"
+	    Triggers = @(
+	        @{ Attribute = 'machinePasswordAge'; Pattern = '^Not rotated'; Severity = 'Hint' }
+	    )
+	}
+	'DC_PASSWORD_NOT_ROTATED' = @{
+	    Title = "Domain Controller Machine Account Password Not Rotated"
+	    Risk = "Finding"
+	    BaseScore = 30
+	    Description = "This Domain Controller has logged on recently but has not changed its machine account password for far longer than it does on its own - every 30 days by default, like any domain member. A Domain Controller's machine account replicates the directory, so its key is a DCSync credential, and one that does not change keeps working for whoever obtained it once: from a system state backup, a snapshot of a virtual Domain Controller, or its memory."
+	    Impact = @(
+	        "A once-extracted Domain Controller key replicates every password hash of the domain (DCSync) for as long as it stays"
+	        "Service tickets to the Domain Controller's own services - LDAP, CIFS, HOST - can be forged with it"
+	    )
+	    Attack = @(
+	        "1. Attacker obtains the Domain Controller's machine account key once - from a backup, a VM snapshot or memory"
+	        "2. Replicates the domain's secrets with it (DCSync), or forges service tickets to the Domain Controller"
+	        "3. Keeps that access until the Domain Controller changes its password"
+	    )
+	    Remediation = @(
+	        "Find out why the Domain Controller does not change its password: 'Domain member: Disable machine account password changes' or a long maximum age applied to the Domain Controllers, or a restored or cloned Domain Controller"
+	        "Turn the change back on, so the Domain Controller changes its password at its next check"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Read the rotation settings on the Domain Controller"
+	            Command = "Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' | Select-Object DisablePasswordChange,MaximumPasswordAge"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Domain member: Maximum machine account password age - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-member-maximum-machine-account-password-age" }
+	        @{ Title = "Domain member: Disable machine account password changes - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-member-disable-machine-account-password-changes" }
+	    )
+	    Tools = @("Mimikatz", "Impacket")
+	    MITRE = "T1003.006"
+	    Triggers = @(
+	        @{ Attribute = 'machinePasswordAge'; Pattern = '^DOMAIN CONTROLLER'; Severity = 'Finding' }
+	    )
+	}
 	'MACHINE_QUOTA_UNRESTRICTED' = @{
 	    Title = "Unrestricted Machine Account Quota"
 	    Risk = "Hint"
@@ -19817,6 +19891,21 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    FilteringNote = "Only Critical/High/Medium severity findings are shown. Domain Admins and Enterprise Admins with LAPS read access are filtered as expected."
 	    SecureMessage = "LAPS password read access is properly restricted. No non-privileged accounts have access to LAPS passwords, following the principle of least privilege."
 	    PrimaryFindingId = 'LAPS_PASSWORD_READ_ACCESS'
+	}
+	'ComputerPasswordAge' = @{
+	    TitleFormat = "Machine Password Not Rotated: {Name}"
+	    Module = "Computer"
+	    Category = "Computers"
+	    SectionTitle = "Machine Account Password Age"
+	    Summary = "Finds active computers whose machine account password is not rotated."
+	    WhyItMatters = "A domain member changes its machine account password itself, every 30 days by default. One that does not keeps a key that never ages out: whoever extracted it once can forge service tickets to the host, and for a Domain Controller the key replicates the whole directory."
+	    WhatWeCheck = @(
+	        "Enabled computers that logged on within the last 30 days and whose machine account password is 90 days old or older"
+	        "Whether the computer is a Domain Controller, which is reported as a finding"
+	        "Not tested: the cause on the computer itself - a policy, a non-Windows join tool or a clone - which needs access to the host"
+	    )
+	    SecureMessage = "Every computer that logged on in the last 30 days has changed its machine account password within 90 days."
+	    PrimaryFindingId = 'COMPUTER_PASSWORD_NOT_ROTATED'
 	}
 	'OutdatedComputer' = @{
 	    TitleFormat = "Outdated Computer: {Name}"
@@ -68284,6 +68373,65 @@ function Get-NonDefaultComputerOwners {
 	    }
 	}
 }
+function Get-ComputerPasswordAge {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [string]$Domain,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Server,
+	    [Parameter(Mandatory=$false)]
+	    [System.Management.Automation.PSCredential]$Credential,
+	    [Parameter(Mandatory=$false)]
+	    [ValidateRange(1, 3650)]
+	    [int]$PasswordAgeDays = 90,
+	    [Parameter(Mandatory=$false)]
+	    [ValidateRange(1, 3650)]
+	    [int]$ActiveDays = 30
+	)
+	process {
+	    try {
+	        $connectionParams = @{}
+	        if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+	        if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+	        if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+	        if (-not (Ensure-LDAPConnection @connectionParams)) {
+	            return
+	        }
+	        Show-SubHeader "Searching for active computers whose machine account password is not rotated..." -ObjectType "ComputerPasswordAge"
+	        $activeSince = (Get-Date).AddDays(-$ActiveDays).ToFileTime()
+	        $computers = @(Get-DomainComputer -Enabled -PasswordAgeDays $PasswordAgeDays -LDAPFilter "(lastLogonTimestamp>=$activeSince)" @connectionParams)
+	        if ($computers.Count -eq 0) {
+	            Show-Line "Every computer that logged on in the last $ActiveDays days has changed its machine account password within $PasswordAgeDays days" -Class Secure
+	            return
+	        }
+	        $domainControllers = @()
+	        $members = @()
+	        foreach ($computer in @($computers | Test-AccountActivity -IncludeDetails)) {
+	            $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ComputerPasswordAge' -Force
+	            $days = $computer.ActivityDetails.DaysSincePasswordChange
+	            $uacFlags = @($computer.userAccountControl)
+	            if ($uacFlags -contains 'SERVER_TRUST_ACCOUNT' -or $uacFlags -contains 'PARTIAL_SECRETS_ACCOUNT') {
+	                $computer | Add-Member -NotePropertyName 'machinePasswordAge' -NotePropertyValue "DOMAIN CONTROLLER - not rotated for $days days" -Force
+	                $domainControllers += $computer
+	            } else {
+	                $computer | Add-Member -NotePropertyName 'machinePasswordAge' -NotePropertyValue "Not rotated for $days days" -Force
+	                $members += $computer
+	            }
+	        }
+	        if ($domainControllers.Count -gt 0) {
+	            Show-Line "$($domainControllers.Count) Domain Controller(s) have not changed their machine account password in $PasswordAgeDays days or more:" -Class Finding
+	            foreach ($computer in $domainControllers) { Show-Object $computer -Class Finding }
+	        }
+	        if ($members.Count -gt 0) {
+	            Show-Line "$($members.Count) active computer(s) have not changed their machine account password in $PasswordAgeDays days or more:" -Class Hint
+	            foreach ($computer in $members) { Show-Object $computer -Class Hint }
+	        }
+	    } catch {
+	        Show-Line "Error during check - the machine account password age could not be evaluated: $_" -Class Finding
+	    }
+	}
+}
 function Get-GPOPermissions {
 	[CmdletBinding()]
 	param(
@@ -86607,7 +86755,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1527"
+$Script:adPEASVersion = "2.7.0+20261017-1539"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -87118,6 +87266,7 @@ try {
 	        Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-NonDefaultComputerOwners' -Title 'Non-Default Computer Owners' -Check { Get-NonDefaultComputerOwners -OPSEC:$OPSEC }
 	        Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-LAPSConfiguration' -Title 'LAPS Configuration' -Check { Get-LAPSConfiguration -OPSEC:$OPSEC }
 	        Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-OutdatedComputers' -Title 'Outdated Computers' -Check { Get-OutdatedComputers -OPSEC:$OPSEC }
+	        Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-ComputerPasswordAge' -Title 'Machine Account Password Age' -Check { Get-ComputerPasswordAge }
 	    } catch {
 	        Write-Warning "[adPEAS] Error executing Computer Module: $_"
 	    }

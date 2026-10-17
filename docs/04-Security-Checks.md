@@ -1352,6 +1352,25 @@ Get-NonDefaultComputerOwners
 
 ---
 
+### Get-ComputerPasswordAge
+
+**Purpose**: Finds active computers whose machine account password is not rotated.
+
+**What it checks**:
+- Enabled computers that logged on within the last 30 days (`-ActiveDays`) and whose machine account password is 90 days old or older (`-PasswordAgeDays`)
+- A domain member and a Domain Controller change it every 30 days by default; one that does not has the change switched off (`DisablePasswordChange`), a non-Windows join tool that does not rotate, or is a clone
+- Domain Controllers are reported as a finding, other computers as a hint
+
+**Security Impact**: A machine account key that does not change never ages out. Whoever extracted it once can forge service tickets to the host; a Domain Controller's key replicates every password hash of the domain.
+
+**Usage**:
+```powershell
+Get-ComputerPasswordAge
+Get-ComputerPasswordAge -PasswordAgeDays 60 -ActiveDays 14
+```
+
+---
+
 ## Application Module
 
 Analyzes enterprise application infrastructure.
