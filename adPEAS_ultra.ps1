@@ -61257,6 +61257,7 @@ function Get-DomainInformation {
 	            Show-Line "No AD sites found" -Class Hint
 	        }
 	    } catch {
+	        Show-Line "Error during check - the domain information could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -61542,6 +61543,7 @@ function Get-DomainPasswordPolicy {
 	            Show-Line "Fine-Grained Password Policies not available (requires Domain Functional Level 2008+)" -Raw
 	        }
 	    } catch {
+	        Show-Line "Error during check - the password policy could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -61683,6 +61685,7 @@ function Get-DomainTrusts {
 	            Show-Line "No external domain trusts found (isolated domain)" -Class Note
 	        }
 	    } catch {
+	        Show-Line "Error during check - domain trusts could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -62063,6 +62066,7 @@ function Get-LDAPConfiguration {
 	            Show-Line "No LDAP Security configuration found in any GPO - all $dcCount DC(s) potentially vulnerable" -Class Finding
 	        }
 	    } catch {
+	        Show-Line "Error during check - the LDAP signing and channel binding configuration could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -62380,6 +62384,7 @@ function Get-SMBSigningStatus {
 	            Show-Line "No SMB Signing configuration found in any GPO - computers rely on OS defaults (varies by Windows version)" -Class Finding
 	        }
 	    } catch {
+	        Show-Line "Error during check - the SMB signing configuration could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -63257,6 +63262,7 @@ function Get-PrivilegedGroupMembers {
 	            Show-Line "Pre-Windows 2000 Compatible Access group could not be read - its membership was not assessed" -Class Finding
 	        }
 	    } catch {
+	        Show-Line "Error during check - privileged group memberships could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -63693,6 +63699,7 @@ function Get-ProtectedUsersStatus {
 	            }
 	        }
 	    } catch {
+	        Show-Line "Error during check - the Protected Users coverage could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -63791,6 +63798,7 @@ function Get-InactiveAdminAccounts {
 	            Show-Line "No inactive privileged accounts found" -Class Secure
 	        }
 	    } catch {
+	        Show-Line "Error during check - inactive privileged accounts could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -63887,6 +63895,7 @@ function Get-AdminPasswordNeverExpires {
 	            Show-Line "No privileged account has 'password never expires' set (filtered $(@($candidates).Count) candidate(s) with orphaned adminCount)" -Class Secure
 	        }
 	    } catch {
+	        Show-Line "Error during check - privileged accounts whose password never expires could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -64295,6 +64304,7 @@ function Get-ManagedServiceAccountSecurity {
 	            Show-Line "No standalone MSAs found" -Class Note
 	        }
 	    } catch {
+	        Show-Line "Error during check - managed service accounts could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -64470,6 +64480,7 @@ function Get-SIDHistoryInjection {
 	            }
 	        }
 	    } catch {
+	        Show-Line "Error during check - SID history could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -64582,6 +64593,7 @@ function Get-NonDefaultUserOwners {
 	            }
 	        }
 	    } catch {
+	        Show-Line "Error during check - the owners of user accounts could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -64656,6 +64668,7 @@ function Get-PasswordNotRequired {
 	            Show-Line "No enabled accounts with 'Password Not Required' flag found" -Class Secure
 	        }
 	    } catch {
+	        Show-Line "Error during check - accounts without a password requirement could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -64698,6 +64711,7 @@ function Get-UnconstrainedDelegation {
 	            Show-Object $account -Class Finding
 	        }
 	    } catch {
+	        Show-Line "Error during check - unconstrained delegation could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -64824,6 +64838,7 @@ function Get-ConstrainedDelegation {
 	        }
 	        if ($totalAccounts -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing constrained delegation" -Completed }
 	    } catch {
+	        Show-Line "Error during check - constrained delegation could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -64937,6 +64952,7 @@ function Get-ResourceBasedConstrainedDelegation {
 	            Show-Object $account -Class $rbcdClass
 	        }
 	    } catch {
+	        Show-Line "Error during check - resource-based constrained delegation could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -66000,6 +66016,7 @@ function Get-AddComputerRights {
 	            Show-Line "Add Computer to Domain rights properly configured" -Class $quotaClass
 	        }
 	    } catch {
+	        Show-Line "Error during check - the rights to add computers to the domain could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -68219,6 +68236,7 @@ function Get-GPOPermissions {
 	            Show-Line "No dangerous permissions, no non-default owner and no unexpected SYSVOL write access on $readCount of $(@($allGPOs).Count) GPO(s)" -Class $conclusionClass
 	        }
 	    } catch {
+	        Show-Line "Error during check - GPO permissions could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -68444,6 +68462,7 @@ function Get-GPOLocalGroupMembership {
 	            Show-Line "No vulnerable GPO local group assignments found in $(@($gpos).Count) analyzed GPO(s)" -Class $groupClass
 	        }
 	    } catch {
+	        Show-Line "Error during check - GPO local group assignments could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -68913,6 +68932,7 @@ function Get-GPOScheduledTasks {
 	            Show-Line "No scheduled tasks distributed via GPO in $($gpos.Count) analyzed GPO(s)" -Class Note
 	        }
 	    } catch {
+	        Show-Line "Error during check - scheduled tasks deployed via GPO could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -69517,6 +69537,7 @@ function Get-GPOScriptPaths {
 	            Show-Line "No scripts distributed via GPO" -Class Note
 	        }
 	    } catch {
+	        Show-Line "Error during check - scripts deployed via GPO could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -69814,6 +69835,7 @@ function Get-GPORegistrySettings {
 	            Show-Line "No vulnerable registry settings deployed via GPO" -Class Note
 	        }
 	    } catch {
+	        Show-Line "Error during check - registry settings deployed via GPO could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -70095,6 +70117,7 @@ function Get-GPOPointAndPrint {
 	            }
 	        }
 	    } catch {
+	        Show-Line "Error during check - Point and Print settings could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -70704,6 +70727,7 @@ function Get-ADCSTemplate {
 	    }
 	    if ($totalTemplates -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing certificate templates" -Completed }
 	    } catch {
+	        Show-Line "Error during check - certificate templates could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -71761,6 +71785,7 @@ function Get-ADCSVulnerabilities {
 	        }
 	    }
 	    catch {
+	        Show-Line "Error during check - certificate services vulnerabilities could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -71905,6 +71930,7 @@ function Get-WeakCertificateMapping {
 	    Show-SubHeader "Checking write access to altSecurityIdentities on privileged accounts..." -ObjectType "WeakCertificateMapping"
 	    $writableFindings = @()
 	    $exchangeOnlyFindings = @()
+	    $writeAnalysisFailed = $false
 	    try {
 	        $privilegedFilter = '(&(adminCount=1)(|(objectCategory=person)(objectCategory=computer)' +
 	                            '(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount)))'
@@ -71999,6 +72025,8 @@ function Get-WeakCertificateMapping {
 	        }
 	    }
 	    catch {
+	        $writeAnalysisFailed = $true
+	        Show-Line "Error during check - who may write altSecurityIdentities could not be evaluated: $_" -Class Finding
 	    }
 	    if (@($writableFindings).Count -gt 0) {
 	        Show-Line "Found $(@($writableFindings).Count) privileged principal(s) whose altSecurityIdentities a non-privileged principal may write" -Class $mappingClass -FindingId 'ESC14_WRITABLE_MAPPING'
@@ -72017,7 +72045,7 @@ function Get-WeakCertificateMapping {
 	            Show-Line "$(@($exchangeOnlyFindings).Count) privileged account(s) writable only by Exchange service groups (by design) - use -IncludePrivileged" -Class Note
 	        }
 	    }
-	    if (@($writableFindings).Count -eq 0) {
+	    if (@($writableFindings).Count -eq 0 -and -not $writeAnalysisFailed) {
 	        Show-Line "No non-privileged principal can write altSecurityIdentities on a privileged account" -Class Secure
 	    }
 	}
@@ -72916,6 +72944,7 @@ function Get-ExchangeInfrastructure {
 	        }
 	    }
 	    catch {
+	        Show-Line "Error during check - the Exchange infrastructure could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -73493,6 +73522,7 @@ function Get-SCCMInfrastructure {
 	            Show-Line "No SCCM-related groups found" -Class Note
 	        }
 	    } catch {
+	        Show-Line "Error during check - the SCCM infrastructure could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -73629,6 +73659,7 @@ function Get-SCOMInfrastructure {
 	            Show-Line "No SCOM-related groups found" -Class Note
 	        }
 	    } catch {
+	        Show-Line "Error during check - the SCOM infrastructure could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -73735,6 +73766,7 @@ function Get-KerberoastableAccounts {
 	            Show-Line "No kerberoastable accounts found" -Class "Secure"
 	        }
 	    } catch {
+	        Show-Line "Error during check - kerberoastable accounts could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -73848,6 +73880,7 @@ function Get-ASREPRoastableAccounts {
 	            Show-Line "No AS-REP Roastable accounts found" -Class "Secure"
 	        }
 	    } catch {
+	        Show-Line "Error during check - AS-REP roastable accounts could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -73911,6 +73944,7 @@ function Get-UnixPasswordAccounts {
 	            Show-Line "The value was not readable on: $($withheldNames -join ', ')" -Class "Note"
 	        }
 	    } catch {
+	        Show-Line "Error during check - Unix password attributes could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -74575,6 +74609,7 @@ function Get-CredentialExposure {
 	            }
 	        }
 	    } catch {
+	        Show-Line "Error during check - credentials in SYSVOL and NETLOGON could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -74739,6 +74774,7 @@ function Get-LAPSCredentialAccess {
 	            Show-Line "$withheldCount computer(s) have a LAPS password stored that this account may not read" -Class "Note"
 	        }
 	    } catch {
+	        Show-Line "Error during check - LAPS password access could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -74852,6 +74888,7 @@ function Get-BitLockerRecoveryKeyAccess {
 	            Show-Line "Error during the delegation analysis - who may read the recovery passwords could not be evaluated: $_" -Class Finding
 	        }
 	    } catch {
+	        Show-Line "Error during check - BitLocker recovery key access could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -75590,6 +75627,7 @@ function Get-PasswordInDescription {
 	        } else {
 	        }
 	    } catch {
+	        Show-Line "Error during check - credentials in free-text attributes could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -86075,7 +86113,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1235"
+$Script:adPEASVersion = "2.7.0+20261017-1248"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

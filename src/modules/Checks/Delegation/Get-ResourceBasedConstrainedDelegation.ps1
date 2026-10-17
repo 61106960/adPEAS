@@ -203,6 +203,7 @@ function Get-ResourceBasedConstrainedDelegation {
 
         } catch {
             Write-Log "[Get-ResourceBasedConstrainedDelegation] Error: $_" -Level Error
+            Show-Line "Error during check - resource-based constrained delegation could not be evaluated: $_" -Class Finding
         }
     }
 

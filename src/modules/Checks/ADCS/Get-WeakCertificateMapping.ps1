@@ -249,6 +249,7 @@ function Get-WeakCertificateMapping {
 
         $writableFindings = @()
         $exchangeOnlyFindings = @()
+        $writeAnalysisFailed = $false
         try {
             # One query for every privileged principal and its security descriptor, rather
             # than Get-ObjectACL per account: that helper reads the object it is given, so
@@ -421,6 +422,10 @@ function Get-WeakCertificateMapping {
         }
         catch {
             Write-Log "[Get-WeakCertificateMapping] Write-access analysis failed: $_" -Level Warning
+            # A failed analysis found nothing, which is not the same as nothing to find:
+            # the green line below used to close this section after an exception.
+            $writeAnalysisFailed = $true
+            Show-Line "Error during check - who may write altSecurityIdentities could not be evaluated: $_" -Class Finding
         }
 
         if (@($writableFindings).Count -gt 0) {
@@ -452,7 +457,7 @@ function Get-WeakCertificateMapping {
         # Only the real findings decide this. The Exchange ACL is by design and holds no
         # non-privileged principal, so counting it here meant the green verdict - which is
         # exactly what this line claims - could never be printed in a domain with Exchange.
-        if (@($writableFindings).Count -eq 0) {
+        if (@($writableFindings).Count -eq 0 -and -not $writeAnalysisFailed) {
             Show-Line "No non-privileged principal can write altSecurityIdentities on a privileged account" -Class Secure
         }
     }

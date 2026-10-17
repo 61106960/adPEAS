@@ -249,6 +249,7 @@ function Get-ConstrainedDelegation {
 
         } catch {
             Write-Log "[Get-ConstrainedDelegation] Error: $_" -Level Error
+            Show-Line "Error during check - constrained delegation could not be evaluated: $_" -Class Finding
         }
     }
 

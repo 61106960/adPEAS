@@ -246,6 +246,7 @@ function Get-BitLockerRecoveryKeyAccess {
 
         } catch {
             Write-Log "[Get-BitLockerRecoveryKeyAccess] Error: $_" -Level Error
+            Show-Line "Error during check - BitLocker recovery key access could not be evaluated: $_" -Class Finding
         }
     }
 

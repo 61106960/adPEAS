@@ -593,6 +593,7 @@ function Get-SCCMInfrastructure {
 
         } catch {
             Write-Log "[Get-SCCMInfrastructure] Error: $_" -Level Error
+            Show-Line "Error during check - the SCCM infrastructure could not be evaluated: $_" -Class Finding
         }
     }
 

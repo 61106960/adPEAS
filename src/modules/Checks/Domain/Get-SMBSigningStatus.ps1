@@ -556,6 +556,7 @@ function Get-SMBSigningStatus {
 
         } catch {
             Write-Log "[Get-SMBSigningStatus] Error: $_" -Level Error
+            Show-Line "Error during check - the SMB signing configuration could not be evaluated: $_" -Class Finding
         }
     }
 

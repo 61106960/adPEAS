@@ -1769,6 +1769,7 @@ function Get-ADCSVulnerabilities {
         }
         catch {
             Write-Log "[Get-ADCSVulnerabilities] Error: $_" -Level Error
+            Show-Line "Error during check - certificate services vulnerabilities could not be evaluated: $_" -Class Finding
         }
     }
 

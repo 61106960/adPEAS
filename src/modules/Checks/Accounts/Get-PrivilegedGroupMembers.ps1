@@ -1474,6 +1474,7 @@ function Get-PrivilegedGroupMembers {
 
         } catch {
             Write-Log "[Get-PrivilegedGroupMembers] Error: $_" -Level Error
+            Show-Line "Error during check - privileged group memberships could not be evaluated: $_" -Class Finding
         }
     }
 

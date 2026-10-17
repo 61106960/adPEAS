@@ -143,6 +143,7 @@ function Get-PasswordNotRequired {
 
         } catch {
             Write-Log "[Get-PasswordNotRequired] Error: $_" -Level Error
+            Show-Line "Error during check - accounts without a password requirement could not be evaluated: $_" -Class Finding
         }
     }
 

@@ -369,6 +369,7 @@ function Get-GPOPointAndPrint {
 
         } catch {
             Write-Log "[Get-GPOPointAndPrint] Error: $_" -Level Error
+            Show-Line "Error during check - Point and Print settings could not be evaluated: $_" -Class Finding
         }
     }
 

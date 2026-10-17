@@ -691,6 +691,7 @@ function Get-LDAPConfiguration {
 
         } catch {
             Write-Log "[Get-LDAPConfiguration] Error: $_" -Level Error
+            Show-Line "Error during check - the LDAP signing and channel binding configuration could not be evaluated: $_" -Class Finding
         }
     }
 

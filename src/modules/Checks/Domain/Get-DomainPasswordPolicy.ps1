@@ -519,6 +519,7 @@ function Get-DomainPasswordPolicy {
 
         } catch {
             Write-Log "[Get-DomainPasswordPolicy] Error: $_" -Level Error
+            Show-Line "Error during check - the password policy could not be evaluated: $_" -Class Finding
         }
     }
 

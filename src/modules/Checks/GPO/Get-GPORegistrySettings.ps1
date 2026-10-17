@@ -336,6 +336,7 @@ function Get-GPORegistrySettings {
 
         } catch {
             Write-Log "[Get-GPORegistrySettings] Error: $_" -Level Error
+            Show-Line "Error during check - registry settings deployed via GPO could not be evaluated: $_" -Class Finding
         }
     }
 

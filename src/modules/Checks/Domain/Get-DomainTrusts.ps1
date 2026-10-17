@@ -277,6 +277,7 @@ function Get-DomainTrusts {
 
         } catch {
             Write-Log "[Get-DomainTrusts] Error: $_" -Level Error
+            Show-Line "Error during check - domain trusts could not be evaluated: $_" -Class Finding
         }
     }
 

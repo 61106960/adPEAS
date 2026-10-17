@@ -208,6 +208,7 @@ function Get-InactiveAdminAccounts {
 
         } catch {
             Write-Log "[Get-InactiveAdminAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - inactive privileged accounts could not be evaluated: $_" -Class Finding
         }
     }
 

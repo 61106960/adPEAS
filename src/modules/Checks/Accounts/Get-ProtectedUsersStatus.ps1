@@ -454,6 +454,7 @@ function Get-ProtectedUsersStatus {
 
         } catch {
             Write-Log "[Get-ProtectedUsersStatus] Error: $_" -Level Error
+            Show-Line "Error during check - the Protected Users coverage could not be evaluated: $_" -Class Finding
         }
     }
 

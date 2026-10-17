@@ -330,6 +330,7 @@ function Get-LAPSCredentialAccess {
 
         } catch {
             Write-Log "[Get-LAPSCredentialAccess] Error: $_" -Level Error
+            Show-Line "Error during check - LAPS password access could not be evaluated: $_" -Class Finding
         }
     }
 

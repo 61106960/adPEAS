@@ -825,6 +825,7 @@ function Get-GPOPermissions {
 
         } catch {
             Write-Log "[Get-GPOPermissions] Error: $_" -Level Error
+            Show-Line "Error during check - GPO permissions could not be evaluated: $_" -Class Finding
         }
     }
 

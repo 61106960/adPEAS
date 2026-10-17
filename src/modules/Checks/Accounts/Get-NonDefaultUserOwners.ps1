@@ -215,6 +215,7 @@ function Get-NonDefaultUserOwners {
 
         } catch {
             Write-Log "[Get-NonDefaultUserOwners] Error: $_" -Level Error
+            Show-Line "Error during check - the owners of user accounts could not be evaluated: $_" -Class Finding
         }
     }
 

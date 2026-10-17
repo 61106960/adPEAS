@@ -236,6 +236,7 @@ function Get-SCOMInfrastructure {
 
         } catch {
             Write-Log "[Get-SCOMInfrastructure] Error: $_" -Level Error
+            Show-Line "Error during check - the SCOM infrastructure could not be evaluated: $_" -Class Finding
         }
     }
 

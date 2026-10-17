@@ -671,6 +671,7 @@ function Get-ManagedServiceAccountSecurity {
 
         } catch {
             Write-Log "[Get-ManagedServiceAccountSecurity] Error: $_" -Level Error
+            Show-Line "Error during check - managed service accounts could not be evaluated: $_" -Class Finding
         }
     }
 

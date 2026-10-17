@@ -209,6 +209,7 @@ function Get-KerberoastableAccounts {
 
         } catch {
             Write-Log "[Get-KerberoastableAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - kerberoastable accounts could not be evaluated: $_" -Class Finding
         }
     }
 

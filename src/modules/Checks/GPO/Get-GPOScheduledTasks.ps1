@@ -361,6 +361,7 @@ function Get-GPOScheduledTasks {
 
         } catch {
             Write-Log "[Get-GPOScheduledTasks] Error: $_" -Level Error
+            Show-Line "Error during check - scheduled tasks deployed via GPO could not be evaluated: $_" -Class Finding
         }
     }
 

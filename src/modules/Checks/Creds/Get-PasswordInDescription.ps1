@@ -390,6 +390,7 @@ function Get-PasswordInDescription {
 
         } catch {
             Write-Log "[Get-PasswordInDescription] Error: $_" -Level Error
+            Show-Line "Error during check - credentials in free-text attributes could not be evaluated: $_" -Class Finding
         }
     }
 

@@ -459,6 +459,7 @@ function Get-AddComputerRights {
 
         } catch {
             Write-Log "[Get-AddComputerRights] Error: $_" -Level Error
+            Show-Line "Error during check - the rights to add computers to the domain could not be evaluated: $_" -Class Finding
         }
     }
 

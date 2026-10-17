@@ -92,6 +92,7 @@ function Get-UnconstrainedDelegation {
 
         } catch {
             Write-Log "[Get-UnconstrainedDelegation] Error: $_" -Level Error
+            Show-Line "Error during check - unconstrained delegation could not be evaluated: $_" -Class Finding
         }
     }
 

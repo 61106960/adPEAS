@@ -141,6 +141,7 @@ function Get-UnixPasswordAccounts {
 
         } catch {
             Write-Log "[Get-UnixPasswordAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - Unix password attributes could not be evaluated: $_" -Class Finding
         }
     }
 

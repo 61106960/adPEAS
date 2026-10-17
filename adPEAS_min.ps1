@@ -63499,6 +63499,7 @@ function Get-DomainInformation {
             }
         } catch {
             Write-Log "[Get-DomainInformation] Error: $_" -Level Error
+            Show-Line "Error during check - the domain information could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -63796,6 +63797,7 @@ function Get-DomainPasswordPolicy {
             }
         } catch {
             Write-Log "[Get-DomainPasswordPolicy] Error: $_" -Level Error
+            Show-Line "Error during check - the password policy could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -63944,6 +63946,7 @@ function Get-DomainTrusts {
             }
         } catch {
             Write-Log "[Get-DomainTrusts] Error: $_" -Level Error
+            Show-Line "Error during check - domain trusts could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -64335,6 +64338,7 @@ function Get-LDAPConfiguration {
             }
         } catch {
             Write-Log "[Get-LDAPConfiguration] Error: $_" -Level Error
+            Show-Line "Error during check - the LDAP signing and channel binding configuration could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -64662,6 +64666,7 @@ function Get-SMBSigningStatus {
             }
         } catch {
             Write-Log "[Get-SMBSigningStatus] Error: $_" -Level Error
+            Show-Line "Error during check - the SMB signing configuration could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -65595,6 +65600,7 @@ function Get-PrivilegedGroupMembers {
             }
         } catch {
             Write-Log "[Get-PrivilegedGroupMembers] Error: $_" -Level Error
+            Show-Line "Error during check - privileged group memberships could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -66047,6 +66053,7 @@ function Get-ProtectedUsersStatus {
             }
         } catch {
             Write-Log "[Get-ProtectedUsersStatus] Error: $_" -Level Error
+            Show-Line "Error during check - the Protected Users coverage could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -66152,6 +66159,7 @@ function Get-InactiveAdminAccounts {
             }
         } catch {
             Write-Log "[Get-InactiveAdminAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - inactive privileged accounts could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -66259,6 +66267,7 @@ function Get-AdminPasswordNeverExpires {
             }
         } catch {
             Write-Log "[Get-AdminPasswordNeverExpires] Error: $_" -Level Error
+            Show-Line "Error during check - privileged accounts whose password never expires could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -66696,6 +66705,7 @@ function Get-ManagedServiceAccountSecurity {
             }
         } catch {
             Write-Log "[Get-ManagedServiceAccountSecurity] Error: $_" -Level Error
+            Show-Line "Error during check - managed service accounts could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -66885,6 +66895,7 @@ function Get-SIDHistoryInjection {
             }
         } catch {
             Write-Log "[Get-SIDHistoryInjection] Error: $_" -Level Error
+            Show-Line "Error during check - SID history could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -67008,6 +67019,7 @@ function Get-NonDefaultUserOwners {
             }
         } catch {
             Write-Log "[Get-NonDefaultUserOwners] Error: $_" -Level Error
+            Show-Line "Error during check - the owners of user accounts could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -67089,6 +67101,7 @@ function Get-PasswordNotRequired {
             }
         } catch {
             Write-Log "[Get-PasswordNotRequired] Error: $_" -Level Error
+            Show-Line "Error during check - accounts without a password requirement could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -67138,6 +67151,7 @@ function Get-UnconstrainedDelegation {
             }
         } catch {
             Write-Log "[Get-UnconstrainedDelegation] Error: $_" -Level Error
+            Show-Line "Error during check - unconstrained delegation could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -67272,6 +67286,7 @@ function Get-ConstrainedDelegation {
             if ($totalAccounts -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing constrained delegation" -Completed }
         } catch {
             Write-Log "[Get-ConstrainedDelegation] Error: $_" -Level Error
+            Show-Line "Error during check - constrained delegation could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -67394,6 +67409,7 @@ function Get-ResourceBasedConstrainedDelegation {
             }
         } catch {
             Write-Log "[Get-ResourceBasedConstrainedDelegation] Error: $_" -Level Error
+            Show-Line "Error during check - resource-based constrained delegation could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -68521,6 +68537,7 @@ function Get-AddComputerRights {
             }
         } catch {
             Write-Log "[Get-AddComputerRights] Error: $_" -Level Error
+            Show-Line "Error during check - the rights to add computers to the domain could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -70827,6 +70844,7 @@ function Get-GPOPermissions {
             }
         } catch {
             Write-Log "[Get-GPOPermissions] Error: $_" -Level Error
+            Show-Line "Error during check - GPO permissions could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -71062,6 +71080,7 @@ function Get-GPOLocalGroupMembership {
             }
         } catch {
             Write-Log "[Get-GPOLocalGroupMembership] Error: $_" -Level Error
+            Show-Line "Error during check - GPO local group assignments could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -71547,6 +71566,7 @@ function Get-GPOScheduledTasks {
             }
         } catch {
             Write-Log "[Get-GPOScheduledTasks] Error: $_" -Level Error
+            Show-Line "Error during check - scheduled tasks deployed via GPO could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -72167,6 +72187,7 @@ function Get-GPOScriptPaths {
             }
         } catch {
             Write-Log "[Get-GPOScriptPaths] Error: $_" -Level Error
+            Show-Line "Error during check - scripts deployed via GPO could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -72476,6 +72497,7 @@ function Get-GPORegistrySettings {
             }
         } catch {
             Write-Log "[Get-GPORegistrySettings] Error: $_" -Level Error
+            Show-Line "Error during check - registry settings deployed via GPO could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -72768,6 +72790,7 @@ function Get-GPOPointAndPrint {
             }
         } catch {
             Write-Log "[Get-GPOPointAndPrint] Error: $_" -Level Error
+            Show-Line "Error during check - Point and Print settings could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -73388,6 +73411,7 @@ function Get-ADCSTemplate {
         if ($totalTemplates -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing certificate templates" -Completed }
         } catch {
             Write-Log "[Get-ADCSTemplate] Error: $_" -Level Error
+            Show-Line "Error during check - certificate templates could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -74496,6 +74520,7 @@ function Get-ADCSVulnerabilities {
         }
         catch {
             Write-Log "[Get-ADCSVulnerabilities] Error: $_" -Level Error
+            Show-Line "Error during check - certificate services vulnerabilities could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -74651,6 +74676,7 @@ function Get-WeakCertificateMapping {
         Show-SubHeader "Checking write access to altSecurityIdentities on privileged accounts..." -ObjectType "WeakCertificateMapping"
         $writableFindings = @()
         $exchangeOnlyFindings = @()
+        $writeAnalysisFailed = $false
         try {
             $privilegedFilter = '(&(adminCount=1)(|(objectCategory=person)(objectCategory=computer)' +
                                 '(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount)))'
@@ -74754,6 +74780,8 @@ function Get-WeakCertificateMapping {
         }
         catch {
             Write-Log "[Get-WeakCertificateMapping] Write-access analysis failed: $_" -Level Warning
+            $writeAnalysisFailed = $true
+            Show-Line "Error during check - who may write altSecurityIdentities could not be evaluated: $_" -Class Finding
         }
         if (@($writableFindings).Count -gt 0) {
             Show-Line "Found $(@($writableFindings).Count) privileged principal(s) whose altSecurityIdentities a non-privileged principal may write" -Class $mappingClass -FindingId 'ESC14_WRITABLE_MAPPING'
@@ -74772,7 +74800,7 @@ function Get-WeakCertificateMapping {
                 Show-Line "$(@($exchangeOnlyFindings).Count) privileged account(s) writable only by Exchange service groups (by design) - use -IncludePrivileged" -Class Note
             }
         }
-        if (@($writableFindings).Count -eq 0) {
+        if (@($writableFindings).Count -eq 0 -and -not $writeAnalysisFailed) {
             Show-Line "No non-privileged principal can write altSecurityIdentities on a privileged account" -Class Secure
         }
     }
@@ -75702,6 +75730,7 @@ function Get-ExchangeInfrastructure {
         }
         catch {
             Write-Log "[Get-ExchangeInfrastructure] Error: $_" -Level Error
+            Show-Line "Error during check - the Exchange infrastructure could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -76307,6 +76336,7 @@ function Get-SCCMInfrastructure {
             }
         } catch {
             Write-Log "[Get-SCCMInfrastructure] Error: $_" -Level Error
+            Show-Line "Error during check - the SCCM infrastructure could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -76451,6 +76481,7 @@ function Get-SCOMInfrastructure {
             }
         } catch {
             Write-Log "[Get-SCOMInfrastructure] Error: $_" -Level Error
+            Show-Line "Error during check - the SCOM infrastructure could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -76566,6 +76597,7 @@ function Get-KerberoastableAccounts {
             }
         } catch {
             Write-Log "[Get-KerberoastableAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - kerberoastable accounts could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -76688,6 +76720,7 @@ function Get-ASREPRoastableAccounts {
             }
         } catch {
             Write-Log "[Get-ASREPRoastableAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - AS-REP roastable accounts could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -76759,6 +76792,7 @@ function Get-UnixPasswordAccounts {
             }
         } catch {
             Write-Log "[Get-UnixPasswordAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - Unix password attributes could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -77452,6 +77486,7 @@ function Get-CredentialExposure {
             }
         } catch {
             Write-Log "[Get-CredentialExposure] Error: $_" -Level Error
+            Show-Line "Error during check - credentials in SYSVOL and NETLOGON could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -77635,6 +77670,7 @@ function Get-LAPSCredentialAccess {
             }
         } catch {
             Write-Log "[Get-LAPSCredentialAccess] Error: $_" -Level Error
+            Show-Line "Error during check - LAPS password access could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -77764,6 +77800,7 @@ function Get-BitLockerRecoveryKeyAccess {
             }
         } catch {
             Write-Log "[Get-BitLockerRecoveryKeyAccess] Error: $_" -Level Error
+            Show-Line "Error during check - BitLocker recovery key access could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -78535,6 +78572,7 @@ function Get-PasswordInDescription {
             }
         } catch {
             Write-Log "[Get-PasswordInDescription] Error: $_" -Level Error
+            Show-Line "Error during check - credentials in free-text attributes could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -89069,7 +89107,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1235"
+$Script:adPEASVersion = "2.7.0+20261017-1248"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

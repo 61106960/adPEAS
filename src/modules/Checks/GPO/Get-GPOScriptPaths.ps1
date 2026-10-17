@@ -268,6 +268,7 @@ function Get-GPOScriptPaths {
 
         } catch {
             Write-Log "[Get-GPOScriptPaths] Error: $_" -Level Error
+            Show-Line "Error during check - scripts deployed via GPO could not be evaluated: $_" -Class Finding
         }
     }
 

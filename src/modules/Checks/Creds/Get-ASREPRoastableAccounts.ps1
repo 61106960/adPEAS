@@ -220,6 +220,7 @@ function Get-ASREPRoastableAccounts {
 
         } catch {
             Write-Log "[Get-ASREPRoastableAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - AS-REP roastable accounts could not be evaluated: $_" -Class Finding
         }
     }
 

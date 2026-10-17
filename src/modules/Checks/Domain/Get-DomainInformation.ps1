@@ -754,6 +754,7 @@ function Get-DomainInformation {
 
         } catch {
             Write-Log "[Get-DomainInformation] Error: $_" -Level Error
+            Show-Line "Error during check - the domain information could not be evaluated: $_" -Class Finding
         }
     }
 

@@ -1056,6 +1056,7 @@ function Get-CredentialExposure {
 
         } catch {
             Write-Log "[Get-CredentialExposure] Error: $_" -Level Error
+            Show-Line "Error during check - credentials in SYSVOL and NETLOGON could not be evaluated: $_" -Class Finding
         }
     }
 

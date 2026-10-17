@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 12:35:55
-    Version: 2.7.0+20261017-1235
+    Build: 2026-10-17 12:48:00
+    Version: 2.7.0+20261017-1248
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -99793,6 +99793,7 @@ function Get-DomainInformation {
 
         } catch {
             Write-Log "[Get-DomainInformation] Error: $_" -Level Error
+            Show-Line "Error during check - the domain information could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -100326,6 +100327,7 @@ function Get-DomainPasswordPolicy {
 
         } catch {
             Write-Log "[Get-DomainPasswordPolicy] Error: $_" -Level Error
+            Show-Line "Error during check - the password policy could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -100617,6 +100619,7 @@ function Get-DomainTrusts {
 
         } catch {
             Write-Log "[Get-DomainTrusts] Error: $_" -Level Error
+            Show-Line "Error during check - domain trusts could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -101322,6 +101325,7 @@ function Get-LDAPConfiguration {
 
         } catch {
             Write-Log "[Get-LDAPConfiguration] Error: $_" -Level Error
+            Show-Line "Error during check - the LDAP signing and channel binding configuration could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -101892,6 +101896,7 @@ function Get-SMBSigningStatus {
 
         } catch {
             Write-Log "[Get-SMBSigningStatus] Error: $_" -Level Error
+            Show-Line "Error during check - the SMB signing configuration could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -103380,6 +103385,7 @@ function Get-PrivilegedGroupMembers {
 
         } catch {
             Write-Log "[Get-PrivilegedGroupMembers] Error: $_" -Level Error
+            Show-Line "Error during check - privileged group memberships could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -104126,6 +104132,7 @@ function Get-ProtectedUsersStatus {
 
         } catch {
             Write-Log "[Get-ProtectedUsersStatus] Error: $_" -Level Error
+            Show-Line "Error during check - the Protected Users coverage could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -104348,6 +104355,7 @@ function Get-InactiveAdminAccounts {
 
         } catch {
             Write-Log "[Get-InactiveAdminAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - inactive privileged accounts could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -104569,6 +104577,7 @@ function Get-AdminPasswordNeverExpires {
 
         } catch {
             Write-Log "[Get-AdminPasswordNeverExpires] Error: $_" -Level Error
+            Show-Line "Error during check - privileged accounts whose password never expires could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -105376,6 +105385,7 @@ function Get-ManagedServiceAccountSecurity {
 
         } catch {
             Write-Log "[Get-ManagedServiceAccountSecurity] Error: $_" -Level Error
+            Show-Line "Error during check - managed service accounts could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -105698,6 +105708,7 @@ function Get-SIDHistoryInjection {
 
         } catch {
             Write-Log "[Get-SIDHistoryInjection] Error: $_" -Level Error
+            Show-Line "Error during check - SID history could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -105927,6 +105938,7 @@ function Get-NonDefaultUserOwners {
 
         } catch {
             Write-Log "[Get-NonDefaultUserOwners] Error: $_" -Level Error
+            Show-Line "Error during check - the owners of user accounts could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -106084,6 +106096,7 @@ function Get-PasswordNotRequired {
 
         } catch {
             Write-Log "[Get-PasswordNotRequired] Error: $_" -Level Error
+            Show-Line "Error during check - accounts without a password requirement could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -106190,6 +106203,7 @@ function Get-UnconstrainedDelegation {
 
         } catch {
             Write-Log "[Get-UnconstrainedDelegation] Error: $_" -Level Error
+            Show-Line "Error during check - unconstrained delegation could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -106453,6 +106467,7 @@ function Get-ConstrainedDelegation {
 
         } catch {
             Write-Log "[Get-ConstrainedDelegation] Error: $_" -Level Error
+            Show-Line "Error during check - constrained delegation could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -106670,6 +106685,7 @@ function Get-ResourceBasedConstrainedDelegation {
 
         } catch {
             Write-Log "[Get-ResourceBasedConstrainedDelegation] Error: $_" -Level Error
+            Show-Line "Error during check - resource-based constrained delegation could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -108698,6 +108714,7 @@ function Get-AddComputerRights {
 
         } catch {
             Write-Log "[Get-AddComputerRights] Error: $_" -Level Error
+            Show-Line "Error during check - the rights to add computers to the domain could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -112940,6 +112957,7 @@ function Get-GPOPermissions {
 
         } catch {
             Write-Log "[Get-GPOPermissions] Error: $_" -Level Error
+            Show-Line "Error during check - GPO permissions could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -113362,6 +113380,7 @@ function Get-GPOLocalGroupMembership {
 
         } catch {
             Write-Log "[Get-GPOLocalGroupMembership] Error: $_" -Level Error
+            Show-Line "Error during check - GPO local group assignments could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -114269,6 +114288,7 @@ function Get-GPOScheduledTasks {
 
         } catch {
             Write-Log "[Get-GPOScheduledTasks] Error: $_" -Level Error
+            Show-Line "Error during check - scheduled tasks deployed via GPO could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -115372,6 +115392,7 @@ function Get-GPOScriptPaths {
 
         } catch {
             Write-Log "[Get-GPOScriptPaths] Error: $_" -Level Error
+            Show-Line "Error during check - scripts deployed via GPO could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -115931,6 +115952,7 @@ function Get-GPORegistrySettings {
 
         } catch {
             Write-Log "[Get-GPORegistrySettings] Error: $_" -Level Error
+            Show-Line "Error during check - registry settings deployed via GPO could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -116477,6 +116499,7 @@ function Get-GPOPointAndPrint {
 
         } catch {
             Write-Log "[Get-GPOPointAndPrint] Error: $_" -Level Error
+            Show-Line "Error during check - Point and Print settings could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -117611,6 +117634,7 @@ function Get-ADCSTemplate {
 
         } catch {
             Write-Log "[Get-ADCSTemplate] Error: $_" -Level Error
+            Show-Line "Error during check - certificate templates could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -119394,6 +119418,7 @@ function Get-ADCSVulnerabilities {
         }
         catch {
             Write-Log "[Get-ADCSVulnerabilities] Error: $_" -Level Error
+            Show-Line "Error during check - certificate services vulnerabilities could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -119738,6 +119763,7 @@ function Get-WeakCertificateMapping {
 
         $writableFindings = @()
         $exchangeOnlyFindings = @()
+        $writeAnalysisFailed = $false
         try {
             # One query for every privileged principal and its security descriptor, rather
             # than Get-ObjectACL per account: that helper reads the object it is given, so
@@ -119910,6 +119936,10 @@ function Get-WeakCertificateMapping {
         }
         catch {
             Write-Log "[Get-WeakCertificateMapping] Write-access analysis failed: $_" -Level Warning
+            # A failed analysis found nothing, which is not the same as nothing to find:
+            # the green line below used to close this section after an exception.
+            $writeAnalysisFailed = $true
+            Show-Line "Error during check - who may write altSecurityIdentities could not be evaluated: $_" -Class Finding
         }
 
         if (@($writableFindings).Count -gt 0) {
@@ -119941,7 +119971,7 @@ function Get-WeakCertificateMapping {
         # Only the real findings decide this. The Exchange ACL is by design and holds no
         # non-privileged principal, so counting it here meant the green verdict - which is
         # exactly what this line claims - could never be printed in a domain with Exchange.
-        if (@($writableFindings).Count -eq 0) {
+        if (@($writableFindings).Count -eq 0 -and -not $writeAnalysisFailed) {
             Show-Line "No non-privileged principal can write altSecurityIdentities on a privileged account" -Class Secure
         }
     }
@@ -121478,6 +121508,7 @@ function Get-ExchangeInfrastructure {
         }
         catch {
             Write-Log "[Get-ExchangeInfrastructure] Error: $_" -Level Error
+            Show-Line "Error during check - the Exchange infrastructure could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -122480,6 +122511,7 @@ function Get-SCCMInfrastructure {
 
         } catch {
             Write-Log "[Get-SCCMInfrastructure] Error: $_" -Level Error
+            Show-Line "Error during check - the SCCM infrastructure could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -122730,6 +122762,7 @@ function Get-SCOMInfrastructure {
 
         } catch {
             Write-Log "[Get-SCOMInfrastructure] Error: $_" -Level Error
+            Show-Line "Error during check - the SCOM infrastructure could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -122953,6 +122986,7 @@ function Get-KerberoastableAccounts {
 
         } catch {
             Write-Log "[Get-KerberoastableAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - kerberoastable accounts could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -123187,6 +123221,7 @@ function Get-ASREPRoastableAccounts {
 
         } catch {
             Write-Log "[Get-ASREPRoastableAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - AS-REP roastable accounts could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -123342,6 +123377,7 @@ function Get-UnixPasswordAccounts {
 
         } catch {
             Write-Log "[Get-UnixPasswordAccounts] Error: $_" -Level Error
+            Show-Line "Error during check - Unix password attributes could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -124412,6 +124448,7 @@ function Get-CredentialExposure {
 
         } catch {
             Write-Log "[Get-CredentialExposure] Error: $_" -Level Error
+            Show-Line "Error during check - credentials in SYSVOL and NETLOGON could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -124756,6 +124793,7 @@ function Get-LAPSCredentialAccess {
 
         } catch {
             Write-Log "[Get-LAPSCredentialAccess] Error: $_" -Level Error
+            Show-Line "Error during check - LAPS password access could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -125017,6 +125055,7 @@ function Get-BitLockerRecoveryKeyAccess {
 
         } catch {
             Write-Log "[Get-BitLockerRecoveryKeyAccess] Error: $_" -Level Error
+            Show-Line "Error during check - BitLocker recovery key access could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -126473,6 +126512,7 @@ function Get-PasswordInDescription {
 
         } catch {
             Write-Log "[Get-PasswordInDescription] Error: $_" -Level Error
+            Show-Line "Error during check - credentials in free-text attributes could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -138958,7 +138998,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1235"
+$Script:adPEASVersion = "2.7.0+20261017-1248"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

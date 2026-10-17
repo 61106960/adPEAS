@@ -219,6 +219,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   and its report section still spoke of privileged accounts with `adminCount=1` only. A
   failed query now prints an error line instead of ending the section without a word.
 
+- **Every check says when it could not finish.** In 35 checks - among them the
+  Kerberoasting, AS-REP, delegation, trust, password policy, LDAP and SMB signing, GPO
+  and ADCS checks - a failed query was written to the log only, so the section simply
+  ended, which reads like a domain with nothing to report. Each prints "Error during check
+  - ... could not be evaluated" now. In `Get-WeakCertificateMapping` a failed write-access
+  analysis was followed by the green line "No non-privileged principal can write
+  altSecurityIdentities on a privileged account"; it is an error line now, and the green
+  line is printed only after an analysis that ran.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

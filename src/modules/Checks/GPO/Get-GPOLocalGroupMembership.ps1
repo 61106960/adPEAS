@@ -408,6 +408,7 @@ function Get-GPOLocalGroupMembership {
 
         } catch {
             Write-Log "[Get-GPOLocalGroupMembership] Error: $_" -Level Error
+            Show-Line "Error during check - GPO local group assignments could not be evaluated: $_" -Class Finding
         }
     }
 

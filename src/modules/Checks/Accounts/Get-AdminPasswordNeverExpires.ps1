@@ -207,6 +207,7 @@ function Get-AdminPasswordNeverExpires {
 
         } catch {
             Write-Log "[Get-AdminPasswordNeverExpires] Error: $_" -Level Error
+            Show-Line "Error during check - privileged accounts whose password never expires could not be evaluated: $_" -Class Finding
         }
     }
 
