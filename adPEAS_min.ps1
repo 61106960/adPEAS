@@ -71511,7 +71511,6 @@ function Get-ComputerExplicitRight {
         '72e39547-7b18-11d1-adef-00c04fd8d5cd' = 'dNSHostName'
     }
     $passwordResetGuid = '00299570-246d-11d0-a768-00aa006e0529'
-    $computerClassGuid = 'bf967a86-0de6-11d0-a285-00aa003049e2'
     $placeholderSIDs = @('S-1-3-0', 'S-1-5-10')
     $privilegedBySID = @{}
     foreach ($computer in @($Computers)) {
@@ -71524,7 +71523,6 @@ function Get-ComputerExplicitRight {
         $nameBySID = @{}
         foreach ($ace in @($descriptor.ACEs)) {
             if ($ace.Type -ne 'Allow' -or $ace.IsInherited) { continue }
-            if ($ace.InheritedObjectType -and $ace.InheritedObjectType -ine $computerClassGuid) { continue }
             if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
             $sid = [string]$ace.SID
             if (-not $sid -or $placeholderSIDs -contains $sid -or $sid -eq $ownerSID -or $sid -eq $creatorSID) { continue }
@@ -90685,7 +90683,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1710"
+$Script:adPEASVersion = "2.7.0+20261017-1718"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

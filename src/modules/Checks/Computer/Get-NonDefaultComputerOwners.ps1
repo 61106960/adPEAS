@@ -15,11 +15,15 @@
     creator (mS-DS-CreatorSID), the CREATOR OWNER and SELF placeholders and Tier-0 including
     the operators are left out, and what remains was added by someone.
 
-    Counted on the object itself (not inherit-only, and either for every class or for
-    computer objects): GenericAll, GenericWrite, WriteDacl, WriteOwner, WriteProperty on
-    every attribute, all extended rights, the password reset right, and WriteProperty on
-    msDS-AllowedToActOnBehalfOfOtherIdentity (RBCD), msDS-KeyCredentialLink (shadow
-    credentials), servicePrincipalName and dNSHostName.
+    Counted on the object itself (not inherit-only): GenericAll, GenericWrite, WriteDacl,
+    WriteOwner, WriteProperty on every attribute, all extended rights, the password reset
+    right, and WriteProperty on msDS-AllowedToActOnBehalfOfOtherIdentity (RBCD),
+    msDS-KeyCredentialLink (shadow credentials), servicePrincipalName and dNSHostName.
+
+    An InheritedObjectType does not take an entry off the object that carries it: it names
+    the class of the children that may inherit the entry (MS-DTYP, ACE; "ACE Inheritance
+    Rules"), and the access check reads the ObjectType alone. An inherited copy for a class
+    that does not match arrives inherit-only, which the test above already catches.
 
 .PARAMETER Computers
     Computer objects carrying the converted nTSecurityDescriptor, OwnerSID and
@@ -48,7 +52,6 @@ function Get-ComputerExplicitRight {
         '72e39547-7b18-11d1-adef-00c04fd8d5cd' = 'dNSHostName'
     }
     $passwordResetGuid = '00299570-246d-11d0-a768-00aa006e0529'
-    $computerClassGuid = 'bf967a86-0de6-11d0-a285-00aa003049e2'
     # CREATOR OWNER and SELF: placeholders the default descriptor writes.
     $placeholderSIDs = @('S-1-3-0', 'S-1-5-10')
     $privilegedBySID = @{}
@@ -64,7 +67,6 @@ function Get-ComputerExplicitRight {
         $nameBySID = @{}
         foreach ($ace in @($descriptor.ACEs)) {
             if ($ace.Type -ne 'Allow' -or $ace.IsInherited) { continue }
-            if ($ace.InheritedObjectType -and $ace.InheritedObjectType -ine $computerClassGuid) { continue }
             if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
 
             $sid = [string]$ace.SID
