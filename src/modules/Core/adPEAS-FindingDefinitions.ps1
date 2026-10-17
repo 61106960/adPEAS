@@ -7465,6 +7465,52 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
 
+    'TRUST_PASSWORD_STALE' = @{
+        Title = "Trust Password No Longer Rotated"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "The interdomain trust account of this trust - the user account <flatName>$ in this domain, which exists for every trust the partner extends to this domain (MS-ADTS 6.1.6.8) - has had the same password for 90 days or more. The trusting domain changes it about every 30 days, so the rotation has stopped: the partner is unreachable, decommissioned, or the change fails. The trust key derived from that password encrypts tickets across the trust. Whoever extracted it once - by DCSync of the trust account, or from a backup of a domain controller - keeps a working key, and the inter-realm tickets forged with it stay valid as long as the password does."
+        Impact = @(
+            "A trust key extracted once keeps working: inter-realm tickets forged with it stay valid"
+            "A trust to a domain that no longer answers is left in place"
+        )
+        Attack = @(
+            "1. Attacker with replication rights or a domain controller backup extracts the key of the trust account (DCSync of <flatName>$)"
+            "2. Forges inter-realm tickets with it"
+            "3. The key keeps working, because the password is no longer changed"
+        )
+        Remediation = @(
+            "Verify the trust - netdom trust /verify, or Validate in Active Directory Domains and Trusts - and find out why the trusting domain stopped changing the password"
+            "Remove trusts to domains that no longer exist"
+            "Reset the trust password on both sides with netdom trust /resetOneSide and the same password; twice, if the key may have been extracted"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the interdomain trust accounts and when their password was last set"
+                Command = "Get-ADUser -LDAPFilter '(userAccountControl:1.2.840.113556.1.4.803:=2048)' -Properties pwdLastSet | Select-Object SamAccountName, @{n='PasswordLastSet';e={[DateTime]::FromFileTime(`$_.pwdLastSet)}}"
+            }
+            @{
+                Description = "Verify the trust"
+                Command = "netdom trust <trustingdomain> /domain:<trusteddomain> /verify"
+            }
+            @{
+                Description = "Reset the trust password on this side (run on each side with the same password)"
+                Command = "netdom trust <thisdomain> /domain:<otherdomain> /resetOneSide /passwordT:<password> /userO:administrator /passwordO:*"
+            }
+        )
+        References = @(
+            @{ Title = "How Domain and Forest Trusts Work - trust passwords (Microsoft)"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2003/cc773178(v=ws.10)" }
+            @{ Title = "Essential Attributes of Interdomain Trust Accounts - MS-ADTS 6.1.6.8"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/ac527b5b-0e88-48a1-8c73-497d40388d04" }
+            @{ Title = "Reset a trust password on one side of the trust - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/forest-recovery-guide/ad-forest-recovery-reset-trust" }
+            @{ Title = "Reset Interdomain Trust Account (ITA) Credentials - CISA CM0145"; Url = "https://www.cisa.gov/eviction-strategies-tool/info-countermeasures/CM0145" }
+        )
+        Tools = @("Mimikatz", "Impacket")
+        MITRE = "T1558"
+        Triggers = @(
+            @{ Attribute = 'trustPasswordRotation'; Pattern = '^Stale'; Severity = 'Hint' }
+        )
+    }
+
     'TRUST_BIDIRECTIONAL' = @{
         Title = "Bidirectional Trust Relationship"
         Risk = "Hint"

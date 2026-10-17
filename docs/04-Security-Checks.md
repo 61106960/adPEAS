@@ -173,6 +173,8 @@ Get-DomainPasswordPolicy
 - SID filtering status
 - Selective authentication configuration
 - The Kerberos encryption types allowed across the trust, from `msDS-SupportedEncryptionTypes` on the trust object - a trust without the attribute supports RC4 and no AES (KB4492348), and the 2026 change that made AES the default for accounts does not cover trusts. A trust without AES is a hint.
+- The domain SID of the partner (`securityIdentifier` on the trust object)
+- On a trust the partner extends to this domain: when the password of its interdomain trust account `<flatName>$` was last changed. The trusting domain changes it about every 30 days; 90 days or more is a hint - the rotation has stopped, and a trust key extracted before stays valid.
 
 **Security Impact**: External trusts may allow lateral movement. Bidirectional trusts expose both domains. SID filtering disabled enables SID history attacks. A trust without AES keeps RC4 in use across it; on a realm trust to MIT Kerberos with an administrator-chosen password, the trust key can be cracked offline from a referral ticket.
 

@@ -310,6 +310,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   password the domain controllers generate, nor that the trust has to be re-created: AES
   is switched on at the trust object.
 
+- **`Get-DomainTrusts` shows the partner's domain SID and the age of the trust
+  password.** `partnerDomainSID` comes from `securityIdentifier` on the trust object, which
+  the data layer now decodes like `objectSid` instead of handing over bytes. On a trust the
+  partner extends to this domain, `trustPasswordLastSet` says when the password of its
+  interdomain trust account `<flatName>$` was last changed - one query for all of them.
+  The trusting domain changes it about every 30 days; at 90 days or more the rotation has
+  stopped, a trust key extracted before stays valid, and the trust is a hint with the new
+  card *Trust Password No Longer Rotated* and a line that counts such trusts. A missing
+  or unreadable account is said as such.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

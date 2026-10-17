@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 19:50:43
-    Version: 2.7.0+20261017-1950
+    Build: 2026-10-17 19:58:35
+    Version: 2.7.0+20261017-1958
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6600,10 +6600,12 @@ $Script:PrimaryAttributes = @{
     DomainTrust = @(
         'trustPartner',
         'flatName',
+        'partnerDomainSID',
         'trustDirection',
         'trustType',
         'trustAttributes',
-        'trustEncryptionTypes'
+        'trustEncryptionTypes',
+        'trustPasswordLastSet'
     )
 
     # Domain Controllers object
@@ -15434,6 +15436,52 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             # A trust with DES and nothing stronger: no AES either, and Windows refuses
             # DES by default.
             @{ Attribute = 'trustKeyWeakness'; Pattern = '^DES'; Severity = 'Hint' }
+        )
+    }
+
+    'TRUST_PASSWORD_STALE' = @{
+        Title = "Trust Password No Longer Rotated"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "The interdomain trust account of this trust - the user account <flatName>$ in this domain, which exists for every trust the partner extends to this domain (MS-ADTS 6.1.6.8) - has had the same password for 90 days or more. The trusting domain changes it about every 30 days, so the rotation has stopped: the partner is unreachable, decommissioned, or the change fails. The trust key derived from that password encrypts tickets across the trust. Whoever extracted it once - by DCSync of the trust account, or from a backup of a domain controller - keeps a working key, and the inter-realm tickets forged with it stay valid as long as the password does."
+        Impact = @(
+            "A trust key extracted once keeps working: inter-realm tickets forged with it stay valid"
+            "A trust to a domain that no longer answers is left in place"
+        )
+        Attack = @(
+            "1. Attacker with replication rights or a domain controller backup extracts the key of the trust account (DCSync of <flatName>$)"
+            "2. Forges inter-realm tickets with it"
+            "3. The key keeps working, because the password is no longer changed"
+        )
+        Remediation = @(
+            "Verify the trust - netdom trust /verify, or Validate in Active Directory Domains and Trusts - and find out why the trusting domain stopped changing the password"
+            "Remove trusts to domains that no longer exist"
+            "Reset the trust password on both sides with netdom trust /resetOneSide and the same password; twice, if the key may have been extracted"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the interdomain trust accounts and when their password was last set"
+                Command = "Get-ADUser -LDAPFilter '(userAccountControl:1.2.840.113556.1.4.803:=2048)' -Properties pwdLastSet | Select-Object SamAccountName, @{n='PasswordLastSet';e={[DateTime]::FromFileTime(`$_.pwdLastSet)}}"
+            }
+            @{
+                Description = "Verify the trust"
+                Command = "netdom trust <trustingdomain> /domain:<trusteddomain> /verify"
+            }
+            @{
+                Description = "Reset the trust password on this side (run on each side with the same password)"
+                Command = "netdom trust <thisdomain> /domain:<otherdomain> /resetOneSide /passwordT:<password> /userO:administrator /passwordO:*"
+            }
+        )
+        References = @(
+            @{ Title = "How Domain and Forest Trusts Work - trust passwords (Microsoft)"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2003/cc773178(v=ws.10)" }
+            @{ Title = "Essential Attributes of Interdomain Trust Accounts - MS-ADTS 6.1.6.8"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/ac527b5b-0e88-48a1-8c73-497d40388d04" }
+            @{ Title = "Reset a trust password on one side of the trust - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/forest-recovery-guide/ad-forest-recovery-reset-trust" }
+            @{ Title = "Reset Interdomain Trust Account (ITA) Credentials - CISA CM0145"; Url = "https://www.cisa.gov/eviction-strategies-tool/info-countermeasures/CM0145" }
+        )
+        Tools = @("Mimikatz", "Impacket")
+        MITRE = "T1558"
+        Triggers = @(
+            @{ Attribute = 'trustPasswordRotation'; Pattern = '^Stale'; Severity = 'Hint' }
         )
     }
 
@@ -26130,6 +26178,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Selective authentication settings"
             "Trust transitivity"
             "The Kerberos encryption types allowed across the trust (msDS-SupportedEncryptionTypes on the trust object)"
+            "The domain SID of the partner, and on an inbound trust when the password of its interdomain trust account was last changed"
         )
         SecureMessage = "All domain trusts are properly secured with SID filtering enabled and appropriate authentication settings. No misconfigured or overly permissive trusts were found."
     }
@@ -35970,7 +36019,9 @@ function ConvertFrom-LDAPAttribute {
             # Convert byte arrays (e.g., objectSid, objectGUID, LAPS)
             # NOTE: Use -ieq for case-insensitive comparison because LdapConnection returns lowercase attribute names
             if ($PropValue[0] -is [byte[]]) {
-                if ($PropName -ieq "objectSid") {
+                # securityIdentifier is the domain SID of the partner on a trust object; it
+                # arrived as bytes, which a report row cannot show.
+                if ($PropName -ieq "objectSid" -or $PropName -ieq "securityIdentifier") {
                     try {
                         $ConvertedProperties[$PropName] = (New-Object System.Security.Principal.SecurityIdentifier($PropValue[0], 0)).Value
                     } catch {
@@ -102602,7 +102653,10 @@ function Get-DomainTrusts {
 
     Also reported: the encryption types Kerberos may use across each trust, read from
     msDS-SupportedEncryptionTypes on the trust object - a trust without it supports RC4 and
-    no AES - and a hint where no AES is among them.
+    no AES - and a hint where no AES is among them; the domain SID of the partner; and on a
+    trust the partner extends to this domain, when the password of its interdomain trust
+    account <flatName>$ was last changed - the trusting domain does that about every 30
+    days, so 90 days or more is a hint.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -102665,8 +102719,27 @@ function Get-DomainTrusts {
             if (@($trusts).Count -gt 0) {
                 Show-Line "Found $(@($trusts).Count) domain trust(s):" -Class Hint
 
+                # The interdomain trust accounts. A trust with direction Inbound or
+                # Bidirectional has a user account <flatName>$ in the users container of
+                # this domain (MS-ADTS 6.1.6.8), and the trusting domain changes its password
+                # about every 30 days. One query for all of them, and only where a trust can
+                # have one; $null when the read failed.
+                $staleTrustPasswordDays = 90
+                $trustAccounts = @{}
+                if (@($trusts | Where-Object { $_.trustDirection -in @('Inbound', 'Bidirectional') }).Count -gt 0) {
+                    try {
+                        foreach ($account in @(Get-DomainObject -LDAPFilter '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=2048))' @PSBoundParameters)) {
+                            if ($account -and $account.sAMAccountName) { $trustAccounts[[string]$account.sAMAccountName] = $account }
+                        }
+                    } catch {
+                        Write-Log "[Get-DomainTrusts] Could not read the interdomain trust accounts: $_"
+                        $trustAccounts = $null
+                    }
+                }
+
                 $riskyTrusts = 0
                 $weakKeyTrusts = 0
+                $staleTrusts = 0
                 foreach ($trust in $trusts) {
                     # trustDirection, trustType and trustAttributes are already decoded
                     # by Invoke-LDAPSearch into readable strings/arrays
@@ -102712,6 +102785,40 @@ function Get-DomainTrusts {
                     if ($verdict.Risk) {
                         $riskyTrusts++
                         $trustObject | Add-Member -NotePropertyName 'trustRisk' -NotePropertyValue $verdict.Risk -Force
+                    }
+
+                    # The domain SID of the partner - the SIDs SID filtering keeps out or lets
+                    # in begin with it.
+                    if ($trust.securityIdentifier) {
+                        $trustObject | Add-Member -NotePropertyName 'partnerDomainSID' -NotePropertyValue ([string]$trust.securityIdentifier) -Force
+                    }
+
+                    # The password of the inbound side, on its interdomain trust account. A
+                    # password the trusting domain no longer changes keeps a trust key that
+                    # was extracted once working for as long as it stays.
+                    $passwordStale = $false
+                    if ($direction -in @('Inbound', 'Bidirectional') -and $trust.flatName) {
+                        $accountName = "$($trust.flatName)`$"
+                        $lastSetText = $null
+                        if ($null -eq $trustAccounts) {
+                            $lastSetText = 'Unknown - the interdomain trust accounts could not be read'
+                        } elseif (-not $trustAccounts.ContainsKey($accountName)) {
+                            $lastSetText = "Unknown - no interdomain trust account $accountName was found in this domain"
+                        } else {
+                            $pwdLastSet = $trustAccounts[$accountName].pwdLastSet
+                            if ($pwdLastSet -is [DateTime]) {
+                                $ageDays = [int][Math]::Floor(((Get-Date) - $pwdLastSet).TotalDays)
+                                $lastSetText = "$(Format-adPEASDate $pwdLastSet 'yyyy-MM-dd') ($ageDays days ago, on $accountName)"
+                                if ($ageDays -ge $staleTrustPasswordDays) {
+                                    $passwordStale = $true
+                                    $trustObject | Add-Member -NotePropertyName 'trustPasswordRotation' `
+                                        -NotePropertyValue "Stale - not changed for $ageDays days; the trusting domain changes it about every 30 days" -Force
+                                }
+                            } else {
+                                $lastSetText = "Never - $accountName has no password change recorded"
+                            }
+                        }
+                        $trustObject | Add-Member -NotePropertyName 'trustPasswordLastSet' -NotePropertyValue $lastSetText -Force
                     }
 
                     # The encryption types of Kerberos across the trust. A referral ticket
@@ -102771,12 +102878,11 @@ function Get-DomainTrusts {
                     }
 
                     # The class of the object: the SID filtering verdict, raised to a hint
-                    # by a key without AES.
+                    # by a key without AES or a password that is no longer changed.
                     $objectClass = $verdict.Severity
-                    if ($keyWeakness) {
-                        $weakKeyTrusts++
-                        if ($objectClass -ne 'Finding') { $objectClass = 'Hint' }
-                    }
+                    if ($keyWeakness) { $weakKeyTrusts++ }
+                    if ($passwordStale) { $staleTrusts++ }
+                    if (($keyWeakness -or $passwordStale) -and $objectClass -ne 'Finding') { $objectClass = 'Hint' }
 
                     $trustObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainTrust' -Force
                     Show-Object $trustObject -Class $objectClass
@@ -102790,6 +102896,9 @@ function Get-DomainTrusts {
                 }
                 if ($weakKeyTrusts -gt 0) {
                     Show-Line "$weakKeyTrusts of them allow no AES for Kerberos across the trust" -Class Hint -FindingId 'TRUST_USES_RC4'
+                }
+                if ($staleTrusts -gt 0) {
+                    Show-Line "$staleTrusts of them have a trust password that has not changed for $staleTrustPasswordDays days or more" -Class Hint -FindingId 'TRUST_PASSWORD_STALE'
                 }
             }
 
@@ -143143,7 +143252,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1950"
+$Script:adPEASVersion = "2.7.0+20261017-1958"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -161,6 +161,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Selective authentication settings"
             "Trust transitivity"
             "The Kerberos encryption types allowed across the trust (msDS-SupportedEncryptionTypes on the trust object)"
+            "The domain SID of the partner, and on an inbound trust when the password of its interdomain trust account was last changed"
         )
         SecureMessage = "All domain trusts are properly secured with SID filtering enabled and appropriate authentication settings. No misconfigured or overly permissive trusts were found."
     }

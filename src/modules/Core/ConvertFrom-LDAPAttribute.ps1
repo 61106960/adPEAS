@@ -800,7 +800,9 @@ function ConvertFrom-LDAPAttribute {
             # Convert byte arrays (e.g., objectSid, objectGUID, LAPS)
             # NOTE: Use -ieq for case-insensitive comparison because LdapConnection returns lowercase attribute names
             if ($PropValue[0] -is [byte[]]) {
-                if ($PropName -ieq "objectSid") {
+                # securityIdentifier is the domain SID of the partner on a trust object; it
+                # arrived as bytes, which a report row cannot show.
+                if ($PropName -ieq "objectSid" -or $PropName -ieq "securityIdentifier") {
                     try {
                         $ConvertedProperties[$PropName] = (New-Object System.Security.Principal.SecurityIdentifier($PropValue[0], 0)).Value
                     } catch {

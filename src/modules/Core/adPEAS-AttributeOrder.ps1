@@ -313,10 +313,12 @@ $Script:PrimaryAttributes = @{
     DomainTrust = @(
         'trustPartner',
         'flatName',
+        'partnerDomainSID',
         'trustDirection',
         'trustType',
         'trustAttributes',
-        'trustEncryptionTypes'
+        'trustEncryptionTypes',
+        'trustPasswordLastSet'
     )
 
     # Domain Controllers object
