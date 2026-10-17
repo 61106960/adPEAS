@@ -5980,7 +5980,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         Impact = @(
             "Configures unconstrained or constrained delegation on any account, without needing that account's own credentials"
             "Unconstrained delegation on a service captures the TGT of every user that authenticates to it - a coerced domain controller authentication yields a DC's own TGT"
-            "Bypasses the protection 'Account is sensitive and cannot be delegated' is meant to provide, since the attacker controls the delegation configuration"
+            "Every account that is neither marked 'Account is sensitive and cannot be delegated' nor in Protected Users can be impersonated through the delegation the holder configures - the flag still holds against it, on domain controllers with the CVE-2020-17049 fix"
         )
         Attack = @(
             "1. Authenticate as the holder on the domain controller"
