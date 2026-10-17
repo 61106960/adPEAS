@@ -3334,7 +3334,7 @@ $Script:PrimaryAttributes = @{
 	    'Group', 'Reason', 'Count', 'Policies'
 	)
 	GPPCredential = @(
-	    'CredentialType', 'GPOName', 'FilePath', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
+	    'CredentialType', 'GPOName', 'FilePath', 'RegistryValue', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
 	)
 	SYSVOLCredential = @(
 	    'CredentialType', 'GPOName', 'FilePath', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
@@ -9991,6 +9991,42 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    MITRE = "T1552.001"
 	    Triggers = @(
 	        @{ Attribute = 'credentialType'; Pattern = 'AutoAdminLogon'; Severity = 'Finding' }
+	    )
+	}
+	'GPO_REGISTRY_PASSWORD' = @{
+	    Title = "Password in a Registry Value Deployed by Group Policy"
+	    Risk = "Finding"
+	    BaseScore = 45
+	    Description = "A Group Policy Object deploys a string registry value whose name says it holds a password - Password, ProxyPassword, ServiceAccountPassword, Pwd and the like. An Administrative Template keeps it in Registry.pol, a preference item in Registry.xml, and both files sit in SYSVOL in clear text, readable by every authenticated user of the domain. The value name is what marks it; whether the password still works is not tested."
+	    Impact = @(
+	        "Any domain user can read the password from SYSVOL"
+	        "The password often belongs to a service, a proxy or a management agent that runs with more rights than the user reading it"
+	        "Every computer the GPO applies to receives it in its registry as well"
+	    )
+	    Attack = @(
+	        "1. Attacker with any domain account reads Registry.pol and Registry.xml from SYSVOL"
+	        "2. Picks the values named like a password"
+	        "3. Uses the password against the service or account it belongs to"
+	    )
+	    Remediation = @(
+	        "Remove the value from the GPO - in GPMC, the Administrative Template setting or the preference item that writes it"
+	        "Change the password, since it has been readable for as long as the GPO existed"
+	        "Hand the credential to the application another way - a managed service account, or a secret store"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Remove a value an Administrative Template deploys (Registry.pol)"
+	            Command = "Remove-GPRegistryValue -Name 'GPO_NAME' -Key 'HKLM\Software\VENDOR\KEY' -ValueName 'VALUE_NAME'"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Registry Policy File Format - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/desktop/policy/registry-policy-file-format" }
+	        @{ Title = "Unsecured Credentials: Credentials In Files - MITRE"; Url = "https://attack.mitre.org/techniques/T1552/001/" }
+	    )
+	    Tools = @("Snaffler", "Manual SYSVOL search")
+	    MITRE = "T1552.001"
+	    Triggers = @(
+	        @{ Attribute = 'credentialType'; Pattern = '^Registry Value$'; Severity = 'Finding' }
 	    )
 	}
 	'CREDENTIAL_NET_USE' = @{
@@ -19885,6 +19921,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Groups.xml, ScheduledTasks.xml, and similar GPP files"
 	        "cpassword attributes and their decryption"
 	        "AutoAdminLogon credentials in Registry.xml"
+	        "String registry values named like a password - Password, ProxyPassword, Pwd - in Registry.xml and in the Administrative Template file Registry.pol"
 	    )
 	    SecureMessage = "No credentials were found in Group Policy Preference files. GPP password storage (cpassword) is not used in this domain."
 	}
@@ -75092,6 +75129,37 @@ function Get-WinlogonCredential {
 	    }
 	}
 }
+function Get-RegistryPasswordCredential {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyCollection()]
+	    $Records,
+	    [Parameter(Mandatory = $true)]
+	    [string]$FilePath
+	)
+	foreach ($record in @($Records)) {
+	    if (-not $record) { continue }
+	    $valueName = [string]$record.ValueName
+	    if ($valueName -notmatch '(?i)(password|passwd|pwd)$' -or $valueName -match '^\*\*') { continue }
+	    $isString = if ($record.Type -is [string]) {
+	        $record.Type -match '^REG_(EXPAND_|MULTI_)?SZ$'
+	    } else {
+	        @(1, 2, 7) -contains [int64]$record.Type
+	    }
+	    if (-not $isString -or -not $record.ValueString) { continue }
+	    if ($record.PSObject.Properties['Disabled'] -and $record.Disabled) { continue }
+	    if ($record.PSObject.Properties['Action'] -and $record.Action -eq 'D') { continue }
+	    if ([string]$record.Key -match '\\Windows NT\\CurrentVersion\\Winlogon\\?$' -and $valueName -match '^(Alt)?DefaultPassword$') { continue }
+	    [PSCustomObject]@{
+	        CredentialType = 'Registry Value'
+	        FilePath       = $FilePath
+	        RegistryValue  = (@($record.Hive, $record.Key, $valueName) | Where-Object { $_ }) -join '\'
+	        Password       = [string]$record.ValueString
+	    }
+	}
+}
 function Get-CredentialExposure {
 	[CmdletBinding()]
 	param(
@@ -75237,10 +75305,29 @@ function Get-CredentialExposure {
 	                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
 	                                Show-Object $credObj -Class Finding
 	                            }
+	                            foreach ($credObj in @(Get-RegistryPasswordCredential -Records @(Parse-RegistryXml -XmlFilePath $xmlFile.FullName) -FilePath $xmlFile.FullName)) {
+	                                Show-Line "Found a password in a registry value deployed by Group Policy" -Class Finding
+	                                $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
+	                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Registry Value' -Force
+	                                Show-Object $credObj -Class Finding
+	                            }
 	                        }
 	                    }
 	                    catch {
 	                    }
+	                }
+	            }
+	            foreach ($polFile in @(Get-ChildItem -Force -Path $scanPath -Recurse -Include 'Registry.pol' -ErrorAction SilentlyContinue)) {
+	                try {
+	                    $polHive = if ($polFile.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
+	                    foreach ($credObj in @(Get-RegistryPasswordCredential -Records @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive $polHive) -FilePath $polFile.FullName)) {
+	                        Show-Line "Found a password in a registry value deployed by Group Policy" -Class Finding
+	                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
+	                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Registry Value' -Force
+	                        Show-Object $credObj -Class Finding
+	                    }
+	                }
+	                catch {
 	                }
 	            }
 	            $searchExtensions = $Script:CredentialScanExtensions
@@ -75385,10 +75472,11 @@ function Get-CredentialExposure {
 	            }
 	            else {
 	                $Script:sysvolAccessible = $true
-	                $allExtensions = @('*.xml') + $Script:CredentialScanExtensions
+	                $allExtensions = @('*.xml') + $Script:CredentialScanExtensions + @('Registry.pol')
 	                $allFiles = @(Get-CachedSYSVOLFiles -Filter $allExtensions -SYSVOLPath $sysvolBase)
 	                $xmlFiles = @($allFiles | Where-Object { $_.Extension -eq '.xml' })
-	                $scriptFiles = @($allFiles | Where-Object { $_.Extension -ne '.xml' })
+	                $polFiles = @($allFiles | Where-Object { $_.Name -ieq 'Registry.pol' })
+	                $scriptFiles = @($allFiles | Where-Object { $_.Extension -ne '.xml' -and $_.Name -ine 'Registry.pol' })
 	                if ($xmlFiles.Count -gt 0) {
 	                    $totalXmlFiles = @($xmlFiles).Count
 	                    $currentXmlIndex = 0
@@ -75464,6 +75552,15 @@ function Get-CredentialExposure {
 	                                    Show-Object $credObj -Class Finding
 	                                    $gppFindingsCount++
 	                                }
+	                                foreach ($credObj in @(Get-RegistryPasswordCredential -Records @(Parse-RegistryXml -XmlFilePath $xmlFile.FullName) -FilePath $xmlFile.FullName)) {
+	                                    if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
+	                                    if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
+	                                    Show-Line "Found a password in a registry value deployed by Group Policy" -Class Finding
+	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
+	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Registry Value' -Force
+	                                    Show-Object $credObj -Class Finding
+	                                    $gppFindingsCount++
+	                                }
 	                            }
 	                        }
 	                        catch {
@@ -75471,6 +75568,31 @@ function Get-CredentialExposure {
 	                    }
 	                    if ($totalXmlFiles -gt $Script:ProgressThreshold) {
 	                        Show-Progress -Activity "Scanning SYSVOL for GPP credentials" -Completed
+	                    }
+	                }
+	                foreach ($polFile in $polFiles) {
+	                    try {
+	                        $polHive = if ($polFile.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
+	                        $polRecords = @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive $polHive)
+	                        foreach ($credObj in @(Get-RegistryPasswordCredential -Records $polRecords -FilePath $polFile.FullName)) {
+	                            if ($polFile.FullName -match '\\Policies\\(\{[^}]+\})\\') {
+	                                $polGpoGUID = $Matches[1].ToUpper()
+	                                $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $(if ($gpoNameMap[$polGpoGUID]) { $gpoNameMap[$polGpoGUID] } else { $polGpoGUID }) -Force
+	                                $polLinkedOUs = 'Unknown - linkage could not be resolved'
+	                                if ($null -ne $gpoLinkage) {
+	                                    $polLinkedOUs = @()
+	                                    if ($gpoLinkage.ContainsKey($polGpoGUID)) { $polLinkedOUs = @($gpoLinkage[$polGpoGUID]) }
+	                                }
+	                                $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $polLinkedOUs -Force
+	                            }
+	                            Show-Line "Found a password in a registry value deployed by Group Policy" -Class Finding
+	                            $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
+	                            $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Registry Value' -Force
+	                            Show-Object $credObj -Class Finding
+	                            $gppFindingsCount++
+	                        }
+	                    }
+	                    catch {
 	                    }
 	                }
 	                if ($gppFindingsCount -eq 0) {
@@ -87186,7 +87308,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1627"
+$Script:adPEASVersion = "2.7.0+20261017-1638"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -176,6 +176,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   grants to every account they cover, a finding with a card of its own. What the group
   grants inside SCCM is not read; the site database records it, not Active Directory.
 
+- **Passwords in registry values a GPO deploys are reported.** `Get-CredentialExposure`
+  found the Winlogon password in a preference Registry.xml and nothing else a policy writes
+  into the registry. It now reports every string value named like a password -
+  `Password`, `ProxyPassword`, `ServiceAccountPassword`, `Pwd` - from Registry.xml and
+  from the Administrative Template file Registry.pol, which no pass read for credentials,
+  with hive, key, GPO and links and a card of its own. Numeric values such as
+  `RequirePassword`, preference items switched off or deleting the value, and the
+  Winlogon password, which keeps its own row, are left out.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

@@ -1188,6 +1188,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Groups.xml, ScheduledTasks.xml, and similar GPP files"
             "cpassword attributes and their decryption"
             "AutoAdminLogon credentials in Registry.xml"
+            "String registry values named like a password - Password, ProxyPassword, Pwd - in Registry.xml and in the Administrative Template file Registry.pol"
         )
         SecureMessage = "No credentials were found in Group Policy Preference files. GPP password storage (cpassword) is not used in this domain."
     }

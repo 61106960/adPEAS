@@ -6580,6 +6580,43 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
 
+    'GPO_REGISTRY_PASSWORD' = @{
+        Title = "Password in a Registry Value Deployed by Group Policy"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Group Policy Object deploys a string registry value whose name says it holds a password - Password, ProxyPassword, ServiceAccountPassword, Pwd and the like. An Administrative Template keeps it in Registry.pol, a preference item in Registry.xml, and both files sit in SYSVOL in clear text, readable by every authenticated user of the domain. The value name is what marks it; whether the password still works is not tested."
+        Impact = @(
+            "Any domain user can read the password from SYSVOL"
+            "The password often belongs to a service, a proxy or a management agent that runs with more rights than the user reading it"
+            "Every computer the GPO applies to receives it in its registry as well"
+        )
+        Attack = @(
+            "1. Attacker with any domain account reads Registry.pol and Registry.xml from SYSVOL"
+            "2. Picks the values named like a password"
+            "3. Uses the password against the service or account it belongs to"
+        )
+        Remediation = @(
+            "Remove the value from the GPO - in GPMC, the Administrative Template setting or the preference item that writes it"
+            "Change the password, since it has been readable for as long as the GPO existed"
+            "Hand the credential to the application another way - a managed service account, or a secret store"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Remove a value an Administrative Template deploys (Registry.pol)"
+                Command = "Remove-GPRegistryValue -Name 'GPO_NAME' -Key 'HKLM\Software\VENDOR\KEY' -ValueName 'VALUE_NAME'"
+            }
+        )
+        References = @(
+            @{ Title = "Registry Policy File Format - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/desktop/policy/registry-policy-file-format" }
+            @{ Title = "Unsecured Credentials: Credentials In Files - MITRE"; Url = "https://attack.mitre.org/techniques/T1552/001/" }
+        )
+        Tools = @("Snaffler", "Manual SYSVOL search")
+        MITRE = "T1552.001"
+        Triggers = @(
+            @{ Attribute = 'credentialType'; Pattern = '^Registry Value$'; Severity = 'Finding' }
+        )
+    }
+
     'CREDENTIAL_NET_USE' = @{
         Title = "Net Use Command with Embedded Password"
         Risk = "Finding"
