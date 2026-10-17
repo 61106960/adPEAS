@@ -24456,7 +24456,7 @@ function Clear-SessionState {
 	$Script:RiskySIDs = $null
 	$Script:GroupSeverityConfig = $null
 	$Script:RiskyPaths = $null
-	$Script:_gpoTaskUNCAccess = $null
+	$Script:_uncWriteAccess = $null
 	$Script:DangerousGPOAccessRights = $null
 	$Script:CriticalGPOAttributes = $null
 	$Script:UnscopedGPORights = $null
@@ -40324,6 +40324,166 @@ function Select-NTFSWriteAccess {
 	    }
 	}
 	return $result
+}
+function Get-UNCWriteAccess {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyCollection()]
+	    [string[]]$Path,
+	    [Parameter(Mandatory = $false)]
+	    [switch]$OPSEC,
+	    [Parameter(Mandatory = $false)]
+	    [string]$Caller = 'Get-UNCWriteAccess'
+	)
+	if ($null -eq $Script:_uncWriteAccess) {
+	    $Script:_uncWriteAccess = @{ Hosts = @{}; Paths = @{} }
+	}
+	$rows = @()
+	$writers = @()
+	$unchecked = @()
+	foreach ($uncPath in @($Path)) {
+	    if (-not $uncPath) { continue }
+	    $pathKey = $uncPath.ToLowerInvariant()
+	    if (-not $Script:_uncWriteAccess.Paths.ContainsKey($pathKey)) {
+	        $Script:_uncWriteAccess.Paths[$pathKey] = Read-UNCPathAccess -Path $uncPath -OPSEC:$OPSEC -Caller $Caller
+	    }
+	    $entry = $Script:_uncWriteAccess.Paths[$pathKey]
+	    foreach ($writer in @($entry.Findings)) {
+	        $rows += "$($writer.Object): $($writer.Row)"
+	        if ($writers -notcontains $writer.Identity) { $writers += $writer.Identity }
+	    }
+	    if ($entry.Reason) { $unchecked += [string]$entry.Reason }
+	}
+	[PSCustomObject]@{
+	    Rows      = @($rows)
+	    Writers   = @($writers)
+	    Unchecked = @($unchecked)
+	}
+}
+function Read-UNCPathAccess {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [string]$Path,
+	    [Parameter(Mandatory = $false)]
+	    [switch]$OPSEC,
+	    [Parameter(Mandatory = $false)]
+	    [string]$Caller = 'Get-UNCWriteAccess'
+	)
+	$findings = @()
+	try {
+	    if ($OPSEC) {
+	        return [PSCustomObject]@{ Findings = @(); Reason = '-OPSEC connects to no host a policy names' }
+	    }
+	    if ($Path -match '%') {
+	        return [PSCustomObject]@{ Findings = @(); Reason = "$Path contains an environment variable, which only the computer running the task resolves" }
+	    }
+	    if ($Path -notmatch '^\\\\([^\\]+)\\([^\\]+)(.*)$') {
+	        return [PSCustomObject]@{ Findings = @(); Reason = "$Path could not be read" }
+	    }
+	    $uncHost = $Matches[1]
+	    $share = $Matches[2]
+	    $uncRest = ([string]$Matches[3]).TrimEnd([char]0x5C)
+	    $target = Get-UNCConnectHost -HostName $uncHost
+	    if (-not $target.Host) {
+	        return [PSCustomObject]@{ Findings = @(); Reason = [string]$target.Reason }
+	    }
+	    $uncParentRest = ''
+	    if ($uncRest) { $uncParentRest = $uncRest.Substring(0, $uncRest.LastIndexOf([char]0x5C)) }
+	    $uncShareRoot = "\\$($target.Host)\$share"
+	    $read = @(Invoke-SMBAccess -UNCPath $uncShareRoot -RetryCount 0 -Description "Reading the NTFS permissions of $Path" -ScriptBlock {
+	        $uncMountedRoot = $uncShareRoot
+	        if ($args.Count -gt 0 -and $args[0]) { $uncMountedRoot = [string]$args[0] }
+	        $fileRules = $null
+	        if ($uncRest) { $fileRules = Get-FileAccessRules -Path ($uncMountedRoot + $uncRest) }
+	        if ($null -ne $fileRules) {
+	            [PSCustomObject]@{
+	                Kind        = 'File'
+	                FileRules   = $fileRules
+	                FolderRules = (Get-DirectoryAccessRules -Path ($uncMountedRoot + $uncParentRest))
+	            }
+	        } else {
+	            $folderRules = Get-DirectoryAccessRules -Path ($uncMountedRoot + $uncRest)
+	            if ($null -ne $folderRules) {
+	                [PSCustomObject]@{ Kind = 'Folder'; FileRules = $null; FolderRules = $folderRules }
+	            } elseif ($uncRest) {
+	                [PSCustomObject]@{
+	                    Kind        = 'Missing'
+	                    FileRules   = $null
+	                    FolderRules = (Get-DirectoryAccessRules -Path ($uncMountedRoot + $uncParentRest))
+	                }
+	            }
+	        }
+	    } | Where-Object { $_ -and $_.PSObject.Properties['Kind'] })
+	    if ($read.Count -eq 0) {
+	        return [PSCustomObject]@{ Findings = @(); Reason = "$Path could not be read" }
+	    }
+	    $read = $read[0]
+	    $originalRoot = "\\$uncHost\$share"
+	    $folderObject = $originalRoot + $uncParentRest
+	    if ($read.Kind -eq 'Folder') { $folderObject = $originalRoot + $uncRest }
+	    if ($read.Kind -eq 'File') {
+	        foreach ($writer in @(Select-NTFSWriteAccess -Rules @($read.FileRules) -Target $Path -Caller $Caller)) {
+	            $findings += [PSCustomObject]@{ Object = $Path; Identity = $writer.Identity; Row = $writer.Row }
+	        }
+	    }
+	    $reason = $null
+	    if ($null -ne $read.FolderRules) {
+	        foreach ($writer in @(Select-NTFSWriteAccess -Rules @($read.FolderRules) -Target $folderObject -Caller $Caller -SkipInheritOnly)) {
+	            $findings += [PSCustomObject]@{ Object = $folderObject; Identity = $writer.Identity; Row = $writer.Row }
+	        }
+	    } elseif ($read.Kind -eq 'Missing') {
+	        $reason = "$Path could not be read"
+	    } else {
+	        $reason = "the folder $folderObject could not be read"
+	    }
+	    return [PSCustomObject]@{ Findings = @($findings); Reason = $reason }
+	} catch {
+	    return [PSCustomObject]@{ Findings = @($findings); Reason = "$Path could not be read" }
+	}
+}
+function Get-UNCConnectHost {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [string]$HostName
+	)
+	if ($null -eq $Script:_uncWriteAccess) {
+	    $Script:_uncWriteAccess = @{ Hosts = @{}; Paths = @{} }
+	}
+	$hostKey = $HostName.ToLowerInvariant()
+	if ($Script:_uncWriteAccess.Hosts.ContainsKey($hostKey)) {
+	    return $Script:_uncWriteAccess.Hosts[$hostKey]
+	}
+	$notADomainComputer = "$HostName is not an enabled computer of this domain, and adPEAS connects to no other host"
+	$answer = [PSCustomObject]@{ Host = $null; Reason = $notADomainComputer }
+	$domainFQDN = [string]$Script:LDAPContext.Domain
+	$domainNetBIOS = [string]$Script:LDAPContext.DomainNetBIOS
+	$address = $null
+	if ($domainFQDN -and ($HostName -ieq $domainFQDN -or ($domainNetBIOS -and $HostName -ieq $domainNetBIOS))) {
+	    $answer = [PSCustomObject]@{ Host = $domainFQDN; Reason = $null }
+	} elseif ([System.Net.IPAddress]::TryParse($HostName, [ref]$address)) {
+	    $answer = [PSCustomObject]@{ Host = $null; Reason = "$HostName is an address rather than a computer of this domain, and adPEAS connects to no other host" }
+	} elseif ($HostName -match '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$') {
+	    $filter = "(sAMAccountName=$HostName`$)"
+	    if ($HostName.Contains('.')) { $filter = "(dNSHostName=$HostName)" }
+	    try {
+	        $computer = @(Get-DomainComputer -LDAPFilter $filter -Enabled -Properties 'dNSHostName')[0]
+	        if ($computer) {
+	            $dnsName = [string]$computer.dNSHostName
+	            if ($dnsName) {
+	                $answer = [PSCustomObject]@{ Host = $dnsName; Reason = $null }
+	            } else {
+	                $answer = [PSCustomObject]@{ Host = $null; Reason = "the computer $HostName has no DNS host name in the directory, and adPEAS connects by no other name" }
+	            }
+	        }
+	    } catch {
+	        $answer = [PSCustomObject]@{ Host = $null; Reason = "the computer $HostName could not be looked up in the directory" }
+	    }
+	}
+	$Script:_uncWriteAccess.Hosts[$hostKey] = $answer
+	return $answer
 }
 if (-not $Script:ProgressThreshold) {
 	$Script:ProgressThreshold = 30
@@ -70525,7 +70685,7 @@ function Get-GPOScheduledTasks {
 	        }
 	        $domainFQDN = $Script:LDAPContext.Domain
 	        $Script:_gpoScheduledTasks = [System.Collections.ArrayList]::new()
-	        $Script:_gpoTaskUNCAccess = @{ Hosts = @{}; Paths = @{} }
+	        $Script:_uncWriteAccess = @{ Hosts = @{}; Paths = @{} }
 	        Show-SubHeader "Searching for GPO scheduled tasks..." -ObjectType "GPOScheduledTask"
 	        $gpos = Get-DomainGPO @connectionParams
 	        if (-not $gpos) {
@@ -70596,7 +70756,7 @@ function Get-GPOScheduledTasks {
 	        $sysvolAccessible = $Script:sysvolAccessible
 	        $Script:_gpoScheduledTasks = $null
 	        $Script:sysvolAccessible = $null
-	        $Script:_gpoTaskUNCAccess = $null
+	        $Script:_uncWriteAccess = $null
 	        if (-not $sysvolAccessible) {
 	            if ((Test-SysvolAccessible) -eq $false) {
 	                Show-Line "Skipped - SYSVOL not accessible" -Class Hint
@@ -70788,7 +70948,7 @@ function Parse-ScheduledTasksXML {
 	        $uncAccess = $null
 	        if (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath) {
 	            try {
-	                $uncAccess = Get-TaskUNCWriteAccess -Path $uncPaths -OPSEC:$OPSEC
+	                $uncAccess = Get-UNCWriteAccess -Path $uncPaths -OPSEC:$OPSEC
 	            } catch {
 	            }
 	        }
@@ -70965,162 +71125,6 @@ function Get-TaskUNCPaths {
 	    $seen[$pathKey] = $true
 	    $uncPath
 	}
-}
-function Get-TaskUNCWriteAccess {
-	[CmdletBinding()]
-	param(
-	    [Parameter(Mandatory = $true)]
-	    [AllowEmptyCollection()]
-	    [string[]]$Path,
-	    [Parameter(Mandatory = $false)]
-	    [switch]$OPSEC
-	)
-	if ($null -eq $Script:_gpoTaskUNCAccess) {
-	    $Script:_gpoTaskUNCAccess = @{ Hosts = @{}; Paths = @{} }
-	}
-	$rows = @()
-	$writers = @()
-	$unchecked = @()
-	foreach ($uncPath in @($Path)) {
-	    if (-not $uncPath) { continue }
-	    $pathKey = $uncPath.ToLowerInvariant()
-	    if (-not $Script:_gpoTaskUNCAccess.Paths.ContainsKey($pathKey)) {
-	        $Script:_gpoTaskUNCAccess.Paths[$pathKey] = Read-TaskUNCPathAccess -Path $uncPath -OPSEC:$OPSEC
-	    }
-	    $entry = $Script:_gpoTaskUNCAccess.Paths[$pathKey]
-	    foreach ($writer in @($entry.Findings)) {
-	        $rows += "$($writer.Object): $($writer.Row)"
-	        if ($writers -notcontains $writer.Identity) { $writers += $writer.Identity }
-	    }
-	    if ($entry.Reason) { $unchecked += [string]$entry.Reason }
-	}
-	[PSCustomObject]@{
-	    Rows      = @($rows)
-	    Writers   = @($writers)
-	    Unchecked = @($unchecked)
-	}
-}
-function Read-TaskUNCPathAccess {
-	[CmdletBinding()]
-	param(
-	    [Parameter(Mandatory = $true)]
-	    [string]$Path,
-	    [Parameter(Mandatory = $false)]
-	    [switch]$OPSEC
-	)
-	$findings = @()
-	try {
-	    if ($OPSEC) {
-	        return [PSCustomObject]@{ Findings = @(); Reason = '-OPSEC connects to no host a policy names' }
-	    }
-	    if ($Path -match '%') {
-	        return [PSCustomObject]@{ Findings = @(); Reason = "$Path contains an environment variable, which only the computer running the task resolves" }
-	    }
-	    if ($Path -notmatch '^\\\\([^\\]+)\\([^\\]+)(.*)$') {
-	        return [PSCustomObject]@{ Findings = @(); Reason = "$Path could not be read" }
-	    }
-	    $uncHost = $Matches[1]
-	    $share = $Matches[2]
-	    $taskRest = ([string]$Matches[3]).TrimEnd([char]0x5C)
-	    $target = Get-TaskUNCHost -HostName $uncHost
-	    if (-not $target.Host) {
-	        return [PSCustomObject]@{ Findings = @(); Reason = [string]$target.Reason }
-	    }
-	    $taskParentRest = ''
-	    if ($taskRest) { $taskParentRest = $taskRest.Substring(0, $taskRest.LastIndexOf([char]0x5C)) }
-	    $taskShareRoot = "\\$($target.Host)\$share"
-	    $read = @(Invoke-SMBAccess -UNCPath $taskShareRoot -RetryCount 0 -Description "Reading the NTFS permissions of $Path" -ScriptBlock {
-	        $taskMountedRoot = $taskShareRoot
-	        if ($args.Count -gt 0 -and $args[0]) { $taskMountedRoot = [string]$args[0] }
-	        $fileRules = $null
-	        if ($taskRest) { $fileRules = Get-FileAccessRules -Path ($taskMountedRoot + $taskRest) }
-	        if ($null -ne $fileRules) {
-	            [PSCustomObject]@{
-	                Kind        = 'File'
-	                FileRules   = $fileRules
-	                FolderRules = (Get-DirectoryAccessRules -Path ($taskMountedRoot + $taskParentRest))
-	            }
-	        } else {
-	            $folderRules = Get-DirectoryAccessRules -Path ($taskMountedRoot + $taskRest)
-	            if ($null -ne $folderRules) {
-	                [PSCustomObject]@{ Kind = 'Folder'; FileRules = $null; FolderRules = $folderRules }
-	            } elseif ($taskRest) {
-	                [PSCustomObject]@{
-	                    Kind        = 'Missing'
-	                    FileRules   = $null
-	                    FolderRules = (Get-DirectoryAccessRules -Path ($taskMountedRoot + $taskParentRest))
-	                }
-	            }
-	        }
-	    } | Where-Object { $_ -and $_.PSObject.Properties['Kind'] })
-	    if ($read.Count -eq 0) {
-	        return [PSCustomObject]@{ Findings = @(); Reason = "$Path could not be read" }
-	    }
-	    $read = $read[0]
-	    $originalRoot = "\\$uncHost\$share"
-	    $folderObject = $originalRoot + $taskParentRest
-	    if ($read.Kind -eq 'Folder') { $folderObject = $originalRoot + $taskRest }
-	    if ($read.Kind -eq 'File') {
-	        foreach ($writer in @(Select-NTFSWriteAccess -Rules @($read.FileRules) -Target $Path -Caller 'Get-GPOScheduledTasks')) {
-	            $findings += [PSCustomObject]@{ Object = $Path; Identity = $writer.Identity; Row = $writer.Row }
-	        }
-	    }
-	    $reason = $null
-	    if ($null -ne $read.FolderRules) {
-	        foreach ($writer in @(Select-NTFSWriteAccess -Rules @($read.FolderRules) -Target $folderObject -Caller 'Get-GPOScheduledTasks' -SkipInheritOnly)) {
-	            $findings += [PSCustomObject]@{ Object = $folderObject; Identity = $writer.Identity; Row = $writer.Row }
-	        }
-	    } elseif ($read.Kind -eq 'Missing') {
-	        $reason = "$Path could not be read"
-	    } else {
-	        $reason = "the folder $folderObject could not be read"
-	    }
-	    return [PSCustomObject]@{ Findings = @($findings); Reason = $reason }
-	} catch {
-	    return [PSCustomObject]@{ Findings = @($findings); Reason = "$Path could not be read" }
-	}
-}
-function Get-TaskUNCHost {
-	[CmdletBinding()]
-	param(
-	    [Parameter(Mandatory = $true)]
-	    [string]$HostName
-	)
-	if ($null -eq $Script:_gpoTaskUNCAccess) {
-	    $Script:_gpoTaskUNCAccess = @{ Hosts = @{}; Paths = @{} }
-	}
-	$hostKey = $HostName.ToLowerInvariant()
-	if ($Script:_gpoTaskUNCAccess.Hosts.ContainsKey($hostKey)) {
-	    return $Script:_gpoTaskUNCAccess.Hosts[$hostKey]
-	}
-	$notADomainComputer = "$HostName is not an enabled computer of this domain, and adPEAS connects to no other host"
-	$answer = [PSCustomObject]@{ Host = $null; Reason = $notADomainComputer }
-	$domainFQDN = [string]$Script:LDAPContext.Domain
-	$domainNetBIOS = [string]$Script:LDAPContext.DomainNetBIOS
-	$address = $null
-	if ($domainFQDN -and ($HostName -ieq $domainFQDN -or ($domainNetBIOS -and $HostName -ieq $domainNetBIOS))) {
-	    $answer = [PSCustomObject]@{ Host = $domainFQDN; Reason = $null }
-	} elseif ([System.Net.IPAddress]::TryParse($HostName, [ref]$address)) {
-	    $answer = [PSCustomObject]@{ Host = $null; Reason = "$HostName is an address rather than a computer of this domain, and adPEAS connects to no other host" }
-	} elseif ($HostName -match '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$') {
-	    $filter = "(sAMAccountName=$HostName`$)"
-	    if ($HostName.Contains('.')) { $filter = "(dNSHostName=$HostName)" }
-	    try {
-	        $computer = @(Get-DomainComputer -LDAPFilter $filter -Enabled -Properties 'dNSHostName')[0]
-	        if ($computer) {
-	            $dnsName = [string]$computer.dNSHostName
-	            if ($dnsName) {
-	                $answer = [PSCustomObject]@{ Host = $dnsName; Reason = $null }
-	            } else {
-	                $answer = [PSCustomObject]@{ Host = $null; Reason = "the computer $HostName has no DNS host name in the directory, and adPEAS connects by no other name" }
-	            }
-	        }
-	    } catch {
-	        $answer = [PSCustomObject]@{ Host = $null; Reason = "the computer $HostName could not be looked up in the directory" }
-	    }
-	}
-	$Script:_gpoTaskUNCAccess.Hosts[$hostKey] = $answer
-	return $answer
 }
 function Get-GPOScriptPaths {
 	[CmdletBinding()]
@@ -87978,7 +87982,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1752"
+$Script:adPEASVersion = "2.7.0+20261017-1758"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

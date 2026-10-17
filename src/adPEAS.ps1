@@ -173,6 +173,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Test-AccountActivity.ps1"
     . "$Script:ScriptPath\modules\Helpers\Invoke-SMBAccess.ps1"
     . "$Script:ScriptPath\modules\Helpers\Select-NTFSWriteAccess.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Get-UNCWriteAccess.ps1"
     . "$Script:ScriptPath\modules\Helpers\Show-Progress.ps1"
     . "$Script:ScriptPath\modules\Helpers\Kerberos-ASN1.ps1"
     . "$Script:ScriptPath\modules\Helpers\Kerberos-Crypto.ps1"
