@@ -243,6 +243,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   password produced a LAPS one. The edge now comes from control access on the LAPS
   password attributes.
 
+- **More GUIDs that named another attribute, among them in commands the reader runs.**
+  Checked against Microsoft's schema pages: `msPKIRoamingTimeStamp` carried a GUID that is
+  not that attribute, so a delegated read of it was not recognised, and the
+  `Set-DomainObject` read aliases `ReadUserPassword`, `ReadLMHash`, `ReadLMPwdHistory`,
+  `ReadNTHash` and `ReadNTPwdHistory` named other attributes. Four cards had a wrong GUID
+  in their remediation commands - **the dNSHostName card's last command granted SELF an
+  unvalidated write on `displayName`**; it now checks that computers keep the validated
+  write they hold by default. The scriptPath card filtered on a wrong GUID, the
+  DNS-Host-Name-Attributes card offered the validated write as an extended right under a
+  wrong GUID, and the encrypted-LAPS card now reads the attribute's GUID from the schema.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

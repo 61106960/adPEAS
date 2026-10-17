@@ -220,7 +220,7 @@ $Script:PropertyGUIDs = @{
     # entries exist so Get-OUPermissions can recognise a delegated read.
     'ms-PKI-AccountCredentials'      = [GUID]'b8dfa744-31dc-4ef1-ac7c-84baf7ef9da7'
     'ms-PKI-DPAPIMasterKeys'         = [GUID]'b3f93023-9239-4f7c-b99c-6745d87adbc2'
-    'ms-PKI-RoamingTimeStamp'        = [GUID]'91e647de-d96f-4b70-9557-d63ff4f3ccd8'
+    'ms-PKI-RoamingTimeStamp'        = [GUID]'6617e4ac-a2f1-43ab-b60c-11fbd1facf05'
 
     # BitLocker recovery password, on the msFVE-RecoveryInformation object below each
     # computer. System-Id-Guid from learn.microsoft.com/windows/win32/adschema
@@ -1106,15 +1106,16 @@ $Script:ReadPropertyAliases = @{
     'ReadUnicodePwd'      = 'bf9679e1-0de6-11d0-a285-00aa003049e2'
     'ReadNTPassword'      = 'bf9679e1-0de6-11d0-a285-00aa003049e2'  # Alias
 
-    # ntPwdHistory - NT password hash history
-    # schemaIDGUID: a8df7489-c5ea-11d1-bbcb-0080c76670c0
-    'ReadNTHash'          = 'a8df7489-c5ea-11d1-bbcb-0080c76670c0'
-    'ReadNTPwdHistory'    = 'a8df7489-c5ea-11d1-bbcb-0080c76670c0'  # Alias
+    # The NT hash itself is unicodePwd, above. ntPwdHistory holds the earlier ones.
+    # Every schemaIDGUID in this block is the System-Id-Guid of the attribute's own
+    # learn.microsoft.com/windows/win32/adschema page; four of them had been written from
+    # memory and named another attribute.
+    'ReadNTHash'          = 'bf9679e1-0de6-11d0-a285-00aa003049e2'  # unicodePwd
+    'ReadNTPwdHistory'    = 'bf9679e2-0de6-11d0-a285-00aa003049e2'  # ntPwdHistory
 
-    # lmPwdHistory - LM password hash history (legacy)
-    # schemaIDGUID: bf9679d5-0de6-11d0-a285-00aa003049e2
-    'ReadLMHash'          = 'bf9679d5-0de6-11d0-a285-00aa003049e2'
-    'ReadLMPwdHistory'    = 'bf9679d5-0de6-11d0-a285-00aa003049e2'  # Alias
+    # LM hashes (legacy): dBCSPwd is the current one, lmPwdHistory the earlier ones
+    'ReadLMHash'          = 'bf96799c-0de6-11d0-a285-00aa003049e2'  # dBCSPwd
+    'ReadLMPwdHistory'    = 'bf96799d-0de6-11d0-a285-00aa003049e2'  # lmPwdHistory
 
     # === Unix/POSIX Passwords ===
     # unixUserPassword - Unix password for Services for Unix
@@ -1122,13 +1123,14 @@ $Script:ReadPropertyAliases = @{
     'ReadUnixPassword'    = '612cb747-c0e8-4f92-9221-fdd5f15b550d'
 
     # userPassword - LDAP standard password attribute
-    # schemaIDGUID: bf9679e0-0de6-11d0-a285-00aa003049e2
-    'ReadUserPassword'    = 'bf9679e0-0de6-11d0-a285-00aa003049e2'
+    # schemaIDGUID: bf967a6e-0de6-11d0-a285-00aa003049e2
+    'ReadUserPassword'    = 'bf967a6e-0de6-11d0-a285-00aa003049e2'
 
     # === Credential Roaming ===
     # msPKI-RoamingTimeStamp - Credential Roaming timestamp
-    # schemaIDGUID: 91e647de-d96f-4b70-9557-d63ff4f3ccd8
-    'ReadRoamingTimestamp'       = '91e647de-d96f-4b70-9557-d63ff4f3ccd8'
+    # schemaIDGUID: 6617e4ac-a2f1-43ab-b60c-11fbd1facf05 (a-mspkiroamingtimestamp; this
+    # alias and the property table held 91e647de, which is not that attribute)
+    'ReadRoamingTimestamp'       = '6617e4ac-a2f1-43ab-b60c-11fbd1facf05'
 
     # msPKI-DPAPIMasterKeys - DPAPI Master Keys (credential roaming)
     # schemaIDGUID: b3f93023-9239-4f7c-b99c-6745d87adbc2

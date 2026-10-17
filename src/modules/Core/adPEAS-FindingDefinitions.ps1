@@ -3487,19 +3487,19 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         RemediationCommands = @(
             @{
                 Description = "View current ACL for dNSHostName attribute on OU"
-                Command = "(Get-Acl 'AD:\OU=Computers,DC=domain,DC=com').Access | Where-Object {`$_.ObjectType -eq 'bf967953-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+                Command = "(Get-Acl 'AD:\OU=Computers,DC=domain,DC=com').Access | Where-Object {`$_.ObjectType -eq '72e39547-7b18-11d1-adef-00c04fd8d5cd'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
             }
             @{
                 Description = "Remove WriteProperty permission for dNSHostName from specific principal"
-                Command = "`$acl = Get-Acl 'AD:\OU=Computers,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\User' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf967953-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=Computers,DC=domain,DC=com' -AclObject `$acl"
+                Command = "`$acl = Get-Acl 'AD:\OU=Computers,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\User' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '72e39547-7b18-11d1-adef-00c04fd8d5cd'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=Computers,DC=domain,DC=com' -AclObject `$acl"
             }
             @{
                 Description = "Monitor dNSHostName changes via Event ID 5136 (Directory Service Changes)"
                 Command = "Get-WinEvent -FilterHashtable @{LogName='Security'; Id=5136; StartTime=(Get-Date).AddDays(-7)} | Where-Object {`$_.Message -match 'dNSHostName'} | Select-Object TimeCreated,@{Name='Computer';Expression={`$_.Properties[10].Value}},@{Name='Attribute';Expression={`$_.Properties[8].Value}},@{Name='NewValue';Expression={`$_.Properties[11].Value}} | Format-Table -AutoSize"
             }
             @{
-                Description = "Grant SELF permission to allow computers to update their own dNSHostName"
-                Command = "`$ouPath = 'AD:\OU=Computers,DC=domain,DC=com'; `$acl = Get-Acl `$ouPath; `$sid = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-10'; `$ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(`$sid, 'WriteProperty', 'Allow', 'bf967953-0de6-11d0-a285-00aa003049e2', 'Descendents', '00000000-0000-0000-0000-000000000000'); `$acl.AddAccessRule(`$ace); Set-Acl -Path `$ouPath -AclObject `$acl"
+                Description = "Confirm that computers keep the validated write on their own dNSHostName (SELF, Self right) - it is granted by default, so nothing needs to be added, and an unvalidated WriteProperty for SELF would be the weakening this finding is about"
+                Command = "(Get-Acl 'AD:\CN=COMPUTER01,OU=Computers,DC=domain,DC=com').Access | Where-Object { `$_.IdentityReference -eq 'NT AUTHORITY\SELF' -and `$_.ObjectType -eq '72e39547-7b18-11d1-adef-00c04fd8d5cd' } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
             }
         )
         References = @(
@@ -3549,8 +3549,8 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
                 Command = "`$acl = Get-Acl 'AD:\OU=Computers,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\User' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '72e39547-7b18-11d1-adef-00c04fd8d5cd'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=Computers,DC=domain,DC=com' -AclObject `$acl"
             }
             @{
-                Description = "Grant Validated-DNS-Host-Name extended right instead (GUID: f0f8ffab-1191-11d0-a060-00aa006c33ed)"
-                Command = "`$ouPath = 'AD:\OU=Computers,DC=domain,DC=com'; `$acl = Get-Acl `$ouPath; `$sid = (Get-ADGroup 'DOMAIN\GroupName').SID; `$ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(`$sid, 'ExtendedRight', 'Allow', 'f0f8ffab-1191-11d0-a060-00aa006c33ed', 'Descendents', 'bf967a86-0de6-11d0-a285-00aa003049e2'); `$acl.AddAccessRule(`$ace); Set-Acl -Path `$ouPath -AclObject `$acl"
+                Description = "Grant the Validated-DNS-Host-Name validated write instead - a Self right on 72e39547-7b18-11d1-adef-00c04fd8d5cd, not an extended right"
+                Command = "`$ouPath = 'AD:\OU=Computers,DC=domain,DC=com'; `$acl = Get-Acl `$ouPath; `$sid = (Get-ADGroup 'DOMAIN\GroupName').SID; `$ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(`$sid, 'Self', 'Allow', '72e39547-7b18-11d1-adef-00c04fd8d5cd', 'Descendents', 'bf967a86-0de6-11d0-a285-00aa003049e2'); `$acl.AddAccessRule(`$ace); Set-Acl -Path `$ouPath -AclObject `$acl"
             }
             @{
                 Description = "Find all computers with non-default dNSHostName values (potential indicators of modification)"
@@ -3628,11 +3628,11 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         RemediationCommands = @(
             @{
                 Description = "View current ACL on OU to identify principals with WriteProperty on scriptPath"
-                Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679f1-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+                Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679a8-0de6-11d0-a285-00aa003049e2'} | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
             }
             @{
                 Description = "Remove WriteProperty permission on scriptPath from specific principal"
-                Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679f1-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
+                Command = "`$acl = Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com'; `$ace = `$acl.Access | Where-Object {`$_.IdentityReference -eq 'DOMAIN\USER' -and `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'bf9679a8-0de6-11d0-a285-00aa003049e2'}; `$ace | ForEach-Object {`$acl.RemoveAccessRule(`$_)}; Set-Acl -Path 'AD:\OU=TARGET_OU,DC=domain,DC=com' -AclObject `$acl"
             }
             @{
                 Description = "Find all users in OU with scriptPath configured"
@@ -5824,8 +5824,8 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         )
         RemediationCommands = @(
             @{
-                Description = "Show who can read the encrypted LAPS password on an OU"
-                Command = '(Get-Acl -Path "AD:OU=TARGET_OU,DC=DOMAIN,DC=COM").Access | Where-Object { $_.ObjectType -eq "0bf205b5-8bcb-4943-8413-52e492d7cf63" } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize'
+                Description = "Show who can read the encrypted LAPS password on an OU - the attribute's GUID is read from this forest's schema rather than written down"
+                Command = '$schema = (Get-ADRootDSE).schemaNamingContext; $guid = [guid]::new([byte[]](Get-ADObject -SearchBase $schema -LDAPFilter "(lDAPDisplayName=msLAPS-EncryptedPassword)" -Properties schemaIDGUID).schemaIDGUID); (Get-Acl -Path "AD:OU=TARGET_OU,DC=DOMAIN,DC=COM").Access | Where-Object { $_.ObjectType -eq $guid } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize'
             }
             @{
                 Description = "Read the configured decryptor from the LAPS policy"
@@ -9586,7 +9586,7 @@ Get-ADUser <targetuser> -Properties msPKIAccountCredentials, msPKIDPAPIMasterKey
 $roaming = @{
     'b8dfa744-31dc-4ef1-ac7c-84baf7ef9da7' = 'ms-PKI-AccountCredentials'
     'b3f93023-9239-4f7c-b99c-6745d87adbc2' = 'ms-PKI-DPAPIMasterKeys'
-    '91e647de-d96f-4b70-9557-d63ff4f3ccd8' = 'ms-PKI-RoamingTimeStamp'
+    '6617e4ac-a2f1-43ab-b60c-11fbd1facf05' = 'ms-PKI-RoamingTimeStamp'
 }
 (Get-Acl "AD:\<container DN>").Access |
     Where-Object { $roaming.ContainsKey($_.ObjectType.ToString()) } |
