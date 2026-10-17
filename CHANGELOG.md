@@ -183,6 +183,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   was reported as a role-transfer right. Change-PDC is reported as before, and its card
   now speaks of the PDC emulator alone.
 
+- **The card for write access to the domain root's GPO link no longer claims
+  `gPOptions`.** The check reports `gPLink` only, and the card said "gPLink or gPOptions"
+  and described blocked inheritance - which at the domain stops the site-linked policies
+  alone and is not what the card is about.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

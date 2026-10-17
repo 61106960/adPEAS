@@ -6072,12 +6072,12 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    Title = "Write Access to the GPO Link of the Domain Object"
 	    Risk = "Finding"
 	    BaseScore = 53
-	    Description = "A principal can write gPLink or gPOptions on the domain object. gPLink is the attribute that links a Group Policy Object to the domain itself, so whoever writes it chooses which policy applies to every machine in the domain, domain controllers included. gPOptions decides whether inheritance is blocked, which is enough to disable a policy that is holding a setting down."
+	    Description = "A principal can write gPLink on the domain object. gPLink is the attribute that links a Group Policy Object to the domain itself, so whoever writes it chooses which policy applies to every machine in the domain, domain controllers included."
 	    Impact = @(
 	        "A GPO linked at the domain root applies to every computer and user in the domain, domain controllers included"
 	        "Startup and logon scripts, scheduled immediate tasks and software installation in such a GPO are code execution everywhere"
 	        "The attacker does not need write access to any existing GPO - creating one and linking it here is enough"
-	        "Blocking inheritance through gPOptions silently disables a hardening policy without changing the policy itself"
+	        "The same attribute also removes a link or changes its order and enforcement, which takes a hardening policy off the whole domain"
 	    )
 	    Attack = @(
 	        "1. Attacker creates a GPO, which by default any authenticated user with Group Policy Creator Owners can do"
@@ -6086,7 +6086,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	        "4. Waits for the refresh interval, or triggers it, and has code running on every machine"
 	    )
 	    Remediation = @(
-	        "Remove write access to gPLink and gPOptions on the domain object from every non-Tier-0 principal"
+	        "Remove write access to gPLink on the domain object from every non-Tier-0 principal"
 	        "Audit the current links at the domain root - a policy linked there should be deliberate and few"
 	        "Watch directory service changes on the domain object for gPLink (Event ID 5136)"
 	    )
@@ -6107,7 +6107,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    Tools = @("PowerView", "BloodHound", "SharpGPOAbuse")
 	    MITRE = "T1484.001"
 	    Triggers = @(
-	        @{ Attribute = 'dangerousRights'; Pattern = 'GP-Link|GP-Options'; Severity = 'Finding' }
+	        @{ Attribute = 'dangerousRights'; Pattern = 'GP-Link'; Severity = 'Finding' }
 	    )
 	}
 	'DOMAIN_ROOT_SID_HISTORY_WRITE' = @{
@@ -86046,7 +86046,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1208"
+$Script:adPEASVersion = "2.7.0+20261017-1210"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
