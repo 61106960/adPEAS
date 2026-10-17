@@ -1114,12 +1114,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Summary = "Analyzes who may change the privileged groups that AdminSDHolder does not protect."
         WhyItMatters = "SDProp resets only the groups AdminSDHolder protects. Every other group keeps whatever ACEs it is given, and several are privileged in all but name - DnsAdmins load code into the DNS service on the domain controllers, Group Policy Creator Owners create policy, the Exchange groups hold rights on the domain, and a group nested into one of them passes its membership on. Whoever may add a member to such a group, or rewrite its DACL or owner, can make any account a member."
         WhatWeCheck = @(
-            "Every privileged group without adminCount=1, the groups nested into them, and the Exchange groups"
+            "Every privileged group without adminCount=1, the groups nested into them, and the Exchange groups - and the operator groups dsHeuristics takes out of AdminSDHolder protection, whatever their adminCount says"
             "WriteProperty on member, the Self-Membership validated write, WriteDacl, WriteOwner, GenericAll and GenericWrite - explicit and inherited"
             "The owner of each group"
             "The same identity gate as the AdminSDHolder check; Exchange service groups count as by design"
         )
-        FilteringNote = "Which groups are unprotected is read from adminCount, which SDProp sets and never clears: a group protected once and no longer keeps a stale 1 and is not read. Account Operators control every unprotected group through the default security descriptor of the group class; that is said once, as a hint while the group has members, instead of once per group. Expected and privileged holders are hidden unless -IncludePrivileged. Groups in another domain of the forest are not read."
+        FilteringNote = "Which groups are unprotected is read from adminCount, which SDProp sets and never clears: a group protected once and no longer keeps a stale 1 and is not read - except the operator groups character 16 of dsHeuristics excludes, and the groups reached only through them, which are read. Account Operators control every unprotected group through the default security descriptor of the group class; that is said once, as a hint while the group has members, instead of once per group. Expected and privileged holders are hidden unless -IncludePrivileged. Groups in another domain of the forest are not read."
         SecureMessage = "No principal beyond the expected ones can change the privileged groups AdminSDHolder does not protect."
         PrimaryFindingId = 'PRIVILEGED_GROUP_ACL'
     }

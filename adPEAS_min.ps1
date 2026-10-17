@@ -13781,7 +13781,7 @@ foreach ($oid in $linkedOIDs) {
         Title = "Control Over a Privileged Group That AdminSDHolder Does Not Protect"
         Risk = "Finding"
         BaseScore = 75
-        Description = "A principal may change a privileged group that AdminSDHolder does not protect. SDProp resets the DACL of the protected groups every hour - Microsoft lists Account Operators, Administrators, Backup Operators, Domain Admins, Domain Controllers, Enterprise Admins, Enterprise Key Admins, Key Admins, Print Operators, Read-only Domain Controllers, Replicator, Schema Admins and Server Operators - and leaves every other group with whatever ACEs it is given. Several of those are privileged in all but name: DnsAdmins can load code into the DNS service on the domain controllers, Group Policy Creator Owners create policy, the Exchange groups hold rights on the domain, and a group nested into one of them passes its membership on. Whoever may write the member attribute, use the Self-Membership validated write, rewrite the DACL, take ownership or already owns the group can make any account a member - their own included - and with it gets what the group can do."
+        Description = "A principal may change a privileged group that AdminSDHolder does not protect. SDProp resets the DACL of the protected groups every hour - Microsoft lists Account Operators, Administrators, Backup Operators, Domain Admins, Domain Controllers, Enterprise Admins, Enterprise Key Admins, Key Admins, Print Operators, Read-only Domain Controllers, Replicator, Schema Admins and Server Operators, unless character 16 of dsHeuristics takes the operator groups among them out - and leaves every other group with whatever ACEs it is given. Several of those are privileged in all but name: DnsAdmins can load code into the DNS service on the domain controllers, Group Policy Creator Owners create policy, the Exchange groups hold rights on the domain, and a group nested into one of them passes its membership on. Whoever may write the member attribute, use the Self-Membership validated write, rewrite the DACL, take ownership or already owns the group can make any account a member - their own included - and with it gets what the group can do."
         Impact = @(
             "The holder adds an account of its choosing to the group, and that account receives the group's rights at its next logon"
             "DnsAdmins membership leads to code execution as SYSTEM on the domain controllers that run DNS"
@@ -20217,12 +20217,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Summary = "Analyzes who may change the privileged groups that AdminSDHolder does not protect."
         WhyItMatters = "SDProp resets only the groups AdminSDHolder protects. Every other group keeps whatever ACEs it is given, and several are privileged in all but name - DnsAdmins load code into the DNS service on the domain controllers, Group Policy Creator Owners create policy, the Exchange groups hold rights on the domain, and a group nested into one of them passes its membership on. Whoever may add a member to such a group, or rewrite its DACL or owner, can make any account a member."
         WhatWeCheck = @(
-            "Every privileged group without adminCount=1, the groups nested into them, and the Exchange groups"
+            "Every privileged group without adminCount=1, the groups nested into them, and the Exchange groups - and the operator groups dsHeuristics takes out of AdminSDHolder protection, whatever their adminCount says"
             "WriteProperty on member, the Self-Membership validated write, WriteDacl, WriteOwner, GenericAll and GenericWrite - explicit and inherited"
             "The owner of each group"
             "The same identity gate as the AdminSDHolder check; Exchange service groups count as by design"
         )
-        FilteringNote = "Which groups are unprotected is read from adminCount, which SDProp sets and never clears: a group protected once and no longer keeps a stale 1 and is not read. Account Operators control every unprotected group through the default security descriptor of the group class; that is said once, as a hint while the group has members, instead of once per group. Expected and privileged holders are hidden unless -IncludePrivileged. Groups in another domain of the forest are not read."
+        FilteringNote = "Which groups are unprotected is read from adminCount, which SDProp sets and never clears: a group protected once and no longer keeps a stale 1 and is not read - except the operator groups character 16 of dsHeuristics excludes, and the groups reached only through them, which are read. Account Operators control every unprotected group through the default security descriptor of the group class; that is said once, as a hint while the group has members, instead of once per group. Expected and privileged holders are hidden unless -IncludePrivileged. Groups in another domain of the forest are not read."
         SecureMessage = "No principal beyond the expected ones can change the privileged groups AdminSDHolder does not protect."
         PrimaryFindingId = 'PRIVILEGED_GROUP_ACL'
     }
@@ -66567,7 +66567,8 @@ function Get-PrivilegedGroupMembers {
                     [string]$DistinguishedName,
                     [string]$Name,
                     [string]$Source,
-                    $NestedGroups
+                    $NestedGroups,
+                    [string]$RootSID
                 )
                 if ([string]::IsNullOrWhiteSpace($DistinguishedName)) { return }
                 if ($domainDN -and -not $DistinguishedName.EndsWith(",$domainDN", [System.StringComparison]::OrdinalIgnoreCase)) { return }
@@ -66576,12 +66577,14 @@ function Get-PrivilegedGroupMembers {
                         DistinguishedName = $DistinguishedName
                         Name              = $Name
                         Source            = $Source
+                        Roots             = New-Object System.Collections.Generic.List[string]
                     }
                 }
+                $GroupsForACLReview[$DistinguishedName].Roots.Add([string]$RootSID)
                 foreach ($nestedGroup in @($NestedGroups)) {
                     if (-not $nestedGroup) { continue }
                     Add-GroupForACLReview -DistinguishedName $nestedGroup.DistinguishedName -Name $nestedGroup.GroupName `
-                        -Source "nested in $Name" -NestedGroups $nestedGroup.NestedGroups
+                        -Source "nested in $Name" -NestedGroups $nestedGroup.NestedGroups -RootSID $RootSID
                 }
             }
             $accountOperatorMembers = $null
@@ -66618,7 +66621,7 @@ function Get-PrivilegedGroupMembers {
                         $GroupName = $Group.sAMAccountName
                         Write-Log "[Get-PrivilegedGroupMembers] Found group: $GroupName ($($Group.distinguishedName))"
                         $Result = Get-GroupMembersRecursive -GroupDN $Group.distinguishedName -GroupName $GroupName -CredentialParams $CredParams -Visited @{} -GroupObject $Group
-                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups
+                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups -RootSID $GroupSID
                         foreach ($primaryMember in @($PrimaryGroupMembers["$RID"])) {
                             if (-not $primaryMember) { continue }
                             $primaryDN = if ($primaryMember.distinguishedName -is [array]) {
@@ -66698,7 +66701,7 @@ function Get-PrivilegedGroupMembers {
                         $GroupName = $Group.sAMAccountName
                         Write-Log "[Get-PrivilegedGroupMembers] Found built-in group: $GroupName ($($Group.distinguishedName))"
                         $Result = Get-GroupMembersRecursive -GroupDN $Group.distinguishedName -GroupName $GroupName -CredentialParams $CredParams -Visited @{} -GroupObject $Group
-                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups
+                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups -RootSID $SID
                         $DirectMemberCount = @($Result.DirectMembers).Count
                         $NestedGroupCount = @($Result.NestedGroups).Count
                         $NestedSum = ($Result.NestedGroups | Measure-Object -Property TotalMembers -Sum).Sum
@@ -67238,8 +67241,10 @@ function Get-PrivilegedGroupMembers {
                 Show-Line "AdminSDHolder ACLs are secure" -Class Secure
             }
             try {
+                $adminSDExcludedGroups = Get-AdminSDHolderExcludedGroup -ConnectionParams $connectionParams
                 Show-UnprotectedGroupACL -Groups @($GroupsForACLReview.Values) -IncludePrivileged:$IncludePrivileged `
-                    -ConnectionParams $connectionParams -AccountOperatorMembers $accountOperatorMembers
+                    -ConnectionParams $connectionParams -AccountOperatorMembers $accountOperatorMembers `
+                    -AdminSDExcludedGroups $adminSDExcludedGroups
             } catch {
                 Write-Log "[Get-PrivilegedGroupMembers] Group ACL analysis failed: $_" -Level Error
                 Show-Line "Error during the group ACL analysis - the privileged groups AdminSDHolder does not protect could not be evaluated: $_" -Class Finding
@@ -67339,6 +67344,28 @@ function Get-PrivilegedGroupMembers {
         Write-Log "[Get-PrivilegedGroupMembers] Privileged group enumeration completed"
     }
 }
+function Get-AdminSDHolderExcludedGroup {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+    $excluded = @{}
+    $configDN = $Script:LDAPContext.ConfigurationNamingContext
+    if (-not $configDN) { return $excluded }
+    try {
+        $dirService = @(Get-DomainObject -Identity "CN=Directory Service,CN=Windows NT,CN=Services,$configDN" -Properties 'dSHeuristics' @ConnectionParams)[0]
+        if ($dirService) {
+            foreach ($operatorGroup in @((ConvertFrom-DSHeuristics -Value ([string]$dirService.dSHeuristics)).AdminSDExcludedGroups)) {
+                $excluded[$operatorGroup.SID] = $operatorGroup.Name
+            }
+        }
+    } catch {
+        Write-Log "[Get-PrivilegedGroupMembers] Could not read dsHeuristics for the AdminSDHolder exclusions: $_"
+    }
+    return $excluded
+}
 function Show-UnprotectedGroupACL {
     [CmdletBinding()]
     param(
@@ -67351,7 +67378,9 @@ function Show-UnprotectedGroupACL {
         [hashtable]$ConnectionParams = @{},
         [Parameter(Mandatory=$false)]
         [AllowNull()]
-        $AccountOperatorMembers
+        $AccountOperatorMembers,
+        [Parameter(Mandatory=$false)]
+        [hashtable]$AdminSDExcludedGroups = @{}
     )
     Show-SubHeader "Checking the ACLs of privileged groups AdminSDHolder does not protect..." -ObjectType 'PrivilegedGroupACL'
     $accountOperatorsSID = 'S-1-5-32-548'
@@ -67359,6 +67388,7 @@ function Show-UnprotectedGroupACL {
     $byTrustee = [ordered]@{}
     $examinedGroups = @()
     $unreadGroups = @()
+    $excludedRead = @()
     $accountOperatorGroups = @()
     $suppressed = @{}
     foreach ($group in @($Groups)) {
@@ -67373,7 +67403,13 @@ function Show-UnprotectedGroupACL {
             $unreadGroups += $group.Name
             continue
         }
-        if ("$($groupObject.adminCount)" -eq '1') { continue }
+        if ("$($groupObject.adminCount)" -eq '1') {
+            $roots = @($group.Roots)
+            $excludedOnly = ($roots.Count -gt 0 -and
+                @($roots | Where-Object { -not $AdminSDExcludedGroups.ContainsKey([string]$_) }).Count -eq 0)
+            if (-not $excludedOnly) { continue }
+            $excludedRead += $group.Name
+        }
         $descriptor = New-Object System.DirectoryServices.ActiveDirectorySecurity
         try {
             $descriptor.SetSecurityDescriptorBinaryForm([byte[]]$groupObject.nTSecurityDescriptor)
@@ -67462,6 +67498,11 @@ function Show-UnprotectedGroupACL {
     if ($examinedGroups.Count -gt 0) {
         Show-Line ("$($examinedGroups.Count) privileged group(s) are outside AdminSDHolder's protection and were read: " +
                    ($examinedGroups -join ', ')) -Class Note
+    }
+    if ($excludedRead.Count -gt 0) {
+        $excludedNames = @($AdminSDExcludedGroups.Values | Sort-Object)
+        Show-Line ("$($excludedRead.Count) of them carry adminCount=1 from an earlier SDProp run, but dsHeuristics takes " +
+                   "$($excludedNames -join ', ') out of the protection: " + ($excludedRead -join ', ')) -Class Note
     }
     if ($accountOperatorGroups.Count -gt 0) {
         $aoText = "Account Operators control $($accountOperatorGroups.Count) of these group(s) through the default every new group gets - a member of Account Operators can make itself a member of each"
@@ -91807,7 +91848,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1924"
+$Script:adPEASVersion = "2.7.0+20261017-1934"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

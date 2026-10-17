@@ -580,6 +580,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   client can read, and how to set the character back; its title is *Anonymous LDAP
   Operations Allowed*, and its risk is a finding like the line that raises it.
 
+- **Operator groups that `dsHeuristics` takes out of AdminSDHolder protection are read
+  in the group ACL step.** `Get-PrivilegedGroupMembers` reads the DACL of the privileged
+  groups AdminSDHolder does not protect and measures that by `adminCount`. Character 16
+  of `dsHeuristics` excludes Account, Server, Print or Backup Operators and their members
+  from the protection - but the `adminCount=1` SDProp set before stays, so exactly the
+  groups whose DACL nobody resets any more looked protected, and the right granted on
+  them since went unread. The step now reads `dsHeuristics`, records through which
+  privileged group each group was reached, and reads a group whose every path runs
+  through an excluded operator group, whatever its `adminCount` says; a note names them.
+  A group another protected group still covers stays out.
+
 ---
 
 ## [2.7.0] - 2026-10-08

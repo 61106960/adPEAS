@@ -413,13 +413,20 @@ function Get-PrivilegedGroupMembers {
             # them - a nested group passes its membership on, so the right to add a member to
             # it is the right to add one to the group above. Only this domain's partition: the
             # descriptor of a group in another domain is not read over this connection.
+            #
+            # Roots: the SID of every privileged group a group was reached from, one entry per
+            # path ('' where the caller passed none). dsHeuristics can take operator groups out
+            # of AdminSDHolder protection, and a group reached only through those is not
+            # protected any more, whatever its adminCount says - step 5b needs the paths to
+            # tell.
             $GroupsForACLReview = [ordered]@{}
             function Add-GroupForACLReview {
                 param(
                     [string]$DistinguishedName,
                     [string]$Name,
                     [string]$Source,
-                    $NestedGroups
+                    $NestedGroups,
+                    [string]$RootSID
                 )
                 if ([string]::IsNullOrWhiteSpace($DistinguishedName)) { return }
                 if ($domainDN -and -not $DistinguishedName.EndsWith(",$domainDN", [System.StringComparison]::OrdinalIgnoreCase)) { return }
@@ -428,12 +435,14 @@ function Get-PrivilegedGroupMembers {
                         DistinguishedName = $DistinguishedName
                         Name              = $Name
                         Source            = $Source
+                        Roots             = New-Object System.Collections.Generic.List[string]
                     }
                 }
+                $GroupsForACLReview[$DistinguishedName].Roots.Add([string]$RootSID)
                 foreach ($nestedGroup in @($NestedGroups)) {
                     if (-not $nestedGroup) { continue }
                     Add-GroupForACLReview -DistinguishedName $nestedGroup.DistinguishedName -Name $nestedGroup.GroupName `
-                        -Source "nested in $Name" -NestedGroups $nestedGroup.NestedGroups
+                        -Source "nested in $Name" -NestedGroups $nestedGroup.NestedGroups -RootSID $RootSID
                 }
             }
 
@@ -508,7 +517,7 @@ function Get-PrivilegedGroupMembers {
                         # Each top-level group gets its own Visited hashtable to avoid cross-contamination
                         # Pass the already-fetched group object to avoid duplicate LDAP query
                         $Result = Get-GroupMembersRecursive -GroupDN $Group.distinguishedName -GroupName $GroupName -CredentialParams $CredParams -Visited @{} -GroupObject $Group
-                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups
+                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups -RootSID $GroupSID
 
                         # Fold in the accounts holding this group as their primary group.
                         # They are direct members in every sense that matters - the RID is in
@@ -622,7 +631,7 @@ function Get-PrivilegedGroupMembers {
                         # Each top-level group gets its own Visited hashtable to avoid cross-contamination
                         # Pass the already-fetched group object to avoid duplicate LDAP query
                         $Result = Get-GroupMembersRecursive -GroupDN $Group.distinguishedName -GroupName $GroupName -CredentialParams $CredParams -Visited @{} -GroupObject $Group
-                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups
+                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups -RootSID $SID
 
                         $DirectMemberCount = @($Result.DirectMembers).Count
                         $NestedGroupCount = @($Result.NestedGroups).Count
@@ -1456,8 +1465,10 @@ function Get-PrivilegedGroupMembers {
             # Its own try: a failure here must not read as clean, and must not take the steps
             # around it with it.
             try {
+                $adminSDExcludedGroups = Get-AdminSDHolderExcludedGroup -ConnectionParams $connectionParams
                 Show-UnprotectedGroupACL -Groups @($GroupsForACLReview.Values) -IncludePrivileged:$IncludePrivileged `
-                    -ConnectionParams $connectionParams -AccountOperatorMembers $accountOperatorMembers
+                    -ConnectionParams $connectionParams -AccountOperatorMembers $accountOperatorMembers `
+                    -AdminSDExcludedGroups $adminSDExcludedGroups
             } catch {
                 Write-Log "[Get-PrivilegedGroupMembers] Group ACL analysis failed: $_" -Level Error
                 Show-Line "Error during the group ACL analysis - the privileged groups AdminSDHolder does not protect could not be evaluated: $_" -Class Finding
@@ -1632,6 +1643,53 @@ function Get-PrivilegedGroupMembers {
 
 <#
 .SYNOPSIS
+    The operator groups dsHeuristics takes out of AdminSDHolder protection.
+
+.DESCRIPTION
+    Character 16 of dsHeuristics (dwAdminSDExMask, MS-ADTS 3.1.1.6.1.4) excludes Account,
+    Server, Print and Backup Operators, and their direct and transitive members, from the
+    protection operation, in every domain of the forest. SDProp then leaves them alone - but
+    the adminCount=1 it set before stays, because nothing clears it, so step 5b would take
+    them for protected. Get-LDAPConfiguration reports the setting itself.
+
+    The attribute is read here rather than handed over, so the check keeps working on its
+    own. A read that fails is logged and returns nothing excluded: step 5b then measures by
+    adminCount alone, as it did before it knew of the setting.
+
+.PARAMETER ConnectionParams
+    Domain/Server/Credential hashtable, passed through unchanged.
+
+.OUTPUTS
+    Hashtable SID -> group name; empty when nothing is excluded or the attribute could not
+    be read.
+#>
+function Get-AdminSDHolderExcludedGroup {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    $excluded = @{}
+    $configDN = $Script:LDAPContext.ConfigurationNamingContext
+    if (-not $configDN) { return $excluded }
+
+    try {
+        $dirService = @(Get-DomainObject -Identity "CN=Directory Service,CN=Windows NT,CN=Services,$configDN" -Properties 'dSHeuristics' @ConnectionParams)[0]
+        if ($dirService) {
+            foreach ($operatorGroup in @((ConvertFrom-DSHeuristics -Value ([string]$dirService.dSHeuristics)).AdminSDExcludedGroups)) {
+                $excluded[$operatorGroup.SID] = $operatorGroup.Name
+            }
+        }
+    } catch {
+        Write-Log "[Get-PrivilegedGroupMembers] Could not read dsHeuristics for the AdminSDHolder exclusions: $_"
+    }
+    return $excluded
+}
+
+<#
+.SYNOPSIS
     Reports who may change a privileged group that AdminSDHolder does not protect.
 
 .DESCRIPTION
@@ -1648,7 +1706,11 @@ function Get-PrivilegedGroupMembers {
 
     Which groups are unprotected is measured, not listed: SDProp sets adminCount=1 on every
     group it protects, so the groups without it are read. adminCount is never cleared, so a
-    group that was protected once and is no longer keeps a stale 1 and is not read here.
+    group that was protected once and is no longer keeps a stale 1 and is not read here -
+    with one exception that can be known: character 16 of dsHeuristics takes Account,
+    Server, Print or Backup Operators and their members out of AdminSDHolder protection
+    (MS-ADTS 3.1.1.6.1.4). A group that is one of those, or reached only through them, is
+    read whatever its adminCount says.
 
     The rights that take a group over: writing its member attribute (WriteProperty on member
     or on every attribute, which GenericWrite includes), the Self-Membership validated write,
@@ -1677,6 +1739,11 @@ function Get-PrivilegedGroupMembers {
 
 .PARAMETER AccountOperatorMembers
     How many members Account Operators has, or $null when the group was not found.
+
+.PARAMETER AdminSDExcludedGroups
+    The operator groups dsHeuristics takes out of AdminSDHolder protection, SID -> name
+    (Get-AdminSDHolderExcludedGroup). A group whose Roots are all among them is read even
+    with adminCount=1.
 #>
 function Show-UnprotectedGroupACL {
     [CmdletBinding()]
@@ -1693,7 +1760,10 @@ function Show-UnprotectedGroupACL {
 
         [Parameter(Mandatory=$false)]
         [AllowNull()]
-        $AccountOperatorMembers
+        $AccountOperatorMembers,
+
+        [Parameter(Mandatory=$false)]
+        [hashtable]$AdminSDExcludedGroups = @{}
     )
 
     Show-SubHeader "Checking the ACLs of privileged groups AdminSDHolder does not protect..." -ObjectType 'PrivilegedGroupACL'
@@ -1705,6 +1775,7 @@ function Show-UnprotectedGroupACL {
     $byTrustee = [ordered]@{}
     $examinedGroups = @()
     $unreadGroups = @()
+    $excludedRead = @()
     $accountOperatorGroups = @()
     $suppressed = @{}
 
@@ -1722,8 +1793,17 @@ function Show-UnprotectedGroupACL {
             continue
         }
 
-        # Protected: step 5 read its template.
-        if ("$($groupObject.adminCount)" -eq '1') { continue }
+        # Protected: step 5 read its template - unless every privileged group it was reached
+        # from is one dsHeuristics takes out of the protection. SDProp then leaves it alone,
+        # and the adminCount=1 it set before stays.
+        if ("$($groupObject.adminCount)" -eq '1') {
+            # No recorded path is no evidence of an exclusion.
+            $roots = @($group.Roots)
+            $excludedOnly = ($roots.Count -gt 0 -and
+                @($roots | Where-Object { -not $AdminSDExcludedGroups.ContainsKey([string]$_) }).Count -eq 0)
+            if (-not $excludedOnly) { continue }
+            $excludedRead += $group.Name
+        }
 
         $descriptor = New-Object System.DirectoryServices.ActiveDirectorySecurity
         try {
@@ -1836,6 +1916,11 @@ function Show-UnprotectedGroupACL {
     if ($examinedGroups.Count -gt 0) {
         Show-Line ("$($examinedGroups.Count) privileged group(s) are outside AdminSDHolder's protection and were read: " +
                    ($examinedGroups -join ', ')) -Class Note
+    }
+    if ($excludedRead.Count -gt 0) {
+        $excludedNames = @($AdminSDExcludedGroups.Values | Sort-Object)
+        Show-Line ("$($excludedRead.Count) of them carry adminCount=1 from an earlier SDProp run, but dsHeuristics takes " +
+                   "$($excludedNames -join ', ') out of the protection: " + ($excludedRead -join ', ')) -Class Note
     }
 
     # Account Operators: the default, said once - see the description.
