@@ -176,6 +176,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `SeizeDomainMaster` granted a different right than its name says**; each now writes the
   right it names.
 
+- **`Get-DangerousACLs` reports only the role-transfer right that acts on the domain
+  object.** Change-Rid-Master, Change-Infrastructure-Master, Change-Domain-Master and
+  Change-Schema-Master apply to RID Manager$, CN=Infrastructure, CN=Partitions and the
+  schema container, so an ACE for one of them on the domain object authorises nothing and
+  was reported as a role-transfer right. Change-PDC is reported as before, and its card
+  now speaks of the PDC emulator alone.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

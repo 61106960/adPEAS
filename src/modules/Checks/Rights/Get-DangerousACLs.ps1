@@ -127,16 +127,19 @@ function Get-DangerousACLs {
             # DS-Replication-Synchronize and DS-Replication-Manage-Topology are
             # deliberately absent: they move replication around without reading anything
             # out of it.
+            #
+            # Change-PDC is the only role-transfer right that acts on the domain object.
+            # The other four apply to the object that holds their role - RID Manager$,
+            # CN=Infrastructure, CN=Partitions and the schema container (the r-change-*
+            # pages of the AD schema reference) - so an ACE for one of them on the domain
+            # object authorises nothing. They used to be listed here and reported as if it
+            # did.
             $criticalDomainObjectTypes = @(
                 'GP-Link',
                 'Reanimate-Tombstones',
                 'DS-Install-Replica',
                 'Migrate-SID-History',
-                'Change-Rid-Master',
                 'Change-PDC',
-                'Change-Infrastructure-Master',
-                'Change-Domain-Master',
-                'Change-Schema-Master',
                 # Raising the quota hands every authenticated user a computer account
                 # they control, which is the delegation source RBCD needs. No other
                 # check asks who may write it - Get-AddComputerRights reads the value.
@@ -225,10 +228,10 @@ function Get-DangerousACLs {
                     # gPLink links a GPO to the whole domain, ms-DS-MachineAccountQuota and
                     # minPwdLength are two more.
                     #
-                    # Self deliberately stays out. The only validated write the domain
-                    # object defines is Validated-MS-DS-Behavior-Version, so the holder can
-                    # raise the domain functional level and nothing else - disruptive, but
-                    # not a takeover, and a red line for it would be the louder error.
+                    # Self deliberately stays out. No validated write applies to the domain
+                    # object - Validated-MS-DS-Behavior-Version, which an earlier comment
+                    # here named, applies to NTDS-DSA - so a Self ACE on it grants nothing
+                    # a red line could describe.
                     $dangerousRights = @($ace.RightsRaw | Where-Object {
                         $_ -in @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'WriteProperty')
                     })

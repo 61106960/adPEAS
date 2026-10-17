@@ -6279,45 +6279,43 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    )
 	}
 	'DOMAIN_ROOT_FSMO_TRANSFER' = @{
-	    Title = "FSMO Role Transfer Rights on the Domain Object"
+	    Title = "PDC Emulator Transfer Right on the Domain Object"
 	    Risk = "Finding"
 	    BaseScore = 45
-	    Description = "A principal holds one of the Change-*-Master extended rights on the domain object - the rights that transfer an FSMO role (RID master, PDC emulator, infrastructure master, domain naming master, schema master). These are operational rather than directly escalating, but the role holders are single points of failure: moving the RID master or the PDC emulator onto a machine the attacker controls, or onto one that is about to go offline, breaks account creation and authentication domain-wide."
+	    Description = "A principal holds the Change-PDC extended right on the domain object - the right that moves the PDC emulator role to another domain controller. It is operational rather than directly escalating, but the PDC emulator is a single point of failure: it is the domain's time source and the target of urgent replication for password changes, and moving it onto a machine the attacker controls, or onto one that is about to go offline, degrades authentication domain-wide. Change-PDC is the only role-transfer right that acts on the domain object; the other four act on the objects that hold their roles."
 	    Impact = @(
-	        "Transferring the RID master stops new security principals from being created once the current RID pool is exhausted"
 	        "Transferring the PDC emulator moves the authoritative time source and the urgent-replication target for password changes"
 	        "A role moved onto an attacker-controlled or soon-to-be-decommissioned DC is a denial of service that is slow to diagnose"
-	        "The schema master is the only object that can extend the schema, which is a forest-wide change"
 	    )
 	    Attack = @(
-	        "1. Attacker holds a Change-*-Master right on the domain object"
-	        "2. Transfers the role to a domain controller of its choosing"
-	        "3. Account creation, authentication or time synchronisation degrades domain-wide"
+	        "1. Attacker holds Change-PDC on the domain object"
+	        "2. Transfers the PDC emulator role to a domain controller of its choosing"
+	        "3. Time synchronisation and password-change replication degrade domain-wide"
 	        "4. The cause looks like a replication fault rather than an action"
 	    )
 	    Remediation = @(
-	        "Remove the Change-*-Master rights from every principal that is not a Tier-0 administrator"
-	        "Record where each FSMO role is held and alert on a change"
-	        "Transfer roles through the documented process rather than by granting the right"
+	        "Remove Change-PDC from every principal that is not a Tier-0 administrator"
+	        "Record which domain controller holds the PDC emulator role and alert on a change"
+	        "Transfer the role through the documented process rather than by granting the right"
 	    )
 	    RemediationCommands = @(
 	        @{
-	            Description = "Show where the FSMO roles are held today"
-	            Command = 'Get-ADDomain | Select-Object RIDMaster,PDCEmulator,InfrastructureMaster; Get-ADForest | Select-Object SchemaMaster,DomainNamingMaster'
+	            Description = "Show which domain controller holds the PDC emulator role today"
+	            Command = 'Get-ADDomain | Select-Object PDCEmulator'
 	        }
 	        @{
-	            Description = "Show which principals hold a role-transfer right on the domain object"
-	            Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ActiveDirectoryRights -match "ExtendedRight" } | Format-Table IdentityReference,ObjectType,AccessControlType -AutoSize'
+	            Description = "Show which principals hold Change-PDC on the domain object"
+	            Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ObjectType -eq "bae50096-4752-11d1-9052-00c04fc2d4cf" } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize'
 	        }
 	    )
 	    References = @(
 	        @{ Title = "FSMO roles - Microsoft"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/fsmo-roles" }
-	        @{ Title = "Change-Rid-Master - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-change-rid-master" }
+	        @{ Title = "Change-PDC - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-change-pdc" }
 	    )
 	    Tools = @("PowerView", "ADACLScanner")
 	    MITRE = "T1489"
 	    Triggers = @(
-	        @{ Attribute = 'dangerousRights'; Pattern = 'Change-Rid-Master|Change-PDC|Change-Infrastructure-Master|Change-Domain-Master|Change-Schema-Master'; Severity = 'Finding' }
+	        @{ Attribute = 'dangerousRights'; Pattern = 'Change-PDC'; Severity = 'Finding' }
 	    )
 	}
 	'DOMAIN_ROOT_NON_DEFAULT_OWNER' = @{
@@ -64966,11 +64964,7 @@ function Get-DangerousACLs {
 	            'Reanimate-Tombstones',
 	            'DS-Install-Replica',
 	            'Migrate-SID-History',
-	            'Change-Rid-Master',
 	            'Change-PDC',
-	            'Change-Infrastructure-Master',
-	            'Change-Domain-Master',
-	            'Change-Schema-Master',
 	            'ms-DS-MachineAccountQuota'
 	        )
 	        foreach ($ace in $aclResult.ACEs) {
@@ -86052,7 +86046,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1205"
+$Script:adPEASVersion = "2.7.0+20261017-1208"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

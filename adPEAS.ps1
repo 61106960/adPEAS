@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 12:05:28
-    Version: 2.7.0+20261017-1205
+    Build: 2026-10-17 12:08:49
+    Version: 2.7.0+20261017-1208
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -10532,47 +10532,46 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
     }
 
     'DOMAIN_ROOT_FSMO_TRANSFER' = @{
-        Title = "FSMO Role Transfer Rights on the Domain Object"
+        Title = "PDC Emulator Transfer Right on the Domain Object"
         Risk = "Finding"
         BaseScore = 45
-        Description = "A principal holds one of the Change-*-Master extended rights on the domain object - the rights that transfer an FSMO role (RID master, PDC emulator, infrastructure master, domain naming master, schema master). These are operational rather than directly escalating, but the role holders are single points of failure: moving the RID master or the PDC emulator onto a machine the attacker controls, or onto one that is about to go offline, breaks account creation and authentication domain-wide."
+        Description = "A principal holds the Change-PDC extended right on the domain object - the right that moves the PDC emulator role to another domain controller. It is operational rather than directly escalating, but the PDC emulator is a single point of failure: it is the domain's time source and the target of urgent replication for password changes, and moving it onto a machine the attacker controls, or onto one that is about to go offline, degrades authentication domain-wide. Change-PDC is the only role-transfer right that acts on the domain object; the other four act on the objects that hold their roles."
         Impact = @(
-            "Transferring the RID master stops new security principals from being created once the current RID pool is exhausted"
             "Transferring the PDC emulator moves the authoritative time source and the urgent-replication target for password changes"
             "A role moved onto an attacker-controlled or soon-to-be-decommissioned DC is a denial of service that is slow to diagnose"
-            "The schema master is the only object that can extend the schema, which is a forest-wide change"
         )
         Attack = @(
-            "1. Attacker holds a Change-*-Master right on the domain object"
-            "2. Transfers the role to a domain controller of its choosing"
-            "3. Account creation, authentication or time synchronisation degrades domain-wide"
+            "1. Attacker holds Change-PDC on the domain object"
+            "2. Transfers the PDC emulator role to a domain controller of its choosing"
+            "3. Time synchronisation and password-change replication degrade domain-wide"
             "4. The cause looks like a replication fault rather than an action"
         )
         Remediation = @(
-            "Remove the Change-*-Master rights from every principal that is not a Tier-0 administrator"
-            "Record where each FSMO role is held and alert on a change"
-            "Transfer roles through the documented process rather than by granting the right"
+            "Remove Change-PDC from every principal that is not a Tier-0 administrator"
+            "Record which domain controller holds the PDC emulator role and alert on a change"
+            "Transfer the role through the documented process rather than by granting the right"
         )
         RemediationCommands = @(
             @{
-                Description = "Show where the FSMO roles are held today"
-                Command = 'Get-ADDomain | Select-Object RIDMaster,PDCEmulator,InfrastructureMaster; Get-ADForest | Select-Object SchemaMaster,DomainNamingMaster'
+                Description = "Show which domain controller holds the PDC emulator role today"
+                Command = 'Get-ADDomain | Select-Object PDCEmulator'
             }
             @{
-                Description = "Show which principals hold a role-transfer right on the domain object"
-                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ActiveDirectoryRights -match "ExtendedRight" } | Format-Table IdentityReference,ObjectType,AccessControlType -AutoSize'
+                Description = "Show which principals hold Change-PDC on the domain object"
+                Command = '(Get-Acl -Path "AD:DC=DOMAIN,DC=COM").Access | Where-Object { $_.ObjectType -eq "bae50096-4752-11d1-9052-00c04fc2d4cf" } | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize'
             }
         )
         References = @(
             @{ Title = "FSMO roles - Microsoft"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/fsmo-roles" }
-            @{ Title = "Change-Rid-Master - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-change-rid-master" }
+            @{ Title = "Change-PDC - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-change-pdc" }
         )
         Tools = @("PowerView", "ADACLScanner")
         MITRE = "T1489"
         Triggers = @(
-            # One card for all five roles: the rights differ in which role moves, not in
-            # what the holder can do about it, and the remediation is the same sentence.
-            @{ Attribute = 'dangerousRights'; Pattern = 'Change-Rid-Master|Change-PDC|Change-Infrastructure-Master|Change-Domain-Master|Change-Schema-Master'; Severity = 'Finding' }
+            # Change-PDC only. The other four role-transfer rights apply to RID Manager$,
+            # CN=Infrastructure, CN=Partitions and the schema container, and the domain
+            # object's ACL check no longer reports them.
+            @{ Attribute = 'dangerousRights'; Pattern = 'Change-PDC'; Severity = 'Finding' }
         )
     }
     'DOMAIN_ROOT_NON_DEFAULT_OWNER' = @{
@@ -106771,16 +106770,19 @@ function Get-DangerousACLs {
             # DS-Replication-Synchronize and DS-Replication-Manage-Topology are
             # deliberately absent: they move replication around without reading anything
             # out of it.
+            #
+            # Change-PDC is the only role-transfer right that acts on the domain object.
+            # The other four apply to the object that holds their role - RID Manager$,
+            # CN=Infrastructure, CN=Partitions and the schema container (the r-change-*
+            # pages of the AD schema reference) - so an ACE for one of them on the domain
+            # object authorises nothing. They used to be listed here and reported as if it
+            # did.
             $criticalDomainObjectTypes = @(
                 'GP-Link',
                 'Reanimate-Tombstones',
                 'DS-Install-Replica',
                 'Migrate-SID-History',
-                'Change-Rid-Master',
                 'Change-PDC',
-                'Change-Infrastructure-Master',
-                'Change-Domain-Master',
-                'Change-Schema-Master',
                 # Raising the quota hands every authenticated user a computer account
                 # they control, which is the delegation source RBCD needs. No other
                 # check asks who may write it - Get-AddComputerRights reads the value.
@@ -106869,10 +106871,10 @@ function Get-DangerousACLs {
                     # gPLink links a GPO to the whole domain, ms-DS-MachineAccountQuota and
                     # minPwdLength are two more.
                     #
-                    # Self deliberately stays out. The only validated write the domain
-                    # object defines is Validated-MS-DS-Behavior-Version, so the holder can
-                    # raise the domain functional level and nothing else - disruptive, but
-                    # not a takeover, and a red line for it would be the louder error.
+                    # Self deliberately stays out. No validated write applies to the domain
+                    # object - Validated-MS-DS-Behavior-Version, which an earlier comment
+                    # here named, applies to NTDS-DSA - so a Self ACE on it grants nothing
+                    # a red line could describe.
                     $dangerousRights = @($ace.RightsRaw | Where-Object {
                         $_ -in @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'WriteProperty')
                     })
@@ -138891,7 +138893,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1205"
+$Script:adPEASVersion = "2.7.0+20261017-1208"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
