@@ -1357,12 +1357,13 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "Administrators store passwords in the attributes they type into: description, info, comment, adminDescription, and above all extensionAttribute1-15, which is where an initial password tends to end up. Every one of them is readable by any authenticated domain user, so a password there is a password handed to the whole domain - and it sits on groups, organizational units and service accounts as often as on user accounts."
         WhatWeCheck = @(
             "description, info, comment and adminDescription on every object class"
-            "extensionAttribute1-15, where the schema defines them"
+            "wWWHomePage and url, for credentials written into a link"
+            "extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20, where the schema defines them"
             "Groups, organizational units, contacts, managed service accounts and Group Policy objects, not only user and computer accounts"
-            "High-confidence password assignments (e.g., password=value)"
-            "Lower-confidence credential mentions for manual review"
+            "High-confidence password assignments (e.g., password=value) and credentials embedded in a URL (user:password@host)"
+            "Lower-confidence credential mentions for manual review, outside the link attributes"
         )
-        SecureMessage = "No credentials were found in the free-text attributes of any object. The attributes a password tends to be typed into - description, info, comment, adminDescription, extensionAttribute1-15 - carry none."
+        SecureMessage = "No credentials were found in the free-text attributes of any object. The attributes a password tends to be typed into - description, info, comment, adminDescription, the link attributes, extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20 - carry none."
         PrimaryFindingId = 'CREDENTIAL_IN_DESCRIPTION'
     }
 

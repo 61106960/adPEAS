@@ -1,14 +1,18 @@
 function Get-PasswordInDescription {
     <#
     .SYNOPSIS
-    Detects user and computer accounts with potential passwords in description or info attributes.
+    Detects directory objects with potential passwords in their free-text attributes.
 
     .DESCRIPTION
-    Scans the 'description' and 'info' attributes of user and computer accounts for patterns that indicate credentials are stored in plaintext.
-    Uses a two-tier detection system:
+    Scans the free-text attributes of every object class - description, info, comment,
+    adminDescription, wWWHomePage, url, extensionAttribute1-15 and
+    msDS-cloudExtensionAttribute1-20 - for patterns that indicate credentials are stored in
+    plaintext. Uses a two-tier detection system:
 
-    Tier 1 (Finding): High-confidence patterns with explicit password assignments (e.g., "password=Secret123")
-    Tier 2 (Hint): Lower-confidence patterns with generic credential mentions (e.g., "password" without value)
+    Tier 1 (Finding): High-confidence patterns with explicit password assignments (e.g., "password=Secret123"),
+    and credentials embedded in a URL (e.g., "https://svc:Secret123@host")
+    Tier 2 (Hint): Lower-confidence patterns with generic credential mentions (e.g., "password" without value).
+    Not applied to wWWHomePage and url: a link to a password reset page mentions the word and holds nothing.
 
     Exclusion patterns filter out false positives from password policy text, help text, and placeholders.
 
@@ -93,6 +97,11 @@ function Get-PasswordInDescription {
                 @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" }
                 @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" }
                 @{ Pattern = '\bparol[ae]?\s*[=:]\s*\S{3,}'; Description = "Parola/parole/parol assignment (RO/LV/IT)" }
+                # The userinfo part of a URL, RFC 3986: scheme://user:password@host. Written
+                # into a homepage or url attribute, or into a description, it is the
+                # credential itself. A user name alone (user@host) or an empty password
+                # (user:@host) does not match, and neither does a port (host:8080/).
+                @{ Pattern = '[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@'; Description = "Credentials embedded in a URL" }
             )
 
             # Tier 2: Lower-confidence patterns (generic credential mentions)
@@ -149,7 +158,9 @@ function Get-PasswordInDescription {
                 '\bpass\s*[=:]\s*\*+\s*$',
                 '\bpass\s*[=:]\s*<[^>]+>',
                 'kennwort\s*[=:]\s*\*+\s*$',
-                'kennwort\s*[=:]\s*<[^>]+>'
+                'kennwort\s*[=:]\s*<[^>]+>',
+                '://[^\s/:@]+:\*+@',
+                '://[^\s/:@]+:<[^>]+>@'
             )
 
             $findingCount = 0
@@ -169,21 +180,31 @@ function Get-PasswordInDescription {
             # And more than two attributes. These are the free-text fields a human types
             # into, which is where a password ends up.
             #
-            # Two queries rather than one: description, info, comment and adminDescription
-            # are in every schema, extensionAttribute1-15 are not - they arrive with the
-            # Exchange schema extension, which most but not all domains have. A filter that
-            # names an attribute the schema does not define does not skip that one clause,
-            # the whole search fails with an undefined-attribute error, so the optional half
-            # runs on its own and a failure there costs that half alone.
-            $baseAttributes     = @('description', 'info', 'comment', 'adminDescription')
-            $optionalAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
+            # Three queries rather than one: description, info, comment, adminDescription,
+            # wWWHomePage and url are in every schema, the other two sets are not.
+            # extensionAttribute1-15 arrive with the Exchange schema extension, which most
+            # but not all domains have; msDS-cloudExtensionAttribute1-20 with the Windows
+            # Server 2012 schema. A filter that names an attribute the schema does not
+            # define does not skip that one clause, the whole search fails with an
+            # undefined-attribute error, so each optional set runs on its own and a failure
+            # there costs that set alone.
+            $baseAttributes  = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url')
+            $exchangeAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
+            $cloudAttributes = @(1..20 | ForEach-Object { "msDS-cloudExtensionAttribute$_" })
 
-            # Merged by distinguishedName: an object can come back from both queries, and
+            # A link, not a sentence. Only an assignment or credentials in the URL itself
+            # count there: a homepage pointing at the password reset portal mentions the
+            # word and holds nothing, and as a tier 2 mention it was a hint on every account
+            # that links to it.
+            $urlAttributes = @('wWWHomePage', 'url')
+
+            # Merged by distinguishedName: an object can come back from several queries, and
             # reporting it twice would be two findings for one account.
             $candidates = @{}
             foreach ($set in @(
-                @{ Attributes = $baseAttributes;     Optional = $false }
-                @{ Attributes = $optionalAttributes; Optional = $true }
+                @{ Attributes = $baseAttributes;     Optional = $false; Label = 'the base attributes' }
+                @{ Attributes = $exchangeAttributes; Optional = $true;  Label = 'extensionAttribute1-15' }
+                @{ Attributes = $cloudAttributes;    Optional = $true;  Label = 'msDS-cloudExtensionAttribute1-20' }
             )) {
                 $presenceFilter = '(|' + ((@($set.Attributes) | ForEach-Object { "($_=*)" }) -join '') + ')'
                 $wanted = @($set.Attributes) + @('objectCategory', 'sAMAccountName', 'name')
@@ -193,7 +214,7 @@ function Get-PasswordInDescription {
                     $found = @(Get-DomainObject -LDAPFilter $presenceFilter -Properties $wanted @connectionParams)
                 } catch {
                     if (-not $set.Optional) { throw }
-                    Write-Log "[Get-PasswordInDescription] Optional attribute query failed, schema may not define extensionAttribute1-15: $_"
+                    Write-Log "[Get-PasswordInDescription] Optional attribute query failed, schema may not define $($set.Label): $_"
                 }
 
                 foreach ($obj in $found) {
@@ -301,6 +322,9 @@ function Get-PasswordInDescription {
                             $bestAttrName = $attr.Name
                             break
                         }
+
+                        # A link mentions what it links to; that is not a credential.
+                        if ($urlAttributes -contains $attr.Name) { continue }
 
                         # No assignment here, so policy wording is what it looks like.
                         $excluded = $false

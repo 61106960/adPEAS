@@ -10154,10 +10154,10 @@ Get-ADObject -SearchBase $schema `
 	    )
 	}
 	'CREDENTIAL_IN_DESCRIPTION' = @{
-	    Title = "Credentials Found in Description/Info Field"
+	    Title = "Credentials Found in a Free-Text Attribute"
 	    Risk = "Finding"
 	    BaseScore = 45
-	    Description = "The description or info attribute of this object contains what appears to be a password or credential. These fields are readable by any authenticated user, exposing credentials to all domain users."
+	    Description = "A free-text attribute of this object - description, info, comment, adminDescription, a link in wWWHomePage or url, or an extension attribute - contains what appears to be a password or credential. These fields are readable by any authenticated user, exposing credentials to all domain users."
 	    Impact = @(
 	        "Passwords visible to any authenticated domain user"
 	        "Often contains actual working passwords"
@@ -10173,7 +10173,7 @@ Get-ADObject -SearchBase $schema `
 	    )
 	    Remediation = @(
 	        "Change the password first. The attribute was readable by every authenticated user in the domain, usually for years; emptying the field afterwards changes nothing about who already has the value, and the old content is in every AD backup"
-	        "Remove all passwords from description and info fields immediately"
+	        "Remove the password from the attribute the row names - description, info, comment, adminDescription, the link or the extension attribute"
 	        "Use a proper password manager for credential storage"
 	        "Educate administrators about this security risk"
 	        "Implement regular scans for credentials in AD attributes"
@@ -21031,12 +21031,13 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    WhyItMatters = "Administrators store passwords in the attributes they type into: description, info, comment, adminDescription, and above all extensionAttribute1-15, which is where an initial password tends to end up. Every one of them is readable by any authenticated domain user, so a password there is a password handed to the whole domain - and it sits on groups, organizational units and service accounts as often as on user accounts."
 	    WhatWeCheck = @(
 	        "description, info, comment and adminDescription on every object class"
-	        "extensionAttribute1-15, where the schema defines them"
+	        "wWWHomePage and url, for credentials written into a link"
+	        "extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20, where the schema defines them"
 	        "Groups, organizational units, contacts, managed service accounts and Group Policy objects, not only user and computer accounts"
-	        "High-confidence password assignments (e.g., password=value)"
-	        "Lower-confidence credential mentions for manual review"
+	        "High-confidence password assignments (e.g., password=value) and credentials embedded in a URL (user:password@host)"
+	        "Lower-confidence credential mentions for manual review, outside the link attributes"
 	    )
-	    SecureMessage = "No credentials were found in the free-text attributes of any object. The attributes a password tends to be typed into - description, info, comment, adminDescription, extensionAttribute1-15 - carry none."
+	    SecureMessage = "No credentials were found in the free-text attributes of any object. The attributes a password tends to be typed into - description, info, comment, adminDescription, the link attributes, extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20 - carry none."
 	    PrimaryFindingId = 'CREDENTIAL_IN_DESCRIPTION'
 	}
 	'DangerousACL' = @{
@@ -79265,6 +79266,7 @@ function Get-PasswordInDescription {
 	            @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" }
 	            @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" }
 	            @{ Pattern = '\bparol[ae]?\s*[=:]\s*\S{3,}'; Description = "Parola/parole/parol assignment (RO/LV/IT)" }
+	            @{ Pattern = '[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@'; Description = "Credentials embedded in a URL" }
 	        )
 	        $tier2Patterns = @(
 	            @{ Pattern = $pwToken; Description = "Password-variant mention (EN/DE/NO/LU/EO)" }
@@ -79292,17 +79294,22 @@ function Get-PasswordInDescription {
 	            '\bpass\s*[=:]\s*\*+\s*$',
 	            '\bpass\s*[=:]\s*<[^>]+>',
 	            'kennwort\s*[=:]\s*\*+\s*$',
-	            'kennwort\s*[=:]\s*<[^>]+>'
+	            'kennwort\s*[=:]\s*<[^>]+>',
+	            '://[^\s/:@]+:\*+@',
+	            '://[^\s/:@]+:<[^>]+>@'
 	        )
 	        $findingCount = 0
 	        $hintCount = 0
 	        $unreadableCount = 0
-	        $baseAttributes     = @('description', 'info', 'comment', 'adminDescription')
-	        $optionalAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
+	        $baseAttributes  = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url')
+	        $exchangeAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
+	        $cloudAttributes = @(1..20 | ForEach-Object { "msDS-cloudExtensionAttribute$_" })
+	        $urlAttributes = @('wWWHomePage', 'url')
 	        $candidates = @{}
 	        foreach ($set in @(
-	            @{ Attributes = $baseAttributes;     Optional = $false }
-	            @{ Attributes = $optionalAttributes; Optional = $true }
+	            @{ Attributes = $baseAttributes;     Optional = $false; Label = 'the base attributes' }
+	            @{ Attributes = $exchangeAttributes; Optional = $true;  Label = 'extensionAttribute1-15' }
+	            @{ Attributes = $cloudAttributes;    Optional = $true;  Label = 'msDS-cloudExtensionAttribute1-20' }
 	        )) {
 	            $presenceFilter = '(|' + ((@($set.Attributes) | ForEach-Object { "($_=*)" }) -join '') + ')'
 	            $wanted = @($set.Attributes) + @('objectCategory', 'sAMAccountName', 'name')
@@ -79374,6 +79381,7 @@ function Get-PasswordInDescription {
 	                        $bestAttrName = $attr.Name
 	                        break
 	                    }
+	                    if ($urlAttributes -contains $attr.Name) { continue }
 	                    $excluded = $false
 	                    foreach ($exPattern in $exclusionPatterns) {
 	                        if ($attrValue -match $exPattern) {
@@ -89918,7 +89926,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-2211"
+$Script:adPEASVersion = "2.7.0+20261017-2217"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

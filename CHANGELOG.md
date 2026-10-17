@@ -447,6 +447,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   read as cleartext. Each value now gets its own line - "userPassword (2 of 2): Cleartext
   ..." - and the account its loudest verdict.
 
+- **`Get-PasswordInDescription` reads the link and the cloud extension attributes.**
+  `wWWHomePage` and `url` are searched with the other free-text attributes, and a new
+  pattern finds credentials in the userinfo part of a URL - `https://svc:Secret@host` - in
+  any of them; a password in a query string was already an assignment. Only those count in
+  a link: a homepage pointing at the password reset portal mentions the word and holds
+  nothing, so the mention tier does not apply there. `msDS-cloudExtensionAttribute1-20`
+  run in a query of their own beside `extensionAttribute1-15`, because either set can be
+  missing from a schema that has the other, and a filter naming an undefined attribute
+  fails as a whole. The card is titled *Credentials Found in a Free-Text Attribute*.
+
 - **The Restricted Admin card is a hint, as its row is.** The registry table lowered
   `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the
   card and the trigger on its row stayed a finding: the console printed the row yellow and

@@ -6666,10 +6666,10 @@ Get-ADObject -SearchBase $schema `
     # ============================================================================
 
     'CREDENTIAL_IN_DESCRIPTION' = @{
-        Title = "Credentials Found in Description/Info Field"
+        Title = "Credentials Found in a Free-Text Attribute"
         Risk = "Finding"
         BaseScore = 45
-        Description = "The description or info attribute of this object contains what appears to be a password or credential. These fields are readable by any authenticated user, exposing credentials to all domain users."
+        Description = "A free-text attribute of this object - description, info, comment, adminDescription, a link in wWWHomePage or url, or an extension attribute - contains what appears to be a password or credential. These fields are readable by any authenticated user, exposing credentials to all domain users."
         Impact = @(
             "Passwords visible to any authenticated domain user"
             "Often contains actual working passwords"
@@ -6685,7 +6685,7 @@ Get-ADObject -SearchBase $schema `
         )
         Remediation = @(
             "Change the password first. The attribute was readable by every authenticated user in the domain, usually for years; emptying the field afterwards changes nothing about who already has the value, and the old content is in every AD backup"
-            "Remove all passwords from description and info fields immediately"
+            "Remove the password from the attribute the row names - description, info, comment, adminDescription, the link or the extension attribute"
             "Use a proper password manager for credential storage"
             "Educate administrators about this security risk"
             "Implement regular scans for credentials in AD attributes"
