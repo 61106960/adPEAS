@@ -602,7 +602,7 @@ $Script:PrimaryAttributes = @{
     # SCCM Group (from Get-SCCMInfrastructure Step 8)
     # NOTE: Deliberately excludes 'member' to avoid per-DN SID resolution (O(n) LDAP queries per group)
     SCCMGroup = @(
-        'sAMAccountName', 'description', 'MemberCount', 'memberOf', 'managedBy',
+        'sAMAccountName', 'description', 'MemberCount', 'memberNames', 'broadMembers', 'memberOf', 'managedBy',
         'whenCreated', 'distinguishedName'
     )
 

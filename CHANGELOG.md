@@ -168,6 +168,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   watched roles - for the role groups Exchange ships them on, such as Discovery
   Management with Mailbox Search, the membership is who actually holds the role.
 
+- **SCCM-related groups name their members and report a broad group among them.**
+  `Get-SCCMInfrastructure` counted the members of each group it finds by name and showed
+  none of them. It now lists them - a foreign security principal by its resolved name -
+  and asks once per group which of them is a broad group: Domain Users, Domain Computers,
+  Authenticated Users or Everyone in such a group hands whatever SCCM access the group
+  grants to every account they cover, a finding with a card of its own. What the group
+  grants inside SCCM is not read; the site database records it, not Active Directory.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

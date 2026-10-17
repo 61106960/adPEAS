@@ -572,20 +572,68 @@ function Get-SCCMInfrastructure {
             if ($sccmGroupsFound.Count -gt 0) {
                 Show-Line "Found $($sccmGroupsFound.Count) SCCM-related group(s)" -Class Hint
 
+                # The class each group is shown with, Finding where a broad group is a member.
+                $groupClass = @{}
                 foreach ($group in $sccmGroupsFound) {
-                    # Add member count without resolving individual members (avoids O(n) LDAP queries)
-                    $memberCount = 0
-                    if ($group.member) {
-                        $memberCount = @($group.member).Count
-                    }
+                    $memberDNs = @(@($group.member) | Where-Object { $_ })
                     # A number, not "3 member(s)": the report sorts and compares this
                     # column, and a string sorts 10 before 2.
-                    $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue $memberCount -Force
+                    $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue $memberDNs.Count -Force
+                    $groupClass[[string]$group.distinguishedName] = 'Hint'
+
+                    if ($memberDNs.Count -gt 0) {
+                        # The members by name, from the DNs the group already carries. Left
+                        # to the renderer, every member would cost a SID lookup of its own.
+                        # A foreign security principal is named by its SID; the well-known
+                        # ones resolve without a query.
+                        $memberNames = @($memberDNs | ForEach-Object {
+                            if ("$_" -match '^CN=(S-1-[0-9-]+),CN=ForeignSecurityPrincipals,') {
+                                $foreignSID = $Matches[1]
+                                $foreignName = ConvertFrom-SID -SID $foreignSID
+                                if ($foreignName) { $foreignName } else { $foreignSID }
+                            } elseif ("$_" -match '^CN=((?:[^,\\]|\\.)+),') {
+                                $Matches[1] -replace '\\(.)', '$1'
+                            } else { "$_" }
+                        } | Sort-Object)
+                        $shownNames = @($memberNames | Select-Object -First 20) -join ', '
+                        if ($memberNames.Count -gt 20) { $shownNames = "$shownNames, ... and $($memberNames.Count - 20) more" }
+                        $group | Add-Member -NotePropertyName 'memberNames' -NotePropertyValue $shownNames -Force
+
+                        # And whether a broad group is among them, from one query per group
+                        # rather than one per member. Whatever SCCM access the group grants -
+                        # the check knows it by name only - Domain Users or Authenticated
+                        # Users in it hands that access to every account they cover.
+                        try {
+                            $escapedGroupDN = Escape-LDAPFilterDN -DistinguishedName ([string]$group.distinguishedName)
+                            $broadNames = @()
+                            foreach ($memberObject in @(Get-DomainObject -LDAPFilter "(memberOf=$escapedGroupDN)" -Properties 'objectSid', 'sAMAccountName' @PSBoundParameters)) {
+                                $memberSID = [string]$memberObject.objectSid
+                                if ($memberSID -and (Test-IsBroadTrustee -SID $memberSID)) {
+                                    $broadNames += $(if ($memberObject.sAMAccountName) { [string]$memberObject.sAMAccountName } else { ConvertFrom-SID -SID $memberSID })
+                                }
+                            }
+                            if ($broadNames.Count -gt 0) {
+                                $group | Add-Member -NotePropertyName 'broadMembers' -NotePropertyValue "BROAD - $(@($broadNames | Sort-Object) -join ', ') - every account it covers holds whatever SCCM access this group grants" -Force
+                                $groupClass[[string]$group.distinguishedName] = 'Finding'
+                            }
+                        } catch {
+                            Write-Log "[Get-SCCMInfrastructure] Members of $($group.distinguishedName) could not be read: $_" -Level Warning
+                            $group | Add-Member -NotePropertyName 'broadMembers' -NotePropertyValue 'Unknown - the members could not be read' -Force
+                        }
+                    }
+
                     # Remove member attribute to prevent Extended-attribute rendering from triggering
                     # per-DN SID resolution (Convert-DNsToMemberInfo -> ConvertTo-SID per member)
                     $group.PSObject.Properties.Remove('member')
                     $group | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMGroup' -Force
-                    Show-Object $group -Class Hint
+                }
+
+                $broadGroupCount = @($groupClass.Values | Where-Object { $_ -eq 'Finding' }).Count
+                if ($broadGroupCount -gt 0) {
+                    Show-Line "$broadGroupCount SCCM-related group(s) have a broad group as member" -Class Finding
+                }
+                foreach ($group in $sccmGroupsFound) {
+                    Show-Object $group -Class $groupClass[[string]$group.distinguishedName]
                 }
             } else {
                 Show-Line "No SCCM-related groups found" -Class Note

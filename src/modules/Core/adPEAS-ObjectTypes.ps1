@@ -428,6 +428,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "SCCM groups may grant elevated access to SCCM infrastructure."
         WhatWeCheck = @(
             "Groups with SCCM-related names or attributes"
+            "Their direct members, by name"
+            "Whether a broad group - Domain Users, Domain Computers, Authenticated Users, Everyone - is among them"
+            "Not tested: what the group grants inside SCCM, which the site database records, not Active Directory"
         )
     }
 

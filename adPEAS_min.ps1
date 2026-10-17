@@ -3443,7 +3443,7 @@ $Script:PrimaryAttributes = @{
         'PXEServer', 'WDSServicePoint', 'ParentObject', 'BindingInfo'
     )
     SCCMGroup = @(
-        'sAMAccountName', 'description', 'MemberCount', 'memberOf', 'managedBy',
+        'sAMAccountName', 'description', 'MemberCount', 'memberNames', 'broadMembers', 'memberOf', 'managedBy',
         'whenCreated', 'distinguishedName'
     )
     SCOMGroup = @(
@@ -12338,6 +12338,41 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
         Tools = @("Rubeus", "Impacket", "sccmhunter")
         MITRE = "T1558.003"
     }
+    'SCCM_GROUP_BROAD_MEMBER' = @{
+        Title = "Broad Group in an SCCM-Related Group"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "A group whose name ties it to SCCM (ConfigMgr, MECM, or the site-to-site connection groups SCCM creates) has a broad group as a member - Domain Users, Domain Computers, Authenticated Users or Everyone. adPEAS recognises the group by its name and cannot read what it grants inside SCCM, but whatever that is - administrative roles in the console, rights on site servers or on the content they hold - every account the broad group covers holds it now."
+        Impact = @(
+            "Every account in the broad group inherits the SCCM group's access"
+            "Where the group carries an SCCM administrative role, that is software deployment and script execution on every managed client"
+            "Where it is a site system connection group, it is the site server's own access to the other site systems"
+        )
+        Attack = @(
+            "1. Attacker with any domain account is, through the broad group, a member of the SCCM group"
+            "2. Uses the access the group grants - in the console, on a site server share, or on the site database"
+            "3. With an administrative role, deploys a script or an application to the clients"
+        )
+        Remediation = @(
+            "Remove the broad group from the SCCM-related group"
+            "Grant SCCM roles to named administrative groups only, and review the role assignments in the console"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Remove Domain Users from the group"
+                Command = "Remove-ADGroupMember -Identity 'GROUP_NAME' -Members 'Domain Users' -Confirm:`$false"
+            }
+        )
+        References = @(
+            @{ Title = "Misconfiguration Manager - SCCM attack techniques"; Url = "https://github.com/subat0mik/Misconfiguration-Manager" }
+            @{ Title = "MECM Accounts and Permissions - Microsoft"; Url = "https://learn.microsoft.com/en-us/mem/configmgr/core/plan-design/hierarchy/accounts" }
+        )
+        Tools = @("sccmhunter", "SharpSCCM")
+        MITRE = "T1072"
+        Triggers = @(
+            @{ Attribute = 'broadMembers'; Pattern = '^BROAD'; Severity = 'Finding' }
+        )
+    }
     'AZURE_AD_CONNECT_EXPOSED' = @{
         Title = "Azure AD Connect Server Exposure"
         Risk = "Finding"
@@ -19180,6 +19215,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "SCCM groups may grant elevated access to SCCM infrastructure."
         WhatWeCheck = @(
             "Groups with SCCM-related names or attributes"
+            "Their direct members, by name"
+            "Whether a broad group - Domain Users, Domain Computers, Authenticated Users, Everyone - is among them"
+            "Not tested: what the group grants inside SCCM, which the site database records, not Active Directory"
         )
     }
     'SCCMContainerPermission' = @{
@@ -77328,15 +77366,51 @@ function Get-SCCMInfrastructure {
             }
             if ($sccmGroupsFound.Count -gt 0) {
                 Show-Line "Found $($sccmGroupsFound.Count) SCCM-related group(s)" -Class Hint
+                $groupClass = @{}
                 foreach ($group in $sccmGroupsFound) {
-                    $memberCount = 0
-                    if ($group.member) {
-                        $memberCount = @($group.member).Count
+                    $memberDNs = @(@($group.member) | Where-Object { $_ })
+                    $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue $memberDNs.Count -Force
+                    $groupClass[[string]$group.distinguishedName] = 'Hint'
+                    if ($memberDNs.Count -gt 0) {
+                        $memberNames = @($memberDNs | ForEach-Object {
+                            if ("$_" -match '^CN=(S-1-[0-9-]+),CN=ForeignSecurityPrincipals,') {
+                                $foreignSID = $Matches[1]
+                                $foreignName = ConvertFrom-SID -SID $foreignSID
+                                if ($foreignName) { $foreignName } else { $foreignSID }
+                            } elseif ("$_" -match '^CN=((?:[^,\\]|\\.)+),') {
+                                $Matches[1] -replace '\\(.)', '$1'
+                            } else { "$_" }
+                        } | Sort-Object)
+                        $shownNames = @($memberNames | Select-Object -First 20) -join ', '
+                        if ($memberNames.Count -gt 20) { $shownNames = "$shownNames, ... and $($memberNames.Count - 20) more" }
+                        $group | Add-Member -NotePropertyName 'memberNames' -NotePropertyValue $shownNames -Force
+                        try {
+                            $escapedGroupDN = Escape-LDAPFilterDN -DistinguishedName ([string]$group.distinguishedName)
+                            $broadNames = @()
+                            foreach ($memberObject in @(Get-DomainObject -LDAPFilter "(memberOf=$escapedGroupDN)" -Properties 'objectSid', 'sAMAccountName' @PSBoundParameters)) {
+                                $memberSID = [string]$memberObject.objectSid
+                                if ($memberSID -and (Test-IsBroadTrustee -SID $memberSID)) {
+                                    $broadNames += $(if ($memberObject.sAMAccountName) { [string]$memberObject.sAMAccountName } else { ConvertFrom-SID -SID $memberSID })
+                                }
+                            }
+                            if ($broadNames.Count -gt 0) {
+                                $group | Add-Member -NotePropertyName 'broadMembers' -NotePropertyValue "BROAD - $(@($broadNames | Sort-Object) -join ', ') - every account it covers holds whatever SCCM access this group grants" -Force
+                                $groupClass[[string]$group.distinguishedName] = 'Finding'
+                            }
+                        } catch {
+                            Write-Log "[Get-SCCMInfrastructure] Members of $($group.distinguishedName) could not be read: $_" -Level Warning
+                            $group | Add-Member -NotePropertyName 'broadMembers' -NotePropertyValue 'Unknown - the members could not be read' -Force
+                        }
                     }
-                    $group | Add-Member -NotePropertyName 'MemberCount' -NotePropertyValue $memberCount -Force
                     $group.PSObject.Properties.Remove('member')
                     $group | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SCCMGroup' -Force
-                    Show-Object $group -Class Hint
+                }
+                $broadGroupCount = @($groupClass.Values | Where-Object { $_ -eq 'Finding' }).Count
+                if ($broadGroupCount -gt 0) {
+                    Show-Line "$broadGroupCount SCCM-related group(s) have a broad group as member" -Class Finding
+                }
+                foreach ($group in $sccmGroupsFound) {
+                    Show-Object $group -Class $groupClass[[string]$group.distinguishedName]
                 }
             } else {
                 Show-Line "No SCCM-related groups found" -Class Note
@@ -90127,7 +90201,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1619"
+$Script:adPEASVersion = "2.7.0+20261017-1627"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
