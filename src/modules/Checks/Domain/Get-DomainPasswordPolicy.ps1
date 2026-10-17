@@ -281,11 +281,23 @@ function Get-DomainPasswordPolicy {
             # an attribute that did not arrive means nothing at all.
             if ($hasMaxPwdAge -and $maxPwdAge -eq 0) { $moderateWeaknesses += "password_never_expires" }
 
+            # Nothing weak among the values that were read is not a secure policy while a
+            # value that carries a verdict could not be read: the green line vouched for a
+            # lockout threshold or a complexity flag nobody had seen. Unknown, not clean -
+            # the class the other checks give a result they could not complete.
+            $unreadVerdictValues = @()
+            if (-not $hasMinPwdLength)     { $unreadVerdictValues += 'minPwdLength' }
+            if (-not $hasMaxPwdAge)        { $unreadVerdictValues += 'maxPwdAge' }
+            if (-not $hasPwdProperties)    { $unreadVerdictValues += 'pwdProperties' }
+            if (-not $hasLockoutThreshold) { $unreadVerdictValues += 'lockoutThreshold' }
+
             # Determine overall severity
             $policySeverity = if (@($policyWeaknesses).Count -gt 0) {
                 "Finding"
             } elseif (@($moderateWeaknesses).Count -gt 0) {
                 "Hint"
+            } elseif (@($unreadVerdictValues).Count -gt 0) {
+                "Note"
             } else {
                 "Secure"
             }
@@ -327,10 +339,10 @@ function Get-DomainPasswordPolicy {
                         $psoContainerExists = $true
                         Write-Log "[Get-DomainPasswordPolicy] Password Settings Container exists"
                     } else {
-                        Write-Log "[Get-DomainPasswordPolicy] Password Settings Container does not exist"
+                        Write-Log "[Get-DomainPasswordPolicy] Password Settings Container not returned - not visible to this account"
                     }
                 } catch {
-                    Write-Log "[Get-DomainPasswordPolicy] Password Settings Container does not exist (error: $_)"
+                    Write-Log "[Get-DomainPasswordPolicy] Password Settings Container not returned (error: $_)"
                 }
 
                 if ($psoContainerExists) {
@@ -340,14 +352,74 @@ function Get-DomainPasswordPolicy {
                     if (@($psos).Count -gt 0) {
                         Show-Line "Found $(@($psos).Count) Fine-Grained Password Polic$(if(@($psos).Count -eq 1){'y'}else{'ies'}):" -Class Hint
 
+                        # Every setting read below is a mandatory attribute of
+                        # msDS-PasswordSettings (adschema: systemMustContain), so a policy
+                        # without one was not read - it was not configured as 0. And by its
+                        # default security descriptor only Domain Admins and SYSTEM may read a
+                        # policy at all, which makes the absent value the normal case for any
+                        # other account. It printed "Disabled", counted as a weakness, and the
+                        # precedence became 999 - all about settings nobody had seen.
+                        #
+                        # Returns $null where the value did not arrive or does not parse - it
+                        # used to throw out of [int] and take the whole section with it. A
+                        # typed $true or $false reads as the same TRUE or FALSE.
+                        function Read-PSOSetting {
+                            param($Value, [switch]$Boolean)
+                            if ($Boolean) {
+                                if ([string]$Value -eq 'TRUE') { return $true }
+                                if ([string]$Value -eq 'FALSE') { return $false }
+                                return $null
+                            }
+                            $parsedValue = 0
+                            if ([int]::TryParse([string]$Value, [ref]$parsedValue)) { return $parsedValue }
+                            return $null
+                        }
+
+                        $unknownValue = 'Unknown - the value could not be read'
+                        $psoReadings = @()
+
                         foreach ($pso in $psos) {
                             $psoName = $pso.name
-                            $precedence = if ($pso.'msDS-PasswordSettingsPrecedence') { [int]$pso.'msDS-PasswordSettingsPrecedence' } else { 999 }
-                            $minLength = if ($pso.'msDS-MinimumPasswordLength') { [int]$pso.'msDS-MinimumPasswordLength' } else { 0 }
-                            $complexityEnabled = if ($pso.'msDS-PasswordComplexityEnabled') { $pso.'msDS-PasswordComplexityEnabled' -eq 'TRUE' } else { $false }
-                            $reversibleEncryption = if ($pso.'msDS-PasswordReversibleEncryptionEnabled') { $pso.'msDS-PasswordReversibleEncryptionEnabled' -eq 'TRUE' } else { $false }
-                            $lockoutThresholdPSO = if ($pso.'msDS-LockoutThreshold') { [int]$pso.'msDS-LockoutThreshold' } else { 0 }
+                            $precedence           = Read-PSOSetting $pso.'msDS-PasswordSettingsPrecedence'
+                            $minLength            = Read-PSOSetting $pso.'msDS-MinimumPasswordLength'
+                            $complexityEnabled    = Read-PSOSetting $pso.'msDS-PasswordComplexityEnabled' -Boolean
+                            $reversibleEncryption = Read-PSOSetting $pso.'msDS-PasswordReversibleEncryptionEnabled' -Boolean
+                            $lockoutThresholdPSO  = Read-PSOSetting $pso.'msDS-LockoutThreshold'
                             $appliesTo = @(@(if ($pso.'msDS-PSOAppliesTo') { $pso.'msDS-PSOAppliesTo' } else { @() }) | Where-Object { $_ })
+
+                            # Not one mandatory value arrived: the policy was not read at all,
+                            # and then an empty msDS-PSOAppliesTo says nothing either.
+                            $psoRead = ($null -ne $precedence) -or ($null -ne $minLength) -or ($null -ne $complexityEnabled) -or
+                                       ($null -ne $reversibleEncryption) -or ($null -ne $lockoutThresholdPSO)
+
+                            # A weakness only from a value that was read - and a policy is only
+                            # clean when every value a verdict hangs on was. $null is neither
+                            # true nor equal to 0, so only the length and the complexity need
+                            # the guard: $null is less than 8, and -not $null is true.
+                            $psoWeak = $reversibleEncryption -or
+                                       (($null -ne $minLength) -and $minLength -lt 8) -or
+                                       (($null -ne $complexityEnabled) -and -not $complexityEnabled) -or
+                                       ($lockoutThresholdPSO -eq 0)
+                            $psoVerdictsRead = ($null -ne $minLength) -and ($null -ne $complexityEnabled) -and
+                                               ($null -ne $reversibleEncryption) -and ($null -ne $lockoutThresholdPSO)
+
+                            # A policy assigned to nobody applies to nobody. Counting it as a
+                            # weakness was the same false positive as an unlinked GPO, which
+                            # two other checks in this project state explicitly - so the
+                            # unassigned ones are named separately instead, and so are the ones
+                            # that could not be read: not assessed is not the same as clean.
+                            $psoState = if (-not $psoRead) {
+                                'Unread'
+                            } elseif (@($appliesTo).Count -eq 0) {
+                                'Unassigned'
+                            } elseif ($psoWeak) {
+                                'Weak'
+                            } elseif (-not $psoVerdictsRead) {
+                                'Unread'
+                            } else {
+                                'Clean'
+                            }
+                            $psoReadings += [PSCustomObject]@{ Name = "$psoName"; State = $psoState }
 
                             # Who the policy applies to, by name, and whether any of them
                             # is privileged.
@@ -370,13 +442,19 @@ function Get-DomainPasswordPolicy {
                             # Create PSO object for consistent display
                             $psoObj = [PSCustomObject]@{
                                 psoName = $psoName
-                                precedence = $precedence
-                                minPwdLength = if ($minLength -eq 0) { "Disabled" } else { "$minLength characters" }
-                                passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
-                                reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
-                                lockoutThreshold = if ($lockoutThresholdPSO -eq 0) { "Disabled" } else { "After $lockoutThresholdPSO failed attempts" }
+                                precedence = if ($null -eq $precedence) { $unknownValue } else { $precedence }
+                                minPwdLength = if ($null -eq $minLength) { $unknownValue }
+                                               elseif ($minLength -eq 0) { "Disabled" } else { "$minLength characters" }
+                                passwordComplexity = if ($null -eq $complexityEnabled) { $unknownValue }
+                                                     elseif ($complexityEnabled) { "Enabled" } else { "Disabled" }
+                                reversibleEncryption = if ($null -eq $reversibleEncryption) { $unknownValue }
+                                                       elseif ($reversibleEncryption) { "Enabled" } else { "Disabled" }
+                                lockoutThreshold = if ($null -eq $lockoutThresholdPSO) { $unknownValue }
+                                                   elseif ($lockoutThresholdPSO -eq 0) { "Disabled" } else { "After $lockoutThresholdPSO failed attempts" }
                                 appliesTo = if (@($appliesToNames).Count -gt 0) {
                                     (@($appliesToNames) -join ', ')
+                                } elseif (-not $psoRead) {
+                                    'Unknown - the policy could not be read'
                                 } else {
                                     'Nobody - this policy is assigned to no user and no group'
                                 }
@@ -392,56 +470,48 @@ function Get-DomainPasswordPolicy {
                         }
 
                         # Output FGPP findings summary.
-                        #
-                        # A policy assigned to nobody applies to nobody. Counting it as a
-                        # weakness was the same false positive as an unlinked GPO, which
-                        # two other checks in this project state explicitly - so the
-                        # unassigned ones are named separately instead.
-                        $unassignedPSOs = @()
-                        $weakPSOs = @()
-                        foreach ($candidate in @($psos)) {
-                            $psoTargets = @(@($candidate.'msDS-PSOAppliesTo') | Where-Object { $_ })
-                            if (@($psoTargets).Count -eq 0) {
-                                $unassignedPSOs += $candidate
-                                continue
-                            }
+                        $weakPSONames       = @($psoReadings | Where-Object { $_.State -eq 'Weak' } | ForEach-Object { $_.Name })
+                        $cleanPSONames      = @($psoReadings | Where-Object { $_.State -eq 'Clean' } | ForEach-Object { $_.Name })
+                        $unreadPSONames     = @($psoReadings | Where-Object { $_.State -eq 'Unread' } | ForEach-Object { $_.Name })
+                        $unassignedPSONames = @($psoReadings | Where-Object { $_.State -eq 'Unassigned' } | ForEach-Object { $_.Name })
 
-                            $psoRE = if ($candidate.'msDS-PasswordReversibleEncryptionEnabled') { $candidate.'msDS-PasswordReversibleEncryptionEnabled' -eq 'TRUE' } else { $false }
-                            $psoMinLen = if ($candidate.'msDS-MinimumPasswordLength') { [int]$candidate.'msDS-MinimumPasswordLength' } else { 0 }
-                            $psoComp = if ($candidate.'msDS-PasswordComplexityEnabled') { $candidate.'msDS-PasswordComplexityEnabled' -eq 'TRUE' } else { $false }
-                            $psoLockout = if ($candidate.'msDS-LockoutThreshold') { [int]$candidate.'msDS-LockoutThreshold' } else { 0 }
-
-                            if ($psoRE -or ($psoMinLen -lt 8) -or (-not $psoComp) -or ($psoLockout -eq 0)) {
-                                $weakPSOs += $candidate
-                            }
-                        }
-
-                        if (@($weakPSOs).Count -gt 0) {
+                        if ($weakPSONames.Count -gt 0) {
                             # Named, not counted: which policy is weak is the whole
                             # answer, and the line carries the write-up so the HTML
                             # report has an impact and a remediation for it. It had no
                             # FindingId at all, so it reached the report as a sentence
                             # with nothing behind it and no contribution to the score.
-                            $weakPSONames = @($weakPSOs | ForEach-Object { "$($_.name)" })
-                            Show-Line "$(@($weakPSOs).Count) Fine-Grained Password Polic$(if(@($weakPSOs).Count -eq 1){'y'}else{'ies'}) with a weakness: $(@($weakPSONames) -join ', ')" -Class Finding -FindingId 'WEAK_FGPP'
-                        } elseif (@($unassignedPSOs).Count -lt @($psos).Count) {
+                            Show-Line "$($weakPSONames.Count) Fine-Grained Password Polic$(if($weakPSONames.Count -eq 1){'y'}else{'ies'}) with a weakness: $($weakPSONames -join ', ')" -Class Finding -FindingId 'WEAK_FGPP'
+                        } elseif ($cleanPSONames.Count -gt 0 -and $unreadPSONames.Count -eq 0) {
                             Show-Line "Fine-Grained Password Policies are properly configured" -Class Secure
+                        } elseif ($cleanPSONames.Count -gt 0) {
+                            Show-Line "No weakness in the Fine-Grained Password Policies that could be read" -Class Note
                         }
 
-                        if (@($unassignedPSOs).Count -gt 0) {
-                            $unassignedNames = @($unassignedPSOs | ForEach-Object { "$($_.name)" })
-                            Show-Line "Assigned to no user and no group, and therefore not assessed: $(@($unassignedNames) -join ', ')" -Class Note
+                        if ($unreadPSONames.Count -gt 0) {
+                            Show-Line "Could not be read in full, and therefore not assessed: $($unreadPSONames -join ', ')" -Class Note
+                        }
+
+                        if ($unassignedPSONames.Count -gt 0) {
+                            Show-Line "Assigned to no user and no group, and therefore not assessed: $($unassignedPSONames -join ', ')" -Class Note
                         }
 
                     } else {
-                        Show-Line "No Fine-Grained Password Policies configured" -Class Note
+                        # Not "none configured": by default Authenticated Users may not read a
+                        # policy (Microsoft, "AD DS: Fine-Grained Password Policies"), so an
+                        # empty answer is what any account outside Domain Admins gets.
+                        Show-Line "No Fine-Grained Password Policy found - by default only Domain Admins can read them" -Class Note
                     }
                     } catch {
                         Write-Log "[Get-DomainPasswordPolicy] FGPP enumeration failed: $_" -Level Error
                         Write-Warning "[Get-DomainPasswordPolicy] Failed to query Fine-Grained Password Policies: $_"
                     }
                 } else {
-                    Show-Line "No Fine-Grained Password Policies configured" -Class Note
+                    # The container is created in every domain and cannot be renamed, moved or
+                    # deleted (same source), and its default security descriptor admits only
+                    # Domain Admins and SYSTEM - so not finding it means not seeing it, which
+                    # says nothing about the policies.
+                    Show-Line "No Fine-Grained Password Policy found - by default only Domain Admins can read them" -Class Note
                 }
             } else {
                 Show-Line "Fine-Grained Password Policies not available (requires Domain Functional Level 2008+)" -Raw

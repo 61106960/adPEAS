@@ -131,6 +131,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   rows read "Unknown" now, as the minimum length and the maximum age already did, and
   count toward no weakness.
 
+- **A password policy is not called secure over a value nobody read, and a Fine-Grained
+  Password Policy nobody could read is not called weak.** With nothing weak among the
+  values that were read, a domain policy whose minimum length, maximum age, complexity
+  flags or lockout threshold did not arrive was a green "Found password policy:"; it is a
+  note now. By default only Domain Admins may read a Password Settings Object, and every
+  setting on it is a mandatory attribute - so a missing setting was not read, yet it
+  printed "Disabled" and counted as a weakness, the precedence became 999 and the policy
+  read as assigned to nobody. Those rows say "Unknown" now, a policy that could not be
+  read in full is named as not assessed, and a value that does not parse no longer throws
+  the whole section away. Where no policy comes back at all, the check says that only
+  Domain Admins can read them by default instead of "No Fine-Grained Password Policies
+  configured".
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

@@ -61369,10 +61369,17 @@ function Get-DomainPasswordPolicy {
 	        if ($hasMinPwdLength -and $minPwdLength -ge 8 -and $minPwdLength -lt 14) { $moderateWeaknesses += "moderate_password_length" }
 	        if ($lockoutThreshold -gt 10) { $moderateWeaknesses += "high_lockout_threshold" }
 	        if ($hasMaxPwdAge -and $maxPwdAge -eq 0) { $moderateWeaknesses += "password_never_expires" }
+	        $unreadVerdictValues = @()
+	        if (-not $hasMinPwdLength)     { $unreadVerdictValues += 'minPwdLength' }
+	        if (-not $hasMaxPwdAge)        { $unreadVerdictValues += 'maxPwdAge' }
+	        if (-not $hasPwdProperties)    { $unreadVerdictValues += 'pwdProperties' }
+	        if (-not $hasLockoutThreshold) { $unreadVerdictValues += 'lockoutThreshold' }
 	        $policySeverity = if (@($policyWeaknesses).Count -gt 0) {
 	            "Finding"
 	        } elseif (@($moderateWeaknesses).Count -gt 0) {
 	            "Hint"
+	        } elseif (@($unreadVerdictValues).Count -gt 0) {
+	            "Note"
 	        } else {
 	            "Secure"
 	        }
@@ -61409,14 +61416,47 @@ function Get-DomainPasswordPolicy {
 	                    $psos = Get-DomainObject -LDAPFilter "(objectClass=msDS-PasswordSettings)" -SearchBase $psoContainerDN @PSBoundParameters
 	                if (@($psos).Count -gt 0) {
 	                    Show-Line "Found $(@($psos).Count) Fine-Grained Password Polic$(if(@($psos).Count -eq 1){'y'}else{'ies'}):" -Class Hint
+	                    function Read-PSOSetting {
+	                        param($Value, [switch]$Boolean)
+	                        if ($Boolean) {
+	                            if ([string]$Value -eq 'TRUE') { return $true }
+	                            if ([string]$Value -eq 'FALSE') { return $false }
+	                            return $null
+	                        }
+	                        $parsedValue = 0
+	                        if ([int]::TryParse([string]$Value, [ref]$parsedValue)) { return $parsedValue }
+	                        return $null
+	                    }
+	                    $unknownValue = 'Unknown - the value could not be read'
+	                    $psoReadings = @()
 	                    foreach ($pso in $psos) {
 	                        $psoName = $pso.name
-	                        $precedence = if ($pso.'msDS-PasswordSettingsPrecedence') { [int]$pso.'msDS-PasswordSettingsPrecedence' } else { 999 }
-	                        $minLength = if ($pso.'msDS-MinimumPasswordLength') { [int]$pso.'msDS-MinimumPasswordLength' } else { 0 }
-	                        $complexityEnabled = if ($pso.'msDS-PasswordComplexityEnabled') { $pso.'msDS-PasswordComplexityEnabled' -eq 'TRUE' } else { $false }
-	                        $reversibleEncryption = if ($pso.'msDS-PasswordReversibleEncryptionEnabled') { $pso.'msDS-PasswordReversibleEncryptionEnabled' -eq 'TRUE' } else { $false }
-	                        $lockoutThresholdPSO = if ($pso.'msDS-LockoutThreshold') { [int]$pso.'msDS-LockoutThreshold' } else { 0 }
+	                        $precedence           = Read-PSOSetting $pso.'msDS-PasswordSettingsPrecedence'
+	                        $minLength            = Read-PSOSetting $pso.'msDS-MinimumPasswordLength'
+	                        $complexityEnabled    = Read-PSOSetting $pso.'msDS-PasswordComplexityEnabled' -Boolean
+	                        $reversibleEncryption = Read-PSOSetting $pso.'msDS-PasswordReversibleEncryptionEnabled' -Boolean
+	                        $lockoutThresholdPSO  = Read-PSOSetting $pso.'msDS-LockoutThreshold'
 	                        $appliesTo = @(@(if ($pso.'msDS-PSOAppliesTo') { $pso.'msDS-PSOAppliesTo' } else { @() }) | Where-Object { $_ })
+	                        $psoRead = ($null -ne $precedence) -or ($null -ne $minLength) -or ($null -ne $complexityEnabled) -or
+	                                   ($null -ne $reversibleEncryption) -or ($null -ne $lockoutThresholdPSO)
+	                        $psoWeak = $reversibleEncryption -or
+	                                   (($null -ne $minLength) -and $minLength -lt 8) -or
+	                                   (($null -ne $complexityEnabled) -and -not $complexityEnabled) -or
+	                                   ($lockoutThresholdPSO -eq 0)
+	                        $psoVerdictsRead = ($null -ne $minLength) -and ($null -ne $complexityEnabled) -and
+	                                           ($null -ne $reversibleEncryption) -and ($null -ne $lockoutThresholdPSO)
+	                        $psoState = if (-not $psoRead) {
+	                            'Unread'
+	                        } elseif (@($appliesTo).Count -eq 0) {
+	                            'Unassigned'
+	                        } elseif ($psoWeak) {
+	                            'Weak'
+	                        } elseif (-not $psoVerdictsRead) {
+	                            'Unread'
+	                        } else {
+	                            'Clean'
+	                        }
+	                        $psoReadings += [PSCustomObject]@{ Name = "$psoName"; State = $psoState }
 	                        $appliesToNames = @()
 	                        $appliesToPrivileged = @()
 	                        foreach ($targetDN in $appliesTo) {
@@ -61428,13 +61468,19 @@ function Get-DomainPasswordPolicy {
 	                        }
 	                        $psoObj = [PSCustomObject]@{
 	                            psoName = $psoName
-	                            precedence = $precedence
-	                            minPwdLength = if ($minLength -eq 0) { "Disabled" } else { "$minLength characters" }
-	                            passwordComplexity = if ($complexityEnabled) { "Enabled" } else { "Disabled" }
-	                            reversibleEncryption = if ($reversibleEncryption) { "Enabled" } else { "Disabled" }
-	                            lockoutThreshold = if ($lockoutThresholdPSO -eq 0) { "Disabled" } else { "After $lockoutThresholdPSO failed attempts" }
+	                            precedence = if ($null -eq $precedence) { $unknownValue } else { $precedence }
+	                            minPwdLength = if ($null -eq $minLength) { $unknownValue }
+	                                           elseif ($minLength -eq 0) { "Disabled" } else { "$minLength characters" }
+	                            passwordComplexity = if ($null -eq $complexityEnabled) { $unknownValue }
+	                                                 elseif ($complexityEnabled) { "Enabled" } else { "Disabled" }
+	                            reversibleEncryption = if ($null -eq $reversibleEncryption) { $unknownValue }
+	                                                   elseif ($reversibleEncryption) { "Enabled" } else { "Disabled" }
+	                            lockoutThreshold = if ($null -eq $lockoutThresholdPSO) { $unknownValue }
+	                                               elseif ($lockoutThresholdPSO -eq 0) { "Disabled" } else { "After $lockoutThresholdPSO failed attempts" }
 	                            appliesTo = if (@($appliesToNames).Count -gt 0) {
 	                                (@($appliesToNames) -join ', ')
+	                            } elseif (-not $psoRead) {
+	                                'Unknown - the policy could not be read'
 	                            } else {
 	                                'Nobody - this policy is assigned to no user and no group'
 	                            }
@@ -61446,40 +61492,31 @@ function Get-DomainPasswordPolicy {
 	                        $psoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'FineGrainedPasswordPolicy' -Force
 	                        Show-Object $psoObj -Class Hint
 	                    }
-	                    $unassignedPSOs = @()
-	                    $weakPSOs = @()
-	                    foreach ($candidate in @($psos)) {
-	                        $psoTargets = @(@($candidate.'msDS-PSOAppliesTo') | Where-Object { $_ })
-	                        if (@($psoTargets).Count -eq 0) {
-	                            $unassignedPSOs += $candidate
-	                            continue
-	                        }
-	                        $psoRE = if ($candidate.'msDS-PasswordReversibleEncryptionEnabled') { $candidate.'msDS-PasswordReversibleEncryptionEnabled' -eq 'TRUE' } else { $false }
-	                        $psoMinLen = if ($candidate.'msDS-MinimumPasswordLength') { [int]$candidate.'msDS-MinimumPasswordLength' } else { 0 }
-	                        $psoComp = if ($candidate.'msDS-PasswordComplexityEnabled') { $candidate.'msDS-PasswordComplexityEnabled' -eq 'TRUE' } else { $false }
-	                        $psoLockout = if ($candidate.'msDS-LockoutThreshold') { [int]$candidate.'msDS-LockoutThreshold' } else { 0 }
-	                        if ($psoRE -or ($psoMinLen -lt 8) -or (-not $psoComp) -or ($psoLockout -eq 0)) {
-	                            $weakPSOs += $candidate
-	                        }
-	                    }
-	                    if (@($weakPSOs).Count -gt 0) {
-	                        $weakPSONames = @($weakPSOs | ForEach-Object { "$($_.name)" })
-	                        Show-Line "$(@($weakPSOs).Count) Fine-Grained Password Polic$(if(@($weakPSOs).Count -eq 1){'y'}else{'ies'}) with a weakness: $(@($weakPSONames) -join ', ')" -Class Finding -FindingId 'WEAK_FGPP'
-	                    } elseif (@($unassignedPSOs).Count -lt @($psos).Count) {
+	                    $weakPSONames       = @($psoReadings | Where-Object { $_.State -eq 'Weak' } | ForEach-Object { $_.Name })
+	                    $cleanPSONames      = @($psoReadings | Where-Object { $_.State -eq 'Clean' } | ForEach-Object { $_.Name })
+	                    $unreadPSONames     = @($psoReadings | Where-Object { $_.State -eq 'Unread' } | ForEach-Object { $_.Name })
+	                    $unassignedPSONames = @($psoReadings | Where-Object { $_.State -eq 'Unassigned' } | ForEach-Object { $_.Name })
+	                    if ($weakPSONames.Count -gt 0) {
+	                        Show-Line "$($weakPSONames.Count) Fine-Grained Password Polic$(if($weakPSONames.Count -eq 1){'y'}else{'ies'}) with a weakness: $($weakPSONames -join ', ')" -Class Finding -FindingId 'WEAK_FGPP'
+	                    } elseif ($cleanPSONames.Count -gt 0 -and $unreadPSONames.Count -eq 0) {
 	                        Show-Line "Fine-Grained Password Policies are properly configured" -Class Secure
+	                    } elseif ($cleanPSONames.Count -gt 0) {
+	                        Show-Line "No weakness in the Fine-Grained Password Policies that could be read" -Class Note
 	                    }
-	                    if (@($unassignedPSOs).Count -gt 0) {
-	                        $unassignedNames = @($unassignedPSOs | ForEach-Object { "$($_.name)" })
-	                        Show-Line "Assigned to no user and no group, and therefore not assessed: $(@($unassignedNames) -join ', ')" -Class Note
+	                    if ($unreadPSONames.Count -gt 0) {
+	                        Show-Line "Could not be read in full, and therefore not assessed: $($unreadPSONames -join ', ')" -Class Note
+	                    }
+	                    if ($unassignedPSONames.Count -gt 0) {
+	                        Show-Line "Assigned to no user and no group, and therefore not assessed: $($unassignedPSONames -join ', ')" -Class Note
 	                    }
 	                } else {
-	                    Show-Line "No Fine-Grained Password Policies configured" -Class Note
+	                    Show-Line "No Fine-Grained Password Policy found - by default only Domain Admins can read them" -Class Note
 	                }
 	                } catch {
 	                    Write-Warning "[Get-DomainPasswordPolicy] Failed to query Fine-Grained Password Policies: $_"
 	                }
 	            } else {
-	                Show-Line "No Fine-Grained Password Policies configured" -Class Note
+	                Show-Line "No Fine-Grained Password Policy found - by default only Domain Admins can read them" -Class Note
 	            }
 	        } else {
 	            Show-Line "Fine-Grained Password Policies not available (requires Domain Functional Level 2008+)" -Raw
@@ -85939,7 +85976,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-0048"
+$Script:adPEASVersion = "2.7.0+20261017-0855"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
