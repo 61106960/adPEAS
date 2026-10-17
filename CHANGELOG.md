@@ -163,6 +163,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   and `AltDefaultPassword` under the Winlogon key is now its own credential, with the user
   and domain name of its own set or collection.
 
+- **Eight extended rights carried the GUID of another right, and six `Set-DomainObject`
+  aliases wrote the wrong ACE.** The table that names an ACE's right had been written
+  from memory; checked against MS-ADTS 5.1.3.2.1 now. `Migrate-SID-History` was the GUID
+  of Update-Password-Not-Required-Bit, while the real right was filed as
+  `Manage-Optional-Features` - so a Migrate-SID-History ACE on the domain object went
+  unreported. `Send-As` was Send-To, Change-PDC was Change-Domain-Master,
+  Change-Infrastructure-Master was Change-PDC, Change-Domain-Master was
+  Do-Garbage-Collection, and `Recalculate-Hierarchy`, `Add-GUID` and
+  `Validated-MS-DS-Behavior-Version` were wrong as well. **`Set-DomainObject -ExtendedRight`
+  with `SendAs`, `MigrateSIDHistory`, `SIDHistory`, `SeizePDC`, `SeizeInfrastructure` or
+  `SeizeDomainMaster` granted a different right than its name says**; each now writes the
+  right it names.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

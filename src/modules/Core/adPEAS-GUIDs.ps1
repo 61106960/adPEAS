@@ -22,6 +22,12 @@
 # EXTENDED RIGHTS GUIDs (GUID -> Friendly Name)
 # ============================================================================
 # Used for resolving ObjectType GUIDs in ACEs to human-readable names
+#
+# Every control access right below is checked against the table in MS-ADTS 5.1.3.2.1
+# ("Control Access Rights"). Eight entries had been written from memory and named the
+# wrong right - among them Migrate-SID-History, which carried the GUID of
+# Update-Password-Not-Required-Bit while the real one was filed as Manage-Optional-Features,
+# and Send-As, which was Send-To. Take a new entry from that table, not from memory.
 $Script:ExtendedRightsGUIDs = @{
     # === DCSync / Replication Rights ===
     '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2' = 'DS-Replication-Get-Changes'
@@ -40,7 +46,8 @@ $Script:ExtendedRightsGUIDs = @{
     'bf9679c0-0de6-11d0-a285-00aa003049e2' = 'Self-Membership'
 
     # === Exchange / Mail Related ===
-    'ab721a55-1e2f-11d0-9819-00aa0040529b' = 'Send-As'
+    'ab721a54-1e2f-11d0-9819-00aa0040529b' = 'Send-As'
+    'ab721a55-1e2f-11d0-9819-00aa0040529b' = 'Send-To'
     'ab721a56-1e2f-11d0-9819-00aa0040529b' = 'Receive-As'
 
     # === Certificate Services (ADCS) ===
@@ -49,7 +56,7 @@ $Script:ExtendedRightsGUIDs = @{
 
     # === SPN / Kerberos Related ===
     'f3a64788-5306-11d1-a9c5-0000f80367c1' = 'Validated-SPN'
-    '4d076c5f-8a3d-4f1b-b4e8-16f4e8c75fc1' = 'Validated-MS-DS-Behavior-Version'
+    'd31a8757-2447-4545-8081-3bb610cacbf2' = 'Validated-MS-DS-Behavior-Version'  # applies to NTDS-DSA
     '80863791-dbe9-4eb8-837e-7f0ab55d9ac7' = 'Validated-MS-DS-Additional-DNS-Host-Name'
 
     # === Domain / Forest Trust ===
@@ -95,23 +102,34 @@ $Script:ExtendedRightsGUIDs = @{
     '45ec5156-db7e-47bb-b53f-dbeb2d03c40f' = 'Reanimate-Tombstones'
 
     # === FSMO Role Transfer ===
+    # Each applies to the object that holds its role (MS-ADTS, and the r-change-* pages):
+    # Change-PDC to the domain object, Change-Rid-Master to RID Manager$,
+    # Change-Infrastructure-Master to CN=Infrastructure, Change-Domain-Master to
+    # CN=Partitions and Change-Schema-Master to the schema container.
     'e12b56b6-0a95-11d1-adbb-00c04fd8d5cd' = 'Change-Schema-Master'
     'd58d5f36-0a98-11d1-adbb-00c04fd8d5cd' = 'Change-Rid-Master'
-    '014bf69c-7b3b-11d1-85f6-08002be74fab' = 'Change-PDC'
-    'bae50096-4752-11d1-9052-00c04fc2d4cf' = 'Change-Infrastructure-Master'
-    'fec364e0-0a98-11d1-adbb-00c04fd8d5cd' = 'Change-Domain-Master'
+    'bae50096-4752-11d1-9052-00c04fc2d4cf' = 'Change-PDC'
+    'cc17b1fb-33d9-11d2-97d4-00c04fd8d5cd' = 'Change-Infrastructure-Master'
+    '014bf69c-7b3b-11d1-85f6-08002be74fab' = 'Change-Domain-Master'
+    'fec364e0-0a98-11d1-adbb-00c04fd8d5cd' = 'Do-Garbage-Collection'
 
     # === General / Other ===
-    'bc0ac240-79a9-11d0-9020-00c04fc2d4cf' = 'Add-GUID'  # Also Property Set 'Membership' (dual-use)
+    # bc0ac240 is not an extended right: it is the Membership property set (member and
+    # memberOf). It is here, like GP-Link above, so Get-ObjectACL can name the ACE. It was
+    # filed as Add-GUID, whose own GUID is 440820ad.
+    'bc0ac240-79a9-11d0-9020-00c04fc2d4cf' = 'Membership'
+    '440820ad-65b4-11d1-a3da-0000f875ae0d' = 'Add-GUID'
     '9432c620-033c-4db7-8b58-14ef6d0bf477' = 'Refresh-Group-Cache'
-    '62dd28a8-7f46-11d2-b9ad-00c04f79f805' = 'Recalculate-Hierarchy'
+    '0bc1554e-0a99-11d1-adbb-00c04fd8d5cd' = 'Recalculate-Hierarchy'
+    '62dd28a8-7f46-11d2-b9ad-00c04f79f805' = 'Recalculate-Security-Inheritance'
     '1abd7cf8-0a99-11d1-adbb-00c04fd8d5cd' = 'Allocate-Rids'
     '68b1d179-0d15-4d4f-ab71-46152e79a7bc' = 'Allowed-To-Authenticate'
     'edacfd8f-ffb3-11d1-b41d-00a0c968f939' = 'Apply-Group-Policy'
     'b7b1b3dd-ab09-4242-9e30-9980e5d322f7' = 'Generate-RSoP-Planning'
     'b7b1b3de-ab09-4242-9e30-9980e5d322f7' = 'Generate-RSoP-Logging'
-    '280f369c-67c7-438e-ae98-1d46f3c6f541' = 'Migrate-SID-History'
-    'ba33815a-4f93-4c76-87f3-57574bff8109' = 'Manage-Optional-Features'
+    'ba33815a-4f93-4c76-87f3-57574bff8109' = 'Migrate-SID-History'
+    '280f369c-67c7-438e-ae98-1d46f3c6f541' = 'Update-Password-Not-Required-Bit'
+    '7c0e2a7c-a419-48e4-a995-10180aad54dd' = 'Manage-Optional-Features'
     'e2a36dc9-ae17-47c3-b58b-be34c55ba633' = 'Create-Inbound-Forest-Trust'
     '3e0f7e18-2c7a-4c10-ba82-4d926db99a3e' = 'DS-Clone-Domain-Controller'
 
@@ -263,8 +281,8 @@ $Script:ValidatedWriteGUIDs = @{
     # Validated-DNS-Host-Name - Allows writing to dNSHostName with validation
     'Validated-DNS-Host-Name'        = [GUID]'72e39547-7b18-11d1-adef-00c04fd8d5cd'
 
-    # Validated-MS-DS-Behavior-Version
-    'Validated-MS-DS-Behavior-Version' = [GUID]'4d076c5f-8a3d-4f1b-b4e8-16f4e8c75fc1'
+    # Validated-MS-DS-Behavior-Version - applies to NTDS-DSA, not to the domain object
+    'Validated-MS-DS-Behavior-Version' = [GUID]'d31a8757-2447-4545-8081-3bb610cacbf2'
 
     # Validated-MS-DS-Additional-DNS-Host-Name
     'Validated-MS-DS-Additional-DNS-Host-Name' = [GUID]'80863791-dbe9-4eb8-837e-7f0ab55d9ac7'
@@ -922,7 +940,10 @@ $Script:ExtendedRightsAliases = @{
     'ResetPassword'       = '00299570-246d-11d0-a768-00aa006e0529'  # Alias for ForceChangePassword
 
     # === Exchange Rights ===
-    'SendAs'    = 'ab721a55-1e2f-11d0-9819-00aa0040529b'  # Send-As
+    # Every GUID in this table is the rightsGuid MS-ADTS 5.1.3.2.1 gives the right named
+    # beside it. SendAs, MigrateSIDHistory, SIDHistory and three Seize aliases wrote the ACE
+    # of a different right - ab721a55 is Send-To, 280f369c Update-Password-Not-Required-Bit.
+    'SendAs'    = 'ab721a54-1e2f-11d0-9819-00aa0040529b'  # Send-As
     'ReceiveAs' = 'ab721a56-1e2f-11d0-9819-00aa0040529b'  # Receive-As
 
     # === Certificate Enrollment (ADCS Abuse) ===
@@ -935,8 +956,8 @@ $Script:ExtendedRightsAliases = @{
     'AllowedToAuthenticate' = '68b1d179-0d15-4d4f-ab71-46152e79a7bc'  # Allowed-To-Authenticate
 
     # === SID History Injection (Direct Priv-Esc!) ===
-    'MigrateSIDHistory' = '280f369c-67c7-438e-ae98-1d46f3c6f541'  # Migrate-SID-History (CORRECTED!)
-    'SIDHistory'        = '280f369c-67c7-438e-ae98-1d46f3c6f541'  # Alias
+    'MigrateSIDHistory' = 'ba33815a-4f93-4c76-87f3-57574bff8109'  # Migrate-SID-History
+    'SIDHistory'        = 'ba33815a-4f93-4c76-87f3-57574bff8109'  # Alias
 
     # === RBCD (Resource-Based Constrained Delegation) ===
     # Not an extended right and therefore not listed here. RBCD is granted by writing the
@@ -968,10 +989,10 @@ $Script:ExtendedRightsAliases = @{
 
     # === FSMO Role Seizure (Domain Takeover!) ===
     'SeizeRidMaster'    = 'd58d5f36-0a98-11d1-adbb-00c04fd8d5cd'  # Change-Rid-Master
-    'SeizePDC'          = '014bf69c-7b3b-11d1-85f6-08002be74fab'  # Change-PDC
-    'SeizeInfrastructure' = 'bae50096-4752-11d1-9052-00c04fc2d4cf'  # Change-Infrastructure-Master
+    'SeizePDC'          = 'bae50096-4752-11d1-9052-00c04fc2d4cf'  # Change-PDC
+    'SeizeInfrastructure' = 'cc17b1fb-33d9-11d2-97d4-00c04fd8d5cd'  # Change-Infrastructure-Master
     'SeizeSchemaMaster' = 'e12b56b6-0a95-11d1-adbb-00c04fd8d5cd'  # Change-Schema-Master
-    'SeizeDomainMaster' = 'fec364e0-0a98-11d1-adbb-00c04fd8d5cd'  # Change-Domain-Master (Naming Master)
+    'SeizeDomainMaster' = '014bf69c-7b3b-11d1-85f6-08002be74fab'  # Change-Domain-Master (Naming Master)
 
     # === All Extended Rights (Dangerous!) ===
     'AllExtendedRights' = '00000000-0000-0000-0000-000000000000'  # Grants ALL extended rights!
