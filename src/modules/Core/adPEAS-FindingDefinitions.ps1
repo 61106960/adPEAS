@@ -11029,7 +11029,7 @@ $acl.Access | Where-Object {
         MITRE = "T1078.002"
         Triggers = @(
             @{ Attribute = 'OperatorGroup'; Severity = 'Hint' }
-            @{ Attribute = 'MemberCount'; Custom = 'gt_0'; Severity = 'Hint' }
+            @{ Attribute = 'MemberCount'; Custom = 'operator_group_has_members'; Severity = 'Hint' }
             # Hint, not Finding. No operator-group member in Protected Users is the
             # normal state of very nearly every domain, the line that prints these
             # objects calls itself informational ("consider for Protected Users"), and
@@ -14558,6 +14558,20 @@ function Test-CustomTrigger {
             $hasDangerousPerms = $SourceObject.PSObject.Properties['DangerousPermissions'] -and $SourceObject.DangerousPermissions
             $hasDangerousSettings = $SourceObject.PSObject.Properties['DangerousSettings'] -and $SourceObject.DangerousSettings
             return ($hasDangerousPerms -or $hasDangerousSettings)
+        }
+
+        'operator_group_has_members' {
+            # The operator-group rows of Get-ProtectedUsersStatus only. The SCCM and SCOM
+            # group rows carry a MemberCount too, and the trigger index is keyed by the
+            # attribute name alone - so every SCCM or SCOM group with a member collected
+            # the card about Account, Backup, Print and Server Operators. Without the row
+            # there is no telling whose count it is, so that answers no as well.
+            if (-not $SourceObject -or "$($SourceObject._adPEASObjectType)" -ne 'OperatorGroup') { return $false }
+            $memberTotal = 0
+            if ([int]::TryParse([string]$Value, [ref]$memberTotal)) {
+                return ($memberTotal -gt 0)
+            }
+            return $false
         }
 
         'is_hardcoded_path' {

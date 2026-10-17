@@ -195,6 +195,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   it runs as SYSTEM and a note when it runs as the user, says that its permissions were
   not checked, and carries the card for scripts outside the policy store.
 
+- **SCCM and SCOM groups no longer carry the operator-group card.** Their member count
+  shares its attribute name with the count on the Account, Backup, Print and Server
+  Operators rows, and every SCCM or SCOM group with a member opened that write-up. The
+  card now goes to the operator-group rows only.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

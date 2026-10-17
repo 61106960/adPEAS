@@ -13993,7 +13993,7 @@ $acl.Access | Where-Object {
 	    MITRE = "T1078.002"
 	    Triggers = @(
 	        @{ Attribute = 'OperatorGroup'; Severity = 'Hint' }
-	        @{ Attribute = 'MemberCount'; Custom = 'gt_0'; Severity = 'Hint' }
+	        @{ Attribute = 'MemberCount'; Custom = 'operator_group_has_members'; Severity = 'Hint' }
 	        @{ Attribute = 'ProtectedCount'; Pattern = '^0$'; Severity = 'Hint' }
 	    )
 	}
@@ -16745,6 +16745,14 @@ function Test-CustomTrigger {
 	        $hasDangerousPerms = $SourceObject.PSObject.Properties['DangerousPermissions'] -and $SourceObject.DangerousPermissions
 	        $hasDangerousSettings = $SourceObject.PSObject.Properties['DangerousSettings'] -and $SourceObject.DangerousSettings
 	        return ($hasDangerousPerms -or $hasDangerousSettings)
+	    }
+	    'operator_group_has_members' {
+	        if (-not $SourceObject -or "$($SourceObject._adPEASObjectType)" -ne 'OperatorGroup') { return $false }
+	        $memberTotal = 0
+	        if ([int]::TryParse([string]$Value, [ref]$memberTotal)) {
+	            return ($memberTotal -gt 0)
+	        }
+	        return $false
 	    }
 	    'is_hardcoded_path' {
 	        if ($SourceObject -and "$($SourceObject._adPEASObjectType)" -eq 'GPOScriptPath') { return $false }
@@ -86055,7 +86063,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1216"
+$Script:adPEASVersion = "2.7.0+20261017-1220"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
