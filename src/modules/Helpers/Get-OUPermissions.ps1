@@ -177,6 +177,7 @@ function Get-ACEInheritanceSource {
     - AccountControl: userAccountControl write access
     - GroupMembership: member attribute write access
     - SPNModification: servicePrincipalName write access
+    - KeyCredentialLink: msDS-KeyCredentialLink write access (Shadow Credentials)
     - ScriptPath: scriptPath write access
     - Delegation: Delegation attribute write access
     - LAPS: LAPS password read access
@@ -304,6 +305,7 @@ function Get-OUPermissions {
             'GroupMembership',
             'SPNModification',
             'DNSHostName',
+            'KeyCredentialLink',
             'ScriptPath',
             'Delegation',
             'LAPS',
@@ -343,7 +345,7 @@ function Get-OUPermissions {
             $CheckType = @(
                 'GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner',
                 'PasswordReset', 'AccountControl', 'GroupMembership',
-                'SPNModification', 'DNSHostName', 'ScriptPath', 'Delegation', 'LAPS',
+                'SPNModification', 'DNSHostName', 'KeyCredentialLink', 'ScriptPath', 'Delegation', 'LAPS',
                 'CredentialRoaming', 'BitLocker', 'ObjectCreation', 'GPOLinking', 'Ownership'
             )
         }
@@ -590,7 +592,7 @@ function Get-OUPermissions {
                 if ($HasWriteProperty -and $IsAllProperties -and ($CheckType -contains 'AccountControl' -or
                     $CheckType -contains 'GroupMembership' -or $CheckType -contains 'SPNModification' -or
                     $CheckType -contains 'ScriptPath' -or $CheckType -contains 'Delegation' -or
-                    $CheckType -contains 'GPOLinking')) {
+                    $CheckType -contains 'GPOLinking' -or $CheckType -contains 'KeyCredentialLink')) {
 
                     # Skip broad groups with expected "All Properties" access
                     if (-not $skipAllPropertiesOnly) {
@@ -950,6 +952,30 @@ function Get-OUPermissions {
                             $Findings += [PSCustomObject]@{
                                 CheckType     = "DNSHostName"
                                 Right         = "Self (Validated-DNS-Host-Name)$childReachNote"
+                                Principal     = $TrusteeName
+                                SID           = $TrusteeSID
+                                Severity      = $Severity
+                                InheritedFrom = $InheritedFrom
+                            }
+                        }
+                    }
+                }
+
+                # Check 5c: Shadow Credentials (msDS-KeyCredentialLink)
+                # Note: GUID::Empty is handled by generic "WriteProperty (All Properties)" above
+                # A key the trustee writes into the attribute lets it authenticate as the user
+                # or computer with PKINIT, without the password and across every password
+                # reset. No check asked who may write it: the SHADOW_CREDENTIALS card said the
+                # ACL checks report it, and this is where they now do. Key Admins and Enterprise
+                # Key Admins hold the right on the domain by design and are privileged, so they
+                # come out as Info like every other privileged holder.
+                if ($CheckType -contains 'KeyCredentialLink') {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and ($AppliesToUsers -or $AppliesToComputers) -and $AppliesToChildren) {
+                        if ($ACE.ObjectType -eq $PropertyGUIDs['msDS-KeyCredentialLink']) {
+                            $Severity = if ($IsPrivileged) { "Info" } else { "High" }
+                            $Findings += [PSCustomObject]@{
+                                CheckType     = "KeyCredentialLink"
+                                Right         = "WriteProperty (msDS-KeyCredentialLink)$childReachNote"
                                 Principal     = $TrusteeName
                                 SID           = $TrusteeSID
                                 Severity      = $Severity

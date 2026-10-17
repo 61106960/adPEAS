@@ -10,6 +10,7 @@
     - Account Control Modification - Change userAccountControl flags
     - Group Membership Control - Modify group memberships
     - SPN Modification - Set servicePrincipalName (Kerberoasting prep)
+    - Key Credential Write - Add a key to msDS-KeyCredentialLink (Shadow Credentials)
     - Script Path Modification - Change logon scripts (code execution)
     - Delegation Rights - Configure constrained/unconstrained delegation
     - Object Creation - Create new users/computers
@@ -83,6 +84,7 @@ function Get-DangerousOUPermissions {
             'AccountControl',
             'GroupMembership',
             'SPNModification',
+            'KeyCredentialLink',
             'ScriptPath',
             'Delegation',
             'LAPS',

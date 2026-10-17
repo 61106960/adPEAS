@@ -82,6 +82,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   unprotected group through the default security descriptor of the group class; that is
   said once, as a hint while Account Operators has members.
 
+- **Who may write `msDS-KeyCredentialLink` is reported (Shadow Credentials).** No check
+  asked it, although the card for a populated key credential said the ACL checks did.
+  `Get-DangerousOUPermissions` now reports a delegated write of the attribute on an OU's
+  users and computers; Key Admins and Enterprise Key Admins, which hold it by design for
+  Windows Hello for Business, are rated as privileged and stay out of a default report.
+
+- **AdminSDHolder is checked for the rights that take over the administrator accounts,
+  and for its owner.** SDProp copies AdminSDHolder's descriptor onto every protected
+  account as well as onto the protected groups, and the check asked only about full
+  control and the member attribute. A write on `msDS-KeyCredentialLink`,
+  `servicePrincipalName`, `altSecurityIdentities` or `userAccountControl`, the password
+  reset right and "all extended rights" are now findings, each row saying what the right
+  allows on every protected account, and a non-default owner of AdminSDHolder is named.
+  The rows open a card of their own, which the member rows did not have. A trustee with
+  several ACEs is reported once with all of its rights; the check used to keep the first
+  ACE the descriptor returned, and the descriptor re-sorts them on load.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

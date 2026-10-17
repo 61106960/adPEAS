@@ -3515,6 +3515,95 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         )
     }
 
+    'OU_PERM_KEYCREDENTIALLINK_WRITE' = @{
+        Title = "WriteProperty (msDS-KeyCredentialLink) on OU"
+        Risk = "Finding"
+        # Below WriteDacl and WriteOwner (55): a row that carries one of those as well has
+        # to open their card, because they grant this right and everything else.
+        BaseScore = 54
+        Description = "A principal can write msDS-KeyCredentialLink on the users or computers in this OU - the Shadow Credentials attack. It adds a key pair of its own to an account and then authenticates as that account with PKINIT, without knowing or changing the password; the key keeps working across every password reset until somebody removes it. Key Admins and Enterprise Key Admins hold this right on the whole domain by design, for Windows Hello for Business, and are not reported."
+        Impact = @(
+            "Authentication as any user or computer in the OU, without the password and without changing it"
+            "On a computer account: a ticket for the computer, and with S4U2Self administrative access to the machine"
+            "Persistence that survives password resets, because the planted key is a credential of its own"
+            "Needs a domain controller with a certificate for PKINIT, which every domain with AD CS or Windows Hello for Business has"
+        )
+        Attack = @(
+            "1. Attacker writes a new key credential into msDS-KeyCredentialLink of a target account (Whisker, pyWhisker, Certipy shadow)"
+            "2. Requests a TGT for the target with PKINIT, using the private key of that pair"
+            "3. Recovers the target's NT hash from the PAC (UnPAC-the-hash) or uses the ticket directly"
+            "4. Optionally leaves the key in place as a backdoor"
+        )
+        Remediation = @(
+            "Remove the write right on msDS-KeyCredentialLink from every principal that is not Key Admins, Enterprise Key Admins or the account itself"
+            "Audit msDS-KeyCredentialLink on the accounts in this OU for keys nobody can account for"
+            "Monitor changes to msDS-KeyCredentialLink (Event ID 5136)"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who may write msDS-KeyCredentialLink on an OU"
+                Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object { `$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq '5b47d60f-6090-40b2-9f37-2a4de88f3063' } | Format-Table IdentityReference,ActiveDirectoryRights,IsInherited,AccessControlType -AutoSize"
+            }
+            @{
+                Description = "List the accounts in the OU that carry key credentials"
+                Command = "Get-ADObject -SearchBase 'OU=TARGET_OU,DC=domain,DC=com' -LDAPFilter '(msDS-KeyCredentialLink=*)' -Properties msDS-KeyCredentialLink | Select-Object Name,DistinguishedName"
+            }
+        )
+        References = @(
+            @{ Title = "Shadow Credentials: Abusing Key Trust Account Mapping for Account Takeover"; Url = "https://posts.specterops.io/shadow-credentials-abusing-key-trust-account-mapping-for-takeover-8ee1a53566ab" }
+            @{ Title = "Key Credential Link - MS-ADTS"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/f3f01e95-6d0c-4fe6-8b43-d585167658fa" }
+        )
+        Tools = @("Whisker", "pyWhisker", "Certipy", "Rubeus")
+        MITRE = "T1556"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'WriteProperty \(msDS-KeyCredentialLink\)'; Severity = 'Finding' }
+        )
+    }
+
+    'ADMINSDHOLDER_PROPAGATED_RIGHT' = @{
+        Title = "A Right on AdminSDHolder That SDProp Copies Onto Every Protected Object"
+        Risk = "Finding"
+        # Below WriteDacl and WriteOwner (55), for the same reason as the OU cards.
+        BaseScore = 54
+        Description = "A principal holds a right on CN=AdminSDHolder that is not one of its defaults. SDProp writes the AdminSDHolder security descriptor onto every protected group and every member of one - Domain Admins, Enterprise Admins, Schema Admins, Administrators and the operator groups among them - every hour, so a right here is that right on all of them, and it comes back after anyone removes it from one account. The row says which right and what it allows: adding a member to every protected group, writing a key credential, an SPN, a certificate mapping or userAccountControl on every protected account, resetting their passwords, or - for the owner - rewriting the template itself."
+        Impact = @(
+            "A member right makes the trustee a member of Domain Admins whenever it likes"
+            "A key credential, SPN, certificate mapping or reset right takes over any administrator account"
+            "SDProp restores the right every hour, which makes it a persistence mechanism as much as an escalation"
+            "Ownership of AdminSDHolder lets the owner grant itself anything here"
+        )
+        Attack = @(
+            "1. Attacker uses the right on one protected object - SDProp has already copied it there"
+            "2. For a member right: adds itself to Domain Admins; for an account right: takes over an administrator"
+            "3. Keeps the access, because the next SDProp run puts the right back if it is removed below"
+        )
+        Remediation = @(
+            "Remove the ACE from CN=AdminSDHolder,CN=System - removing it from a protected object alone does not last"
+            "Wait for SDProp or trigger it (runProtectAdminGroupsTask on the PDC emulator), then confirm the protected objects no longer carry it"
+            "For an owner finding, set the owner of AdminSDHolder back to Domain Admins"
+            "Treat a non-default ACE here as a sign of compromise and review the protected accounts"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the explicit ACEs and the owner of AdminSDHolder"
+                Command = "`$acl = Get-Acl 'AD:\CN=AdminSDHolder,CN=System,DC=domain,DC=com'; `$acl.Owner; `$acl.Access | Where-Object { -not `$_.IsInherited } | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "AdminSDHolder and SDProp"; Url = "https://adsecurity.org/?p=1906" }
+            @{ Title = "Appendix C: Protected Accounts and Groups in Active Directory"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory" }
+        )
+        Tools = @("PowerView", "BloodHound", "ADACLScanner")
+        MITRE = "T1098"
+        Triggers = @(
+            # The rows Get-PrivilegedGroupMembers writes for AdminSDHolder; their wording
+            # names every protected group or account, which no other producer does. The
+            # member rows had no card before.
+            @{ Attribute = 'dangerousRights'; Pattern = ' - may .+ every protected (group|account)'; Severity = 'Finding' }
+        )
+    }
+
     'OU_PERM_DNS_HOST_NAME_ATTRIBUTES' = @{
         Title = "WriteProperty (DNS-Host-Name-Attributes) on OU"
         Risk = "Finding"
@@ -6561,7 +6650,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "Key Credential Present (msDS-KeyCredentialLink)"
         Risk = "Note"
         BaseScore = 5
-        Description = "The account carries one or more key credentials in msDS-KeyCredentialLink. Windows Hello for Business, FIDO2 security keys and Entra hybrid join write them in normal operation, so a populated attribute is information, not a finding. The Shadow Credentials attack needs write access to the attribute, and that is what the ACL checks report - a right on msDS-KeyCredentialLink, GenericWrite or GenericAll on the account. The row lists each key with its source and, on a computer, how long after the account it appeared: a device key registers within minutes of the join, so one added days or weeks later on a computer that does not use Windows Hello is worth a look."
+        Description = "The account carries one or more key credentials in msDS-KeyCredentialLink. Windows Hello for Business, FIDO2 security keys and Entra hybrid join write them in normal operation, so a populated attribute is information, not a finding. The Shadow Credentials attack needs write access to the attribute, and that is what the ACL checks report - a right on msDS-KeyCredentialLink, GenericWrite or GenericAll delegated on an OU, and the same rights on AdminSDHolder, which SDProp copies onto every administrator. The row lists each key with its source and, on a computer, how long after the account it appeared: a device key registers within minutes of the join, so one added days or weeks later on a computer that does not use Windows Hello is worth a look."
         Impact = @(
             "A key credential lets its holder authenticate with PKINIT without the password"
             "Expected on accounts enrolled in Windows Hello for Business or FIDO2, and on hybrid-joined computers"

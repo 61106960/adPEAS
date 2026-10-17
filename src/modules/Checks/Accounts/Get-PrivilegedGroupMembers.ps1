@@ -1101,8 +1101,8 @@ function Get-PrivilegedGroupMembers {
                 if ($SecurityDescriptor) {
                     # Uses central privileged check from Test-IsPrivileged.ps1
 
-                    # Deduplicate by tracking seen SIDs
-                    $SeenSIDs = @{}
+                    # The dangerous rights of each trustee, gathered over all of its ACEs
+                    $trusteeRights = [ordered]@{}
 
                     # GetAccessRules with SecurityIdentifier, not .Access. .Access asks for
                     # the rules as NTAccount, which makes the local machine name-resolve
@@ -1126,9 +1126,6 @@ function Get-PrivilegedGroupMembers {
                             $TrusteeSID = ConvertTo-SID -Identity $identRef.Value
                         }
                         if (-not $TrusteeSID) { continue }
-
-                        # Skip if already processed this SID
-                        if ($SeenSIDs.ContainsKey($TrusteeSID)) { continue }
 
                         # Skip ACEs with InheritedObjectType - they only apply to child objects, not AdminSDHolder itself
                         $inheritedObjectType = $ACE.InheritedObjectType
@@ -1180,13 +1177,115 @@ function Get-PrivilegedGroupMembers {
                         $HasSelfMember = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::Self)) -and
                                          ($objectTypeIsMember -or $objectTypeIsEmpty)
 
+                        # The rights that take over the protected ACCOUNTS, which the member
+                        # rights above do not cover: SDProp writes this descriptor onto every
+                        # protected user as well, so a write on one of these attributes here
+                        # is that write on every administrator. Named attributes only - a
+                        # WriteProperty without an ObjectType is already the member line
+                        # above, and GenericAll covers everything.
+                        #   msDS-KeyCredentialLink - add a key and authenticate as the account
+                        #   servicePrincipalName   - give the account an SPN and roast it
+                        #   altSecurityIdentities  - map a certificate onto the account (ESC14)
+                        #   userAccountControl     - switch off pre-authentication or the
+                        #                            password requirement (directly or through
+                        #                            the User-Account-Restrictions set)
+                        # and the extended right to reset the password, which an ACE with no
+                        # ObjectType grants along with every other extended right.
+                        $hasWriteProperty = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteProperty)
+                        $hasExtendedRight = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
+                        $HasWriteKeyCredential = $hasWriteProperty -and $objectType -and ($objectType -eq $Script:PropertyGUIDs['msDS-KeyCredentialLink'])
+                        $HasWriteSPN = $hasWriteProperty -and $objectType -and ($objectType -eq $Script:PropertyGUIDs['servicePrincipalName'])
+                        $HasWriteAltSecurity = $hasWriteProperty -and $objectType -and ($objectType -eq $Script:PropertyGUIDs['altSecurityIdentities'])
+                        $HasWriteAccountControl = $hasWriteProperty -and $objectType -and (
+                            ($objectType -eq $Script:PropertyGUIDs['userAccountControl']) -or
+                            ($objectType -eq $Script:PropertySetGUIDs['User-Account-Restrictions']))
+                        $resetPasswordGUID = [Guid]$Script:ExtendedRightsAliases['ForceChangePassword']
+                        $HasResetPassword = $hasExtendedRight -and ($objectTypeIsEmpty -or ($objectType -eq $resetPasswordGUID))
+
                         $HasDangerousPermission = $HasGenericAll -or $HasWriteDacl -or $HasWriteOwner -or
-                                                  $HasWriteMember -or $HasSelfMember
+                                                  $HasWriteMember -or $HasSelfMember -or
+                                                  $HasWriteKeyCredential -or $HasWriteSPN -or $HasWriteAltSecurity -or
+                                                  $HasWriteAccountControl -or $HasResetPassword
 
                         if (-not $HasDangerousPermission) { continue }
 
-                        # Mark as seen
-                        $SeenSIDs[$TrusteeSID] = $true
+                        # Collected per trustee and judged once, below. The descriptor hands
+                        # the ACEs back in an order nobody controls - measured, it re-sorts
+                        # them on load - and the loop used to take the first dangerous ACE of
+                        # a trustee and skip the others, so which of its rights the row named
+                        # depended on that order.
+                        if (-not $trusteeRights.Contains($TrusteeSID)) {
+                            $trusteeRights[$TrusteeSID] = @{
+                                GenericAll = $false; WriteDacl = $false; WriteOwner = $false
+                                WriteMember = $false; SelfMember = $false; KeyCredential = $false
+                                SPN = $false; AltSecurity = $false; AccountControl = $false
+                                ResetPassword = $false; AllExtendedRights = $false
+                            }
+                        }
+                        $collected = $trusteeRights[$TrusteeSID]
+                        if ($HasGenericAll) { $collected.GenericAll = $true }
+                        if ($HasWriteDacl) { $collected.WriteDacl = $true }
+                        if ($HasWriteOwner) { $collected.WriteOwner = $true }
+                        if ($HasWriteMember) { $collected.WriteMember = $true }
+                        if ($HasSelfMember) { $collected.SelfMember = $true }
+                        if ($HasWriteKeyCredential) { $collected.KeyCredential = $true }
+                        if ($HasWriteSPN) { $collected.SPN = $true }
+                        if ($HasWriteAltSecurity) { $collected.AltSecurity = $true }
+                        if ($HasWriteAccountControl) { $collected.AccountControl = $true }
+                        if ($HasResetPassword) {
+                            if ($objectTypeIsEmpty) { $collected.AllExtendedRights = $true } else { $collected.ResetPassword = $true }
+                        }
+                    }
+
+                    # The rights some trustees hold here by design: Key Admins and Enterprise
+                    # Key Admins write msDS-KeyCredentialLink for Windows Hello for Business
+                    # (DefaultRightHolders of the DomainRootACL scope). Left out of the row, so
+                    # a right of theirs that is not by design is reported on its own.
+                    $holderTable = $Script:SecurityScopes['DomainRootACL'].DefaultRightHolders
+
+                    foreach ($TrusteeSID in @($trusteeRights.Keys)) {
+                        $collected = $trusteeRights[$TrusteeSID]
+
+                        $defaultRights = @()
+                        if ($holderTable) {
+                            $holderRID = Get-SIDRIDSuffix -SID $TrusteeSID
+                            if ($holderTable.ContainsKey($TrusteeSID)) { $defaultRights = @($holderTable[$TrusteeSID]) }
+                            elseif ($holderRID -and $holderTable.ContainsKey($holderRID)) { $defaultRights = @($holderTable[$holderRID]) }
+                        }
+
+                        # Each right by name and by what it does. Named for the consequence
+                        # rather than for the bit, because that is what a reader has to see:
+                        # this propagates to every protected group and account.
+                        #
+                        # Only GenericAll, WriteDacl and WriteOwner when GenericAll is on the
+                        # row: full control over the whole object expands to every right
+                        # below, so listing them beside it says the same thing several times.
+                        $entries = New-Object System.Collections.ArrayList
+                        if ($collected.GenericAll) { [void]$entries.Add(@('GenericAll', 'GenericAll')) }
+                        if ($collected.WriteDacl) { [void]$entries.Add(@('WriteDacl', 'WriteDacl')) }
+                        if ($collected.WriteOwner) { [void]$entries.Add(@('WriteOwner', 'WriteOwner')) }
+                        if (-not $collected.GenericAll) {
+                            if ($collected.WriteMember) { [void]$entries.Add(@('member', 'WriteProperty on member - may add a member to every protected group')) }
+                            if ($collected.SelfMember) { [void]$entries.Add(@('Self-Membership', 'Self on member - may add itself to every protected group')) }
+                            if ($collected.KeyCredential) { [void]$entries.Add(@('msDS-KeyCredentialLink', 'WriteProperty on msDS-KeyCredentialLink - may add a key credential to every protected account and log on as it')) }
+                            if ($collected.SPN) { [void]$entries.Add(@('servicePrincipalName', 'WriteProperty on servicePrincipalName - may give every protected account an SPN and roast its password')) }
+                            if ($collected.AltSecurity) { [void]$entries.Add(@('altSecurityIdentities', 'WriteProperty on altSecurityIdentities - may map a certificate onto every protected account')) }
+                            if ($collected.AccountControl) { [void]$entries.Add(@('userAccountControl', 'WriteProperty on userAccountControl - may turn off pre-authentication or the password requirement on every protected account')) }
+                            if ($collected.AllExtendedRights) {
+                                [void]$entries.Add(@('User-Force-Change-Password', 'All extended rights - may reset the password of every protected account'))
+                            } elseif ($collected.ResetPassword) {
+                                # Not "Reset password ...": OU_PERM_PASSWORD_RESET matches that
+                                # text, scores higher and describes an OU delegation.
+                                [void]$entries.Add(@('User-Force-Change-Password', 'Password reset right - may reset the password of every protected account'))
+                            }
+                        }
+
+                        $reported = @($entries | Where-Object { $defaultRights -notcontains $_[0] })
+                        if (@($reported).Count -eq 0) {
+                            Write-Log "[Get-PrivilegedGroupMembers] AdminSDHolder: $TrusteeSID holds only its default rights"
+                            continue
+                        }
+                        $Permissions = @($reported | ForEach-Object { $_[1] })
 
                         # Resolve name for display
                         $TrusteeName = ConvertFrom-SID -SID $TrusteeSID
@@ -1214,23 +1313,6 @@ function Get-PrivilegedGroupMembers {
                             $scopeResult = Test-IsExpectedInScope -Identity $TrusteeSID -Scope 'DomainRootACL' -ReturnDetails
                             $severity = $scopeResult.Severity
                             Write-Log "[Get-PrivilegedGroupMembers] IncludePrivileged: Including AdminSDHolder $TrusteeName ($TrusteeSID) with severity $severity"
-                        }
-
-                        $Permissions = @()
-                        if ($HasGenericAll) { $Permissions += "GenericAll" }
-                        if ($HasWriteDacl) { $Permissions += "WriteDacl" }
-                        if ($HasWriteOwner) { $Permissions += "WriteOwner" }
-                        # Named for what it does rather than for the bit, because the
-                        # consequence is the one a reader has to see: this propagates to
-                        # every protected group.
-                        #
-                        # Only when GenericAll is not already on the row. GenericAll over the
-                        # whole object expands to WriteProperty and Self as well, so listing
-                        # them beside it turns one ACE that says "full control" into five
-                        # lines that say the same thing.
-                        if (-not $HasGenericAll) {
-                            if ($HasWriteMember) { $Permissions += "WriteProperty on member - may add a member to every protected group" }
-                            if ($HasSelfMember) { $Permissions += "Self on member - may add itself to every protected group" }
                         }
 
                         $finding = [PSCustomObject]@{
@@ -1299,6 +1381,32 @@ function Get-PrivilegedGroupMembers {
                         $inheritedName = ConvertFrom-SID -SID $aceSID
                         if (-not $inheritedName) { $inheritedName = $aceSID }
                         if ($inheritedControllers -notcontains $inheritedName) { $inheritedControllers += $inheritedName }
+                    }
+
+                    # The owner of AdminSDHolder may rewrite its DACL whatever the DACL says,
+                    # and the rewritten template is copied onto every protected object within
+                    # the hour. Not asked before; the four default owners - Administrators,
+                    # SYSTEM, Domain Admins, Enterprise Admins - are expected, as on the domain
+                    # object.
+                    $holderOwnerSID = $null
+                    try { $holderOwnerSID = $SecurityDescriptor.GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch {
+                        Write-Log "[Get-PrivilegedGroupMembers] Could not read the AdminSDHolder owner: $_"
+                    }
+                    if ($holderOwnerSID) {
+                        $ownerScope = Test-IsExpectedInScope -Identity $holderOwnerSID -Scope 'DomainRootACL' -ReturnDetails
+                        if ($ownerScope.Severity -notin @('Expected', 'Attention')) {
+                            $ownerName = ConvertFrom-SID -SID $holderOwnerSID
+                            if (-not $ownerName) { $ownerName = $holderOwnerSID }
+                            $ownerFinding = [PSCustomObject]@{
+                                Name = $ownerName
+                                Trustee = $ownerName
+                                TrusteeSID = $holderOwnerSID
+                                dangerousRights = @('Owner of AdminSDHolder - may rewrite the template SDProp copies onto every protected group and account')
+                                _adPEASObjectType = 'AdminSDHolderACL'
+                            }
+                            $AdminSDHolderFindings += $ownerFinding
+                            Show-Object $ownerFinding -Class Finding
+                        }
                     }
 
                     if (@($inheritedControllers).Count -gt 0) {

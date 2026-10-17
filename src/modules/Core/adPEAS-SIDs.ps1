@@ -706,6 +706,14 @@ $Script:SecurityScopes = @{
             '-512',   # Domain Admins
             '-519'    # Enterprise Admins
         )
+        # Key Admins and Enterprise Key Admins write msDS-KeyCredentialLink by design -
+        # that is what Windows Hello for Business needs - and hold nothing else here. Only
+        # a caller that names the rights it is asking about gets this answer, and any other
+        # right of theirs is judged like anybody's.
+        DefaultRightHolders = @{
+            '-526' = @('msDS-KeyCredentialLink')
+            '-527' = @('msDS-KeyCredentialLink')
+        }
         AttentionBroadGroups = @()  # No broad groups allowed on domain root
     }
 
