@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 08:57:44
-    Version: 2.7.0+20261017-0857
+    Build: 2026-10-17 08:59:21
+    Version: 2.7.0+20261017-0859
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -35386,7 +35386,7 @@ function ConvertFrom-LDAPAttribute {
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }
                 } elseif ($PropNameLower -eq 'trustdirection') {
-                    # Convert trust direction to readable value (MS-ADTS 6.1.6.7.9)
+                    # Convert trust direction to readable value (MS-ADTS 6.1.6.7.12)
                     try {
                         $TrustDir = [Int32]$PropValue[0]
                         $TrustDirName = switch ($TrustDir) {
@@ -35441,7 +35441,7 @@ function ConvertFrom-LDAPAttribute {
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }
                 } elseif ($PropNameLower -eq 'pwdproperties') {
-                    # Convert password properties to readable flags (MS-ADTS 6.1.6.1)
+                    # Convert password properties to readable flags (MS-SAMR, Domain Fields: PasswordProperties)
                     try {
                         $PwdProps = [Int32]$PropValue[0]
                         $PwdPropsFlags = @()
@@ -138763,7 +138763,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-0857"
+$Script:adPEASVersion = "2.7.0+20261017-0859"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

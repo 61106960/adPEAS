@@ -1349,7 +1349,7 @@ function ConvertFrom-LDAPAttribute {
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }
                 } elseif ($PropNameLower -eq 'trustdirection') {
-                    # Convert trust direction to readable value (MS-ADTS 6.1.6.7.9)
+                    # Convert trust direction to readable value (MS-ADTS 6.1.6.7.12)
                     try {
                         $TrustDir = [Int32]$PropValue[0]
                         $TrustDirName = switch ($TrustDir) {
@@ -1404,7 +1404,7 @@ function ConvertFrom-LDAPAttribute {
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }
                 } elseif ($PropNameLower -eq 'pwdproperties') {
-                    # Convert password properties to readable flags (MS-ADTS 6.1.6.1)
+                    # Convert password properties to readable flags (MS-SAMR, Domain Fields: PasswordProperties)
                     try {
                         $PwdProps = [Int32]$PropValue[0]
                         $PwdPropsFlags = @()
