@@ -209,6 +209,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   as a date, and the check parsed it as a number, which a date never is - so a gMSA with
   an expiry date was never mentioned.
 
+- **The trust account card no longer tells the reader to remove PASSWD_NOTREQD.** Windows
+  sets the flag on every trust account, and the trust password is generated and rotated
+  by the domain controllers; the card called that password possibly empty and named a
+  `netdom` switch that does not exist. Its MITRE reference pointed at Kerberoasting.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

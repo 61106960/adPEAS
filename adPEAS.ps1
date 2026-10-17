@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 12:28:34
-    Version: 2.7.0+20261017-1228
+    Build: 2026-10-17 12:32:28
+    Version: 2.7.0+20261017-1232
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -12041,12 +12041,11 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         Title = "Inter-Domain Trust Account"
         Risk = "Hint"
         BaseScore = 20
-        Description = "This is a trust account (INTERDOMAIN_TRUST_ACCOUNT) representing a trust relationship between two Active Directory domains. Trust accounts store a shared secret used to authenticate cross-domain Kerberos requests. The account name typically matches the trusted domain name with a trailing dollar sign."
+        Description = "This is a trust account (INTERDOMAIN_TRUST_ACCOUNT) representing a trust relationship between two Active Directory domains. Trust accounts store a shared secret used to authenticate cross-domain Kerberos requests. The account name typically matches the trusted domain name with a trailing dollar sign. Windows creates every trust account with PASSWD_NOTREQD set (userAccountControl 2080); the flag does not make the password empty - the domain controllers generate the trust password and change it every 30 days."
         Impact = @(
             "Trust accounts hold the shared secret for the entire trust relationship"
             "Compromising the trust key allows forging inter-realm TGTs"
             "An attacker with the trust key can create cross-domain Golden Tickets"
-            "Combined with PASSWD_NOTREQD: the trust password could potentially be empty"
             "Trust keys are equivalent to krbtgt keys for cross-domain access"
         )
         Attack = @(
@@ -12056,15 +12055,15 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
             "4. Gain administrative access across the trust boundary"
         )
         Remediation = @(
-            "Ensure trust accounts do NOT have the PASSWD_NOTREQD flag"
-            "Rotate trust passwords regularly (netdom trust /resetOnTrustee)"
+            "Leave PASSWD_NOTREQD on the trust account alone - Windows sets it on every trust account, and it is not a weakness there"
+            "Reset the trust password after a suspected compromise of either domain (netdom trust ... /reset); Windows changes it every 30 days on its own"
             "Monitor trust account modifications with Event ID 4738"
             "Consider Selective Authentication to limit trust scope"
             "Use SID Filtering to prevent SIDHistory-based escalation across trusts"
         )
         References = @(
             @{ Title = "Trust Account Attack - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/inter-forest-and-cross-domain-attacks.html" }
-            @{ Title = "Kerberos Trust Tickets - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1558/003/" }
+            @{ Title = "Golden Ticket - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1558/001/" }
             @{ Title = "Domain Trust Discovery - Microsoft"; Url = "https://learn.microsoft.com/en-us/defender-for-identity/security-assessment-unsecure-domain-trust" }
         )
         Tools = @("Mimikatz", "Impacket", "Rubeus", "netdom")
@@ -138956,7 +138955,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1228"
+$Script:adPEASVersion = "2.7.0+20261017-1232"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
