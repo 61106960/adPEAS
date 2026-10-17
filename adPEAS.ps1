@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 16:56:36
-    Version: 2.7.0+20261017-1656
+    Build: 2026-10-17 17:10:15
+    Version: 2.7.0+20261017-1710
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6853,6 +6853,10 @@ $Script:PrimaryAttributes = @{
     ExchangeOrganizationManagement = @(
         'sAMAccountName', 'distinguishedName', 'objectSid',
         'member', 'memberOf', 'description'
+    )
+
+    ComputerObjectACL = @(
+        'Computer', 'Trustee', 'TrusteeSID', 'explicitRights', 'distinguishedName'
     )
 
     CriticalObjectACL = @(
@@ -16295,6 +16299,41 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
     # ============================================================================
     # COMPUTER ACCOUNT FINDINGS
     # ============================================================================
+
+    'COMPUTER_OBJECT_EXPLICIT_RIGHT' = @{
+        Title = "Explicit Permission on a Computer Object Outside Tier-0"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A principal outside Tier-0 holds a permission on this computer object that is written on the object itself - not inherited from its OU, not one of the entries the default security descriptor of the computer class gives the creator, the operators and the administrators. Full control, a generic write or a DACL write takes the object over; a write on msDS-AllowedToActOnBehalfOfOtherIdentity is resource-based constrained delegation to the machine, one on msDS-KeyCredentialLink a shadow credential for it, the password reset right hands over the machine account itself, and all extended rights include reading its LAPS password. Each of these ends in administrative access to the computer."
+        Impact = @(
+            "Administrative access to the computer, through its own machine account or through delegation to it"
+            "On a server that holds credentials, or on a domain controller, more than the computer"
+        )
+        Attack = @(
+            "1. Attacker controls the listed principal"
+            "2. Writes RBCD or a key credential on the computer, resets its password, or reads its LAPS password"
+            "3. Obtains a service ticket to the computer as an administrator, or logs on with the local administrator password"
+        )
+        Remediation = @(
+            "Remove the entry from the computer object, or replace it with the narrower right the task needs"
+            "Delegate computer management on the OU to a group, where the OU permission check reports it, rather than per object"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the explicit entries on a computer object"
+                Command = "(Get-Acl -Path ('AD:' + (Get-ADComputer 'COMPUTERNAME').DistinguishedName)).Access | Where-Object { -not `$_.IsInherited } | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Computer class - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/c-computer" }
+            @{ Title = "Resource-based constrained delegation - The Hacker Recipes"; Url = "https://www.thehacker.recipes/ad/movement/kerberos/delegations/rbcd" }
+        )
+        Tools = @("Rubeus", "Whisker", "Impacket", "PowerView")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'explicitRights'; Pattern = '.'; Severity = 'Finding' }
+        )
+    }
 
     'COMPUTER_PASSWORD_NOT_ROTATED' = @{
         Title = "Machine Account Password Not Rotated"
@@ -26503,6 +26542,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         SecureMessage = "No account stores its password with reversible encryption. No password can be recovered to plaintext from Active Directory through this setting."
         PrimaryFindingId = 'REVERSIBLE_ENCRYPTION'
+    }
+
+    'ComputerObjectACL' = @{
+        TitleFormat = "Explicit Computer Permission: {Computer}"
+        Module = "Computer"
+        Category = "Computers"
+        SectionTitle = "Explicit Permissions on Computer Objects"
+        Summary = "Finds permissions written on individual computer objects that give a principal outside Tier-0 control over the computer."
+        WhyItMatters = "An entry on the computer object itself - not inherited from an OU - is invisible to a review of OU delegations. Full control, RBCD or key credential writes, the password reset right and all extended rights each end in administrative access to the machine."
+        WhatWeCheck = @(
+            "Explicit entries on every computer object, from the descriptors the owner check reads"
+            "GenericAll, GenericWrite, WriteDacl, WriteOwner, WriteProperty on everything, all extended rights and the password reset right"
+            "WriteProperty on msDS-AllowedToActOnBehalfOfOtherIdentity, msDS-KeyCredentialLink, servicePrincipalName and dNSHostName"
+            "The entries the default descriptor writes for the owner, the creator, SELF, the operators and the administrators are left out"
+        )
+        PrimaryFindingId = 'COMPUTER_OBJECT_EXPLICIT_RIGHT'
     }
 
     'CriticalObjectACL' = @{
@@ -53359,6 +53414,12 @@ function ConvertFrom-SecurityDescriptor {
                 RightsDisplay = $RightsDisplay
                 ObjectType = if ($ACE.ObjectType -ne [System.Guid]::Empty) { $ACE.ObjectType.ToString() } else { $null }
                 DisplayText = $DisplayText
+                # Where the ACE comes from and what it reaches, for a consumer that has to
+                # tell an entry someone put on this object from one it inherits, or one
+                # that applies to the children only (Test-ACEAppliesToSelf reads the string).
+                IsInherited = [bool]$ACE.IsInherited
+                InheritedObjectType = if ($ACE.InheritedObjectType -ne [System.Guid]::Empty) { $ACE.InheritedObjectType.ToString() } else { $null }
+                PropagationFlags = $ACE.PropagationFlags.ToString()
             }
         }
 
@@ -113433,10 +113494,127 @@ function Get-InfrastructureServers {
 
 # ----- Get-NonDefaultComputerOwners.ps1 -----
 
+<#
+.SYNOPSIS
+    The explicit entries on computer objects that give a principal outside Tier-0 control
+    over the computer.
+
+.DESCRIPTION
+    The other way to control a computer object, next to owning it: an ACE someone put on
+    the object itself. Inherited entries come from an OU delegation, which the OU permission
+    check reports where it is defined.
+
+    The default security descriptor of the computer class writes explicit entries of its
+    own (Microsoft, Computer class): full control for Domain Admins, Account Operators and
+    SYSTEM, and for CREATOR OWNER - resolved to the creator - all extended rights, the
+    User-Account-Restrictions property set and the validated writes. So the owner, the
+    creator (mS-DS-CreatorSID), the CREATOR OWNER and SELF placeholders and Tier-0 including
+    the operators are left out, and what remains was added by someone.
+
+    Counted on the object itself (not inherit-only, and either for every class or for
+    computer objects): GenericAll, GenericWrite, WriteDacl, WriteOwner, WriteProperty on
+    every attribute, all extended rights, the password reset right, and WriteProperty on
+    msDS-AllowedToActOnBehalfOfOtherIdentity (RBCD), msDS-KeyCredentialLink (shadow
+    credentials), servicePrincipalName and dNSHostName.
+
+.PARAMETER Computers
+    Computer objects carrying the converted nTSecurityDescriptor, OwnerSID and
+    mS-DS-CreatorSID - the bulk result of Get-NonDefaultComputerOwners.
+
+.OUTPUTS
+    PSCustomObject per computer and trustee: Computer, distinguishedName, Trustee,
+    TrusteeSID and explicitRights.
+
+.NOTES
+    Internal helper function
+#>
+function Get-ComputerExplicitRight {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        $Computers
+    )
+
+    $watchedAttributes = @{
+        '3f78c3e5-f79a-46bd-a0b8-9d18116ddc79' = 'msDS-AllowedToActOnBehalfOfOtherIdentity'
+        '5b47d60f-6090-40b2-9f37-2a4de88f3063' = 'msDS-KeyCredentialLink'
+        'f3a64788-5306-11d1-a9c5-0000f80367c1' = 'servicePrincipalName'
+        '72e39547-7b18-11d1-adef-00c04fd8d5cd' = 'dNSHostName'
+    }
+    $passwordResetGuid = '00299570-246d-11d0-a768-00aa006e0529'
+    $computerClassGuid = 'bf967a86-0de6-11d0-a285-00aa003049e2'
+    # CREATOR OWNER and SELF: placeholders the default descriptor writes.
+    $placeholderSIDs = @('S-1-3-0', 'S-1-5-10')
+    $privilegedBySID = @{}
+
+    foreach ($computer in @($Computers)) {
+        if (-not $computer) { continue }
+        $descriptor = $computer.nTSecurityDescriptor
+        if (-not $descriptor -or -not $descriptor.ACEs) { continue }
+        $ownerSID = [string]$computer.OwnerSID
+        $creatorSID = [string]$computer.'mS-DS-CreatorSID'
+
+        $rightsBySID = [ordered]@{}
+        $nameBySID = @{}
+        foreach ($ace in @($descriptor.ACEs)) {
+            if ($ace.Type -ne 'Allow' -or $ace.IsInherited) { continue }
+            if ($ace.InheritedObjectType -and $ace.InheritedObjectType -ine $computerClassGuid) { continue }
+            if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+
+            $sid = [string]$ace.SID
+            if (-not $sid -or $placeholderSIDs -contains $sid -or $sid -eq $ownerSID -or $sid -eq $creatorSID) { continue }
+
+            $rights = [string]$ace.Rights
+            $objectType = ([string]$ace.ObjectType).ToLowerInvariant()
+            $granted = @()
+            if (-not $objectType) {
+                foreach ($right in @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'WriteProperty')) {
+                    if ($rights -match "\b$right\b") { $granted += $right }
+                }
+                if ($rights -match '\bExtendedRight\b' -and $rights -notmatch '\bGenericAll\b') { $granted += 'All extended rights' }
+            } elseif ($objectType -eq $passwordResetGuid -and $rights -match '\bExtendedRight\b') {
+                $granted += 'Password reset'
+            } elseif ($watchedAttributes.ContainsKey($objectType) -and $rights -match '\bWriteProperty\b') {
+                $granted += "WriteProperty ($($watchedAttributes[$objectType]))"
+            }
+            if ($granted.Count -eq 0) { continue }
+
+            # Tier-0 and the operators hold these by default - Account Operators on every
+            # computer object. One classification per trustee, not per object.
+            if (-not $privilegedBySID.ContainsKey($sid)) {
+                $privilegedBySID[$sid] = [bool](Test-IsPrivileged -Identity $sid -IncludeOperators).IsPrivileged
+            }
+            if ($privilegedBySID[$sid]) { continue }
+
+            if (-not $rightsBySID.Contains($sid)) {
+                $rightsBySID[$sid] = @()
+                $nameBySID[$sid] = $(if ($ace.Name) { [string]$ace.Name } else { $sid })
+            }
+            $rightsBySID[$sid] = @($rightsBySID[$sid]) + $granted
+        }
+
+        $dn = [string]@($computer.distinguishedName)[0]
+        $computerName = $dn
+        if ($dn -match '^CN=((?:[^,\\]|\\.)+),') { $computerName = $Matches[1] -replace '\\(.)', '$1' }
+        foreach ($sid in @($rightsBySID.Keys)) {
+            [PSCustomObject]@{
+                Computer          = $computerName
+                distinguishedName = $dn
+                Trustee           = $nameBySID[$sid]
+                TrusteeSID        = $sid
+                explicitRights    = (@($rightsBySID[$sid] | Select-Object -Unique) -join ', ')
+            }
+        }
+    }
+}
+
 function Get-NonDefaultComputerOwners {
     <#
     .SYNOPSIS
-    Identifies computer accounts whose owner is not one of the expected defaults.
+    Identifies computer accounts whose owner is not one of the expected defaults, and the
+    explicit permissions on computer objects that give a principal outside Tier-0 control.
 
     .DESCRIPTION
     The owner of an AD object holds implicit WriteDACL: it can grant itself any right on the
@@ -113515,7 +113693,7 @@ function Get-NonDefaultComputerOwners {
                 return
             }
 
-            Show-SubHeader "Searching for computers with non-default owners..." -ObjectType "NonDefaultComputerOwner"
+            Show-SubHeader "Searching for computers with non-default owners or explicit permissions..." -ObjectType "NonDefaultComputerOwner"
 
             # OPSEC mode: Skip heavy-load enumeration
             if ($OPSEC) {
@@ -113745,6 +113923,18 @@ function Get-NonDefaultComputerOwners {
             # not the same result as one that read all of them.
             if ($unreadableOwners -gt 0 -and @($nonDefaultOwnerComputers).Count -gt 0) {
                 Show-Line "$unreadableOwners of $totalComputers computer object(s) carried no owner in their security descriptor and were not evaluated" -Class "Finding"
+            }
+
+            # And the other way to control a computer object: an entry someone put on it,
+            # read from the descriptors the query above already brought back. A descriptor
+            # that could not be read is counted above.
+            $explicitFindings = @(Get-ComputerExplicitRight -Computers $computersWithOwner)
+            if ($explicitFindings.Count -gt 0) {
+                Show-Line "Found $($explicitFindings.Count) explicit permission(s) on computer objects held outside Tier-0:" -Class "Finding"
+                foreach ($explicitFinding in $explicitFindings) {
+                    $explicitFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ComputerObjectACL' -Force
+                    Show-Object $explicitFinding -Class Finding
+                }
             }
 
         } catch {
@@ -141041,7 +141231,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1656"
+$Script:adPEASVersion = "2.7.0+20261017-1710"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

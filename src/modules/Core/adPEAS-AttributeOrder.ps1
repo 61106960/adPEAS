@@ -568,6 +568,10 @@ $Script:PrimaryAttributes = @{
         'member', 'memberOf', 'description'
     )
 
+    ComputerObjectACL = @(
+        'Computer', 'Trustee', 'TrusteeSID', 'explicitRights', 'distinguishedName'
+    )
+
     CriticalObjectACL = @(
         'Trustee', 'TrusteeSID', 'criticalObject', 'criticalObjectRights'
     )

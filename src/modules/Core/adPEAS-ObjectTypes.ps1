@@ -850,6 +850,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'REVERSIBLE_ENCRYPTION'
     }
 
+    'ComputerObjectACL' = @{
+        TitleFormat = "Explicit Computer Permission: {Computer}"
+        Module = "Computer"
+        Category = "Computers"
+        SectionTitle = "Explicit Permissions on Computer Objects"
+        Summary = "Finds permissions written on individual computer objects that give a principal outside Tier-0 control over the computer."
+        WhyItMatters = "An entry on the computer object itself - not inherited from an OU - is invisible to a review of OU delegations. Full control, RBCD or key credential writes, the password reset right and all extended rights each end in administrative access to the machine."
+        WhatWeCheck = @(
+            "Explicit entries on every computer object, from the descriptors the owner check reads"
+            "GenericAll, GenericWrite, WriteDacl, WriteOwner, WriteProperty on everything, all extended rights and the password reset right"
+            "WriteProperty on msDS-AllowedToActOnBehalfOfOtherIdentity, msDS-KeyCredentialLink, servicePrincipalName and dNSHostName"
+            "The entries the default descriptor writes for the owner, the creator, SELF, the operators and the administrators are left out"
+        )
+        PrimaryFindingId = 'COMPUTER_OBJECT_EXPLICIT_RIGHT'
+    }
+
     'CriticalObjectACL' = @{
         TitleFormat = "Critical Object Control: {Trustee}"
         Module = "Rights"

@@ -201,6 +201,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   whoever sets Block Inheritance on an OU switches off every non-enforced GPO linked
   above it, a security baseline at the domain included.
 
+- **Explicit permissions on computer objects are reported.** `Get-NonDefaultComputerOwners`
+  read the owner of every computer object and nothing else of its descriptor, so a
+  write on `msDS-AllowedToActOnBehalfOfOtherIdentity` someone had put on a single
+  computer - resource-based constrained delegation to it - went unreported, as did a
+  shadow credential write, a password reset right or full control. It now lists, from the
+  descriptors it already reads, every entry written on the object itself that gives a
+  principal outside Tier-0 full control, a generic write, a write on every attribute or on
+  the DACL, the right to take ownership, all extended rights (the LAPS password included),
+  the password reset right, or a write on
+  `msDS-AllowedToActOnBehalfOfOtherIdentity`, `msDS-KeyCredentialLink`,
+  `servicePrincipalName` or `dNSHostName`. Inherited entries are left to the OU
+  permission check, which reports them where the delegation is defined; the entries the
+  computer class writes for its creator, the owner, SELF and the operators are not
+  reported. `ConvertFrom-SecurityDescriptor` now carries `IsInherited`,
+  `InheritedObjectType` and `PropagationFlags` on every ACE.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

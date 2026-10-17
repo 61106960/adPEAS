@@ -1376,13 +1376,15 @@ Get-InfrastructureServers
 
 ### Get-NonDefaultComputerOwners
 
-**Purpose**: Finds computers owned by non-privileged users.
+**Purpose**: Finds computers owned by non-privileged users, and explicit permissions on computer objects held outside Tier-0.
 
 **What it checks**:
 - Computer object owner attribute
 - Computers owned by regular users instead of Domain Admins
+- Entries written on the computer object itself (not inherited) that give a principal outside Tier-0 full control, a generic write, a write on every attribute or on the DACL, the right to take ownership, all extended rights, the password reset right, or a write on `msDS-AllowedToActOnBehalfOfOtherIdentity`, `msDS-KeyCredentialLink`, `servicePrincipalName` or `dNSHostName`
+- The entries the computer class writes for its creator, the owner, SELF and the operators are not reported; inherited entries are reported by the OU permission check where the delegation is defined
 
-**Security Impact**: Computer owners can modify the object, potentially adding themselves to `msDS-AllowedToActOnBehalfOfOtherIdentity` and enabling RBCD attacks.
+**Security Impact**: Computer owners can modify the object, potentially adding themselves to `msDS-AllowedToActOnBehalfOfOtherIdentity` and enabling RBCD attacks. An explicit write on that attribute or on `msDS-KeyCredentialLink`, a password reset right or all extended rights (which include reading the LAPS password) lead to administrative access to the computer the same way.
 
 **Usage**:
 ```powershell

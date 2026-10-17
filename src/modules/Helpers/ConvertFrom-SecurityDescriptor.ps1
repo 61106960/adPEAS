@@ -119,6 +119,12 @@ function ConvertFrom-SecurityDescriptor {
                 RightsDisplay = $RightsDisplay
                 ObjectType = if ($ACE.ObjectType -ne [System.Guid]::Empty) { $ACE.ObjectType.ToString() } else { $null }
                 DisplayText = $DisplayText
+                # Where the ACE comes from and what it reaches, for a consumer that has to
+                # tell an entry someone put on this object from one it inherits, or one
+                # that applies to the children only (Test-ACEAppliesToSelf reads the string).
+                IsInherited = [bool]$ACE.IsInherited
+                InheritedObjectType = if ($ACE.InheritedObjectType -ne [System.Guid]::Empty) { $ACE.InheritedObjectType.ToString() } else { $null }
+                PropagationFlags = $ACE.PropagationFlags.ToString()
             }
         }
 

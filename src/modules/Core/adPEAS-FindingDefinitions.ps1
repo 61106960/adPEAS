@@ -8345,6 +8345,41 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
     # COMPUTER ACCOUNT FINDINGS
     # ============================================================================
 
+    'COMPUTER_OBJECT_EXPLICIT_RIGHT' = @{
+        Title = "Explicit Permission on a Computer Object Outside Tier-0"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A principal outside Tier-0 holds a permission on this computer object that is written on the object itself - not inherited from its OU, not one of the entries the default security descriptor of the computer class gives the creator, the operators and the administrators. Full control, a generic write or a DACL write takes the object over; a write on msDS-AllowedToActOnBehalfOfOtherIdentity is resource-based constrained delegation to the machine, one on msDS-KeyCredentialLink a shadow credential for it, the password reset right hands over the machine account itself, and all extended rights include reading its LAPS password. Each of these ends in administrative access to the computer."
+        Impact = @(
+            "Administrative access to the computer, through its own machine account or through delegation to it"
+            "On a server that holds credentials, or on a domain controller, more than the computer"
+        )
+        Attack = @(
+            "1. Attacker controls the listed principal"
+            "2. Writes RBCD or a key credential on the computer, resets its password, or reads its LAPS password"
+            "3. Obtains a service ticket to the computer as an administrator, or logs on with the local administrator password"
+        )
+        Remediation = @(
+            "Remove the entry from the computer object, or replace it with the narrower right the task needs"
+            "Delegate computer management on the OU to a group, where the OU permission check reports it, rather than per object"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the explicit entries on a computer object"
+                Command = "(Get-Acl -Path ('AD:' + (Get-ADComputer 'COMPUTERNAME').DistinguishedName)).Access | Where-Object { -not `$_.IsInherited } | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Computer class - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/c-computer" }
+            @{ Title = "Resource-based constrained delegation - The Hacker Recipes"; Url = "https://www.thehacker.recipes/ad/movement/kerberos/delegations/rbcd" }
+        )
+        Tools = @("Rubeus", "Whisker", "Impacket", "PowerView")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'explicitRights'; Pattern = '.'; Severity = 'Finding' }
+        )
+    }
+
     'COMPUTER_PASSWORD_NOT_ROTATED' = @{
         Title = "Machine Account Password Not Rotated"
         Risk = "Hint"
