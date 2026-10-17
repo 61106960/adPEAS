@@ -167,7 +167,7 @@ function Get-LDAPConfiguration {
                     } elseif ([string]::IsNullOrWhiteSpace($dsHeuristics)) {
                         # An unset attribute is the default, and the default of every
                         # heuristic read here is its secure value.
-                        Show-Line "dsHeuristics is not set, which is the secure default - anonymous LDAP and NSPI access are blocked, AdminSDHolder protects every operator group, and UPN and SPN values are checked for uniqueness" -Class Secure
+                        Show-Line "dsHeuristics is not set - the secure default for anonymous LDAP and NSPI access, AdminSDHolder and UPN/SPN uniqueness" -Class Secure
                     } else {
                         $heuristics = ConvertFrom-DSHeuristics -Value $dsHeuristics
                         $hasFinding = $false
@@ -206,7 +206,7 @@ function Get-LDAPConfiguration {
                         $unchecked = @($heuristics.UncheckedUniqueness)
                         if ($null -eq $heuristics.UniquenessMask) {
                             $hasUnknown = $true
-                            Show-Line "dsHeuristics character 21 is '$($heuristics.UniquenessCharacter)', outside the values 0 to 7 it defines - whether UPN and SPN values are checked for uniqueness is unknown" -Class Note
+                            Show-Line "dsHeuristics character 21 is '$($heuristics.UniquenessCharacter)', outside its values 0 to 7 - whether UPN and SPN uniqueness is checked is unknown" -Class Note
                         } elseif ($unchecked.Count -gt 0) {
                             $hasFinding = $true
                             $checkText = if ($unchecked.Count -eq 1) {

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 23:42:56
-    Version: 2.7.0+20261017-2342
+    Build: 2026-10-18 00:00:54
+    Version: 2.7.0+20261018-0000
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -104853,7 +104853,7 @@ function Get-LDAPConfiguration {
                     } elseif ([string]::IsNullOrWhiteSpace($dsHeuristics)) {
                         # An unset attribute is the default, and the default of every
                         # heuristic read here is its secure value.
-                        Show-Line "dsHeuristics is not set, which is the secure default - anonymous LDAP and NSPI access are blocked, AdminSDHolder protects every operator group, and UPN and SPN values are checked for uniqueness" -Class Secure
+                        Show-Line "dsHeuristics is not set - the secure default for anonymous LDAP and NSPI access, AdminSDHolder and UPN/SPN uniqueness" -Class Secure
                     } else {
                         $heuristics = ConvertFrom-DSHeuristics -Value $dsHeuristics
                         $hasFinding = $false
@@ -104892,7 +104892,7 @@ function Get-LDAPConfiguration {
                         $unchecked = @($heuristics.UncheckedUniqueness)
                         if ($null -eq $heuristics.UniquenessMask) {
                             $hasUnknown = $true
-                            Show-Line "dsHeuristics character 21 is '$($heuristics.UniquenessCharacter)', outside the values 0 to 7 it defines - whether UPN and SPN values are checked for uniqueness is unknown" -Class Note
+                            Show-Line "dsHeuristics character 21 is '$($heuristics.UniquenessCharacter)', outside its values 0 to 7 - whether UPN and SPN uniqueness is checked is unknown" -Class Note
                         } elseif ($unchecked.Count -gt 0) {
                             $hasFinding = $true
                             $checkText = if ($unchecked.Count -eq 1) {
@@ -111130,7 +111130,7 @@ function Get-PasswordNotRequired {
                 }
 
                 if ($unusedComputers.Count -gt 0) {
-                    Show-Line "$($unusedComputers.Count) computer account(s) carry the flag and have never logged on - pre-created accounts, whose password is the lowercase computer name if they were created as pre-Windows 2000 computers" -Class Finding
+                    Show-Line "$($unusedComputers.Count) computer account(s) carry the flag and have never logged on - the password may be empty or the computer name" -Class Finding
                     foreach ($computer in $unusedComputers) { Show-Object $computer -Class Finding }
                 }
 
@@ -111571,12 +111571,12 @@ function Get-UnconstrainedDelegation {
                 if ($exposedNames.Count -gt 0) {
                     $shownNames = @($exposedNames | Select-Object -First 20) -join ', '
                     if ($exposedNames.Count -gt 20) { $shownNames = "$shownNames, ... and $($exposedNames.Count - 20) more" }
-                    Show-Line "$($exposedNames.Count) privileged account(s) hand their TGT to these hosts on every Kerberos logon to them - neither marked as sensitive nor in Protected Users: $shownNames" -Class Finding -FindingId 'UNCONSTRAINED_DELEGATION_EXPOSED_ACCOUNTS'
+                    Show-Line "$($exposedNames.Count) privileged account(s) hand their TGT to these hosts at every Kerberos logon - not sensitive, not in Protected Users: $shownNames" -Class Finding -FindingId 'UNCONSTRAINED_DELEGATION_EXPOSED_ACCOUNTS'
                 } else {
-                    Show-Line "Every privileged account is marked as sensitive or in Protected Users, so none hands its TGT to these hosts - a coerced Domain Controller's machine account still does" -Class Note
+                    Show-Line "Every privileged account is sensitive or in Protected Users - a coerced Domain Controller still hands over its own TGT" -Class Note
                 }
                 if ($exposure.ProtectedUsersCounted -eq $false) {
-                    Show-Line "Protected Users was not counted as protection - it stops delegation at domain functional level Windows Server 2012 R2 or higher only" -Class Note
+                    Show-Line "Protected Users was not counted - it stops delegation only at domain functional level Windows Server 2012 R2 or higher" -Class Note
                 }
             } catch {
                 Write-Log "[Get-UnconstrainedDelegation] Privileged account exposure could not be evaluated: $_" -Level Warning
@@ -112820,12 +112820,12 @@ function Get-CriticalObjectACLs {
                     Show-Object $finding -Class Finding
                 }
             } elseif ($unread.Count -eq 0 -and -not $sitesUnread) {
-                Show-Line "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager, the infrastructure object or a site" -Class Secure
+                Show-Line "No principal outside Tier-0 controls the schema, the partitions, the RID Manager, the infrastructure object or a site" -Class Secure
             }
 
         } catch {
             Write-Log "[Get-CriticalObjectACLs] Error: $_" -Level Error
-            Show-Line "Error during check - the ACLs of the schema, the partitions container, the role objects and the sites could not be evaluated: $_" -Class Finding
+            Show-Line "Error during check - the ACLs of the schema, partitions, role objects and sites could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -116120,7 +116120,7 @@ function Show-DSRMPasswordManagement {
         Show-Line "DSRM password not managed by Windows LAPS on $(@($unmanaged).Count) of $total domain controller(s): $(Format-LAPSComputerList -Name $unmanaged)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
     }
     if (@($notRotated).Count -gt 0) {
-        Show-Line "DSRM password no longer rotated by Windows LAPS on $(@($notRotated).Count) of $total domain controller(s) - the expiration time passed more than $GraceDays days ago: $(Format-LAPSComputerList -Name $notRotated)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
+        Show-Line "DSRM password no longer rotated by Windows LAPS on $(@($notRotated).Count) of $total domain controller(s) - expired more than $GraceDays days ago: $(Format-LAPSComputerList -Name $notRotated)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
     }
     if (@($unmanaged).Count -eq 0 -and @($notRotated).Count -eq 0) {
         Show-Line "DSRM password managed by Windows LAPS on all $total domain controller(s)" -Class "Note"
@@ -117317,7 +117317,7 @@ function Get-InfrastructureServers {
                     foreach ($dc in $unregisteredDCs) { $dc | Show-Object -Class Finding }
                 }
                 if ($null -eq $registered) {
-                    Show-Line "The configuration partition could not be read - the Domain Controllers were not checked against their NTDS Settings objects" -Class "Note"
+                    Show-Line "The configuration partition could not be read - Domain Controllers were not checked against their NTDS Settings" -Class "Note"
                 }
             } else {
                 Show-Line "No Domain Controllers found (unexpected)" -Class "Note"
@@ -145478,7 +145478,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-2342"
+$Script:adPEASVersion = "2.7.0+20261018-0000"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

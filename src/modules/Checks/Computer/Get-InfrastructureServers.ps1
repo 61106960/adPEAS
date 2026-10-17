@@ -357,7 +357,7 @@ function Get-InfrastructureServers {
                     foreach ($dc in $unregisteredDCs) { $dc | Show-Object -Class Finding }
                 }
                 if ($null -eq $registered) {
-                    Show-Line "The configuration partition could not be read - the Domain Controllers were not checked against their NTDS Settings objects" -Class "Note"
+                    Show-Line "The configuration partition could not be read - Domain Controllers were not checked against their NTDS Settings" -Class "Note"
                 }
             } else {
                 Show-Line "No Domain Controllers found (unexpected)" -Class "Note"

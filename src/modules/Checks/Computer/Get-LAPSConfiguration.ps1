@@ -431,7 +431,7 @@ function Show-DSRMPasswordManagement {
         Show-Line "DSRM password not managed by Windows LAPS on $(@($unmanaged).Count) of $total domain controller(s): $(Format-LAPSComputerList -Name $unmanaged)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
     }
     if (@($notRotated).Count -gt 0) {
-        Show-Line "DSRM password no longer rotated by Windows LAPS on $(@($notRotated).Count) of $total domain controller(s) - the expiration time passed more than $GraceDays days ago: $(Format-LAPSComputerList -Name $notRotated)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
+        Show-Line "DSRM password no longer rotated by Windows LAPS on $(@($notRotated).Count) of $total domain controller(s) - expired more than $GraceDays days ago: $(Format-LAPSComputerList -Name $notRotated)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
     }
     if (@($unmanaged).Count -eq 0 -and @($notRotated).Count -eq 0) {
         Show-Line "DSRM password managed by Windows LAPS on all $total domain controller(s)" -Class "Note"

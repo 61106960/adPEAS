@@ -199,12 +199,12 @@ function Get-UnconstrainedDelegation {
                 if ($exposedNames.Count -gt 0) {
                     $shownNames = @($exposedNames | Select-Object -First 20) -join ', '
                     if ($exposedNames.Count -gt 20) { $shownNames = "$shownNames, ... and $($exposedNames.Count - 20) more" }
-                    Show-Line "$($exposedNames.Count) privileged account(s) hand their TGT to these hosts on every Kerberos logon to them - neither marked as sensitive nor in Protected Users: $shownNames" -Class Finding -FindingId 'UNCONSTRAINED_DELEGATION_EXPOSED_ACCOUNTS'
+                    Show-Line "$($exposedNames.Count) privileged account(s) hand their TGT to these hosts at every Kerberos logon - not sensitive, not in Protected Users: $shownNames" -Class Finding -FindingId 'UNCONSTRAINED_DELEGATION_EXPOSED_ACCOUNTS'
                 } else {
-                    Show-Line "Every privileged account is marked as sensitive or in Protected Users, so none hands its TGT to these hosts - a coerced Domain Controller's machine account still does" -Class Note
+                    Show-Line "Every privileged account is sensitive or in Protected Users - a coerced Domain Controller still hands over its own TGT" -Class Note
                 }
                 if ($exposure.ProtectedUsersCounted -eq $false) {
-                    Show-Line "Protected Users was not counted as protection - it stops delegation at domain functional level Windows Server 2012 R2 or higher only" -Class Note
+                    Show-Line "Protected Users was not counted - it stops delegation only at domain functional level Windows Server 2012 R2 or higher" -Class Note
                 }
             } catch {
                 Write-Log "[Get-UnconstrainedDelegation] Privileged account exposure could not be evaluated: $_" -Level Warning

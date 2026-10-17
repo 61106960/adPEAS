@@ -175,7 +175,7 @@ function Get-PasswordNotRequired {
                 }
 
                 if ($unusedComputers.Count -gt 0) {
-                    Show-Line "$($unusedComputers.Count) computer account(s) carry the flag and have never logged on - pre-created accounts, whose password is the lowercase computer name if they were created as pre-Windows 2000 computers" -Class Finding
+                    Show-Line "$($unusedComputers.Count) computer account(s) carry the flag and have never logged on - the password may be empty or the computer name" -Class Finding
                     foreach ($computer in $unusedComputers) { Show-Object $computer -Class Finding }
                 }
 

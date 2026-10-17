@@ -186,12 +186,12 @@ function Get-CriticalObjectACLs {
                     Show-Object $finding -Class Finding
                 }
             } elseif ($unread.Count -eq 0 -and -not $sitesUnread) {
-                Show-Line "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager, the infrastructure object or a site" -Class Secure
+                Show-Line "No principal outside Tier-0 controls the schema, the partitions, the RID Manager, the infrastructure object or a site" -Class Secure
             }
 
         } catch {
             Write-Log "[Get-CriticalObjectACLs] Error: $_" -Level Error
-            Show-Line "Error during check - the ACLs of the schema, the partitions container, the role objects and the sites could not be evaluated: $_" -Class Finding
+            Show-Line "Error during check - the ACLs of the schema, partitions, role objects and sites could not be evaluated: $_" -Class Finding
         }
     }
 
