@@ -174,6 +174,12 @@ function Get-GPOPermissions {
             # ===== Step 4: Analyze GPO Permissions =====
             $vulnerableGPOsHash = @{}
 
+            # Coverage item B20: the broad groups that may change a policy, per GUID, for the
+            # oneLinkAway row once both halves are read. Change means rewrite what the
+            # policy applies - not delete it, nor a write that cannot reach its content.
+            $broadWritersByGUID = @{}
+            $contentChangeRights = @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'WriteProperty')
+
             # GPOs whose security descriptor could not be read or parsed. They used to be
             # counted as analyzed and clean by the Secure line below, which is the one
             # statement a failed read cannot support.
@@ -443,6 +449,12 @@ function Get-GPOPermissions {
                         }
                     }
 
+                    $broadNames = @($vulnerableIdentities | Where-Object {
+                        $_.Severity -eq 'Finding' -and (Test-IsBroadTrustee -SID ([string]$_.SID)) -and
+                        @(@(([string]$_.DangerousRight -split ' : ')[0] -split ',\s*') | Where-Object { $contentChangeRights -contains $_ }).Count -gt 0
+                    } | ForEach-Object { [string]$_.Identity })
+                    if ($broadNames.Count -gt 0) { $broadWritersByGUID[$gpoGUID] = $broadNames }
+
                     # If we found vulnerable identities for this GPO, add to results
                     if (@($vulnerableIdentities).Count -gt 0) {
                         # Get GPO Linkage for this GPO. Three-valued: $null when the map could
@@ -689,6 +701,7 @@ function Get-GPOPermissions {
             # could not be read, which is how the first used to be reported.
             $Script:_gpoSysvolMissing = @()
             $Script:_gpoSysvolOrphans = @()
+            $Script:_gpoSysvolBroadWriters = @{}
 
             Invoke-SMBAccess -Description "Reading the NTFS permissions of the GPO folders in SYSVOL" -ScriptBlock {
                 $policiesPath = "\\$($Script:LDAPContext.Server)\SYSVOL\$($Script:LDAPContext.Domain)\Policies"
@@ -775,13 +788,18 @@ function Get-GPOPermissions {
                     #
                     # Inherit-only rules count here. The children of a policy folder are
                     # the policy, so a Modify that reaches only them still rewrites it.
-                    $folderRows = @(Select-NTFSWriteAccess -Rules $rules -Target $gpoFolder `
-                        -Caller 'Get-GPOPermissions' -IncludePrivileged:$IncludePrivileged |
-                        ForEach-Object { $_.Row })
+                    $folderWriters = @(Select-NTFSWriteAccess -Rules $rules -Target $gpoFolder `
+                        -Caller 'Get-GPOPermissions' -IncludePrivileged:$IncludePrivileged)
+                    $folderRows = @($folderWriters | ForEach-Object { $_.Row })
 
                     if (@($folderRows).Count -gt 0) {
                         $Script:_gpoSysvolRows[$sysvolGUID] = @($folderRows)
                     }
+
+                    # Every trustee here may rewrite the policy content - see oneLinkAway.
+                    $broadFolderWriters = @($folderWriters | Where-Object { Test-IsBroadTrustee -SID ([string]$_.SID) } |
+                        ForEach-Object { [string]$_.Identity })
+                    if ($broadFolderWriters.Count -gt 0) { $Script:_gpoSysvolBroadWriters[$sysvolGUID] = $broadFolderWriters }
 
                     if ($folderExpected -and $null -ne $gptIniGUIDs -and
                         -not $gptIniGUIDs.ContainsKey($sysvolGUID) -and -not $gptIniUnknown.ContainsKey($sysvolGUID)) {
@@ -870,6 +888,31 @@ function Get-GPOPermissions {
                 }
 
                 $vulnerableGPOs += $extraCard
+            }
+
+            # Coverage item B20: a policy that applies nowhere is not harmless when a broad
+            # group may change it. Whatever a member writes into it waits there, and the
+            # policy applies it the moment anyone links it - an administrator reviving an old
+            # policy, or whoever may write gPLink on an OU, a site or the domain. Only where
+            # the links are known: unresolved links say nothing either way.
+            if ($null -ne $gpoLinkage) {
+                foreach ($card in @($vulnerableGPOs)) {
+                    $cardGUID = [string]$card.Name
+                    $cardLinks = @()
+                    if ($gpoLinkage.ContainsKey($cardGUID)) { $cardLinks = @($gpoLinkage[$cardGUID]) }
+                    if (@($cardLinks | Where-Object { $_.LinkStatus -ne 'Disabled' }).Count -gt 0) { continue }
+
+                    $cardWriters = @()
+                    if ($broadWritersByGUID.ContainsKey($cardGUID)) { $cardWriters += @($broadWritersByGUID[$cardGUID]) }
+                    if ($Script:_gpoSysvolBroadWriters.ContainsKey($cardGUID)) { $cardWriters += @($Script:_gpoSysvolBroadWriters[$cardGUID]) }
+                    $cardWriters = @($cardWriters | Select-Object -Unique)
+                    if ($cardWriters.Count -eq 0) { continue }
+
+                    $notApplied = 'nothing links it'
+                    if ($cardLinks.Count -gt 0) { $notApplied = 'its links are disabled' }
+                    $card | Add-Member -NotePropertyName 'oneLinkAway' `
+                        -NotePropertyValue "$($cardWriters -join ', ') may change it and $notApplied - one link applies whatever it then holds below that link" -Force
+                }
             }
 
             # Same coverage contract as the OU permission checks: the note names how many

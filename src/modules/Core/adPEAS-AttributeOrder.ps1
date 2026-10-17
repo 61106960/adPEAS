@@ -152,7 +152,7 @@ $Script:PrimaryAttributes = @{
         # Security findings
         'DangerousPermissions', 'SysvolPermissions', 'GPOOwner', 'DangerousSettings',
         # Linkage
-        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
+        'LinkedOUs', 'oneLinkAway', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
     )
 
     # SMB Signing GPO (only SMB-relevant attributes, no LDAP)

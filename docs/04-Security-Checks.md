@@ -1237,6 +1237,7 @@ separate question, answered by `GPOStatus`.
 - Affected computer count (including Domain Controllers)
 - Policies whose folder or `gpt.ini` is missing in SYSVOL on the domain controller read - a hint when the policy is linked, because a client that cannot open the `gpt.ini` of a policy in its scope aborts Group Policy processing (Event 1058); a note when it is not. A folder that is there but could not be read is reported as such, not as missing
 - Folders in `SYSVOL\Policies` named for no policy object the account can read - left over from a deleted policy, or a policy hidden from the account by its security filtering (note)
+- A policy that applies nowhere - nothing links it, or its links are disabled - while a broad group (Authenticated Users, Domain Users, Everyone, ...) may change it on the directory object or in its SYSVOL folder: the `oneLinkAway` row (hint) says that a single link applies whatever it then holds
 
 **Security Impact**: GPO modification enables code execution on all computers where the GPO is linked. An attacker with GPO write access can deploy malware domain-wide.
 

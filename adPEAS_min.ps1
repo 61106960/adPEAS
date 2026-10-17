@@ -3298,7 +3298,7 @@ $Script:PrimaryAttributes = @{
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'ServerSigning', 'ClientSigning',
         'DangerousPermissions', 'SysvolPermissions', 'GPOOwner', 'DangerousSettings',
-        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
+        'LinkedOUs', 'oneLinkAway', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
     )
     SMBSigning = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
@@ -6358,6 +6358,41 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
         References = @(
             @{ Title = "MS-GPOL: Group Policy Protocol"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/" }
+        )
+    }
+    'GPO_UNLINKED_BROAD_WRITE' = @{
+        Title = "Unlinked GPO a Broad Group May Change"
+        Risk = "Hint"
+        BaseScore = 40
+        Description = "This Group Policy object applies nowhere today - nothing links it, or its links are disabled - and a broad group such as Authenticated Users or Domain Users may change it, on the directory object or in its folder in SYSVOL. Unlinked is not harmless here. Whatever a member of the group writes into the policy waits there unseen, and the moment the policy is linked - by an administrator who revives an old policy, or by whoever may write gPLink on an OU, a site or the domain - it applies to every computer and user below the link, with the privileges of the policy's own mechanisms: a computer startup script or an immediate scheduled task runs as SYSTEM."
+        Impact = @(
+            "Any member of the group can stage a payload in the policy now and wait for it to be linked"
+            "Whoever may write gPLink on an OU, a site or the domain turns that into code execution on the computers below it, with no right on any policy of their own"
+            "Group Policy Management lists the policy among the unlinked ones, where it draws no attention"
+        )
+        Remediation = @(
+            "Remove the write permission of the broad group from the policy - on the directory object (the Delegation tab in Group Policy Management) and on its folder in SYSVOL"
+            "Delete policies that are no longer needed rather than leaving them unlinked"
+            "Before linking an old policy again, review its content: every setting, script and preference item it holds applies with the link"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who may edit one policy (GroupPolicy module)"
+                Command = 'Get-GPPermission -Name "<GPO name>" -All | Where-Object { $_.Permission -match "Edit|Custom" }'
+            }
+            @{
+                Description = "List the policies that nothing links (GroupPolicy module)"
+                Command = 'Get-GPO -All | Where-Object { -not ([xml](Get-GPOReport -Guid $_.Id -ReportType Xml)).GPO.LinksTo } | Select-Object DisplayName, Id'
+            }
+        )
+        References = @(
+            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+            @{ Title = "MS-GPOL: GPO Search"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/5c7ecdad-469f-4b30-94b3-450b7fff868f" }
+        )
+        Tools = @("SharpGPOAbuse")
+        MITRE = "T1484.001"
+        Triggers = @(
+            @{ Attribute = 'oneLinkAway'; Severity = 'Hint' }
         )
     }
     'DOMAIN_ROOT_GPLINK_WRITE' = @{
@@ -25922,6 +25957,7 @@ function Clear-SessionState {
     $Script:_gpoSysvolScanned = $null
     $Script:_gpoSysvolMissing = $null
     $Script:_gpoSysvolOrphans = $null
+    $Script:_gpoSysvolBroadWriters = $null
     $Script:LAPSSchemaInfo = $null
     $Script:CredentialAccountCache = $null
     $Script:PrivilegedAccountFilterCache = $null
@@ -74769,6 +74805,8 @@ function Get-GPOPermissions {
             }
             $gpoLinkage = Get-GPOLinkage
             $vulnerableGPOsHash = @{}
+            $broadWritersByGUID = @{}
+            $contentChangeRights = @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'WriteProperty')
             $unreadGPOs = @()
             $ownerOnlyGPOs = @{}
             $totalGPOs = @($allGPOs).Count
@@ -74909,6 +74947,11 @@ function Get-GPOPermissions {
                             IsInherited = [bool]$ace.IsInherited
                         }
                     }
+                    $broadNames = @($vulnerableIdentities | Where-Object {
+                        $_.Severity -eq 'Finding' -and (Test-IsBroadTrustee -SID ([string]$_.SID)) -and
+                        @(@(([string]$_.DangerousRight -split ' : ')[0] -split ',\s*') | Where-Object { $contentChangeRights -contains $_ }).Count -gt 0
+                    } | ForEach-Object { [string]$_.Identity })
+                    if ($broadNames.Count -gt 0) { $broadWritersByGUID[$gpoGUID] = $broadNames }
                     if (@($vulnerableIdentities).Count -gt 0) {
                         $links = $null
                         if ($null -ne $gpoLinkage) {
@@ -75038,6 +75081,7 @@ function Get-GPOPermissions {
             $Script:_gpoSysvolScanned = $false
             $Script:_gpoSysvolMissing = @()
             $Script:_gpoSysvolOrphans = @()
+            $Script:_gpoSysvolBroadWriters = @{}
             Invoke-SMBAccess -Description "Reading the NTFS permissions of the GPO folders in SYSVOL" -ScriptBlock {
                 $policiesPath = "\\$($Script:LDAPContext.Server)\SYSVOL\$($Script:LDAPContext.Domain)\Policies"
                 if (-not (Test-Path $policiesPath)) {
@@ -75089,12 +75133,15 @@ function Get-GPOPermissions {
                         $Script:_gpoSysvolUnread += ([string]$sysvolGPO.DisplayName)
                         continue
                     }
-                    $folderRows = @(Select-NTFSWriteAccess -Rules $rules -Target $gpoFolder `
-                        -Caller 'Get-GPOPermissions' -IncludePrivileged:$IncludePrivileged |
-                        ForEach-Object { $_.Row })
+                    $folderWriters = @(Select-NTFSWriteAccess -Rules $rules -Target $gpoFolder `
+                        -Caller 'Get-GPOPermissions' -IncludePrivileged:$IncludePrivileged)
+                    $folderRows = @($folderWriters | ForEach-Object { $_.Row })
                     if (@($folderRows).Count -gt 0) {
                         $Script:_gpoSysvolRows[$sysvolGUID] = @($folderRows)
                     }
+                    $broadFolderWriters = @($folderWriters | Where-Object { Test-IsBroadTrustee -SID ([string]$_.SID) } |
+                        ForEach-Object { [string]$_.Identity })
+                    if ($broadFolderWriters.Count -gt 0) { $Script:_gpoSysvolBroadWriters[$sysvolGUID] = $broadFolderWriters }
                     if ($folderExpected -and $null -ne $gptIniGUIDs -and
                         -not $gptIniGUIDs.ContainsKey($sysvolGUID) -and -not $gptIniUnknown.ContainsKey($sysvolGUID)) {
                         $Script:_gpoSysvolMissing += [PSCustomObject]@{ GPO = $sysvolGPO; What = 'no gpt.ini' }
@@ -75160,6 +75207,23 @@ function Get-GPOPermissions {
                     $extraCard | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $extraStatus -Force
                 }
                 $vulnerableGPOs += $extraCard
+            }
+            if ($null -ne $gpoLinkage) {
+                foreach ($card in @($vulnerableGPOs)) {
+                    $cardGUID = [string]$card.Name
+                    $cardLinks = @()
+                    if ($gpoLinkage.ContainsKey($cardGUID)) { $cardLinks = @($gpoLinkage[$cardGUID]) }
+                    if (@($cardLinks | Where-Object { $_.LinkStatus -ne 'Disabled' }).Count -gt 0) { continue }
+                    $cardWriters = @()
+                    if ($broadWritersByGUID.ContainsKey($cardGUID)) { $cardWriters += @($broadWritersByGUID[$cardGUID]) }
+                    if ($Script:_gpoSysvolBroadWriters.ContainsKey($cardGUID)) { $cardWriters += @($Script:_gpoSysvolBroadWriters[$cardGUID]) }
+                    $cardWriters = @($cardWriters | Select-Object -Unique)
+                    if ($cardWriters.Count -eq 0) { continue }
+                    $notApplied = 'nothing links it'
+                    if ($cardLinks.Count -gt 0) { $notApplied = 'its links are disabled' }
+                    $card | Add-Member -NotePropertyName 'oneLinkAway' `
+                        -NotePropertyValue "$($cardWriters -join ', ') may change it and $notApplied - one link applies whatever it then holds below that link" -Force
+                }
             }
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadGPOs -TotalOUs @($allGPOs).Count
             $sysvolCoverageIncomplete = $false
@@ -93702,7 +93766,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-0013"
+$Script:adPEASVersion = "2.7.0+20261018-0028"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -512,6 +512,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   over from a deleted policy, or a policy hidden from the account. A policy whose
   `gPCFileSysPath` points elsewhere is not expected to have the folder.
 
+- **An unlinked GPO a broad group may change says it is one link away.** A policy that
+  applies nowhere - nothing links it, or its links are disabled - showed "Not linked" and
+  0 affected computers, which reads as harmless. Where a broad group such as Authenticated
+  Users or Domain Users may change it - rewrite the directory object or write its SYSVOL
+  folder; deleting it does not count - the new `oneLinkAway` row says that a single link
+  applies whatever the policy then holds, and the card *Unlinked GPO a Broad Group May
+  Change* explains who can place that link. Where the links could not be resolved, no
+  such claim is made.
+
 - **The Restricted Admin card is a hint, as its row is.** The registry table lowered
   `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the
   card and the trigger on its row stayed a finding: the console printed the row yellow and

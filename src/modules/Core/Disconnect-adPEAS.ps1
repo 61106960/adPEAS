@@ -338,6 +338,7 @@ function Clear-SessionState {
     $Script:_gpoSysvolScanned = $null
     $Script:_gpoSysvolMissing = $null
     $Script:_gpoSysvolOrphans = $null
+    $Script:_gpoSysvolBroadWriters = $null
 
     $Script:LAPSSchemaInfo = $null
     $Script:CredentialAccountCache = $null
