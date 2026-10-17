@@ -583,6 +583,50 @@ $Script:FindingDefinitions = @{
         )
     }
 
+    'UNCONSTRAINED_DELEGATION_EXPOSED_ACCOUNTS' = @{
+        Title = "Privileged Accounts Hand Their TGT to Unconstrained Delegation Hosts"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "These privileged accounts are neither marked 'Account is sensitive and cannot be delegated' nor in Protected Users. When one of them logs on with Kerberos to a host trusted for unconstrained delegation, the ticket it presents carries a copy of its TGT, and the host keeps it in memory: whoever controls the host can act as that account anywhere in the domain. The sensitive flag stops this at every domain functional level, Protected Users at Windows Server 2012 R2 or higher."
+        Impact = @(
+            "A routine logon to the host - a remote desktop session, a mapped drive, a management console - leaves a reusable TGT of a privileged account behind"
+            "With the TGT of a Domain Admin the host's controller can replicate the directory (DCSync)"
+            "A Domain Controller's own machine account is not covered by either control, so a coerced Domain Controller still hands its TGT to these hosts whatever is done here"
+        )
+        Attack = @(
+            "1. Attacker gains administrative control of a host with unconstrained delegation"
+            "2. Waits for, or provokes, a Kerberos logon of one of the listed accounts to that host"
+            "3. Extracts the forwarded TGT from memory (Rubeus monitor, Mimikatz sekurlsa::tickets)"
+            "4. Uses the TGT as that account"
+        )
+        Remediation = @(
+            "Mark every privileged account 'Account is sensitive and cannot be delegated'"
+            "Put privileged user accounts in Protected Users once the domain functional level is Windows Server 2012 R2 or higher - not service or computer accounts"
+            "Replace unconstrained delegation on the hosts with constrained delegation or resource-based constrained delegation"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Mark an account as sensitive and not delegatable"
+                Command = "Set-ADUser -Identity 'ADMIN_ACCOUNT' -AccountNotDelegated `$true"
+            }
+            @{
+                Description = "Add a privileged user to Protected Users"
+                Command = "Add-ADGroupMember -Identity 'Protected Users' -Members 'ADMIN_ACCOUNT'"
+            }
+            @{
+                Description = "List the accounts with adminCount that can still be delegated"
+                Command = "Get-ADUser -LDAPFilter '(&(adminCount=1)(!(userAccountControl:1.2.840.113556.1.4.803:=1048576)))' | Select-Object SamAccountName"
+            }
+        )
+        References = @(
+            @{ Title = "Protected Users Security Group - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group" }
+            @{ Title = "Kerberos Delegation Explained"; Url = "https://adsecurity.org/?p=1667" }
+            @{ Title = "Unconstrained Delegation - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/unconstrained-delegation.html" }
+        )
+        Tools = @("Rubeus", "Mimikatz")
+        MITRE = "T1550.003"
+    }
+
     'CONSTRAINED_DELEGATION_PROTOCOL_TRANSITION' = @{
         Title = "Constrained Delegation with Protocol Transition"
         Risk = "Finding"

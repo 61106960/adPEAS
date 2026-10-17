@@ -751,7 +751,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Computers with TRUSTED_FOR_DELEGATION flag"
             "Users with TRUSTED_FOR_DELEGATION flag"
+            "Managed service accounts with TRUSTED_FOR_DELEGATION flag"
             "Whether the account is a Domain Controller, which carries the flag by design"
+            "Which privileged accounts are neither marked as sensitive nor in Protected Users, and so hand their TGT to these hosts"
             "Not tested: whether a Domain Controller can be coerced into authenticating to the system - that needs a connection to the host, not an LDAP query"
         )
         SecureMessage = "No account other than the Domain Controllers has unconstrained delegation, so no member server stores the TGT of everyone who authenticates to it. Constrained and resource-based delegation are separate sections."

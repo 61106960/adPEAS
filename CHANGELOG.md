@@ -113,6 +113,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   lifetime and the tolerated clock skew are shown beside them, a lifetime of 0 is said to
   never expire, and every widened value is named in the verdict.
 
+- **Unconstrained delegation names the privileged accounts whose TGT those hosts
+  receive.** A privileged user or managed service account that is neither marked
+  "Account is sensitive and cannot be delegated" nor in Protected Users hands its TGT to
+  a host with unconstrained delegation on every Kerberos logon to it.
+  `Get-UnconstrainedDelegation` now lists those accounts after the hosts, as a finding
+  with a card of its own, or says that every privileged account is protected - which
+  still leaves a coerced domain controller's machine account, and the line says so.
+  Protected Users counts from domain functional level Windows Server 2012 R2 on, the
+  level at which it stops delegation.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
