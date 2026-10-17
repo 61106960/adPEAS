@@ -471,7 +471,7 @@ function Get-GPOUserRightsAssignment {
                 # conclusion, because a list of deviations found in the readable folders is
                 # incomplete in the same way a clean verdict is wrong.
                 $rightsClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $rightsClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) { $rightsClass = 'Note' }
 
                 if ($deviations.Count -gt 0) {
                     Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
@@ -517,7 +517,7 @@ function Get-GPOUserRightsAssignment {
                 # Same question as above, on the branch where no GPO carried a user right at
                 # all: that is only a clean domain if the folders were readable.
                 $emptyClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $emptyClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) { $emptyClass = 'Note' }
                 Show-Line "Every user right assigned via GPO matches the Windows default" -Class $emptyClass
             }
 

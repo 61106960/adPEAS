@@ -123,6 +123,16 @@ if (-not $Script:SYSVOLCacheReachable) {
     $Script:SYSVOLCacheReachable = $null  # $null = cache not yet built
 }
 
+# Files the listing did reach but that could not be read or parsed. The folder list above
+# is filled by the enumeration; this one by whoever opens a file - the content cache, the
+# Registry.pol and Registry.xml parsers, and the checks that read a file on their own -
+# because only the reader sees the failure. Without it, a policy file denied to the scan
+# account, or a Groups.xml cut short by a replication conflict, contributed nothing and
+# read exactly like a file with nothing in it.
+if (-not $Script:SYSVOLFileGaps) {
+    $Script:SYSVOLFileGaps = $null  # $null = nothing registered
+}
+
 # Folders under SYSVOL that no domain user can read by design, and that hold no policy
 # content. They are left out of the coverage report above - not to make the output
 # tidier, but because the report would otherwise be wrong.
@@ -243,7 +253,93 @@ function Reset-SYSVOLFileCache {
     $Script:SYSVOLFileCache = $null
     $Script:SYSVOLCacheSkipped = $null
     $Script:SYSVOLCacheReachable = $null
+    $Script:SYSVOLFileGaps = $null
     Write-Log "[Reset-SYSVOLFileCache] Cache cleared"
+}
+
+<#
+.SYNOPSIS
+    Records a SYSVOL file that was listed but could not be read or parsed.
+.DESCRIPTION
+    Called by whoever opens the file, in the catch that used to only log: the content
+    cache, the Registry.pol and Registry.xml parsers, and the checks that read a file on
+    their own. One entry per path - a file several checks fail on is one gap.
+
+    The reason is told from the exception where there is one: access denied, an I/O error
+    or a path that is gone means the content never arrived, anything else that it arrived
+    and was not understood.
+.PARAMETER Path
+    The file.
+.PARAMETER ErrorRecord
+    The error the read or the parse raised - an ErrorRecord or an exception.
+.PARAMETER Reason
+    The reason, where there is no exception to tell it from.
+#>
+function Register-SYSVOLFileGap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Path,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $ErrorRecord,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('could not be read', 'could not be parsed')]
+        [string]$Reason = 'could not be parsed'
+    )
+
+    if (-not $Path) { return }
+
+    if ($null -ne $ErrorRecord) {
+        $exception = $ErrorRecord
+        if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $exception = $ErrorRecord.Exception }
+        $Reason = 'could not be parsed'
+        while ($null -ne $exception) {
+            if ($exception -is [System.UnauthorizedAccessException] -or $exception -is [System.IO.IOException] -or
+                $exception -is [System.Management.Automation.ItemNotFoundException]) {
+                $Reason = 'could not be read'
+                break
+            }
+            $exception = $exception.InnerException
+        }
+    }
+
+    # Ordered, so the note lists the files in the order they failed; case-insensitive keys,
+    # so one file reached under two spellings is one gap.
+    if ($null -eq $Script:SYSVOLFileGaps) { $Script:SYSVOLFileGaps = [ordered]@{} }
+    if (-not $Script:SYSVOLFileGaps.Contains($Path)) {
+        $Script:SYSVOLFileGaps[$Path] = [PSCustomObject]@{ Path = $Path; Reason = $Reason }
+        Write-Log "[Register-SYSVOLFileGap] $Path $Reason"
+    }
+}
+
+<#
+.SYNOPSIS
+    Returns the SYSVOL files that could not be read or parsed.
+.PARAMETER FileFilter
+    File name patterns, wildcards allowed - the files the asking check reads. A file the
+    check never opens says nothing about its result. Without a filter every gap returns.
+.OUTPUTS
+    PSCustomObject with Path and Reason, one per file.
+#>
+function Get-SYSVOLFileGap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$FileFilter
+    )
+
+    if ($null -eq $Script:SYSVOLFileGaps) { return }
+    foreach ($gap in @($Script:SYSVOLFileGaps.Values)) {
+        if (-not $FileFilter) { $gap; continue }
+        $leaf = ($gap.Path -split '[\\/]')[-1]
+        foreach ($pattern in $FileFilter) {
+            if ($leaf -like $pattern) { $gap; break }
+        }
+    }
 }
 
 <#
@@ -288,23 +384,33 @@ function Get-SYSVOLCacheCoverage {
     Writes nothing when SYSVOL was read completely, so a caller can place it
     unconditionally in front of its own conclusion. Returns $true when coverage was
     incomplete, which lets a caller downgrade a "Secure" conclusion to a "Note": a green
-    line must not be printed over folders that were never read.
+    line must not be printed over folders that were never read, nor over files that were
+    listed and could not be read or parsed.
+.PARAMETER FileFilter
+    The file names the calling check reads, wildcards allowed. Only file gaps among them
+    are reported - a Groups.xml nobody could parse says nothing about the registry
+    settings. Without it every file gap is reported. Folder gaps are reported either way:
+    a folder that could not be read held files of every kind.
 .OUTPUTS
     Boolean - $true if SYSVOL coverage is incomplete.
 #>
 function Show-SYSVOLCoverageNote {
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$FileFilter
+    )
 
     $coverage = Get-SYSVOLCacheCoverage
-    if ($null -eq $coverage) { return $false }
 
-    if (-not $coverage.Reachable) {
+    if ($null -ne $coverage -and -not $coverage.Reachable) {
         Show-Line "SYSVOL was not reachable - no file-based check below could run. This is not a clean result." -Class Finding
         return $true
     }
 
-    if ($coverage.SkippedCount -gt 0) {
+    $incomplete = $false
+
+    if ($null -ne $coverage -and $coverage.SkippedCount -gt 0) {
         Show-Line "$($coverage.SkippedCount) SYSVOL folder(s) could not be read - the result below is incomplete" -Class Finding
         foreach ($path in ($coverage.SkippedPaths | Select-Object -First 10)) {
             Show-Line "  not read: $path" -Class Hint
@@ -312,10 +418,22 @@ function Show-SYSVOLCoverageNote {
         if ($coverage.SkippedCount -gt 10) {
             Show-Line "  ... and $($coverage.SkippedCount - 10) more" -Class Hint
         }
-        return $true
+        $incomplete = $true
     }
 
-    return $false
+    $fileGaps = @(Get-SYSVOLFileGap -FileFilter $FileFilter)
+    if ($fileGaps.Count -gt 0) {
+        Show-Line "$($fileGaps.Count) SYSVOL file(s) could not be read or parsed - the result below is incomplete" -Class Finding
+        foreach ($gap in ($fileGaps | Select-Object -First 10)) {
+            Show-Line "  not evaluated: $($gap.Path) - $($gap.Reason)" -Class Hint
+        }
+        if ($fileGaps.Count -gt 10) {
+            Show-Line "  ... and $($fileGaps.Count - 10) more" -Class Hint
+        }
+        $incomplete = $true
+    }
+
+    return $incomplete
 }
 
 <#
@@ -472,7 +590,8 @@ function Get-CachedSYSVOLFiles {
 .PARAMETER Path
     Full UNC path to the file to read.
 .OUTPUTS
-    [string] Raw file content, or $null if file does not exist.
+    [string] Raw file content, or $null if the file does not exist, is empty, or could not
+    be read - the last registered with Register-SYSVOLFileGap, so the note can say so.
 #>
 function Get-CachedSYSVOLContent {
     [CmdletBinding()]
@@ -495,9 +614,14 @@ function Get-CachedSYSVOLContent {
         return $null
     }
 
-    $content = Get-Content -Path $Path -Raw -ErrorAction SilentlyContinue
+    $readErrors = $null
+    $content = Get-Content -Path $Path -Raw -ErrorAction SilentlyContinue -ErrorVariable readErrors
     if ($null -ne $content) {
         $Script:SYSVOLContentCache[$cacheKey] = $content
+    } elseif (@($readErrors).Count -gt 0) {
+        # There, and not readable: a gap, not an empty file. An empty file reads as $null
+        # with no error, and has nothing in it to miss.
+        Register-SYSVOLFileGap -Path $Path -ErrorRecord @($readErrors)[0]
     }
 
     return $content

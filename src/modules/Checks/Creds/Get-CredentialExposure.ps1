@@ -855,6 +855,7 @@ function Get-CredentialExposure {
                             }
                             catch {
                                 Write-Log "[Get-CredentialExposure] Error parsing $($xmlFile.Fullname): $_"
+                                Register-SYSVOLFileGap -Path $xmlFile.FullName -ErrorRecord $_
                             }
                         }
                         if ($totalXmlFiles -gt $Script:ProgressThreshold) {
@@ -890,15 +891,17 @@ function Get-CredentialExposure {
                         }
                         catch {
                             Write-Log "[Get-CredentialExposure] Error parsing $($polFile.FullName): $_"
+                            Register-SYSVOLFileGap -Path $polFile.FullName -ErrorRecord $_
                         }
                     }
 
                     if ($gppFindingsCount -eq 0) {
                         # A folder the scan account may not read contributes no findings and
                         # used to be indistinguishable from a folder with nothing in it. Say
-                        # so, and do not paint the conclusion green over it.
+                        # so, and do not paint the conclusion green over it. The same for a
+                        # preference file or a Registry.pol that was listed and not read.
                         $gppClass = "Secure"
-                        if (Show-SYSVOLCoverageNote) { $gppClass = "Note" }
+                        if (Show-SYSVOLCoverageNote -FileFilter @('*.xml', 'Registry.pol')) { $gppClass = "Note" }
                         Show-Line "No GPP credentials found in SYSVOL" -Class $gppClass
                     }
 
@@ -1020,6 +1023,7 @@ function Get-CredentialExposure {
                                     }
                                     catch {
                                         Write-Log "[Get-CredentialExposure] Failed to decode VBE file: $($file.Name)"
+                                        Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                                         continue
                                     }
                                 }
@@ -1153,6 +1157,7 @@ function Get-CredentialExposure {
                             }
                             catch {
                                 Write-Log "[Get-CredentialExposure] Error analyzing $($file.Name): $_"
+                                Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                             }
                         }
                         if ($totalScriptFiles -gt $Script:ProgressThreshold) {
@@ -1161,7 +1166,7 @@ function Get-CredentialExposure {
 
                         if ($sysvolFindingsCount -eq 0) {
                             $scriptClass = "Secure"
-                            if (Show-SYSVOLCoverageNote) { $scriptClass = "Note" }
+                            if (Show-SYSVOLCoverageNote -FileFilter $Script:CredentialScanExtensions) { $scriptClass = "Note" }
                             Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class $scriptClass
                         }
                     }
@@ -1169,7 +1174,7 @@ function Get-CredentialExposure {
                         # No script files at all. That is only a clean result if the scan was
                         # allowed to look everywhere.
                         $scriptClass = "Secure"
-                        if (Show-SYSVOLCoverageNote) { $scriptClass = "Note" }
+                        if (Show-SYSVOLCoverageNote -FileFilter $Script:CredentialScanExtensions) { $scriptClass = "Note" }
                         Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class $scriptClass
                     }
                 }

@@ -241,6 +241,7 @@ function Get-GPOLocalGroupMembership {
                             }
                         } catch {
                             Write-Log "[Get-GPOLocalGroupMembership] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -309,6 +310,7 @@ function Get-GPOLocalGroupMembership {
                             }
                         } catch {
                             Write-Log "[Get-GPOLocalGroupMembership] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -409,9 +411,10 @@ function Get-GPOLocalGroupMembership {
             } else {
                 # The count says how many GPOs were looked at, not how many were readable.
                 # Without the coverage line a scan that was denied every Policies folder
-                # ends on a green "nothing found in N GPOs".
+                # ends on a green "nothing found in N GPOs" - and so does one whose
+                # GptTmpl.inf or Groups.xml could not be read or parsed.
                 $groupClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $groupClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf', 'Groups.xml')) { $groupClass = 'Note' }
                 Show-Line "No vulnerable GPO local group assignments found in $(@($gpos).Count) analyzed GPO(s)" -Class $groupClass
             }
 
@@ -779,6 +782,7 @@ function Parse-RestrictedGroups {
         return $findings
     } catch {
         Write-Log "[Parse-RestrictedGroups] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }
@@ -975,6 +979,7 @@ function Parse-GPPGroups {
         return $findings
     } catch {
         Write-Log "[Parse-GPPGroups] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }

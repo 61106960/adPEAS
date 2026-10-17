@@ -259,6 +259,7 @@ function Get-GPOScheduledTasks {
                             }
                         } catch {
                             Write-Log "[Get-GPOScheduledTasks] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -354,8 +355,9 @@ function Get-GPOScheduledTasks {
                 }
             } else {
                 # The count is the number of GPOs looked at, not the number that could be
-                # read; the coverage line says which folders were skipped.
-                $null = Show-SYSVOLCoverageNote
+                # read; the coverage line says which folders were skipped and which task
+                # files could not be read or parsed.
+                $null = Show-SYSVOLCoverageNote -FileFilter @('ScheduledTasks.xml')
                 Show-Line "No scheduled tasks distributed via GPO in $($gpos.Count) analyzed GPO(s)" -Class Note
             }
 
@@ -787,6 +789,7 @@ function Parse-ScheduledTasksXML {
         return $tasks
     } catch {
         Write-Log "[Parse-ScheduledTasksXML] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }

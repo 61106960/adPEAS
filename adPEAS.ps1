@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 21:34:04
-    Version: 2.7.0+20261017-2134
+    Build: 2026-10-17 22:06:50
+    Version: 2.7.0+20261017-2206
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -35718,6 +35718,10 @@ function Clear-SessionState {
     # SYSVOL content cache (on-demand file content, e.g., GptTmpl.inf)
     $Script:SYSVOLContentCache = $null
 
+    # SYSVOL files that could not be read or parsed. Reset-SYSVOLFileCache clears them as
+    # well, but only runs when a listing was built - a file can fail without one.
+    $Script:SYSVOLFileGaps = $null
+
     # Whether this directory publishes a certificate issuer trusted for authentication
     # (Get-CertificateTrustAnchor). Per domain, so it must not survive a reconnect.
     $Script:CertificateTrustAnchor = $null
@@ -62882,6 +62886,16 @@ if (-not $Script:SYSVOLCacheReachable) {
     $Script:SYSVOLCacheReachable = $null  # $null = cache not yet built
 }
 
+# Files the listing did reach but that could not be read or parsed. The folder list above
+# is filled by the enumeration; this one by whoever opens a file - the content cache, the
+# Registry.pol and Registry.xml parsers, and the checks that read a file on their own -
+# because only the reader sees the failure. Without it, a policy file denied to the scan
+# account, or a Groups.xml cut short by a replication conflict, contributed nothing and
+# read exactly like a file with nothing in it.
+if (-not $Script:SYSVOLFileGaps) {
+    $Script:SYSVOLFileGaps = $null  # $null = nothing registered
+}
+
 # Folders under SYSVOL that no domain user can read by design, and that hold no policy
 # content. They are left out of the coverage report above - not to make the output
 # tidier, but because the report would otherwise be wrong.
@@ -63002,7 +63016,93 @@ function Reset-SYSVOLFileCache {
     $Script:SYSVOLFileCache = $null
     $Script:SYSVOLCacheSkipped = $null
     $Script:SYSVOLCacheReachable = $null
+    $Script:SYSVOLFileGaps = $null
     Write-Log "[Reset-SYSVOLFileCache] Cache cleared"
+}
+
+<#
+.SYNOPSIS
+    Records a SYSVOL file that was listed but could not be read or parsed.
+.DESCRIPTION
+    Called by whoever opens the file, in the catch that used to only log: the content
+    cache, the Registry.pol and Registry.xml parsers, and the checks that read a file on
+    their own. One entry per path - a file several checks fail on is one gap.
+
+    The reason is told from the exception where there is one: access denied, an I/O error
+    or a path that is gone means the content never arrived, anything else that it arrived
+    and was not understood.
+.PARAMETER Path
+    The file.
+.PARAMETER ErrorRecord
+    The error the read or the parse raised - an ErrorRecord or an exception.
+.PARAMETER Reason
+    The reason, where there is no exception to tell it from.
+#>
+function Register-SYSVOLFileGap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Path,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $ErrorRecord,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('could not be read', 'could not be parsed')]
+        [string]$Reason = 'could not be parsed'
+    )
+
+    if (-not $Path) { return }
+
+    if ($null -ne $ErrorRecord) {
+        $exception = $ErrorRecord
+        if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $exception = $ErrorRecord.Exception }
+        $Reason = 'could not be parsed'
+        while ($null -ne $exception) {
+            if ($exception -is [System.UnauthorizedAccessException] -or $exception -is [System.IO.IOException] -or
+                $exception -is [System.Management.Automation.ItemNotFoundException]) {
+                $Reason = 'could not be read'
+                break
+            }
+            $exception = $exception.InnerException
+        }
+    }
+
+    # Ordered, so the note lists the files in the order they failed; case-insensitive keys,
+    # so one file reached under two spellings is one gap.
+    if ($null -eq $Script:SYSVOLFileGaps) { $Script:SYSVOLFileGaps = [ordered]@{} }
+    if (-not $Script:SYSVOLFileGaps.Contains($Path)) {
+        $Script:SYSVOLFileGaps[$Path] = [PSCustomObject]@{ Path = $Path; Reason = $Reason }
+        Write-Log "[Register-SYSVOLFileGap] $Path $Reason"
+    }
+}
+
+<#
+.SYNOPSIS
+    Returns the SYSVOL files that could not be read or parsed.
+.PARAMETER FileFilter
+    File name patterns, wildcards allowed - the files the asking check reads. A file the
+    check never opens says nothing about its result. Without a filter every gap returns.
+.OUTPUTS
+    PSCustomObject with Path and Reason, one per file.
+#>
+function Get-SYSVOLFileGap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$FileFilter
+    )
+
+    if ($null -eq $Script:SYSVOLFileGaps) { return }
+    foreach ($gap in @($Script:SYSVOLFileGaps.Values)) {
+        if (-not $FileFilter) { $gap; continue }
+        $leaf = ($gap.Path -split '[\\/]')[-1]
+        foreach ($pattern in $FileFilter) {
+            if ($leaf -like $pattern) { $gap; break }
+        }
+    }
 }
 
 <#
@@ -63047,23 +63147,33 @@ function Get-SYSVOLCacheCoverage {
     Writes nothing when SYSVOL was read completely, so a caller can place it
     unconditionally in front of its own conclusion. Returns $true when coverage was
     incomplete, which lets a caller downgrade a "Secure" conclusion to a "Note": a green
-    line must not be printed over folders that were never read.
+    line must not be printed over folders that were never read, nor over files that were
+    listed and could not be read or parsed.
+.PARAMETER FileFilter
+    The file names the calling check reads, wildcards allowed. Only file gaps among them
+    are reported - a Groups.xml nobody could parse says nothing about the registry
+    settings. Without it every file gap is reported. Folder gaps are reported either way:
+    a folder that could not be read held files of every kind.
 .OUTPUTS
     Boolean - $true if SYSVOL coverage is incomplete.
 #>
 function Show-SYSVOLCoverageNote {
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$FileFilter
+    )
 
     $coverage = Get-SYSVOLCacheCoverage
-    if ($null -eq $coverage) { return $false }
 
-    if (-not $coverage.Reachable) {
+    if ($null -ne $coverage -and -not $coverage.Reachable) {
         Show-Line "SYSVOL was not reachable - no file-based check below could run. This is not a clean result." -Class Finding
         return $true
     }
 
-    if ($coverage.SkippedCount -gt 0) {
+    $incomplete = $false
+
+    if ($null -ne $coverage -and $coverage.SkippedCount -gt 0) {
         Show-Line "$($coverage.SkippedCount) SYSVOL folder(s) could not be read - the result below is incomplete" -Class Finding
         foreach ($path in ($coverage.SkippedPaths | Select-Object -First 10)) {
             Show-Line "  not read: $path" -Class Hint
@@ -63071,10 +63181,22 @@ function Show-SYSVOLCoverageNote {
         if ($coverage.SkippedCount -gt 10) {
             Show-Line "  ... and $($coverage.SkippedCount - 10) more" -Class Hint
         }
-        return $true
+        $incomplete = $true
     }
 
-    return $false
+    $fileGaps = @(Get-SYSVOLFileGap -FileFilter $FileFilter)
+    if ($fileGaps.Count -gt 0) {
+        Show-Line "$($fileGaps.Count) SYSVOL file(s) could not be read or parsed - the result below is incomplete" -Class Finding
+        foreach ($gap in ($fileGaps | Select-Object -First 10)) {
+            Show-Line "  not evaluated: $($gap.Path) - $($gap.Reason)" -Class Hint
+        }
+        if ($fileGaps.Count -gt 10) {
+            Show-Line "  ... and $($fileGaps.Count - 10) more" -Class Hint
+        }
+        $incomplete = $true
+    }
+
+    return $incomplete
 }
 
 <#
@@ -63231,7 +63353,8 @@ function Get-CachedSYSVOLFiles {
 .PARAMETER Path
     Full UNC path to the file to read.
 .OUTPUTS
-    [string] Raw file content, or $null if file does not exist.
+    [string] Raw file content, or $null if the file does not exist, is empty, or could not
+    be read - the last registered with Register-SYSVOLFileGap, so the note can say so.
 #>
 function Get-CachedSYSVOLContent {
     [CmdletBinding()]
@@ -63254,9 +63377,14 @@ function Get-CachedSYSVOLContent {
         return $null
     }
 
-    $content = Get-Content -Path $Path -Raw -ErrorAction SilentlyContinue
+    $readErrors = $null
+    $content = Get-Content -Path $Path -Raw -ErrorAction SilentlyContinue -ErrorVariable readErrors
     if ($null -ne $content) {
         $Script:SYSVOLContentCache[$cacheKey] = $content
+    } elseif (@($readErrors).Count -gt 0) {
+        # There, and not readable: a gap, not an empty file. An empty file reads as $null
+        # with no error, and has nothing in it to miss.
+        Register-SYSVOLFileGap -Path $Path -ErrorRecord @($readErrors)[0]
     }
 
     return $content
@@ -79804,14 +79932,19 @@ function Parse-PRegRecords {
 
     try {
         $bytes = [System.IO.File]::ReadAllBytes($PolFilePath)
-        if ($bytes.Length -lt 8) { return $records }
-        if ([System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'PReg') {
+        # An empty file holds no policy. One shorter than the eight-byte header, or with
+        # another signature, is not a Registry.pol that could be read - and whatever it
+        # was meant to deploy is unknown, which is not the same as nothing.
+        if ($bytes.Length -eq 0) { return $records }
+        if ($bytes.Length -lt 8 -or [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'PReg') {
             Write-Log "[Parse-PRegRecords] Invalid PReg header: $PolFilePath"
+            Register-SYSVOLFileGap -Path $PolFilePath -Reason 'could not be parsed'
             return $records
         }
 
         $pos = 8  # skip signature(4) + version(4)
         $len = $bytes.Length
+        $malformed = $false
 
         # Local reader for null-terminated UTF-16LE strings; advances $pos past terminator
         $readString = {
@@ -79842,26 +79975,26 @@ function Parse-PRegRecords {
             $ref = [ref]$pos
             $key = (& $readString $ref)
             # expect ';'
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
 
             $valueName = (& $readString $ref)
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
 
-            if (($pos + 4) -gt $len) { break }
+            if (($pos + 4) -gt $len) { $malformed = $true; break }
             $type = [System.BitConverter]::ToUInt32($bytes, $pos)
             $pos += 4
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
 
-            if (($pos + 4) -gt $len) { break }
+            if (($pos + 4) -gt $len) { $malformed = $true; break }
             $size = [System.BitConverter]::ToUInt32($bytes, $pos)
             $pos += 4
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
 
-            if (($pos + $size) -gt $len) { break }
+            if (($pos + $size) -gt $len) { $malformed = $true; break }
             $data = New-Object byte[] $size
             if ($size -gt 0) { [System.Array]::Copy($bytes, $pos, $data, 0, $size) }
             $pos += $size
@@ -79907,8 +80040,16 @@ function Parse-PRegRecords {
 
             # expect ']' - if not present, the loop's resync will find the next '['
         }
+
+        # A record that broke off: the records before it are kept, and whatever followed
+        # it was never read.
+        if ($malformed) {
+            Write-Log "[Parse-PRegRecords] Truncated or malformed record: $PolFilePath"
+            Register-SYSVOLFileGap -Path $PolFilePath -Reason 'could not be parsed'
+        }
     } catch {
         Write-Log "[Parse-PRegRecords] Error parsing $PolFilePath : $_"
+        Register-SYSVOLFileGap -Path $PolFilePath -ErrorRecord $_
     }
 
     return $records
@@ -79966,6 +80107,10 @@ function Parse-RegistryXml {
         # external DTD, so nothing was exploitable here - but that behaviour is a default
         # that has changed across framework versions, and this makes it not depend on it.
         $resolvedPath = (Resolve-Path -LiteralPath $XmlFilePath -ErrorAction Stop).ProviderPath
+
+        # An empty file deploys nothing. Loaded, it fails as XML without a root element, and
+        # would be recorded as a file that could not be parsed - a gap with nothing in it.
+        if ((Get-Item -LiteralPath $resolvedPath -ErrorAction Stop).Length -eq 0) { return $records }
 
         $xml = New-Object System.Xml.XmlDocument
         $xml.XmlResolver = $null
@@ -80040,6 +80185,7 @@ function Parse-RegistryXml {
         }
     } catch {
         Write-Log "[Parse-RegistryXml] Error parsing $XmlFilePath : $_"
+        Register-SYSVOLFileGap -Path $XmlFilePath -ErrorRecord $_
     }
 
     return $records
@@ -113453,7 +113599,7 @@ function Get-AddComputerRights {
                 # GptTmpl.inf, and the SYSVOL walk silently skips a Policies folder it may
                 # not read. A green line over those folders claims more than was looked at.
                 $quotaClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $quotaClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) { $quotaClass = 'Note' }
                 Show-Line "Add Computer to Domain rights properly configured" -Class $quotaClass
             }
 
@@ -114220,7 +114366,7 @@ function Get-GPOUserRightsAssignment {
                 # conclusion, because a list of deviations found in the readable folders is
                 # incomplete in the same way a clean verdict is wrong.
                 $rightsClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $rightsClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) { $rightsClass = 'Note' }
 
                 if ($deviations.Count -gt 0) {
                     Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
@@ -114266,7 +114412,7 @@ function Get-GPOUserRightsAssignment {
                 # Same question as above, on the branch where no GPO carried a user right at
                 # all: that is only a clean domain if the folders were readable.
                 $emptyClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $emptyClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) { $emptyClass = 'Note' }
                 Show-Line "Every user right assigned via GPO matches the Windows default" -Class $emptyClass
             }
 
@@ -118520,6 +118666,7 @@ function Get-GPOLocalGroupMembership {
                             }
                         } catch {
                             Write-Log "[Get-GPOLocalGroupMembership] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -118588,6 +118735,7 @@ function Get-GPOLocalGroupMembership {
                             }
                         } catch {
                             Write-Log "[Get-GPOLocalGroupMembership] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -118688,9 +118836,10 @@ function Get-GPOLocalGroupMembership {
             } else {
                 # The count says how many GPOs were looked at, not how many were readable.
                 # Without the coverage line a scan that was denied every Policies folder
-                # ends on a green "nothing found in N GPOs".
+                # ends on a green "nothing found in N GPOs" - and so does one whose
+                # GptTmpl.inf or Groups.xml could not be read or parsed.
                 $groupClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $groupClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf', 'Groups.xml')) { $groupClass = 'Note' }
                 Show-Line "No vulnerable GPO local group assignments found in $(@($gpos).Count) analyzed GPO(s)" -Class $groupClass
             }
 
@@ -119058,6 +119207,7 @@ function Parse-RestrictedGroups {
         return $findings
     } catch {
         Write-Log "[Parse-RestrictedGroups] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }
@@ -119254,6 +119404,7 @@ function Parse-GPPGroups {
         return $findings
     } catch {
         Write-Log "[Parse-GPPGroups] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }
@@ -119524,6 +119675,7 @@ function Get-GPOScheduledTasks {
                             }
                         } catch {
                             Write-Log "[Get-GPOScheduledTasks] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -119619,8 +119771,9 @@ function Get-GPOScheduledTasks {
                 }
             } else {
                 # The count is the number of GPOs looked at, not the number that could be
-                # read; the coverage line says which folders were skipped.
-                $null = Show-SYSVOLCoverageNote
+                # read; the coverage line says which folders were skipped and which task
+                # files could not be read or parsed.
+                $null = Show-SYSVOLCoverageNote -FileFilter @('ScheduledTasks.xml')
                 Show-Line "No scheduled tasks distributed via GPO in $($gpos.Count) analyzed GPO(s)" -Class Note
             }
 
@@ -120052,6 +120205,7 @@ function Parse-ScheduledTasksXML {
         return $tasks
     } catch {
         Write-Log "[Parse-ScheduledTasksXML] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }
@@ -120396,6 +120550,7 @@ function Get-GPOScriptPaths {
                             }
                         } catch {
                             Write-Log "[Get-GPOScriptPaths] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -120469,8 +120624,9 @@ function Get-GPOScriptPaths {
                 }
             } else {
                 # Logon scripts live in the GPO folders; an unreadable folder hides them
-                # without a trace unless the coverage line names it.
-                $null = Show-SYSVOLCoverageNote
+                # without a trace unless the coverage line names it, and so does a
+                # scripts.ini that could not be read.
+                $null = Show-SYSVOLCoverageNote -FileFilter @('scripts.ini', 'psscripts.ini')
                 Show-Line "No scripts distributed via GPO" -Class Note
             }
 
@@ -120692,6 +120848,7 @@ function Parse-ScriptIni {
         return $findings
     } catch {
         Write-Log "[Parse-ScriptIni] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }
@@ -120977,6 +121134,7 @@ function Get-GPORegistrySettings {
                         }
                     } catch {
                         Write-Log "[Get-GPORegistrySettings] Error parsing $($file.FullName): $_"
+                        Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                     }
                 }
                 if ($totalFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning GPO registry settings" -Completed }
@@ -121113,9 +121271,10 @@ function Get-GPORegistrySettings {
                     Show-Object $finding -Class $rowClass
                 }
             } else {
-                # Names the GPO folders that could not be read, so "no vulnerable settings"
-                # is not mistaken for "all settings were examined".
-                $null = Show-SYSVOLCoverageNote
+                # Names the GPO folders that could not be read, and the policy files that
+                # could not be read or parsed, so "no vulnerable settings" is not mistaken
+                # for "all settings were examined".
+                $null = Show-SYSVOLCoverageNote -FileFilter @('Registry.pol', 'Registry.xml', 'GptTmpl.inf')
                 Show-Line "No vulnerable registry settings deployed via GPO" -Class Note
             }
 
@@ -121527,6 +121686,7 @@ function Get-GPOPointAndPrint {
                         Add-PointAndPrintRecords -Records $records -GPOGUID $gpoGUID -Source $source
                     } catch {
                         Write-Log "[Get-GPOPointAndPrint] Error parsing $($file.FullName): $_"
+                        Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                     }
                 }
                 if ($totalFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning Point and Print policies" -Completed }
@@ -121549,8 +121709,9 @@ function Get-GPOPointAndPrint {
 
             if ($configs.Count -eq 0) {
                 # "the secure Windows default applies" is a claim about every GPO folder in
-                # SYSVOL. It only holds if all of them were actually readable.
-                if (Show-SYSVOLCoverageNote) {
+                # SYSVOL. It only holds if all of them were actually readable, and every
+                # policy file in them read and parsed.
+                if (Show-SYSVOLCoverageNote -FileFilter @('Registry.pol', 'Registry.xml', 'GptTmpl.inf')) {
                     Show-Line "No Point and Print or printer driver policy was found in the GPO folders that could be read" -Class Note
                 } else {
                     Show-Line "No GPO configures Point and Print or printer driver policies - the secure Windows default applies" -Class Secure
@@ -121815,6 +121976,7 @@ function Read-PrintSecurityOption {
         }
     } catch {
         Write-Log "[Read-PrintSecurityOption] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
     }
 }
 
@@ -129523,6 +129685,7 @@ function Get-CredentialExposure {
                             }
                             catch {
                                 Write-Log "[Get-CredentialExposure] Error parsing $($xmlFile.Fullname): $_"
+                                Register-SYSVOLFileGap -Path $xmlFile.FullName -ErrorRecord $_
                             }
                         }
                         if ($totalXmlFiles -gt $Script:ProgressThreshold) {
@@ -129558,15 +129721,17 @@ function Get-CredentialExposure {
                         }
                         catch {
                             Write-Log "[Get-CredentialExposure] Error parsing $($polFile.FullName): $_"
+                            Register-SYSVOLFileGap -Path $polFile.FullName -ErrorRecord $_
                         }
                     }
 
                     if ($gppFindingsCount -eq 0) {
                         # A folder the scan account may not read contributes no findings and
                         # used to be indistinguishable from a folder with nothing in it. Say
-                        # so, and do not paint the conclusion green over it.
+                        # so, and do not paint the conclusion green over it. The same for a
+                        # preference file or a Registry.pol that was listed and not read.
                         $gppClass = "Secure"
-                        if (Show-SYSVOLCoverageNote) { $gppClass = "Note" }
+                        if (Show-SYSVOLCoverageNote -FileFilter @('*.xml', 'Registry.pol')) { $gppClass = "Note" }
                         Show-Line "No GPP credentials found in SYSVOL" -Class $gppClass
                     }
 
@@ -129688,6 +129853,7 @@ function Get-CredentialExposure {
                                     }
                                     catch {
                                         Write-Log "[Get-CredentialExposure] Failed to decode VBE file: $($file.Name)"
+                                        Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                                         continue
                                     }
                                 }
@@ -129821,6 +129987,7 @@ function Get-CredentialExposure {
                             }
                             catch {
                                 Write-Log "[Get-CredentialExposure] Error analyzing $($file.Name): $_"
+                                Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                             }
                         }
                         if ($totalScriptFiles -gt $Script:ProgressThreshold) {
@@ -129829,7 +129996,7 @@ function Get-CredentialExposure {
 
                         if ($sysvolFindingsCount -eq 0) {
                             $scriptClass = "Secure"
-                            if (Show-SYSVOLCoverageNote) { $scriptClass = "Note" }
+                            if (Show-SYSVOLCoverageNote -FileFilter $Script:CredentialScanExtensions) { $scriptClass = "Note" }
                             Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class $scriptClass
                         }
                     }
@@ -129837,7 +130004,7 @@ function Get-CredentialExposure {
                         # No script files at all. That is only a clean result if the scan was
                         # allowed to look everywhere.
                         $scriptClass = "Secure"
-                        if (Show-SYSVOLCoverageNote) { $scriptClass = "Note" }
+                        if (Show-SYSVOLCoverageNote -FileFilter $Script:CredentialScanExtensions) { $scriptClass = "Note" }
                         Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class $scriptClass
                     }
                 }
@@ -144423,7 +144590,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-2134"
+$Script:adPEASVersion = "2.7.0+20261017-2206"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

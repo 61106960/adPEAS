@@ -426,7 +426,7 @@ function Get-AddComputerRights {
                 # GptTmpl.inf, and the SYSVOL walk silently skips a Policies folder it may
                 # not read. A green line over those folders claims more than was looked at.
                 $quotaClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $quotaClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) { $quotaClass = 'Note' }
                 Show-Line "Add Computer to Domain rights properly configured" -Class $quotaClass
             }
 

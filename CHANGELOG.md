@@ -426,6 +426,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   all of them are managed. Notes, with the card *DSRM Password Not Managed by Windows
   LAPS*.
 
+- **A SYSVOL file that could not be read or parsed is a gap in the result, not an empty
+  file.** Folders the scan account may not open were already reported; a file inside a
+  readable folder that could not be read - denied, locked, gone - or was read and could
+  not be parsed - a truncated `Registry.pol`, a `Groups.xml` that is not XML - left a log
+  line and nothing else, and the checks concluded over it. Every reader now records such a
+  file: the content cache, the `Registry.pol` and `Registry.xml` parsers, and the checks
+  that read on their own. The coverage note before a "nothing found" conclusion names
+  them - "N SYSVOL file(s) could not be read or parsed - the result below is incomplete",
+  with each path and whether it could not be read or not be parsed - and keeps the
+  conclusion from being green. Each check is told only about the files it reads: a
+  `Groups.xml` nobody could parse says nothing about the registry settings. An empty file
+  is not a gap.
+
 - **The Restricted Admin card is a hint, as its row is.** The registry table lowered
   `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the
   card and the trigger on its row stayed a finding: the console printed the row yellow and

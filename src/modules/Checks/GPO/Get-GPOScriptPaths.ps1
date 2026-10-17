@@ -209,6 +209,7 @@ function Get-GPOScriptPaths {
                             }
                         } catch {
                             Write-Log "[Get-GPOScriptPaths] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -282,8 +283,9 @@ function Get-GPOScriptPaths {
                 }
             } else {
                 # Logon scripts live in the GPO folders; an unreadable folder hides them
-                # without a trace unless the coverage line names it.
-                $null = Show-SYSVOLCoverageNote
+                # without a trace unless the coverage line names it, and so does a
+                # scripts.ini that could not be read.
+                $null = Show-SYSVOLCoverageNote -FileFilter @('scripts.ini', 'psscripts.ini')
                 Show-Line "No scripts distributed via GPO" -Class Note
             }
 
@@ -505,6 +507,7 @@ function Parse-ScriptIni {
         return $findings
     } catch {
         Write-Log "[Parse-ScriptIni] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }

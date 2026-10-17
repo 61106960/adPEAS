@@ -192,6 +192,7 @@ function Get-GPORegistrySettings {
                         }
                     } catch {
                         Write-Log "[Get-GPORegistrySettings] Error parsing $($file.FullName): $_"
+                        Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                     }
                 }
                 if ($totalFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning GPO registry settings" -Completed }
@@ -328,9 +329,10 @@ function Get-GPORegistrySettings {
                     Show-Object $finding -Class $rowClass
                 }
             } else {
-                # Names the GPO folders that could not be read, so "no vulnerable settings"
-                # is not mistaken for "all settings were examined".
-                $null = Show-SYSVOLCoverageNote
+                # Names the GPO folders that could not be read, and the policy files that
+                # could not be read or parsed, so "no vulnerable settings" is not mistaken
+                # for "all settings were examined".
+                $null = Show-SYSVOLCoverageNote -FileFilter @('Registry.pol', 'Registry.xml', 'GptTmpl.inf')
                 Show-Line "No vulnerable registry settings deployed via GPO" -Class Note
             }
 

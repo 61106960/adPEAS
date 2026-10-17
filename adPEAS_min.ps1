@@ -25560,6 +25560,7 @@ function Clear-SessionState {
         Reset-SYSVOLFileCache
     }
     $Script:SYSVOLContentCache = $null
+    $Script:SYSVOLFileGaps = $null
     $Script:CertificateTrustAnchor = $null
     $Script:adPEAS_FindingsCollection = $null
     $Script:adPEAS_FindingsCollectionEnabled = $false
@@ -41850,6 +41851,9 @@ if (-not $Script:SYSVOLCacheSkipped) {
 if (-not $Script:SYSVOLCacheReachable) {
     $Script:SYSVOLCacheReachable = $null
 }
+if (-not $Script:SYSVOLFileGaps) {
+    $Script:SYSVOLFileGaps = $null
+}
 $Script:SYSVOLByDesignInaccessible = @(
     'DfsrPrivate'
 )
@@ -41901,7 +41905,56 @@ function Reset-SYSVOLFileCache {
     $Script:SYSVOLFileCache = $null
     $Script:SYSVOLCacheSkipped = $null
     $Script:SYSVOLCacheReachable = $null
+    $Script:SYSVOLFileGaps = $null
     Write-Log "[Reset-SYSVOLFileCache] Cache cleared"
+}
+function Register-SYSVOLFileGap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Path,
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $ErrorRecord,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('could not be read', 'could not be parsed')]
+        [string]$Reason = 'could not be parsed'
+    )
+    if (-not $Path) { return }
+    if ($null -ne $ErrorRecord) {
+        $exception = $ErrorRecord
+        if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $exception = $ErrorRecord.Exception }
+        $Reason = 'could not be parsed'
+        while ($null -ne $exception) {
+            if ($exception -is [System.UnauthorizedAccessException] -or $exception -is [System.IO.IOException] -or
+                $exception -is [System.Management.Automation.ItemNotFoundException]) {
+                $Reason = 'could not be read'
+                break
+            }
+            $exception = $exception.InnerException
+        }
+    }
+    if ($null -eq $Script:SYSVOLFileGaps) { $Script:SYSVOLFileGaps = [ordered]@{} }
+    if (-not $Script:SYSVOLFileGaps.Contains($Path)) {
+        $Script:SYSVOLFileGaps[$Path] = [PSCustomObject]@{ Path = $Path; Reason = $Reason }
+        Write-Log "[Register-SYSVOLFileGap] $Path $Reason"
+    }
+}
+function Get-SYSVOLFileGap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$FileFilter
+    )
+    if ($null -eq $Script:SYSVOLFileGaps) { return }
+    foreach ($gap in @($Script:SYSVOLFileGaps.Values)) {
+        if (-not $FileFilter) { $gap; continue }
+        $leaf = ($gap.Path -split '[\\/]')[-1]
+        foreach ($pattern in $FileFilter) {
+            if ($leaf -like $pattern) { $gap; break }
+        }
+    }
 }
 function Get-SYSVOLCacheCoverage {
     [CmdletBinding()]
@@ -41918,14 +41971,17 @@ function Get-SYSVOLCacheCoverage {
 }
 function Show-SYSVOLCoverageNote {
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$FileFilter
+    )
     $coverage = Get-SYSVOLCacheCoverage
-    if ($null -eq $coverage) { return $false }
-    if (-not $coverage.Reachable) {
+    if ($null -ne $coverage -and -not $coverage.Reachable) {
         Show-Line "SYSVOL was not reachable - no file-based check below could run. This is not a clean result." -Class Finding
         return $true
     }
-    if ($coverage.SkippedCount -gt 0) {
+    $incomplete = $false
+    if ($null -ne $coverage -and $coverage.SkippedCount -gt 0) {
         Show-Line "$($coverage.SkippedCount) SYSVOL folder(s) could not be read - the result below is incomplete" -Class Finding
         foreach ($path in ($coverage.SkippedPaths | Select-Object -First 10)) {
             Show-Line "  not read: $path" -Class Hint
@@ -41933,9 +41989,20 @@ function Show-SYSVOLCoverageNote {
         if ($coverage.SkippedCount -gt 10) {
             Show-Line "  ... and $($coverage.SkippedCount - 10) more" -Class Hint
         }
-        return $true
+        $incomplete = $true
     }
-    return $false
+    $fileGaps = @(Get-SYSVOLFileGap -FileFilter $FileFilter)
+    if ($fileGaps.Count -gt 0) {
+        Show-Line "$($fileGaps.Count) SYSVOL file(s) could not be read or parsed - the result below is incomplete" -Class Finding
+        foreach ($gap in ($fileGaps | Select-Object -First 10)) {
+            Show-Line "  not evaluated: $($gap.Path) - $($gap.Reason)" -Class Hint
+        }
+        if ($fileGaps.Count -gt 10) {
+            Show-Line "  ... and $($fileGaps.Count - 10) more" -Class Hint
+        }
+        $incomplete = $true
+    }
+    return $incomplete
 }
 function Get-CachedSYSVOLFiles {
     [CmdletBinding()]
@@ -42033,9 +42100,12 @@ function Get-CachedSYSVOLContent {
     if (-not (Test-Path $Path)) {
         return $null
     }
-    $content = Get-Content -Path $Path -Raw -ErrorAction SilentlyContinue
+    $readErrors = $null
+    $content = Get-Content -Path $Path -Raw -ErrorAction SilentlyContinue -ErrorVariable readErrors
     if ($null -ne $content) {
         $Script:SYSVOLContentCache[$cacheKey] = $content
+    } elseif (@($readErrors).Count -gt 0) {
+        Register-SYSVOLFileGap -Path $Path -ErrorRecord @($readErrors)[0]
     }
     return $content
 }
@@ -52071,13 +52141,15 @@ function Parse-PRegRecords {
     $records = @()
     try {
         $bytes = [System.IO.File]::ReadAllBytes($PolFilePath)
-        if ($bytes.Length -lt 8) { return $records }
-        if ([System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'PReg') {
+        if ($bytes.Length -eq 0) { return $records }
+        if ($bytes.Length -lt 8 -or [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'PReg') {
             Write-Log "[Parse-PRegRecords] Invalid PReg header: $PolFilePath"
+            Register-SYSVOLFileGap -Path $PolFilePath -Reason 'could not be parsed'
             return $records
         }
         $pos = 8
         $len = $bytes.Length
+        $malformed = $false
         $readString = {
             param([ref]$p)
             $start = $p.Value
@@ -52101,22 +52173,22 @@ function Parse-PRegRecords {
             $pos += 2
             $ref = [ref]$pos
             $key = (& $readString $ref)
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
             $valueName = (& $readString $ref)
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
-            if (($pos + 4) -gt $len) { break }
+            if (($pos + 4) -gt $len) { $malformed = $true; break }
             $type = [System.BitConverter]::ToUInt32($bytes, $pos)
             $pos += 4
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
-            if (($pos + 4) -gt $len) { break }
+            if (($pos + 4) -gt $len) { $malformed = $true; break }
             $size = [System.BitConverter]::ToUInt32($bytes, $pos)
             $pos += 4
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
-            if (($pos + $size) -gt $len) { break }
+            if (($pos + $size) -gt $len) { $malformed = $true; break }
             $data = New-Object byte[] $size
             if ($size -gt 0) { [System.Array]::Copy($bytes, $pos, $data, 0, $size) }
             $pos += $size
@@ -52149,8 +52221,13 @@ function Parse-PRegRecords {
                 ValueString = $valueString
             }
         }
+        if ($malformed) {
+            Write-Log "[Parse-PRegRecords] Truncated or malformed record: $PolFilePath"
+            Register-SYSVOLFileGap -Path $PolFilePath -Reason 'could not be parsed'
+        }
     } catch {
         Write-Log "[Parse-PRegRecords] Error parsing $PolFilePath : $_"
+        Register-SYSVOLFileGap -Path $PolFilePath -ErrorRecord $_
     }
     return $records
 }
@@ -52163,6 +52240,7 @@ function Parse-RegistryXml {
     $records = @()
     try {
         $resolvedPath = (Resolve-Path -LiteralPath $XmlFilePath -ErrorAction Stop).ProviderPath
+        if ((Get-Item -LiteralPath $resolvedPath -ErrorAction Stop).Length -eq 0) { return $records }
         $xml = New-Object System.Xml.XmlDocument
         $xml.XmlResolver = $null
         $xml.Load($resolvedPath)
@@ -52212,6 +52290,7 @@ function Parse-RegistryXml {
         }
     } catch {
         Write-Log "[Parse-RegistryXml] Error parsing $XmlFilePath : $_"
+        Register-SYSVOLFileGap -Path $XmlFilePath -ErrorRecord $_
     }
     return $records
 }
@@ -71938,7 +72017,7 @@ function Get-AddComputerRights {
             }
             if (-not $hasFindings) {
                 $quotaClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $quotaClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) { $quotaClass = 'Note' }
                 Show-Line "Add Computer to Domain rights properly configured" -Class $quotaClass
             }
         } catch {
@@ -72340,7 +72419,7 @@ function Get-GPOUserRightsAssignment {
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
                     -Dormant $split.Dormant -Listed:$IncludeInactive
                 $rightsClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $rightsClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) { $rightsClass = 'Note' }
                 if ($deviations.Count -gt 0) {
                     Show-Line "Found $($deviations.Count) user right assignment(s) that depart from the Windows default:" -Class $headerClass
                 } elseif ($inactiveCount -gt 0) {
@@ -72363,7 +72442,7 @@ function Get-GPOUserRightsAssignment {
                 Show-Line "SYSVOL access failed - GPO user rights could not be evaluated - SMB access failed (authentication/network issue)" -Class "Finding"
             } else {
                 $emptyClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $emptyClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) { $emptyClass = 'Note' }
                 Show-Line "Every user right assigned via GPO matches the Windows default" -Class $emptyClass
             }
         } catch {
@@ -74680,6 +74759,7 @@ function Get-GPOLocalGroupMembership {
                             }
                         } catch {
                             Write-Log "[Get-GPOLocalGroupMembership] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -74726,6 +74806,7 @@ function Get-GPOLocalGroupMembership {
                             }
                         } catch {
                             Write-Log "[Get-GPOLocalGroupMembership] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -74782,7 +74863,7 @@ function Get-GPOLocalGroupMembership {
                 }
             } else {
                 $groupClass = 'Secure'
-                if (Show-SYSVOLCoverageNote) { $groupClass = 'Note' }
+                if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf', 'Groups.xml')) { $groupClass = 'Note' }
                 Show-Line "No vulnerable GPO local group assignments found in $(@($gpos).Count) analyzed GPO(s)" -Class $groupClass
             }
         } catch {
@@ -74987,6 +75068,7 @@ function Parse-RestrictedGroups {
         return $findings
     } catch {
         Write-Log "[Parse-RestrictedGroups] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }
@@ -75098,6 +75180,7 @@ function Parse-GPPGroups {
         return $findings
     } catch {
         Write-Log "[Parse-GPPGroups] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }
@@ -75214,6 +75297,7 @@ function Get-GPOScheduledTasks {
                             }
                         } catch {
                             Write-Log "[Get-GPOScheduledTasks] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -75271,7 +75355,7 @@ function Get-GPOScheduledTasks {
                     Show-Object $task -Class $taskClass
                 }
             } else {
-                $null = Show-SYSVOLCoverageNote
+                $null = Show-SYSVOLCoverageNote -FileFilter @('ScheduledTasks.xml')
                 Show-Line "No scheduled tasks distributed via GPO in $($gpos.Count) analyzed GPO(s)" -Class Note
             }
         } catch {
@@ -75536,6 +75620,7 @@ function Parse-ScheduledTasksXML {
         return $tasks
     } catch {
         Write-Log "[Parse-ScheduledTasksXML] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }
@@ -75695,6 +75780,7 @@ function Get-GPOScriptPaths {
                             }
                         } catch {
                             Write-Log "[Get-GPOScriptPaths] Error parsing $($file.FullName): $_"
+                            Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                         }
                     }
                 }
@@ -75740,7 +75826,7 @@ function Get-GPOScriptPaths {
                     }
                 }
             } else {
-                $null = Show-SYSVOLCoverageNote
+                $null = Show-SYSVOLCoverageNote -FileFilter @('scripts.ini', 'psscripts.ini')
                 Show-Line "No scripts distributed via GPO" -Class Note
             }
         } catch {
@@ -75886,6 +75972,7 @@ function Parse-ScriptIni {
         return $findings
     } catch {
         Write-Log "[Parse-ScriptIni] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
         return $null
     }
 }
@@ -76022,6 +76109,7 @@ function Get-GPORegistrySettings {
                         }
                     } catch {
                         Write-Log "[Get-GPORegistrySettings] Error parsing $($file.FullName): $_"
+                        Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                     }
                 }
                 if ($totalFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning GPO registry settings" -Completed }
@@ -76093,7 +76181,7 @@ function Get-GPORegistrySettings {
                     Show-Object $finding -Class $rowClass
                 }
             } else {
-                $null = Show-SYSVOLCoverageNote
+                $null = Show-SYSVOLCoverageNote -FileFilter @('Registry.pol', 'Registry.xml', 'GptTmpl.inf')
                 Show-Line "No vulnerable registry settings deployed via GPO" -Class Note
             }
         } catch {
@@ -76310,6 +76398,7 @@ function Get-GPOPointAndPrint {
                         Add-PointAndPrintRecords -Records $records -GPOGUID $gpoGUID -Source $source
                     } catch {
                         Write-Log "[Get-GPOPointAndPrint] Error parsing $($file.FullName): $_"
+                        Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                     }
                 }
                 if ($totalFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning Point and Print policies" -Completed }
@@ -76327,7 +76416,7 @@ function Get-GPOPointAndPrint {
                 return
             }
             if ($configs.Count -eq 0) {
-                if (Show-SYSVOLCoverageNote) {
+                if (Show-SYSVOLCoverageNote -FileFilter @('Registry.pol', 'Registry.xml', 'GptTmpl.inf')) {
                     Show-Line "No Point and Print or printer driver policy was found in the GPO folders that could be read" -Class Note
                 } else {
                     Show-Line "No GPO configures Point and Print or printer driver policies - the secure Windows default applies" -Class Secure
@@ -76482,6 +76571,7 @@ function Read-PrintSecurityOption {
         }
     } catch {
         Write-Log "[Read-PrintSecurityOption] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
     }
 }
 function Get-PointAndPrintValue {
@@ -80996,6 +81086,7 @@ function Get-CredentialExposure {
                             }
                             catch {
                                 Write-Log "[Get-CredentialExposure] Error parsing $($xmlFile.Fullname): $_"
+                                Register-SYSVOLFileGap -Path $xmlFile.FullName -ErrorRecord $_
                             }
                         }
                         if ($totalXmlFiles -gt $Script:ProgressThreshold) {
@@ -81026,11 +81117,12 @@ function Get-CredentialExposure {
                         }
                         catch {
                             Write-Log "[Get-CredentialExposure] Error parsing $($polFile.FullName): $_"
+                            Register-SYSVOLFileGap -Path $polFile.FullName -ErrorRecord $_
                         }
                     }
                     if ($gppFindingsCount -eq 0) {
                         $gppClass = "Secure"
-                        if (Show-SYSVOLCoverageNote) { $gppClass = "Note" }
+                        if (Show-SYSVOLCoverageNote -FileFilter @('*.xml', 'Registry.pol')) { $gppClass = "Note" }
                         Show-Line "No GPP credentials found in SYSVOL" -Class $gppClass
                     }
                     Show-SubHeader "Searching for sensitive information in SYSVOL/NETLOGON..." -ObjectType "SYSVOLCredential"
@@ -81118,6 +81210,7 @@ function Get-CredentialExposure {
                                     }
                                     catch {
                                         Write-Log "[Get-CredentialExposure] Failed to decode VBE file: $($file.Name)"
+                                        Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                                         continue
                                     }
                                 }
@@ -81213,6 +81306,7 @@ function Get-CredentialExposure {
                             }
                             catch {
                                 Write-Log "[Get-CredentialExposure] Error analyzing $($file.Name): $_"
+                                Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                             }
                         }
                         if ($totalScriptFiles -gt $Script:ProgressThreshold) {
@@ -81220,13 +81314,13 @@ function Get-CredentialExposure {
                         }
                         if ($sysvolFindingsCount -eq 0) {
                             $scriptClass = "Secure"
-                            if (Show-SYSVOLCoverageNote) { $scriptClass = "Note" }
+                            if (Show-SYSVOLCoverageNote -FileFilter $Script:CredentialScanExtensions) { $scriptClass = "Note" }
                             Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class $scriptClass
                         }
                     }
                     else {
                         $scriptClass = "Secure"
-                        if (Show-SYSVOLCoverageNote) { $scriptClass = "Note" }
+                        if (Show-SYSVOLCoverageNote -FileFilter $Script:CredentialScanExtensions) { $scriptClass = "Note" }
                         Show-Line "No sensitive information found in SYSVOL/NETLOGON scripts" -Class $scriptClass
                     }
                 }
@@ -92868,7 +92962,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-2134"
+$Script:adPEASVersion = "2.7.0+20261017-2206"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

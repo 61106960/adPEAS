@@ -279,6 +279,10 @@ function Clear-SessionState {
     # SYSVOL content cache (on-demand file content, e.g., GptTmpl.inf)
     $Script:SYSVOLContentCache = $null
 
+    # SYSVOL files that could not be read or parsed. Reset-SYSVOLFileCache clears them as
+    # well, but only runs when a listing was built - a file can fail without one.
+    $Script:SYSVOLFileGaps = $null
+
     # Whether this directory publishes a certificate issuer trusted for authentication
     # (Get-CertificateTrustAnchor). Per domain, so it must not survive a reconnect.
     $Script:CertificateTrustAnchor = $null

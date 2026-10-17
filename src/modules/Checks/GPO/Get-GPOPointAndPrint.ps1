@@ -228,6 +228,7 @@ function Get-GPOPointAndPrint {
                         Add-PointAndPrintRecords -Records $records -GPOGUID $gpoGUID -Source $source
                     } catch {
                         Write-Log "[Get-GPOPointAndPrint] Error parsing $($file.FullName): $_"
+                        Register-SYSVOLFileGap -Path $file.FullName -ErrorRecord $_
                     }
                 }
                 if ($totalFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning Point and Print policies" -Completed }
@@ -250,8 +251,9 @@ function Get-GPOPointAndPrint {
 
             if ($configs.Count -eq 0) {
                 # "the secure Windows default applies" is a claim about every GPO folder in
-                # SYSVOL. It only holds if all of them were actually readable.
-                if (Show-SYSVOLCoverageNote) {
+                # SYSVOL. It only holds if all of them were actually readable, and every
+                # policy file in them read and parsed.
+                if (Show-SYSVOLCoverageNote -FileFilter @('Registry.pol', 'Registry.xml', 'GptTmpl.inf')) {
                     Show-Line "No Point and Print or printer driver policy was found in the GPO folders that could be read" -Class Note
                 } else {
                     Show-Line "No GPO configures Point and Print or printer driver policies - the secure Windows default applies" -Class Secure
@@ -516,6 +518,7 @@ function Read-PrintSecurityOption {
         }
     } catch {
         Write-Log "[Read-PrintSecurityOption] Error parsing $FilePath : $_"
+        Register-SYSVOLFileGap -Path $FilePath -ErrorRecord $_
     }
 }
 

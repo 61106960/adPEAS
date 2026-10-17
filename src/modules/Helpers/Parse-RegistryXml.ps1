@@ -47,6 +47,10 @@ function Parse-RegistryXml {
         # that has changed across framework versions, and this makes it not depend on it.
         $resolvedPath = (Resolve-Path -LiteralPath $XmlFilePath -ErrorAction Stop).ProviderPath
 
+        # An empty file deploys nothing. Loaded, it fails as XML without a root element, and
+        # would be recorded as a file that could not be parsed - a gap with nothing in it.
+        if ((Get-Item -LiteralPath $resolvedPath -ErrorAction Stop).Length -eq 0) { return $records }
+
         $xml = New-Object System.Xml.XmlDocument
         $xml.XmlResolver = $null
         $xml.Load($resolvedPath)
@@ -120,6 +124,7 @@ function Parse-RegistryXml {
         }
     } catch {
         Write-Log "[Parse-RegistryXml] Error parsing $XmlFilePath : $_"
+        Register-SYSVOLFileGap -Path $XmlFilePath -ErrorRecord $_
     }
 
     return $records

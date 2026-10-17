@@ -39,14 +39,19 @@ function Parse-PRegRecords {
 
     try {
         $bytes = [System.IO.File]::ReadAllBytes($PolFilePath)
-        if ($bytes.Length -lt 8) { return $records }
-        if ([System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'PReg') {
+        # An empty file holds no policy. One shorter than the eight-byte header, or with
+        # another signature, is not a Registry.pol that could be read - and whatever it
+        # was meant to deploy is unknown, which is not the same as nothing.
+        if ($bytes.Length -eq 0) { return $records }
+        if ($bytes.Length -lt 8 -or [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'PReg') {
             Write-Log "[Parse-PRegRecords] Invalid PReg header: $PolFilePath"
+            Register-SYSVOLFileGap -Path $PolFilePath -Reason 'could not be parsed'
             return $records
         }
 
         $pos = 8  # skip signature(4) + version(4)
         $len = $bytes.Length
+        $malformed = $false
 
         # Local reader for null-terminated UTF-16LE strings; advances $pos past terminator
         $readString = {
@@ -77,26 +82,26 @@ function Parse-PRegRecords {
             $ref = [ref]$pos
             $key = (& $readString $ref)
             # expect ';'
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
 
             $valueName = (& $readString $ref)
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
 
-            if (($pos + 4) -gt $len) { break }
+            if (($pos + 4) -gt $len) { $malformed = $true; break }
             $type = [System.BitConverter]::ToUInt32($bytes, $pos)
             $pos += 4
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
 
-            if (($pos + 4) -gt $len) { break }
+            if (($pos + 4) -gt $len) { $malformed = $true; break }
             $size = [System.BitConverter]::ToUInt32($bytes, $pos)
             $pos += 4
-            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { break }
+            if (-not ($pos -lt $len -and $bytes[$pos] -eq $semicolon)) { $malformed = $true; break }
             $pos += 2
 
-            if (($pos + $size) -gt $len) { break }
+            if (($pos + $size) -gt $len) { $malformed = $true; break }
             $data = New-Object byte[] $size
             if ($size -gt 0) { [System.Array]::Copy($bytes, $pos, $data, 0, $size) }
             $pos += $size
@@ -142,8 +147,16 @@ function Parse-PRegRecords {
 
             # expect ']' - if not present, the loop's resync will find the next '['
         }
+
+        # A record that broke off: the records before it are kept, and whatever followed
+        # it was never read.
+        if ($malformed) {
+            Write-Log "[Parse-PRegRecords] Truncated or malformed record: $PolFilePath"
+            Register-SYSVOLFileGap -Path $PolFilePath -Reason 'could not be parsed'
+        }
     } catch {
         Write-Log "[Parse-PRegRecords] Error parsing $PolFilePath : $_"
+        Register-SYSVOLFileGap -Path $PolFilePath -ErrorRecord $_
     }
 
     return $records
