@@ -203,7 +203,7 @@ function Get-PasswordInDescription {
                         $candidates[$dn] = @{ Object = $obj; Attributes = @() }
                     }
                     foreach ($name in @($set.Attributes)) {
-                        # Joined rather than cast: url and otherWebPages are multi-valued,
+                        # Joined rather than cast: description is multi-valued in the schema,
                         # and a cast would render an array as System.Object[].
                         $value = (@($obj.$name) | Where-Object { $_ }) -join ' '
                         if (-not [string]::IsNullOrWhiteSpace($value)) {

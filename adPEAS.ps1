@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 13:00:10
-    Version: 2.7.0+20261017-1300
+    Build: 2026-10-17 13:02:15
+    Version: 2.7.0+20261017-1302
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -32663,7 +32663,10 @@ function Connect-adPEAS {
                             }
                             if (-not $Connection -and -not $UseLDAPS -and $Script:LastLDAPErrorCode -eq 8) {
                                 Write-Log "[Connect-adPEAS] SimpleBind failed with LDAP_STRONG_AUTH_REQUIRED - auto-upgrading to LDAPS..."
-                                Show-Line "LDAP signing/channel binding required - auto-upgrading to LDAPS" -Class Hint
+                                # Port 389 without TLS: there is no channel to bind, so the
+                                # refusal can only be the signing requirement - a simple bind
+                                # cannot be signed. The line used to name channel binding too.
+                                Show-Line "LDAP signing required - the simple bind was refused on port 389, auto-upgrading to LDAPS" -Class Hint
 
                                 $ConnParams['UseLDAPS'] = $true
                                 $Connection = Connect-LDAP @ConnParams
@@ -126356,7 +126359,7 @@ function Get-PasswordInDescription {
                         $candidates[$dn] = @{ Object = $obj; Attributes = @() }
                     }
                     foreach ($name in @($set.Attributes)) {
-                        # Joined rather than cast: url and otherWebPages are multi-valued,
+                        # Joined rather than cast: description is multi-valued in the schema,
                         # and a cast would render an array as System.Object[].
                         $value = (@($obj.$name) | Where-Object { $_ }) -join ' '
                         if (-not [string]::IsNullOrWhiteSpace($value)) {
@@ -139040,7 +139043,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1300"
+$Script:adPEASVersion = "2.7.0+20261017-1302"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

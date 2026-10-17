@@ -1189,7 +1189,10 @@ function Connect-adPEAS {
                             }
                             if (-not $Connection -and -not $UseLDAPS -and $Script:LastLDAPErrorCode -eq 8) {
                                 Write-Log "[Connect-adPEAS] SimpleBind failed with LDAP_STRONG_AUTH_REQUIRED - auto-upgrading to LDAPS..."
-                                Show-Line "LDAP signing/channel binding required - auto-upgrading to LDAPS" -Class Hint
+                                # Port 389 without TLS: there is no channel to bind, so the
+                                # refusal can only be the signing requirement - a simple bind
+                                # cannot be signed. The line used to name channel binding too.
+                                Show-Line "LDAP signing required - the simple bind was refused on port 389, auto-upgrading to LDAPS" -Class Hint
 
                                 $ConnParams['UseLDAPS'] = $true
                                 $Connection = Connect-LDAP @ConnParams
