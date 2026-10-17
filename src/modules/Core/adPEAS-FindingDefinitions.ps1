@@ -15102,6 +15102,11 @@ function Get-EncryptionTypeList {
     foreach ($entry in @($encProp.Value)) {
         $text = ([string]$entry).Trim()
         if (-not $text) { continue }
+        # The -SK bit is no type of the account's keys: it makes the KDC use AES session
+        # keys where RC4 ones would be used (MS-KILE 2.2.7). 0x24, RC4 with AES session
+        # keys - Microsoft's recommendation for an account that must keep RC4 - still
+        # encrypts the ticket with RC4. Counted as AES, it hid the RC4-only account.
+        if ($text -like '*-SK') { continue }
         if ($text -like 'RC4*' -or $text -like 'AES*' -or $text -like 'DES*') { $names += $text }
     }
 

@@ -591,6 +591,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   through an excluded operator group, whatever its `adminCount` says; a note names them.
   A group another protected group still covers stays out.
 
+- **`msDS-SupportedEncryptionTypes` is decoded at the bits MS-KILE defines.** The Kerberos
+  feature flags were read at 0x40-0x200 instead of 0x10000-0x80000, so the SHA-2 variants
+  of AES (0x40, 0x80) were shown as "FAST-Supported" and "Compound-Identity-Supported",
+  and a computer's 0x2001C lost its compound-identity flag. A value without any encryption
+  type - only feature flags or the session-key bit - now reads "Not configured" beside
+  them, which is what it means: the domain's default types apply. **The `-SK` bit no
+  longer counts as AES**: it asks for AES session keys, and 0x24 - RC4 with AES session
+  keys, Microsoft's recommendation for an account that has to keep RC4 - still encrypts
+  the ticket with RC4. Counted as AES, such a kerberoastable account was neither "RC4
+  without AES" on its card nor RC4-only in the report's scoring.
+
 ---
 
 ## [2.7.0] - 2026-10-08

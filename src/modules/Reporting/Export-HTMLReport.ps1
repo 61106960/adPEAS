@@ -622,13 +622,18 @@ function Build-ScoringContext {
                     if ($encValue -band 0x4)  { $encNames += 'RC4-HMAC' }
                     if ($encValue -band 0x8)  { $encNames += 'AES128' }
                     if ($encValue -band 0x10) { $encNames += 'AES256' }
-                    if ($encValue -band 0x20) { $encNames += 'AES256' }
+                    if ($encValue -band 0x40) { $encNames += 'AES128' }
+                    if ($encValue -band 0x80) { $encNames += 'AES256' }
                     continue
                 }
 
-                # The decoded form. Only the encryption types are carried over: bits 6 and
-                # above are Kerberos feature flags (FAST, compound identity, claims) and
-                # say nothing about how a ticket is encrypted.
+                # The decoded form. Only the encryption types are carried over: the
+                # feature flags (FAST, compound identity, claims - 0x10000 upwards) say
+                # nothing about how a ticket is encrypted, and neither does the -SK bit,
+                # which asks for AES session keys - 0x24 still encrypts the ticket with RC4
+                # (MS-KILE 2.2.7). It used to count as AES256 here, so an account set to
+                # RC4 with AES session keys was no longer RC4-only for the scoring.
+                if ($encText -like '*-SK')            { continue }
                 if ($encText -like 'RC4*')            { $encNames += 'RC4-HMAC' }
                 elseif ($encText -like 'AES128*')     { $encNames += 'AES128' }
                 elseif ($encText -like 'AES256*')     { $encNames += 'AES256' }

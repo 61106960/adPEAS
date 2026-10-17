@@ -1236,24 +1236,33 @@ function ConvertFrom-LDAPAttribute {
                         $EncTypes = [Int32]$PropValue[0]
                         $EncTypeFlags = @()
 
-                        # Encryption types (MS-KILE 2.2.7)
-                        if ($EncTypes -band 1) { $EncTypeFlags += "DES-CBC-CRC" }
-                        if ($EncTypes -band 2) { $EncTypeFlags += "DES-CBC-MD5" }
-                        if ($EncTypes -band 4) { $EncTypeFlags += "RC4-HMAC" }
-                        if ($EncTypes -band 8) { $EncTypeFlags += "AES128-CTS-HMAC-SHA1-96" }
-                        if ($EncTypes -band 16) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96" }
-                        if ($EncTypes -band 32) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96-SK" }
-                        # Kerberos feature flags
-                        if ($EncTypes -band 64) { $EncTypeFlags += "FAST-Supported" }
-                        if ($EncTypes -band 128) { $EncTypeFlags += "Compound-Identity-Supported" }
-                        if ($EncTypes -band 256) { $EncTypeFlags += "Claims-Supported" }
-                        if ($EncTypes -band 512) { $EncTypeFlags += "Resource-SID-Compression-Disabled" }
+                        # Encryption types (MS-KILE 2.2.7, bits A-E and J-L). 0x40 and 0x80
+                        # are the SHA-2 variants of AES (RFC 8009); they were read as the
+                        # FAST and compound-identity flags.
+                        if ($EncTypes -band 0x1) { $EncTypeFlags += "DES-CBC-CRC" }
+                        if ($EncTypes -band 0x2) { $EncTypeFlags += "DES-CBC-MD5" }
+                        if ($EncTypes -band 0x4) { $EncTypeFlags += "RC4-HMAC" }
+                        if ($EncTypes -band 0x8) { $EncTypeFlags += "AES128-CTS-HMAC-SHA1-96" }
+                        if ($EncTypes -band 0x10) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96" }
+                        if ($EncTypes -band 0x20) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96-SK" }
+                        if ($EncTypes -band 0x40) { $EncTypeFlags += "AES128-CTS-HMAC-SHA256-128" }
+                        if ($EncTypes -band 0x80) { $EncTypeFlags += "AES256-CTS-HMAC-SHA384-192" }
 
-                        if ($EncTypeFlags.Count -gt 0) {
-                            $ConvertedProperties[$PropName] = $EncTypeFlags
-                        } else {
-                            $ConvertedProperties[$PropName] = @("Not configured")
-                        }
+                        # No encryption type in the value - only the session-key bit or
+                        # the feature flags below - leaves the account on the domain's
+                        # default types, which is what "Not configured" says everywhere
+                        # else. A computer with only compound identity set (0x20000) was
+                        # "Not configured" by accident before; now it is on purpose.
+                        if (($EncTypes -band 0xDF) -eq 0) { $EncTypeFlags = @("Not configured") + $EncTypeFlags }
+
+                        # Kerberos feature flags, bits F-I: 0x10000 upwards, not 0x40
+                        # upwards as this read them.
+                        if ($EncTypes -band 0x10000) { $EncTypeFlags += "FAST-Supported" }
+                        if ($EncTypes -band 0x20000) { $EncTypeFlags += "Compound-Identity-Supported" }
+                        if ($EncTypes -band 0x40000) { $EncTypeFlags += "Claims-Supported" }
+                        if ($EncTypes -band 0x80000) { $EncTypeFlags += "Resource-SID-Compression-Disabled" }
+
+                        $ConvertedProperties[$PropName] = $EncTypeFlags
                     } catch {
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }

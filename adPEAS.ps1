@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 19:34:27
-    Version: 2.7.0+20261017-1934
+    Build: 2026-10-17 19:43:29
+    Version: 2.7.0+20261017-1943
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -23073,6 +23073,11 @@ function Get-EncryptionTypeList {
     foreach ($entry in @($encProp.Value)) {
         $text = ([string]$entry).Trim()
         if (-not $text) { continue }
+        # The -SK bit is no type of the account's keys: it makes the KDC use AES session
+        # keys where RC4 ones would be used (MS-KILE 2.2.7). 0x24, RC4 with AES session
+        # keys - Microsoft's recommendation for an account that must keep RC4 - still
+        # encrypts the ticket with RC4. Counted as AES, it hid the RC4-only account.
+        if ($text -like '*-SK') { continue }
         if ($text -like 'RC4*' -or $text -like 'AES*' -or $text -like 'DES*') { $names += $text }
     }
 
@@ -36393,24 +36398,33 @@ function ConvertFrom-LDAPAttribute {
                         $EncTypes = [Int32]$PropValue[0]
                         $EncTypeFlags = @()
 
-                        # Encryption types (MS-KILE 2.2.7)
-                        if ($EncTypes -band 1) { $EncTypeFlags += "DES-CBC-CRC" }
-                        if ($EncTypes -band 2) { $EncTypeFlags += "DES-CBC-MD5" }
-                        if ($EncTypes -band 4) { $EncTypeFlags += "RC4-HMAC" }
-                        if ($EncTypes -band 8) { $EncTypeFlags += "AES128-CTS-HMAC-SHA1-96" }
-                        if ($EncTypes -band 16) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96" }
-                        if ($EncTypes -band 32) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96-SK" }
-                        # Kerberos feature flags
-                        if ($EncTypes -band 64) { $EncTypeFlags += "FAST-Supported" }
-                        if ($EncTypes -band 128) { $EncTypeFlags += "Compound-Identity-Supported" }
-                        if ($EncTypes -band 256) { $EncTypeFlags += "Claims-Supported" }
-                        if ($EncTypes -band 512) { $EncTypeFlags += "Resource-SID-Compression-Disabled" }
+                        # Encryption types (MS-KILE 2.2.7, bits A-E and J-L). 0x40 and 0x80
+                        # are the SHA-2 variants of AES (RFC 8009); they were read as the
+                        # FAST and compound-identity flags.
+                        if ($EncTypes -band 0x1) { $EncTypeFlags += "DES-CBC-CRC" }
+                        if ($EncTypes -band 0x2) { $EncTypeFlags += "DES-CBC-MD5" }
+                        if ($EncTypes -band 0x4) { $EncTypeFlags += "RC4-HMAC" }
+                        if ($EncTypes -band 0x8) { $EncTypeFlags += "AES128-CTS-HMAC-SHA1-96" }
+                        if ($EncTypes -band 0x10) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96" }
+                        if ($EncTypes -band 0x20) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96-SK" }
+                        if ($EncTypes -band 0x40) { $EncTypeFlags += "AES128-CTS-HMAC-SHA256-128" }
+                        if ($EncTypes -band 0x80) { $EncTypeFlags += "AES256-CTS-HMAC-SHA384-192" }
 
-                        if ($EncTypeFlags.Count -gt 0) {
-                            $ConvertedProperties[$PropName] = $EncTypeFlags
-                        } else {
-                            $ConvertedProperties[$PropName] = @("Not configured")
-                        }
+                        # No encryption type in the value - only the session-key bit or
+                        # the feature flags below - leaves the account on the domain's
+                        # default types, which is what "Not configured" says everywhere
+                        # else. A computer with only compound identity set (0x20000) was
+                        # "Not configured" by accident before; now it is on purpose.
+                        if (($EncTypes -band 0xDF) -eq 0) { $EncTypeFlags = @("Not configured") + $EncTypeFlags }
+
+                        # Kerberos feature flags, bits F-I: 0x10000 upwards, not 0x40
+                        # upwards as this read them.
+                        if ($EncTypes -band 0x10000) { $EncTypeFlags += "FAST-Supported" }
+                        if ($EncTypes -band 0x20000) { $EncTypeFlags += "Compound-Identity-Supported" }
+                        if ($EncTypes -band 0x40000) { $EncTypeFlags += "Claims-Supported" }
+                        if ($EncTypes -band 0x80000) { $EncTypeFlags += "Resource-SID-Compression-Disabled" }
+
+                        $ConvertedProperties[$PropName] = $EncTypeFlags
                     } catch {
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }
@@ -131212,13 +131226,18 @@ function Build-ScoringContext {
                     if ($encValue -band 0x4)  { $encNames += 'RC4-HMAC' }
                     if ($encValue -band 0x8)  { $encNames += 'AES128' }
                     if ($encValue -band 0x10) { $encNames += 'AES256' }
-                    if ($encValue -band 0x20) { $encNames += 'AES256' }
+                    if ($encValue -band 0x40) { $encNames += 'AES128' }
+                    if ($encValue -band 0x80) { $encNames += 'AES256' }
                     continue
                 }
 
-                # The decoded form. Only the encryption types are carried over: bits 6 and
-                # above are Kerberos feature flags (FAST, compound identity, claims) and
-                # say nothing about how a ticket is encrypted.
+                # The decoded form. Only the encryption types are carried over: the
+                # feature flags (FAST, compound identity, claims - 0x10000 upwards) say
+                # nothing about how a ticket is encrypted, and neither does the -SK bit,
+                # which asks for AES session keys - 0x24 still encrypts the ticket with RC4
+                # (MS-KILE 2.2.7). It used to count as AES256 here, so an account set to
+                # RC4 with AES session keys was no longer RC4-only for the scoring.
+                if ($encText -like '*-SK')            { continue }
                 if ($encText -like 'RC4*')            { $encNames += 'RC4-HMAC' }
                 elseif ($encText -like 'AES128*')     { $encNames += 'AES128' }
                 elseif ($encText -like 'AES256*')     { $encNames += 'AES256' }
@@ -143067,7 +143086,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1934"
+$Script:adPEASVersion = "2.7.0+20261017-1943"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

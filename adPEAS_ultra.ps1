@@ -17425,6 +17425,7 @@ function Get-EncryptionTypeList {
 	foreach ($entry in @($encProp.Value)) {
 	    $text = ([string]$entry).Trim()
 	    if (-not $text) { continue }
+	    if ($text -like '*-SK') { continue }
 	    if ($text -like 'RC4*' -or $text -like 'AES*' -or $text -like 'DES*') { $names += $text }
 	}
 	if (@($names).Count -eq 0) { return $null }
@@ -25588,21 +25589,20 @@ function ConvertFrom-LDAPAttribute {
 	                try {
 	                    $EncTypes = [Int32]$PropValue[0]
 	                    $EncTypeFlags = @()
-	                    if ($EncTypes -band 1) { $EncTypeFlags += "DES-CBC-CRC" }
-	                    if ($EncTypes -band 2) { $EncTypeFlags += "DES-CBC-MD5" }
-	                    if ($EncTypes -band 4) { $EncTypeFlags += "RC4-HMAC" }
-	                    if ($EncTypes -band 8) { $EncTypeFlags += "AES128-CTS-HMAC-SHA1-96" }
-	                    if ($EncTypes -band 16) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96" }
-	                    if ($EncTypes -band 32) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96-SK" }
-	                    if ($EncTypes -band 64) { $EncTypeFlags += "FAST-Supported" }
-	                    if ($EncTypes -band 128) { $EncTypeFlags += "Compound-Identity-Supported" }
-	                    if ($EncTypes -band 256) { $EncTypeFlags += "Claims-Supported" }
-	                    if ($EncTypes -band 512) { $EncTypeFlags += "Resource-SID-Compression-Disabled" }
-	                    if ($EncTypeFlags.Count -gt 0) {
-	                        $ConvertedProperties[$PropName] = $EncTypeFlags
-	                    } else {
-	                        $ConvertedProperties[$PropName] = @("Not configured")
-	                    }
+	                    if ($EncTypes -band 0x1) { $EncTypeFlags += "DES-CBC-CRC" }
+	                    if ($EncTypes -band 0x2) { $EncTypeFlags += "DES-CBC-MD5" }
+	                    if ($EncTypes -band 0x4) { $EncTypeFlags += "RC4-HMAC" }
+	                    if ($EncTypes -band 0x8) { $EncTypeFlags += "AES128-CTS-HMAC-SHA1-96" }
+	                    if ($EncTypes -band 0x10) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96" }
+	                    if ($EncTypes -band 0x20) { $EncTypeFlags += "AES256-CTS-HMAC-SHA1-96-SK" }
+	                    if ($EncTypes -band 0x40) { $EncTypeFlags += "AES128-CTS-HMAC-SHA256-128" }
+	                    if ($EncTypes -band 0x80) { $EncTypeFlags += "AES256-CTS-HMAC-SHA384-192" }
+	                    if (($EncTypes -band 0xDF) -eq 0) { $EncTypeFlags = @("Not configured") + $EncTypeFlags }
+	                    if ($EncTypes -band 0x10000) { $EncTypeFlags += "FAST-Supported" }
+	                    if ($EncTypes -band 0x20000) { $EncTypeFlags += "Compound-Identity-Supported" }
+	                    if ($EncTypes -band 0x40000) { $EncTypeFlags += "Claims-Supported" }
+	                    if ($EncTypes -band 0x80000) { $EncTypeFlags += "Resource-SID-Compression-Disabled" }
+	                    $ConvertedProperties[$PropName] = $EncTypeFlags
 	                } catch {
 	                    $ConvertedProperties[$PropName] = $PropValue[0]
 	                }
@@ -78650,9 +78650,11 @@ function Build-ScoringContext {
 	                if ($encValue -band 0x4)  { $encNames += 'RC4-HMAC' }
 	                if ($encValue -band 0x8)  { $encNames += 'AES128' }
 	                if ($encValue -band 0x10) { $encNames += 'AES256' }
-	                if ($encValue -band 0x20) { $encNames += 'AES256' }
+	                if ($encValue -band 0x40) { $encNames += 'AES128' }
+	                if ($encValue -band 0x80) { $encNames += 'AES256' }
 	                continue
 	            }
+	            if ($encText -like '*-SK')            { continue }
 	            if ($encText -like 'RC4*')            { $encNames += 'RC4-HMAC' }
 	            elseif ($encText -like 'AES128*')     { $encNames += 'AES128' }
 	            elseif ($encText -like 'AES256*')     { $encNames += 'AES256' }
@@ -88811,7 +88813,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1934"
+$Script:adPEASVersion = "2.7.0+20261017-1943"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
