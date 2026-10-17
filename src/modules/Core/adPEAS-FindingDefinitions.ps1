@@ -9860,6 +9860,40 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
         )
     }
 
+    'DSRM_PASSWORD_UNMANAGED' = @{
+        Title = "DSRM Password Not Managed by Windows LAPS"
+        Risk = "Note"
+        BaseScore = 10
+        Description = "Every domain controller has a Directory Services Restore Mode (DSRM) account - the local administrator of the mode a domain controller is restored in, its password set at promotion and checked against no password policy. Unless Windows LAPS manages it, nothing changes that password afterwards: it is as old as the domain controller or as the last manual reset, and Active Directory does not record which. Where Windows LAPS manages it, the domain controller's computer object carries msLAPS-PasswordExpirationTime, which is what this is read from; an expiration time long past means nothing rotates the password any more."
+        Impact = @(
+            "With console access - a hypervisor console is enough - the DSRM password logs on to a domain controller started in restore mode as its local administrator, with the directory database offline and open to copying"
+            "Where DsrmAdminLogonBehavior is 2, the DSRM account logs on to the running domain controller at any time, over the network with its hash alone"
+            "A DSRM password set once for every domain controller at promotion, or synchronized from a domain account with ntdsutil, is disclosed for all of them at once"
+        )
+        Remediation = @(
+            "Let Windows LAPS manage the DSRM password: a policy with BackupDirectory 2, ADPasswordEncryptionEnabled 1 and BackupDsrmPassword 1 that applies to the domain controllers - this needs domain functional level 2016 and Windows Server 2019 or later domain controllers"
+            "Until then, set a unique, long DSRM password on each domain controller and keep it in a vault"
+            "Make sure no domain controller has DsrmAdminLogonBehavior set to 2"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Reset the DSRM password of a domain controller (run on it; prompts for the new password)"
+                Command = "ntdsutil `"set dsrm password`" `"reset password on server null`" q q"
+            }
+            @{
+                Description = "Show whether Windows LAPS manages the DSRM password of a domain controller"
+                Command = "Get-LapsADPassword -Identity 'DC_NAME' | Select-Object ComputerName, Source, ExpirationTimestamp"
+            }
+        )
+        References = @(
+            @{ Title = "Windows LAPS architecture - DSRM password support"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview" }
+            @{ Title = "Get started with Windows LAPS and Windows Server Active Directory"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-scenarios-windows-server-active-directory" }
+            @{ Title = "Sneaky Active Directory Persistence #11: Directory Service Restore Mode"; Url = "https://adsecurity.org/?p=1785" }
+        )
+        Tools = @("Mimikatz")
+        MITRE = "T1078.003"
+    }
+
     'NON_DEFAULT_COMPUTER_OWNERS' = @{
         Title = "Computer with Non-Default Owner"
         Risk = "Hint"

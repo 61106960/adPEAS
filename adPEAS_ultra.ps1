@@ -13092,6 +13092,39 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
 	        @{ Attribute = 'lapsPasswordStale'; Severity = 'Finding' }
 	    )
 	}
+	'DSRM_PASSWORD_UNMANAGED' = @{
+	    Title = "DSRM Password Not Managed by Windows LAPS"
+	    Risk = "Note"
+	    BaseScore = 10
+	    Description = "Every domain controller has a Directory Services Restore Mode (DSRM) account - the local administrator of the mode a domain controller is restored in, its password set at promotion and checked against no password policy. Unless Windows LAPS manages it, nothing changes that password afterwards: it is as old as the domain controller or as the last manual reset, and Active Directory does not record which. Where Windows LAPS manages it, the domain controller's computer object carries msLAPS-PasswordExpirationTime, which is what this is read from; an expiration time long past means nothing rotates the password any more."
+	    Impact = @(
+	        "With console access - a hypervisor console is enough - the DSRM password logs on to a domain controller started in restore mode as its local administrator, with the directory database offline and open to copying"
+	        "Where DsrmAdminLogonBehavior is 2, the DSRM account logs on to the running domain controller at any time, over the network with its hash alone"
+	        "A DSRM password set once for every domain controller at promotion, or synchronized from a domain account with ntdsutil, is disclosed for all of them at once"
+	    )
+	    Remediation = @(
+	        "Let Windows LAPS manage the DSRM password: a policy with BackupDirectory 2, ADPasswordEncryptionEnabled 1 and BackupDsrmPassword 1 that applies to the domain controllers - this needs domain functional level 2016 and Windows Server 2019 or later domain controllers"
+	        "Until then, set a unique, long DSRM password on each domain controller and keep it in a vault"
+	        "Make sure no domain controller has DsrmAdminLogonBehavior set to 2"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Reset the DSRM password of a domain controller (run on it; prompts for the new password)"
+	            Command = "ntdsutil `"set dsrm password`" `"reset password on server null`" q q"
+	        }
+	        @{
+	            Description = "Show whether Windows LAPS manages the DSRM password of a domain controller"
+	            Command = "Get-LapsADPassword -Identity 'DC_NAME' | Select-Object ComputerName, Source, ExpirationTimestamp"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Windows LAPS architecture - DSRM password support"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview" }
+	        @{ Title = "Get started with Windows LAPS and Windows Server Active Directory"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-scenarios-windows-server-active-directory" }
+	        @{ Title = "Sneaky Active Directory Persistence #11: Directory Service Restore Mode"; Url = "https://adsecurity.org/?p=1785" }
+	    )
+	    Tools = @("Mimikatz")
+	    MITRE = "T1078.003"
+	}
 	'NON_DEFAULT_COMPUTER_OWNERS' = @{
 	    Title = "Computer with Non-Default Owner"
 	    Risk = "Hint"
@@ -21205,6 +21238,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Computers missing LAPS protection"
 	        "Coverage percentage across the domain, with domain controllers left out - a DC has no local Administrator for LAPS to manage"
 	        "Whether a GPO configures DSRM password backup, which is the only LAPS setting that reaches a domain controller"
+	        "Which domain controllers have their DSRM password managed by Windows LAPS, read from the domain controllers themselves"
 	        "OUs with low LAPS adoption"
 	    )
 	    SecureMessage = "LAPS is properly deployed with high coverage across the domain. Local administrator passwords are unique per computer, preventing lateral movement through password reuse."
@@ -70291,6 +70325,45 @@ function Format-LAPSComputerList {
 	$shown = $names[0..($Limit - 1)] -join ', '
 	return ($shown + ', ... and ' + ($names.Count - $Limit) + ' more')
 }
+function Show-DSRMPasswordManagement {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [AllowEmptyCollection()]
+	    [object[]]$DomainController,
+	    [Parameter(Mandatory=$true)]
+	    [int]$GraceDays,
+	    [Parameter(Mandatory=$true)]
+	    [DateTime]$EraStart
+	)
+	$total = @($DomainController).Count
+	if ($total -eq 0) { return }
+	$cutoff = (Get-Date).AddDays(-$GraceDays)
+	$unmanaged = @()
+	$notRotated = @()
+	foreach ($dc in $DomainController) {
+	    $name = if ($dc.sAMAccountName) {
+	        "$($dc.sAMAccountName)" -replace '\$$', ''
+	    } else {
+	        ("$($dc.distinguishedName)" -split ',')[0] -replace '^CN=', ''
+	    }
+	    $expiry = $dc.'msLAPS-PasswordExpirationTime'
+	    if ($null -eq $expiry) {
+	        $unmanaged += $name
+	    } elseif ($expiry -is [DateTime] -and $expiry -ge $EraStart -and $expiry -lt $cutoff) {
+	        $notRotated += $name
+	    }
+	}
+	if (@($unmanaged).Count -gt 0) {
+	    Show-Line "DSRM password not managed by Windows LAPS on $(@($unmanaged).Count) of $total domain controller(s): $(Format-LAPSComputerList -Name $unmanaged)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
+	}
+	if (@($notRotated).Count -gt 0) {
+	    Show-Line "DSRM password no longer rotated by Windows LAPS on $(@($notRotated).Count) of $total domain controller(s) - the expiration time passed more than $GraceDays days ago: $(Format-LAPSComputerList -Name $notRotated)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
+	}
+	if (@($unmanaged).Count -eq 0 -and @($notRotated).Count -eq 0) {
+	    Show-Line "DSRM password managed by Windows LAPS on all $total domain controller(s)" -Class "Note"
+	}
+}
 function Get-LAPSConfiguration {
 	[CmdletBinding()]
 	param(
@@ -70361,12 +70434,14 @@ function Get-LAPSConfiguration {
 	            $coverageCaveat = "A Windows LAPS policy in this domain backs the password up outside Active Directory ($policyList). A computer in its scope keeps no msLAPS attribute here by design, so whether its local administrator password is managed cannot be read from Active Directory."
 	        }
 	        $domainControllerDNs = @{}
+	        $domainControllers = @()
 	        $domainControllerCount = 0
 	        $domainControllerLookupFailed = $false
 	        try {
-	            foreach ($dc in @(Get-DomainComputer -DomainController -Properties 'distinguishedName' @connectionParams)) {
+	            foreach ($dc in @(Get-DomainComputer -DomainController -Properties 'distinguishedName', 'sAMAccountName', 'msLAPS-PasswordExpirationTime' @connectionParams)) {
 	                if (-not $dc.distinguishedName) { continue }
 	                $domainControllerDNs["$($dc.distinguishedName)".ToLowerInvariant()] = $true
+	                $domainControllers += $dc
 	            }
 	            $domainControllerCount = $domainControllerDNs.Count
 	        } catch {
@@ -70587,6 +70662,8 @@ function Get-LAPSConfiguration {
 	        } else {
 	            Show-Line "All computers (100%) have LAPS protection" -Class "Secure"
 	        }
+	        Show-DSRMPasswordManagement -DomainController $domainControllers `
+	            -GraceDays $staleGraceDays -EraStart $lapsEraStart
 	    } catch {
 	        Show-Line "Error during check - the LAPS configuration could not be evaluated: $_" -Class Finding
 	    }
@@ -89745,7 +89822,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-2124"
+$Script:adPEASVersion = "2.7.0+20261017-2134"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

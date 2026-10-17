@@ -1590,6 +1590,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Computers missing LAPS protection"
             "Coverage percentage across the domain, with domain controllers left out - a DC has no local Administrator for LAPS to manage"
             "Whether a GPO configures DSRM password backup, which is the only LAPS setting that reaches a domain controller"
+            "Which domain controllers have their DSRM password managed by Windows LAPS, read from the domain controllers themselves"
             "OUs with low LAPS adoption"
         )
         SecureMessage = "LAPS is properly deployed with high coverage across the domain. Local administrator passwords are unique per computer, preventing lateral movement through password reuse."

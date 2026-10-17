@@ -355,6 +355,89 @@ function Format-LAPSComputerList {
     return ($shown + ', ... and ' + ($names.Count - $Limit) + ' more')
 }
 
+<#
+.SYNOPSIS
+    Says on which domain controllers Windows LAPS manages the DSRM password.
+
+.DESCRIPTION
+    A domain controller has no local account for LAPS to manage, but it has the Directory
+    Services Restore Mode account: the local administrator of the mode a domain controller
+    is restored in, its password set at promotion and checked against no password policy.
+    Nothing changes that password afterwards unless someone resets it by hand, or Windows
+    LAPS manages it - on Windows Server 2019 and later domain controllers, in a domain at
+    functional level 2016 or higher, once a policy turns on BackupDsrmPassword with
+    password encryption.
+
+    Read from the domain controllers, not from the policy: a policy says what was meant to
+    happen, the DC what did. Where Windows LAPS manages the DSRM password it keeps
+    msLAPS-PasswordExpirationTime on the DC's computer object, as on every computer it
+    manages, and the attribute is not confidential. An expiration time more than the grace
+    period in the past means nothing rotates the password any more - the rotation stalled,
+    or the attribute was left behind when a LAPS-managed server was promoted. 0, the
+    request for an immediate rotation, and values that are no date say nothing about age
+    and count as managed, as they count as protected in the coverage figures.
+
+    Notes, not findings: an unmanaged DSRM password is the state of every domain that never
+    set this up, and the directory says nothing about how old or how strong it is.
+
+.PARAMETER DomainController
+    The domain controllers, with sAMAccountName and msLAPS-PasswordExpirationTime.
+
+.PARAMETER GraceDays
+    How far an expiration time may lie in the past before the password counts as no
+    longer rotated - the grace the computers get.
+
+.PARAMETER EraStart
+    Expiration times before this are no rotation date - the bound the computers get.
+
+.NOTES
+    Internal helper function
+#>
+function Show-DSRMPasswordManagement {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        [object[]]$DomainController,
+
+        [Parameter(Mandatory=$true)]
+        [int]$GraceDays,
+
+        [Parameter(Mandatory=$true)]
+        [DateTime]$EraStart
+    )
+
+    $total = @($DomainController).Count
+    if ($total -eq 0) { return }
+
+    $cutoff = (Get-Date).AddDays(-$GraceDays)
+    $unmanaged = @()
+    $notRotated = @()
+    foreach ($dc in $DomainController) {
+        $name = if ($dc.sAMAccountName) {
+            "$($dc.sAMAccountName)" -replace '\$$', ''
+        } else {
+            ("$($dc.distinguishedName)" -split ',')[0] -replace '^CN=', ''
+        }
+        $expiry = $dc.'msLAPS-PasswordExpirationTime'
+        if ($null -eq $expiry) {
+            $unmanaged += $name
+        } elseif ($expiry -is [DateTime] -and $expiry -ge $EraStart -and $expiry -lt $cutoff) {
+            $notRotated += $name
+        }
+    }
+
+    if (@($unmanaged).Count -gt 0) {
+        Show-Line "DSRM password not managed by Windows LAPS on $(@($unmanaged).Count) of $total domain controller(s): $(Format-LAPSComputerList -Name $unmanaged)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
+    }
+    if (@($notRotated).Count -gt 0) {
+        Show-Line "DSRM password no longer rotated by Windows LAPS on $(@($notRotated).Count) of $total domain controller(s) - the expiration time passed more than $GraceDays days ago: $(Format-LAPSComputerList -Name $notRotated)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
+    }
+    if (@($unmanaged).Count -eq 0 -and @($notRotated).Count -eq 0) {
+        Show-Line "DSRM password managed by Windows LAPS on all $total domain controller(s)" -Class "Note"
+    }
+}
+
 function Get-LAPSConfiguration {
     <#
     .SYNOPSIS
@@ -379,7 +462,9 @@ function Get-LAPSConfiguration {
 
     Whether BackupDsrmPassword is configured is a Windows LAPS policy setting rather than a
     coverage figure, and it is reported where the other policy settings are: on the GPO
-    object in the section above, as DsrmPasswordBackup.
+    object in the section above, as DsrmPasswordBackup. Whether Windows LAPS actually
+    manages a domain controller's DSRM password is read from the domain controller, and is
+    the last line of the coverage section.
 
     LAPS Versions Supported:
     - Legacy LAPS: Original Microsoft LAPS (ms-Mcs-* attributes)
@@ -550,12 +635,16 @@ function Get-LAPSConfiguration {
             # coverage numbers - the old behaviour, and better than dropping real machines
             # because one query did not answer.
             $domainControllerDNs = @{}
+            $domainControllers = @()
             $domainControllerCount = 0
             $domainControllerLookupFailed = $false
             try {
-                foreach ($dc in @(Get-DomainComputer -DomainController -Properties 'distinguishedName' @connectionParams)) {
+                # The name and the Windows LAPS expiration time are for the DSRM line at the
+                # end of the coverage section. No DC is shown as an object.
+                foreach ($dc in @(Get-DomainComputer -DomainController -Properties 'distinguishedName', 'sAMAccountName', 'msLAPS-PasswordExpirationTime' @connectionParams)) {
                     if (-not $dc.distinguishedName) { continue }
                     $domainControllerDNs["$($dc.distinguishedName)".ToLowerInvariant()] = $true
+                    $domainControllers += $dc
                 }
                 $domainControllerCount = $domainControllerDNs.Count
             } catch {
@@ -719,9 +808,9 @@ function Get-LAPSConfiguration {
 
             # A failed domain controller lookup still needs saying: the DCs are then counted
             # as ordinary computers below, which understates the coverage figure rather than
-            # leaving it out of it. The DSRM backup state used to be reported here as well
-            # and is not any more - it is a Windows LAPS policy setting rather than a
-            # coverage figure, and it belongs to the GPO section above if anywhere.
+            # leaving it out of it. The DSRM backup policy setting used to be reported here
+            # as well and is not any more - it is on the GPO object above. What the domain
+            # controllers themselves show about their DSRM password ends this section.
             if ($domainControllerLookupFailed) {
                 Show-Line "Domain Controllers could not be enumerated - counted as ordinary computers, so LAPS coverage is understated" -Class "Note"
             }
@@ -882,6 +971,14 @@ function Get-LAPSConfiguration {
             } else {
                 Show-Line "All computers (100%) have LAPS protection" -Class "Secure"
             }
+
+            # ===== The domain controllers' DSRM passwords =====
+            # Left out of the figures above because a DC has no local account for LAPS to
+            # manage - but it has a DSRM account, and that one Windows LAPS can manage. A
+            # failed lookup leaves the list empty and has its own note above; with no
+            # domain controller read, the helper says nothing.
+            Show-DSRMPasswordManagement -DomainController $domainControllers `
+                -GraceDays $staleGraceDays -EraStart $lapsEraStart
 
         } catch {
             # Say so on the console, not only in the log - an aborted check is otherwise

@@ -416,6 +416,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   with the card *DSRM Administrator Logon Allowed at Any Time via GPO*. 0, the default, and
   1, Microsoft's suggestion for a single or isolated domain controller, are not reported.
 
+- **`Get-LAPSConfiguration` says whose DSRM password Windows LAPS manages.** Domain
+  controllers are rightly left out of the coverage figures, and the report then said
+  nothing about the one account LAPS can manage on them: the Directory Services Restore
+  Mode account, set at promotion and checked against no password policy. The coverage
+  section now ends with what the domain controllers themselves show - read from
+  `msLAPS-PasswordExpirationTime` on each DC, not from the policy: which of them carry no
+  Windows LAPS expiration time, which carry one that passed more than 30 days ago, or that
+  all of them are managed. Notes, with the card *DSRM Password Not Managed by Windows
+  LAPS*.
+
 - **The Restricted Admin card is a hint, as its row is.** The registry table lowered
   `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the
   card and the trigger on its row stayed a finding: the console printed the row yellow and
