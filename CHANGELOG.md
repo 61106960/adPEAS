@@ -205,6 +205,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   back to the domain default and RC4 stays available - fired only for a stored 0, which
   is not how the case occurs. The row now reads "Not configured" and carries that card.
 
+- **The note about a gMSA that expires appears.** The account's `accountExpires` arrives
+  as a date, and the check parsed it as a number, which a date never is - so a gMSA with
+  an expiry date was never mentioned.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

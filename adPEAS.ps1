@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 12:23:30
-    Version: 2.7.0+20261017-1223
+    Build: 2026-10-17 12:28:34
+    Version: 2.7.0+20261017-1228
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -105152,13 +105152,26 @@ function Get-ManagedServiceAccountSecurity {
                     # accountExpires: 0 and 0x7FFFFFFFFFFFFFFF both mean "never". A date on a
                     # gMSA is a Note, not a finding - nothing is exposed by it, but every
                     # service running under the account stops authenticating when it passes.
-                    $expiresValue = [long]0
-                    if ([long]::TryParse([string]$gmsa.accountExpires, [ref]$expiresValue) -and
-                        $expiresValue -gt 0 -and $expiresValue -ne 9223372036854775807) {
-                        $expiryText = 'unreadable'
-                        try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTimeUtc($expiresValue)) 'yyyy-MM-dd' } catch {
-                            Write-Log "[Get-ManagedServiceAccountSecurity] Could not read accountExpires of $($gmsa.sAMAccountName): $_"
+                    #
+                    # The value arrives converted: ConvertFrom-LDAPAttribute turns a real date
+                    # into a DateTime and leaves only the two "never" values as numbers. This
+                    # used to parse every value as a number, so a date never got through and
+                    # the note never appeared.
+                    $expiresRaw = @($gmsa.accountExpires)[0]
+                    $expiryText = $null
+                    if ($expiresRaw -is [DateTime]) {
+                        $expiryText = Format-adPEASDate $expiresRaw 'yyyy-MM-dd'
+                    } else {
+                        $expiresValue = [long]0
+                        if ([long]::TryParse([string]$expiresRaw, [ref]$expiresValue) -and
+                            $expiresValue -gt 0 -and $expiresValue -ne 9223372036854775807) {
+                            $expiryText = 'unreadable'
+                            try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTimeUtc($expiresValue)) 'yyyy-MM-dd' } catch {
+                                Write-Log "[Get-ManagedServiceAccountSecurity] Could not read accountExpires of $($gmsa.sAMAccountName): $_"
+                            }
                         }
+                    }
+                    if ($expiryText) {
                         $expiringGMSAs += "$($gmsa.sAMAccountName) ($expiryText)"
                     }
                 }
@@ -138943,7 +138956,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1223"
+$Script:adPEASVersion = "2.7.0+20261017-1228"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

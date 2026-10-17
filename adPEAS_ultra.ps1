@@ -64160,12 +64160,20 @@ function Get-ManagedServiceAccountSecurity {
 	                if ([int]::TryParse([string]$gmsa.'msDS-ManagedPasswordInterval', [ref]$intervalDays) -and $intervalDays -gt 90) {
 	                    $longIntervals += "$($gmsa.sAMAccountName) ($intervalDays days)"
 	                }
-	                $expiresValue = [long]0
-	                if ([long]::TryParse([string]$gmsa.accountExpires, [ref]$expiresValue) -and
-	                    $expiresValue -gt 0 -and $expiresValue -ne 9223372036854775807) {
-	                    $expiryText = 'unreadable'
-	                    try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTimeUtc($expiresValue)) 'yyyy-MM-dd' } catch {
+	                $expiresRaw = @($gmsa.accountExpires)[0]
+	                $expiryText = $null
+	                if ($expiresRaw -is [DateTime]) {
+	                    $expiryText = Format-adPEASDate $expiresRaw 'yyyy-MM-dd'
+	                } else {
+	                    $expiresValue = [long]0
+	                    if ([long]::TryParse([string]$expiresRaw, [ref]$expiresValue) -and
+	                        $expiresValue -gt 0 -and $expiresValue -ne 9223372036854775807) {
+	                        $expiryText = 'unreadable'
+	                        try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTimeUtc($expiresValue)) 'yyyy-MM-dd' } catch {
+	                        }
 	                    }
+	                }
+	                if ($expiryText) {
 	                    $expiringGMSAs += "$($gmsa.sAMAccountName) ($expiryText)"
 	                }
 	            }
@@ -86067,7 +86075,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1223"
+$Script:adPEASVersion = "2.7.0+20261017-1228"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
