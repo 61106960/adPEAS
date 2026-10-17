@@ -158,7 +158,9 @@ function Get-GPOPermissions {
             # ===== Step 2: Enumerate Computers for Impact Analysis =====
             # Include ALL computers (workstations, servers, AND domain controllers) for accurate impact analysis
             # GPOs affecting DCs are often more critical than those affecting workstations
-            $allComputers = @(Get-DomainComputer -Properties "name","distinguishedName" @connectionParams)
+            # objectSid and primaryGroupID for a policy's security filtering, which decides
+            # by the computer's token - see Test-GPOFilterCoversComputer.
+            $allComputers = @(Get-DomainComputer -Properties "name","distinguishedName","objectSid","primaryGroupID" @connectionParams)
 
             if (-not $allComputers) {
                 $allComputers = @()
@@ -464,9 +466,11 @@ function Get-GPOPermissions {
                         }
 
                         $affectedComputerCount = 0
+                        # The computers the links put in scope, for the security filtering below.
+                        $inScopeComputers = New-Object System.Collections.ArrayList
 
                         if ($isDomainWide) {
-                            $affectedComputerCount = @($allComputers).Count
+                            foreach ($computer in $allComputers) { [void]$inScopeComputers.Add($computer) }
                         }
                         elseif (@($activeLinks).Count -gt 0) {
                             foreach ($computer in $allComputers) {
@@ -496,9 +500,32 @@ function Get-GPOPermissions {
                                     }
 
                                     if ($isCovered) {
-                                        $affectedComputerCount++
+                                        [void]$inScopeComputers.Add($computer)
                                     }
                                 }
+                            }
+                        }
+                        $affectedComputerCount = $inScopeComputers.Count
+
+                        # Security filtering (coverage item A10): a computer in scope applies
+                        # the policy only if its token holds a principal granted Apply Group
+                        # Policy and none denied it. The count used to take every computer
+                        # below a link. Where the filtering is not known, or lets every
+                        # computer apply the policy, the count stands as it was.
+                        $securityFilterNote = $null
+                        $securityFilter = Get-GPOSecurityFilter -GPOGUID $gpoGUID
+                        if ($null -ne $securityFilter -and -not ($securityFilter.Everyone -and @($securityFilter.DenySIDs).Count -eq 0)) {
+                            $applyingComputers = 0
+                            $undecidedComputers = 0
+                            foreach ($computer in $inScopeComputers) {
+                                $filterVerdict = Test-GPOFilterCoversComputer -Filter $securityFilter -Computer $computer
+                                if ($filterVerdict -eq 'Yes') { $applyingComputers++ }
+                                elseif ($filterVerdict -eq 'Unknown') { $undecidedComputers++ }
+                            }
+                            $affectedComputerCount = $applyingComputers
+                            $securityFilterNote = "security filtering: $(Format-GPOSecurityFilter -Filter $securityFilter)"
+                            if ($undecidedComputers -gt 0) {
+                                $securityFilterNote += " - $undecidedComputers more computer(s) may apply it, whose membership could not be read"
                             }
                         }
 
@@ -517,6 +544,10 @@ function Get-GPOPermissions {
                             } else {
                                 $affectedComputersNote = 'plus the computers of the linked site(s), which the directory does not record - site membership follows IP subnets'
                             }
+                        }
+                        if ($securityFilterNote) {
+                            if ($affectedComputersNote) { $affectedComputersNote = "$affectedComputersNote; $securityFilterNote" }
+                            else { $affectedComputersNote = $securityFilterNote }
                         }
 
                         # Where the policy applies. The full link records, disabled ones
@@ -590,7 +621,7 @@ function Get-GPOPermissions {
                         # whoever can edit this policy then runs code there. A fact beside
                         # LinkedOUs, no verdict.
                         $enrichedGPO | Add-Member -NotePropertyName "reachesDomainControllers" `
-                            -NotePropertyValue (Get-GPODomainControllerReach -Link $links) -Force
+                            -NotePropertyValue (Get-GPODomainControllerReach -Link $links -GPOGUID $gpoGUID) -Force
 
                         # The object is a copy of the GPO and already carries GPOStatus from
                         # Get-DomainGPO; the transformer hides it when it says "Enabled".
@@ -747,7 +778,7 @@ function Get-GPOPermissions {
                 }
                 $extraCard | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $extraLinksDisplay -Force
                 $extraCard | Add-Member -NotePropertyName "reachesDomainControllers" `
-                    -NotePropertyValue (Get-GPODomainControllerReach -Link $extraLinks) -Force
+                    -NotePropertyValue (Get-GPODomainControllerReach -Link $extraLinks -GPOGUID $extraGUID) -Force
 
                 $extraStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$extraGUID] -Scope 'Any' -Link $extraLinks
                 if ($extraStatus) {

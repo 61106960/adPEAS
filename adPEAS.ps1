@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 18:17:45
-    Version: 2.7.0+20261017-1817
+    Build: 2026-10-17 18:37:38
+    Version: 2.7.0+20261017-1837
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -34965,6 +34965,8 @@ function Clear-SessionState {
     $Script:CachedAllGPOs = $null
     $Script:CachedGPOLinkage = $null
     $Script:DomainControllerGPOContext = $null
+    $Script:GPOSecurityFilterMap = $null
+    $Script:GPOFilterPrincipalCache = $null
 
     # Kerberoast run state (Invoke-Kerberoast)
     # KerberoastCredParams is a splat table that carries the PSCredential the caller
@@ -81075,10 +81077,17 @@ function Get-GPOPolicySummary {
         from the domain root down to the domain controller blocks inheritance and the link
         is not enforced.
 
-    WHAT IT DOES NOT READ, which is why every answer says "by its link": security filtering,
-    WMI filters, and whether the policy's computer half is switched on - GPOStatus is that
-    row's subject. "Yes" therefore means the links put a domain controller in the policy's
-    scope, not that RSoP on it lists the policy.
+    Given the policy's GUID, it also reads the policy's security filtering (coverage item
+    A10, Get-GPOSecurityFilter): a link that reaches a domain controller does not apply the
+    policy there unless the domain controller's token holds a principal granted Apply Group
+    Policy and none denied it. Such a policy is "No - by its link on X it would, but only Y may
+    apply it", and "Unknown" when a principal that could decide it could not be read. A
+    policy whose filtering is not known is judged by its links, as before.
+
+    WHAT IT DOES NOT READ, which is why every answer says "by its link": WMI filters, and
+    whether the policy's computer half is switched on - GPOStatus is that row's subject.
+    "Yes" therefore means the links and the security filtering put a domain controller in
+    the policy's scope, not that RSoP on it lists the policy.
 
 .PARAMETER Link
     The policy's link records as Get-GPOLinkage returns them. $null means the linkage could
@@ -81087,6 +81096,9 @@ function Get-GPOPolicySummary {
 
 .PARAMETER Context
     From Get-DomainControllerGPOContext. Read from there when not given.
+
+.PARAMETER GPOGUID
+    The policy's GUID, for its security filtering. Without it the answer is the links'.
 
 .OUTPUTS
     [string] beginning with Yes, No or Unknown.
@@ -81105,7 +81117,12 @@ function Get-GPODomainControllerReach {
 
         [Parameter(Mandatory=$false)]
         [AllowNull()]
-        $Context
+        $Context,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$GPOGUID
     )
 
     if ($null -eq $Link) { return 'Unknown - the linkage could not be resolved' }
@@ -81138,6 +81155,8 @@ function Get-GPODomainControllerReach {
         if ($null -eq $blocked) { $blocked = @{} }
 
         $reachingLabels = New-Object System.Collections.Generic.List[string]
+        # Every domain controller a link reaches, for the security filtering below.
+        $reachedDCs     = New-Object System.Collections.ArrayList
         $sawBlocked     = $false
         $sawUnknownSite = $false
 
@@ -81186,12 +81205,31 @@ function Get-GPODomainControllerReach {
                     $linkDN
                 }
                 if (-not $reachingLabels.Contains($label)) { $reachingLabels.Add($label) }
-                break
+                if (-not $reachedDCs.Contains($dc)) { [void]$reachedDCs.Add($dc) }
             }
         }
 
-        if ($reachingLabels.Count -eq 1) { return "Yes - by its link on $($reachingLabels[0])" }
-        if ($reachingLabels.Count -gt 1) { return "Yes - by its links on $($reachingLabels -join ' and ')" }
+        if ($reachingLabels.Count -gt 0) {
+            $linkText = "by its link on $($reachingLabels[0])"
+            if ($reachingLabels.Count -gt 1) { $linkText = "by its links on $($reachingLabels -join ' and ')" }
+
+            # Security filtering, where it is known and narrows anything: a domain controller
+            # the links reach applies the policy only if its token holds a principal granted
+            # Apply Group Policy and none denied it.
+            $securityFilter = $null
+            if ($GPOGUID) { $securityFilter = Get-GPOSecurityFilter -GPOGUID $GPOGUID }
+            if ($null -eq $securityFilter -or ($securityFilter.Everyone -and @($securityFilter.DenySIDs).Count -eq 0)) {
+                return "Yes - $linkText"
+            }
+
+            $dcVerdicts = @(foreach ($reachedDC in $reachedDCs) { Test-GPOFilterCoversComputer -Filter $securityFilter -Computer $reachedDC })
+            if ($dcVerdicts -contains 'Yes') { return "Yes - $linkText" }
+            $filterText = Format-GPOSecurityFilter -Filter $securityFilter
+            if ($dcVerdicts -contains 'Unknown') {
+                return "Unknown - $linkText it would, but $filterText, and whether a domain controller is among them could not be read"
+            }
+            return "No - $linkText it would, but $filterText"
+        }
 
         # Unknown outranks No: the site whose membership could not be read may be exactly
         # the one this policy is linked to.
@@ -81551,6 +81589,319 @@ function Get-GPOPostureBasisNote {
     return 'Read from the policies, not from the domain controllers: a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing), so the registry of the domain controllers is the ground truth'
 }
 
+<#
+.SYNOPSIS
+    Reads who may apply a GPO by its security filtering: the principals that hold the Apply
+    Group Policy right on the policy object, and those denied it.
+
+.DESCRIPTION
+    Coverage item A10. A link puts computers and users in a policy's scope; security
+    filtering decides which of them apply it. A computer or a user applies a policy only when
+    its token holds a principal granted the Apply Group Policy extended right
+    (edacfd8f-ffb3-11d1-b41d-00a0c968f939) on the groupPolicyContainer, and none that is denied
+    it - Deny wins. By default Authenticated Users hold it, which every computer and user is
+    in; filtering a policy replaces them with groups or accounts of its own.
+
+    Full control and all extended rights (an ExtendedRight with no object type) include the
+    right. An inherit-only entry reaches the policy's child containers, not the policy. SYSTEM
+    holds full control on every policy and is left out: a computer applies policy with its
+    own account's token, which does not carry SYSTEM.
+
+.PARAMETER SecurityDescriptorBytes
+    The policy object's nTSecurityDescriptor.
+
+.OUTPUTS
+    [PSCustomObject] with AllowSIDs (holders not denied), DenySIDs, and Everyone (Authenticated
+    Users or Everyone among AllowSIDs).
+#>
+function ConvertTo-GPOSecurityFilter {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]]$SecurityDescriptorBytes
+    )
+
+    $descriptor = New-Object System.DirectoryServices.ActiveDirectorySecurity
+    $descriptor.SetSecurityDescriptorBinaryForm($SecurityDescriptorBytes)
+
+    $applyGuid = [Guid]'edacfd8f-ffb3-11d1-b41d-00a0c968f939'
+    $allow = [ordered]@{}
+    $deny = [ordered]@{}
+    foreach ($rule in @($descriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))) {
+        if (([string]$rule.PropagationFlags) -match 'InheritOnly') { continue }
+
+        $objectType = $rule.ObjectType
+        $objectTypeIsEmpty = (-not $objectType -or $objectType -eq [Guid]::Empty)
+        $grantsApply = (Test-ADRightsMask -Rights $rule.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)) -and
+                       ($objectTypeIsEmpty -or $objectType -eq $applyGuid)
+        if (-not $grantsApply) { continue }
+
+        $sid = $rule.IdentityReference.Value
+        if ($sid -eq 'S-1-5-18') { continue }
+        if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) {
+            $deny[$sid] = $true
+        } else {
+            $allow[$sid] = $true
+        }
+    }
+
+    $allowSIDs = @($allow.Keys | Where-Object { -not $deny.Contains($_) })
+    [PSCustomObject]@{
+        AllowSIDs = $allowSIDs
+        DenySIDs  = @($deny.Keys)
+        Everyone  = (@($allowSIDs | Where-Object { $_ -in @('S-1-5-11', 'S-1-1-0') }).Count -gt 0)
+    }
+}
+
+<#
+.SYNOPSIS
+    The security filtering of one GPO, by its GUID; $null when it is not known.
+
+.DESCRIPTION
+    Every policy object's descriptor is read in one query the first time a check asks, and
+    the answer is kept in $Script:GPOSecurityFilterMap for the session; Disconnect-adPEAS
+    clears it. A policy whose descriptor could not be read has no entry, and $null is the
+    caller's cue to speak of the links alone, as before.
+
+.PARAMETER GPOGUID
+    The policy's GUID, with or without braces.
+#>
+function Get-GPOSecurityFilter {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$GPOGUID
+    )
+
+    if ([string]::IsNullOrWhiteSpace($GPOGUID)) { return $null }
+
+    if ($null -eq $Script:GPOSecurityFilterMap) {
+        $filterMap = @{}
+        try {
+            foreach ($rawGPO in @(Get-DomainObject -LDAPFilter '(objectClass=groupPolicyContainer)' -Properties 'distinguishedName', 'nTSecurityDescriptor' -Raw)) {
+                $rawDN = [string]@($rawGPO.distinguishedName)[0]
+                if ($rawDN -notmatch '^CN=(\{[0-9A-Fa-f-]+\}),') { continue }
+                # @{} compares its keys without regard to case, as GUIDs are compared.
+                $filterKey = $Matches[1]
+                if (-not $rawGPO.nTSecurityDescriptor) { continue }
+                try {
+                    $filterMap[$filterKey] = ConvertTo-GPOSecurityFilter -SecurityDescriptorBytes ([byte[]]$rawGPO.nTSecurityDescriptor)
+                } catch {
+                    Write-Log "[Get-GPOSecurityFilter] Could not parse the descriptor of $rawDN : $_"
+                }
+            }
+        } catch {
+            Write-Log "[Get-GPOSecurityFilter] Could not read the policy objects: $_"
+        }
+        $Script:GPOSecurityFilterMap = $filterMap
+    }
+
+    $lookupKey = $GPOGUID.Trim()
+    if ($lookupKey -notmatch '^\{') { $lookupKey = "{$lookupKey}" }
+    if ($Script:GPOSecurityFilterMap.ContainsKey($lookupKey)) { return $Script:GPOSecurityFilterMap[$lookupKey] }
+    return $null
+}
+
+<#
+.SYNOPSIS
+    Reads one principal a security filter names: who it is, and for a group the computers it
+    holds.
+
+.DESCRIPTION
+    Internal helper of Test-GPOFilterCoversComputer, cached per SID in
+    $Script:GPOFilterPrincipalCache for the session. For a group: the computers that are
+    members through member links, nested groups included (LDAP_MATCHING_RULE_IN_CHAIN), and
+    which of Domain Computers, Domain Controllers and Read-only Domain Controllers are nested
+    into it - a computer is in those through its primaryGroupID, which no member link
+    records, so the chain query does not find it there.
+
+.PARAMETER SID
+    A SID of this domain's form (S-1-5-21-...).
+#>
+function Resolve-GPOFilterPrincipal {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SID
+    )
+
+    if ($null -eq $Script:GPOFilterPrincipalCache) { $Script:GPOFilterPrincipalCache = @{} }
+    if ($Script:GPOFilterPrincipalCache.ContainsKey($SID)) { return $Script:GPOFilterPrincipalCache[$SID] }
+
+    $principal = [PSCustomObject]@{
+        SID              = $SID
+        Resolved         = $false
+        IsGroup          = $false
+        MemberComputers  = @{}
+        PrimaryGroupRIDs = @()
+    }
+    try {
+        $sidHex = ConvertTo-LDAPSIDHex -SID $SID
+        $principalObject = $null
+        if ($sidHex) {
+            $principalObject = @(Get-DomainObject -LDAPFilter "(objectSid=$sidHex)" -Properties 'distinguishedName', 'objectClass')[0]
+        }
+        if ($principalObject) {
+            if (@($principalObject.objectClass) -icontains 'group') {
+                $principal.IsGroup = $true
+                $escapedDN = Escape-LDAPFilterDN -DistinguishedName ([string]@($principalObject.distinguishedName)[0])
+                foreach ($member in @(Get-DomainComputer -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedDN)" -Properties 'distinguishedName')) {
+                    $memberDN = [string]@($member.distinguishedName)[0]
+                    if ($memberDN) { $principal.MemberComputers[$memberDN.ToLowerInvariant()] = $true }
+                }
+                $domainSID = [string]$Script:LDAPContext.DomainSID
+                $primaryClauses = ''
+                foreach ($rid in @(515, 516, 521)) {
+                    $ridHex = ConvertTo-LDAPSIDHex -SID "$domainSID-$rid"
+                    if ($ridHex) { $primaryClauses += "(objectSid=$ridHex)" }
+                }
+                if ($primaryClauses) {
+                    foreach ($nested in @(Get-DomainObject -LDAPFilter "(&(memberOf:1.2.840.113556.1.4.1941:=$escapedDN)(|$primaryClauses))" -Properties 'objectSid')) {
+                        if ([string]@($nested.objectSid)[0] -match '-(\d+)$') { $principal.PrimaryGroupRIDs += [int]$Matches[1] }
+                    }
+                }
+            }
+            $principal.Resolved = $true
+        }
+    } catch {
+        Write-Log "[Resolve-GPOFilterPrincipal] Could not read $SID : $_"
+        $principal.Resolved = $false
+    }
+
+    $Script:GPOFilterPrincipalCache[$SID] = $principal
+    return $principal
+}
+
+<#
+.SYNOPSIS
+    Whether a computer's token holds one of the given principals: Yes, No or Unknown.
+
+.DESCRIPTION
+    Internal helper of Test-GPOFilterCoversComputer. The token of a computer account holds
+    Authenticated Users, Everyone, This Organization and Network on every logon over the
+    network, its own SID, its primary group - Domain Computers, Domain Controllers or
+    Read-only Domain Controllers - and every group it is a member of; a writable domain
+    controller's holds Enterprise Domain Controllers, a read-only one's Enterprise Read-only
+    Domain Controllers. A principal of this domain's form that cannot be read leaves the
+    answer Unknown unless another one decides it.
+#>
+function Test-GPOFilterPrincipalSet {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [string[]]$SIDs,
+
+        [Parameter(Mandatory = $true)]
+        $Computer
+    )
+
+    $domainSID = [string]$Script:LDAPContext.DomainSID
+    $computerSID = [string]@($Computer.objectSid)[0]
+    $computerDN = ([string]@($Computer.distinguishedName)[0]).ToLowerInvariant()
+    $primaryRID = 0
+    $primaryText = [string]@($Computer.primaryGroupID)[0]
+    if ($primaryText -match '^\d+$') { $primaryRID = [int]$primaryText }
+
+    $unknown = $false
+    foreach ($sid in @($SIDs)) {
+        if (-not $sid) { continue }
+        if ($sid -in @('S-1-5-11', 'S-1-1-0', 'S-1-5-15', 'S-1-5-2')) { return 'Yes' }
+        if ($sid -eq 'S-1-5-9' -and $primaryRID -eq 516) { return 'Yes' }
+        if ($computerSID -and $sid -eq $computerSID) { return 'Yes' }
+        if ($primaryRID -and $domainSID -and $sid -eq "$domainSID-$primaryRID") { return 'Yes' }
+        if ($sid -match '-498$' -and $primaryRID -eq 521) { return 'Yes' }
+
+        if ($sid -match '^S-1-5-21-') {
+            $principal = Resolve-GPOFilterPrincipal -SID $sid
+            if (-not $principal.Resolved) { $unknown = $true; continue }
+            if ($principal.IsGroup) {
+                if ($computerDN -and $principal.MemberComputers.ContainsKey($computerDN)) { return 'Yes' }
+                if ($primaryRID -and (@($principal.PrimaryGroupRIDs) -contains $primaryRID)) { return 'Yes' }
+            }
+        }
+    }
+
+    if ($unknown) { return 'Unknown' }
+    return 'No'
+}
+
+<#
+.SYNOPSIS
+    Whether a computer applies a policy by its security filtering: Yes, No or Unknown.
+
+.DESCRIPTION
+    Yes when its token holds a principal granted Apply Group Policy and none denied it; No
+    when it holds none of the first or one of the second; Unknown when a principal that could
+    decide it could not be read.
+
+.PARAMETER Filter
+    From Get-GPOSecurityFilter.
+
+.PARAMETER Computer
+    An object with distinguishedName, objectSid and primaryGroupID.
+#>
+function Test-GPOFilterCoversComputer {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Filter,
+
+        [Parameter(Mandatory = $true)]
+        $Computer
+    )
+
+    $allowed = Test-GPOFilterPrincipalSet -SIDs @($Filter.AllowSIDs) -Computer $Computer
+    if ($allowed -eq 'No') { return 'No' }
+    $denied = 'No'
+    if (@($Filter.DenySIDs).Count -gt 0) { $denied = Test-GPOFilterPrincipalSet -SIDs @($Filter.DenySIDs) -Computer $Computer }
+    if ($denied -eq 'Yes') { return 'No' }
+    if ($allowed -eq 'Yes' -and $denied -eq 'No') { return 'Yes' }
+    return 'Unknown'
+}
+
+<#
+.SYNOPSIS
+    Says in words who may apply a policy by its security filtering.
+
+.OUTPUTS
+    [string] such as "only GPO-Servers may apply it", "no principal may apply it", or
+    "it is denied to Kiosk-PCs".
+#>
+function Format-GPOSecurityFilter {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Filter
+    )
+
+    $nameOf = {
+        param($sid)
+        $resolvedName = ConvertFrom-SID -SID $sid
+        if ($resolvedName) { $resolvedName } else { $sid }
+    }
+    $allowNames = @(@($Filter.AllowSIDs) | Where-Object { $_ } | ForEach-Object { & $nameOf $_ })
+    $denyNames = @(@($Filter.DenySIDs) | Where-Object { $_ } | ForEach-Object { & $nameOf $_ })
+
+    $parts = @()
+    if ($allowNames.Count -eq 0) {
+        $parts += 'no principal may apply it'
+    } elseif (-not $Filter.Everyone) {
+        $parts += "only $($allowNames -join ', ') may apply it"
+    }
+    if ($denyNames.Count -gt 0) { $parts += "it is denied to $($denyNames -join ', ')" }
+    return ($parts -join ', and ')
+}
+
 
 
 # ----- Get-DomainControllerGPOContext.ps1 -----
@@ -81580,7 +81931,9 @@ function Get-DomainControllerGPOContext {
     .OUTPUTS
     PSCustomObject with
       DomainControllers  - one entry per domain controller: DistinguishedName, SiteDN
-                           ($null where the site could not be read)
+                           ($null where the site could not be read), and objectSid and
+                           primaryGroupID, which security filtering is judged by
+                           (Test-GPOFilterCoversComputer)
       BlockedContainers  - hashtable of lower-case DNs whose gPOptions blocks inheritance
       DomainDN           - the domain root, where the walk up from a domain controller ends
 
@@ -81609,7 +81962,7 @@ function Get-DomainControllerGPOContext {
         # Every domain has a domain controller; none read means none could be read.
         $dcObjects = @()
         try {
-            $dcObjects = @(Get-DomainComputer -DomainController -Properties 'distinguishedName', 'serverReferenceBL')
+            $dcObjects = @(Get-DomainComputer -DomainController -Properties 'distinguishedName', 'serverReferenceBL', 'objectSid', 'primaryGroupID')
         } catch {
             Write-Log "[Get-DomainControllerGPOContext] Could not read the domain controllers: $_"
             return $null
@@ -81637,6 +81990,8 @@ function Get-DomainControllerGPOContext {
             $dcEntries += [PSCustomObject]@{
                 DistinguishedName = $dcDN
                 SiteDN            = $siteDN
+                objectSid         = $(if ($dcObject.objectSid) { [string]@($dcObject.objectSid)[0] } else { $null })
+                primaryGroupID    = $(if ($dcObject.primaryGroupID) { [string]@($dcObject.primaryGroupID)[0] } else { $null })
             }
         }
 
@@ -112046,7 +112401,7 @@ function Get-GPOUserRightsAssignment {
                             LinkedOUs            = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
                             # Beside LinkedOUs, a fact without a verdict. The baseline above
                             # keeps its own, coarser reading of where the policy applies.
-                            reachesDomainControllers = (Get-GPODomainControllerReach -Link $links)
+                            reachesDomainControllers = (Get-GPODomainControllerReach -Link $links -GPOGUID $gpo.Name)
                             _severity            = $severity
                         }
 
@@ -115325,7 +115680,9 @@ function Get-GPOPermissions {
             # ===== Step 2: Enumerate Computers for Impact Analysis =====
             # Include ALL computers (workstations, servers, AND domain controllers) for accurate impact analysis
             # GPOs affecting DCs are often more critical than those affecting workstations
-            $allComputers = @(Get-DomainComputer -Properties "name","distinguishedName" @connectionParams)
+            # objectSid and primaryGroupID for a policy's security filtering, which decides
+            # by the computer's token - see Test-GPOFilterCoversComputer.
+            $allComputers = @(Get-DomainComputer -Properties "name","distinguishedName","objectSid","primaryGroupID" @connectionParams)
 
             if (-not $allComputers) {
                 $allComputers = @()
@@ -115631,9 +115988,11 @@ function Get-GPOPermissions {
                         }
 
                         $affectedComputerCount = 0
+                        # The computers the links put in scope, for the security filtering below.
+                        $inScopeComputers = New-Object System.Collections.ArrayList
 
                         if ($isDomainWide) {
-                            $affectedComputerCount = @($allComputers).Count
+                            foreach ($computer in $allComputers) { [void]$inScopeComputers.Add($computer) }
                         }
                         elseif (@($activeLinks).Count -gt 0) {
                             foreach ($computer in $allComputers) {
@@ -115663,9 +116022,32 @@ function Get-GPOPermissions {
                                     }
 
                                     if ($isCovered) {
-                                        $affectedComputerCount++
+                                        [void]$inScopeComputers.Add($computer)
                                     }
                                 }
+                            }
+                        }
+                        $affectedComputerCount = $inScopeComputers.Count
+
+                        # Security filtering (coverage item A10): a computer in scope applies
+                        # the policy only if its token holds a principal granted Apply Group
+                        # Policy and none denied it. The count used to take every computer
+                        # below a link. Where the filtering is not known, or lets every
+                        # computer apply the policy, the count stands as it was.
+                        $securityFilterNote = $null
+                        $securityFilter = Get-GPOSecurityFilter -GPOGUID $gpoGUID
+                        if ($null -ne $securityFilter -and -not ($securityFilter.Everyone -and @($securityFilter.DenySIDs).Count -eq 0)) {
+                            $applyingComputers = 0
+                            $undecidedComputers = 0
+                            foreach ($computer in $inScopeComputers) {
+                                $filterVerdict = Test-GPOFilterCoversComputer -Filter $securityFilter -Computer $computer
+                                if ($filterVerdict -eq 'Yes') { $applyingComputers++ }
+                                elseif ($filterVerdict -eq 'Unknown') { $undecidedComputers++ }
+                            }
+                            $affectedComputerCount = $applyingComputers
+                            $securityFilterNote = "security filtering: $(Format-GPOSecurityFilter -Filter $securityFilter)"
+                            if ($undecidedComputers -gt 0) {
+                                $securityFilterNote += " - $undecidedComputers more computer(s) may apply it, whose membership could not be read"
                             }
                         }
 
@@ -115684,6 +116066,10 @@ function Get-GPOPermissions {
                             } else {
                                 $affectedComputersNote = 'plus the computers of the linked site(s), which the directory does not record - site membership follows IP subnets'
                             }
+                        }
+                        if ($securityFilterNote) {
+                            if ($affectedComputersNote) { $affectedComputersNote = "$affectedComputersNote; $securityFilterNote" }
+                            else { $affectedComputersNote = $securityFilterNote }
                         }
 
                         # Where the policy applies. The full link records, disabled ones
@@ -115757,7 +116143,7 @@ function Get-GPOPermissions {
                         # whoever can edit this policy then runs code there. A fact beside
                         # LinkedOUs, no verdict.
                         $enrichedGPO | Add-Member -NotePropertyName "reachesDomainControllers" `
-                            -NotePropertyValue (Get-GPODomainControllerReach -Link $links) -Force
+                            -NotePropertyValue (Get-GPODomainControllerReach -Link $links -GPOGUID $gpoGUID) -Force
 
                         # The object is a copy of the GPO and already carries GPOStatus from
                         # Get-DomainGPO; the transformer hides it when it says "Enabled".
@@ -115914,7 +116300,7 @@ function Get-GPOPermissions {
                 }
                 $extraCard | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $extraLinksDisplay -Force
                 $extraCard | Add-Member -NotePropertyName "reachesDomainControllers" `
-                    -NotePropertyValue (Get-GPODomainControllerReach -Link $extraLinks) -Force
+                    -NotePropertyValue (Get-GPODomainControllerReach -Link $extraLinks -GPOGUID $extraGUID) -Force
 
                 $extraStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$extraGUID] -Scope 'Any' -Link $extraLinks
                 if ($extraStatus) {
@@ -116229,7 +116615,7 @@ function Get-GPOLocalGroupMembership {
 
                                 # Whether those links put a domain controller in the
                                 # policy's scope - a fact beside LinkedOUs, no verdict.
-                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $gpoGUID
 
                                 foreach ($finding in $restrictedGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
@@ -116298,7 +116684,7 @@ function Get-GPOLocalGroupMembership {
                                     -Scope $(if ($file.FullName -match '\\Machine\\') { 'Machine' } else { 'User' }) `
                                     -Link $linkedOUs
 
-                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $gpoGUID
 
                                 foreach ($finding in $gppGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
@@ -117225,7 +117611,7 @@ function Get-GPOScheduledTasks {
 
                                 # Whether those links put a domain controller in the
                                 # policy's scope - a fact beside LinkedOUs, no verdict.
-                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $gpoGUID
 
                                 foreach ($task in $taskFindings) {
                                     # Set unconditionally, including when the list is empty:
@@ -118110,7 +118496,7 @@ function Get-GPOScriptPaths {
 
                                 # Whether those links put a domain controller in the
                                 # policy's scope - a fact beside LinkedOUs, no verdict.
-                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $gpoGUID
 
                                 foreach ($finding in $findings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
@@ -118809,7 +119195,7 @@ function Get-GPORegistrySettings {
                     # Whether those links put a domain controller in the policy's scope - a
                     # fact beside LinkedOUs, no verdict.
                     $finding | Add-Member -NotePropertyName 'reachesDomainControllers' `
-                        -NotePropertyValue (Get-GPODomainControllerReach -Link $linkedOUs) -Force
+                        -NotePropertyValue (Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $finding.GPOGUID) -Force
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 
                     # A value in a policy whose relevant half is switched off reaches no
@@ -119997,7 +120383,7 @@ function New-PointAndPrintObject {
     $dcReachLinks = $linkedOUs
     if ($null -eq $GPOLinkage) { $dcReachLinks = $null }
     $obj | Add-Member -NotePropertyName 'reachesDomainControllers' `
-        -NotePropertyValue (Get-GPODomainControllerReach -Link $dcReachLinks) -Force
+        -NotePropertyValue (Get-GPODomainControllerReach -Link $dcReachLinks -GPOGUID $gpoGuid) -Force
 
     # Point and Print lives under HKLM, so the computer half of the GPO is the one that has
     # to be switched on. $null for the links when the linkage could not be resolved at all.
@@ -142134,7 +142520,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1817"
+$Script:adPEASVersion = "2.7.0+20261017-1837"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

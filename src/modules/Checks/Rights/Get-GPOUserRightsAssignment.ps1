@@ -379,7 +379,7 @@ function Get-GPOUserRightsAssignment {
                             LinkedOUs            = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
                             # Beside LinkedOUs, a fact without a verdict. The baseline above
                             # keeps its own, coarser reading of where the policy applies.
-                            reachesDomainControllers = (Get-GPODomainControllerReach -Link $links)
+                            reachesDomainControllers = (Get-GPODomainControllerReach -Link $links -GPOGUID $gpo.Name)
                             _severity            = $severity
                         }
 

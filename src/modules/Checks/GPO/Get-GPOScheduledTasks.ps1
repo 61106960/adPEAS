@@ -232,7 +232,7 @@ function Get-GPOScheduledTasks {
 
                                 # Whether those links put a domain controller in the
                                 # policy's scope - a fact beside LinkedOUs, no verdict.
-                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs
+                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $gpoGUID
 
                                 foreach ($task in $taskFindings) {
                                     # Set unconditionally, including when the list is empty:

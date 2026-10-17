@@ -23,7 +23,9 @@ function Get-DomainControllerGPOContext {
     .OUTPUTS
     PSCustomObject with
       DomainControllers  - one entry per domain controller: DistinguishedName, SiteDN
-                           ($null where the site could not be read)
+                           ($null where the site could not be read), and objectSid and
+                           primaryGroupID, which security filtering is judged by
+                           (Test-GPOFilterCoversComputer)
       BlockedContainers  - hashtable of lower-case DNs whose gPOptions blocks inheritance
       DomainDN           - the domain root, where the walk up from a domain controller ends
 
@@ -52,7 +54,7 @@ function Get-DomainControllerGPOContext {
         # Every domain has a domain controller; none read means none could be read.
         $dcObjects = @()
         try {
-            $dcObjects = @(Get-DomainComputer -DomainController -Properties 'distinguishedName', 'serverReferenceBL')
+            $dcObjects = @(Get-DomainComputer -DomainController -Properties 'distinguishedName', 'serverReferenceBL', 'objectSid', 'primaryGroupID')
         } catch {
             Write-Log "[Get-DomainControllerGPOContext] Could not read the domain controllers: $_"
             return $null
@@ -80,6 +82,8 @@ function Get-DomainControllerGPOContext {
             $dcEntries += [PSCustomObject]@{
                 DistinguishedName = $dcDN
                 SiteDN            = $siteDN
+                objectSid         = $(if ($dcObject.objectSid) { [string]@($dcObject.objectSid)[0] } else { $null })
+                primaryGroupID    = $(if ($dcObject.primaryGroupID) { [string]@($dcObject.primaryGroupID)[0] } else { $null })
             }
         }
 

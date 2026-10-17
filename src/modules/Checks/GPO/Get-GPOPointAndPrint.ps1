@@ -970,7 +970,7 @@ function New-PointAndPrintObject {
     $dcReachLinks = $linkedOUs
     if ($null -eq $GPOLinkage) { $dcReachLinks = $null }
     $obj | Add-Member -NotePropertyName 'reachesDomainControllers' `
-        -NotePropertyValue (Get-GPODomainControllerReach -Link $dcReachLinks) -Force
+        -NotePropertyValue (Get-GPODomainControllerReach -Link $dcReachLinks -GPOGUID $gpoGuid) -Force
 
     # Point and Print lives under HKLM, so the computer half of the GPO is the one that has
     # to be switched on. $null for the links when the linkage could not be resolved at all.

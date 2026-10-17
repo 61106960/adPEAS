@@ -350,6 +350,8 @@ function Clear-SessionState {
     $Script:CachedAllGPOs = $null
     $Script:CachedGPOLinkage = $null
     $Script:DomainControllerGPOContext = $null
+    $Script:GPOSecurityFilterMap = $null
+    $Script:GPOFilterPrincipalCache = $null
 
     # Kerberoast run state (Invoke-Kerberoast)
     # KerberoastCredParams is a splat table that carries the PSCredential the caller

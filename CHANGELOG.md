@@ -29,7 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   an OU above a domain controller, the domain root or the domain controller's site - or
   says why none does. Domain controllers are found where their computer objects are, and
   a container that blocks inheritance stops every link above it that is not enforced.
-  Security filtering and WMI filters are not read, so the row speaks of links only. It is
+  WMI filters are not read, so the row speaks of links and security filtering only. It is
   information and changes no severity.
 
 - **Credentials found in SYSVOL say what their account is in the directory.** A new
@@ -254,6 +254,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   administrators may write - with the number of accounts that run it and the privileged
   ones among them by name. A local path is not read; `-OPSEC`, passed on by
   `Invoke-adPEAS -OPSEC`, reads nothing. It runs in the Accounts module.
+
+- **The reach of a GPO takes its security filtering into account.** A computer applies a
+  policy only if its token holds a principal granted the Apply Group Policy right on the
+  policy object and none denied it; by default Authenticated Users hold it. The
+  `reachesDomainControllers` row of the GPO checks and the `affectedComputerCount` of
+  `Get-GPOPermissions` read the links alone, so a policy linked at the domain root but
+  filtered to a group of file servers was said to reach the domain controllers and every
+  computer. Both now read who may apply the policy - one query for every policy object
+  per session - and judge each computer by its own SID, its primary group, the groups it
+  is in (nested ones included, and the primary groups nested into a filter group), and
+  Enterprise Domain Controllers for a domain controller. Such a policy now reads "No - by
+  its link on ... it would, but only ... may apply it", and its computer count says the
+  same in `affectedComputersNote`; a principal that cannot be read makes the answer
+  Unknown and the count a lower bound. Where the filtering is not known, the links decide
+  as before.
 
 ### Changed
 
