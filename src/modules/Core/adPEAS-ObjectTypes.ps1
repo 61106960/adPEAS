@@ -833,6 +833,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'REVERSIBLE_ENCRYPTION'
     }
 
+    'RODCPasswordReplication' = @{
+        TitleFormat = "RODC Password Replication: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "RODC Password Replication Policy"
+        Summary = "Checks which privileged accounts a read-only Domain Controller may cache, or has cached, the password of."
+        WhyItMatters = "A read-only Domain Controller stands where physical security is weakest, and every password it caches can be taken from it. Its password replication policy decides which accounts it may cache; a privileged account allowed there is a privileged account outside the Tier-0 boundary."
+        WhatWeCheck = @(
+            "Each read-only Domain Controller's allow list (msDS-RevealOnDemandGroup) and deny list (msDS-NeverRevealGroup) against the token of every privileged account, primary group included - deny wins"
+            "The privileged accounts whose secrets it has received already (msDS-RevealedUsers)"
+            "Whether the Denied RODC Password Replication Group is still on its deny list"
+        )
+        SecureMessage = "No read-only Domain Controller may cache the password of a privileged account, and none holds one."
+        PrimaryFindingId = 'RODC_PRIVILEGED_PASSWORD_ALLOWED'
+    }
+
     'PasswordNotRequired' = @{
         TitleFormat = "Password Not Required: {Name}"
         Module = "Accounts"

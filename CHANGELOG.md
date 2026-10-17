@@ -149,6 +149,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   ones without as a finding with a card of its own. Where the configuration partition
   cannot be read, it says so instead.
 
+- **New check `Get-RODCPasswordReplication`: privileged passwords on read-only Domain
+  Controllers.** For every enabled read-only Domain Controller it compares the allow list
+  (`msDS-RevealOnDemandGroup`) and the deny list (`msDS-NeverRevealGroup`) with the token
+  of every privileged account - recursive membership and the primary group, deny
+  winning - and names the privileged accounts whose password the RODC may cache. It also
+  names the privileged accounts whose secrets the RODC holds already
+  (`msDS-RevealedUsers`), and a deny list that has lost the Denied RODC Password
+  Replication Group. It runs in the Accounts module.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

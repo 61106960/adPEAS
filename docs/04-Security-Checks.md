@@ -864,6 +864,24 @@ Get-ProtectedUsersStatus
 
 ---
 
+### Get-RODCPasswordReplication
+
+**Purpose**: Checks which privileged accounts a read-only Domain Controller may cache, or has cached, the password of.
+
+**What it checks**:
+- Each RODC's allow list (`msDS-RevealOnDemandGroup`) and deny list (`msDS-NeverRevealGroup`) against the token of every privileged account, primary group included - deny wins
+- The privileged accounts whose secrets the RODC has received already (`msDS-RevealedUsers`)
+- Whether the Denied RODC Password Replication Group is still on the RODC's deny list
+
+**Security Impact**: An RODC stands where physical security is weakest, and every password it caches can be extracted from it. A privileged account it may cache is outside the Tier-0 boundary.
+
+**Usage**:
+```powershell
+Get-RODCPasswordReplication
+```
+
+---
+
 ### Get-InactiveAdminAccounts
 
 **Purpose**: Finds privileged accounts that haven't been used.

@@ -228,6 +228,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Domain\Get-SMBSigningStatus.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-PrivilegedGroupMembers.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-ProtectedUsersStatus.ps1"
+    . "$Script:ScriptPath\modules\Checks\Accounts\Get-RODCPasswordReplication.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-InactiveAdminAccounts.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-AdminPasswordNeverExpires.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-AdminReversibleEncryption.ps1"
@@ -1170,6 +1171,7 @@ try {
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-SIDHistoryInjection' -Title 'SID History Injection' -Check { Get-SIDHistoryInjection }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-ManagedServiceAccountSecurity' -Title 'Managed Service Account Security' -Check { Get-ManagedServiceAccountSecurity }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-ProtectedUsersStatus' -Title 'Protected Users Status' -Check { Get-ProtectedUsersStatus }
+            Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-RODCPasswordReplication' -Title 'RODC Password Replication Policy' -Check { Get-RODCPasswordReplication }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-InactiveAdminAccounts' -Title 'Inactive Admin Accounts' -Check { Get-InactiveAdminAccounts }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-AdminPasswordNeverExpires' -Title 'Admin Password Never Expires' -Check { Get-AdminPasswordNeverExpires }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-AdminReversibleEncryption' -Title 'Admin Reversible Encryption' -Check { Get-AdminReversibleEncryption }

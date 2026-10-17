@@ -6294,6 +6294,101 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             @{ Attribute = 'dangerousRights'; Pattern = 'DS-Install-Replica'; Severity = 'Finding' }
         )
     }
+    'RODC_PRIVILEGED_PASSWORD_ALLOWED' = @{
+        Title = "Read-Only Domain Controller May Cache Privileged Passwords"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "The password replication policy of this read-only Domain Controller allows it to cache the passwords of the privileged accounts listed: their token contains a principal from its allow list (msDS-RevealOnDemandGroup) and none from its deny list (msDS-NeverRevealGroup). A read-only Domain Controller is placed where physical security is weakest, and every password it caches can be extracted from it. By default the allow list holds the empty Allowed RODC Password Replication Group, and the deny list holds the Denied RODC Password Replication Group with Administrators, Account Operators, Server Operators and Backup Operators."
+        Impact = @(
+            "Once such an account logs on through the read-only Domain Controller, its password hash is stored there"
+            "Whoever takes the server - a branch office machine, a stolen disk, a backup - takes those hashes with it"
+            "For a Domain Admin or an operator that is the domain"
+        )
+        Attack = @(
+            "1. Attacker gains administrative access to the read-only Domain Controller or its disks"
+            "2. Extracts the cached secrets (secretsdump against the NTDS.dit, or the RODC's own krbtgt to forge tickets for cached accounts)"
+            "3. Uses the privileged account's hash anywhere in the domain"
+        )
+        Remediation = @(
+            "Remove the privileged accounts or the groups that bring them in from the allow list, or the Allowed RODC Password Replication Group"
+            "Add the privileged groups to the Denied RODC Password Replication Group - deny wins over allow"
+            "Prepopulate only the accounts of the branch office the read-only Domain Controller serves"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the allow and deny lists of a read-only Domain Controller"
+                Command = "Get-ADDomainControllerPasswordReplicationPolicy -Identity 'RODC_NAME' -Allowed; Get-ADDomainControllerPasswordReplicationPolicy -Identity 'RODC_NAME' -Denied"
+            }
+            @{
+                Description = "Deny a privileged group for every read-only Domain Controller"
+                Command = "Add-ADGroupMember -Identity 'Denied RODC Password Replication Group' -Members 'GROUP_NAME'"
+            }
+        )
+        References = @(
+            @{ Title = "Password Replication Policy - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc730883(v=ws.10)" }
+            @{ Title = "ms-DS-Revealed-Users attribute - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-msds-revealedusers" }
+        )
+        Tools = @("Impacket", "Mimikatz", "Rubeus")
+        MITRE = "T1003.003"
+    }
+    'RODC_PRIVILEGED_PASSWORD_REVEALED' = @{
+        Title = "Privileged Secrets Cached on a Read-Only Domain Controller"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "The secrets of the privileged accounts listed have already been replicated to this read-only Domain Controller - msDS-RevealedUsers on its computer object names them. They can be extracted from the server today, whatever its password replication policy says now. Changing the policy does not remove a secret that was cached; changing the account's password does."
+        Impact = @(
+            "The password hashes of privileged accounts are on a server outside the protected Tier-0 boundary"
+            "Whoever takes the server takes them, with no further action by the accounts"
+        )
+        Attack = @(
+            "1. Attacker gains administrative access to the read-only Domain Controller or its disks"
+            "2. Extracts the cached hashes of the privileged accounts"
+            "3. Uses them anywhere in the domain"
+        )
+        Remediation = @(
+            "Reset the passwords of the listed accounts - that invalidates the cached copies"
+            "Deny the groups that brought them in, so the secrets are not cached again"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the accounts whose secrets a read-only Domain Controller holds"
+                Command = "Get-ADDomainControllerPasswordReplicationPolicyUsage -Identity 'RODC_NAME' -RevealedAccounts"
+            }
+        )
+        References = @(
+            @{ Title = "ms-DS-Revealed-Users attribute - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-msds-revealedusers" }
+            @{ Title = "Password Replication Policy - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc730883(v=ws.10)" }
+        )
+        Tools = @("Impacket", "Mimikatz")
+        MITRE = "T1003.003"
+    }
+    'RODC_DENIED_GROUP_MISSING' = @{
+        Title = "Denied RODC Password Replication Group Not on the Deny List"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "The deny list (msDS-NeverRevealGroup) of this read-only Domain Controller does not hold the Denied RODC Password Replication Group, which it holds by default. That group is where Domain Admins, Enterprise Admins, Schema Admins and the other Tier-0 principals are denied for every read-only Domain Controller at once; without it, only the allow list keeps their passwords off this server."
+        Impact = @(
+            "A privileged account brought into the allow list - directly or through a broad group - is no longer stopped by the domain-wide deny group"
+        )
+        Attack = @(
+            "1. An administrator adds a broad group to the allow list, or a privileged account to an allowed group"
+            "2. The read-only Domain Controller caches the privileged password at the next logon through it"
+        )
+        Remediation = @(
+            "Put the Denied RODC Password Replication Group back on the deny list of the read-only Domain Controller"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Add the Denied RODC Password Replication Group to the deny list"
+                Command = "Add-ADDomainControllerPasswordReplicationPolicy -Identity 'RODC_NAME' -DeniedList 'Denied RODC Password Replication Group'"
+            }
+        )
+        References = @(
+            @{ Title = "Password Replication Policy - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc730883(v=ws.10)" }
+        )
+        Tools = @("PowerView")
+        MITRE = "T1003.003"
+    }
     'UNREGISTERED_DOMAIN_CONTROLLER' = @{
         Title = "Computer Account With the Domain Controller Role That Is Not a Domain Controller"
         Risk = "Finding"
@@ -19440,6 +19535,21 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         SecureMessage = "No account stores its password with reversible encryption. No password can be recovered to plaintext from Active Directory through this setting."
         PrimaryFindingId = 'REVERSIBLE_ENCRYPTION'
+    }
+    'RODCPasswordReplication' = @{
+        TitleFormat = "RODC Password Replication: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "RODC Password Replication Policy"
+        Summary = "Checks which privileged accounts a read-only Domain Controller may cache, or has cached, the password of."
+        WhyItMatters = "A read-only Domain Controller stands where physical security is weakest, and every password it caches can be taken from it. Its password replication policy decides which accounts it may cache; a privileged account allowed there is a privileged account outside the Tier-0 boundary."
+        WhatWeCheck = @(
+            "Each read-only Domain Controller's allow list (msDS-RevealOnDemandGroup) and deny list (msDS-NeverRevealGroup) against the token of every privileged account, primary group included - deny wins"
+            "The privileged accounts whose secrets it has received already (msDS-RevealedUsers)"
+            "Whether the Denied RODC Password Replication Group is still on its deny list"
+        )
+        SecureMessage = "No read-only Domain Controller may cache the password of a privileged account, and none holds one."
+        PrimaryFindingId = 'RODC_PRIVILEGED_PASSWORD_ALLOWED'
     }
     'PasswordNotRequired' = @{
         TitleFormat = "Password Not Required: {Name}"
@@ -66585,6 +66695,124 @@ function Get-ProtectedUsersStatus {
         Write-Log "[Get-ProtectedUsersStatus] Check completed"
     }
 }
+function Get-RODCPasswordReplication {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    begin {
+        Write-Log "[Get-RODCPasswordReplication] Starting check"
+    }
+    process {
+        try {
+            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+                return
+            }
+            Show-SubHeader "Checking the password replication policy of read-only Domain Controllers..." -ObjectType "RODCPasswordReplication"
+            $rodcs = @(Get-DomainComputer -DomainController @PSBoundParameters | Test-AccountActivity -IsEnabled |
+                Where-Object { @($_.userAccountControl) -contains 'PARTIAL_SECRETS_ACCOUNT' })
+            if ($rodcs.Count -eq 0) {
+                Show-Line "No read-only Domain Controller in this domain - there is no password replication policy to check" -Class Note
+                return
+            }
+            $privilegedFilter = Get-PrivilegedAccountFilter -IncludeOperators @PSBoundParameters
+            $accountProperties = @('sAMAccountName', 'objectSid', 'distinguishedName', 'primaryGroupID')
+            $candidates = @(Get-DomainUser -Enabled -LDAPFilter $privilegedFilter -Properties $accountProperties @PSBoundParameters)
+            $candidates += @(Get-DomainUser -GMSA -Enabled -LDAPFilter $privilegedFilter -Properties $accountProperties @PSBoundParameters)
+            $privileged = @()
+            foreach ($candidate in $candidates) {
+                if (-not (Test-IsPrivileged -Identity $candidate -IncludeOperators).IsPrivileged) { continue }
+                $sid = [string]$candidate.objectSid
+                $tokenSIDs = @($sid) + @(Get-RecursiveGroupMembership -IdentitySID $sid -IdentityDN ([string]$candidate.distinguishedName))
+                if ($candidate.primaryGroupID -and $sid -match '^(S-1-5-21-\d+-\d+-\d+)-\d+$') {
+                    $primaryGroupSID = "$($Matches[1])-$($candidate.primaryGroupID)"
+                    $tokenSIDs += @($primaryGroupSID) + @(Get-RecursiveGroupMembership -IdentitySID $primaryGroupSID)
+                }
+                $privileged += [PSCustomObject]@{
+                    Name              = [string]$candidate.sAMAccountName
+                    DistinguishedName = [string]$candidate.distinguishedName
+                    TokenSIDs         = $tokenSIDs
+                }
+            }
+            $sidByDN = @{}
+            foreach ($rodc in $rodcs) {
+                foreach ($dn in (@($rodc.'msDS-RevealOnDemandGroup') + @($rodc.'msDS-NeverRevealGroup'))) {
+                    if (-not $dn -or $sidByDN.ContainsKey([string]$dn)) { continue }
+                    $listed = @(Get-DomainObject -Identity ([string]$dn) -Properties 'objectSid' @PSBoundParameters)[0]
+                    $sidByDN[[string]$dn] = if ($listed -and $listed.objectSid) { [string]$listed.objectSid } else { $null }
+                }
+            }
+            $deniedGroupSID = "$($Script:LDAPContext.DomainSID)-572"
+            foreach ($rodc in $rodcs) {
+                $rodcName = ([string]$rodc.sAMAccountName).TrimEnd('$')
+                $allowed = @{}
+                foreach ($dn in @($rodc.'msDS-RevealOnDemandGroup')) {
+                    if ($dn -and $sidByDN[[string]$dn]) { $allowed[$sidByDN[[string]$dn]] = $true }
+                }
+                $denied = @{}
+                $unresolvedDenied = 0
+                foreach ($dn in @($rodc.'msDS-NeverRevealGroup')) {
+                    if (-not $dn) { continue }
+                    if ($sidByDN[[string]$dn]) { $denied[$sidByDN[[string]$dn]] = $true } else { $unresolvedDenied++ }
+                }
+                $exposedNames = @()
+                foreach ($account in $privileged) {
+                    $isAllowed = @($account.TokenSIDs | Where-Object { $allowed.ContainsKey($_) }).Count -gt 0
+                    $isDenied  = @($account.TokenSIDs | Where-Object { $denied.ContainsKey($_) }).Count -gt 0
+                    if ($isAllowed -and -not $isDenied) { $exposedNames += $account.Name }
+                }
+                $revealedDNs = @{}
+                foreach ($value in @($rodc.'msDS-RevealedUsers')) {
+                    if ("$value" -match '^B:\d+:[0-9A-Fa-f]*:(.+)$') { $revealedDNs[$Matches[1]] = $true }
+                }
+                $revealedNames = @($privileged | Where-Object { $revealedDNs.ContainsKey($_.DistinguishedName) } | ForEach-Object { $_.Name })
+                $issues = 0
+                if ($exposedNames.Count -gt 0) {
+                    $issues++
+                    Show-Line "$rodcName - $($exposedNames.Count) privileged account(s) may have their password cached, allowed and not denied by its password replication policy: $(Format-RODCAccountList $exposedNames)" -Class Finding -FindingId 'RODC_PRIVILEGED_PASSWORD_ALLOWED'
+                }
+                if ($revealedNames.Count -gt 0) {
+                    $issues++
+                    Show-Line "$rodcName - the secrets of $($revealedNames.Count) privileged account(s) are cached on it already: $(Format-RODCAccountList $revealedNames)" -Class Finding -FindingId 'RODC_PRIVILEGED_PASSWORD_REVEALED'
+                }
+                if (-not $denied.ContainsKey($deniedGroupSID)) {
+                    $issues++
+                    Show-Line "$rodcName - the Denied RODC Password Replication Group is not on its deny list" -Class Hint -FindingId 'RODC_DENIED_GROUP_MISSING'
+                }
+                if ($unresolvedDenied -gt 0) {
+                    $issues++
+                    Show-Line "$rodcName - $unresolvedDenied member(s) of its deny list could not be resolved and were not counted" -Class Note
+                }
+                if ($issues -eq 0) {
+                    Show-Line "$rodcName - no privileged account may have its password cached, and none has" -Class Secure
+                }
+            }
+        } catch {
+            Write-Log "[Get-RODCPasswordReplication] Error: $_" -Level Error
+            Show-Line "Error during check - the password replication policy of the read-only Domain Controllers could not be evaluated: $_" -Class Finding
+        }
+    }
+    end {
+        Write-Log "[Get-RODCPasswordReplication] Check completed"
+    }
+}
+function Format-RODCAccountList {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string[]]$Name
+    )
+    $sorted = @($Name | Sort-Object)
+    $shown = @($sorted | Select-Object -First 20) -join ', '
+    if ($sorted.Count -gt 20) { $shown = "$shown, ... and $($sorted.Count - 20) more" }
+    return $shown
+}
 function Get-InactiveAdminAccounts {
     [CmdletBinding()]
     param(
@@ -89862,7 +90090,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1553"
+$Script:adPEASVersion = "2.7.0+20261017-1605"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -90353,6 +90581,7 @@ try {
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-SIDHistoryInjection' -Title 'SID History Injection' -Check { Get-SIDHistoryInjection }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-ManagedServiceAccountSecurity' -Title 'Managed Service Account Security' -Check { Get-ManagedServiceAccountSecurity }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-ProtectedUsersStatus' -Title 'Protected Users Status' -Check { Get-ProtectedUsersStatus }
+            Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-RODCPasswordReplication' -Title 'RODC Password Replication Policy' -Check { Get-RODCPasswordReplication }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-InactiveAdminAccounts' -Title 'Inactive Admin Accounts' -Check { Get-InactiveAdminAccounts }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-AdminPasswordNeverExpires' -Title 'Admin Password Never Expires' -Check { Get-AdminPasswordNeverExpires }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-AdminReversibleEncryption' -Title 'Admin Reversible Encryption' -Check { Get-AdminReversibleEncryption }
