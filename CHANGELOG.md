@@ -155,6 +155,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   automatic logon the documented way was never reported. The rule reads the number out of
   the string now; the DWORD rules still ignore a string, because Windows does too.
 
+- **`Get-CredentialExposure` reports every Winlogon password in a Registry.xml.** It kept
+  one value of each name per file - the last - so a file that deploys two kiosk accounts
+  reported one of them, and it looked only at files that also say `AutoAdminLogon`,
+  although a GPO that deploys the user name and password while another GPO switches
+  automatic logon on puts the password into SYSVOL all the same. Each `DefaultPassword`
+  and `AltDefaultPassword` under the Winlogon key is now its own credential, with the user
+  and domain name of its own set or collection.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

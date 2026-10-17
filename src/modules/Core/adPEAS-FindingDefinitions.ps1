@@ -6165,7 +6165,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
         Attack = @(
             "1. Attacker accesses SYSVOL share (any domain user can read)"
-            "2. Searches for Registry.xml files containing AutoAdminLogon"
+            "2. Searches for Registry.xml files containing the Winlogon DefaultPassword value"
             "3. Extracts DefaultUserName, DefaultPassword, and DefaultDomainName"
             "4. Uses credentials directly (no decryption needed!)"
             "5. Logs into systems where AutoAdminLogon is configured"
@@ -6201,7 +6201,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             }
             @{
                 Description = "Find the Registry.xml items in a GPO folder, to know which GPO to open"
-                Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com\Policies' -Recurse -Include Registry.xml | Where-Object { Select-String -Path `$_.FullName -Pattern 'AutoAdminLogon' -Quiet } | Select-Object FullName"
+                Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com\Policies' -Recurse -Include Registry.xml | Where-Object { Select-String -Path `$_.FullName -Pattern 'DefaultPassword' -Quiet } | Select-Object FullName"
             }
             @{
                 Description = "Disable AutoAdminLogon locally on a specific computer"

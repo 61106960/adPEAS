@@ -9589,7 +9589,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    )
 	    Attack = @(
 	        "1. Attacker accesses SYSVOL share (any domain user can read)"
-	        "2. Searches for Registry.xml files containing AutoAdminLogon"
+	        "2. Searches for Registry.xml files containing the Winlogon DefaultPassword value"
 	        "3. Extracts DefaultUserName, DefaultPassword, and DefaultDomainName"
 	        "4. Uses credentials directly (no decryption needed!)"
 	        "5. Logs into systems where AutoAdminLogon is configured"
@@ -9625,7 +9625,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        }
 	        @{
 	            Description = "Find the Registry.xml items in a GPO folder, to know which GPO to open"
-	            Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com\Policies' -Recurse -Include Registry.xml | Where-Object { Select-String -Path `$_.FullName -Pattern 'AutoAdminLogon' -Quiet } | Select-Object FullName"
+	            Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com\Policies' -Recurse -Include Registry.xml | Where-Object { Select-String -Path `$_.FullName -Pattern 'DefaultPassword' -Quiet } | Select-Object FullName"
 	        }
 	        @{
 	            Description = "Disable AutoAdminLogon locally on a specific computer"
@@ -73906,6 +73906,58 @@ function Get-ReportedLineKey {
 	}
 	return $Match.Trim()
 }
+function Get-WinlogonCredential {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [xml]$XmlContent
+	)
+	function Select-SetValue {
+	    param($Candidates, $Anchor, $Passwords)
+	    $candidates = @($Candidates)
+	    if ($candidates.Count -eq 0) { return '' }
+	    if ($candidates.Count -eq @($Passwords).Count) {
+	        $rank = @($Passwords | Where-Object { $_.Position -lt $Anchor.Position }).Count
+	        return $candidates[$rank].Value
+	    }
+	    $before = @($candidates | Where-Object { $_.Position -lt $Anchor.Position })
+	    if ($before.Count -gt 0) { return $before[$before.Count - 1].Value }
+	    return $candidates[0].Value
+	}
+	$winlogonItems = @()
+	$position = 0
+	foreach ($prop in $XmlContent.GetElementsByTagName('Properties')) {
+	    $position++
+	    $keyPath = ([string]$prop.GetAttribute('key')).Trim('\')
+	    if ($keyPath -notmatch '\\Windows NT\\CurrentVersion\\Winlogon$') { continue }
+	    $valueName = [string]$prop.GetAttribute('name')
+	    if (-not ($valueName -match '^(?<set>(Alt)?)Default(?<part>UserName|Password|DomainName)$')) { continue }
+	    $holder = $null
+	    if ($prop.ParentNode) { $holder = $prop.ParentNode.ParentNode }
+	    $winlogonItems += [PSCustomObject]@{
+	        Position = $position
+	        Holder   = $holder
+	        Set      = $Matches['set']
+	        Part     = $Matches['part']
+	        Value    = [string]$prop.GetAttribute('value')
+	    }
+	}
+	foreach ($passwordItem in @($winlogonItems | Where-Object { $_.Part -eq 'password' })) {
+	    if (-not $passwordItem.Value) { continue }
+	    $sameSet = @($winlogonItems | Where-Object {
+	        $_.Set -eq $passwordItem.Set -and [object]::ReferenceEquals($_.Holder, $passwordItem.Holder)
+	    })
+	    $passwords = @($sameSet | Where-Object { $_.Part -eq 'password' })
+	    $user   = Select-SetValue -Candidates @($sameSet | Where-Object { $_.Part -eq 'username' }) -Anchor $passwordItem -Passwords $passwords
+	    $domain = Select-SetValue -Candidates @($sameSet | Where-Object { $_.Part -eq 'domainname' }) -Anchor $passwordItem -Passwords $passwords
+	    $fullName = $user
+	    if ($user -and $domain -and $user -notmatch '[\\@]') { $fullName = "$domain\$user" }
+	    [PSCustomObject]@{
+	        UserName = $fullName
+	        Password = $passwordItem.Value
+	    }
+	}
+}
 function Get-CredentialExposure {
 	[CmdletBinding()]
 	param(
@@ -74035,29 +74087,21 @@ function Get-CredentialExposure {
 	                                }
 	                            }
 	                        }
-	                        if ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
-	                            $autoLogonUser = $null
-	                            $autoLogonPassword = $null
-	                            $autoLogonDomain = $null
-	                            foreach ($prop in $xmlContent.GetElementsByTagName('Properties')) {
-	                                if ($prop.name -match 'DefaultUserName') { $autoLogonUser = $prop.value }
-	                                if ($prop.name -match 'DefaultPassword') { $autoLogonPassword = $prop.value }
-	                                if ($prop.name -match 'DefaultDomainName') { $autoLogonDomain = $prop.value }
-	                            }
-	                            if ($autoLogonPassword -and $autoLogonPassword -ne '') {
-	                                $fullUsername = if ($autoLogonDomain) { "$autoLogonDomain\$autoLogonUser" } else { $autoLogonUser }
+	                        if ($fileName -match 'Registry\.xml') {
+	                            foreach ($winlogonCredential in @(Get-WinlogonCredential -XmlContent $xmlContent)) {
+	                                $fullUsername = $winlogonCredential.UserName
 	                                $credObj = [PSCustomObject]@{
 	                                    CredentialType = "AutoAdminLogon"
 	                                    FilePath = $xmlFile.Fullname
 	                                    UserName = $fullUsername
-	                                    Password = $autoLogonPassword
+	                                    Password = $winlogonCredential.Password
 	                                }
 	                                $accountInAD = Resolve-CredentialAccount -UserName $fullUsername -FileName $fileName -FileTime $xmlFile.LastWriteTime
 	                                if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
 	                                Show-Line "Found AutoAdminLogon credential" -Class Finding
-	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
-	                                    Show-Object $credObj -Class Finding
+	                                $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
+	                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
+	                                Show-Object $credObj -Class Finding
 	                            }
 	                        }
 	                    }
@@ -74267,22 +74311,14 @@ function Get-CredentialExposure {
 	                                    }
 	                                }
 	                            }
-	                            if ($fileName -match 'Registry\.xml' -and $xmlContent.InnerXml -match 'AutoAdminLogon') {
-	                                $autoLogonUser = $null
-	                                $autoLogonPassword = $null
-	                                $autoLogonDomain = $null
-	                                foreach ($prop in $xmlContent.GetElementsByTagName('Properties')) {
-	                                    if ($prop.name -match 'DefaultUserName') { $autoLogonUser = $prop.value }
-	                                    if ($prop.name -match 'DefaultPassword') { $autoLogonPassword = $prop.value }
-	                                    if ($prop.name -match 'DefaultDomainName') { $autoLogonDomain = $prop.value }
-	                                }
-	                                if ($autoLogonPassword -and $autoLogonPassword -ne '') {
-	                                    $fullUsername = if ($autoLogonDomain) { "$autoLogonDomain\$autoLogonUser" } else { $autoLogonUser }
+	                            if ($fileName -match 'Registry\.xml') {
+	                                foreach ($winlogonCredential in @(Get-WinlogonCredential -XmlContent $xmlContent)) {
+	                                    $fullUsername = $winlogonCredential.UserName
 	                                    $credObj = [PSCustomObject]@{
 	                                        CredentialType = "AutoAdminLogon"
 	                                        FilePath = $xmlFile.Fullname
 	                                        UserName = $fullUsername
-	                                        Password = $autoLogonPassword
+	                                        Password = $winlogonCredential.Password
 	                                    }
 	                                    $accountInAD = Resolve-CredentialAccount -UserName $fullUsername -FileName $fileName -FileTime $xmlFile.LastWriteTime
 	                                    if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
@@ -86010,7 +86046,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1134"
+$Script:adPEASVersion = "2.7.0+20261017-1149"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
