@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 22:06:50
-    Version: 2.7.0+20261017-2206
+    Build: 2026-10-17 22:11:03
+    Version: 2.7.0+20261017-2211
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -128767,18 +128767,27 @@ function Get-UnixPasswordAccounts {
                 $formats = @()
                 $worstRank = 0
                 foreach ($attribute in $passwordAttributes) {
-                    $value = [string]$user.$attribute
-                    if ([string]::IsNullOrWhiteSpace($value)) { continue }
+                    # Each value on its own. userPassword and unixUserPassword are
+                    # multi-valued, and the values of one attribute need not share a format.
+                    # Cast to a string, two values were joined with a space: the joined text
+                    # matched no hash shape and was called cleartext, and a cleartext value
+                    # beside a hash vanished into it.
+                    $values = @(@($user.$attribute) | ForEach-Object { [string]$_ } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
-                    # What the value is decides what it is worth: a cleartext password or an
-                    # NT hash is usable as it stands, an LM or DES hash falls in hours, and a
-                    # salted $6$ has to be cracked first. All of it used to be one red
-                    # finding with one score.
-                    $verdict = Get-UnixPasswordFormat -Value $value -Attribute $attribute
-                    $formats += "${attribute}: $($verdict.Format)"
-                    $thisRank = 1
-                    if ($rank.ContainsKey([string]$verdict.Severity)) { $thisRank = $rank[[string]$verdict.Severity] }
-                    if ($thisRank -gt $worstRank) { $worstRank = $thisRank }
+                    for ($valueIndex = 0; $valueIndex -lt $values.Count; $valueIndex++) {
+                        # What the value is decides what it is worth: a cleartext password or
+                        # an NT hash is usable as it stands, an LM or DES hash falls in hours,
+                        # and a salted $6$ has to be cracked first. All of it used to be one
+                        # red finding with one score.
+                        $verdict = Get-UnixPasswordFormat -Value $values[$valueIndex] -Attribute $attribute
+                        $label = $attribute
+                        if ($values.Count -gt 1) { $label = "$attribute ($($valueIndex + 1) of $($values.Count))" }
+                        $formats += "${label}: $($verdict.Format)"
+                        $thisRank = 1
+                        if ($rank.ContainsKey([string]$verdict.Severity)) { $thisRank = $rank[[string]$verdict.Severity] }
+                        if ($thisRank -gt $worstRank) { $worstRank = $thisRank }
+                    }
                 }
 
                 if ($formats.Count -eq 0) {
@@ -144590,7 +144599,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-2206"
+$Script:adPEASVersion = "2.7.0+20261017-2211"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

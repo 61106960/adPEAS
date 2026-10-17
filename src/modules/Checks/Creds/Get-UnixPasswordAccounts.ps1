@@ -93,18 +93,27 @@ function Get-UnixPasswordAccounts {
                 $formats = @()
                 $worstRank = 0
                 foreach ($attribute in $passwordAttributes) {
-                    $value = [string]$user.$attribute
-                    if ([string]::IsNullOrWhiteSpace($value)) { continue }
+                    # Each value on its own. userPassword and unixUserPassword are
+                    # multi-valued, and the values of one attribute need not share a format.
+                    # Cast to a string, two values were joined with a space: the joined text
+                    # matched no hash shape and was called cleartext, and a cleartext value
+                    # beside a hash vanished into it.
+                    $values = @(@($user.$attribute) | ForEach-Object { [string]$_ } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
-                    # What the value is decides what it is worth: a cleartext password or an
-                    # NT hash is usable as it stands, an LM or DES hash falls in hours, and a
-                    # salted $6$ has to be cracked first. All of it used to be one red
-                    # finding with one score.
-                    $verdict = Get-UnixPasswordFormat -Value $value -Attribute $attribute
-                    $formats += "${attribute}: $($verdict.Format)"
-                    $thisRank = 1
-                    if ($rank.ContainsKey([string]$verdict.Severity)) { $thisRank = $rank[[string]$verdict.Severity] }
-                    if ($thisRank -gt $worstRank) { $worstRank = $thisRank }
+                    for ($valueIndex = 0; $valueIndex -lt $values.Count; $valueIndex++) {
+                        # What the value is decides what it is worth: a cleartext password or
+                        # an NT hash is usable as it stands, an LM or DES hash falls in hours,
+                        # and a salted $6$ has to be cracked first. All of it used to be one
+                        # red finding with one score.
+                        $verdict = Get-UnixPasswordFormat -Value $values[$valueIndex] -Attribute $attribute
+                        $label = $attribute
+                        if ($values.Count -gt 1) { $label = "$attribute ($($valueIndex + 1) of $($values.Count))" }
+                        $formats += "${label}: $($verdict.Format)"
+                        $thisRank = 1
+                        if ($rank.ContainsKey([string]$verdict.Severity)) { $thisRank = $rank[[string]$verdict.Severity] }
+                        if ($thisRank -gt $worstRank) { $worstRank = $thisRank }
+                    }
                 }
 
                 if ($formats.Count -eq 0) {

@@ -80516,13 +80516,17 @@ function Get-UnixPasswordAccounts {
                 $formats = @()
                 $worstRank = 0
                 foreach ($attribute in $passwordAttributes) {
-                    $value = [string]$user.$attribute
-                    if ([string]::IsNullOrWhiteSpace($value)) { continue }
-                    $verdict = Get-UnixPasswordFormat -Value $value -Attribute $attribute
-                    $formats += "${attribute}: $($verdict.Format)"
-                    $thisRank = 1
-                    if ($rank.ContainsKey([string]$verdict.Severity)) { $thisRank = $rank[[string]$verdict.Severity] }
-                    if ($thisRank -gt $worstRank) { $worstRank = $thisRank }
+                    $values = @(@($user.$attribute) | ForEach-Object { [string]$_ } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                    for ($valueIndex = 0; $valueIndex -lt $values.Count; $valueIndex++) {
+                        $verdict = Get-UnixPasswordFormat -Value $values[$valueIndex] -Attribute $attribute
+                        $label = $attribute
+                        if ($values.Count -gt 1) { $label = "$attribute ($($valueIndex + 1) of $($values.Count))" }
+                        $formats += "${label}: $($verdict.Format)"
+                        $thisRank = 1
+                        if ($rank.ContainsKey([string]$verdict.Severity)) { $thisRank = $rank[[string]$verdict.Severity] }
+                        if ($thisRank -gt $worstRank) { $worstRank = $thisRank }
+                    }
                 }
                 if ($formats.Count -eq 0) {
                     $withheld += $user
@@ -92962,7 +92966,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-2206"
+$Script:adPEASVersion = "2.7.0+20261017-2211"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

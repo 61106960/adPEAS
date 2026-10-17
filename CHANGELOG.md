@@ -439,6 +439,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `Groups.xml` nobody could parse says nothing about the registry settings. An empty file
   is not a gap.
 
+- **`Get-UnixPasswordAccounts` judges every value of a multi-valued attribute on its
+  own.** `userPassword` and `unixUserPassword` may hold more than one value, and the check
+  cast them to one string: the values were joined with a space and judged as one. A
+  salted `{SSHA}` hash with the password itself beside it read as a salted hash, and the
+  cleartext went unreported; two salted hashes side by side matched no hash shape and
+  read as cleartext. Each value now gets its own line - "userPassword (2 of 2): Cleartext
+  ..." - and the account its loudest verdict.
+
 - **The Restricted Admin card is a hint, as its row is.** The registry table lowered
   `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the
   card and the trigger on its row stayed a finding: the console printed the row yellow and
