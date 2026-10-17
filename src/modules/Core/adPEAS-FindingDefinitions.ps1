@@ -13593,7 +13593,7 @@ $acl.Access | Where-Object {
         Title = "GPO Script Executed From Outside the Policy Store"
         Risk = "Finding"
         BaseScore = 60
-        Description = "A Group Policy runs this script from a path that is not the policy's own Scripts folder in SYSVOL - a file share, or a local path on every target machine. Whoever may write that file decides what runs, and a startup or shutdown script runs as SYSTEM on every machine the policy reaches. adPEAS reports the path and the context; the permissions of that path are not something it can read from the directory, so they are the first thing to check by hand."
+        Description = "A Group Policy runs this script from a path that is not the policy's own Scripts folder in SYSVOL - a file share, the domain's NETLOGON scripts folder, or a local path on every target machine. Whoever may write that file decides what runs, and a startup or shutdown script runs as SYSTEM on every machine the policy reaches. adPEAS reports the path and the context; the permissions of that path are not something it can read from the directory, so they are the first thing to check by hand."
         Impact = @(
             "Write access to the script file is code execution in the script's context - SYSTEM for startup and shutdown scripts"
             "The scope is every machine or every user the GPO applies to, at every boot or every logon"
@@ -13632,12 +13632,18 @@ $acl.Access | Where-Object {
             @{ Attribute = 'scriptRisk'; Pattern = '^Runs as SYSTEM from a path outside'; Severity = 'Finding' }
             @{ Attribute = 'scriptRisk'; Pattern = '^Runs as the logged-on user from a path outside'; Severity = 'Hint' }
 
+            # NETLOGON, or SYSVOL outside a GPO folder: not the policy's own folder either,
+            # so the card applies, but its default permissions let administrators write -
+            # a hint under SYSTEM, a note under the user.
+            @{ Attribute = 'scriptRisk'; Pattern = '^Runs as SYSTEM from NETLOGON'; Severity = 'Hint' }
+            @{ Attribute = 'scriptRisk'; Pattern = '^Runs as the logged-on user from NETLOGON'; Severity = 'Note' }
+
             # The script in the policy store: a colour and no card, because the GPO
             # permissions decide who may change it and the GPO permission checks are what
-            # report those. The ExcludePattern keeps this one off the two cases above -
+            # report those. The ExcludePattern keeps this one off the four cases above -
             # a severity-only trigger without a pattern matches every value of its
             # attribute, and that pass runs first.
-            @{ Attribute = 'scriptRisk'; ExcludePattern = 'outside the policy store'; Severity = 'Note'; SeverityOnly = $true }
+            @{ Attribute = 'scriptRisk'; ExcludePattern = 'outside the policy store|outside a GPO folder'; Severity = 'Note'; SeverityOnly = $true }
 
             @{ Attribute = 'scriptParameterCredential'; Severity = 'Finding' }
         )

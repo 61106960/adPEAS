@@ -188,6 +188,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   and described blocked inheritance - which at the domain stops the site-linked policies
   alone and is not what the card is about.
 
+- **A GPO script in NETLOGON is no longer said to be guarded by the GPO's permissions.**
+  `Get-GPOScriptPaths` counted NETLOGON, and SYSVOL outside a GPO folder, as the policy
+  store "where the GPO permissions decide who may change it". That folder's file
+  permissions are no GPO's and are not read by the check. Such a script is now a hint when
+  it runs as SYSTEM and a note when it runs as the user, says that its permissions were
+  not checked, and carries the card for scripts outside the policy store.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

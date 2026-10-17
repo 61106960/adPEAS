@@ -16243,7 +16243,7 @@ $acl.Access | Where-Object {
 	    Title = "GPO Script Executed From Outside the Policy Store"
 	    Risk = "Finding"
 	    BaseScore = 60
-	    Description = "A Group Policy runs this script from a path that is not the policy's own Scripts folder in SYSVOL - a file share, or a local path on every target machine. Whoever may write that file decides what runs, and a startup or shutdown script runs as SYSTEM on every machine the policy reaches. adPEAS reports the path and the context; the permissions of that path are not something it can read from the directory, so they are the first thing to check by hand."
+	    Description = "A Group Policy runs this script from a path that is not the policy's own Scripts folder in SYSVOL - a file share, the domain's NETLOGON scripts folder, or a local path on every target machine. Whoever may write that file decides what runs, and a startup or shutdown script runs as SYSTEM on every machine the policy reaches. adPEAS reports the path and the context; the permissions of that path are not something it can read from the directory, so they are the first thing to check by hand."
 	    Impact = @(
 	        "Write access to the script file is code execution in the script's context - SYSTEM for startup and shutdown scripts"
 	        "The scope is every machine or every user the GPO applies to, at every boot or every logon"
@@ -16281,7 +16281,9 @@ $acl.Access | Where-Object {
 	    Triggers = @(
 	        @{ Attribute = 'scriptRisk'; Pattern = '^Runs as SYSTEM from a path outside'; Severity = 'Finding' }
 	        @{ Attribute = 'scriptRisk'; Pattern = '^Runs as the logged-on user from a path outside'; Severity = 'Hint' }
-	        @{ Attribute = 'scriptRisk'; ExcludePattern = 'outside the policy store'; Severity = 'Note'; SeverityOnly = $true }
+	        @{ Attribute = 'scriptRisk'; Pattern = '^Runs as SYSTEM from NETLOGON'; Severity = 'Hint' }
+	        @{ Attribute = 'scriptRisk'; Pattern = '^Runs as the logged-on user from NETLOGON'; Severity = 'Note' }
+	        @{ Attribute = 'scriptRisk'; ExcludePattern = 'outside the policy store|outside a GPO folder'; Severity = 'Note'; SeverityOnly = $true }
 	        @{ Attribute = 'scriptParameterCredential'; Severity = 'Finding' }
 	    )
 	}
@@ -69582,10 +69584,15 @@ function Parse-ScriptIni {
 	            'js'   { 'JScript' }
 	            default { if ($IsPowerShell) { 'PowerShell' } else { 'Unknown' } }
 	        }
-	        $pathIsInsidePolicyStore = ($cmdLine -match '(?i)\\Policies\\\{') -or
-	                                   ($cmdLine -match '(?i)\\(SYSVOL|NETLOGON)\\')
+	        $pathIsInsidePolicyStore = ($cmdLine -match '(?i)\\Policies\\\{')
+	        $pathIsInSysvolShare = (-not $pathIsInsidePolicyStore) -and
+	                               ($cmdLine -match '(?i)\\(SYSVOL|NETLOGON)\\')
 	        $scriptRisk = ''
-	        if (-not $pathIsInsidePolicyStore -and $runsAsSystem) {
+	        if ($pathIsInSysvolShare -and $runsAsSystem) {
+	            $scriptRisk = 'Runs as SYSTEM from NETLOGON or SYSVOL outside a GPO folder - the file permissions there decide who may change it, not the GPO permissions, and they were not checked'
+	        } elseif ($pathIsInSysvolShare) {
+	            $scriptRisk = 'Runs as the logged-on user from NETLOGON or SYSVOL outside a GPO folder - the file permissions there decide who may change it, not the GPO permissions, and they were not checked'
+	        } elseif (-not $pathIsInsidePolicyStore -and $runsAsSystem) {
 	            $scriptRisk = 'Runs as SYSTEM from a path outside the policy store - whoever may write that file executes code as SYSTEM on every machine in scope. The permissions of that path were not checked'
 	        } elseif (-not $pathIsInsidePolicyStore) {
 	            $scriptRisk = 'Runs as the logged-on user from a path outside the policy store - whoever may write that file executes code as every user in scope. The permissions of that path were not checked'
@@ -69614,7 +69621,9 @@ function Parse-ScriptIni {
 	            IsPowerShell   = $IsPowerShell
 	            InsidePolicyStore = $pathIsInsidePolicyStore
 	            scriptRisk     = $scriptRisk
-	            _Severity      = $(if (-not $pathIsInsidePolicyStore -and $runsAsSystem) { 'Finding' }
+	            _Severity      = $(if ($pathIsInSysvolShare -and $runsAsSystem) { 'Hint' }
+	                               elseif ($pathIsInSysvolShare) { 'Note' }
+	                               elseif (-not $pathIsInsidePolicyStore -and $runsAsSystem) { 'Finding' }
 	                               elseif (-not $pathIsInsidePolicyStore) { 'Hint' }
 	                               else { 'Note' })
 	        }
@@ -86046,7 +86055,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1210"
+$Script:adPEASVersion = "2.7.0+20261017-1216"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

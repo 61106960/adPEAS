@@ -405,19 +405,30 @@ function Parse-ScriptIni {
 
             # Where the script actually lives. A bare file name has been resolved into the
             # GPO's own Scripts folder above, so a path inside a Policies\{GUID} folder is
-            # the policy store itself - and so are SYSVOL and NETLOGON. Their ACL is the one
-            # the GPO permission findings already speak about. Anything else is a file on a
-            # share or a local disk whose permissions nobody here has seen.
-            $pathIsInsidePolicyStore = ($cmdLine -match '(?i)\\Policies\\\{') -or
-                                       ($cmdLine -match '(?i)\\(SYSVOL|NETLOGON)\\')
+            # the policy store itself, and the GPO's permissions are what its folder's ACL
+            # follows - the ones the GPO permission findings speak about. NETLOGON, and
+            # SYSVOL outside a GPO folder, are not: that is the domain's scripts folder,
+            # whose file permissions no GPO decides, and they used to be counted as the
+            # policy store. Anything else is a file on a share or a local disk whose
+            # permissions nobody here has seen.
+            $pathIsInsidePolicyStore = ($cmdLine -match '(?i)\\Policies\\\{')
+            $pathIsInSysvolShare = (-not $pathIsInsidePolicyStore) -and
+                                   ($cmdLine -match '(?i)\\(SYSVOL|NETLOGON)\\')
 
             # And what that is worth. This check used to compute nothing: every script was
             # printed at the renderer's default class, and the only card a row could reach
             # was SCRIPTPATH_HARDCODED - a definition written about the scriptPath attribute
             # of a user account, which described the GPO's script as somebody's logon script
             # attribute being backdoored.
+            #
+            # NETLOGON is a hint under SYSTEM and a note otherwise: its default permissions
+            # let administrators write, but they are not the GPO's and were not read.
             $scriptRisk = ''
-            if (-not $pathIsInsidePolicyStore -and $runsAsSystem) {
+            if ($pathIsInSysvolShare -and $runsAsSystem) {
+                $scriptRisk = 'Runs as SYSTEM from NETLOGON or SYSVOL outside a GPO folder - the file permissions there decide who may change it, not the GPO permissions, and they were not checked'
+            } elseif ($pathIsInSysvolShare) {
+                $scriptRisk = 'Runs as the logged-on user from NETLOGON or SYSVOL outside a GPO folder - the file permissions there decide who may change it, not the GPO permissions, and they were not checked'
+            } elseif (-not $pathIsInsidePolicyStore -and $runsAsSystem) {
                 $scriptRisk = 'Runs as SYSTEM from a path outside the policy store - whoever may write that file executes code as SYSTEM on every machine in scope. The permissions of that path were not checked'
             } elseif (-not $pathIsInsidePolicyStore) {
                 $scriptRisk = 'Runs as the logged-on user from a path outside the policy store - whoever may write that file executes code as every user in scope. The permissions of that path were not checked'
@@ -452,7 +463,9 @@ function Parse-ScriptIni {
                 IsPowerShell   = $IsPowerShell
                 InsidePolicyStore = $pathIsInsidePolicyStore
                 scriptRisk     = $scriptRisk
-                _Severity      = $(if (-not $pathIsInsidePolicyStore -and $runsAsSystem) { 'Finding' }
+                _Severity      = $(if ($pathIsInSysvolShare -and $runsAsSystem) { 'Hint' }
+                                   elseif ($pathIsInSysvolShare) { 'Note' }
+                                   elseif (-not $pathIsInsidePolicyStore -and $runsAsSystem) { 'Finding' }
                                    elseif (-not $pathIsInsidePolicyStore) { 'Hint' }
                                    else { 'Note' })
             }
