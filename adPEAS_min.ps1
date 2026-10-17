@@ -2120,6 +2120,175 @@ $Script:DangerousRegistryKeys = @(
         VulnerabilityName = 'DSRM Administrator logon allowed at any time'
         RiskReason        = 'On a domain controller the DSRM account - its local administrator, whose password no password policy checks - logs on while the directory runs, over the network with its hash alone'
     }
+    @{
+        Id                = 'PRINT_RPC_PRIVACY_OFF'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\Print'
+        ValueName         = 'RpcAuthnLevelPrivacyEnabled'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_PRINT_RPC_PRIVACY'
+        VulnerabilityName = 'Print spooler RPC privacy hardening switched off'
+        RiskReason        = 'The spooler accepts IRemoteWinspool calls without packet privacy again - the hardening against relaying them (CVE-2021-1678) is undone'
+    }
+    @{
+        Id                = 'WSUS_USER_PROXY'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\WindowsUpdate'
+        ValueName         = 'SetProxyBehaviorForUpdateDetection'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_WSUS_USER_PROXY'
+        VulnerabilityName = 'Update scan may fall back to the user proxy'
+        RiskReason        = 'With an http:// update server, the scan of the update service, which runs as SYSTEM, can go through a proxy the logged-on user chooses'
+    }
+    @{
+        Id                = 'MACHINE_PW_AGE'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\Netlogon\Parameters'
+        ValueName         = 'MaximumPasswordAge'
+        Match             = 'GreaterThan'
+        MatchValue        = 30
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_MACHINE_PASSWORD_AGE'
+        VulnerabilityName = 'Machine account password changed less often than every 30 days'
+        RiskReason        = 'A captured machine account password or hash stays valid for longer - for silver tickets, and as the computer account itself'
+    }
+    @{
+        Id                = 'NULL_SHARES_PIPES'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\LanManServer\Parameters'
+        ValueName         = 'RestrictNullSessAccess'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_NULL_SESSION'
+        VulnerabilityName = 'Anonymous (null session) access to shares and named pipes unrestricted'
+        RiskReason        = 'Null sessions reach every share and named pipe whose permissions admit anonymous users, not only the ones listed in NullSessionShares and NullSessionPipes'
+    }
+    @{
+        Id                = 'SCRIPTBLOCK_OFF_HKLM'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+        ValueName         = 'EnableScriptBlockLogging'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SCRIPTBLOCK_LOGGING_OFF'
+        VulnerabilityName = 'PowerShell script block logging switched off'
+        RiskReason        = 'No event 4104 for the script blocks PowerShell runs - not even for the ones it would log by itself as suspicious'
+    }
+    @{
+        Id                = 'SCRIPTBLOCK_OFF_HKCU'
+        Hive              = 'HKCU'
+        Key               = 'Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+        ValueName         = 'EnableScriptBlockLogging'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SCRIPTBLOCK_LOGGING_OFF'
+        VulnerabilityName = 'PowerShell script block logging switched off'
+        RiskReason        = 'No event 4104 for the script blocks PowerShell runs - not even for the ones it would log by itself as suspicious'
+    }
+    @{
+        Id                = 'SCRIPTBLOCK_OFF_CORE_HKLM'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\PowerShellCore\ScriptBlockLogging'
+        ValueName         = 'EnableScriptBlockLogging'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SCRIPTBLOCK_LOGGING_OFF'
+        VulnerabilityName = 'PowerShell script block logging switched off'
+        RiskReason        = 'No event 4104 for the script blocks PowerShell 7 runs - not even for the ones it would log by itself as suspicious'
+    }
+    @{
+        Id                = 'SCRIPTBLOCK_OFF_CORE_HKCU'
+        Hive              = 'HKCU'
+        Key               = 'Software\Policies\Microsoft\PowerShellCore\ScriptBlockLogging'
+        ValueName         = 'EnableScriptBlockLogging'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SCRIPTBLOCK_LOGGING_OFF'
+        VulnerabilityName = 'PowerShell script block logging switched off'
+        RiskReason        = 'No event 4104 for the script blocks PowerShell 7 runs - not even for the ones it would log by itself as suspicious'
+    }
+    @{
+        Id                = 'UAC_ADMIN_NO_PROMPT'
+        Hive              = 'HKLM'
+        Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
+        ValueName         = 'ConsentPromptBehaviorAdmin'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_UAC_NO_PROMPT'
+        VulnerabilityName = 'Administrators elevate without a UAC prompt'
+        RiskReason        = 'Any program an administrator runs can take the full administrative token without a prompt'
+    }
+    @{
+        Id                = 'SSL30_SERVER'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 3.0\Server'
+        ValueName         = 'Enabled'
+        Match             = 'GreaterThan'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LEGACY_TLS'
+        VulnerabilityName = 'SSL 3.0 switched on for the server role'
+        RiskReason        = 'Clients can negotiate SSL 3.0 with these servers, which the POODLE attack breaks'
+    }
+    @{
+        Id                = 'SSL30_CLIENT'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 3.0\Client'
+        ValueName         = 'Enabled'
+        Match             = 'GreaterThan'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LEGACY_TLS'
+        VulnerabilityName = 'SSL 3.0 switched on for the client role'
+        RiskReason        = 'These computers offer SSL 3.0 to the servers they connect to, which the POODLE attack breaks'
+    }
+    @{
+        Id                = 'TLS10_SERVER'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Server'
+        ValueName         = 'Enabled'
+        Match             = 'GreaterThan'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LEGACY_TLS'
+        VulnerabilityName = 'TLS 1.0 switched on for the server role'
+        RiskReason        = 'Clients can negotiate TLS 1.0 with these servers, which RFC 8996 deprecates'
+    }
+    @{
+        Id                = 'TLS10_CLIENT'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client'
+        ValueName         = 'Enabled'
+        Match             = 'GreaterThan'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LEGACY_TLS'
+        VulnerabilityName = 'TLS 1.0 switched on for the client role'
+        RiskReason        = 'These computers offer TLS 1.0 to the servers they connect to, which RFC 8996 deprecates'
+    }
 )
 $Script:Win32ErrorCodes = @{
     0     = @{ Name = 'ERROR_SUCCESS';                    Message = 'Success';                        Category = 'Success' }
@@ -17287,13 +17456,14 @@ $acl.Access | Where-Object {
         )
     }
     'REGISTRY_NULL_SESSION' = @{
-        Title = "Anonymous (Null Session) Enumeration Enabled via GPO"
+        Title = "Anonymous (Null Session) Access Widened via GPO"
         Risk = "Hint"
         BaseScore = 25
-        Description = "A Group Policy weakens anonymous access restrictions (RestrictAnonymous=0, RestrictAnonymousSAM=0, or EveryoneIncludesAnonymous=1). This allows unauthenticated null-session enumeration of shares, users, and policies - valuable reconnaissance for an attacker."
+        Description = "A Group Policy weakens anonymous access restrictions (RestrictAnonymous=0, RestrictAnonymousSAM=0, EveryoneIncludesAnonymous=1, or RestrictNullSessAccess=0). This allows unauthenticated null-session enumeration of shares, users, and policies - valuable reconnaissance for an attacker. RestrictNullSessAccess=0 switches off 'Network access: Restrict anonymous access to Named Pipes and Shares', which Windows enables by default: a null session then reaches every share and named pipe whose permissions admit anonymous users, not only those named in NullSessionShares and NullSessionPipes."
         Impact = @(
             "Unauthenticated enumeration of accounts/shares"
             "Aids password spraying and target selection"
+            "With RestrictNullSessAccess=0, unauthenticated access to every share and named pipe whose permissions admit anonymous users"
         )
         Attack = @(
             "1. Connect with a null session"
@@ -17301,6 +17471,7 @@ $acl.Access | Where-Object {
         )
         Remediation = @(
             "Restore anonymous restrictions (RestrictAnonymous/SAM=1, EveryoneIncludesAnonymous=0)"
+            "Set 'Network access: Restrict anonymous access to Named Pipes and Shares' back to Enabled (RestrictNullSessAccess=1), the Windows default"
         )
         References = @(
             @{ Title = "Null session enumeration"; Url = "https://www.blumira.com/integration/how-to-disable-null-session-in-windows/" }
@@ -17601,6 +17772,174 @@ $acl.Access | Where-Object {
         MITRE = "T1556"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = '^DSRM Administrator logon allowed at any time'; Severity = 'Finding' }
+        )
+    }
+    'REGISTRY_PRINT_RPC_PRIVACY' = @{
+        Title = "Print Spooler RPC Privacy Hardening Switched Off via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets RpcAuthnLevelPrivacyEnabled to 0 under Control\Print. The value belongs to Microsoft's fix for CVE-2021-1678 (KB4599464), which makes the print spooler's IRemoteWinspool interface require RPC packet privacy - what keeps its authentication from being relayed. Since the updates of September 14, 2021 that is the behavior when the value is missing; 0 switches it off again, which Microsoft calls 'not recommended' and says leaves the devices 'not protected'."
+        Impact = @(
+            "The print spooler accepts IRemoteWinspool calls at the lower authentication level again, which reopens the relay CVE-2021-1678 describes"
+            "The value is usually set to keep old print clients working, and stays after they are gone"
+        )
+        Remediation = @(
+            "Remove the value from the policy, or set it to 1"
+            "Update the print clients that needed it - Microsoft requires the January 12, 2021 update or later on them"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the value on a print server"
+                Command = "Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Print' -Name RpcAuthnLevelPrivacyEnabled -ErrorAction SilentlyContinue"
+            }
+        )
+        References = @(
+            @{ Title = "Managing deployment of Printer RPC binding changes for CVE-2021-1678 (KB4599464)"; Url = "https://support.microsoft.com/en-us/topic/managing-deployment-of-printer-rpc-binding-changes-for-cve-2021-1678-kb4599464-12a69652-30b9-3d61-d9f7-7201623a8b25" }
+        )
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Print spooler RPC privacy hardening switched off'; Severity = 'Hint' }
+        )
+    }
+    'REGISTRY_WSUS_USER_PROXY' = @{
+        Title = "Update Scan May Use the User Proxy via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets SetProxyBehaviorForUpdateDetection to 1 - in 'Specify intranet Microsoft update service location', 'Allow user proxy to be used as a fallback if detection using system proxy fails'. With an update server reached over http://, the scan of the Windows Update service, which runs as SYSTEM, can then go through a proxy the logged-on user configures, and whoever answers through that proxy answers the scan. Microsoft allows it 'despite the vulnerabilities it presents' and warns that the value 1 'exposes your environment to potential security risk and makes scans unsecure'. The setting changes nothing where the update server is reached over https."
+        Impact = @(
+            "A standard user who sets a proxy of their own can intercept the update scan of the computer and offer it updates of their choosing, which the update service installs as SYSTEM"
+            "It matters only where the update server is reached over http:// - the finding 'WSUS configured over HTTP' says whether it is"
+        )
+        Remediation = @(
+            "Set 'Select the proxy behavior for Windows Update client for detecting updates' back to 'Only use system proxy for detecting updates' (0), or remove it"
+            "Reach the update server over https, which takes the question away"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the update server and the proxy behavior on a computer"
+                Command = "Get-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate' | Select-Object WUServer, SetProxyBehaviorForUpdateDetection"
+            }
+        )
+        References = @(
+            @{ Title = "Policy CSP - Update: SetProxyBehaviorForUpdateDetection"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-update#setproxybehaviorforupdatedetection" }
+        )
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Update scan may fall back to the user proxy'; Severity = 'Hint' }
+        )
+    }
+    'REGISTRY_MACHINE_PASSWORD_AGE' = @{
+        Title = "Machine Account Password Changed Less Often Than Every 30 Days via GPO"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A Group Policy sets 'Domain member: Maximum machine account password age' (MaximumPasswordAge under Netlogon\Parameters) above 30 days, the default and what Microsoft recommends; the setting allows up to 999. A computer changes its machine account password no more often than that, so a machine account password or hash an attacker captures - from the computer's LSA secrets, or from a copy of its disk - stays valid that much longer. Microsoft: 'Significantly increasing the password change interval (or disabling password changes) gives an attacker more time to undertake a brute-force password-guessing attack against one of the machine accounts.'"
+        Impact = @(
+            "A captured machine account hash keeps forging service tickets to the computer, and keeps authenticating as the computer, for months instead of weeks"
+            "On a domain controller the machine account can replicate the directory, krbtgt included, for as long as its hash stays valid"
+        )
+        Remediation = @(
+            "Set 'Domain member: Maximum machine account password age' back to 30 days, or remove it from the policy"
+            "Where a captured machine hash is suspected, change the computer's password at once rather than waiting for the interval"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the value on a computer"
+                Command = "Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Services\Netlogon\Parameters' -Name MaximumPasswordAge -ErrorAction SilentlyContinue"
+            }
+            @{
+                Description = "Change the machine account password of the local computer now"
+                Command = "Reset-ComputerMachinePassword -Server 'DC_NAME'"
+            }
+        )
+        References = @(
+            @{ Title = "Domain member: Maximum machine account password age"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-member-maximum-machine-account-password-age" }
+        )
+        Tools = @("Mimikatz", "Rubeus")
+        MITRE = "T1558.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Machine account password changed less often than every 30 days'; Severity = 'Hint' }
+        )
+    }
+    'REGISTRY_SCRIPTBLOCK_LOGGING_OFF' = @{
+        Title = "PowerShell Script Block Logging Switched Off via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets 'Turn on PowerShell Script Block Logging' to Disabled, which writes EnableScriptBlockLogging = 0 - for Windows PowerShell or PowerShell 7, in the computer or the user half of the policy. Without the policy PowerShell still logs, as event 4104 at warning level, the script blocks it finds suspicious. An explicit 0 suppresses those too: the engine skips even such an entry when the setting is false (CompiledScriptBlock.LogScriptBlockCreation in the PowerShell source). The computers in scope then keep no record of the PowerShell code run on them."
+        Impact = @(
+            "PowerShell attack tooling - download cradles, AMSI bypasses, offensive modules - leaves no 4104 event on the computers in scope"
+            "Detection rules and incident response that rely on the PowerShell Operational log find nothing there"
+        )
+        Remediation = @(
+            "Set the policy to Enabled - or at least to Not configured, which keeps the automatic logging of suspicious script blocks"
+            "Enable Protected Event Logging along with it, so that logged script content stays encrypted"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the setting on a computer"
+                Command = "Get-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -ErrorAction SilentlyContinue"
+            }
+        )
+        References = @(
+            @{ Title = "about_Logging (Windows PowerShell 5.1)"; Url = "https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_logging?view=powershell-5.1" }
+            @{ Title = "PowerShell source: CompiledScriptBlock.cs (LogScriptBlockCreation)"; Url = "https://github.com/PowerShell/PowerShell/blob/v7.4.6/src/System.Management.Automation/engine/runtime/CompiledScriptBlock.cs" }
+        )
+        MITRE = "T1562.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^PowerShell script block logging switched off'; Severity = 'Hint' }
+        )
+    }
+    'REGISTRY_UAC_NO_PROMPT' = @{
+        Title = "Administrators Elevate Without a UAC Prompt via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets 'User Account Control: Behavior of the elevation prompt for administrators in Admin Approval Mode' to 'Elevate without prompting' (ConsentPromptBehaviorAdmin = 0). An administrator's programs still start with the filtered token, but any of them that asks for elevation receives the full administrative token without consent or credentials. Microsoft: 'Use this option only in the most constrained environments.' The default is 5, 'Prompt for consent for non-Windows binaries'."
+        Impact = @(
+            "Malware an administrator starts - from a document, a download or a link - elevates silently, without the prompt that would show it"
+            "UAC bypass techniques become unnecessary on the computers in scope"
+        )
+        Remediation = @(
+            "Set the setting back to 'Prompt for consent for non-Windows binaries' (5), or to something stricter such as 'Prompt for consent on the secure desktop' (2)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the setting on a computer"
+                Command = "Get-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name ConsentPromptBehaviorAdmin"
+            }
+        )
+        References = @(
+            @{ Title = "User Account Control settings and configuration"; Url = "https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/settings-and-configuration" }
+        )
+        MITRE = "T1548.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Administrators elevate without a UAC prompt'; Severity = 'Hint' }
+        )
+    }
+    'REGISTRY_LEGACY_TLS' = @{
+        Title = "SSL 3.0 or TLS 1.0 Switched On via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy writes an Enabled value other than 0 under SCHANNEL\Protocols\SSL 3.0 or SCHANNEL\Protocols\TLS 1.0, for the server or the client role. That overrides the system default and puts the protocol version on offer again for everything that uses Schannel - IIS, Remote Desktop, LDAPS, WinRM over https. SSL 3.0 is broken by the POODLE attack (CVE-2014-3566); TLS 1.0 is deprecated by RFC 8996."
+        Impact = @(
+            "Where both ends still offer the old version, a man in the middle can push the connection down to it and attack it there"
+            "Compliance baselines such as PCI DSS forbid both versions"
+        )
+        Remediation = @(
+            "Remove the values from the policy, or set Enabled to 0 under Protocols\SSL 3.0 and Protocols\TLS 1.0, for the server and the client role"
+            "Before switching TLS 1.0 off, find the peers that still need it - Schannel event logging records the negotiated versions"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every protocol setting Schannel has on a computer"
+                Command = "Get-ChildItem 'HKLM:\System\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols' -Recurse | Get-ItemProperty | Select-Object PSPath, Enabled, DisabledByDefault"
+            }
+        )
+        References = @(
+            @{ Title = "Transport Layer Security (TLS) registry settings"; Url = "https://learn.microsoft.com/en-us/windows-server/security/tls/tls-registry-settings" }
+            @{ Title = "RFC 8996: Deprecating TLS 1.0 and TLS 1.1"; Url = "https://www.rfc-editor.org/rfc/rfc8996" }
+        )
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^(SSL 3\.0|TLS 1\.0) switched on for the (server|client) role'; Severity = 'Hint' }
         )
     }
     'GPO_POINTANDPRINT_EXPLOITABLE' = @{
@@ -93766,7 +94105,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-0028"
+$Script:adPEASVersion = "2.7.0+20261018-0045"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

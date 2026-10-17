@@ -53,6 +53,16 @@
       - SMBv1 / SMBv2 server and client:   https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
       - RejectUnencryptedAccess:           https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-security
       - DsrmAdminLogonBehavior:            https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc732714(v=ws.10)
+      - RpcAuthnLevelPrivacyEnabled:       https://support.microsoft.com/help/4599464 (KB4599464, CVE-2021-1678)
+      - SetProxyBehaviorForUpdateDetection: https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-update
+                                           (value name and 0/1 read from WindowsUpdate.admx, policy CorpWuURL)
+      - Maximum machine account password age:
+                                           https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/domain-member-maximum-machine-account-password-age
+      - RestrictNullSessAccess:            https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-access-restrict-anonymous-access-to-named-pipes-and-shares
+      - ConsentPromptBehaviorAdmin:        https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/settings-and-configuration
+      - EnableScriptBlockLogging:          https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_logging?view=powershell-5.1
+                                           (class Both and Disabled = 0 read from PowerShellExecutionPolicy.admx)
+      - Schannel protocol Enabled values:  https://learn.microsoft.com/en-us/windows-server/security/tls/tls-registry-settings
 #>
 
 # =============================================================================
@@ -628,5 +638,200 @@ $Script:DangerousRegistryKeys = @(
         FindingId         = 'REGISTRY_DSRM_ADMIN_LOGON'
         VulnerabilityName = 'DSRM Administrator logon allowed at any time'
         RiskReason        = 'On a domain controller the DSRM account - its local administrator, whose password no password policy checks - logs on while the directory runs, over the network with its hash alone'
+    }
+
+    # =========================================================================
+    # Coverage item B21 - settings that take back a hardening Windows ships with
+    # =========================================================================
+
+    # KB4599464 (CVE-2021-1678): since the September 14, 2021 updates a missing value means
+    # 1, so only an explicit 0 turns the hardening off - "Not recommended", "not protected".
+    @{
+        Id                = 'PRINT_RPC_PRIVACY_OFF'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\Print'
+        ValueName         = 'RpcAuthnLevelPrivacyEnabled'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_PRINT_RPC_PRIVACY'
+        VulnerabilityName = 'Print spooler RPC privacy hardening switched off'
+        RiskReason        = 'The spooler accepts IRemoteWinspool calls without packet privacy again - the hardening against relaying them (CVE-2021-1678) is undone'
+    }
+    # "Specify intranet Microsoft update service location", the proxy element. 0 (default):
+    # system proxy only; 1: the user proxy as a fallback. It matters for an http:// update
+    # server only - which WSUS_HTTP reports - and Microsoft says 1 "makes scans unsecure".
+    @{
+        Id                = 'WSUS_USER_PROXY'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\WindowsUpdate'
+        ValueName         = 'SetProxyBehaviorForUpdateDetection'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_WSUS_USER_PROXY'
+        VulnerabilityName = 'Update scan may fall back to the user proxy'
+        RiskReason        = 'With an http:// update server, the scan of the update service, which runs as SYSTEM, can go through a proxy the logged-on user chooses'
+    }
+    # Domain member: Maximum machine account password age - 1 to 999 days, 30 by default and
+    # by Microsoft's recommendation. MACHINE_PW_NOCHANGE above is the extreme of it.
+    @{
+        Id                = 'MACHINE_PW_AGE'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\Netlogon\Parameters'
+        ValueName         = 'MaximumPasswordAge'
+        Match             = 'GreaterThan'
+        MatchValue        = 30
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_MACHINE_PASSWORD_AGE'
+        VulnerabilityName = 'Machine account password changed less often than every 30 days'
+        RiskReason        = 'A captured machine account password or hash stays valid for longer - for silver tickets, and as the computer account itself'
+    }
+    # Network access: Restrict anonymous access to Named Pipes and Shares - 1 (Enabled) is
+    # the default. 0 lets null sessions reach every pipe and share whose permissions admit
+    # them, not only those named in NullSessionPipes and NullSessionShares.
+    @{
+        Id                = 'NULL_SHARES_PIPES'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\LanManServer\Parameters'
+        ValueName         = 'RestrictNullSessAccess'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_NULL_SESSION'
+        VulnerabilityName = 'Anonymous (null session) access to shares and named pipes unrestricted'
+        RiskReason        = 'Null sessions reach every share and named pipe whose permissions admit anonymous users, not only the ones listed in NullSessionShares and NullSessionPipes'
+    }
+    # "Turn on PowerShell Script Block Logging" set to Disabled writes 0. The policy exists in
+    # both halves (ADMX class Both), the engine reads the machine value and then the user's,
+    # and PowerShell 7 has a key of its own. An explicit 0 also suppresses the script blocks
+    # PowerShell logs by itself as suspicious - CompiledScriptBlock.LogScriptBlockCreation
+    # skips even a forced entry when the setting is false.
+    @{
+        Id                = 'SCRIPTBLOCK_OFF_HKLM'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+        ValueName         = 'EnableScriptBlockLogging'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SCRIPTBLOCK_LOGGING_OFF'
+        VulnerabilityName = 'PowerShell script block logging switched off'
+        RiskReason        = 'No event 4104 for the script blocks PowerShell runs - not even for the ones it would log by itself as suspicious'
+    }
+    @{
+        Id                = 'SCRIPTBLOCK_OFF_HKCU'
+        Hive              = 'HKCU'
+        Key               = 'Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+        ValueName         = 'EnableScriptBlockLogging'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SCRIPTBLOCK_LOGGING_OFF'
+        VulnerabilityName = 'PowerShell script block logging switched off'
+        RiskReason        = 'No event 4104 for the script blocks PowerShell runs - not even for the ones it would log by itself as suspicious'
+    }
+    @{
+        Id                = 'SCRIPTBLOCK_OFF_CORE_HKLM'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\PowerShellCore\ScriptBlockLogging'
+        ValueName         = 'EnableScriptBlockLogging'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SCRIPTBLOCK_LOGGING_OFF'
+        VulnerabilityName = 'PowerShell script block logging switched off'
+        RiskReason        = 'No event 4104 for the script blocks PowerShell 7 runs - not even for the ones it would log by itself as suspicious'
+    }
+    @{
+        Id                = 'SCRIPTBLOCK_OFF_CORE_HKCU'
+        Hive              = 'HKCU'
+        Key               = 'Software\Policies\Microsoft\PowerShellCore\ScriptBlockLogging'
+        ValueName         = 'EnableScriptBlockLogging'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SCRIPTBLOCK_LOGGING_OFF'
+        VulnerabilityName = 'PowerShell script block logging switched off'
+        RiskReason        = 'No event 4104 for the script blocks PowerShell 7 runs - not even for the ones it would log by itself as suspicious'
+    }
+    # User Account Control: Behavior of the elevation prompt for administrators in Admin
+    # Approval Mode - 5 is the default, 0 is "Elevate without prompting", which Microsoft
+    # reserves for "the most constrained environments". ENABLELUA above switches UAC off.
+    @{
+        Id                = 'UAC_ADMIN_NO_PROMPT'
+        Hive              = 'HKLM'
+        Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System'
+        ValueName         = 'ConsentPromptBehaviorAdmin'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_UAC_NO_PROMPT'
+        VulnerabilityName = 'Administrators elevate without a UAC prompt'
+        RiskReason        = 'Any program an administrator runs can take the full administrative token without a prompt'
+    }
+    # Schannel: an Enabled value under Protocols\<version>\Server or \Client overrides the
+    # system default - 1 switches the version on, 0 off (TLS registry settings). Read as
+    # anything but 0, because the value is a BOOL and 0xffffffff is written as well.
+    @{
+        Id                = 'SSL30_SERVER'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 3.0\Server'
+        ValueName         = 'Enabled'
+        Match             = 'GreaterThan'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LEGACY_TLS'
+        VulnerabilityName = 'SSL 3.0 switched on for the server role'
+        RiskReason        = 'Clients can negotiate SSL 3.0 with these servers, which the POODLE attack breaks'
+    }
+    @{
+        Id                = 'SSL30_CLIENT'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 3.0\Client'
+        ValueName         = 'Enabled'
+        Match             = 'GreaterThan'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LEGACY_TLS'
+        VulnerabilityName = 'SSL 3.0 switched on for the client role'
+        RiskReason        = 'These computers offer SSL 3.0 to the servers they connect to, which the POODLE attack breaks'
+    }
+    @{
+        Id                = 'TLS10_SERVER'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Server'
+        ValueName         = 'Enabled'
+        Match             = 'GreaterThan'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LEGACY_TLS'
+        VulnerabilityName = 'TLS 1.0 switched on for the server role'
+        RiskReason        = 'Clients can negotiate TLS 1.0 with these servers, which RFC 8996 deprecates'
+    }
+    @{
+        Id                = 'TLS10_CLIENT'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client'
+        ValueName         = 'Enabled'
+        Match             = 'GreaterThan'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LEGACY_TLS'
+        VulnerabilityName = 'TLS 1.0 switched on for the client role'
+        RiskReason        = 'These computers offer TLS 1.0 to the servers they connect to, which RFC 8996 deprecates'
     }
 )

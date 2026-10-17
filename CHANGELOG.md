@@ -521,6 +521,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Change* explains who can place that link. Where the links could not be resolved, no
   such claim is made.
 
+- **`Get-GPORegistrySettings` reports seven more settings that take back a Windows
+  hardening.** Each is a hint with a card of its own, read from `Registry.pol`,
+  `Registry.xml` or the Security Options in `GptTmpl.inf`:
+  - `RpcAuthnLevelPrivacyEnabled=0` - the print spooler RPC privacy hardening of
+    KB4599464 (CVE-2021-1678) switched off again
+  - `SetProxyBehaviorForUpdateDetection=1` - the update scan may fall back to the user's
+    proxy, which matters with an `http://` update server
+  - `MaximumPasswordAge` above 30 days - machine account passwords change less often than
+    the default Microsoft recommends
+  - `RestrictNullSessAccess=0` - null sessions reach every share and named pipe their
+    permissions admit, not only the ones listed (on the existing null session card)
+  - `EnableScriptBlockLogging=0`, for Windows PowerShell and PowerShell 7, in either half
+    of a policy - an explicit 0 also suppresses the script blocks PowerShell otherwise
+    logs by itself as suspicious
+  - `ConsentPromptBehaviorAdmin=0` - administrators elevate without a UAC prompt
+  - Schannel `Enabled` other than 0 for SSL 3.0 or TLS 1.0, server or client role
+
 - **The Restricted Admin card is a hint, as its row is.** The registry table lowered
   `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the
   card and the trigger on its row stayed a finding: the console printed the row yellow and
