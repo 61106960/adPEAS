@@ -291,7 +291,7 @@ $Script:PrimaryAttributes = @{
         'domainControllers', 'forestName',
         'parentDomain', 'childDomains',
         'anonymousLDAPAccess', 'anonymousReadableAttributes',
-        'tombstoneLifetime', 'recycleBin', 'deletedObjectLifetime'
+        'tombstoneLifetime', 'recycleBin', 'deletedObjectLifetime', 'sysvolReplication'
     )
 
     # Kerberos Policy object

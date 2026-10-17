@@ -12043,6 +12043,43 @@ $acl.Access | Where-Object {
         )
     }
 
+    'SYSVOL_FRS_REPLICATION' = @{
+        Title = "SYSVOL Still Replicated by FRS"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "SYSVOL - the share that carries every Group Policy and the logon scripts - is still replicated by the File Replication Service, either because the domain was never migrated to DFS Replication or because the migration stopped before Eliminated. FRS is deprecated, and Microsoft blocks it: no domain controller running Windows Server 1709 or later can be added to a domain that still replicates SYSVOL with FRS (KB4025991, KB4023141). A domain in this state cannot replace its domain controllers with supported ones before it migrates, and it usually still runs old ones."
+        Impact = @(
+            "No domain controller from Windows Server 1709 on can be added until SYSVOL is migrated"
+            "The domain is held to old domain controllers, with their missing security features and patches"
+            "FRS replicates less reliably than DFSR: a policy or a script can differ between domain controllers"
+        )
+        Remediation = @(
+            "Migrate SYSVOL to DFS Replication with dfsrmig on the PDC emulator: Prepared, Redirected, Eliminated"
+            "The domain functional level must be Windows Server 2008 or higher"
+            "Finish a migration that stopped halfway - FRS keeps replicating until the state is Eliminated"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the global migration state (run on a domain controller)"
+                Command = "dfsrmig /getglobalstate"
+            }
+            @{
+                Description = "Start or continue the migration, one state at a time, waiting for each to converge"
+                Command = "dfsrmig /setglobalstate 1; dfsrmig /getmigrationstate  # then 2, then 3"
+            }
+        )
+        References = @(
+            @{ Title = "Windows Server version 1709 no longer supports FRS (KB4025991)"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/windows-server-version-1709-no-longer-supports-frs" }
+            @{ Title = "NTFRS deprecation blocks the installation of replica DCs (KB4023141)"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/ntfrs-deprecation-blocks-replic-dc-installation" }
+            @{ Title = "DFSR SYSVOL Migration FAQ - Microsoft AskDS"; Url = "https://learn.microsoft.com/en-us/archive/blogs/askds/dfsr-sysvol-migration-faq-useful-trivia-that-may-save-your-follicles" }
+        )
+        Tools = @()
+        MITRE = "T1484.001"
+        Triggers = @(
+            @{ Attribute = 'sysvolReplication'; Pattern = '^FRS'; Severity = 'Hint' }
+        )
+    }
+
     'TOMBSTONE_LIFETIME_SHORT' = @{
         Title = "Tombstone Lifetime Shorter Than 180 Days"
         Risk = "Hint"

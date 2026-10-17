@@ -342,6 +342,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   object stays complete. Two new cards, *Active Directory Recycle Bin Not Enabled* and
   *Tombstone Lifetime Shorter Than 180 Days*.
 
+- **`Get-DomainInformation` says which service replicates SYSVOL.** A new
+  `sysvolReplication` row reads the FRS replica set and the DFSR replication group of
+  SYSVOL under `CN=System` and the global migration state in `msDFSR-Flags`: *DFSR*,
+  *FRS* for a domain never migrated, or *FRS and DFSR* with the state while a migration
+  has not reached Eliminated. FRS is a hint with the card *SYSVOL Still Replicated by
+  FRS*: it is deprecated, and no domain controller from Windows Server 1709 on can be
+  added to such a domain (KB4025991).
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

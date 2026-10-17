@@ -126,6 +126,7 @@ Analyzes domain-level configuration and security settings.
 - Forest functional level
 - Domain Controllers
 - What a deletion leaves behind in the forest: the tombstone lifetime (`tombstoneLifetime` on `CN=Directory Service`, 60 days when not set; below the 180 days of a new forest is a hint - a backup older than that can no longer be restored) and whether the Active Directory Recycle Bin is enabled (`msDS-EnabledFeature` on the Partitions container; disabled at forest functional level 2008 R2 or higher is a hint), with the deleted-object lifetime when it is
+- Which service replicates SYSVOL: DFSR, FRS, or both while a migration has not reached Eliminated - read from the FRS replica set and the DFSR replication group of SYSVOL under `CN=System` and the global state in `msDFSR-Flags`. FRS is a hint: it is deprecated, and no domain controller from Windows Server 1709 on can be added to such a domain
 
 **Security Impact**: Outdated functional levels may lack security features and indicate older, vulnerable DCs.
 

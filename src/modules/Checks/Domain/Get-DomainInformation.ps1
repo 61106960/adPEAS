@@ -420,7 +420,7 @@ function Get-DomainInformation {
             $deletionParams = @{}
             foreach ($key in @($PSBoundParameters.Keys)) { $deletionParams[$key] = $PSBoundParameters[$key] }
             $deletion = Get-ForestDeletionSetting -ConnectionParams $deletionParams
-            $deletionWeak = $false
+            $maintenanceHint = $false
 
             if ($null -eq $deletion.TombstoneLifetime) {
                 $tombstoneText = 'Unknown - the Directory Service object could not be read'
@@ -428,7 +428,7 @@ function Get-DomainInformation {
                 $tombstoneDays = $deletion.TombstoneLifetime
                 $tombstoneText = if ($deletion.TombstoneLifetimeSet) { "$tombstoneDays days" } else { "$tombstoneDays days - not set, which means $tombstoneDays" }
                 if ($tombstoneDays -lt 180) {
-                    $deletionWeak = $true
+                    $maintenanceHint = $true
                     $tombstoneText += "; shorter than the 180 days Microsoft sets in a new forest - a backup older than $tombstoneDays days can no longer be restored"
                 }
             }
@@ -441,7 +441,7 @@ function Get-DomainInformation {
             } elseif ([int]$ForestFunc -lt 4) {
                 $recycleBinText = 'Not available - it needs forest functional level Windows Server 2008 R2'
             } else {
-                $deletionWeak = $true
+                $maintenanceHint = $true
                 $recycleBinText = 'Disabled - a deleted object keeps only a few attributes, and its group memberships cannot be restored with it'
             }
             $domainInfoObj | Add-Member -NotePropertyName 'recycleBin' -NotePropertyValue $recycleBinText -Force
@@ -449,7 +449,27 @@ function Get-DomainInformation {
                 $domainInfoObj | Add-Member -NotePropertyName 'deletedObjectLifetime' -NotePropertyValue "$($deletion.DeletedObjectLifetime) days" -Force
             }
 
-            if ($deletionWeak -and $domainInfoSeverity -eq "Note") {
+            # Which service replicates SYSVOL. FRS is deprecated, and a domain that still
+            # replicates SYSVOL with it accepts no domain controller from Windows Server 1709
+            # on - it says the domain controllers and their maintenance are old. Not read
+            # anywhere before.
+            $sysvolReplication = Get-SysvolReplication -DomainDN $DomainDN -ConnectionParams $deletionParams
+            $sysvolText = switch ($sysvolReplication.Mode) {
+                'DFSR' { 'DFSR' }
+                'FRS' {
+                    $maintenanceHint = $true
+                    'FRS - SYSVOL was never migrated to DFSR; FRS is deprecated, and no domain controller from Windows Server 1709 on can be added to this domain'
+                }
+                'Migrating' {
+                    $maintenanceHint = $true
+                    $stateText = if ($sysvolReplication.State) { "global state $($sysvolReplication.State)" } else { 'global state not set' }
+                    "FRS and DFSR - the migration to DFSR is not finished ($stateText), and FRS still replicates SYSVOL"
+                }
+                default { 'Unknown - neither the FRS replica set nor the DFSR replication group of SYSVOL was found' }
+            }
+            $domainInfoObj | Add-Member -NotePropertyName 'sysvolReplication' -NotePropertyValue $sysvolText -Force
+
+            if ($maintenanceHint -and $domainInfoSeverity -eq "Note") {
                 $domainInfoSeverity = "Hint"
             }
 
@@ -870,6 +890,76 @@ function Get-ForestDeletionSetting {
     }
 
     return $result
+}
+
+<#
+.SYNOPSIS
+    Which service replicates SYSVOL in this domain: FRS, DFSR, or both during a migration.
+
+.DESCRIPTION
+    Read from three objects under CN=System of the domain:
+    - CN=Domain System Volume (SYSVOL share),CN=File Replication Service - the FRS replica
+      set of SYSVOL. The PDC removes it when a migration to DFSR reaches Eliminated.
+    - CN=Domain System Volume,CN=DFSR-GlobalSettings - the DFSR replication group of SYSVOL,
+      created when a migration reaches Prepared, and present from the start in a domain
+      that never used FRS.
+    - msDFSR-Flags on CN=DFSR-GlobalSettings - the global migration state: 0 Start,
+      16 Prepared, 32 Redirected, 48 Eliminated; a final cleanup removes it again.
+    (AskDS, "DFSR SYSVOL Migration FAQ".) FRS is deprecated, and no domain controller from
+    Windows Server 1709 on can be added to a domain that still replicates SYSVOL with it
+    (KB4025991, KB4023141).
+
+.PARAMETER DomainDN
+    The distinguished name of the domain.
+
+.PARAMETER ConnectionParams
+    Domain/Server/Credential hashtable, passed through unchanged.
+
+.OUTPUTS
+    PSCustomObject: Mode 'FRS', 'Migrating', 'DFSR' or $null when neither replication object
+    was found; State the global migration state by name, or $null.
+#>
+function Get-SysvolReplication {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DomainDN,
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    $frsSet = $null
+    $dfsrGroup = $null
+    $globalSettings = $null
+    try {
+        $frsSet = @(Get-DomainObject -Identity "CN=Domain System Volume (SYSVOL share),CN=File Replication Service,CN=System,$DomainDN" -Properties 'distinguishedName' @ConnectionParams)[0]
+    } catch {
+        Write-Log "[Get-DomainInformation] Could not read the FRS replica set of SYSVOL: $_"
+    }
+    try {
+        $dfsrGroup = @(Get-DomainObject -Identity "CN=Domain System Volume,CN=DFSR-GlobalSettings,CN=System,$DomainDN" -Properties 'distinguishedName' @ConnectionParams)[0]
+        $globalSettings = @(Get-DomainObject -Identity "CN=DFSR-GlobalSettings,CN=System,$DomainDN" -Properties 'msDFSR-Flags' @ConnectionParams)[0]
+    } catch {
+        Write-Log "[Get-DomainInformation] Could not read the DFSR replication group of SYSVOL: $_"
+    }
+
+    $state = $null
+    if ($globalSettings) {
+        $flags = 0
+        if ([int]::TryParse([string]$globalSettings.'msDFSR-Flags', [ref]$flags)) {
+            $state = switch ($flags) {
+                0  { 'Start' }
+                16 { 'Prepared' }
+                32 { 'Redirected' }
+                48 { 'Eliminated' }
+                default { "Unknown ($flags)" }
+            }
+        }
+    }
+
+    $mode = if ($frsSet -and $dfsrGroup) { 'Migrating' } elseif ($frsSet) { 'FRS' } elseif ($dfsrGroup) { 'DFSR' } else { $null }
+    return [PSCustomObject]@{ Mode = $mode; State = $state }
 }
 
 <#

@@ -3254,7 +3254,7 @@ $Script:PrimaryAttributes = @{
 	    'domainControllers', 'forestName',
 	    'parentDomain', 'childDomains',
 	    'anonymousLDAPAccess', 'anonymousReadableAttributes',
-	    'tombstoneLifetime', 'recycleBin', 'deletedObjectLifetime'
+	    'tombstoneLifetime', 'recycleBin', 'deletedObjectLifetime', 'sysvolReplication'
 	)
 	KerberosPolicy = @(
 	    'ticketLifetime', 'maxTicketAgeTGT', 'maxRenewalAge', 'maxServiceTicketAge', 'maxClockSkew',
@@ -14964,6 +14964,42 @@ $acl.Access | Where-Object {
 	    MITRE = "T1485"
 	    Triggers = @(
 	        @{ Attribute = 'recycleBin'; Pattern = '^Disabled'; Severity = 'Hint' }
+	    )
+	}
+	'SYSVOL_FRS_REPLICATION' = @{
+	    Title = "SYSVOL Still Replicated by FRS"
+	    Risk = "Hint"
+	    BaseScore = 10
+	    Description = "SYSVOL - the share that carries every Group Policy and the logon scripts - is still replicated by the File Replication Service, either because the domain was never migrated to DFS Replication or because the migration stopped before Eliminated. FRS is deprecated, and Microsoft blocks it: no domain controller running Windows Server 1709 or later can be added to a domain that still replicates SYSVOL with FRS (KB4025991, KB4023141). A domain in this state cannot replace its domain controllers with supported ones before it migrates, and it usually still runs old ones."
+	    Impact = @(
+	        "No domain controller from Windows Server 1709 on can be added until SYSVOL is migrated"
+	        "The domain is held to old domain controllers, with their missing security features and patches"
+	        "FRS replicates less reliably than DFSR: a policy or a script can differ between domain controllers"
+	    )
+	    Remediation = @(
+	        "Migrate SYSVOL to DFS Replication with dfsrmig on the PDC emulator: Prepared, Redirected, Eliminated"
+	        "The domain functional level must be Windows Server 2008 or higher"
+	        "Finish a migration that stopped halfway - FRS keeps replicating until the state is Eliminated"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show the global migration state (run on a domain controller)"
+	            Command = "dfsrmig /getglobalstate"
+	        }
+	        @{
+	            Description = "Start or continue the migration, one state at a time, waiting for each to converge"
+	            Command = "dfsrmig /setglobalstate 1; dfsrmig /getmigrationstate  # then 2, then 3"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Windows Server version 1709 no longer supports FRS (KB4025991)"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/windows-server-version-1709-no-longer-supports-frs" }
+	        @{ Title = "NTFRS deprecation blocks the installation of replica DCs (KB4023141)"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/ntfrs-deprecation-blocks-replic-dc-installation" }
+	        @{ Title = "DFSR SYSVOL Migration FAQ - Microsoft AskDS"; Url = "https://learn.microsoft.com/en-us/archive/blogs/askds/dfsr-sysvol-migration-faq-useful-trivia-that-may-save-your-follicles" }
+	    )
+	    Tools = @()
+	    MITRE = "T1484.001"
+	    Triggers = @(
+	        @{ Attribute = 'sysvolReplication'; Pattern = '^FRS'; Severity = 'Hint' }
 	    )
 	}
 	'TOMBSTONE_LIFETIME_SHORT' = @{
@@ -62711,14 +62747,14 @@ function Get-DomainInformation {
 	        $deletionParams = @{}
 	        foreach ($key in @($PSBoundParameters.Keys)) { $deletionParams[$key] = $PSBoundParameters[$key] }
 	        $deletion = Get-ForestDeletionSetting -ConnectionParams $deletionParams
-	        $deletionWeak = $false
+	        $maintenanceHint = $false
 	        if ($null -eq $deletion.TombstoneLifetime) {
 	            $tombstoneText = 'Unknown - the Directory Service object could not be read'
 	        } else {
 	            $tombstoneDays = $deletion.TombstoneLifetime
 	            $tombstoneText = if ($deletion.TombstoneLifetimeSet) { "$tombstoneDays days" } else { "$tombstoneDays days - not set, which means $tombstoneDays" }
 	            if ($tombstoneDays -lt 180) {
-	                $deletionWeak = $true
+	                $maintenanceHint = $true
 	                $tombstoneText += "; shorter than the 180 days Microsoft sets in a new forest - a backup older than $tombstoneDays days can no longer be restored"
 	            }
 	        }
@@ -62730,14 +62766,29 @@ function Get-DomainInformation {
 	        } elseif ([int]$ForestFunc -lt 4) {
 	            $recycleBinText = 'Not available - it needs forest functional level Windows Server 2008 R2'
 	        } else {
-	            $deletionWeak = $true
+	            $maintenanceHint = $true
 	            $recycleBinText = 'Disabled - a deleted object keeps only a few attributes, and its group memberships cannot be restored with it'
 	        }
 	        $domainInfoObj | Add-Member -NotePropertyName 'recycleBin' -NotePropertyValue $recycleBinText -Force
 	        if ($deletion.RecycleBin -and $null -ne $deletion.DeletedObjectLifetime) {
 	            $domainInfoObj | Add-Member -NotePropertyName 'deletedObjectLifetime' -NotePropertyValue "$($deletion.DeletedObjectLifetime) days" -Force
 	        }
-	        if ($deletionWeak -and $domainInfoSeverity -eq "Note") {
+	        $sysvolReplication = Get-SysvolReplication -DomainDN $DomainDN -ConnectionParams $deletionParams
+	        $sysvolText = switch ($sysvolReplication.Mode) {
+	            'DFSR' { 'DFSR' }
+	            'FRS' {
+	                $maintenanceHint = $true
+	                'FRS - SYSVOL was never migrated to DFSR; FRS is deprecated, and no domain controller from Windows Server 1709 on can be added to this domain'
+	            }
+	            'Migrating' {
+	                $maintenanceHint = $true
+	                $stateText = if ($sysvolReplication.State) { "global state $($sysvolReplication.State)" } else { 'global state not set' }
+	                "FRS and DFSR - the migration to DFSR is not finished ($stateText), and FRS still replicates SYSVOL"
+	            }
+	            default { 'Unknown - neither the FRS replica set nor the DFSR replication group of SYSVOL was found' }
+	        }
+	        $domainInfoObj | Add-Member -NotePropertyName 'sysvolReplication' -NotePropertyValue $sysvolText -Force
+	        if ($maintenanceHint -and $domainInfoSeverity -eq "Note") {
 	            $domainInfoSeverity = "Hint"
 	        }
 	        if ($domainInfoSeverity -eq "Note" -and [int]$DomainFunc -lt 7) {
@@ -63008,6 +63059,42 @@ function Get-ForestDeletionSetting {
 	} catch {
 	}
 	return $result
+}
+function Get-SysvolReplication {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [string]$DomainDN,
+	    [Parameter(Mandatory = $false)]
+	    [hashtable]$ConnectionParams = @{}
+	)
+	$frsSet = $null
+	$dfsrGroup = $null
+	$globalSettings = $null
+	try {
+	    $frsSet = @(Get-DomainObject -Identity "CN=Domain System Volume (SYSVOL share),CN=File Replication Service,CN=System,$DomainDN" -Properties 'distinguishedName' @ConnectionParams)[0]
+	} catch {
+	}
+	try {
+	    $dfsrGroup = @(Get-DomainObject -Identity "CN=Domain System Volume,CN=DFSR-GlobalSettings,CN=System,$DomainDN" -Properties 'distinguishedName' @ConnectionParams)[0]
+	    $globalSettings = @(Get-DomainObject -Identity "CN=DFSR-GlobalSettings,CN=System,$DomainDN" -Properties 'msDFSR-Flags' @ConnectionParams)[0]
+	} catch {
+	}
+	$state = $null
+	if ($globalSettings) {
+	    $flags = 0
+	    if ([int]::TryParse([string]$globalSettings.'msDFSR-Flags', [ref]$flags)) {
+	        $state = switch ($flags) {
+	            0  { 'Start' }
+	            16 { 'Prepared' }
+	            32 { 'Redirected' }
+	            48 { 'Eliminated' }
+	            default { "Unknown ($flags)" }
+	        }
+	    }
+	}
+	$mode = if ($frsSet -and $dfsrGroup) { 'Migrating' } elseif ($frsSet) { 'FRS' } elseif ($dfsrGroup) { 'DFSR' } else { $null }
+	return [PSCustomObject]@{ Mode = $mode; State = $state }
 }
 function Get-DomainKerberosPolicy {
 	[CmdletBinding()]
@@ -89180,7 +89267,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-2016"
+$Script:adPEASVersion = "2.7.0+20261017-2022"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
