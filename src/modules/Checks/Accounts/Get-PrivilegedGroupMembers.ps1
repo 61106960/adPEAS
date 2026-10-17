@@ -101,8 +101,15 @@ function Get-PrivilegedGroupMembers {
         }
 
         # Dynamic groups (no fixed SID - resolve by name)
+        #
+        # ESX Admins: a VMware ESXi host joined to the domain makes every member of a domain
+        # group of that name a full administrator, matched by name alone, so a group created
+        # after the join counts as well (CVE-2024-37085). An administrator of the hypervisor
+        # owns the virtual machines on it, domain controllers included. The group does not
+        # exist by default; where it does, its members and who may change it are reported.
         $Script:DynamicPrivilegedGroups = @(
             'DnsAdmins'
+            'ESX Admins'
         )
     }
 

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 20:48:41
-    Version: 2.7.0+20261017-2048
+    Build: 2026-10-17 20:55:33
+    Version: 2.7.0+20261017-2055
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -12613,6 +12613,37 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         )
     }
 
+    'ESX_ADMINS_MEMBER' = @{
+        Title = "Member of ESX Admins (VMware ESXi Administrators)"
+        Risk = "Hint"
+        BaseScore = 35
+        Description = "This account is a member of a domain group named ESX Admins. A VMware ESXi host joined to the domain makes every member of a group of that name a full administrator of the host. It matches the name alone and does not check that the group existed when the host was joined, so a group created later - or another group renamed to it - counts the same (CVE-2024-37085). An administrator of the hypervisor controls every virtual machine on it, domain controllers included, whose disks hold the directory database. Microsoft reported ransomware operators creating this group and adding themselves to it in 2024. Whoever may add a member to the group has the same reach."
+        Impact = @(
+            "Full administrative control of every ESXi host joined to the domain that still uses the default group"
+            "Access to the disks of the virtual machines on those hosts - a domain controller's disk holds the directory database"
+            "Mass encryption of the virtual machines, as in the ransomware cases Microsoft reported"
+        )
+        Attack = @(
+            "1. Attacker becomes a member of ESX Admins - or creates or renames a group to that name if none exists"
+            "2. Logs on to a domain-joined ESXi host with domain credentials and is its administrator"
+            "3. Copies a domain controller's virtual disk, or encrypts the virtual machines"
+        )
+        Remediation = @(
+            "Treat the group as Tier 0: keep its membership minimal and let only the domain's administrators change it"
+            "On every ESXi host joined to the domain, point Config.HostAgent.plugins.hostsvc.esxAdminsGroup to a dedicated group, or leave the domain where the join is not needed"
+            "Update ESXi to a version with the fix for CVE-2024-37085 - Broadcom fixed 8.0 and VMware Cloud Foundation 5.x"
+        )
+        References = @(
+            @{ Title = "Ransomware operators exploit ESXi hypervisor vulnerability for mass encryption - Microsoft"; Url = "https://www.microsoft.com/en-us/security/blog/2024/07/29/ransomware-operators-exploit-esxi-hypervisor-vulnerability-for-mass-encryption/" }
+        )
+        Tools = @("PowerView", "BloodHound")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'privilegedGroups'; Custom = 'is_esxadmins_sid'; Severity = 'Hint' }
+            @{ Attribute = 'MemberOf'; Custom = 'is_esxadmins_sid'; Severity = 'Hint' }
+        )
+    }
+
     'PRIVILEGED_GROUP_MEMBERSHIP' = @{
         Title = "Privileged Group Membership (Tier 0)"
         Risk = "Finding"
@@ -24012,6 +24043,17 @@ function Test-CustomTrigger {
             if (-not $sid) { return $false }
             $resolvedName = ConvertFrom-SID -SID $sid
             return ($resolvedName -match '\\DnsAdmins$')
+        }
+
+        'is_esxadmins_sid' {
+            # ESX Admins has no fixed RID either - VMware ESXi matches it by name, which is
+            # the whole of CVE-2024-37085.
+            $sid = if ($Value -is [string] -and $Value -match '^S-1-') { $Value }
+                   elseif ($Value -is [PSCustomObject] -and $Value.PSObject.Properties['SID']) { $Value.SID }
+                   else { $null }
+            if (-not $sid) { return $false }
+            $resolvedName = ConvertFrom-SID -SID $sid
+            return ($resolvedName -match '\\ESX Admins$')
         }
 
         'days_over_365' {
@@ -105129,8 +105171,15 @@ function Get-PrivilegedGroupMembers {
         }
 
         # Dynamic groups (no fixed SID - resolve by name)
+        #
+        # ESX Admins: a VMware ESXi host joined to the domain makes every member of a domain
+        # group of that name a full administrator, matched by name alone, so a group created
+        # after the join counts as well (CVE-2024-37085). An administrator of the hypervisor
+        # owns the virtual machines on it, domain controllers included. The group does not
+        # exist by default; where it does, its members and who may change it are reported.
         $Script:DynamicPrivilegedGroups = @(
             'DnsAdmins'
+            'ESX Admins'
         )
     }
 
@@ -144090,7 +144139,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-2048"
+$Script:adPEASVersion = "2.7.0+20261017-2055"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

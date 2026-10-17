@@ -392,6 +392,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   treated as authenticated*, a finding with a card of its own: such mail reaches
   distribution groups that accept internal senders only and loses its external marking.
 
+- **`Get-PrivilegedGroupMembers` reports the ESX Admins group.** VMware ESXi joined to the
+  domain makes every member of a domain group named ESX Admins a full administrator of the
+  host, matched by name alone (CVE-2024-37085) - and an administrator of the hypervisor
+  owns the virtual machines on it, domain controllers included. Where the group exists, its
+  members are listed with the other privileged groups, with the card *Member of ESX
+  Admins*, and who may change it is read in the group ACL step.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
