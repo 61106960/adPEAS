@@ -127,8 +127,9 @@ function Get-CriticalObjectACLs {
                     $nameBySID[[string]$aclResult.OwnerSID] = $(if ($aclResult.Owner) { [string]$aclResult.Owner } else { [string]$aclResult.OwnerSID })
                 }
                 foreach ($ace in @($aclResult.ACEs)) {
-                    # Only what applies to the object itself.
-                    if ($ace.InheritedObjectType -and $ace.InheritedObjectType -ne $noGuid) { continue }
+                    # Only what applies to the object itself: not inherit-only. A class named
+                    # for inheritance does not take the ACE off this object (MS-DTYP, ACE) -
+                    # the access check skips INHERIT_ONLY_ACE and nothing else.
                     if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
 
                     $granted = @()

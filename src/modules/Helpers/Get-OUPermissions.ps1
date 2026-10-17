@@ -1463,11 +1463,15 @@ function Get-OUPermissions {
 
                 # Check 10: GPO Linking Rights
                 # Note: GUID::Empty is handled by generic "WriteProperty (All Properties)" above
-                # gPLink is an attribute of the OU itself, NOT child objects
-                # So InheritedObjectType must be empty (applies to the OU) or organizationalUnit
+                # gPLink is an attribute of the OU itself, NOT child objects, so the question
+                # is whether the ACE applies to this OU: not inherit-only. A class named for
+                # inheritance does not take it off the OU - it names the children that may
+                # inherit the ACE (MS-DTYP, ACE), and the access check skips INHERIT_ONLY_ACE
+                # and nothing else. An inherited copy for another class arrives inherit-only.
+                # The class used to be required to be organizationalUnit, which dropped
+                # "this object and descendant user objects" although it grants the write here.
                 if ($CheckType -contains 'GPOLinking') {
-                    $AppliesToOU = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['organizationalUnit'])
-                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToOU -and $AppliesToSelf) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToSelf) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['gPLink']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{

@@ -1127,10 +1127,17 @@ function Get-PrivilegedGroupMembers {
                         }
                         if (-not $TrusteeSID) { continue }
 
-                        # Skip ACEs with InheritedObjectType - they only apply to child objects, not AdminSDHolder itself
-                        $inheritedObjectType = $ACE.InheritedObjectType
-                        if ($inheritedObjectType -and $inheritedObjectType -ne [Guid]::Empty) {
-                            Write-Log "[Get-PrivilegedGroupMembers] Skipping child-only ACE on AdminSDHolder: Trustee=$TrusteeSID"
+                        # An inherit-only ACE grants nothing on AdminSDHolder, and nothing on
+                        # the objects SDProp copies it onto - it reaches only their children.
+                        #
+                        # An InheritedObjectType does not take an ACE off the object either:
+                        # it names the class of the children that may inherit the ACE (MS-DTYP,
+                        # ACE), and the access check reads the ObjectType alone and skips only
+                        # INHERIT_ONLY_ACE. "This object and descendant user objects" is full
+                        # control over AdminSDHolder and, copied by SDProp, over every
+                        # protected group and account. This skipped every ACE with a class.
+                        if (([string]$ACE.PropagationFlags) -match 'InheritOnly') {
+                            Write-Log "[Get-PrivilegedGroupMembers] Skipping inherit-only ACE on AdminSDHolder: Trustee=$TrusteeSID"
                             continue
                         }
 
@@ -1363,6 +1370,9 @@ function Get-PrivilegedGroupMembers {
                         }
 
                         if (-not $ACE.IsInherited) { continue }
+                        # An inherited copy for another class than AdminSDHolder's arrives
+                        # inherit-only and grants nothing here.
+                        if (([string]$ACE.PropagationFlags) -match 'InheritOnly') { continue }
 
                         $inheritedType = $ACE.ObjectType
                         $inheritedEmpty = (-not $inheritedType -or $inheritedType -eq [Guid]::Empty)

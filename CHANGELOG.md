@@ -476,6 +476,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   policy that followed an assignment to an administrator was reported as a hint about an
   "already privileged" assignee instead of as a finding.
 
+- **An ACE that names an object class for inheritance is no longer ignored on the object
+  that carries it.** The class in an ACE (`InheritedObjectType`) says which children may
+  inherit it; whether it applies to the object itself is decided by the inherit-only flag
+  alone - the access check reads the object type and skips inherit-only entries, nothing
+  else (MS-DTYP). Five places took a class as "children only" and dropped the entry:
+  the domain root ACL in `Get-DangerousACLs`, the AdminSDHolder template in
+  `Get-PrivilegedGroupMembers`, `Get-CriticalObjectACLs`, the container check of
+  `Get-AddComputerRights` and the GPO-link rights on an OU. An entry such as "this object
+  and descendant user objects" is full control over the domain object - replication
+  rights of that shape are DCSync - and on AdminSDHolder it is copied onto every
+  protected account. The wizard's "descendant objects only" forms are inherit-only and
+  stay out. AdminSDHolder entries that are inherit-only but name no class were counted,
+  and are not any more: they reach neither the template nor the objects SDProp copies it
+  onto.
+
 ---
 
 ## [2.7.0] - 2026-10-08

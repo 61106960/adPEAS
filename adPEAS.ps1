@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 17:18:33
-    Version: 2.7.0+20261017-1718
+    Build: 2026-10-17 17:35:01
+    Version: 2.7.0+20261017-1735
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -83217,11 +83217,15 @@ function Get-OUPermissions {
 
                 # Check 10: GPO Linking Rights
                 # Note: GUID::Empty is handled by generic "WriteProperty (All Properties)" above
-                # gPLink is an attribute of the OU itself, NOT child objects
-                # So InheritedObjectType must be empty (applies to the OU) or organizationalUnit
+                # gPLink is an attribute of the OU itself, NOT child objects, so the question
+                # is whether the ACE applies to this OU: not inherit-only. A class named for
+                # inheritance does not take it off the OU - it names the children that may
+                # inherit the ACE (MS-DTYP, ACE), and the access check skips INHERIT_ONLY_ACE
+                # and nothing else. An inherited copy for another class arrives inherit-only.
+                # The class used to be required to be organizationalUnit, which dropped
+                # "this object and descendant user objects" although it grants the write here.
                 if ($CheckType -contains 'GPOLinking') {
-                    $AppliesToOU = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['organizationalUnit'])
-                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToOU -and $AppliesToSelf) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToSelf) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['gPLink']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -103952,10 +103956,17 @@ function Get-PrivilegedGroupMembers {
                         }
                         if (-not $TrusteeSID) { continue }
 
-                        # Skip ACEs with InheritedObjectType - they only apply to child objects, not AdminSDHolder itself
-                        $inheritedObjectType = $ACE.InheritedObjectType
-                        if ($inheritedObjectType -and $inheritedObjectType -ne [Guid]::Empty) {
-                            Write-Log "[Get-PrivilegedGroupMembers] Skipping child-only ACE on AdminSDHolder: Trustee=$TrusteeSID"
+                        # An inherit-only ACE grants nothing on AdminSDHolder, and nothing on
+                        # the objects SDProp copies it onto - it reaches only their children.
+                        #
+                        # An InheritedObjectType does not take an ACE off the object either:
+                        # it names the class of the children that may inherit the ACE (MS-DTYP,
+                        # ACE), and the access check reads the ObjectType alone and skips only
+                        # INHERIT_ONLY_ACE. "This object and descendant user objects" is full
+                        # control over AdminSDHolder and, copied by SDProp, over every
+                        # protected group and account. This skipped every ACE with a class.
+                        if (([string]$ACE.PropagationFlags) -match 'InheritOnly') {
+                            Write-Log "[Get-PrivilegedGroupMembers] Skipping inherit-only ACE on AdminSDHolder: Trustee=$TrusteeSID"
                             continue
                         }
 
@@ -104188,6 +104199,9 @@ function Get-PrivilegedGroupMembers {
                         }
 
                         if (-not $ACE.IsInherited) { continue }
+                        # An inherited copy for another class than AdminSDHolder's arrives
+                        # inherit-only and grants nothing here.
+                        if (([string]$ACE.PropagationFlags) -match 'InheritOnly') { continue }
 
                         $inheritedType = $ACE.ObjectType
                         $inheritedEmpty = (-not $inheritedType -or $inheritedType -eq [Guid]::Empty)
@@ -108236,18 +108250,11 @@ function Get-DangerousACLs {
                 $trusteeSID = $ace.TrusteeSID
                 $trusteeName = $ace.Trustee
                 $objectType = $ace.ObjectType
-                $inheritedObjectType = $ace.InheritedObjectType
 
-                # Skip ACEs with InheritedObjectType - they only apply to child objects, not the domain root
-                if ($inheritedObjectType -and $inheritedObjectType -ne '' -and $inheritedObjectType -ne '00000000-0000-0000-0000-000000000000') {
-                    Write-Log "[Get-DangerousACLs] Skipping child-only ACE: Trustee=$trusteeName, InheritedType=$inheritedObjectType"
-                    continue
-                }
-
-                # The other half of the same question, and the half the skip above cannot
-                # answer. "Delegate full control over all descendant objects" at the domain
-                # root writes an ACE with ContainerInherit, ObjectInherit and InheritOnly and
-                # an EMPTY InheritedObjectType - measured - so it arrived here looking exactly
+                # Whether the ACE applies to the domain object is INHERIT_ONLY_ACE alone.
+                # "Delegate full control over all descendant objects" at the domain root
+                # writes an ACE with ContainerInherit, ObjectInherit and InheritOnly and an
+                # EMPTY InheritedObjectType - measured - so it arrived here looking exactly
                 # like an ACE on the domain object itself and was reported as GenericAll on the
                 # domain root. The trustee cannot touch the domain object with it: no DCSync,
                 # no DACL rewrite, no GPO link at domain level.
@@ -108256,6 +108263,14 @@ function Get-DangerousACLs {
                 # inherited copy arrives there with InheritOnly cleared - measured - so
                 # Get-DangerousOUPermissions reports it on the OUs where it does apply, with
                 # Get-ACEInheritanceSource naming the domain root as its source.
+                #
+                # An InheritedObjectType is no reason to skip. It names the class of the
+                # children that may inherit the ACE (MS-DTYP, ACE); the access check reads the
+                # ObjectType alone and skips only INHERIT_ONLY_ACE. The delegation wizard's
+                # "descendant user objects" form is inherit-only and stops here; an ACE that
+                # names a class and is not inherit-only - "this object and descendant user
+                # objects", written by a script or a product - grants its rights on the domain
+                # object as well, DCSync included. Every ACE with a class used to be skipped.
                 if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
                     Write-Log "[Get-DangerousACLs] Skipping descendants-only ACE: Trustee=$trusteeName, PropagationFlags=$($ace.PropagationFlags)"
                     continue
@@ -108764,8 +108779,9 @@ function Get-CriticalObjectACLs {
                     $nameBySID[[string]$aclResult.OwnerSID] = $(if ($aclResult.Owner) { [string]$aclResult.Owner } else { [string]$aclResult.OwnerSID })
                 }
                 foreach ($ace in @($aclResult.ACEs)) {
-                    # Only what applies to the object itself.
-                    if ($ace.InheritedObjectType -and $ace.InheritedObjectType -ne $noGuid) { continue }
+                    # Only what applies to the object itself: not inherit-only. A class named
+                    # for inheritance does not take the ACE off this object (MS-DTYP, ACE) -
+                    # the access check skips INHERIT_ONLY_ACE and nothing else.
                     if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
 
                     $granted = @()
@@ -109983,28 +109999,6 @@ function Get-AddComputerRights {
             if ($aclResult -and $aclResult.ACEs) {
                 $seenSIDs = @{}
 
-                # The schemaIDGUID of the container the ACL was read from, for the
-                # inheritance-filter check in the loop. ObjectClass is the most specific
-                # class LDAP returned - 'container' for CN=Computers, 'organizationalUnit'
-                # once redircmp has moved the default somewhere else.
-                #
-                # Stays $null when the class cannot be resolved, and the check below then
-                # drops nothing: an unknown class must not silence the whole analysis.
-                #
-                # The table itself is tested for, not just the key. Calling .ContainsKey on
-                # it when adPEAS-GUIDs.ps1 has not been loaded throws, and the throw lands in
-                # this check's own try/catch - which aborted the entire analysis and reported
-                # nothing at all, the exact failure this gate is meant to prevent. Measured:
-                # the suite loads the sources it names and that one was not among them.
-                $containerClassGUID = $null
-                $containerClass = [string]$aclResult.ObjectClass
-                if ($containerClass -and $Script:SchemaClassGUIDs -and
-                    $Script:SchemaClassGUIDs.ContainsKey($containerClass)) {
-                    $containerClassGUID = $Script:SchemaClassGUIDs[$containerClass].Guid
-                } elseif ($containerClass) {
-                    Write-Log "[Get-AddComputerRights] No schema GUID for container class '$containerClass' - inheritance filters are not evaluated"
-                }
-
                 foreach ($ace in $aclResult.ACEs) {
                     $trusteeSID = $ace.TrusteeSID
 
@@ -110022,23 +110016,18 @@ function Get-AddComputerRights {
                     # normally none. Reported as "may add computers to the domain" it was a
                     # false positive, and the ACE carries an empty InheritedObjectType so
                     # nothing else here caught it.
+                    #
+                    # This is also the whole of the class question. An inheritance filter
+                    # names the class of the children that may inherit the ACE (MS-DTYP,
+                    # ACE); the access check reads the ObjectType alone and skips only
+                    # INHERIT_ONLY_ACE. The wizard forms for "only the following objects"
+                    # are inherit-only and stop here, an inherited copy for another class
+                    # than the container's arrives inherit-only, and an ACE that names a
+                    # class without being inherit-only grants its rights on the container
+                    # whatever the class. Comparing the filter with the container's class
+                    # used to drop that last one.
                     if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
                         Write-Log "[Get-AddComputerRights] Skipping descendants-only ACE: $($ace.Trustee) ($trusteeSID), PropagationFlags=$($ace.PropagationFlags)"
-                        continue
-                    }
-
-                    # An ACE carrying an inheritance filter grants its rights on this
-                    # container only if the container is of the class named in the filter.
-                    #
-                    # This compares rather than skipping on any filter, which is what the
-                    # domain-root check does: measured, an ACE inherited onto this container
-                    # whose filter names the container's OWN class arrives with InheritOnly
-                    # cleared and is a real grant, so a blanket skip would have turned a
-                    # narrow false positive into a false negative. The wizard forms that do
-                    # not apply here are all InheritOnly and the gate above already has them.
-                    if ($ace.InheritedObjectType -and $containerClassGUID -and
-                        $ace.InheritedObjectType -ne $containerClassGUID) {
-                        Write-Log "[Get-AddComputerRights] Skipping ACE filtered to another class: $($ace.Trustee) ($trusteeSID), InheritedObjectType=$($ace.InheritedObjectType)"
                         continue
                     }
 
@@ -141233,7 +141222,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1718"
+$Script:adPEASVersion = "2.7.0+20261017-1735"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

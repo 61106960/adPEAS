@@ -51489,8 +51489,7 @@ function Get-OUPermissions {
 	                }
 	            }
 	            if ($CheckType -contains 'GPOLinking') {
-	                $AppliesToOU = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['organizationalUnit'])
-	                if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToOU -and $AppliesToSelf) {
+	                if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToSelf) {
 	                    if ($ACE.ObjectType -eq $PropertyGUIDs['gPLink']) {
 	                        $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
 	                        $Findings += [PSCustomObject]@{
@@ -63889,8 +63888,7 @@ function Get-PrivilegedGroupMembers {
 	                        $TrusteeSID = ConvertTo-SID -Identity $identRef.Value
 	                    }
 	                    if (-not $TrusteeSID) { continue }
-	                    $inheritedObjectType = $ACE.InheritedObjectType
-	                    if ($inheritedObjectType -and $inheritedObjectType -ne [Guid]::Empty) {
+	                    if (([string]$ACE.PropagationFlags) -match 'InheritOnly') {
 	                        continue
 	                    }
 	                    $objectType = $ACE.ObjectType
@@ -64020,6 +64018,7 @@ function Get-PrivilegedGroupMembers {
 	                        continue
 	                    }
 	                    if (-not $ACE.IsInherited) { continue }
+	                    if (([string]$ACE.PropagationFlags) -match 'InheritOnly') { continue }
 	                    $inheritedType = $ACE.ObjectType
 	                    $inheritedEmpty = (-not $inheritedType -or $inheritedType -eq [Guid]::Empty)
 	                    $controls = (
@@ -66086,10 +66085,6 @@ function Get-DangerousACLs {
 	            $trusteeSID = $ace.TrusteeSID
 	            $trusteeName = $ace.Trustee
 	            $objectType = $ace.ObjectType
-	            $inheritedObjectType = $ace.InheritedObjectType
-	            if ($inheritedObjectType -and $inheritedObjectType -ne '' -and $inheritedObjectType -ne '00000000-0000-0000-0000-000000000000') {
-	                continue
-	            }
 	            if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
 	                continue
 	            }
@@ -66377,7 +66372,6 @@ function Get-CriticalObjectACLs {
 	                $nameBySID[[string]$aclResult.OwnerSID] = $(if ($aclResult.Owner) { [string]$aclResult.Owner } else { [string]$aclResult.OwnerSID })
 	            }
 	            foreach ($ace in @($aclResult.ACEs)) {
-	                if ($ace.InheritedObjectType -and $ace.InheritedObjectType -ne $noGuid) { continue }
 	                if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
 	                $granted = @()
 	                $objectType = [string]$ace.ObjectType
@@ -67049,13 +67043,6 @@ function Get-AddComputerRights {
 	        $aclResult = Get-ObjectACL -DistinguishedName $computersContainerDN -Rights 'GenericAll','CreateChild' -AllowOnly @connectionParams
 	        if ($aclResult -and $aclResult.ACEs) {
 	            $seenSIDs = @{}
-	            $containerClassGUID = $null
-	            $containerClass = [string]$aclResult.ObjectClass
-	            if ($containerClass -and $Script:SchemaClassGUIDs -and
-	                $Script:SchemaClassGUIDs.ContainsKey($containerClass)) {
-	                $containerClassGUID = $Script:SchemaClassGUIDs[$containerClass].Guid
-	            } elseif ($containerClass) {
-	            }
 	            foreach ($ace in $aclResult.ACEs) {
 	                $trusteeSID = $ace.TrusteeSID
 	                if ([string]::IsNullOrEmpty($trusteeSID)) {
@@ -67063,10 +67050,6 @@ function Get-AddComputerRights {
 	                }
 	                if ($seenSIDs.ContainsKey($trusteeSID)) { continue }
 	                if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
-	                    continue
-	                }
-	                if ($ace.InheritedObjectType -and $containerClassGUID -and
-	                    $ace.InheritedObjectType -ne $containerClassGUID) {
 	                    continue
 	                }
 	                $hasCreateChild = $false
@@ -87658,7 +87641,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1718"
+$Script:adPEASVersion = "2.7.0+20261017-1735"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

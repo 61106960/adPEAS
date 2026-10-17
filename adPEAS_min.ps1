@@ -53245,8 +53245,7 @@ function Get-OUPermissions {
                     }
                 }
                 if ($CheckType -contains 'GPOLinking') {
-                    $AppliesToOU = $IsAllObjectTypes -or ($inheritedObjectType -eq $SchemaClassGUIDs['organizationalUnit'])
-                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToOU -and $AppliesToSelf) {
+                    if ($HasWriteProperty -and -not $IsAllProperties -and $AppliesToSelf) {
                         if ($ACE.ObjectType -eq $PropertyGUIDs['gPLink']) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -66219,9 +66218,8 @@ function Get-PrivilegedGroupMembers {
                             $TrusteeSID = ConvertTo-SID -Identity $identRef.Value
                         }
                         if (-not $TrusteeSID) { continue }
-                        $inheritedObjectType = $ACE.InheritedObjectType
-                        if ($inheritedObjectType -and $inheritedObjectType -ne [Guid]::Empty) {
-                            Write-Log "[Get-PrivilegedGroupMembers] Skipping child-only ACE on AdminSDHolder: Trustee=$TrusteeSID"
+                        if (([string]$ACE.PropagationFlags) -match 'InheritOnly') {
+                            Write-Log "[Get-PrivilegedGroupMembers] Skipping inherit-only ACE on AdminSDHolder: Trustee=$TrusteeSID"
                             continue
                         }
                         $objectType = $ACE.ObjectType
@@ -66355,6 +66353,7 @@ function Get-PrivilegedGroupMembers {
                             continue
                         }
                         if (-not $ACE.IsInherited) { continue }
+                        if (([string]$ACE.PropagationFlags) -match 'InheritOnly') { continue }
                         $inheritedType = $ACE.ObjectType
                         $inheritedEmpty = (-not $inheritedType -or $inheritedType -eq [Guid]::Empty)
                         $controls = (
@@ -68563,11 +68562,6 @@ function Get-DangerousACLs {
                 $trusteeSID = $ace.TrusteeSID
                 $trusteeName = $ace.Trustee
                 $objectType = $ace.ObjectType
-                $inheritedObjectType = $ace.InheritedObjectType
-                if ($inheritedObjectType -and $inheritedObjectType -ne '' -and $inheritedObjectType -ne '00000000-0000-0000-0000-000000000000') {
-                    Write-Log "[Get-DangerousACLs] Skipping child-only ACE: Trustee=$trusteeName, InheritedType=$inheritedObjectType"
-                    continue
-                }
                 if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
                     Write-Log "[Get-DangerousACLs] Skipping descendants-only ACE: Trustee=$trusteeName, PropagationFlags=$($ace.PropagationFlags)"
                     continue
@@ -68871,7 +68865,6 @@ function Get-CriticalObjectACLs {
                     $nameBySID[[string]$aclResult.OwnerSID] = $(if ($aclResult.Owner) { [string]$aclResult.Owner } else { [string]$aclResult.OwnerSID })
                 }
                 foreach ($ace in @($aclResult.ACEs)) {
-                    if ($ace.InheritedObjectType -and $ace.InheritedObjectType -ne $noGuid) { continue }
                     if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
                     $granted = @()
                     $objectType = [string]$ace.ObjectType
@@ -69579,14 +69572,6 @@ function Get-AddComputerRights {
             $aclResult = Get-ObjectACL -DistinguishedName $computersContainerDN -Rights 'GenericAll','CreateChild' -AllowOnly @connectionParams
             if ($aclResult -and $aclResult.ACEs) {
                 $seenSIDs = @{}
-                $containerClassGUID = $null
-                $containerClass = [string]$aclResult.ObjectClass
-                if ($containerClass -and $Script:SchemaClassGUIDs -and
-                    $Script:SchemaClassGUIDs.ContainsKey($containerClass)) {
-                    $containerClassGUID = $Script:SchemaClassGUIDs[$containerClass].Guid
-                } elseif ($containerClass) {
-                    Write-Log "[Get-AddComputerRights] No schema GUID for container class '$containerClass' - inheritance filters are not evaluated"
-                }
                 foreach ($ace in $aclResult.ACEs) {
                     $trusteeSID = $ace.TrusteeSID
                     if ([string]::IsNullOrEmpty($trusteeSID)) {
@@ -69596,11 +69581,6 @@ function Get-AddComputerRights {
                     if ($seenSIDs.ContainsKey($trusteeSID)) { continue }
                     if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
                         Write-Log "[Get-AddComputerRights] Skipping descendants-only ACE: $($ace.Trustee) ($trusteeSID), PropagationFlags=$($ace.PropagationFlags)"
-                        continue
-                    }
-                    if ($ace.InheritedObjectType -and $containerClassGUID -and
-                        $ace.InheritedObjectType -ne $containerClassGUID) {
-                        Write-Log "[Get-AddComputerRights] Skipping ACE filtered to another class: $($ace.Trustee) ($trusteeSID), InheritedObjectType=$($ace.InheritedObjectType)"
                         continue
                     }
                     $hasCreateChild = $false
@@ -90683,7 +90663,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1718"
+$Script:adPEASVersion = "2.7.0+20261017-1735"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

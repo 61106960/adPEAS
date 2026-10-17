@@ -135,28 +135,6 @@ function Get-AddComputerRights {
             if ($aclResult -and $aclResult.ACEs) {
                 $seenSIDs = @{}
 
-                # The schemaIDGUID of the container the ACL was read from, for the
-                # inheritance-filter check in the loop. ObjectClass is the most specific
-                # class LDAP returned - 'container' for CN=Computers, 'organizationalUnit'
-                # once redircmp has moved the default somewhere else.
-                #
-                # Stays $null when the class cannot be resolved, and the check below then
-                # drops nothing: an unknown class must not silence the whole analysis.
-                #
-                # The table itself is tested for, not just the key. Calling .ContainsKey on
-                # it when adPEAS-GUIDs.ps1 has not been loaded throws, and the throw lands in
-                # this check's own try/catch - which aborted the entire analysis and reported
-                # nothing at all, the exact failure this gate is meant to prevent. Measured:
-                # the suite loads the sources it names and that one was not among them.
-                $containerClassGUID = $null
-                $containerClass = [string]$aclResult.ObjectClass
-                if ($containerClass -and $Script:SchemaClassGUIDs -and
-                    $Script:SchemaClassGUIDs.ContainsKey($containerClass)) {
-                    $containerClassGUID = $Script:SchemaClassGUIDs[$containerClass].Guid
-                } elseif ($containerClass) {
-                    Write-Log "[Get-AddComputerRights] No schema GUID for container class '$containerClass' - inheritance filters are not evaluated"
-                }
-
                 foreach ($ace in $aclResult.ACEs) {
                     $trusteeSID = $ace.TrusteeSID
 
@@ -174,23 +152,18 @@ function Get-AddComputerRights {
                     # normally none. Reported as "may add computers to the domain" it was a
                     # false positive, and the ACE carries an empty InheritedObjectType so
                     # nothing else here caught it.
+                    #
+                    # This is also the whole of the class question. An inheritance filter
+                    # names the class of the children that may inherit the ACE (MS-DTYP,
+                    # ACE); the access check reads the ObjectType alone and skips only
+                    # INHERIT_ONLY_ACE. The wizard forms for "only the following objects"
+                    # are inherit-only and stop here, an inherited copy for another class
+                    # than the container's arrives inherit-only, and an ACE that names a
+                    # class without being inherit-only grants its rights on the container
+                    # whatever the class. Comparing the filter with the container's class
+                    # used to drop that last one.
                     if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
                         Write-Log "[Get-AddComputerRights] Skipping descendants-only ACE: $($ace.Trustee) ($trusteeSID), PropagationFlags=$($ace.PropagationFlags)"
-                        continue
-                    }
-
-                    # An ACE carrying an inheritance filter grants its rights on this
-                    # container only if the container is of the class named in the filter.
-                    #
-                    # This compares rather than skipping on any filter, which is what the
-                    # domain-root check does: measured, an ACE inherited onto this container
-                    # whose filter names the container's OWN class arrives with InheritOnly
-                    # cleared and is a real grant, so a blanket skip would have turned a
-                    # narrow false positive into a false negative. The wizard forms that do
-                    # not apply here are all InheritOnly and the gate above already has them.
-                    if ($ace.InheritedObjectType -and $containerClassGUID -and
-                        $ace.InheritedObjectType -ne $containerClassGUID) {
-                        Write-Log "[Get-AddComputerRights] Skipping ACE filtered to another class: $($ace.Trustee) ($trusteeSID), InheritedObjectType=$($ace.InheritedObjectType)"
                         continue
                     }
 

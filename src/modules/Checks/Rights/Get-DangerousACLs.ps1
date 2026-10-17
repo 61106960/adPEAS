@@ -150,18 +150,11 @@ function Get-DangerousACLs {
                 $trusteeSID = $ace.TrusteeSID
                 $trusteeName = $ace.Trustee
                 $objectType = $ace.ObjectType
-                $inheritedObjectType = $ace.InheritedObjectType
 
-                # Skip ACEs with InheritedObjectType - they only apply to child objects, not the domain root
-                if ($inheritedObjectType -and $inheritedObjectType -ne '' -and $inheritedObjectType -ne '00000000-0000-0000-0000-000000000000') {
-                    Write-Log "[Get-DangerousACLs] Skipping child-only ACE: Trustee=$trusteeName, InheritedType=$inheritedObjectType"
-                    continue
-                }
-
-                # The other half of the same question, and the half the skip above cannot
-                # answer. "Delegate full control over all descendant objects" at the domain
-                # root writes an ACE with ContainerInherit, ObjectInherit and InheritOnly and
-                # an EMPTY InheritedObjectType - measured - so it arrived here looking exactly
+                # Whether the ACE applies to the domain object is INHERIT_ONLY_ACE alone.
+                # "Delegate full control over all descendant objects" at the domain root
+                # writes an ACE with ContainerInherit, ObjectInherit and InheritOnly and an
+                # EMPTY InheritedObjectType - measured - so it arrived here looking exactly
                 # like an ACE on the domain object itself and was reported as GenericAll on the
                 # domain root. The trustee cannot touch the domain object with it: no DCSync,
                 # no DACL rewrite, no GPO link at domain level.
@@ -170,6 +163,14 @@ function Get-DangerousACLs {
                 # inherited copy arrives there with InheritOnly cleared - measured - so
                 # Get-DangerousOUPermissions reports it on the OUs where it does apply, with
                 # Get-ACEInheritanceSource naming the domain root as its source.
+                #
+                # An InheritedObjectType is no reason to skip. It names the class of the
+                # children that may inherit the ACE (MS-DTYP, ACE); the access check reads the
+                # ObjectType alone and skips only INHERIT_ONLY_ACE. The delegation wizard's
+                # "descendant user objects" form is inherit-only and stops here; an ACE that
+                # names a class and is not inherit-only - "this object and descendant user
+                # objects", written by a script or a product - grants its rights on the domain
+                # object as well, DCSync included. Every ACE with a class used to be skipped.
                 if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
                     Write-Log "[Get-DangerousACLs] Skipping descendants-only ACE: Trustee=$trusteeName, PropagationFlags=$($ace.PropagationFlags)"
                     continue
