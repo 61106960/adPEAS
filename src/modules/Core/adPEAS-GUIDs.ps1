@@ -154,7 +154,9 @@ $Script:PropertyGUIDs = @{
     'msDS-AllowedToDelegateTo'       = [GUID]'800d94d7-b7a1-42a1-b14d-7cae1423d07f'
     'msDS-AllowedToActOnBehalfOfOtherIdentity' = [GUID]'3f78c3e5-f79a-46bd-a0b8-9d18116ddc79'
     'gPLink'                         = [GUID]'f30e3bbe-9ff0-11d1-b603-0000f80367c1'
-    'gPOptions'                      = [GUID]'f30e3bc0-9ff0-11d1-b603-0000f80367c1'
+    # f30e3bbf per the a-gpoptions page. This entry used to hold f30e3bc0, which is
+    # gPCFunctionalityVersion (below), so an ACE on that GPO attribute was named gPOptions.
+    'gPOptions'                      = [GUID]'f30e3bbf-9ff0-11d1-b603-0000f80367c1'
 
     # Certificate-template attributes. A WriteProperty ACE naming one of these is an ESC4
     # path on its own: each one is a single write away from a template that issues a
@@ -184,7 +186,11 @@ $Script:PropertyGUIDs = @{
     'gPCUserExtensionNames'          = [GUID]'42a75fc6-783f-11d2-9916-0000f87a57d4'
     'versionNumber'                  = [GUID]'bf967a76-0de6-11d0-a285-00aa003049e2'
     'gPCWQLFilter'                   = [GUID]'7bd4c7a6-1add-4436-8c04-3999a880154c'
-    'dNSHostName'                    = [GUID]'72e39547-7b18-11d1-adef-00c04fd8d5cd'  # DNS hostname attribute
+    # The version of the editor that created the GPO, Attribute-Id 1.2.840.113556.1.4.893.
+    # Not content either; listed so its ACE keeps a name now that the gPOptions entry above
+    # no longer carries this GUID.
+    'gPCFunctionalityVersion'        = [GUID]'f30e3bc0-9ff0-11d1-b603-0000f80367c1'
+    'dNSHostName'                   = [GUID]'72e39547-7b18-11d1-adef-00c04fd8d5cd'  # DNS hostname attribute
 
     # gMSA (Group Managed Service Account) password attribute
     'msDS-ManagedPassword'           = [GUID]'e362ed86-b728-0842-b27d-2dea7a9df218'
