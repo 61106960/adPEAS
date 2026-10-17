@@ -307,6 +307,83 @@ $Script:UserRightsBaseline = [ordered]@{
         # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/shut-down-the-system
         DC     = @('S-1-5-32-544', 'S-1-5-32-551', 'S-1-5-32-550', 'S-1-5-32-549')
     }
+
+    # The seven below were not evaluated at all: a GPO granting one of them to Domain Users
+    # passed without a word. Defaults from the "Default values" table of each right's
+    # Microsoft page (Domain Controller and Member Server Effective Default Settings).
+
+    'SeCreateSymbolicLinkPrivilege' = @{
+        Name = 'Create symbolic links'
+        Tier = 'Hint'
+        Why  = 'A symbolic link redirects a file operation of a more privileged process to a path the holder chooses - Microsoft names permission changes, corrupted or destroyed data and denial of service.'
+        # Administrators. The Hyper-V role adds NT VIRTUAL MACHINE\Virtual Machines on a host
+        # where it is installed; that is the role, not the Windows default.
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/create-symbolic-links
+        Member = @('S-1-5-32-544')
+        DC     = @('S-1-5-32-544')
+    }
+
+    'SeDelegateSessionUserImpersonatePrivilege' = @{
+        Name = 'Obtain an impersonation token for another user in the same session'
+        Tier = 'Hint'
+        Why  = 'Obtains an impersonation token for another user logged on in the same session, and acts as that user.'
+        # Microsoft documents what the privilege does (Privilege Constants, winnt.h) and
+        # publishes no default holder set for it, so the comparison falls back to the
+        # identity filter and says so, rather than guessing a default.
+        Member = $null
+        DC     = $null
+    }
+
+    'SeAuditPrivilege' = @{
+        Name = 'Generate security audits'
+        Tier = 'Hint'
+        Why  = 'Writes arbitrary entries into the Security log - enough to roll real events out where the log overwrites, or to stop the machine where it halts on a full log.'
+        # LOCAL SERVICE and NETWORK SERVICE, on a member and on a domain controller alike.
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/generate-security-audits
+        Member = @('S-1-5-19', 'S-1-5-20')
+        DC     = @('S-1-5-19', 'S-1-5-20')
+    }
+
+    'SeSystemEnvironmentPrivilege' = @{
+        Name = 'Modify firmware environment values'
+        Tier = 'Hint'
+        Why  = 'Writes the firmware environment - on UEFI the NVRAM variables that hold the boot settings - which can make the hardware fail or the machine boot something else.'
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/modify-firmware-environment-values
+        Member = @('S-1-5-32-544')
+        DC     = @('S-1-5-32-544')
+    }
+
+    'SeCreateGlobalPrivilege' = @{
+        Name = 'Create global objects'
+        Tier = 'Hint'
+        Why  = 'Creates file mapping and symbolic link objects in the global namespace from any session, where a privileged service expects to find its own - Microsoft calls assigning it a security risk.'
+        # Administrators, LOCAL SERVICE, NETWORK SERVICE and SERVICE.
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/create-global-objects
+        Member = @('S-1-5-32-544', 'S-1-5-19', 'S-1-5-20', 'S-1-5-6')
+        DC     = @('S-1-5-32-544', 'S-1-5-19', 'S-1-5-20', 'S-1-5-6')
+    }
+
+    'SeProfileSingleProcessPrivilege' = @{
+        Name = 'Profile single process'
+        Tier = 'Hint'
+        Why  = 'Samples any process: which run, security software among them, and who else is logged on.'
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/profile-single-process
+        Member = @('S-1-5-32-544')
+        DC     = @('S-1-5-32-544')
+    }
+
+    'SeSystemProfilePrivilege' = @{
+        Name = 'Profile system performance'
+        Tier = 'Hint'
+        Why  = 'Profiles the whole system: which processes are active, security software among them.'
+        # Administrators and NT SERVICE\WdiServiceHost, as the page's own text says - its
+        # table lists Administrators alone. The service SID is derived from the service name
+        # (SHA-1 of the upper-cased name) and is the same on every machine; checked against
+        # sc.exe showsid WdiServiceHost.
+        # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/profile-system-performance
+        Member = @('S-1-5-32-544', 'S-1-5-80-3139157870-2983391045-3678747466-658725712-1809340420')
+        DC     = @('S-1-5-32-544', 'S-1-5-80-3139157870-2983391045-3678747466-658725712-1809340420')
+    }
 }
 
 # SeMachineAccountPrivilege is deliberately absent: Get-AddComputerRights covers it

@@ -465,6 +465,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   policy names `MinimumPasswordAge`, which would put a mention on each of them, and
   `Registry.pol` is parsed for password values on its own.
 
+- **`Get-GPOUserRightsAssignment` evaluates seven more user rights.** A GPO granting
+  `SeCreateSymbolicLinkPrivilege`, `SeAuditPrivilege`, `SeSystemEnvironmentPrivilege`,
+  `SeCreateGlobalPrivilege`, `SeProfileSingleProcessPrivilege`, `SeSystemProfilePrivilege`
+  or `SeDelegateSessionUserImpersonatePrivilege` beyond the Windows default passed without
+  a word. Each default is taken from the Default values table of its Microsoft page -
+  `SeSystemProfilePrivilege` includes `NT SERVICE\WdiServiceHost`, as the page's text
+  says - and all seven are hints with a card of their own. Microsoft publishes no default
+  for `SeDelegateSessionUserImpersonatePrivilege`, so its holders are listed through the
+  identity filter rather than compared against a guess.
+
 - **The Restricted Admin card is a hint, as its row is.** The registry table lowered
   `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the
   card and the trigger on its row stayed a finding: the console printed the row yellow and

@@ -5722,8 +5722,8 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
     # =========================================================================
     # GPO USER RIGHTS - one definition per right (Get-GPOUserRightsAssignment)
     # =========================================================================
-    # GPO_DANGEROUS_USER_RIGHT used to be the tooltip for every one of the 22 rights this
-    # check compares, from SeDebugPrivilege to SeShutdownPrivilege alike - a reader hovering
+    # GPO_DANGEROUS_USER_RIGHT used to be the tooltip for every one of the 22 rights the
+    # check compared then (29 now), from SeDebugPrivilege to SeShutdownPrivilege alike - a reader hovering
     # a Tier-2 logon right got the same "leads directly to SYSTEM" prose written for
     # SeDebugPrivilege. Split into one definition per right, so the Title, Description,
     # Impact, Attack and Remediation match what that specific right actually does.
@@ -6378,6 +6378,201 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         Triggers = @(
             @{ Attribute = 'UserRight'; Pattern = '^SeShutdownPrivilege$'; Severity = 'Hint' }
             @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeShutdownPrivilege'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SECREATESYMBOLICLINK' = @{
+        Title = "'Create Symbolic Links' (SeCreateSymbolicLinkPrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy grants SeCreateSymbolicLinkPrivilege to a principal beyond the Windows default, which is Administrators. Symbolic links can expose security vulnerabilities in applications that are not designed to handle them, and Microsoft names what a holder can do with them: change the permissions on a file, corrupt or destroy data, or cause a denial of service."
+        Impact = @(
+            "A link planted where a more privileged process writes or deletes redirects that operation to a file of the holder's choosing"
+            "Symbolic link redirection is a known route from a standard account to a privileged file operation"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials and a session on a targeted machine"
+            "2. Find a privileged process that writes to, or deletes in, a location the holder can create a link in"
+            "3. Plant a symbolic link there that points at a protected file"
+            "4. The privileged process acts on the target of the link"
+        )
+        Remediation = @(
+            "Remove the principal and leave the right with Administrators, as by default"
+            "Restrict which symbolic links are followed with fsutil behavior set symlinkevaluation"
+        )
+        References = @(
+            @{ Title = "Create symbolic links - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/create-symbolic-links" }
+        )
+        Tools = @("mklink", "fsutil")
+        MITRE = "T1068"
+        Triggers = @(
+            @{ Attribute = 'UserRight'; Pattern = '^SeCreateSymbolicLinkPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeCreateSymbolicLinkPrivilege'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SEDELEGATESESSIONUSERIMPERSONATE' = @{
+        Title = "'Obtain an Impersonation Token for Another User in the Same Session' (SeDelegateSessionUserImpersonatePrivilege) Granted via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy grants SeDelegateSessionUserImpersonatePrivilege to a principal. The privilege obtains an impersonation token for another user in the same session, and the holder then acts as that user. Microsoft documents what the privilege does and publishes no default holder set for it, so this is reported through the identity filter rather than as a deviation from a documented baseline."
+        Impact = @(
+            "The holder acts as another user signed in to the same session, with that user's access"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials and a session on a targeted machine"
+            "2. Obtain the impersonation token of another user in the same session"
+            "3. Act as that user"
+        )
+        Remediation = @(
+            "Grant the right only where a product documents that it needs it, and to a dedicated account"
+        )
+        References = @(
+            @{ Title = "Privilege Constants (Winnt.h) - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/privilege-constants" }
+        )
+        Tools = @("-")
+        MITRE = "T1134.001"
+        Triggers = @(
+            @{ Attribute = 'UserRight'; Pattern = '^SeDelegateSessionUserImpersonatePrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeDelegateSessionUserImpersonatePrivilege'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SEAUDIT' = @{
+        Title = "'Generate Security Audits' (SeAuditPrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy grants SeAuditPrivilege to a principal beyond the Windows default, which is LOCAL SERVICE and NETWORK SERVICE. The holder writes arbitrary records into the Security event log. Microsoft: a malicious user can fill the log with meaningless events - removing the evidence of their activity where the log overwrites events as needed, or causing a denial of service where the machine shuts down when it cannot log security audits."
+        Impact = @(
+            "Real events are rolled out of a Security log that overwrites as needed"
+            "Where 'Audit: Shut down system immediately if unable to log security audits' is on, a full log stops the machine"
+            "Forged records send an investigation the wrong way"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials and a session on a targeted machine"
+            "2. Write security audit records in volume"
+            "3. The events of the intrusion are overwritten, or the machine halts on a full log"
+        )
+        Remediation = @(
+            "Remove the principal and leave the right with LOCAL SERVICE and NETWORK SERVICE, as by default"
+            "Forward the Security log to a collector, so overwriting it locally removes nothing"
+        )
+        References = @(
+            @{ Title = "Generate security audits - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/generate-security-audits" }
+        )
+        Tools = @("-")
+        MITRE = "T1070.001"
+        Triggers = @(
+            @{ Attribute = 'UserRight'; Pattern = '^SeAuditPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeAuditPrivilege'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SESYSTEMENVIRONMENT' = @{
+        Title = "'Modify Firmware Environment Values' (SeSystemEnvironmentPrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy grants SeSystemEnvironmentPrivilege to a principal beyond the Windows default, which is Administrators. The holder modifies firmware environment values - on a UEFI system the NVRAM variables that specify the boot settings. Microsoft: a holder could configure the settings of a hardware component to cause it to fail, which could lead to data corruption or a denial of service."
+        Impact = @(
+            "The boot settings held in NVRAM are writable to the holder"
+            "A hardware component can be configured to fail - data corruption or denial of service"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials and a session on a targeted machine"
+            "2. Write firmware environment variables"
+            "3. The machine boots differently, or a component fails"
+        )
+        Remediation = @(
+            "Remove the principal and leave the right with Administrators - removing Administrators as well can break BitLocker, Microsoft warns"
+        )
+        References = @(
+            @{ Title = "Modify firmware environment values - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/modify-firmware-environment-values" }
+        )
+        Tools = @("bcdedit")
+        MITRE = "T1542.001"
+        Triggers = @(
+            @{ Attribute = 'UserRight'; Pattern = '^SeSystemEnvironmentPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSystemEnvironmentPrivilege'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SECREATEGLOBAL' = @{
+        Title = "'Create Global Objects' (SeCreateGlobalPrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy grants SeCreateGlobalPrivilege to a principal beyond the Windows default - Administrators, LOCAL SERVICE, NETWORK SERVICE and SERVICE. The right is required to create file mapping and symbolic link objects in the global namespace, visible to every session. Microsoft: assigning this right can be a security risk, and non-administrators who need Remote Desktop belong in Remote Desktop Users instead."
+        Impact = @(
+            "A named object a service expects to create in the global namespace can be created first by the holder, from any session"
+            "Shared memory a privileged process reads can be supplied by the holder"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials and a session on a targeted machine"
+            "2. Create the global object a privileged service will open, before the service does"
+            "3. The service reads the holder's data, or follows the holder's link"
+        )
+        Remediation = @(
+            "Remove the principal; for Remote Desktop access use the Remote Desktop Users group, as Microsoft recommends"
+        )
+        References = @(
+            @{ Title = "Create global objects - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/create-global-objects" }
+        )
+        Tools = @("-")
+        MITRE = "T1068"
+        Triggers = @(
+            @{ Attribute = 'UserRight'; Pattern = '^SeCreateGlobalPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeCreateGlobalPrivilege'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SEPROFILESINGLEPROCESS' = @{
+        Title = "'Profile Single Process' (SeProfileSingleProcessPrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "A Group Policy grants SeProfileSingleProcessPrivilege to a principal beyond the Windows default, which is Administrators. Microsoft rates it a moderate vulnerability: the holder monitors the performance of processes to find the critical ones to attack, sees which security software runs, and sees who else is signed in."
+        Impact = @(
+            "Reconnaissance on the machine: running processes, security software among them, and signed-in users"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials and a session on a targeted machine"
+            "2. Profile the running processes to choose a target and the countermeasures to avoid"
+        )
+        Remediation = @(
+            "Remove the principal; grant the right only to trusted monitoring applications, as Microsoft recommends"
+        )
+        References = @(
+            @{ Title = "Profile single process - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/profile-single-process" }
+        )
+        Tools = @("-")
+        MITRE = "T1057"
+        Triggers = @(
+            @{ Attribute = 'UserRight'; Pattern = '^SeProfileSingleProcessPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeProfileSingleProcessPrivilege'; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_USERRIGHT_SESYSTEMPROFILE' = @{
+        Title = "'Profile System Performance' (SeSystemProfilePrivilege) Granted Beyond the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "A Group Policy grants SeSystemProfilePrivilege to a principal beyond the Windows default, which is Administrators and NT SERVICE\WdiServiceHost. Microsoft rates it a moderate vulnerability: the holder monitors the performance of system processes to identify the critical ones to attack and the countermeasures to avoid, such as anti-virus software."
+        Impact = @(
+            "Reconnaissance on the machine: active system processes, security software among them"
+        )
+        Attack = @(
+            "1. Obtain the holder's credentials and a session on a targeted machine"
+            "2. Profile system performance to choose a target and the countermeasures to avoid"
+        )
+        Remediation = @(
+            "Remove the principal and leave the right with Administrators and NT SERVICE\WdiServiceHost, as by default"
+        )
+        References = @(
+            @{ Title = "Profile system performance - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/profile-system-performance" }
+        )
+        Tools = @("-")
+        MITRE = "T1057"
+        Triggers = @(
+            @{ Attribute = 'UserRight'; Pattern = '^SeSystemProfilePrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSystemProfilePrivilege'; Severity = 'Hint' }
         )
     }
 
