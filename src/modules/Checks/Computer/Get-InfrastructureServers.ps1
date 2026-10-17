@@ -28,6 +28,13 @@
 .PARAMETER ConnectionParams
     Domain/Server/Credential, as the caller received them.
 
+.PARAMETER PrivilegedFindingId
+    When given, each account is also checked for privileged rights in the domain, and the
+    privileged ones are reported under this finding. A service runs its code as the account
+    and the host stores the account's password, so whoever controls the service or its host
+    holds the account's rights - for SQL Server, a sysadmin reaches them through xp_cmdshell.
+    Without it the accounts are listed and nothing more.
+
 .NOTES
     Internal helper function
 #>
@@ -44,13 +51,16 @@ function Show-SPNServiceAccounts {
         [string[]]$SPNPrefix,
 
         [Parameter(Mandatory=$false)]
-        [hashtable]$ConnectionParams = @{}
+        [hashtable]$ConnectionParams = @{},
+
+        [Parameter(Mandatory=$false)]
+        [string]$PrivilegedFindingId
     )
 
     $accounts = @()
     try {
         $accounts = @(Get-DomainObject -LDAPFilter "(&$SPNFilter(!(objectCategory=computer)))" `
-            -Properties 'sAMAccountName', 'servicePrincipalName', 'objectClass' @ConnectionParams)
+            -Properties 'sAMAccountName', 'servicePrincipalName', 'objectClass', 'objectSid' @ConnectionParams)
     } catch {
         Write-Log "[Get-InfrastructureServers] $ServiceName service account lookup failed: $_" -Level Error
         Show-Line "$ServiceName service accounts could not be read - result unknown, not empty" -Class "Note"
@@ -60,6 +70,8 @@ function Show-SPNServiceAccounts {
     if (@($accounts).Count -eq 0) { return }
 
     $described = @()
+    $privileged = @()
+    $unevaluated = @()
     foreach ($account in $accounts) {
         $hostNames = @()
         foreach ($spn in @($account.servicePrincipalName)) {
@@ -76,9 +88,39 @@ function Show-SPNServiceAccounts {
         $label = "$($account.sAMAccountName)"
         if (@($hostNames).Count -gt 0) { $label = $label + ' (' + (@($hostNames) -join ', ') + ')' }
         $described += $label
+
+        if (-not $PrivilegedFindingId) { continue }
+
+        # Operators included: Backup and Server Operators reach a domain controller as
+        # surely as Domain Admins do, and the service hands either to whoever controls it.
+        # An account whose privileges cannot be told is named as unknown rather than
+        # counted with the unprivileged ones.
+        $privilegeCheck = $null
+        $accountSID = "$($account.objectSid)"
+        if (-not [string]::IsNullOrWhiteSpace($accountSID)) {
+            try {
+                $privilegeCheck = Test-IsPrivileged -Identity $accountSID -IncludeOperators
+            } catch {
+                Write-Log "[Get-InfrastructureServers] Could not evaluate privileges of $($account.sAMAccountName): $_"
+            }
+        }
+
+        if ($null -eq $privilegeCheck -or $null -eq $privilegeCheck.IsPrivileged) {
+            $unevaluated += "$($account.sAMAccountName)"
+        } elseif ($privilegeCheck.IsPrivileged -eq $true) {
+            $via = if ($privilegeCheck.MatchedGroup) { $privilegeCheck.MatchedGroup } else { $privilegeCheck.Reason }
+            $privileged += "$($account.sAMAccountName) ($via)"
+        }
     }
 
     Show-Line "$ServiceName also runs under $(@($described).Count) domain account(s), host from the SPN: $(@($described) -join '; ')" -Class "Hint"
+
+    if (@($privileged).Count -gt 0) {
+        Show-Line "$(@($privileged).Count) of them hold privileged rights in the domain, and whoever controls the service or its host holds them too: $(@($privileged) -join '; ')" -Class "Finding" -FindingId $PrivilegedFindingId
+    }
+    if (@($unevaluated).Count -gt 0) {
+        Show-Line "The privileges of $(@($unevaluated).Count) of them could not be evaluated - result unknown, not unprivileged: $(@($unevaluated) -join '; ')" -Class "Note"
+    }
 }
 
 <#
@@ -404,9 +446,13 @@ function Get-InfrastructureServers {
             }
 
             # The identity the service authenticates as may be a domain account rather
-            # than the machine, and then the SPN is not on a computer object at all.
+            # than the machine, and then the SPN is not on a computer object at all. Only
+            # this call asks for the accounts' privileges: a sysadmin on the instance runs
+            # operating system commands as the account. SCOM service accounts are judged
+            # by Get-SCOMInfrastructure.
             Show-SPNServiceAccounts -ServiceName 'MSSQL' -SPNFilter "(servicePrincipalName=MSSQLSvc/*)" `
-                -SPNPrefix @('MSSQLSvc/') -ConnectionParams $PSBoundParameters
+                -SPNPrefix @('MSSQLSvc/') -ConnectionParams $PSBoundParameters `
+                -PrivilegedFindingId 'MSSQL_SERVICE_ACCOUNT_PRIVILEGED'
         } catch {
             Write-Log "[Get-InfrastructureServers] MSSQL Server enumeration failed: $_" -Level Error
             Show-Line "MSSQL Server enumeration failed - result unknown, not empty" -Class "Note"

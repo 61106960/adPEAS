@@ -399,6 +399,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   members are listed with the other privileged groups, with the card *Member of ESX
   Admins*, and who may change it is read in the group ACL step.
 
+- **`Get-InfrastructureServers` asks whether a SQL Server service account is privileged.**
+  The domain accounts an instance runs under were listed without judging them. A sysadmin
+  on the instance runs operating system commands as that account through `xp_cmdshell`,
+  and the host keeps its password among the LSA secrets - so an account privileged in the
+  domain hands the domain to whoever controls the instance or its host. Privileged ones,
+  operators included, are now a finding with the card *SQL Server Running Under a
+  Privileged Domain Account*, naming the group that makes each one privileged; an account
+  whose privileges cannot be evaluated is named as unknown rather than counted as clean.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

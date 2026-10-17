@@ -9769,6 +9769,49 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
         )
     }
 
+    'MSSQL_SERVICE_ACCOUNT_PRIVILEGED' = @{
+        Title = "SQL Server Running Under a Privileged Domain Account"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "A SQL Server instance runs under a domain account that holds privileged rights in the domain - the MSSQLSvc service principal name sits on the account the Database Engine authenticates as. Every operating system command the instance runs, it runs as that account, and the host the service is configured on stores the account's password. Control of the instance or of its host is control of those rights."
+        Impact = @(
+            "A login in the sysadmin role enables xp_cmdshell and runs commands as the service account - the process it spawns has the same security rights as the SQL Server service account"
+            "Where SQL Server Agent runs under the same account, a CmdExec job step does the same"
+            "Windows keeps the password of every account a service is configured to run as in the LSA secrets of the host, so local administrator rights on a SQL host recover it"
+            "SQL hosts are rarely administered as Tier 0, and sysadmin is routinely held by database administrators and application owners who are not domain administrators"
+        )
+        Attack = @(
+            "1. Attacker obtains a sysadmin login on the instance - a weak sa password, a linked server, an over-privileged application login - or local administrator rights on the SQL host"
+            "2. xp_cmdshell is enabled with sp_configure, or the service password is read from the LSA secrets of the host"
+            "3. Commands run as the service account, or the recovered credential is used directly"
+            "4. The account's domain privileges are used - no further escalation is needed"
+        )
+        Remediation = @(
+            "Take the domain privilege away: SQL Server needs no privileged group membership to run"
+            "Run the instance under a group Managed Service Account or a virtual account with the lowest rights that work, as Microsoft recommends for SQL Server services"
+            "Use separate accounts for the Database Engine and SQL Server Agent, and for each instance"
+            "Where the account must stay privileged, administer the SQL hosts as Tier 0 and grant sysadmin to Tier 0 administrators only"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the group memberships of the service account"
+                Command = "Get-ADUser -Identity 'ACCOUNT_NAME' -Properties memberOf | Select-Object -ExpandProperty memberOf"
+            }
+            @{
+                Description = "Show which account each SQL Server service runs under (run on the SQL host)"
+                Command = "Get-CimInstance Win32_Service | Where-Object { `$_.Name -match '^(MSSQL|SQLAgent|SQLSERVERAGENT)' } | Select-Object Name, StartName"
+            }
+        )
+        References = @(
+            @{ Title = "Configure Windows service accounts and permissions - SQL Server"; Url = "https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/configure-windows-service-accounts-and-permissions" }
+            @{ Title = "xp_cmdshell (Transact-SQL)"; Url = "https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/xp-cmdshell-transact-sql" }
+            @{ Title = "Create a CmdExec job step"; Url = "https://learn.microsoft.com/en-us/ssms/agent/create-a-cmdexec-job-step" }
+            @{ Title = "Cached and stored credentials technical overview"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-R2-and-2012/hh994565(v=ws.11)" }
+        )
+        Tools = @("PowerUpSQL", "Mimikatz", "BloodHound")
+        MITRE = "T1078.002"
+    }
+
     'LAPS_PASSWORD_NOT_ROTATED' = @{
         Title = "LAPS Password Stopped Rotating"
         Risk = "Finding"

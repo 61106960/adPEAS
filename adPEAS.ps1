@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 20:55:33
-    Version: 2.7.0+20261017-2055
+    Build: 2026-10-17 21:10:32
+    Version: 2.7.0+20261017-2110
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -17806,6 +17806,49 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
         )
     }
 
+    'MSSQL_SERVICE_ACCOUNT_PRIVILEGED' = @{
+        Title = "SQL Server Running Under a Privileged Domain Account"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "A SQL Server instance runs under a domain account that holds privileged rights in the domain - the MSSQLSvc service principal name sits on the account the Database Engine authenticates as. Every operating system command the instance runs, it runs as that account, and the host the service is configured on stores the account's password. Control of the instance or of its host is control of those rights."
+        Impact = @(
+            "A login in the sysadmin role enables xp_cmdshell and runs commands as the service account - the process it spawns has the same security rights as the SQL Server service account"
+            "Where SQL Server Agent runs under the same account, a CmdExec job step does the same"
+            "Windows keeps the password of every account a service is configured to run as in the LSA secrets of the host, so local administrator rights on a SQL host recover it"
+            "SQL hosts are rarely administered as Tier 0, and sysadmin is routinely held by database administrators and application owners who are not domain administrators"
+        )
+        Attack = @(
+            "1. Attacker obtains a sysadmin login on the instance - a weak sa password, a linked server, an over-privileged application login - or local administrator rights on the SQL host"
+            "2. xp_cmdshell is enabled with sp_configure, or the service password is read from the LSA secrets of the host"
+            "3. Commands run as the service account, or the recovered credential is used directly"
+            "4. The account's domain privileges are used - no further escalation is needed"
+        )
+        Remediation = @(
+            "Take the domain privilege away: SQL Server needs no privileged group membership to run"
+            "Run the instance under a group Managed Service Account or a virtual account with the lowest rights that work, as Microsoft recommends for SQL Server services"
+            "Use separate accounts for the Database Engine and SQL Server Agent, and for each instance"
+            "Where the account must stay privileged, administer the SQL hosts as Tier 0 and grant sysadmin to Tier 0 administrators only"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the group memberships of the service account"
+                Command = "Get-ADUser -Identity 'ACCOUNT_NAME' -Properties memberOf | Select-Object -ExpandProperty memberOf"
+            }
+            @{
+                Description = "Show which account each SQL Server service runs under (run on the SQL host)"
+                Command = "Get-CimInstance Win32_Service | Where-Object { `$_.Name -match '^(MSSQL|SQLAgent|SQLSERVERAGENT)' } | Select-Object Name, StartName"
+            }
+        )
+        References = @(
+            @{ Title = "Configure Windows service accounts and permissions - SQL Server"; Url = "https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/configure-windows-service-accounts-and-permissions" }
+            @{ Title = "xp_cmdshell (Transact-SQL)"; Url = "https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/xp-cmdshell-transact-sql" }
+            @{ Title = "Create a CmdExec job step"; Url = "https://learn.microsoft.com/en-us/ssms/agent/create-a-cmdexec-job-step" }
+            @{ Title = "Cached and stored credentials technical overview"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-R2-and-2012/hh994565(v=ws.11)" }
+        )
+        Tools = @("PowerUpSQL", "Mimikatz", "BloodHound")
+        MITRE = "T1078.002"
+    }
+
     'LAPS_PASSWORD_NOT_ROTATED' = @{
         Title = "LAPS Password Stopped Rotating"
         Risk = "Finding"
@@ -26872,6 +26915,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "MSSQLSvc Service Principal Names"
             "SQL Server instances and their hosts"
+            "Domain accounts the instances run under, and whether any of them is privileged in the domain"
         )
     }
 
@@ -115929,6 +115973,13 @@ function Get-OutdatedComputers {
 .PARAMETER ConnectionParams
     Domain/Server/Credential, as the caller received them.
 
+.PARAMETER PrivilegedFindingId
+    When given, each account is also checked for privileged rights in the domain, and the
+    privileged ones are reported under this finding. A service runs its code as the account
+    and the host stores the account's password, so whoever controls the service or its host
+    holds the account's rights - for SQL Server, a sysadmin reaches them through xp_cmdshell.
+    Without it the accounts are listed and nothing more.
+
 .NOTES
     Internal helper function
 #>
@@ -115945,13 +115996,16 @@ function Show-SPNServiceAccounts {
         [string[]]$SPNPrefix,
 
         [Parameter(Mandatory=$false)]
-        [hashtable]$ConnectionParams = @{}
+        [hashtable]$ConnectionParams = @{},
+
+        [Parameter(Mandatory=$false)]
+        [string]$PrivilegedFindingId
     )
 
     $accounts = @()
     try {
         $accounts = @(Get-DomainObject -LDAPFilter "(&$SPNFilter(!(objectCategory=computer)))" `
-            -Properties 'sAMAccountName', 'servicePrincipalName', 'objectClass' @ConnectionParams)
+            -Properties 'sAMAccountName', 'servicePrincipalName', 'objectClass', 'objectSid' @ConnectionParams)
     } catch {
         Write-Log "[Get-InfrastructureServers] $ServiceName service account lookup failed: $_" -Level Error
         Show-Line "$ServiceName service accounts could not be read - result unknown, not empty" -Class "Note"
@@ -115961,6 +116015,8 @@ function Show-SPNServiceAccounts {
     if (@($accounts).Count -eq 0) { return }
 
     $described = @()
+    $privileged = @()
+    $unevaluated = @()
     foreach ($account in $accounts) {
         $hostNames = @()
         foreach ($spn in @($account.servicePrincipalName)) {
@@ -115977,9 +116033,39 @@ function Show-SPNServiceAccounts {
         $label = "$($account.sAMAccountName)"
         if (@($hostNames).Count -gt 0) { $label = $label + ' (' + (@($hostNames) -join ', ') + ')' }
         $described += $label
+
+        if (-not $PrivilegedFindingId) { continue }
+
+        # Operators included: Backup and Server Operators reach a domain controller as
+        # surely as Domain Admins do, and the service hands either to whoever controls it.
+        # An account whose privileges cannot be told is named as unknown rather than
+        # counted with the unprivileged ones.
+        $privilegeCheck = $null
+        $accountSID = "$($account.objectSid)"
+        if (-not [string]::IsNullOrWhiteSpace($accountSID)) {
+            try {
+                $privilegeCheck = Test-IsPrivileged -Identity $accountSID -IncludeOperators
+            } catch {
+                Write-Log "[Get-InfrastructureServers] Could not evaluate privileges of $($account.sAMAccountName): $_"
+            }
+        }
+
+        if ($null -eq $privilegeCheck -or $null -eq $privilegeCheck.IsPrivileged) {
+            $unevaluated += "$($account.sAMAccountName)"
+        } elseif ($privilegeCheck.IsPrivileged -eq $true) {
+            $via = if ($privilegeCheck.MatchedGroup) { $privilegeCheck.MatchedGroup } else { $privilegeCheck.Reason }
+            $privileged += "$($account.sAMAccountName) ($via)"
+        }
     }
 
     Show-Line "$ServiceName also runs under $(@($described).Count) domain account(s), host from the SPN: $(@($described) -join '; ')" -Class "Hint"
+
+    if (@($privileged).Count -gt 0) {
+        Show-Line "$(@($privileged).Count) of them hold privileged rights in the domain, and whoever controls the service or its host holds them too: $(@($privileged) -join '; ')" -Class "Finding" -FindingId $PrivilegedFindingId
+    }
+    if (@($unevaluated).Count -gt 0) {
+        Show-Line "The privileges of $(@($unevaluated).Count) of them could not be evaluated - result unknown, not unprivileged: $(@($unevaluated) -join '; ')" -Class "Note"
+    }
 }
 
 <#
@@ -116305,9 +116391,13 @@ function Get-InfrastructureServers {
             }
 
             # The identity the service authenticates as may be a domain account rather
-            # than the machine, and then the SPN is not on a computer object at all.
+            # than the machine, and then the SPN is not on a computer object at all. Only
+            # this call asks for the accounts' privileges: a sysadmin on the instance runs
+            # operating system commands as the account. SCOM service accounts are judged
+            # by Get-SCOMInfrastructure.
             Show-SPNServiceAccounts -ServiceName 'MSSQL' -SPNFilter "(servicePrincipalName=MSSQLSvc/*)" `
-                -SPNPrefix @('MSSQLSvc/') -ConnectionParams $PSBoundParameters
+                -SPNPrefix @('MSSQLSvc/') -ConnectionParams $PSBoundParameters `
+                -PrivilegedFindingId 'MSSQL_SERVICE_ACCOUNT_PRIVILEGED'
         } catch {
             Write-Log "[Get-InfrastructureServers] MSSQL Server enumeration failed: $_" -Level Error
             Show-Line "MSSQL Server enumeration failed - result unknown, not empty" -Class "Note"
@@ -144139,7 +144229,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-2055"
+$Script:adPEASVersion = "2.7.0+20261017-2110"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

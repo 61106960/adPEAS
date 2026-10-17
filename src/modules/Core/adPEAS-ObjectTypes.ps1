@@ -396,6 +396,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "MSSQLSvc Service Principal Names"
             "SQL Server instances and their hosts"
+            "Domain accounts the instances run under, and whether any of them is privileged in the domain"
         )
     }
 
