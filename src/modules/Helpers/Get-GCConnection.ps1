@@ -238,6 +238,57 @@ function Get-ForestRootExchangeGroup {
 }
 
 
+function Get-ForestDomainSID {
+    <#
+    .SYNOPSIS
+        The domain SIDs of every domain in the forest, through the Global Catalog.
+
+    .DESCRIPTION
+        A domain knows the SID of a partner only where it has a trust object for it, and in
+        a forest that is the parent, the children and - for a tree root - the forest root.
+        A sibling domain has no trust object here, so the trust objects alone cannot say
+        whether a SID belongs to the forest. The Global Catalog holds the head of every
+        domain partition, objectSid included; one search with the forest-wide base
+        Invoke-LDAPSearch uses for an external connection returns them all.
+
+    .OUTPUTS
+        Hashtable domain SID -> DNS name derived from the partition DN. $null when the
+        Global Catalog could not be asked - which is not the same answer as an empty forest.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param()
+
+    try {
+        $gcConn = Get-GCConnection
+        if (-not $gcConn) { return $null }
+
+        # -Raw, like the lookups above: the explicit attribute list then works on the GC
+        # port, and objectSid comes back as the bytes it is.
+        $gcResults = @(Invoke-LDAPSearch -Filter '(objectClass=domainDNS)' -Properties @('objectSid', 'distinguishedName') -LdapConnection $gcConn -Raw)
+
+        $domains = @{}
+        foreach ($gcResult in $gcResults) {
+            if ($null -eq $gcResult.objectSid) { continue }
+            $sidValue = $gcResult.objectSid
+            if ($sidValue -is [array] -and $sidValue.Count -gt 0 -and $sidValue[0] -is [byte[]]) { $sidValue = $sidValue[0] }
+            $sidText = if ($sidValue -is [byte[]]) {
+                (New-Object System.Security.Principal.SecurityIdentifier($sidValue, 0)).Value
+            } else {
+                [string]$sidValue
+            }
+            $dnsName = ([string]$gcResult.distinguishedName -replace '^DC=', '' -replace ',DC=', '.')
+            $domains[$sidText] = $dnsName
+        }
+
+        Write-Log "[Get-ForestDomainSID] Found $($domains.Count) domain(s) in the forest"
+        return $domains
+    } catch {
+        Write-Log "[Get-ForestDomainSID] Global Catalog lookup failed: $($_.Exception.Message)"
+        return $null
+    }
+}
+
 function Resolve-SIDViaGC {
     <#
     .SYNOPSIS

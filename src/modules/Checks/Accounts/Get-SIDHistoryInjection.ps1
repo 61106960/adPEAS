@@ -6,6 +6,11 @@ function Get-SIDHistoryInjection {
     .DESCRIPTION
     Identifies user and computer accounts that have privileged SIDs stored in their sIDHistory attribute.
 
+    For a SID of another domain it also says where the source domain is: a domain of this
+    forest (the Global Catalog lists them), a domain this domain trusts (securityIdentifier
+    on its trust objects), or neither - the leftover of a migration from a domain that is
+    gone or no longer trusted, counted in a line of its own for every account.
+
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
 
@@ -99,6 +104,31 @@ function Get-SIDHistoryInjection {
             $foreignPrivilegedFindings = @()
             $nonPrivilegedFindings = @()
 
+            # Where a SID of another domain comes from: a domain of this forest, a domain
+            # this domain trusts, or neither. sIDHistory bridges a migration; a SID whose
+            # source domain is neither is the leftover of one that ended with the domain
+            # gone or the trust removed. It still goes into the token at every logon here
+            # and is honoured by every ACL that names it, and nothing in the directory
+            # says what it was. Read only where there is a SID history to sort; $null in
+            # either table means it could not be read.
+            $forestDomains = @{}
+            $trustedDomains = @{}
+            $orphanedAccounts = @()
+            $orphanedDomainSIDs = @()
+            if ($objectsWithSIDHistory) {
+                $forestDomains = Get-ForestDomainSID
+                try {
+                    foreach ($trustObject in @(Get-DomainObject -LDAPFilter '(objectClass=trustedDomain)' @connectionParams)) {
+                        if ($trustObject -and $trustObject.securityIdentifier) {
+                            $trustedDomains[[string]$trustObject.securityIdentifier] = [string]$trustObject.trustPartner
+                        }
+                    }
+                } catch {
+                    Write-Log "[Get-SIDHistoryInjection] Could not read the trusts: $_"
+                    $trustedDomains = $null
+                }
+            }
+
             if ($objectsWithSIDHistory) {
                 Write-Log "[Get-SIDHistoryInjection] Found $(@($objectsWithSIDHistory).Count) object(s) with sIDHistory"
 
@@ -112,6 +142,9 @@ function Get-SIDHistoryInjection {
                     $ownDomainSIDs = @()
                     $foreignPrivilegedSIDs = @()
                     $nonPrivilegedSIDs = @()
+                    # Source domain of every foreign SID on this account, domain SID -> text.
+                    $sourceTexts = [ordered]@{}
+                    $accountOrphaned = $false
 
                     foreach ($sidEntry in $sidHistoryRaw) {
                         # Convert byte array to SID string if needed
@@ -166,6 +199,23 @@ function Get-SIDHistoryInjection {
                             $isForeignDomain = ($sidString -like 'S-1-5-21-*') -and (-not $isOwnDomain)
                         }
 
+                        if ($isForeignDomain) {
+                            $sourceDomainSID = $sidString -replace '-\d+$', ''
+                            if (-not $sourceTexts.Contains($sourceDomainSID)) {
+                                $sourceTexts[$sourceDomainSID] = if ($null -ne $forestDomains -and $forestDomains.ContainsKey($sourceDomainSID)) {
+                                    "$($forestDomains[$sourceDomainSID]) - a domain of this forest"
+                                } elseif ($null -ne $trustedDomains -and $trustedDomains.ContainsKey($sourceDomainSID)) {
+                                    "$($trustedDomains[$sourceDomainSID]) - trusted by this domain"
+                                } elseif ($null -eq $forestDomains -or $null -eq $trustedDomains) {
+                                    "$sourceDomainSID - unknown: the domains of the forest or the trusts could not be read"
+                                } else {
+                                    $accountOrphaned = $true
+                                    if ($orphanedDomainSIDs -notcontains $sourceDomainSID) { $orphanedDomainSIDs += $sourceDomainSID }
+                                    "$sourceDomainSID - neither a domain of this forest nor trusted by this domain"
+                                }
+                            }
+                        }
+
                         if ($isPrivilegedRID -and -not $isForeignDomain) {
                             $privilegedSIDs += $sidInfo
                             Write-Log "[Get-SIDHistoryInjection] $($obj.sAMAccountName) has a privileged SID that is not from a source domain in sIDHistory: $sidString ($resolvedName)"
@@ -180,6 +230,9 @@ function Get-SIDHistoryInjection {
                             Write-Log "[Get-SIDHistoryInjection] $($obj.sAMAccountName) has non-privileged SID in sIDHistory: $sidString"
                         }
                     }
+
+                    if ($accountOrphaned) { $orphanedAccounts += [string]$obj.sAMAccountName }
+                    $sourceDisplay = @($sourceTexts.Values)
 
                     # Add findings
                     if (@($privilegedSIDs).Count -gt 0) {
@@ -231,8 +284,9 @@ function Get-SIDHistoryInjection {
 
                         $obj | Add-Member -NotePropertyName 'foreignPrivilegedSIDHistory' -NotePropertyValue $foreignPrivilegedDisplay -Force
                         $obj | Add-Member -NotePropertyName 'sidHistoryForeignPrivileged' -NotePropertyValue (
-                            'This is a privileged SID of another domain, which is what a migration leaves behind - every account moved with ADMT from an administrative group carries one. It is also how cross-forest injection presents, so what decides between them is whether SID filtering is enforced on the trust, and whether the source domain still exists.'
+                            'This is a privileged SID of another domain, which is what a migration leaves behind - every account moved with ADMT from an administrative group carries one. It is also how cross-forest injection presents, so what decides between them is whether SID filtering is enforced on the trust - and sidHistorySource says whether a trust still leads to the source domain.'
                         ) -Force
+                        $obj | Add-Member -NotePropertyName 'sidHistorySource' -NotePropertyValue $sourceDisplay -Force
 
                         $foreignPrivilegedFindings += $obj
                     }
@@ -249,6 +303,9 @@ function Get-SIDHistoryInjection {
 
                         $obj | Add-Member -NotePropertyName 'nonPrivilegedSIDHistory' -NotePropertyValue $nonPrivilegedSIDsDisplay -Force
                         $obj | Add-Member -NotePropertyName 'sIDHistoryCount' -NotePropertyValue $nonPrivilegedSIDs.Count -Force
+                        if ($sourceDisplay.Count -gt 0) {
+                            $obj | Add-Member -NotePropertyName 'sidHistorySource' -NotePropertyValue $sourceDisplay -Force
+                        }
 
                         $nonPrivilegedFindings += $obj
                     }
@@ -292,6 +349,14 @@ function Get-SIDHistoryInjection {
                     $finding | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Migrated privileged SID' -Force
                     Show-Object $finding -Class Hint
                 }
+            }
+
+            # SID history whose source domain is neither in this forest nor trusted, for
+            # every account and whether or not -IncludeNonPrivileged was given: a leftover
+            # to remove, which the per-account rows above show only for privileged SIDs.
+            if (@($orphanedAccounts).Count -gt 0) {
+                Show-Line ("$(@($orphanedAccounts).Count) account(s) carry sIDHistory from $(@($orphanedDomainSIDs).Count) domain(s) this domain " +
+                           "neither trusts nor shares a forest with - leftovers of a migration to remove: $(@($orphanedDomainSIDs) -join ', ')") -Class Hint -FindingId 'SID_HISTORY_ORPHANED'
             }
 
             # Non-privileged findings (migration artifacts) - only if requested

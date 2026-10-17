@@ -5224,7 +5224,7 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
         Description = "This account carries a privileged SID of another domain in sIDHistory. That is the documented result of a domain migration: ADMT writes the source SID of every account it moves, so every migrated administrator ends up with the -512 of the domain they came from. It is also how cross-forest SID history injection presents, and the two look identical in the directory. What separates them is whether SID filtering is enforced on the trust, and whether the source domain still exists."
         Impact = @(
             "If SID filtering is not enforced on the trust, the SID is honoured and grants privileged access from the other domain"
-            "If the source domain has been decommissioned the entry grants nothing and is only clutter - but nothing in the directory says which it is"
+            "If the source domain is gone, the SID still lands in the token at every logon here and is honoured by every ACL that names it - sidHistorySource says whether a trust or the forest still leads to it"
             "A reader who cannot tell a migration leftover from an injection cannot act on either"
         )
         Attack = @(
@@ -5262,6 +5262,41 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
         Triggers = @(
             @{ Attribute = 'sidHistoryForeignPrivileged'; Severity = 'Hint' }
             @{ Attribute = 'foreignPrivilegedSIDHistory'; Severity = 'Hint' }
+        )
+    }
+
+    'SID_HISTORY_ORPHANED' = @{
+        Title = "SID History From a Domain Neither Trusted Nor in the Forest"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "sIDHistory of these accounts names a domain that is neither a domain of this forest nor trusted by this domain - the source of a migration that ended with the domain decommissioned or the trust removed. sIDHistory exists to bridge a migration, so the entries are leftovers. They are not inert: a SID in sIDHistory goes into the account's token at every logon in this domain and is honoured by every ACL that names it - on file servers migrated with their old permissions, for instance - while nothing in the directory says any more what it was or who else holds it."
+        Impact = @(
+            "Access granted to the old domain's SIDs still works for these accounts wherever an ACL names them"
+            "Nobody can tell from the directory what the SIDs grant, so the access is never reviewed"
+            "Entries that should be gone hide a deliberately written one among them"
+        )
+        Remediation = @(
+            "Re-permission the resources that still name the old SIDs with groups of this domain, then remove sIDHistory from the accounts"
+            "Remove sIDHistory once the migration it belongs to is complete - it is meant to be temporary"
+            "Monitor for sIDHistory changes (Event ID 4765, 4766)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the accounts that carry sIDHistory from one source domain (replace the domain SID)"
+                Command = "Get-ADObject -LDAPFilter '(sIDHistory=*)' -Properties sIDHistory | Where-Object { `$_.sIDHistory.Value -like 'S-1-5-21-1111111111-2222222222-3333333333-*' } | Select-Object Name, sIDHistory"
+            }
+            @{
+                Description = "Remove all SID History entries from an account once its resources no longer need them"
+                Command = "Get-ADUser 'USERNAME' -Properties SIDHistory | ForEach-Object { Set-ADUser `$_ -Remove @{SIDHistory=`$_.SIDHistory.Value} }"
+            }
+        )
+        References = @(
+            @{ Title = "SID History Injection - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1134/005/" }
+        )
+        Tools = @("PowerView")
+        MITRE = "T1134.005"
+        Triggers = @(
+            @{ Attribute = 'sidHistorySource'; Pattern = ' - neither a domain of this forest nor trusted by this domain$'; Severity = 'Hint' }
         )
     }
 

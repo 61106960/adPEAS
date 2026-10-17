@@ -360,6 +360,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   test files every rule of the table under the card it names - and found that the
   Credential Guard rule for the runtime key never reached its card; it does now.
 
+- **`Get-SIDHistoryInjection` says where a SID of another domain comes from.** Whether
+  the source domain still exists was never checked. A new `sidHistorySource` row names it:
+  a domain of this forest - read through the Global Catalog, since a domain has no trust
+  object for its siblings - a domain this domain trusts, or neither. A line counts every
+  account that carries sIDHistory from a domain that is neither, whether or not
+  `-IncludeNonPrivileged` was given, with the card *SID History From a Domain Neither
+  Trusted Nor in the Forest*: the leftover of a migration, still added to the token at
+  every logon and honoured by every ACL that names it. When the Global Catalog or the
+  trusts cannot be read, the row says unknown and nothing is counted.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
