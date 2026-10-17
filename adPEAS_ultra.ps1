@@ -10394,7 +10394,7 @@ Get-ADObject -SearchBase $schema `
 	    Title = "Credentials Found in a Free-Text Attribute"
 	    Risk = "Finding"
 	    BaseScore = 45
-	    Description = "A free-text attribute of this object - description, info, comment, adminDescription, a link in wWWHomePage or url, or an extension attribute - contains what appears to be a password or credential. These fields are readable by any authenticated user, exposing credentials to all domain users."
+	    Description = "A free-text attribute of this object - description, info, comment, adminDescription, a link in wWWHomePage or url, a path in scriptPath, homeDirectory or profilePath, or an extension attribute - contains what appears to be a password or credential. These fields are readable by any authenticated user, exposing credentials to all domain users."
 	    Impact = @(
 	        "Passwords visible to any authenticated domain user"
 	        "Often contains actual working passwords"
@@ -21268,11 +21268,11 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    WhyItMatters = "Administrators store passwords in the attributes they type into: description, info, comment, adminDescription, and above all extensionAttribute1-15, which is where an initial password tends to end up. Every one of them is readable by any authenticated domain user, so a password there is a password handed to the whole domain - and it sits on groups, organizational units and service accounts as often as on user accounts."
 	    WhatWeCheck = @(
 	        "description, info, comment and adminDescription on every object class"
-	        "wWWHomePage and url, for credentials written into a link"
+	        "wWWHomePage and url, for credentials written into a link, and scriptPath, homeDirectory and profilePath for what is typed beside a path"
 	        "extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20, where the schema defines them"
 	        "Groups, organizational units, contacts, managed service accounts and Group Policy objects, not only user and computer accounts"
 	        "High-confidence password assignments (e.g., password=value) and credentials embedded in a URL (user:password@host)"
-	        "Lower-confidence credential mentions for manual review, outside the link attributes"
+	        "Lower-confidence credential mentions for manual review, outside the link and path attributes"
 	    )
 	    SecureMessage = "No credentials were found in the free-text attributes of any object. The attributes a password tends to be typed into - description, info, comment, adminDescription, the link attributes, extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20 - carry none."
 	    PrimaryFindingId = 'CREDENTIAL_IN_DESCRIPTION'
@@ -79539,10 +79539,11 @@ function Get-PasswordInDescription {
 	        $findingCount = 0
 	        $hintCount = 0
 	        $unreadableCount = 0
-	        $baseAttributes  = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url')
+	        $baseAttributes  = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url',
+	                             'scriptPath', 'homeDirectory', 'profilePath')
 	        $exchangeAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
 	        $cloudAttributes = @(1..20 | ForEach-Object { "msDS-cloudExtensionAttribute$_" })
-	        $urlAttributes = @('wWWHomePage', 'url')
+	        $urlAttributes = @('wWWHomePage', 'url', 'scriptPath', 'homeDirectory', 'profilePath')
 	        $candidates = @{}
 	        foreach ($set in @(
 	            @{ Attributes = $baseAttributes;     Optional = $false; Label = 'the base attributes' }
@@ -90164,7 +90165,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-2233"
+$Script:adPEASVersion = "2.7.0+20261017-2238"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

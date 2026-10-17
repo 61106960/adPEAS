@@ -5,14 +5,15 @@ function Get-PasswordInDescription {
 
     .DESCRIPTION
     Scans the free-text attributes of every object class - description, info, comment,
-    adminDescription, wWWHomePage, url, extensionAttribute1-15 and
-    msDS-cloudExtensionAttribute1-20 - for patterns that indicate credentials are stored in
-    plaintext. Uses a two-tier detection system:
+    adminDescription, wWWHomePage, url, scriptPath, homeDirectory, profilePath,
+    extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20 - for patterns that indicate
+    credentials are stored in plaintext. Uses a two-tier detection system:
 
     Tier 1 (Finding): High-confidence patterns with explicit password assignments (e.g., "password=Secret123"),
     and credentials embedded in a URL (e.g., "https://svc:Secret123@host")
     Tier 2 (Hint): Lower-confidence patterns with generic credential mentions (e.g., "password" without value).
-    Not applied to wWWHomePage and url: a link to a password reset page mentions the word and holds nothing.
+    Not applied to the link and path attributes: a link to a password reset page, or a share
+    named after a team, mentions the word and holds nothing.
 
     Exclusion patterns filter out false positives from password policy text, help text, and placeholders.
 
@@ -188,15 +189,18 @@ function Get-PasswordInDescription {
             # define does not skip that one clause, the whole search fails with an
             # undefined-attribute error, so each optional set runs on its own and a failure
             # there costs that set alone.
-            $baseAttributes  = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url')
+            $baseAttributes  = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url',
+                                 'scriptPath', 'homeDirectory', 'profilePath')
             $exchangeAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
             $cloudAttributes = @(1..20 | ForEach-Object { "msDS-cloudExtensionAttribute$_" })
 
-            # A link, not a sentence. Only an assignment or credentials in the URL itself
-            # count there: a homepage pointing at the password reset portal mentions the
-            # word and holds nothing, and as a tier 2 mention it was a hint on every account
-            # that links to it.
-            $urlAttributes = @('wWWHomePage', 'url')
+            # A link or a path, not a sentence. Only an assignment or credentials in the URL
+            # itself count there: a homepage pointing at the password reset portal mentions
+            # the word and holds nothing, and so does a home share named after a team -
+            # as tier 2 mentions they were a hint on every account that carries them. A UNC
+            # path carries no credentials of its own; the path attributes are read for what
+            # is typed into them beside it - an assignment, or a URL with credentials.
+            $urlAttributes = @('wWWHomePage', 'url', 'scriptPath', 'homeDirectory', 'profilePath')
 
             # Merged by distinguishedName: an object can come back from several queries, and
             # reporting it twice would be two findings for one account.

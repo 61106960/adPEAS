@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 22:33:49
-    Version: 2.7.0+20261017-2233
+    Build: 2026-10-17 22:38:37
+    Version: 2.7.0+20261017-2238
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -14995,7 +14995,7 @@ Get-ADObject -SearchBase $schema `
         Title = "Credentials Found in a Free-Text Attribute"
         Risk = "Finding"
         BaseScore = 45
-        Description = "A free-text attribute of this object - description, info, comment, adminDescription, a link in wWWHomePage or url, or an extension attribute - contains what appears to be a password or credential. These fields are readable by any authenticated user, exposing credentials to all domain users."
+        Description = "A free-text attribute of this object - description, info, comment, adminDescription, a link in wWWHomePage or url, a path in scriptPath, homeDirectory or profilePath, or an extension attribute - contains what appears to be a password or credential. These fields are readable by any authenticated user, exposing credentials to all domain users."
         Impact = @(
             "Passwords visible to any authenticated domain user"
             "Often contains actual working passwords"
@@ -28244,11 +28244,11 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "Administrators store passwords in the attributes they type into: description, info, comment, adminDescription, and above all extensionAttribute1-15, which is where an initial password tends to end up. Every one of them is readable by any authenticated domain user, so a password there is a password handed to the whole domain - and it sits on groups, organizational units and service accounts as often as on user accounts."
         WhatWeCheck = @(
             "description, info, comment and adminDescription on every object class"
-            "wWWHomePage and url, for credentials written into a link"
+            "wWWHomePage and url, for credentials written into a link, and scriptPath, homeDirectory and profilePath for what is typed beside a path"
             "extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20, where the schema defines them"
             "Groups, organizational units, contacts, managed service accounts and Group Policy objects, not only user and computer accounts"
             "High-confidence password assignments (e.g., password=value) and credentials embedded in a URL (user:password@host)"
-            "Lower-confidence credential mentions for manual review, outside the link attributes"
+            "Lower-confidence credential mentions for manual review, outside the link and path attributes"
         )
         SecureMessage = "No credentials were found in the free-text attributes of any object. The attributes a password tends to be typed into - description, info, comment, adminDescription, the link attributes, extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20 - carry none."
         PrimaryFindingId = 'CREDENTIAL_IN_DESCRIPTION'
@@ -131993,14 +131993,15 @@ function Get-PasswordInDescription {
 
     .DESCRIPTION
     Scans the free-text attributes of every object class - description, info, comment,
-    adminDescription, wWWHomePage, url, extensionAttribute1-15 and
-    msDS-cloudExtensionAttribute1-20 - for patterns that indicate credentials are stored in
-    plaintext. Uses a two-tier detection system:
+    adminDescription, wWWHomePage, url, scriptPath, homeDirectory, profilePath,
+    extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20 - for patterns that indicate
+    credentials are stored in plaintext. Uses a two-tier detection system:
 
     Tier 1 (Finding): High-confidence patterns with explicit password assignments (e.g., "password=Secret123"),
     and credentials embedded in a URL (e.g., "https://svc:Secret123@host")
     Tier 2 (Hint): Lower-confidence patterns with generic credential mentions (e.g., "password" without value).
-    Not applied to wWWHomePage and url: a link to a password reset page mentions the word and holds nothing.
+    Not applied to the link and path attributes: a link to a password reset page, or a share
+    named after a team, mentions the word and holds nothing.
 
     Exclusion patterns filter out false positives from password policy text, help text, and placeholders.
 
@@ -132176,15 +132177,18 @@ function Get-PasswordInDescription {
             # define does not skip that one clause, the whole search fails with an
             # undefined-attribute error, so each optional set runs on its own and a failure
             # there costs that set alone.
-            $baseAttributes  = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url')
+            $baseAttributes  = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url',
+                                 'scriptPath', 'homeDirectory', 'profilePath')
             $exchangeAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
             $cloudAttributes = @(1..20 | ForEach-Object { "msDS-cloudExtensionAttribute$_" })
 
-            # A link, not a sentence. Only an assignment or credentials in the URL itself
-            # count there: a homepage pointing at the password reset portal mentions the
-            # word and holds nothing, and as a tier 2 mention it was a hint on every account
-            # that links to it.
-            $urlAttributes = @('wWWHomePage', 'url')
+            # A link or a path, not a sentence. Only an assignment or credentials in the URL
+            # itself count there: a homepage pointing at the password reset portal mentions
+            # the word and holds nothing, and so does a home share named after a team -
+            # as tier 2 mentions they were a hint on every account that carries them. A UNC
+            # path carries no credentials of its own; the path attributes are read for what
+            # is typed into them beside it - an assignment, or a URL with credentials.
+            $urlAttributes = @('wWWHomePage', 'url', 'scriptPath', 'homeDirectory', 'profilePath')
 
             # Merged by distinguishedName: an object can come back from several queries, and
             # reporting it twice would be two findings for one account.
@@ -144904,7 +144908,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-2233"
+$Script:adPEASVersion = "2.7.0+20261017-2238"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

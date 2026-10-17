@@ -6864,7 +6864,7 @@ Get-ADObject -SearchBase $schema `
         Title = "Credentials Found in a Free-Text Attribute"
         Risk = "Finding"
         BaseScore = 45
-        Description = "A free-text attribute of this object - description, info, comment, adminDescription, a link in wWWHomePage or url, or an extension attribute - contains what appears to be a password or credential. These fields are readable by any authenticated user, exposing credentials to all domain users."
+        Description = "A free-text attribute of this object - description, info, comment, adminDescription, a link in wWWHomePage or url, a path in scriptPath, homeDirectory or profilePath, or an extension attribute - contains what appears to be a password or credential. These fields are readable by any authenticated user, exposing credentials to all domain users."
         Impact = @(
             "Passwords visible to any authenticated domain user"
             "Often contains actual working passwords"

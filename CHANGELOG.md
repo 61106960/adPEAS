@@ -456,6 +456,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   run in a query of their own beside `extensionAttribute1-15`, because either set can be
   missing from a schema that has the other, and a filter naming an undefined attribute
   fails as a whole. The card is titled *Credentials Found in a Free-Text Attribute*.
+  `scriptPath`, `homeDirectory` and `profilePath` are read the same way as the links: a
+  UNC path carries no credentials of its own, so only an assignment or a URL with
+  credentials typed beside it counts, and a share named after the password team is not a
+  mention.
 
 - **`Get-CredentialExposure` reads the files a credential is written into besides
   scripts.** GPO comment files (`.cmtx`), application and deployment configuration
