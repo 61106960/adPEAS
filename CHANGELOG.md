@@ -330,6 +330,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   so a policy that let the passwords of the admin group never expire was silent. The rows
   carry the names and texts of the domain policy, so its cards judge both.
 
+- **`Get-DomainInformation` says what a deletion leaves behind in the forest.** Neither
+  the tombstone lifetime nor the Active Directory Recycle Bin was read. `tombstoneLifetime`
+  comes from `CN=Directory Service` - 60 days when the attribute is not set, at least 2
+  (MS-ADTS 3.1.1.1.5.1); below the 180 days Microsoft sets in a new forest it is a hint,
+  since a backup older than that can no longer be restored. `recycleBin` is read from
+  `msDS-EnabledFeature` on the Partitions container: disabled at forest functional level
+  2008 R2 or higher is a hint - a deleted object then keeps only a few attributes and
+  comes back without its group memberships - and below that level it is said to be
+  unavailable. With the Recycle Bin, `deletedObjectLifetime` shows how long a deleted
+  object stays complete. Two new cards, *Active Directory Recycle Bin Not Enabled* and
+  *Tombstone Lifetime Shorter Than 180 Days*.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

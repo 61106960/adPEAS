@@ -12002,6 +12002,82 @@ $acl.Access | Where-Object {
         )
     }
 
+    # What a deletion leaves behind - both forest-wide, read by Get-DomainInformation
+    # through Get-ForestDeletionSetting (MS-ADTS 3.1.1.1.5.1, 3.1.1.9.1).
+    'AD_RECYCLE_BIN_DISABLED' = @{
+        Title = "Active Directory Recycle Bin Not Enabled"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "The forest has not enabled the Active Directory Recycle Bin, although its functional level allows it. A deleted object then becomes a tombstone that keeps only a few attributes: its group memberships and most of its other values are gone, so a restore brings back an empty shell and an investigation finds little. A mass deletion by an attacker - or by mistake - can only be undone from a backup, by an authoritative restore. With the Recycle Bin, a deleted object keeps virtually all of its state and can be restored without loss. It is forest-wide and cannot be disabled once enabled."
+        Impact = @(
+            "A deleted user, group or computer comes back without its group memberships and most attributes"
+            "Recovery from a destructive attack on the directory needs a backup and an authoritative restore"
+            "Deleted objects say little about what they were, which hampers an investigation"
+        )
+        Attack = @(
+            "1. Attacker with sufficient rights deletes accounts, groups or OUs to disrupt the domain or cover tracks"
+            "2. Without the Recycle Bin, the deleted objects lose their memberships and attributes"
+            "3. Recovery depends on a recent backup and an authoritative restore"
+        )
+        Remediation = @(
+            "Enable the Recycle Bin (forest functional level Windows Server 2008 R2 or higher); it cannot be disabled again"
+            "Objects deleted before it was enabled stay tombstones - it protects deletions from then on"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Check whether the Recycle Bin is enabled"
+                Command = "Get-ADOptionalFeature -Filter { Name -like 'Recycle*' } | Select-Object Name, EnabledScopes"
+            }
+            @{
+                Description = "Enable it for the forest"
+                Command = "Enable-ADOptionalFeature -Identity 'Recycle Bin Feature' -Scope ForestOrConfigurationSet -Target '<forest root domain>'"
+            }
+        )
+        References = @(
+            @{ Title = "Recycle Bin Optional Feature - MS-ADTS 3.1.1.9.1"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e9482178-ee53-4b6c-841d-5259d6261985" }
+        )
+        Tools = @()
+        MITRE = "T1485"
+        Triggers = @(
+            @{ Attribute = 'recycleBin'; Pattern = '^Disabled'; Severity = 'Hint' }
+        )
+    }
+
+    'TOMBSTONE_LIFETIME_SHORT' = @{
+        Title = "Tombstone Lifetime Shorter Than 180 Days"
+        Risk = "Hint"
+        BaseScore = 5
+        Description = "The tombstone lifetime of the forest - tombstoneLifetime on CN=Directory Service, 60 days when the attribute is not set (MS-ADTS 3.1.1.1.5.1) - is shorter than the 180 days Microsoft sets in a new forest. It is also the useful life of a backup: a backup older than the tombstone lifetime can no longer be restored, and a domain controller offline for longer has to be rebuilt. A short value is usually inherited from a forest created on Windows 2000 or an early Windows Server 2003, not chosen."
+        Impact = @(
+            "Backups older than the tombstone lifetime cannot be restored"
+            "A compromise noticed late leaves fewer clean backups to recover from"
+            "A domain controller offline longer than the tombstone lifetime has to be rebuilt"
+        )
+        Remediation = @(
+            "Set tombstoneLifetime on CN=Directory Service,CN=Windows NT,CN=Services in the configuration partition to 180"
+            "Keep backups of at least two domain controllers per domain, younger than the tombstone lifetime"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the tombstone lifetime (empty means 60 days)"
+                Command = "Get-ADObject ('CN=Directory Service,CN=Windows NT,CN=Services,' + (Get-ADRootDSE).configurationNamingContext) -Properties tombstoneLifetime | Select-Object tombstoneLifetime"
+            }
+            @{
+                Description = "Set it to 180 days"
+                Command = "Set-ADObject ('CN=Directory Service,CN=Windows NT,CN=Services,' + (Get-ADRootDSE).configurationNamingContext) -Replace @{tombstoneLifetime=180}"
+            }
+        )
+        References = @(
+            @{ Title = "Tombstone Lifetime and Deleted-Object Lifetime - MS-ADTS 3.1.1.1.5.1"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/1887de08-2a9e-4694-95e2-898cde411180" }
+            @{ Title = "Active Directory Security Tip #7: The Tombstone Lifetime"; Url = "https://adsecurity.org/?p=4600" }
+        )
+        Tools = @()
+        MITRE = "T1490"
+        Triggers = @(
+            @{ Attribute = 'tombstoneLifetime'; Pattern = 'shorter than the 180 days'; Severity = 'Hint' }
+        )
+    }
+
     # ============================================================================
     # PRE-WINDOWS 2000 COMPATIBLE ACCESS
     # ============================================================================

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 20:07:49
-    Version: 2.7.0+20261017-2007
+    Build: 2026-10-17 20:16:35
+    Version: 2.7.0+20261017-2016
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6577,7 +6577,8 @@ $Script:PrimaryAttributes = @{
         'domainFunctionalLevel', 'forestFunctionalLevel',
         'domainControllers', 'forestName',
         'parentDomain', 'childDomains',
-        'anonymousLDAPAccess', 'anonymousReadableAttributes'
+        'anonymousLDAPAccess', 'anonymousReadableAttributes',
+        'tombstoneLifetime', 'recycleBin', 'deletedObjectLifetime'
     )
 
     # Kerberos Policy object
@@ -19974,6 +19975,82 @@ $acl.Access | Where-Object {
             # support, so there is something to say about them.
             @{ Attribute = 'domainFunctionalLevel'; Pattern = 'Windows (2000|2003|2008|2012)'; Severity = 'Hint' }
             @{ Attribute = 'forestFunctionalLevel'; Pattern = 'Windows (2000|2003|2008|2012)'; Severity = 'Hint' }
+        )
+    }
+
+    # What a deletion leaves behind - both forest-wide, read by Get-DomainInformation
+    # through Get-ForestDeletionSetting (MS-ADTS 3.1.1.1.5.1, 3.1.1.9.1).
+    'AD_RECYCLE_BIN_DISABLED' = @{
+        Title = "Active Directory Recycle Bin Not Enabled"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "The forest has not enabled the Active Directory Recycle Bin, although its functional level allows it. A deleted object then becomes a tombstone that keeps only a few attributes: its group memberships and most of its other values are gone, so a restore brings back an empty shell and an investigation finds little. A mass deletion by an attacker - or by mistake - can only be undone from a backup, by an authoritative restore. With the Recycle Bin, a deleted object keeps virtually all of its state and can be restored without loss. It is forest-wide and cannot be disabled once enabled."
+        Impact = @(
+            "A deleted user, group or computer comes back without its group memberships and most attributes"
+            "Recovery from a destructive attack on the directory needs a backup and an authoritative restore"
+            "Deleted objects say little about what they were, which hampers an investigation"
+        )
+        Attack = @(
+            "1. Attacker with sufficient rights deletes accounts, groups or OUs to disrupt the domain or cover tracks"
+            "2. Without the Recycle Bin, the deleted objects lose their memberships and attributes"
+            "3. Recovery depends on a recent backup and an authoritative restore"
+        )
+        Remediation = @(
+            "Enable the Recycle Bin (forest functional level Windows Server 2008 R2 or higher); it cannot be disabled again"
+            "Objects deleted before it was enabled stay tombstones - it protects deletions from then on"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Check whether the Recycle Bin is enabled"
+                Command = "Get-ADOptionalFeature -Filter { Name -like 'Recycle*' } | Select-Object Name, EnabledScopes"
+            }
+            @{
+                Description = "Enable it for the forest"
+                Command = "Enable-ADOptionalFeature -Identity 'Recycle Bin Feature' -Scope ForestOrConfigurationSet -Target '<forest root domain>'"
+            }
+        )
+        References = @(
+            @{ Title = "Recycle Bin Optional Feature - MS-ADTS 3.1.1.9.1"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e9482178-ee53-4b6c-841d-5259d6261985" }
+        )
+        Tools = @()
+        MITRE = "T1485"
+        Triggers = @(
+            @{ Attribute = 'recycleBin'; Pattern = '^Disabled'; Severity = 'Hint' }
+        )
+    }
+
+    'TOMBSTONE_LIFETIME_SHORT' = @{
+        Title = "Tombstone Lifetime Shorter Than 180 Days"
+        Risk = "Hint"
+        BaseScore = 5
+        Description = "The tombstone lifetime of the forest - tombstoneLifetime on CN=Directory Service, 60 days when the attribute is not set (MS-ADTS 3.1.1.1.5.1) - is shorter than the 180 days Microsoft sets in a new forest. It is also the useful life of a backup: a backup older than the tombstone lifetime can no longer be restored, and a domain controller offline for longer has to be rebuilt. A short value is usually inherited from a forest created on Windows 2000 or an early Windows Server 2003, not chosen."
+        Impact = @(
+            "Backups older than the tombstone lifetime cannot be restored"
+            "A compromise noticed late leaves fewer clean backups to recover from"
+            "A domain controller offline longer than the tombstone lifetime has to be rebuilt"
+        )
+        Remediation = @(
+            "Set tombstoneLifetime on CN=Directory Service,CN=Windows NT,CN=Services in the configuration partition to 180"
+            "Keep backups of at least two domain controllers per domain, younger than the tombstone lifetime"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the tombstone lifetime (empty means 60 days)"
+                Command = "Get-ADObject ('CN=Directory Service,CN=Windows NT,CN=Services,' + (Get-ADRootDSE).configurationNamingContext) -Properties tombstoneLifetime | Select-Object tombstoneLifetime"
+            }
+            @{
+                Description = "Set it to 180 days"
+                Command = "Set-ADObject ('CN=Directory Service,CN=Windows NT,CN=Services,' + (Get-ADRootDSE).configurationNamingContext) -Replace @{tombstoneLifetime=180}"
+            }
+        )
+        References = @(
+            @{ Title = "Tombstone Lifetime and Deleted-Object Lifetime - MS-ADTS 3.1.1.1.5.1"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/1887de08-2a9e-4694-95e2-898cde411180" }
+            @{ Title = "Active Directory Security Tip #7: The Tombstone Lifetime"; Url = "https://adsecurity.org/?p=4600" }
+        )
+        Tools = @()
+        MITRE = "T1490"
+        Triggers = @(
+            @{ Attribute = 'tombstoneLifetime'; Pattern = 'shorter than the 180 days'; Severity = 'Hint' }
         )
     }
 
@@ -101578,6 +101655,47 @@ function Get-DomainInformation {
                 $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue (
                     'Not tested - the session is LDAPS or a global catalog connection, where the anonymous bind test is skipped') -Force
             }
+            # What a deletion leaves behind in this forest. Without the Recycle Bin a deleted
+            # object becomes a tombstone that keeps a handful of attributes - group
+            # memberships and most of what a restore or an investigation needs are gone - and
+            # the tombstone lifetime bounds the age of a backup that can still be restored.
+            # Neither was read anywhere.
+            $deletionParams = @{}
+            foreach ($key in @($PSBoundParameters.Keys)) { $deletionParams[$key] = $PSBoundParameters[$key] }
+            $deletion = Get-ForestDeletionSetting -ConnectionParams $deletionParams
+            $deletionWeak = $false
+
+            if ($null -eq $deletion.TombstoneLifetime) {
+                $tombstoneText = 'Unknown - the Directory Service object could not be read'
+            } else {
+                $tombstoneDays = $deletion.TombstoneLifetime
+                $tombstoneText = if ($deletion.TombstoneLifetimeSet) { "$tombstoneDays days" } else { "$tombstoneDays days - not set, which means $tombstoneDays" }
+                if ($tombstoneDays -lt 180) {
+                    $deletionWeak = $true
+                    $tombstoneText += "; shorter than the 180 days Microsoft sets in a new forest - a backup older than $tombstoneDays days can no longer be restored"
+                }
+            }
+            $domainInfoObj | Add-Member -NotePropertyName 'tombstoneLifetime' -NotePropertyValue $tombstoneText -Force
+
+            if ($null -eq $deletion.RecycleBin) {
+                $recycleBinText = 'Unknown - the Partitions container could not be read'
+            } elseif ($deletion.RecycleBin) {
+                $recycleBinText = 'Enabled'
+            } elseif ([int]$ForestFunc -lt 4) {
+                $recycleBinText = 'Not available - it needs forest functional level Windows Server 2008 R2'
+            } else {
+                $deletionWeak = $true
+                $recycleBinText = 'Disabled - a deleted object keeps only a few attributes, and its group memberships cannot be restored with it'
+            }
+            $domainInfoObj | Add-Member -NotePropertyName 'recycleBin' -NotePropertyValue $recycleBinText -Force
+            if ($deletion.RecycleBin -and $null -ne $deletion.DeletedObjectLifetime) {
+                $domainInfoObj | Add-Member -NotePropertyName 'deletedObjectLifetime' -NotePropertyValue "$($deletion.DeletedObjectLifetime) days" -Force
+            }
+
+            if ($deletionWeak -and $domainInfoSeverity -eq "Note") {
+                $domainInfoSeverity = "Hint"
+            }
+
             # Check for old functional level (< 2016 = level 7).
             #
             # Its own statement now, guarded on the severity rather than chained: it
@@ -101918,6 +102036,83 @@ function Get-DomainInformation {
     end {
         Write-Log "[Get-DomainInformation] Domain enumeration completed"
     }
+}
+
+<#
+.SYNOPSIS
+    What happens to a deleted object in this forest: tombstone lifetime and Recycle Bin.
+
+.DESCRIPTION
+    Both are forest-wide, and neither was read anywhere.
+
+    tombstoneLifetime and msDS-DeletedObjectLifetime are on CN=Directory Service in the
+    configuration partition, in days (MS-ADTS 3.1.1.1.5.1). Without a value the tombstone
+    lifetime is 60 days; a value below 2 counts as 2 on Windows Server 2008 R2 and later.
+    The deleted-object lifetime defaults to the tombstone lifetime.
+
+    The Recycle Bin is an optional feature, enabled for the forest when msDS-EnabledFeature
+    on the Partitions container names its feature object, CN=Recycle Bin Feature under
+    CN=Optional Features (MS-ADTS 3.1.1.9, 3.1.1.9.1). It needs forest functional level
+    Windows Server 2008 R2 and cannot be disabled once enabled.
+
+.PARAMETER ConnectionParams
+    Domain/Server/Credential hashtable, passed through unchanged.
+
+.OUTPUTS
+    PSCustomObject: TombstoneLifetime (days, effective), TombstoneLifetimeSet ($true when
+    the attribute carries a value), DeletedObjectLifetime (days, effective), both $null when
+    the Directory Service object could not be read; RecycleBin $true, $false, or $null when
+    the Partitions container could not be read.
+#>
+function Get-ForestDeletionSetting {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    $result = [PSCustomObject]@{
+        TombstoneLifetime     = $null
+        TombstoneLifetimeSet  = $false
+        DeletedObjectLifetime = $null
+        RecycleBin            = $null
+    }
+    $configDN = $Script:LDAPContext.ConfigurationNamingContext
+    if (-not $configDN) { return $result }
+
+    try {
+        $dirService = @(Get-DomainObject -Identity "CN=Directory Service,CN=Windows NT,CN=Services,$configDN" -Properties 'tombstoneLifetime', 'msDS-DeletedObjectLifetime' @ConnectionParams)[0]
+        if ($dirService) {
+            $days = 0
+            if ([int]::TryParse([string]$dirService.tombstoneLifetime, [ref]$days)) {
+                $result.TombstoneLifetimeSet = $true
+                $result.TombstoneLifetime = [Math]::Max($days, 2)
+            } else {
+                $result.TombstoneLifetime = 60
+            }
+            $deletedDays = 0
+            $result.DeletedObjectLifetime = if ([int]::TryParse([string]$dirService.'msDS-DeletedObjectLifetime', [ref]$deletedDays)) {
+                [Math]::Max($deletedDays, 2)
+            } else {
+                $result.TombstoneLifetime
+            }
+        }
+    } catch {
+        Write-Log "[Get-DomainInformation] Could not read the tombstone lifetime: $_"
+    }
+
+    try {
+        $partitions = @(Get-DomainObject -Identity "CN=Partitions,$configDN" -Properties 'msDS-EnabledFeature' @ConnectionParams)[0]
+        if ($partitions) {
+            $result.RecycleBin = (@(@($partitions.'msDS-EnabledFeature') | Where-Object {
+                "$_" -like 'CN=Recycle Bin Feature,CN=Optional Features,*'
+            }).Count -gt 0)
+        }
+    } catch {
+        Write-Log "[Get-DomainInformation] Could not read the enabled optional features: $_"
+    }
+
+    return $result
 }
 
 <#
@@ -143380,7 +143575,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-2007"
+$Script:adPEASVersion = "2.7.0+20261017-2016"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
