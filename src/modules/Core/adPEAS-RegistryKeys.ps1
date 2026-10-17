@@ -50,6 +50,8 @@
                                            https://learn.microsoft.com/en-us/previous-versions/windows/embedded/jj963363(v=winembedded.81)
       - AllowInsecureGuestAuth policy key: https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-lanmanworkstation
       - SMB server/client signing:         see Get-SMBSigningStatus (dedicated check, not duplicated here)
+      - SMBv1 / SMBv2 server and client:   https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
+      - RejectUnencryptedAccess:           https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-security
 #>
 
 # =============================================================================
@@ -550,5 +552,64 @@ $Script:DangerousRegistryKeys = @(
         FindingId         = 'REGISTRY_INSECURE_GUEST_AUTH'
         VulnerabilityName = 'Insecure guest logon (SMB) allowed via GPO'
         RiskReason        = 'The SMB client accepts an unauthenticated guest session when the server refuses its credentials - a rogue or coerced server captures whatever the client sends, with no signing and no encryption enforced'
+    }
+
+    # SMB protocol versions and encryption, as Microsoft documents the values for Group
+    # Policy ("Detect, enable, and disable SMBv1, SMBv2, and SMBv3 in Windows"; "SMB
+    # Security Enhancements"). Signing has its own check, Get-SMBSigningStatus. Only a GPO
+    # that turns a protection off is reported - one that turns SMBv1 off is the
+    # recommendation, and the absence of either says nothing.
+    @{
+        Id                = 'SMB1_SERVER'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\LanmanServer\Parameters'
+        ValueName         = 'SMB1'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SMB1_SERVER'
+        VulnerabilityName = 'SMBv1 server enabled via GPO'
+        RiskReason        = 'The machines accept SMBv1, which has no pre-authentication integrity - an attacker in the path can downgrade a connection to it - and which Microsoft asks not to use at all'
+    }
+    @{
+        Id                = 'SMB1_CLIENT'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\mrxsmb10'
+        ValueName         = 'Start'
+        # 4 disables the SMBv1 client driver; 2 (automatic) and 3 (manual) leave it loadable.
+        Match             = 'LessOrEqual'
+        MatchValue        = 3
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SMB1_CLIENT'
+        VulnerabilityName = 'SMBv1 client enabled via GPO'
+        RiskReason        = 'The machines can still speak SMBv1 to a server, so an attacker in the path can offer them the protocol without pre-authentication integrity, signing improvements or encryption'
+    }
+    @{
+        Id                = 'SMB2_SERVER_DISABLED'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\LanmanServer\Parameters'
+        ValueName         = 'SMB2'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SMB2_SERVER_DISABLED'
+        VulnerabilityName = 'SMBv2/v3 server disabled via GPO'
+        RiskReason        = 'Disabling SMBv2 disables SMBv3 with it: the server loses encryption, pre-authentication integrity and the stronger signing, and is left with SMBv1 or no file sharing at all'
+    }
+    @{
+        Id                = 'SMB_UNENCRYPTED_ACCESS'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\LanmanServer\Parameters'
+        ValueName         = 'RejectUnencryptedAccess'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SMB_UNENCRYPTED_ACCESS'
+        VulnerabilityName = 'Unencrypted access to encrypted SMB shares allowed via GPO'
+        RiskReason        = 'A share or server that requires encryption also serves clients that cannot encrypt - an attacker in the path claims to be such a client, or downgrades one, and reads the data the encryption was set up to protect'
     }
 )

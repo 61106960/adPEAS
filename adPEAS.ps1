@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 20:22:20
-    Version: 2.7.0+20261017-2022
+    Build: 2026-10-17 20:29:58
+    Version: 2.7.0+20261017-2029
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -3681,6 +3681,8 @@ function Compare-UserRightAssignment {
                                            https://learn.microsoft.com/en-us/previous-versions/windows/embedded/jj963363(v=winembedded.81)
       - AllowInsecureGuestAuth policy key: https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-lanmanworkstation
       - SMB server/client signing:         see Get-SMBSigningStatus (dedicated check, not duplicated here)
+      - SMBv1 / SMBv2 server and client:   https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
+      - RejectUnencryptedAccess:           https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-security
 #>
 
 # =============================================================================
@@ -4181,6 +4183,65 @@ $Script:DangerousRegistryKeys = @(
         FindingId         = 'REGISTRY_INSECURE_GUEST_AUTH'
         VulnerabilityName = 'Insecure guest logon (SMB) allowed via GPO'
         RiskReason        = 'The SMB client accepts an unauthenticated guest session when the server refuses its credentials - a rogue or coerced server captures whatever the client sends, with no signing and no encryption enforced'
+    }
+
+    # SMB protocol versions and encryption, as Microsoft documents the values for Group
+    # Policy ("Detect, enable, and disable SMBv1, SMBv2, and SMBv3 in Windows"; "SMB
+    # Security Enhancements"). Signing has its own check, Get-SMBSigningStatus. Only a GPO
+    # that turns a protection off is reported - one that turns SMBv1 off is the
+    # recommendation, and the absence of either says nothing.
+    @{
+        Id                = 'SMB1_SERVER'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\LanmanServer\Parameters'
+        ValueName         = 'SMB1'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SMB1_SERVER'
+        VulnerabilityName = 'SMBv1 server enabled via GPO'
+        RiskReason        = 'The machines accept SMBv1, which has no pre-authentication integrity - an attacker in the path can downgrade a connection to it - and which Microsoft asks not to use at all'
+    }
+    @{
+        Id                = 'SMB1_CLIENT'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\mrxsmb10'
+        ValueName         = 'Start'
+        # 4 disables the SMBv1 client driver; 2 (automatic) and 3 (manual) leave it loadable.
+        Match             = 'LessOrEqual'
+        MatchValue        = 3
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SMB1_CLIENT'
+        VulnerabilityName = 'SMBv1 client enabled via GPO'
+        RiskReason        = 'The machines can still speak SMBv1 to a server, so an attacker in the path can offer them the protocol without pre-authentication integrity, signing improvements or encryption'
+    }
+    @{
+        Id                = 'SMB2_SERVER_DISABLED'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\LanmanServer\Parameters'
+        ValueName         = 'SMB2'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SMB2_SERVER_DISABLED'
+        VulnerabilityName = 'SMBv2/v3 server disabled via GPO'
+        RiskReason        = 'Disabling SMBv2 disables SMBv3 with it: the server loses encryption, pre-authentication integrity and the stronger signing, and is left with SMBv1 or no file sharing at all'
+    }
+    @{
+        Id                = 'SMB_UNENCRYPTED_ACCESS'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\LanmanServer\Parameters'
+        ValueName         = 'RejectUnencryptedAccess'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_SMB_UNENCRYPTED_ACCESS'
+        VulnerabilityName = 'Unencrypted access to encrypted SMB shares allowed via GPO'
+        RiskReason        = 'A share or server that requires encryption also serves clients that cannot encrypt - an attacker in the path claims to be such a client, or downgrades one, and reads the data the encryption was set up to protect'
     }
 )
 
@@ -21866,7 +21927,9 @@ $acl.Access | Where-Object {
         Tools = @("Mimikatz")
         MITRE = "T1562.001"
         Triggers = @(
-            @{ Attribute = 'VulnerabilityName'; Pattern = 'Credential Guard explicitly disabled'; Severity = 'Hint' }
+            # Both rules of the table: the policy path and the runtime key a preference item
+            # can write. The second never reached this card - its name did not match.
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Credential Guard (explicitly disabled|disabled on the runtime key)'; Severity = 'Hint' }
         )
     }
 
@@ -22113,6 +22176,130 @@ $acl.Access | Where-Object {
         MITRE = "T1557.001"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'Insecure guest logon'; Severity = 'Hint' }
+        )
+    }
+
+    # SMB protocol versions and encryption (Get-GPORegistrySettings). Signing is
+    # Get-SMBSigningStatus's.
+    'REGISTRY_SMB1_SERVER' = @{
+        Title = "SMBv1 Server Enabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets SMB1=1 under LanmanServer\Parameters, so the machines it reaches accept SMBv1 where the feature is installed. SMBv1 has no pre-authentication integrity, so a connection can be downgraded to it, and it lacks the encryption and the signing of SMB 2 and 3. Microsoft asks not to use it at all and no longer installs it from Windows 10 and Windows Server version 1709 on."
+        Impact = @(
+            "An attacker in the path can downgrade a connection to SMBv1, which has no pre-authentication integrity"
+            "SMBv1 carries no encryption, so an encrypted share is read in the clear over it unless unencrypted access is refused"
+            "Old remote code execution flaws in SMBv1 (EternalBlue, MS17-010) reach every unpatched machine in scope"
+        )
+        Attack = @(
+            "1. Attacker places itself between a client and a server in the GPO's scope"
+            "2. Strips the newer dialects from the negotiation so both sides fall back to SMBv1"
+            "3. Reads or tampers with the traffic, or exploits an unpatched SMBv1 flaw"
+        )
+        Remediation = @(
+            "Set SMB1=0 - or remove the setting and uninstall the SMB 1.0/CIFS File Sharing Support feature"
+            "Audit SMBv1 use first: Set-SmbServerConfiguration -AuditSmb1Access `$true, then event 3000 in Microsoft-Windows-SMBServer/Audit"
+            "Update or replace the device that still needs SMBv1 (Microsoft's SMB1 Product Clearinghouse)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show whether a machine accepts SMBv1"
+                Command = "Get-SmbServerConfiguration | Select-Object EnableSMB1Protocol, AuditSmb1Access"
+            }
+        )
+        References = @(
+            @{ Title = "Detect, enable, and disable SMBv1, SMBv2, and SMBv3 in Windows"; Url = "https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3" }
+            @{ Title = "Stop using SMB1 - Microsoft"; Url = "https://techcommunity.microsoft.com/blog/filecab/stop-using-smb1/425858" }
+        )
+        Tools = @()
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^SMBv1 server enabled'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_SMB1_CLIENT' = @{
+        Title = "SMBv1 Client Enabled via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets the start type of the SMBv1 client driver, mrxsmb10, to automatic or manual - 4 disables it - so the machines it reaches can still speak SMBv1 to a server. A server, or an attacker posing as one, can offer them SMBv1 and its missing pre-authentication integrity, signing improvements and encryption."
+        Impact = @(
+            "A rogue server can keep the client on SMBv1, without the protections of SMB 2 and 3"
+            "Keeps alive the old SMBv1 client paths that SMB 2 and 3 replaced"
+        )
+        Attack = @(
+            "1. Attacker poses as an SMB server or sits between the client and a real one"
+            "2. Offers only SMBv1 in the negotiation"
+            "3. Reads or tampers with what the client sends"
+        )
+        Remediation = @(
+            "Set mrxsmb10 Start to 4 and remove MRxSmb10 from the DependOnService value of LanmanWorkstation, as Microsoft documents it"
+            "Update or replace the server that still needs SMBv1"
+        )
+        References = @(
+            @{ Title = "Detect, enable, and disable SMBv1, SMBv2, and SMBv3 in Windows"; Url = "https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3" }
+        )
+        Tools = @()
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^SMBv1 client enabled'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_SMB2_SERVER_DISABLED' = @{
+        Title = "SMBv2/v3 Server Disabled via GPO"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy sets SMB2=0 under LanmanServer\Parameters. SMBv2 and SMBv3 share one stack, so this disables both: the server loses encryption, pre-authentication integrity and the stronger signing, and is left with SMBv1 where that is installed, or with no file sharing at all. Microsoft recommends it only to troubleshoot, temporarily."
+        Impact = @(
+            "No SMB encryption and no pre-authentication integrity on the machines in scope"
+            "Clients fall back to SMBv1 where the server still offers it"
+        )
+        Remediation = @(
+            "Remove the setting or set SMB2=1; the default is enabled"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show whether a machine serves SMBv2 and SMBv3"
+                Command = "Get-SmbServerConfiguration | Select-Object EnableSMB2Protocol"
+            }
+        )
+        References = @(
+            @{ Title = "Detect, enable, and disable SMBv1, SMBv2, and SMBv3 in Windows"; Url = "https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3" }
+        )
+        Tools = @()
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^SMBv2/v3 server disabled'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_SMB_UNENCRYPTED_ACCESS' = @{
+        Title = "Unencrypted Access to Encrypted SMB Shares Allowed via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets RejectUnencryptedAccess=0 under LanmanServer\Parameters - Set-SmbServerConfiguration -RejectUnencryptedAccess `$false. A share or a server that requires SMB encryption then also serves clients that cannot encrypt, in the clear. Microsoft does not recommend it: pre-authentication integrity stops a downgrade to SMB 2, but not to SMB 1.0, and the data the encryption was set up to protect is read without it."
+        Impact = @(
+            "Data on shares that require encryption crosses the network unencrypted to clients that do not encrypt"
+            "An attacker in the path can downgrade a client to SMB 1.0 and read an encrypted share in the clear"
+        )
+        Remediation = @(
+            "Remove the setting; the default rejects unencrypted access"
+            "Update the clients that cannot encrypt, and disable the SMB 1.0 server"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the encryption settings of a server"
+                Command = "Get-SmbServerConfiguration | Select-Object EncryptData, RejectUnencryptedAccess"
+            }
+        )
+        References = @(
+            @{ Title = "SMB Security Enhancements - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-security" }
+        )
+        Tools = @()
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Unencrypted access to encrypted SMB shares'; Severity = 'Hint' }
         )
     }
 
@@ -143702,7 +143889,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-2022"
+$Script:adPEASVersion = "2.7.0+20261017-2029"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

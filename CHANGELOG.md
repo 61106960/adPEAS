@@ -350,6 +350,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   FRS*: it is deprecated, and no domain controller from Windows Server 1709 on can be
   added to such a domain (KB4025991).
 
+- **`Get-GPORegistrySettings` reports Group Policies that weaken SMB.** Four rules with the
+  paths and values Microsoft documents: the SMBv1 server enabled (`SMB1=1` under
+  `LanmanServer\Parameters`), the SMBv1 client driver left loadable (`mrxsmb10` start type
+  2 or 3 - 4 disables it), SMBv2 and SMBv3 disabled on the server (`SMB2=0`), and
+  unencrypted access to shares that require encryption (`RejectUnencryptedAccess=0`).
+  Each is a hint with a card of its own; a policy that turns SMBv1 off is the
+  recommendation and is not reported. Signing stays with `Get-SMBSigningStatus`. A new
+  test files every rule of the table under the card it names - and found that the
+  Credential Guard rule for the runtime key never reached its card; it does now.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
