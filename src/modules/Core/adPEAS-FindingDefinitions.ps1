@@ -14322,7 +14322,9 @@ function Test-CustomTrigger {
         }
 
         'enc_not_configured_with_spn' {
-            # ConvertFrom-LDAPAttribute renders an absent attribute as "Not configured".
+            # ConvertFrom-LDAPAttribute renders a stored 0 as "Not configured", and
+            # Get-KerberoastableAccounts writes the same for an account that has no value
+            # at all - an absent attribute produces no row by itself.
             # Only reported where it matters: an account with a service principal name can
             # be roasted, and the absence of the attribute leaves RC4 on the table. On an
             # ordinary user without an SPN it is the normal state and says nothing.

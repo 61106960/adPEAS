@@ -76541,6 +76541,10 @@ function Get-KerberoastableAccounts {
                         $user | Add-Member -NotePropertyName 'PrivilegedRoastTarget' `
                             -NotePropertyValue $privileged.Reason -Force
                     }
+                    $encryptionTypes = $user.PSObject.Properties['msDS-SupportedEncryptionTypes']
+                    if (-not $encryptionTypes -or $null -eq $encryptionTypes.Value) {
+                        $user | Add-Member -NotePropertyName 'msDS-SupportedEncryptionTypes' -NotePropertyValue @('Not configured') -Force
+                    }
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Kerberoastable' -Force
                     Show-Object $user -Class Finding
                     Show-EmptyLine
@@ -89057,7 +89061,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1220"
+$Script:adPEASVersion = "2.7.0+20261017-1223"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

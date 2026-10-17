@@ -200,6 +200,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Operators rows, and every SCCM or SCOM group with a member opened that write-up. The
   card now goes to the operator-group rows only.
 
+- **A kerberoastable account without `msDS-SupportedEncryptionTypes` says so.** The
+  attribute was simply missing from the row, and the card for it - the KDC then falls
+  back to the domain default and RC4 stays available - fired only for a stored 0, which
+  is not how the case occurs. The row now reads "Not configured" and carries that card.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

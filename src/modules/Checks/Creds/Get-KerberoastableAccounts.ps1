@@ -180,6 +180,17 @@ function Get-KerberoastableAccounts {
                             -NotePropertyValue $privileged.Reason -Force
                     }
 
+                    # No msDS-SupportedEncryptionTypes at all is what ENCRYPTION_NOT_CONFIGURED
+                    # is about: the KDC falls back to the domain default, and RC4 stays on the
+                    # table for this account's tickets. But an absent attribute produces no
+                    # row, and the converter writes "Not configured" only for a stored 0 - so
+                    # the card never reached the case it describes. Said here, where every
+                    # account has a service principal name.
+                    $encryptionTypes = $user.PSObject.Properties['msDS-SupportedEncryptionTypes']
+                    if (-not $encryptionTypes -or $null -eq $encryptionTypes.Value) {
+                        $user | Add-Member -NotePropertyName 'msDS-SupportedEncryptionTypes' -NotePropertyValue @('Not configured') -Force
+                    }
+
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Kerberoastable' -Force
                     Show-Object $user -Class Finding
 

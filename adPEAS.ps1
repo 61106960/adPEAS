@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 12:20:05
-    Version: 2.7.0+20261017-1220
+    Build: 2026-10-17 12:23:30
+    Version: 2.7.0+20261017-1223
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -22253,7 +22253,9 @@ function Test-CustomTrigger {
         }
 
         'enc_not_configured_with_spn' {
-            # ConvertFrom-LDAPAttribute renders an absent attribute as "Not configured".
+            # ConvertFrom-LDAPAttribute renders a stored 0 as "Not configured", and
+            # Get-KerberoastableAccounts writes the same for an account that has no value
+            # at all - an absent attribute produces no row by itself.
             # Only reported where it matters: an account with a service principal name can
             # be roasted, and the absence of the attribute leaves RC4 on the table. On an
             # ordinary user without an SPN it is the normal state and says nothing.
@@ -122907,6 +122909,17 @@ function Get-KerberoastableAccounts {
                             -NotePropertyValue $privileged.Reason -Force
                     }
 
+                    # No msDS-SupportedEncryptionTypes at all is what ENCRYPTION_NOT_CONFIGURED
+                    # is about: the KDC falls back to the domain default, and RC4 stays on the
+                    # table for this account's tickets. But an absent attribute produces no
+                    # row, and the converter writes "Not configured" only for a stored 0 - so
+                    # the card never reached the case it describes. Said here, where every
+                    # account has a service principal name.
+                    $encryptionTypes = $user.PSObject.Properties['msDS-SupportedEncryptionTypes']
+                    if (-not $encryptionTypes -or $null -eq $encryptionTypes.Value) {
+                        $user | Add-Member -NotePropertyName 'msDS-SupportedEncryptionTypes' -NotePropertyValue @('Not configured') -Force
+                    }
+
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Kerberoastable' -Force
                     Show-Object $user -Class Finding
 
@@ -138930,7 +138943,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1220"
+$Script:adPEASVersion = "2.7.0+20261017-1223"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
