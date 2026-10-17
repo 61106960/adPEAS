@@ -836,14 +836,16 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Module = "Accounts"
         Category = "Accounts"
         SectionTitle = "Password Not Required Accounts"
-        Summary = "Identifies enabled user accounts with the PASSWD_NOTREQD flag set."
-        WhyItMatters = "Accounts with the 'Password Not Required' flag can bypass the domain password policy and may have an empty password. While the flag alone does not guarantee an empty password, it indicates a hygiene issue and potential attack vector."
+        Summary = "Identifies enabled user and computer accounts with the PASSWD_NOTREQD flag set."
+        WhyItMatters = "Accounts with the 'Password Not Required' flag can bypass the domain password policy and may have an empty password. While the flag alone does not guarantee an empty password, it indicates a hygiene issue and potential attack vector. A computer account created ahead of its computer carries the flag until a computer joins with it, and created as a pre-Windows 2000 computer it has its name in lowercase as password."
         WhatWeCheck = @(
             "Enabled user accounts with PASSWD_NOTREQD flag (UAC bit 32)"
             "Whether affected accounts are privileged or service accounts"
             "Last password change date for risk assessment"
+            "Enabled computer accounts with the flag, and whether they have ever logged on"
+            "Not tested: whether a pre-created computer account's password is its name - that needs a logon attempt, not an LDAP query"
         )
-        SecureMessage = "No enabled user accounts have the 'Password Not Required' flag set. All accounts require passwords according to domain password policy."
+        SecureMessage = "No enabled user or computer account has the 'Password Not Required' flag set. All accounts require passwords according to domain password policy."
         PrimaryFindingId = 'PASSWORD_NOT_REQUIRED'
     }
 

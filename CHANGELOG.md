@@ -123,6 +123,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Protected Users counts from domain functional level Windows Server 2012 R2 on, the
   level at which it stops delegation.
 
+- **Computer accounts with "Password Not Required" are reported.** `Get-PasswordNotRequired`
+  asked for user accounts only. A computer account created ahead of its computer carries
+  the flag until a computer joins the domain with it, and created as a "pre-Windows 2000
+  computer" its password until then is the computer name in lowercase - a logon for
+  anybody who can list the computer names. Enabled computer accounts with the flag that
+  have never logged on are now a finding with a card of its own; one that has logged on
+  is a hint.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

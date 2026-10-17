@@ -4272,6 +4272,55 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
             @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^EMPTY'; Severity = 'Finding' }
             @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^PRIVILEGED'; Severity = 'Finding' }
             @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Exempt'; Severity = 'Hint' }
+            # A computer account with the flag that has logged on. The one that has not is
+            # PRECREATED_COMPUTER_ACCOUNT.
+            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Has logged on'; Severity = 'Hint' }
+        )
+    }
+
+    'PRECREATED_COMPUTER_ACCOUNT' = @{
+        Title = "Pre-Created Computer Account That Has Never Logged On"
+        Risk = "Finding"
+        BaseScore = 30
+        Description = "This enabled computer account carries PASSWD_NOTREQD and has never logged on - the signature of an account created ahead of its computer (userAccountControl 4128). Created with 'Assign this computer account as a pre-Windows 2000 computer', its password is the computer name in lowercase without the trailing dollar sign, and it stays that until a computer joins the domain with the account, which sets a random password and clears the flag. Without that option the password is random; the directory does not record which of the two was used."
+        Impact = @(
+            "Trying computer names as passwords yields a domain account without any credentials"
+            "A machine account under the attacker's control is what resource-based constrained delegation attacks need, even where the machine account quota is 0"
+            "Over NTLM the right password returns STATUS_NOLOGON_WORKSTATION_TRUST_ACCOUNT instead of a logon, which still confirms it; Kerberos accepts it outright"
+        )
+        Attack = @(
+            "1. Attacker collects computer names - from DNS, from NetBIOS, or from the directory"
+            "2. Requests a TGT for each account with its name in lowercase as password - tools cut the name to 14 characters"
+            "3. Uses the machine account to enumerate the domain, roast service accounts or stage a resource-based constrained delegation attack"
+        )
+        Remediation = @(
+            "Delete pre-created computer accounts that no computer is going to join with"
+            "Set a random password on the ones still needed, or join the computer, which also clears the flag"
+            "Remove the 'Password Not Required' flag"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the enabled computer accounts that carry the flag, with their last logon"
+                Command = "Get-ADComputer -LDAPFilter '(&(userAccountControl:1.2.840.113556.1.4.803:=32)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))' -Properties lastLogonTimestamp,pwdLastSet | Select-Object Name,lastLogonTimestamp,pwdLastSet"
+            }
+            @{
+                Description = "Delete a pre-created account that is no longer needed"
+                Command = "Remove-ADComputer -Identity 'COMPUTERNAME'"
+            }
+            @{
+                Description = "Set a random password on a pre-created account that has not been joined yet, and remove the flag"
+                Command = "Set-ADAccountPassword -Identity 'COMPUTERNAME$' -Reset -NewPassword (ConvertTo-SecureString -AsPlainText -Force ([guid]::NewGuid().ToString() + [guid]::NewGuid().ToString())); Set-ADAccountControl -Identity 'COMPUTERNAME$' -PasswordNotRequired `$false"
+            }
+        )
+        References = @(
+            @{ Title = "Diving into Pre-Created Computer Accounts - TrustedSec"; Url = "https://trustedsec.com/blog/diving-into-pre-created-computer-accounts" }
+            @{ Title = "Diving Deeper Into Pre-Created Computer Accounts - Optiv"; Url = "https://www.optiv.com/insights/discover/blog/diving-deeper-pre-created-computer-accounts" }
+            @{ Title = "Pre-Windows 2000 computers - The Hacker Recipes"; Url = "https://www.thehacker.recipes/ad/movement/builtins/pre-windows-2000-computers" }
+        )
+        Tools = @("pre2k", "NetExec")
+        MITRE = "T1078.002"
+        Triggers = @(
+            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^NEVER LOGGED ON'; Severity = 'Finding' }
         )
     }
 

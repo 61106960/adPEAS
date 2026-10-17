@@ -7870,6 +7870,52 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
             @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^EMPTY'; Severity = 'Finding' }
             @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^PRIVILEGED'; Severity = 'Finding' }
             @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Exempt'; Severity = 'Hint' }
+            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Has logged on'; Severity = 'Hint' }
+        )
+    }
+    'PRECREATED_COMPUTER_ACCOUNT' = @{
+        Title = "Pre-Created Computer Account That Has Never Logged On"
+        Risk = "Finding"
+        BaseScore = 30
+        Description = "This enabled computer account carries PASSWD_NOTREQD and has never logged on - the signature of an account created ahead of its computer (userAccountControl 4128). Created with 'Assign this computer account as a pre-Windows 2000 computer', its password is the computer name in lowercase without the trailing dollar sign, and it stays that until a computer joins the domain with the account, which sets a random password and clears the flag. Without that option the password is random; the directory does not record which of the two was used."
+        Impact = @(
+            "Trying computer names as passwords yields a domain account without any credentials"
+            "A machine account under the attacker's control is what resource-based constrained delegation attacks need, even where the machine account quota is 0"
+            "Over NTLM the right password returns STATUS_NOLOGON_WORKSTATION_TRUST_ACCOUNT instead of a logon, which still confirms it; Kerberos accepts it outright"
+        )
+        Attack = @(
+            "1. Attacker collects computer names - from DNS, from NetBIOS, or from the directory"
+            "2. Requests a TGT for each account with its name in lowercase as password - tools cut the name to 14 characters"
+            "3. Uses the machine account to enumerate the domain, roast service accounts or stage a resource-based constrained delegation attack"
+        )
+        Remediation = @(
+            "Delete pre-created computer accounts that no computer is going to join with"
+            "Set a random password on the ones still needed, or join the computer, which also clears the flag"
+            "Remove the 'Password Not Required' flag"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the enabled computer accounts that carry the flag, with their last logon"
+                Command = "Get-ADComputer -LDAPFilter '(&(userAccountControl:1.2.840.113556.1.4.803:=32)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))' -Properties lastLogonTimestamp,pwdLastSet | Select-Object Name,lastLogonTimestamp,pwdLastSet"
+            }
+            @{
+                Description = "Delete a pre-created account that is no longer needed"
+                Command = "Remove-ADComputer -Identity 'COMPUTERNAME'"
+            }
+            @{
+                Description = "Set a random password on a pre-created account that has not been joined yet, and remove the flag"
+                Command = "Set-ADAccountPassword -Identity 'COMPUTERNAME$' -Reset -NewPassword (ConvertTo-SecureString -AsPlainText -Force ([guid]::NewGuid().ToString() + [guid]::NewGuid().ToString())); Set-ADAccountControl -Identity 'COMPUTERNAME$' -PasswordNotRequired `$false"
+            }
+        )
+        References = @(
+            @{ Title = "Diving into Pre-Created Computer Accounts - TrustedSec"; Url = "https://trustedsec.com/blog/diving-into-pre-created-computer-accounts" }
+            @{ Title = "Diving Deeper Into Pre-Created Computer Accounts - Optiv"; Url = "https://www.optiv.com/insights/discover/blog/diving-deeper-pre-created-computer-accounts" }
+            @{ Title = "Pre-Windows 2000 computers - The Hacker Recipes"; Url = "https://www.thehacker.recipes/ad/movement/builtins/pre-windows-2000-computers" }
+        )
+        Tools = @("pre2k", "NetExec")
+        MITRE = "T1078.002"
+        Triggers = @(
+            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^NEVER LOGGED ON'; Severity = 'Finding' }
         )
     }
     'INTERDOMAIN_TRUST_ACCOUNT' = @{
@@ -19283,14 +19329,16 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Module = "Accounts"
         Category = "Accounts"
         SectionTitle = "Password Not Required Accounts"
-        Summary = "Identifies enabled user accounts with the PASSWD_NOTREQD flag set."
-        WhyItMatters = "Accounts with the 'Password Not Required' flag can bypass the domain password policy and may have an empty password. While the flag alone does not guarantee an empty password, it indicates a hygiene issue and potential attack vector."
+        Summary = "Identifies enabled user and computer accounts with the PASSWD_NOTREQD flag set."
+        WhyItMatters = "Accounts with the 'Password Not Required' flag can bypass the domain password policy and may have an empty password. While the flag alone does not guarantee an empty password, it indicates a hygiene issue and potential attack vector. A computer account created ahead of its computer carries the flag until a computer joins with it, and created as a pre-Windows 2000 computer it has its name in lowercase as password."
         WhatWeCheck = @(
             "Enabled user accounts with PASSWD_NOTREQD flag (UAC bit 32)"
             "Whether affected accounts are privileged or service accounts"
             "Last password change date for risk assessment"
+            "Enabled computer accounts with the flag, and whether they have ever logged on"
+            "Not tested: whether a pre-created computer account's password is its name - that needs a logon attempt, not an LDAP query"
         )
-        SecureMessage = "No enabled user accounts have the 'Password Not Required' flag set. All accounts require passwords according to domain password policy."
+        SecureMessage = "No enabled user or computer account has the 'Password Not Required' flag set. All accounts require passwords according to domain password policy."
         PrimaryFindingId = 'PASSWORD_NOT_REQUIRED'
     }
     'InactiveAdmin' = @{
@@ -67391,6 +67439,7 @@ function Get-PasswordNotRequired {
             }
             Show-SubHeader "Searching for enabled accounts with 'Password Not Required' flag..." -ObjectType "PasswordNotRequired"
             $accounts = Get-DomainUser -Enabled -PasswordNotRequired -ShowOwner @PSBoundParameters
+            $computerAccounts = @(Get-DomainComputer -Enabled -LDAPFilter '(userAccountControl:1.2.840.113556.1.4.803:=32)' -ShowOwner @PSBoundParameters)
             if ($accounts -and @($accounts).Count -gt 0) {
                 $totalAccounts = @($accounts).Count
                 $annotated = @($accounts | Test-AccountActivity -IncludeDetails)
@@ -67441,8 +67490,33 @@ function Get-PasswordNotRequired {
                 if (@($trustAccounts).Count -gt 0) {
                     Show-Line "Trust account(s) carrying the flag by design, not assessed: $(($trustAccounts | ForEach-Object { $_.sAMAccountName }) -join ', ')" -Class Note
                 }
-            } else {
+            } elseif ($computerAccounts.Count -eq 0) {
                 Show-Line "No enabled accounts with 'Password Not Required' flag found" -Class Secure
+            }
+            if ($computerAccounts.Count -gt 0) {
+                $unusedComputers = @()
+                $usedComputers = @()
+                foreach ($computer in @($computerAccounts | Test-AccountActivity -IncludeDetails)) {
+                    $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNotRequired' -Force
+                    if ($computer.ActivityDetails.PasswordNeverSet) {
+                        $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'EMPTY - no password has ever been set' -Force
+                        $unusedComputers += $computer
+                    } elseif ($computer.ActivityDetails.NeverLoggedIn) {
+                        $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'NEVER LOGGED ON - a pre-created account; created as a pre-Windows 2000 computer, its password is its name in lowercase' -Force
+                        $unusedComputers += $computer
+                    } else {
+                        $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'Has logged on - the flag is a leftover a domain join normally clears' -Force
+                        $usedComputers += $computer
+                    }
+                }
+                if ($unusedComputers.Count -gt 0) {
+                    Show-Line "$($unusedComputers.Count) computer account(s) carry the flag and have never logged on - pre-created accounts, whose password is the lowercase computer name if they were created as pre-Windows 2000 computers" -Class Finding
+                    foreach ($computer in $unusedComputers) { Show-Object $computer -Class Finding }
+                }
+                if ($usedComputers.Count -gt 0) {
+                    Show-Line "$($usedComputers.Count) further enabled computer account(s) carry the 'Password Not Required' flag" -Class Hint
+                    foreach ($computer in $usedComputers) { Show-Object $computer -Class Hint }
+                }
             }
         } catch {
             Write-Log "[Get-PasswordNotRequired] Error: $_" -Level Error
@@ -89532,7 +89606,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1515"
+$Script:adPEASVersion = "2.7.0+20261017-1527"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
