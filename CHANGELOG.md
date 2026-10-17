@@ -285,6 +285,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   block and says how many in `affectedComputersNote`. When the domain controllers cannot be
   read, the contest goes by the names as before.
 
+- **`Get-LDAPConfiguration` reads three more characters of `dsHeuristics`.** Only
+  character 7, anonymous LDAP, was evaluated. Now also: character 8, anonymous calls to
+  the NSPI address book interface; character 16 (`dwAdminSDExMask`), which takes Account,
+  Server, Print or Backup Operators and their members out of AdminSDHolder protection in
+  every domain of the forest - the line names the groups; and character 21, which switches
+  off the UPN, SPN or SPN alias uniqueness checks of the domain controllers - with the
+  alias check off, a principal that may write SPNs can claim a server's service for an
+  account it controls (CVE-2021-42282). Each is a finding with a card of its own; a
+  character outside the values the specification defines is reported as unknown. The
+  section is now *Checking the directory service heuristics*, and its row, which carried
+  the GPO type with the card title "LDAP Configuration GPO:" and no name, has a type of its
+  own, *Directory Service Heuristics*, with one decoded value per heuristic.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

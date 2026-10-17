@@ -166,8 +166,15 @@ $Script:PrimaryAttributes = @{
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
-        'dSHeuristics', 'anonymousLDAPAccess',
         'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
+    )
+
+    # dsHeuristics on CN=Directory Service, decoded (Get-LDAPConfiguration). It was typed
+    # LDAPConfigGPO, whose card title is "LDAP Configuration GPO: {Name}" - and it is no
+    # GPO and has no name.
+    DSHeuristics = @(
+        'dSHeuristics', 'anonymousLDAPAccess', 'anonymousNSPIAccess', 'adminSDHolderExclusion',
+        'principalNameUniqueness'
     )
 
     # GPO-deployed dangerous registry settings (Get-GPORegistrySettings)

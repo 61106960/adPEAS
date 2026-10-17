@@ -189,9 +189,18 @@ Get-DomainTrusts
 **What it checks**:
 - LDAP signing requirement
 - LDAP channel binding enforcement
-- Anonymous LDAP access
+- `dsHeuristics` on `CN=Directory Service` - one string for the whole forest, which no GPO
+  governs. Four of its characters switch a protection off on every domain controller:
+  - character 7: anonymous LDAP operations beyond rootDSE
+  - character 8: anonymous calls to the NSPI address book interface
+  - character 16: Account, Server, Print or Backup Operators excluded from AdminSDHolder
+    protection, together with their members
+  - character 21: the UPN, SPN or SPN alias uniqueness checks switched off
 
-**Security Impact**: Without LDAP signing, attackers can perform man-in-the-middle attacks. Anonymous access enables reconnaissance without credentials.
+  A character outside the values the specification defines is reported as unknown, not
+  given a meaning.
+
+**Security Impact**: Without LDAP signing, attackers can perform man-in-the-middle attacks. Anonymous access enables reconnaissance without credentials. An operator group outside AdminSDHolder protection keeps whatever rights are granted on it and its members, and those groups lead to the domain controllers. With the SPN alias check off, a principal that may write SPNs can claim a server's service for an account it controls.
 
 **Usage**:
 ```powershell

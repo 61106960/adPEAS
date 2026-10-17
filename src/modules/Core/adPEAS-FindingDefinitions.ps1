@@ -4954,6 +4954,144 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
         )
     }
 
+    # The other characters of dsHeuristics that switch a protection off, read by
+    # Get-LDAPConfiguration through ConvertFrom-DSHeuristics (MS-ADTS 6.1.1.2.4.1.2).
+    'DSHEURISTICS_ANONYMOUS_NSPI' = @{
+        Title = "Anonymous NSPI Access Allowed"
+        Risk = "Finding"
+        BaseScore = 30
+        Description = "Character 8 of dsHeuristics (fAllowAnonNSPI) is not 0 on CN=Directory Service in the configuration partition, so every domain controller of the forest accepts anonymous calls to the bind method of NSPI, the Name Service Provider Interface - the address book protocol over RPC that Outlook and Exchange use to browse the directory. Otherwise only authenticated clients may bind. An unauthenticated client can then read the address book as far as the directory lets an anonymous caller; in an organization with Exchange that is the global address list. The heuristic is off by default."
+        Impact = @(
+            "Unauthenticated reading of the address book - with Exchange, the names and mail addresses of the organization"
+            "Account names for password spraying and phishing, without a domain account"
+            "The setting is forest-wide: it applies on every domain controller of every domain"
+        )
+        Attack = @(
+            "1. Attacker reaches the RPC endpoint of a domain controller without credentials"
+            "2. Binds to the NSPI interface anonymously"
+            "3. Reads the address book entries the directory shows an anonymous caller"
+            "4. Uses the names and addresses for password spraying or phishing"
+        )
+        Remediation = @(
+            "Set character 8 of dsHeuristics back to 0 and keep every other character as it is"
+            "Find the client that needed anonymous NSPI first - the setting is off by default, so somebody turned it on"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current dsHeuristics value (character 8 is fAllowAnonNSPI)"
+                Command = "Get-ADObject 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com' -Properties dsHeuristics | Select-Object dsHeuristics"
+            }
+            @{
+                Description = "Set character 8 back to 0, leaving every other character as it is"
+                Command = "`$dn = 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com'; `$current = (Get-ADObject `$dn -Properties dsHeuristics).dsHeuristics; if (`$current.Length -ge 8) { `$new = `$current.Substring(0,7) + '0' + `$current.Substring(8); Set-ADObject `$dn -Replace @{dsHeuristics=`$new} }"
+            }
+        )
+        References = @(
+            @{ Title = "dSHeuristics - MS-ADTS 6.1.1.2.4.1.2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e5899be4-862e-496f-9a38-33950617d2c5" }
+        )
+        Tools = @()
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'anonymousNSPIAccess'; Pattern = '^ENABLED'; Severity = 'Finding' }
+        )
+    }
+
+    'DSHEURISTICS_ADMINSDHOLDER_EXCLUSION' = @{
+        Title = "Operator Groups Excluded from AdminSDHolder Protection"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "Character 16 of dsHeuristics (dwAdminSDExMask) takes operator groups out of AdminSDHolder protection - bit 0x1 Account Operators, 0x2 Server Operators, 0x4 Print Operators, 0x8 Backup Operators. In every domain of the forest SDProp then no longer resets the security descriptor of these groups, nor of the accounts and groups that are their members directly or through nesting, unless another protected group covers them as well: a right somebody grants on them stays, and so does one they inherit once inheritance is switched back on. The exclusion exists so that such members can be managed by delegation, and that is the risk - the groups are privileged in all but name. Backup Operators back up and restore files on the domain controllers, the directory database included; Print Operators load drivers on them; Server Operators log on to them and manage their services; Account Operators manage most accounts and groups of the domain. Whoever may change such a group or take over one of its members gets what the group can do."
+        Impact = @(
+            "A right granted on an excluded group or on one of its members is no longer removed within the hour"
+            "Delegated permissions on an OU reach the members once their inheritance is switched back on"
+            "The operator groups lead to the domain controllers: the directory database, drivers, services"
+        )
+        Attack = @(
+            "1. Attacker controls an account with a delegated right over a member of an excluded group - the helpdesk delegation the exclusion is usually set for"
+            "2. Resets the member's password or adds an account to the group; SDProp no longer removes the right that allowed it"
+            "3. Uses the group's rights on a domain controller, e.g. backs up the directory database as a member of Backup Operators"
+        )
+        Remediation = @(
+            "Set character 16 of dsHeuristics back to 0 and keep every other character as it is; SDProp protects the groups and their members again at its next run"
+            "Better still, empty the operator groups and delegate through dedicated groups that hold only the rights the task needs"
+            "Review the rights already granted on the groups and their members while they were excluded - SDProp overwrites the DACL of a protected object, but the rights may already have been used"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current dsHeuristics value (character 16 is dwAdminSDExMask)"
+                Command = "Get-ADObject 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com' -Properties dsHeuristics | Select-Object dsHeuristics"
+            }
+            @{
+                Description = "Set character 16 back to 0, leaving every other character as it is"
+                Command = "`$dn = 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com'; `$current = (Get-ADObject `$dn -Properties dsHeuristics).dsHeuristics; if (`$current.Length -ge 16) { `$new = `$current.Substring(0,15) + '0' + `$current.Substring(16); Set-ADObject `$dn -Replace @{dsHeuristics=`$new} }"
+            }
+            @{
+                Description = "List the members of the four operator groups, by SID so a localized domain works too"
+                Command = "foreach (`$sid in 'S-1-5-32-548','S-1-5-32-549','S-1-5-32-550','S-1-5-32-551') { Get-ADGroupMember -Identity `$sid -Recursive | Select-Object @{n='Group';e={`$sid}}, SamAccountName, objectClass }"
+            }
+        )
+        References = @(
+            @{ Title = "AdminSDHolder configurable state (dwAdminSDExMask) - MS-ADTS 3.1.1.6.1.4"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/50097362-ede5-40fa-973e-8d65e782e384" }
+            @{ Title = "Appendix C: Protected Accounts and Groups in Active Directory"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory" }
+        )
+        Tools = @()
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'adminSDHolderExclusion'; Pattern = ' - not protected by AdminSDHolder$'; Severity = 'Finding' }
+        )
+    }
+
+    'DSHEURISTICS_UNIQUENESS_DISABLED' = @{
+        Title = "UPN or SPN Uniqueness Checks Switched Off"
+        Risk = "Finding"
+        BaseScore = 35
+        Description = "Character 21 of dsHeuristics (DoNotVerifyUPNAndOrSPNUniqueness) switches off checks the domain controllers make on every write since Windows Server 2012 R2: bit 0 the uniqueness of userPrincipalName, bit 1 of servicePrincipalName, bit 2 of SPN aliases - an SPN such as cifs/server that the HOST/server of another account already stands for. Two accounts can then hold the same name. With the alias check off, a principal that may write the SPNs of an account can claim cifs/, http/ or another service of a server for it, and Kerberos then issues the tickets for that service to the account the attacker controls, which can pose as the server (KB5008382, CVE-2021-42282). A duplicate UPN or SPN makes logons and service tickets for the name fail or depend on which account a lookup finds. Microsoft added the switch for migration tools and recommends setting it back once the migration is done."
+        Impact = @(
+            "Two accounts can hold the same UPN or SPN, so the name no longer identifies one account"
+            "With the SPN alias check off, a service of a server can be claimed for another account, which then poses as that server to Kerberos clients"
+            "Logons and service tickets for a duplicated name fail or reach the wrong account"
+            "The setting is forest-wide: it applies on every domain controller of every domain"
+        )
+        Attack = @(
+            "1. Attacker controls an account that may write the UPN or the SPNs of some account - through a delegation, or GenericWrite on a computer"
+            "2. Writes a name another account already holds, or an alias such as cifs/server beside that server's HOST/server; the domain controller accepts it"
+            "3. With an alias, clients of the service get tickets for the attacker's account, whose machine then poses as the server; with a duplicate, logons and tickets for the name fail"
+        )
+        Remediation = @(
+            "Set character 21 of dsHeuristics back to 0 and keep every other character as it is"
+            "The switch exists for migration tools - set it back once the migration is done"
+            "The checks apply to new writes only: find the duplicates created while they were off and remove them"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current dsHeuristics value (character 21 is DoNotVerifyUPNAndOrSPNUniqueness)"
+                Command = "Get-ADObject 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com' -Properties dsHeuristics | Select-Object dsHeuristics"
+            }
+            @{
+                Description = "Set character 21 back to 0, leaving every other character as it is"
+                Command = "`$dn = 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com'; `$current = (Get-ADObject `$dn -Properties dsHeuristics).dsHeuristics; if (`$current.Length -ge 21) { `$new = `$current.Substring(0,20) + '0' + `$current.Substring(21); Set-ADObject `$dn -Replace @{dsHeuristics=`$new} }"
+            }
+            @{
+                Description = "List duplicate SPNs in the forest"
+                Command = "setspn -X -F"
+            }
+            @{
+                Description = "List UPNs that more than one account holds"
+                Command = "Get-ADObject -LDAPFilter '(userPrincipalName=*)' -Properties userPrincipalName | Group-Object userPrincipalName | Where-Object { `$_.Count -gt 1 } | Select-Object Name, Count"
+            }
+        )
+        References = @(
+            @{ Title = "dSHeuristics - MS-ADTS 6.1.1.2.4.1.2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e5899be4-862e-496f-9a38-33950617d2c5" }
+            @{ Title = "SPN and UPN uniqueness - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/dn535779(v=ws.11)" }
+            @{ Title = "KB5008382 - Verification of uniqueness for UPN, SPN and the SPN alias (CVE-2021-42282)"; Url = "https://support.microsoft.com/topic/4651b175-290c-4e59-8fcb-e4e5cd0cdb29" }
+        )
+        Tools = @("setspn")
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'principalNameUniqueness'; Pattern = '^Not checked: '; Severity = 'Finding' }
+        )
+    }
+
     # ============================================================================
     # SID HISTORY FINDINGS
     # ============================================================================

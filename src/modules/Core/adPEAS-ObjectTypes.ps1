@@ -180,6 +180,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "LDAP signing and channel binding are properly configured via GPO. All Domain Controllers require LDAP signing and enforce channel binding, blocking NTLM relay attacks against LDAP services."
     }
 
+    # dsHeuristics, read by Get-LDAPConfiguration in a section of its own ahead of the GPO
+    # rows: one forest-wide string, and no GPO governs any of its characters.
+    'DSHeuristics' = @{
+        TitleFormat = "Directory Service Heuristics"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "Directory Service Heuristics"
+        Summary = "Reads the characters of dsHeuristics that switch a protection off for the whole forest."
+        WhyItMatters = "dsHeuristics is one string on CN=Directory Service in the configuration partition, and each of its characters changes how every domain controller of the forest behaves. Four of them switch a protection off: anonymous LDAP operations, anonymous calls to the NSPI address book, AdminSDHolder protection of the operator groups, and the uniqueness checks on UPN and SPN values. None of them is on by default, and no GPO governs them."
+        WhatWeCheck = @(
+            "Character 7 (fLDAPBlockAnonOps): anonymous LDAP operations beyond rootDSE"
+            "Character 8 (fAllowAnonNSPI): anonymous calls to the NSPI address book interface"
+            "Character 16 (dwAdminSDExMask): operator groups excluded from AdminSDHolder protection"
+            "Character 21 (DoNotVerifyUPNAndOrSPNUniqueness): UPN and SPN uniqueness checks switched off"
+        )
+        SecureMessage = "dsHeuristics leaves every protection it governs in place: anonymous LDAP and NSPI access are blocked, AdminSDHolder protects every operator group, and the domain controllers check UPN and SPN values for uniqueness."
+    }
+
     'SMBSigning' = @{
         TitleFormat = "SMB Signing GPO: {Name}"
         Module = "Domain"

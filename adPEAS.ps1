@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 19:08:35
-    Version: 2.7.0+20261017-1908
+    Build: 2026-10-17 19:24:19
+    Version: 2.7.0+20261017-1924
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6453,8 +6453,15 @@ $Script:PrimaryAttributes = @{
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
         'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
-        'dSHeuristics', 'anonymousLDAPAccess',
         'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
+    )
+
+    # dsHeuristics on CN=Directory Service, decoded (Get-LDAPConfiguration). It was typed
+    # LDAPConfigGPO, whose card title is "LDAP Configuration GPO: {Name}" - and it is no
+    # GPO and has no name.
+    DSHeuristics = @(
+        'dSHeuristics', 'anonymousLDAPAccess', 'anonymousNSPIAccess', 'adminSDHolderExclusion',
+        'principalNameUniqueness'
     )
 
     # GPO-deployed dangerous registry settings (Get-GPORegistrySettings)
@@ -12915,6 +12922,144 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
             # controls, not LDAP, and this definition's own remediation always said the
             # LDAP answer lives in dsHeuristics. Get-LDAPConfiguration reads it now.
             @{ Attribute = 'anonymousLDAPAccess'; Pattern = 'ENABLED'; Severity = 'Finding' }
+        )
+    }
+
+    # The other characters of dsHeuristics that switch a protection off, read by
+    # Get-LDAPConfiguration through ConvertFrom-DSHeuristics (MS-ADTS 6.1.1.2.4.1.2).
+    'DSHEURISTICS_ANONYMOUS_NSPI' = @{
+        Title = "Anonymous NSPI Access Allowed"
+        Risk = "Finding"
+        BaseScore = 30
+        Description = "Character 8 of dsHeuristics (fAllowAnonNSPI) is not 0 on CN=Directory Service in the configuration partition, so every domain controller of the forest accepts anonymous calls to the bind method of NSPI, the Name Service Provider Interface - the address book protocol over RPC that Outlook and Exchange use to browse the directory. Otherwise only authenticated clients may bind. An unauthenticated client can then read the address book as far as the directory lets an anonymous caller; in an organization with Exchange that is the global address list. The heuristic is off by default."
+        Impact = @(
+            "Unauthenticated reading of the address book - with Exchange, the names and mail addresses of the organization"
+            "Account names for password spraying and phishing, without a domain account"
+            "The setting is forest-wide: it applies on every domain controller of every domain"
+        )
+        Attack = @(
+            "1. Attacker reaches the RPC endpoint of a domain controller without credentials"
+            "2. Binds to the NSPI interface anonymously"
+            "3. Reads the address book entries the directory shows an anonymous caller"
+            "4. Uses the names and addresses for password spraying or phishing"
+        )
+        Remediation = @(
+            "Set character 8 of dsHeuristics back to 0 and keep every other character as it is"
+            "Find the client that needed anonymous NSPI first - the setting is off by default, so somebody turned it on"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current dsHeuristics value (character 8 is fAllowAnonNSPI)"
+                Command = "Get-ADObject 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com' -Properties dsHeuristics | Select-Object dsHeuristics"
+            }
+            @{
+                Description = "Set character 8 back to 0, leaving every other character as it is"
+                Command = "`$dn = 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com'; `$current = (Get-ADObject `$dn -Properties dsHeuristics).dsHeuristics; if (`$current.Length -ge 8) { `$new = `$current.Substring(0,7) + '0' + `$current.Substring(8); Set-ADObject `$dn -Replace @{dsHeuristics=`$new} }"
+            }
+        )
+        References = @(
+            @{ Title = "dSHeuristics - MS-ADTS 6.1.1.2.4.1.2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e5899be4-862e-496f-9a38-33950617d2c5" }
+        )
+        Tools = @()
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'anonymousNSPIAccess'; Pattern = '^ENABLED'; Severity = 'Finding' }
+        )
+    }
+
+    'DSHEURISTICS_ADMINSDHOLDER_EXCLUSION' = @{
+        Title = "Operator Groups Excluded from AdminSDHolder Protection"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "Character 16 of dsHeuristics (dwAdminSDExMask) takes operator groups out of AdminSDHolder protection - bit 0x1 Account Operators, 0x2 Server Operators, 0x4 Print Operators, 0x8 Backup Operators. In every domain of the forest SDProp then no longer resets the security descriptor of these groups, nor of the accounts and groups that are their members directly or through nesting, unless another protected group covers them as well: a right somebody grants on them stays, and so does one they inherit once inheritance is switched back on. The exclusion exists so that such members can be managed by delegation, and that is the risk - the groups are privileged in all but name. Backup Operators back up and restore files on the domain controllers, the directory database included; Print Operators load drivers on them; Server Operators log on to them and manage their services; Account Operators manage most accounts and groups of the domain. Whoever may change such a group or take over one of its members gets what the group can do."
+        Impact = @(
+            "A right granted on an excluded group or on one of its members is no longer removed within the hour"
+            "Delegated permissions on an OU reach the members once their inheritance is switched back on"
+            "The operator groups lead to the domain controllers: the directory database, drivers, services"
+        )
+        Attack = @(
+            "1. Attacker controls an account with a delegated right over a member of an excluded group - the helpdesk delegation the exclusion is usually set for"
+            "2. Resets the member's password or adds an account to the group; SDProp no longer removes the right that allowed it"
+            "3. Uses the group's rights on a domain controller, e.g. backs up the directory database as a member of Backup Operators"
+        )
+        Remediation = @(
+            "Set character 16 of dsHeuristics back to 0 and keep every other character as it is; SDProp protects the groups and their members again at its next run"
+            "Better still, empty the operator groups and delegate through dedicated groups that hold only the rights the task needs"
+            "Review the rights already granted on the groups and their members while they were excluded - SDProp overwrites the DACL of a protected object, but the rights may already have been used"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current dsHeuristics value (character 16 is dwAdminSDExMask)"
+                Command = "Get-ADObject 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com' -Properties dsHeuristics | Select-Object dsHeuristics"
+            }
+            @{
+                Description = "Set character 16 back to 0, leaving every other character as it is"
+                Command = "`$dn = 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com'; `$current = (Get-ADObject `$dn -Properties dsHeuristics).dsHeuristics; if (`$current.Length -ge 16) { `$new = `$current.Substring(0,15) + '0' + `$current.Substring(16); Set-ADObject `$dn -Replace @{dsHeuristics=`$new} }"
+            }
+            @{
+                Description = "List the members of the four operator groups, by SID so a localized domain works too"
+                Command = "foreach (`$sid in 'S-1-5-32-548','S-1-5-32-549','S-1-5-32-550','S-1-5-32-551') { Get-ADGroupMember -Identity `$sid -Recursive | Select-Object @{n='Group';e={`$sid}}, SamAccountName, objectClass }"
+            }
+        )
+        References = @(
+            @{ Title = "AdminSDHolder configurable state (dwAdminSDExMask) - MS-ADTS 3.1.1.6.1.4"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/50097362-ede5-40fa-973e-8d65e782e384" }
+            @{ Title = "Appendix C: Protected Accounts and Groups in Active Directory"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory" }
+        )
+        Tools = @()
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'adminSDHolderExclusion'; Pattern = ' - not protected by AdminSDHolder$'; Severity = 'Finding' }
+        )
+    }
+
+    'DSHEURISTICS_UNIQUENESS_DISABLED' = @{
+        Title = "UPN or SPN Uniqueness Checks Switched Off"
+        Risk = "Finding"
+        BaseScore = 35
+        Description = "Character 21 of dsHeuristics (DoNotVerifyUPNAndOrSPNUniqueness) switches off checks the domain controllers make on every write since Windows Server 2012 R2: bit 0 the uniqueness of userPrincipalName, bit 1 of servicePrincipalName, bit 2 of SPN aliases - an SPN such as cifs/server that the HOST/server of another account already stands for. Two accounts can then hold the same name. With the alias check off, a principal that may write the SPNs of an account can claim cifs/, http/ or another service of a server for it, and Kerberos then issues the tickets for that service to the account the attacker controls, which can pose as the server (KB5008382, CVE-2021-42282). A duplicate UPN or SPN makes logons and service tickets for the name fail or depend on which account a lookup finds. Microsoft added the switch for migration tools and recommends setting it back once the migration is done."
+        Impact = @(
+            "Two accounts can hold the same UPN or SPN, so the name no longer identifies one account"
+            "With the SPN alias check off, a service of a server can be claimed for another account, which then poses as that server to Kerberos clients"
+            "Logons and service tickets for a duplicated name fail or reach the wrong account"
+            "The setting is forest-wide: it applies on every domain controller of every domain"
+        )
+        Attack = @(
+            "1. Attacker controls an account that may write the UPN or the SPNs of some account - through a delegation, or GenericWrite on a computer"
+            "2. Writes a name another account already holds, or an alias such as cifs/server beside that server's HOST/server; the domain controller accepts it"
+            "3. With an alias, clients of the service get tickets for the attacker's account, whose machine then poses as the server; with a duplicate, logons and tickets for the name fail"
+        )
+        Remediation = @(
+            "Set character 21 of dsHeuristics back to 0 and keep every other character as it is"
+            "The switch exists for migration tools - set it back once the migration is done"
+            "The checks apply to new writes only: find the duplicates created while they were off and remove them"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the current dsHeuristics value (character 21 is DoNotVerifyUPNAndOrSPNUniqueness)"
+                Command = "Get-ADObject 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com' -Properties dsHeuristics | Select-Object dsHeuristics"
+            }
+            @{
+                Description = "Set character 21 back to 0, leaving every other character as it is"
+                Command = "`$dn = 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com'; `$current = (Get-ADObject `$dn -Properties dsHeuristics).dsHeuristics; if (`$current.Length -ge 21) { `$new = `$current.Substring(0,20) + '0' + `$current.Substring(21); Set-ADObject `$dn -Replace @{dsHeuristics=`$new} }"
+            }
+            @{
+                Description = "List duplicate SPNs in the forest"
+                Command = "setspn -X -F"
+            }
+            @{
+                Description = "List UPNs that more than one account holds"
+                Command = "Get-ADObject -LDAPFilter '(userPrincipalName=*)' -Properties userPrincipalName | Group-Object userPrincipalName | Where-Object { `$_.Count -gt 1 } | Select-Object Name, Count"
+            }
+        )
+        References = @(
+            @{ Title = "dSHeuristics - MS-ADTS 6.1.1.2.4.1.2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e5899be4-862e-496f-9a38-33950617d2c5" }
+            @{ Title = "SPN and UPN uniqueness - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/dn535779(v=ws.11)" }
+            @{ Title = "KB5008382 - Verification of uniqueness for UPN, SPN and the SPN alias (CVE-2021-42282)"; Url = "https://support.microsoft.com/topic/4651b175-290c-4e59-8fcb-e4e5cd0cdb29" }
+        )
+        Tools = @("setspn")
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'principalNameUniqueness'; Pattern = '^Not checked: '; Severity = 'Finding' }
         )
     }
 
@@ -25990,6 +26135,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "GPO configurations enforcing these settings"
         )
         SecureMessage = "LDAP signing and channel binding are properly configured via GPO. All Domain Controllers require LDAP signing and enforce channel binding, blocking NTLM relay attacks against LDAP services."
+    }
+
+    # dsHeuristics, read by Get-LDAPConfiguration in a section of its own ahead of the GPO
+    # rows: one forest-wide string, and no GPO governs any of its characters.
+    'DSHeuristics' = @{
+        TitleFormat = "Directory Service Heuristics"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "Directory Service Heuristics"
+        Summary = "Reads the characters of dsHeuristics that switch a protection off for the whole forest."
+        WhyItMatters = "dsHeuristics is one string on CN=Directory Service in the configuration partition, and each of its characters changes how every domain controller of the forest behaves. Four of them switch a protection off: anonymous LDAP operations, anonymous calls to the NSPI address book, AdminSDHolder protection of the operator groups, and the uniqueness checks on UPN and SPN values. None of them is on by default, and no GPO governs them."
+        WhatWeCheck = @(
+            "Character 7 (fLDAPBlockAnonOps): anonymous LDAP operations beyond rootDSE"
+            "Character 8 (fAllowAnonNSPI): anonymous calls to the NSPI address book interface"
+            "Character 16 (dwAdminSDExMask): operator groups excluded from AdminSDHolder protection"
+            "Character 21 (DoNotVerifyUPNAndOrSPNUniqueness): UPN and SPN uniqueness checks switched off"
+        )
+        SecureMessage = "dsHeuristics leaves every protection it governs in place: anonymous LDAP and NSPI access are blocked, AdminSDHolder protects every operator group, and the domain controllers check UPN and SPN values for uniqueness."
     }
 
     'SMBSigning' = @{
@@ -59994,6 +60157,110 @@ function ConvertFrom-TSClientLicense {
     # emits at least Version and Issued, so it never actually hit the one-element case,
     # but the caller treats both return values the same way.
     return ,$lines
+}
+
+
+
+# ----- ConvertFrom-DSHeuristics.ps1 -----
+
+<#
+.SYNOPSIS
+    Reads the characters of dsHeuristics that switch a protection off.
+
+.DESCRIPTION
+    dsHeuristics on CN=Directory Service,CN=Windows NT,CN=Services in the configuration
+    partition is one string for the whole forest, with one heuristic per character
+    (MS-ADTS 6.1.1.2.4.1.2). The order of the characters is fixed and a character can only
+    be left out by truncating the string, so a character beyond the end has its default,
+    "0" - the secure value of each heuristic read here.
+
+    Character 7, fLDAPBlockAnonOps: "2" lets an anonymous client do more than bind and read
+    rootDSE. Anything else blocks it.
+
+    Character 8, fAllowAnonNSPI: anything but "0" allows anonymous calls to the bind method
+    of NSPI, the address book interface over RPC.
+
+    Character 16, dwAdminSDExMask: a hex digit, each bit of which takes a group and its
+    direct and transitive members out of AdminSDHolder protection - 0x1 Account Operators,
+    0x2 Server Operators, 0x4 Print Operators, 0x8 Backup Operators (3.1.1.6.1.4). The
+    specification lists "0"-"9" and "a"-"f"; an upper-case letter is read as the same
+    digit, since whoever wrote it meant those bits.
+
+    Character 21, DoNotVerifyUPNAndOrSPNUniqueness: in AD DS a number whose bits switch off
+    a uniqueness check on write - bit 0 userPrincipalName, bit 1 servicePrincipalName,
+    bit 2 SPN alias uniqueness. "0" to "7" are the values the specification defines.
+
+    A character outside the values its heuristic defines gets no meaning here: the
+    Mask/Disabled fields stay $null and the caller says the heuristic is unknown.
+
+.PARAMETER Value
+    The attribute value. Empty or $null when the attribute is not set.
+
+.OUTPUTS
+    PSCustomObject with the character and the reading of each heuristic.
+#>
+function ConvertFrom-DSHeuristics {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    $text = [string]$Value
+
+    # The effective character at each position read below: what the string holds, or the
+    # default "0" beyond its end.
+    $character = @{}
+    foreach ($position in @(7, 8, 16, 21)) {
+        $character[$position] = if ($text.Length -ge $position) { [string]$text[$position - 1] } else { '0' }
+    }
+
+    # Character 16 - the operator groups AdminSDHolder no longer protects.
+    $adminSDExMask = $null
+    if ($character[16] -match '^[0-9a-fA-F]$') {
+        $adminSDExMask = [Convert]::ToInt32($character[16], 16)
+    }
+    $excludedGroups = @()
+    if ($null -ne $adminSDExMask) {
+        foreach ($operatorGroup in @(
+            @{ Bit = 0x1; SID = 'S-1-5-32-548'; Name = 'Account Operators' }
+            @{ Bit = 0x2; SID = 'S-1-5-32-549'; Name = 'Server Operators' }
+            @{ Bit = 0x4; SID = 'S-1-5-32-550'; Name = 'Print Operators' }
+            @{ Bit = 0x8; SID = 'S-1-5-32-551'; Name = 'Backup Operators' }
+        )) {
+            if ($adminSDExMask -band $operatorGroup.Bit) {
+                $excludedGroups += [PSCustomObject]@{ SID = $operatorGroup.SID; Name = $operatorGroup.Name }
+            }
+        }
+    }
+
+    # Character 21 - the uniqueness checks the domain controllers skip.
+    $uniquenessMask = $null
+    if ($character[21] -match '^[0-7]$') {
+        $uniquenessMask = [int]$character[21]
+    }
+    $uncheckedNames = @()
+    if ($null -ne $uniquenessMask) {
+        if ($uniquenessMask -band 0x1) { $uncheckedNames += 'UPN' }
+        if ($uniquenessMask -band 0x2) { $uncheckedNames += 'SPN' }
+        if ($uniquenessMask -band 0x4) { $uncheckedNames += 'SPN alias' }
+    }
+
+    [PSCustomObject]@{
+        Value                  = $text
+        AnonymousLDAPCharacter = $character[7]
+        AnonymousLDAP          = ($character[7] -eq '2')
+        AnonymousNSPICharacter = $character[8]
+        AnonymousNSPI          = ($character[8] -ne '0')
+        AdminSDExMaskCharacter = $character[16]
+        AdminSDExMask          = $adminSDExMask
+        AdminSDExcludedGroups  = $excludedGroups
+        UniquenessCharacter    = $character[21]
+        UniquenessMask         = $uniquenessMask
+        UncheckedUniqueness    = $uncheckedNames
+    }
 }
 
 
@@ -102538,7 +102805,8 @@ function Test-GPOCoversDomainControllers {
 function Get-LDAPConfiguration {
     <#
     .SYNOPSIS
-    Checks LDAP Security Configuration (Signing + Channel Binding + Anonymous Binding).
+    Checks LDAP Security Configuration (Signing + Channel Binding) and the forest-wide
+    switches in dsHeuristics.
 
     .DESCRIPTION
     Analyzes LDAP security configuration on Domain Controllers:
@@ -102553,9 +102821,12 @@ function Get-LDAPConfiguration {
        - When Supported (1): Partially Secure
        - Always (2): Secure
 
-    3. Anonymous LDAP Binding: Prevents unauthenticated AD enumeration
-       - Allowed: Insecure
-       - Restricted: Secure
+    3. dsHeuristics on CN=Directory Service, which no GPO governs - the characters that
+       switch a protection off for every domain controller of the forest:
+       - 7: anonymous LDAP operations beyond rootDSE
+       - 8: anonymous calls to the NSPI address book interface
+       - 16: operator groups excluded from AdminSDHolder protection
+       - 21: UPN and SPN uniqueness checks
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -102611,17 +102882,22 @@ function Get-LDAPConfiguration {
                 return
             }
 
-            # ===== Anonymous LDAP operations, read where they are actually configured =====
+            # ===== The switches in dsHeuristics, read where they are actually configured =====
             #
-            # dsHeuristics on CN=Directory Service, character 7 of the first group, is
-            # fLDAPBlockAnonOps: the value 2 lets an anonymous client do more than read
-            # rootDSE, anything else leaves it blocked. This question used to be answered
-            # from two GPO settings that govern SMB null sessions instead - see the note at
-            # the GPO loop below - so the report could carry a red "Anonymous LDAP Binding
-            # Allowed" for a domain where it was blocked, and a green one for a domain
-            # where it was open.
-            Show-SubHeader "Checking anonymous LDAP operations (dsHeuristics)..." -ObjectType "LDAPConfigGPO"
+            # dsHeuristics on CN=Directory Service is one string for the whole forest, one
+            # heuristic per character, and no GPO governs any of them. ConvertFrom-DSHeuristics
+            # reads the four that switch a protection off: character 7 lets an anonymous
+            # client do more than read rootDSE, 8 lets it call the NSPI address book, 16 takes
+            # operator groups out of AdminSDHolder protection, and 21 stops the domain
+            # controllers checking UPN and SPN values for uniqueness.
+            #
+            # Anonymous LDAP used to be answered from two GPO settings that govern SMB null
+            # sessions instead - see the note at the GPO loop below - so the report could
+            # carry a red "Anonymous LDAP Binding Allowed" for a domain where it was blocked,
+            # and a green one for a domain where it was open.
+            Show-SubHeader "Checking the directory service heuristics (dsHeuristics)..." -ObjectType "DSHeuristics"
 
+            $unreadHeuristics = "anonymous LDAP and NSPI access, the AdminSDHolder protection of the operator groups and the UPN and SPN uniqueness checks"
             $configDN = $Script:LDAPContext.ConfigurationNamingContext
             if ($configDN) {
                 $dirServiceDN = "CN=Directory Service,CN=Windows NT,CN=Services,$configDN"
@@ -102630,33 +102906,91 @@ function Get-LDAPConfiguration {
                     $dsHeuristics = if ($dirService) { [string]$dirService.dSHeuristics } else { '' }
 
                     if (-not $dirService) {
-                        Show-Line "The Directory Service object could not be read - whether anonymous LDAP operations are allowed is unknown" -Class Note
+                        Show-Line "The Directory Service object could not be read - dsHeuristics, which decides $unreadHeuristics, is unknown" -Class Note
                     } elseif ([string]::IsNullOrWhiteSpace($dsHeuristics)) {
-                        # An unset attribute is the default, and the default blocks
-                        # anonymous operations beyond rootDSE.
-                        Show-Line "Anonymous LDAP operations are blocked - dsHeuristics is not set, which is the secure default" -Class Secure
+                        # An unset attribute is the default, and the default of every
+                        # heuristic read here is its secure value.
+                        Show-Line "dsHeuristics is not set, which is the secure default - anonymous LDAP and NSPI access are blocked, AdminSDHolder protects every operator group, and UPN and SPN values are checked for uniqueness" -Class Secure
                     } else {
-                        $anonChar = if ($dsHeuristics.Length -ge 7) { $dsHeuristics.Substring(6, 1) } else { '0' }
-                        if ($anonChar -eq '2') {
-                            # What an unauthenticated client can then do is the card's job.
+                        $heuristics = ConvertFrom-DSHeuristics -Value $dsHeuristics
+                        $hasFinding = $false
+                        $hasUnknown = $false
+
+                        # Character 7. What an unauthenticated client can then read is the
+                        # card's job.
+                        if ($heuristics.AnonymousLDAP) {
+                            $hasFinding = $true
                             Show-Line "Anonymous LDAP operations are ENABLED - dsHeuristics character 7 is 2" -Class Finding -FindingId 'LDAP_ANONYMOUS_BINDING_ALLOWED'
                         } else {
-                            Show-Line "Anonymous LDAP operations are blocked - dsHeuristics character 7 is '$anonChar', not 2" -Class Secure
+                            Show-Line "Anonymous LDAP operations are blocked - dsHeuristics character 7 is '$($heuristics.AnonymousLDAPCharacter)', not 2" -Class Secure
+                        }
+
+                        # Character 8.
+                        if ($heuristics.AnonymousNSPI) {
+                            $hasFinding = $true
+                            Show-Line "Anonymous NSPI access is ENABLED - dsHeuristics character 8 is '$($heuristics.AnonymousNSPICharacter)', not 0" -Class Finding -FindingId 'DSHEURISTICS_ANONYMOUS_NSPI'
+                        } else {
+                            Show-Line "Anonymous NSPI access is blocked - dsHeuristics character 8 is 0" -Class Secure
+                        }
+
+                        # Character 16.
+                        $excludedNames = @($heuristics.AdminSDExcludedGroups | ForEach-Object { $_.Name })
+                        if ($null -eq $heuristics.AdminSDExMask) {
+                            $hasUnknown = $true
+                            Show-Line "dsHeuristics character 16 is '$($heuristics.AdminSDExMaskCharacter)', which is not a hex digit - whether AdminSDHolder excludes an operator group is unknown" -Class Note
+                        } elseif ($excludedNames.Count -gt 0) {
+                            $hasFinding = $true
+                            Show-Line "AdminSDHolder does not protect $($excludedNames -join ', ') or their members - dsHeuristics character 16 is '$($heuristics.AdminSDExMaskCharacter)'" -Class Finding -FindingId 'DSHEURISTICS_ADMINSDHOLDER_EXCLUSION'
+                        } else {
+                            Show-Line "AdminSDHolder protects every operator group - dsHeuristics character 16 is 0" -Class Secure
+                        }
+
+                        # Character 21.
+                        $unchecked = @($heuristics.UncheckedUniqueness)
+                        if ($null -eq $heuristics.UniquenessMask) {
+                            $hasUnknown = $true
+                            Show-Line "dsHeuristics character 21 is '$($heuristics.UniquenessCharacter)', outside the values 0 to 7 it defines - whether UPN and SPN values are checked for uniqueness is unknown" -Class Note
+                        } elseif ($unchecked.Count -gt 0) {
+                            $hasFinding = $true
+                            $checkText = if ($unchecked.Count -eq 1) {
+                                "The $($unchecked[0]) uniqueness check is"
+                            } else {
+                                "The $(($unchecked[0..($unchecked.Count - 2)]) -join ', ') and $($unchecked[-1]) uniqueness checks are"
+                            }
+                            Show-Line "$checkText switched off - dsHeuristics character 21 is '$($heuristics.UniquenessCharacter)'" -Class Finding -FindingId 'DSHEURISTICS_UNIQUENESS_DISABLED'
+                        } else {
+                            Show-Line "UPN and SPN values are checked for uniqueness - dsHeuristics character 21 is 0" -Class Secure
                         }
 
                         $heuristicsObj = [PSCustomObject]@{
-                            dSHeuristics        = $dsHeuristics
-                            anonymousLDAPAccess = if ($anonChar -eq '2') { 'ENABLED - Security Risk!' } else { 'Restricted' }
+                            dSHeuristics            = $dsHeuristics
+                            anonymousLDAPAccess     = if ($heuristics.AnonymousLDAP) { 'ENABLED - Security Risk!' } else { 'Restricted' }
+                            anonymousNSPIAccess     = if ($heuristics.AnonymousNSPI) { 'ENABLED' } else { 'Restricted' }
+                            adminSDHolderExclusion  = if ($null -eq $heuristics.AdminSDExMask) {
+                                "Unknown - character 16 is '$($heuristics.AdminSDExMaskCharacter)', not a hex digit"
+                            } elseif ($excludedNames.Count -gt 0) {
+                                "$($excludedNames -join ', ') - not protected by AdminSDHolder"
+                            } else {
+                                'None'
+                            }
+                            principalNameUniqueness = if ($null -eq $heuristics.UniquenessMask) {
+                                "Unknown - character 21 is '$($heuristics.UniquenessCharacter)', outside 0 to 7"
+                            } elseif ($unchecked.Count -gt 0) {
+                                "Not checked: $($unchecked -join ', ')"
+                            } else {
+                                'Checked'
+                            }
                         }
-                        $heuristicsObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
-                        Show-Object $heuristicsObj -Class $(if ($anonChar -eq '2') { 'Finding' } else { 'Secure' })
+                        $heuristicsObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DSHeuristics' -Force
+                        $objectClass = if ($hasFinding) { 'Finding' } elseif ($hasUnknown) { 'Note' } else { 'Secure' }
+                        Show-Object $heuristicsObj -Class $objectClass
                     }
                 } catch {
                     Write-Log "[Get-LDAPConfiguration] Could not read dsHeuristics: $_" -Level Warning
-                    Show-Line "The Directory Service object could not be read - whether anonymous LDAP operations are allowed is unknown" -Class Note
+                    Show-Line "The Directory Service object could not be read - dsHeuristics, which decides $unreadHeuristics, is unknown" -Class Note
                 }
             } else {
-                Show-Line "The configuration partition is unknown - whether anonymous LDAP operations are allowed could not be checked" -Class Note
+                Show-Line "The configuration partition is unknown - dsHeuristics, which decides $unreadHeuristics, could not be read" -Class Note
             }
 
             Show-SubHeader "Analyzing LDAP Signing/Channel Binding via GPO (SYSVOL)..." -ObjectType "LDAPConfigGPO"
@@ -142648,7 +142982,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1908"
+$Script:adPEASVersion = "2.7.0+20261017-1924"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
