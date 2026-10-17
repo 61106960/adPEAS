@@ -3226,7 +3226,7 @@ $Script:PrimaryAttributes = @{
     )
     DomainPasswordPolicy = @(
         'minPwdLength', 'passwordComplexity',
-        'minPwdAge', 'maxPwdAge',
+        'minPwdAge', 'maxPwdAge', 'pwdHistoryLength',
         'reversibleEncryption',
         'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow',
         'builtinAdministratorLockout', 'passwordProperties'
@@ -3234,8 +3234,9 @@ $Script:PrimaryAttributes = @{
     FineGrainedPasswordPolicy = @(
         'psoName', 'precedence',
         'minPwdLength', 'passwordComplexity',
+        'minPwdAge', 'maxPwdAge', 'pwdHistoryLength',
         'reversibleEncryption',
-        'lockoutThreshold',
+        'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow',
         'appliesTo', 'appliesToPrivileged'
     )
     CertificateAuthority = @(
@@ -12411,6 +12412,47 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1110.003"
         Triggers = @(
             @{ Attribute = 'minPwdAge'; Pattern = 'Disabled'; Severity = 'Hint' }
+        )
+    }
+    'PASSWORD_HISTORY_DISABLED' = @{
+        Title = "Password History Disabled"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "The password policy remembers no previous password - pwdHistoryLength is 0 on the domain, or msDS-PasswordHistoryLength on a fine-grained policy - so a user whose password was reset or expired can set the same one again at once. A password that leaked and was changed for that reason comes straight back. Microsoft's default domain policy remembers 24 passwords, the maximum, and recommends exactly that ('Enforce password history')."
+        Impact = @(
+            "A forced password change can be undone by setting the previous password again"
+            "A leaked password that was reset can return the moment its owner sets it again"
+        )
+        Attack = @(
+            "1. Attacker obtains a user's password"
+            "2. The password is reset or expires, and the user sets the old one again"
+            "3. The attacker's password works again"
+        )
+        Remediation = @(
+            "Set 'Enforce password history' to 24 in the Default Domain Policy, and msDS-PasswordHistoryLength on fine-grained policies"
+            "Set a minimum password age above 0 as well - without it, a history can be cycled through by changing the password several times in a row"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the password history and the minimum age of the domain"
+                Command = "Get-ADDefaultDomainPasswordPolicy | Select-Object PasswordHistoryCount, MinPasswordAge"
+            }
+            @{
+                Description = "Remember 24 passwords (the domain head; the Default Domain Policy is where it is normally set)"
+                Command = "Set-ADDefaultDomainPasswordPolicy -Identity 'domain.com' -PasswordHistoryCount 24"
+            }
+            @{
+                Description = "The same on a fine-grained password policy"
+                Command = "Set-ADFineGrainedPasswordPolicy -Identity '<policy name>' -PasswordHistoryCount 24"
+            }
+        )
+        References = @(
+            @{ Title = "Enforce password history - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/enforce-password-history" }
+        )
+        Tools = @()
+        MITRE = "T1110"
+        Triggers = @(
+            @{ Attribute = 'pwdHistoryLength'; Pattern = '^Disabled'; Severity = 'Hint' }
         )
     }
     'ESC9_CT_NO_SECURITY_EXTENSION' = @{
@@ -65142,6 +65184,19 @@ function Get-DomainKerberosPolicy {
         $Script:KerberosPolicySysvolRead = $null
     }
 }
+function Format-PasswordHistoryLength {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Value
+    )
+    if ($null -eq $Value) { return 'Unknown - the value could not be read' }
+    if ([int]$Value -eq 0) { return 'Disabled - a password can be set again right away' }
+    if ([int]$Value -lt 24) { return "$Value passwords remembered - fewer than the 24 Microsoft sets by default" }
+    return "$Value passwords remembered"
+}
 function Get-DomainPasswordPolicy {
     [CmdletBinding()]
     param(
@@ -65211,6 +65266,13 @@ function Get-DomainPasswordPolicy {
             }
             $lockoutWindowSpan = ConvertFrom-ADInterval -Value $domainPolicy.lockOutObservationWindow
             $lockoutWindow = if ($lockoutWindowSpan) { $lockoutWindowSpan.TotalMinutes } else { 0 }
+            $rawPwdHistoryLength = $domainPolicy.pwdHistoryLength
+            $hasPwdHistoryLength = ($null -ne $rawPwdHistoryLength) -and
+                                   (-not [string]::IsNullOrWhiteSpace([string]$rawPwdHistoryLength))
+            $pwdHistoryLength = 0
+            if ($hasPwdHistoryLength) {
+                try { $pwdHistoryLength = [int]$rawPwdHistoryLength } catch { $hasPwdHistoryLength = $false }
+            }
             $pwdPropertyFlags = @(
                 @{ Name = 'DOMAIN_PASSWORD_COMPLEX';         Bit = 1;  Text = 'complexity required' }
                 @{ Name = 'DOMAIN_PASSWORD_NO_ANON_CHANGE';  Bit = 2;  Text = 'reserved - MS-SAMR gives it no effect on the password policy' }
@@ -65255,6 +65317,7 @@ function Get-DomainPasswordPolicy {
                                    elseif ($lockoutThreshold -eq 0) { "Disabled" } else { "After $lockoutThreshold failed attempts" }
                 lockoutDuration = $lockoutDurationText
                 lockoutObservationWindow = if ($lockoutWindow -gt 0) { "$lockoutWindow minutes" } else { "N/A" }
+                pwdHistoryLength = Format-PasswordHistoryLength -Value $(if ($hasPwdHistoryLength) { $pwdHistoryLength } else { $null })
             }
             if ($hasPwdProperties) {
                 $pwdPropsDisplay = @($pwdPropsSet | ForEach-Object { "$($_.Name) - $($_.Text)" })
@@ -65274,11 +65337,13 @@ function Get-DomainPasswordPolicy {
             if ($hasMinPwdLength -and $minPwdLength -ge 8 -and $minPwdLength -lt 14) { $moderateWeaknesses += "moderate_password_length" }
             if ($lockoutThreshold -gt 10) { $moderateWeaknesses += "high_lockout_threshold" }
             if ($hasMaxPwdAge -and $maxPwdAge -eq 0) { $moderateWeaknesses += "password_never_expires" }
+            if ($hasPwdHistoryLength -and $pwdHistoryLength -eq 0) { $moderateWeaknesses += "password_history_disabled" }
             $unreadVerdictValues = @()
             if (-not $hasMinPwdLength)     { $unreadVerdictValues += 'minPwdLength' }
             if (-not $hasMaxPwdAge)        { $unreadVerdictValues += 'maxPwdAge' }
             if (-not $hasPwdProperties)    { $unreadVerdictValues += 'pwdProperties' }
             if (-not $hasLockoutThreshold) { $unreadVerdictValues += 'lockoutThreshold' }
+            if (-not $hasPwdHistoryLength) { $unreadVerdictValues += 'pwdHistoryLength' }
             $policySeverity = if (@($policyWeaknesses).Count -gt 0) {
                 "Finding"
             } elseif (@($moderateWeaknesses).Count -gt 0) {
@@ -65336,6 +65401,15 @@ function Get-DomainPasswordPolicy {
                             if ([int]::TryParse([string]$Value, [ref]$parsedValue)) { return $parsedValue }
                             return $null
                         }
+                        function Read-PSOInterval {
+                            param($Value)
+                            if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { return $null }
+                            $span = ConvertFrom-ADInterval -Value $Value
+                            if ($null -ne $span) { return $span }
+                            $ticks = 0L
+                            if ([Int64]::TryParse(([string]$Value).Trim(), [ref]$ticks)) { return [TimeSpan]::Zero }
+                            return $null
+                        }
                         $unknownValue = 'Unknown - the value could not be read'
                         $psoReadings = @()
                         foreach ($pso in $psos) {
@@ -65345,9 +65419,16 @@ function Get-DomainPasswordPolicy {
                             $complexityEnabled    = Read-PSOSetting $pso.'msDS-PasswordComplexityEnabled' -Boolean
                             $reversibleEncryption = Read-PSOSetting $pso.'msDS-PasswordReversibleEncryptionEnabled' -Boolean
                             $lockoutThresholdPSO  = Read-PSOSetting $pso.'msDS-LockoutThreshold'
+                            $historyPSO           = Read-PSOSetting $pso.'msDS-PasswordHistoryLength'
+                            $maxAgePSO            = Read-PSOInterval $pso.'msDS-MaximumPasswordAge'
+                            $minAgePSO            = Read-PSOInterval $pso.'msDS-MinimumPasswordAge'
+                            $lockoutDurationPSO   = Read-PSOInterval $pso.'msDS-LockoutDuration'
+                            $lockoutWindowPSO     = Read-PSOInterval $pso.'msDS-LockoutObservationWindow'
                             $appliesTo = @(@(if ($pso.'msDS-PSOAppliesTo') { $pso.'msDS-PSOAppliesTo' } else { @() }) | Where-Object { $_ })
                             $psoRead = ($null -ne $precedence) -or ($null -ne $minLength) -or ($null -ne $complexityEnabled) -or
-                                       ($null -ne $reversibleEncryption) -or ($null -ne $lockoutThresholdPSO)
+                                       ($null -ne $reversibleEncryption) -or ($null -ne $lockoutThresholdPSO) -or
+                                       ($null -ne $historyPSO) -or ($null -ne $maxAgePSO) -or ($null -ne $minAgePSO) -or
+                                       ($null -ne $lockoutDurationPSO) -or ($null -ne $lockoutWindowPSO)
                             $psoWeak = $reversibleEncryption -or
                                        (($null -ne $minLength) -and $minLength -lt 8) -or
                                        (($null -ne $complexityEnabled) -and -not $complexityEnabled) -or
@@ -65386,6 +65467,18 @@ function Get-DomainPasswordPolicy {
                                                        elseif ($reversibleEncryption) { "Enabled" } else { "Disabled" }
                                 lockoutThreshold = if ($null -eq $lockoutThresholdPSO) { $unknownValue }
                                                    elseif ($lockoutThresholdPSO -eq 0) { "Disabled" } else { "After $lockoutThresholdPSO failed attempts" }
+                                minPwdAge = if ($null -eq $minAgePSO) { $unknownValue }
+                                            elseif ([Math]::Round($minAgePSO.TotalDays) -eq 0) { "Disabled" } else { "$([Math]::Round($minAgePSO.TotalDays)) days" }
+                                maxPwdAge = if ($null -eq $maxAgePSO) { $unknownValue }
+                                            elseif ([Math]::Round($maxAgePSO.TotalDays) -eq 0) { "Disabled (Never expires)" } else { "$([Math]::Round($maxAgePSO.TotalDays)) days" }
+                                pwdHistoryLength = Format-PasswordHistoryLength -Value $historyPSO
+                                lockoutDuration = if ($null -eq $lockoutDurationPSO) { $unknownValue }
+                                                  elseif ($lockoutDurationPSO.TotalMinutes -gt 0) { "$($lockoutDurationPSO.TotalMinutes) minutes" }
+                                                  elseif ($null -eq $lockoutThresholdPSO) { 'Until manually unlocked - the lockout threshold could not be read' }
+                                                  elseif ($lockoutThresholdPSO -eq 0) { 'N/A - no lockout is configured' }
+                                                  else { 'Forever (manual unlock)' }
+                                lockoutObservationWindow = if ($null -eq $lockoutWindowPSO) { $unknownValue }
+                                                           elseif ($lockoutWindowPSO.TotalMinutes -gt 0) { "$($lockoutWindowPSO.TotalMinutes) minutes" } else { "N/A" }
                                 appliesTo = if (@($appliesToNames).Count -gt 0) {
                                     (@($appliesToNames) -join ', ')
                                 } elseif (-not $psoRead) {
@@ -91976,7 +92069,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1958"
+$Script:adPEASVersion = "2.7.0+20261017-2007"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -153,6 +153,8 @@ Get-DomainInformation
 - Password complexity requirement
 - Account lockout threshold
 - Reversible encryption setting
+- Password history (`pwdHistoryLength`): 0 lets a user set the password a reset replaced at once - a hint; Microsoft's default remembers 24
+- Fine-Grained Password Policies: the same settings - length, complexity, reversible encryption, lockout threshold, duration and window, minimum and maximum age, password history - plus precedence and whom each policy applies to
 
 **Security Impact**: Weak password policies allow attackers to crack passwords more easily or use brute-force attacks without lockout.
 

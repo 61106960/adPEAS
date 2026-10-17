@@ -320,6 +320,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   card *Trust Password No Longer Rotated* and a line that counts such trusts. A missing
   or unreadable account is said as such.
 
+- **`Get-DomainPasswordPolicy` reads the password history and the five PSO settings it
+  skipped.** `pwdHistoryLength` was not read: a history of 0 - a user can set the
+  password a reset replaced at once - is now a moderate weakness with the card *Password
+  History Disabled*, a value below Microsoft's default of 24 is said as such, and an
+  unreadable one keeps the policy from reading as secure. Fine-grained policies now show
+  `msDS-PasswordHistoryLength`, `-MaximumPasswordAge`, `-MinimumPasswordAge`,
+  `-LockoutDuration` and `-LockoutObservationWindow` - all mandatory, none read before,
+  so a policy that let the passwords of the admin group never expire was silent. The rows
+  carry the names and texts of the domain policy, so its cards judge both.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

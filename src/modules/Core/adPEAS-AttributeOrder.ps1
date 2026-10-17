@@ -218,7 +218,7 @@ $Script:PrimaryAttributes = @{
     # Domain Password Policy (all attributes are security-relevant)
     DomainPasswordPolicy = @(
         'minPwdLength', 'passwordComplexity',
-        'minPwdAge', 'maxPwdAge',
+        'minPwdAge', 'maxPwdAge', 'pwdHistoryLength',
         'reversibleEncryption',
         'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow',
         'builtinAdministratorLockout', 'passwordProperties'
@@ -228,8 +228,9 @@ $Script:PrimaryAttributes = @{
     FineGrainedPasswordPolicy = @(
         'psoName', 'precedence',
         'minPwdLength', 'passwordComplexity',
+        'minPwdAge', 'maxPwdAge', 'pwdHistoryLength',
         'reversibleEncryption',
-        'lockoutThreshold',
+        'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow',
         # appliesToPrivileged exists only where a target of the policy is privileged,
         # and this type is strict - a row the list does not name is dropped in silence.
         'appliesTo', 'appliesToPrivileged'
