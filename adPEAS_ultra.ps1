@@ -35952,13 +35952,17 @@ function Test-IsPrivileged {
 	        $name = ConvertFrom-SID -SID $sid
 	    }
 	    $isDomainSID = $sid -match '^S-1-5-21-'
+	    $primaryGroupRID = $null
 	    if ($Script:LdapConnection -and $isDomainSID) {
 	        try {
 	            $sidHex = ConvertTo-LDAPSIDHex -SID $sid
 	            if ($sidHex) {
-	                $adObject = @(Get-DomainObject -LDAPFilter "(objectSid=$sidHex)" -Properties 'sIDHistory','distinguishedName')[0]
+	                $adObject = @(Get-DomainObject -LDAPFilter "(objectSid=$sidHex)" -Properties 'sIDHistory','distinguishedName','primaryGroupID')[0]
 	                if ($adObject -and $adObject.distinguishedName -and -not $dn) {
 	                    $dn = $adObject.distinguishedName
+	                }
+	                if ($adObject -and $adObject.primaryGroupID) {
+	                    $primaryGroupRID = [string]$adObject.primaryGroupID
 	                }
 	                if ($adObject -and $adObject.sIDHistory) {
 	                    $sidHistoryValues = @()
@@ -36036,7 +36040,15 @@ function Test-IsPrivileged {
 	    }
 	    if ($Script:LdapConnection) {
 	        $groupMemberships = Get-RecursiveGroupMembership -IdentitySID $sid -IdentityDN $dn
-	        if ($groupMemberships -and $groupMemberships.Count -gt 0) {
+	        $tierMemberships = @()
+	        if ($groupMemberships) { $tierMemberships += @($groupMemberships) }
+	        if ($primaryGroupRID -and $sid -match '^(S-1-5-21-\d+-\d+-\d+)-\d+$') {
+	            $primaryGroupSID = "$($Matches[1])-$primaryGroupRID"
+	            $tierMemberships += $primaryGroupSID
+	            $primaryGroupNesting = Get-RecursiveGroupMembership -IdentitySID $primaryGroupSID
+	            if ($primaryGroupNesting) { $tierMemberships += @($primaryGroupNesting) }
+	        }
+	        if ($tierMemberships.Count -gt 0) {
 	            $domainSID = $null
 	            if ($Script:LDAPContext -and $Script:LDAPContext.DomainSID) {
 	                $domainSID = $Script:LDAPContext.DomainSID
@@ -36048,7 +36060,7 @@ function Test-IsPrivileged {
 	                }
 	            }
 	            foreach ($groupSID in $privilegedGroupSIDs) {
-	                if ($groupSID -in $groupMemberships) {
+	                if ($groupSID -in $tierMemberships) {
 	                    $groupName = ConvertFrom-SID -SID $groupSID
 	                    if (-not $groupName) { $groupName = $groupSID }
 	                    $result = [PSCustomObject]@{
@@ -36063,7 +36075,7 @@ function Test-IsPrivileged {
 	                }
 	            }
 	            foreach ($opSID in $Script:OperatorSIDs) {
-	                if ($opSID -in $groupMemberships) {
+	                if ($opSID -in $tierMemberships) {
 	                    $groupName = ConvertFrom-SID -SID $opSID
 	                    if (-not $groupName) { $groupName = $opSID }
 	                    $result = [PSCustomObject]@{
@@ -36080,7 +36092,7 @@ function Test-IsPrivileged {
 	            if ($domainSID) {
 	                foreach ($suffix in $Script:OperatorRIDSuffixes) {
 	                    $opSID = "$domainSID$suffix"
-	                    if ($opSID -in $groupMemberships) {
+	                    if ($opSID -in $tierMemberships) {
 	                        $groupName = ConvertFrom-SID -SID $opSID
 	                        if (-not $groupName) { $groupName = $opSID }
 	                        $result = [PSCustomObject]@{
@@ -86418,7 +86430,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1404"
+$Script:adPEASVersion = "2.7.0+20261017-1425"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

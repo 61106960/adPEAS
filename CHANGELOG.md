@@ -354,6 +354,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   its containers as before, and a container whose verdict differs from it now says so
   (`blocked by the confidential flag`).
 
+- **An account that is a Domain Admin through its primary group is privileged.**
+  `Test-IsPrivileged` read group membership through `member` links only, and
+  `primaryGroupID` leaves none - so an account whose primary group is Domain Admins, or a
+  group nested into a privileged one, came back as an ordinary account.
+  `Get-AdminPasswordNeverExpires` and `Get-InactiveAdminAccounts` select their candidates
+  by `primaryGroupID` on purpose and then dropped exactly those accounts again, and the
+  ACL checks reported such an account as an unprivileged holder of rights. The primary
+  group and its nesting now count for the privileged and operator tiers; the default
+  primary group, Domain Users, still makes no account a broad-group member. Domain
+  controller accounts, whose primary group is Domain Controllers, are privileged now too.
+
 ---
 
 ## [2.7.0] - 2026-10-08

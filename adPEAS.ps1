@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 14:04:39
-    Version: 2.7.0+20261017-1404
+    Build: 2026-10-17 14:25:31
+    Version: 2.7.0+20261017-1425
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -54509,8 +54509,8 @@ function ConvertTo-SID {
     - "Privileged group (RID suffix -512)" - Domain-relative privileged group
     - "Broad group (static SID)" - Well-known broad group (Everyone, etc.)
     - "Broad group (RID suffix -513)" - Domain-relative broad group
-    - "Member of Operator group" - Nested in Operator group
-    - "Member of privileged group" - Nested in privileged group
+    - "Member of Operator group" - Nested in Operator group, or holding it as primary group
+    - "Member of privileged group" - Nested in privileged group, or holding it as primary group
     - "Member of broad group" - Nested in broad group
     - "sIDHistory contains Operator SID (SID History Injection risk)" - CRITICAL: Operator via sIDHistory
     - "sIDHistory contains privileged SID (SID History Injection risk)" - CRITICAL: Privileged via sIDHistory
@@ -55302,16 +55302,22 @@ function Test-IsPrivileged {
         # Only domain SIDs (S-1-5-21-*) can have sIDHistory - well-known SIDs
         # (SYSTEM, Administrators, Everyone, etc.) have no AD object to query.
         $isDomainSID = $sid -match '^S-1-5-21-'
+        $primaryGroupRID = $null
         if ($Script:LdapConnection -and $isDomainSID) {
             try {
                 # Query the AD object for sIDHistory + distinguishedName (reused by Phase 5)
                 $sidHex = ConvertTo-LDAPSIDHex -SID $sid
                 if ($sidHex) {
-                    $adObject = @(Get-DomainObject -LDAPFilter "(objectSid=$sidHex)" -Properties 'sIDHistory','distinguishedName')[0]
+                    $adObject = @(Get-DomainObject -LDAPFilter "(objectSid=$sidHex)" -Properties 'sIDHistory','distinguishedName','primaryGroupID')[0]
 
                     # Capture DN for Phase 5 (avoids redundant LDAP query in Get-RecursiveGroupMembership)
                     if ($adObject -and $adObject.distinguishedName -and -not $dn) {
                         $dn = $adObject.distinguishedName
+                    }
+
+                    # And the primary group, which Phase 5 cannot find on its own.
+                    if ($adObject -and $adObject.primaryGroupID) {
+                        $primaryGroupRID = [string]$adObject.primaryGroupID
                     }
 
                     if ($adObject -and $adObject.sIDHistory) {
@@ -55428,8 +55434,30 @@ function Test-IsPrivileged {
             # Get all group memberships with a single LDAP query (cached)
             $groupMemberships = Get-RecursiveGroupMembership -IdentitySID $sid -IdentityDN $dn
 
-            if ($groupMemberships -and $groupMemberships.Count -gt 0) {
-                Write-Log "[Test-IsPrivileged] Found $($groupMemberships.Count) group membership(s) for $sid"
+            # The primary group, which that query cannot see: primaryGroupID puts the
+            # group's RID in the token with no member link in either direction, so
+            # LDAP_MATCHING_RULE_IN_CHAIN does not follow it. An account whose primary group
+            # is Domain Admins came back Standard - or BroadGroup, through the explicit
+            # Domain Users membership the change leaves behind - and every check that
+            # confirms its candidates here dropped exactly the account
+            # Get-PrivilegedAccountFilter selects by primaryGroupID. The group's own nesting
+            # counts as well. Both feed the privileged and operator tiers only: the default
+            # primary group is Domain Users, and counting it as a membership would file
+            # every ordinary account under BroadGroup.
+            #
+            # The RID is relative to the account's own domain, so the group SID is built
+            # from the account's SID, not from the session's domain.
+            $tierMemberships = @()
+            if ($groupMemberships) { $tierMemberships += @($groupMemberships) }
+            if ($primaryGroupRID -and $sid -match '^(S-1-5-21-\d+-\d+-\d+)-\d+$') {
+                $primaryGroupSID = "$($Matches[1])-$primaryGroupRID"
+                $tierMemberships += $primaryGroupSID
+                $primaryGroupNesting = Get-RecursiveGroupMembership -IdentitySID $primaryGroupSID
+                if ($primaryGroupNesting) { $tierMemberships += @($primaryGroupNesting) }
+            }
+
+            if ($tierMemberships.Count -gt 0) {
+                Write-Log "[Test-IsPrivileged] Found $($tierMemberships.Count) group membership(s) for $sid"
 
                 $domainSID = $null
                 if ($Script:LDAPContext -and $Script:LDAPContext.DomainSID) {
@@ -55455,7 +55483,7 @@ function Test-IsPrivileged {
                 }
 
                 foreach ($groupSID in $privilegedGroupSIDs) {
-                    if ($groupSID -in $groupMemberships) {
+                    if ($groupSID -in $tierMemberships) {
                         $groupName = ConvertFrom-SID -SID $groupSID
                         if (-not $groupName) { $groupName = $groupSID }
 
@@ -55475,7 +55503,7 @@ function Test-IsPrivileged {
                 # 5b. Check Operator group membership (local array comparison)
                 # First check static Operator SIDs
                 foreach ($opSID in $Script:OperatorSIDs) {
-                    if ($opSID -in $groupMemberships) {
+                    if ($opSID -in $tierMemberships) {
                         $groupName = ConvertFrom-SID -SID $opSID
                         if (-not $groupName) { $groupName = $opSID }
 
@@ -55496,7 +55524,7 @@ function Test-IsPrivileged {
                 if ($domainSID) {
                     foreach ($suffix in $Script:OperatorRIDSuffixes) {
                         $opSID = "$domainSID$suffix"
-                        if ($opSID -in $groupMemberships) {
+                        if ($opSID -in $tierMemberships) {
                             $groupName = ConvertFrom-SID -SID $opSID
                             if (-not $groupName) { $groupName = $opSID }
 
@@ -139430,7 +139458,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1404"
+$Script:adPEASVersion = "2.7.0+20261017-1425"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
