@@ -416,6 +416,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   with the card *DSRM Administrator Logon Allowed at Any Time via GPO*. 0, the default, and
   1, Microsoft's suggestion for a single or isolated domain controller, are not reported.
 
+- **The Restricted Admin card is a hint, as its row is.** The registry table lowered
+  `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the
+  card and the trigger on its row stayed a finding: the console printed the row yellow and
+  the HTML report counted a red finding scored 50 for the same line. Both are a hint now,
+  scored 30 like the other hints of the table.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

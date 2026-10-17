@@ -13903,8 +13903,8 @@ $acl.Access | Where-Object {
 
     'REGISTRY_RESTRICTEDADMIN' = @{
         Title = "RDP Restricted Admin Mode Enabled via GPO"
-        Risk = "Finding"
-        BaseScore = 50
+        Risk = "Hint"
+        BaseScore = 30
         Description = "A Group Policy sets DisableRestrictedAdmin=0, which allows RDP Restricted Admin mode. The mode exists to keep an administrator's credentials off the remote host, and the cost is that RDP then accepts hash-based authentication - Pass-the-Hash over RDP, and a bypass of some MFA solutions that only see the interactive logon. The value itself is the KB2871997 retrofit switch for Windows 7 and Server 2008 R2: from Windows 8.1 and Server 2012 R2 on the mode is available without it, so on a current estate this GPO documents an intention rather than creating the state. The same path is open on every host where no policy mentions the value at all, which is why this is reported as a hint about a deliberate setting rather than as a vulnerability of its own."
         Impact = @(
             "RDP accepts NT hash without plaintext password"
@@ -13928,7 +13928,10 @@ $acl.Access | Where-Object {
         Tools = @("Mimikatz", "RestrictedAdmin")
         MITRE = "T1550.002"
         Triggers = @(
-            @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP Restricted Admin'; Severity = 'Finding' }
+            # Hint, as the registry table classes the row: the table was lowered to a
+            # Medium hint, and this trigger and the card stayed a finding, so the console
+            # printed a yellow row and the report counted a red finding for the same line.
+            @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP Restricted Admin'; Severity = 'Hint' }
         )
     }
 
