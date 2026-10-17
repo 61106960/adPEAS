@@ -235,6 +235,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   They are recognised the way every other check recognises them now, and shown under
   their English names.
 
+- **Two values of the BloodHound export came from the wrong place.** The domain's
+  `dsheuristics` was read from the domain object, which never carries it, so every export
+  said null; it is read from `CN=Directory Service` in the Configuration partition now.
+  And the `ReadLAPSPassword` edge was keyed on the GUID of `msDS-ManagedPassword`, the gMSA
+  password attribute: a LAPS read delegation produced no edge, and a right on a gMSA
+  password produced a LAPS one. The edge now comes from control access on the LAPS
+  password attributes.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

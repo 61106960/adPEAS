@@ -84660,14 +84660,17 @@ function ConvertTo-BHAces {
 	        '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2' = 'GetChangesAll'
 	        '89e95b76-444d-4c62-991a-0facbeda640c' = 'GetChangesInFilteredSet'
 	        '00299570-246d-11d0-a768-00aa006e0529' = 'ForceChangePassword'
-	        'e362ed86-b728-0842-b27d-2dea7a9df218' = 'ReadLAPSPassword'
 	        '00000000-0000-0000-0000-000000000000' = 'AllExtendedRights'
 	        '0e10c968-78fb-11d2-90d4-00c04f79dc55' = 'Enroll'
 	        'a05b8cc2-17bc-4802-a710-e7c15ab866a2' = 'AutoEnroll'
 	        'ee138f32-c3ec-11d1-bbc5-0080c76670c0' = 'ManageCA'
 	        '98291c0c-7fd7-11d2-9917-00c04fc2d4cf' = 'ManageCertificates'
 	    }
-	    $Script:BHGMSAReadGUID = '5b47d60f-6090-40b2-9f37-2a4de88f3063'
+	    foreach ($lapsAttribute in @('ms-Mcs-AdmPwd', 'msLAPS-Password', 'msLAPS-EncryptedPassword')) {
+	        if ($Script:PropertyGUIDs -and $Script:PropertyGUIDs.ContainsKey($lapsAttribute)) {
+	            $Script:BHExtendedRightGUIDs[$Script:PropertyGUIDs[$lapsAttribute].ToString().ToLower()] = 'ReadLAPSPassword'
+	        }
+	    }
 	}
 	try {
 	    $escapedDN = Escape-LDAPFilterDN -DistinguishedName $DistinguishedName
@@ -84819,16 +84822,6 @@ function ConvertTo-BHAces {
 	                }
 	            }
 	        }
-	        if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::ReadProperty) -eq [System.DirectoryServices.ActiveDirectoryRights]::ReadProperty) {
-	            if ($objectTypeGuid -eq 'e362ed86-b728-0842-b27d-2dea7a9df218') {
-	                $bhAces += @{
-	                    PrincipalSID  = $trusteeSID
-	                    PrincipalType = $principalType
-	                    RightName     = 'ReadLAPSPassword'
-	                    IsInherited   = $isInherited
-	                }
-	            }
-	        }
 	    }
 	}
 	catch {
@@ -84880,6 +84873,15 @@ function Collect-BHDomain {
 	$escapedDomainDN = Escape-LDAPFilterDN -DistinguishedName $DomainDN
 	$domainObj = @(Get-DomainObject -LDAPFilter "(distinguishedName=$escapedDomainDN)" @connectionParams)[0]
 	if (-not $domainObj) { return @() }
+	$dsHeuristicsValue = $null
+	$configDN = $Script:LDAPContext.ConfigurationNamingContext
+	if ($configDN) {
+	    try {
+	        $dirService = @(Get-DomainObject -Identity "CN=Directory Service,CN=Windows NT,CN=Services,$configDN" -Properties 'dSHeuristics' @connectionParams)[0]
+	        if ($dirService -and $dirService.dSHeuristics) { $dsHeuristicsValue = [string]$dirService.dSHeuristics }
+	    } catch {
+	    }
+	}
 	$domainName = $Script:LDAPContext.Domain.ToUpper()
 	$functionalLevel = switch ($domainObj.'msDS-Behavior-Version') {
 	    0       { '2000' }
@@ -84967,7 +84969,7 @@ function Collect-BHDomain {
 	        doesanyinheritedacegrantownerrights     = $false
 	        collected                               = $true
 	        netbios                                 = $netbiosName
-	        dsheuristics                            = if ($domainObj.dSHeuristics) { $domainObj.dSHeuristics } else { $null }
+	        dsheuristics                            = $dsHeuristicsValue
 	        expirepasswordsonsmartcardonlyaccounts  = if ($domainObj.'msDS-ExpirePasswordsOnSmartCardOnlyAccounts') { [bool]$domainObj.'msDS-ExpirePasswordsOnSmartCardOnlyAccounts' } else { $false }
 	        machineaccountquota                     = Get-SafeInt -Value $domainObj.'ms-DS-MachineAccountQuota' -Default 10
 	        lockoutthreshold                        = Get-SafeInt -Value $domainObj.lockoutThreshold -Default 0
@@ -86120,7 +86122,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1253"
+$Script:adPEASVersion = "2.7.0+20261017-1300"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

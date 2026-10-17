@@ -1120,8 +1120,6 @@ function ConvertTo-BHAces {
             '89e95b76-444d-4c62-991a-0facbeda640c' = 'GetChangesInFilteredSet'
             # User password reset
             '00299570-246d-11d0-a768-00aa006e0529' = 'ForceChangePassword'
-            # LAPS password read
-            'e362ed86-b728-0842-b27d-2dea7a9df218' = 'ReadLAPSPassword'
             # All extended rights
             '00000000-0000-0000-0000-000000000000' = 'AllExtendedRights'
             # ADCS: Certificate-Enrollment
@@ -1134,8 +1132,16 @@ function ConvertTo-BHAces {
             '98291c0c-7fd7-11d2-9917-00c04fc2d4cf' = 'ManageCertificates'
         }
 
-        # GMSA password read - special handling via GenericAll on msDS-GroupManagedServiceAccount
-        $Script:BHGMSAReadGUID = '5b47d60f-6090-40b2-9f37-2a4de88f3063'
+        # LAPS password read. The password attributes are confidential, so reading one takes
+        # CONTROL_ACCESS on it - an ExtendedRight ACE naming the attribute's schemaIDGUID.
+        # The entry used to be e362ed86, which is msDS-ManagedPassword, the gMSA password
+        # attribute: an ACE on that attribute became a ReadLAPSPassword edge, and no LAPS
+        # read delegation became one at all. The GUIDs come from the central table.
+        foreach ($lapsAttribute in @('ms-Mcs-AdmPwd', 'msLAPS-Password', 'msLAPS-EncryptedPassword')) {
+            if ($Script:PropertyGUIDs -and $Script:PropertyGUIDs.ContainsKey($lapsAttribute)) {
+                $Script:BHExtendedRightGUIDs[$Script:PropertyGUIDs[$lapsAttribute].ToString().ToLower()] = 'ReadLAPSPassword'
+            }
+        }
     }
 
     try {
@@ -1338,17 +1344,8 @@ function ConvertTo-BHAces {
                 }
             }
 
-            # ----- ReadProperty for LAPS -----
-            if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::ReadProperty) -eq [System.DirectoryServices.ActiveDirectoryRights]::ReadProperty) {
-                if ($objectTypeGuid -eq 'e362ed86-b728-0842-b27d-2dea7a9df218') {
-                    $bhAces += @{
-                        PrincipalSID  = $trusteeSID
-                        PrincipalType = $principalType
-                        RightName     = 'ReadLAPSPassword'
-                        IsInherited   = $isInherited
-                    }
-                }
-            }
+            # No ReadProperty branch for LAPS: a confidential attribute is not read with
+            # ReadProperty alone. The ExtendedRight branch above names the LAPS read.
         }
     }
     catch {
@@ -1432,6 +1429,20 @@ function Collect-BHDomain {
     $domainObj = @(Get-DomainObject -LDAPFilter "(distinguishedName=$escapedDomainDN)" @connectionParams)[0]
 
     if (-not $domainObj) { return @() }
+
+    # dSHeuristics is a forest setting on CN=Directory Service in the Configuration
+    # partition, not an attribute of the domain object - the export read it from the
+    # domain object and therefore always said null. Read where Get-LDAPConfiguration reads it.
+    $dsHeuristicsValue = $null
+    $configDN = $Script:LDAPContext.ConfigurationNamingContext
+    if ($configDN) {
+        try {
+            $dirService = @(Get-DomainObject -Identity "CN=Directory Service,CN=Windows NT,CN=Services,$configDN" -Properties 'dSHeuristics' @connectionParams)[0]
+            if ($dirService -and $dirService.dSHeuristics) { $dsHeuristicsValue = [string]$dirService.dSHeuristics }
+        } catch {
+            Write-Log "[Collect-BHDomain] Could not read dSHeuristics: $_"
+        }
+    }
 
     $domainName = $Script:LDAPContext.Domain.ToUpper()
 
@@ -1541,7 +1552,7 @@ function Collect-BHDomain {
             doesanyinheritedacegrantownerrights     = $false
             collected                               = $true
             netbios                                 = $netbiosName
-            dsheuristics                            = if ($domainObj.dSHeuristics) { $domainObj.dSHeuristics } else { $null }
+            dsheuristics                            = $dsHeuristicsValue
             expirepasswordsonsmartcardonlyaccounts  = if ($domainObj.'msDS-ExpirePasswordsOnSmartCardOnlyAccounts') { [bool]$domainObj.'msDS-ExpirePasswordsOnSmartCardOnlyAccounts' } else { $false }
             machineaccountquota                     = Get-SafeInt -Value $domainObj.'ms-DS-MachineAccountQuota' -Default 10
             lockoutthreshold                        = Get-SafeInt -Value $domainObj.lockoutThreshold -Default 0
