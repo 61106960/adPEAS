@@ -78,11 +78,20 @@ function Get-GPOLocalGroupMembership {
             'S-1-5-32-547' = 'Power Users'
         }
 
-        # Well-known SIDs for risky assignments (Everyone, Authenticated Users, etc.)
+        # The canonical names of the well-known broad groups, so a member is shown the same
+        # way whatever language the policy was written in. Whether a member is broad is
+        # not decided here but by Test-IsBroadTrustee (Resolve-GroupMemberRisk): this
+        # table used to be the test as well, with '-513' beside it, and so Domain
+        # Computers, Domain Guests, BUILTIN\Users, Interactive and Network in a local
+        # Administrators group did not escalate.
         $Script:RiskySIDs = @{
             'S-1-1-0' = 'Everyone'
             'S-1-5-11' = 'Authenticated Users'
             'S-1-5-7' = 'Anonymous Logon'
+            'S-1-5-4' = 'Interactive'
+            'S-1-5-2' = 'Network'
+            'S-1-5-32-545' = 'Users'
+            'S-1-5-32-546' = 'Guests'
         }
 
         # Base severity per target group (using standard adPEAS severity values)
@@ -558,6 +567,51 @@ function Resolve-RestrictedGroupSID {
     return $trimmed
 }
 
+<#
+.SYNOPSIS
+    One member of a group assignment: the name to show, and whether the member is a group
+    that holds most of the domain.
+
+.DESCRIPTION
+    The three parsers wrote this test three times, each with the private list in
+    $Script:RiskySIDs and a '-513' beside it. Test-IsBroadTrustee asks both of the
+    project's lists, which is what lets Domain Computers, Domain Guests, BUILTIN\Users,
+    Interactive and Network escalate an assignment as Domain Users always did.
+
+    A broad group is shown under its canonical English name; any other member under
+    -FallbackName when the caller has one, and otherwise under its resolved name.
+
+.NOTES
+    Internal helper function
+#>
+function Resolve-GroupMemberRisk {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$MemberSID,
+
+        [Parameter(Mandatory = $false)]
+        [string]$FallbackName
+    )
+
+    $broadRIDNames = @{ '-513' = 'Domain Users'; '-514' = 'Domain Guests'; '-515' = 'Domain Computers' }
+
+    $isBroad = Test-IsBroadTrustee -SID $MemberSID
+    $memberName = $null
+    if ($Script:RiskySIDs -and $Script:RiskySIDs.ContainsKey($MemberSID)) {
+        $memberName = $Script:RiskySIDs[$MemberSID]
+    } elseif ($isBroad) {
+        $suffix = Test-IsBroadGroupRID -SID $MemberSID
+        if ($suffix -and $broadRIDNames.ContainsKey($suffix)) { $memberName = $broadRIDNames[$suffix] }
+    }
+    if (-not $memberName) {
+        $memberName = if ($FallbackName) { $FallbackName } else { ConvertFrom-SID -SID $MemberSID }
+    }
+
+    [PSCustomObject]@{ Name = $memberName; IsBroad = [bool]$isBroad }
+}
+
 # Helper Function: Parse Restricted Groups (GptTmpl.inf)
 function Parse-RestrictedGroups {
     [CmdletBinding()]
@@ -629,17 +683,9 @@ function Parse-RestrictedGroups {
                         foreach ($memberSID in $memberSIDs) {
                             if ([string]::IsNullOrWhiteSpace($memberSID)) { continue }
 
-                            $memberName = ""
-
-                            if ($Script:RiskySIDs.ContainsKey($memberSID)) {
-                                $memberName = $Script:RiskySIDs[$memberSID]
-                                $riskyMembers += $memberName
-                            } elseif ($memberSID -match '-513$') {
-                                $memberName = "Domain Users"
-                                $riskyMembers += $memberName
-                            } else {
-                                $memberName = ConvertFrom-SID -SID $memberSID
-                            }
+                            $memberRisk = Resolve-GroupMemberRisk -MemberSID $memberSID
+                            $memberName = $memberRisk.Name
+                            if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
 
                             $memberNames += $memberName
                         }
@@ -693,18 +739,10 @@ function Parse-RestrictedGroups {
                         ForEach-Object { Resolve-RestrictedGroupSID -Identity $_ }
 
                     # Resolve the member name and check if it is itself a risky principal
-                    $memberName = ""
                     $riskyMembers = @()
-
-                    if ($Script:RiskySIDs.ContainsKey($memberSID)) {
-                        $memberName = $Script:RiskySIDs[$memberSID]
-                        $riskyMembers += $memberName
-                    } elseif ($memberSID -match '-513$') {
-                        $memberName = "Domain Users"
-                        $riskyMembers += $memberName
-                    } else {
-                        $memberName = ConvertFrom-SID -SID $memberSID
-                    }
+                    $memberRisk = Resolve-GroupMemberRisk -MemberSID $memberSID
+                    $memberName = $memberRisk.Name
+                    if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
 
                     # Create one finding per target local group
                     foreach ($groupSID in $targetGroupSIDs) {
@@ -867,19 +905,12 @@ function Parse-GPPGroups {
                     # The two Restricted Groups parsers above already name their members
                     # this way; only the preferences parser did not.
                     if ($memberSID) {
-                        # Check for risky SIDs (language-independent)
-                        if ($Script:RiskySIDs.ContainsKey($memberSID)) {
-                            $memberName = $Script:RiskySIDs[$memberSID]
-                            $riskyMembers += $memberName
-                        } elseif ($memberSID -match '-513$') {
-                            # Domain Users (ends with -513)
-                            $memberName = "Domain Users"
-                            $riskyMembers += $memberName
-                        } elseif (-not $memberName) {
-                            # A Member element carrying only a SID would otherwise leave
-                            # the group looking emptier than it is.
-                            $memberName = ConvertFrom-SID -SID $memberSID
-                        }
+                        # Language-independent: decided by SID. A Member element carrying
+                        # only a SID gets its resolved name, or the group would look
+                        # emptier than it is.
+                        $memberRisk = Resolve-GroupMemberRisk -MemberSID ([string]$memberSID) -FallbackName ([string]$memberName)
+                        $memberName = $memberRisk.Name
+                        if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
 
                         $memberSIDs += $memberSID
                     }

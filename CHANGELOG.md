@@ -228,6 +228,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   altSecurityIdentities on a privileged account"; it is an error line now, and the green
   line is printed only after an analysis that ran.
 
+- **`Get-GPOLocalGroupMembership` recognises every broad group in a local group.** Its
+  three parsers kept a private list of Everyone, Authenticated Users and Anonymous Logon
+  plus Domain Users, so Domain Computers, Domain Guests, BUILTIN\Users, BUILTIN\Guests,
+  Interactive and Network put into a local group by policy did not raise the assignment.
+  They are recognised the way every other check recognises them now, and shown under
+  their English names.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

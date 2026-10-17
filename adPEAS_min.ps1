@@ -70884,6 +70884,10 @@ function Get-GPOLocalGroupMembership {
             'S-1-1-0' = 'Everyone'
             'S-1-5-11' = 'Authenticated Users'
             'S-1-5-7' = 'Anonymous Logon'
+            'S-1-5-4' = 'Interactive'
+            'S-1-5-2' = 'Network'
+            'S-1-5-32-545' = 'Users'
+            'S-1-5-32-546' = 'Guests'
         }
         $Script:GroupSeverityConfig = @{
             'S-1-5-32-544' = @{ Severity = "Finding"; Risk = "Domain accounts added to local Administrators" }
@@ -71158,6 +71162,29 @@ function Resolve-RestrictedGroupSID {
     }
     return $trimmed
 }
+function Resolve-GroupMemberRisk {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$MemberSID,
+        [Parameter(Mandatory = $false)]
+        [string]$FallbackName
+    )
+    $broadRIDNames = @{ '-513' = 'Domain Users'; '-514' = 'Domain Guests'; '-515' = 'Domain Computers' }
+    $isBroad = Test-IsBroadTrustee -SID $MemberSID
+    $memberName = $null
+    if ($Script:RiskySIDs -and $Script:RiskySIDs.ContainsKey($MemberSID)) {
+        $memberName = $Script:RiskySIDs[$MemberSID]
+    } elseif ($isBroad) {
+        $suffix = Test-IsBroadGroupRID -SID $MemberSID
+        if ($suffix -and $broadRIDNames.ContainsKey($suffix)) { $memberName = $broadRIDNames[$suffix] }
+    }
+    if (-not $memberName) {
+        $memberName = if ($FallbackName) { $FallbackName } else { ConvertFrom-SID -SID $MemberSID }
+    }
+    [PSCustomObject]@{ Name = $memberName; IsBroad = [bool]$isBroad }
+}
 function Parse-RestrictedGroups {
     [CmdletBinding()]
     param(
@@ -71189,16 +71216,9 @@ function Parse-RestrictedGroups {
                         $riskyMembers = @()
                         foreach ($memberSID in $memberSIDs) {
                             if ([string]::IsNullOrWhiteSpace($memberSID)) { continue }
-                            $memberName = ""
-                            if ($Script:RiskySIDs.ContainsKey($memberSID)) {
-                                $memberName = $Script:RiskySIDs[$memberSID]
-                                $riskyMembers += $memberName
-                            } elseif ($memberSID -match '-513$') {
-                                $memberName = "Domain Users"
-                                $riskyMembers += $memberName
-                            } else {
-                                $memberName = ConvertFrom-SID -SID $memberSID
-                            }
+                            $memberRisk = Resolve-GroupMemberRisk -MemberSID $memberSID
+                            $memberName = $memberRisk.Name
+                            if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
                             $memberNames += $memberName
                         }
                         $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
@@ -71232,17 +71252,10 @@ function Parse-RestrictedGroups {
                     $memberSID = Resolve-RestrictedGroupSID -Identity $Matches[1]
                     $targetGroupSIDs = $Matches[2] -split ',' |
                         ForEach-Object { Resolve-RestrictedGroupSID -Identity $_ }
-                    $memberName = ""
                     $riskyMembers = @()
-                    if ($Script:RiskySIDs.ContainsKey($memberSID)) {
-                        $memberName = $Script:RiskySIDs[$memberSID]
-                        $riskyMembers += $memberName
-                    } elseif ($memberSID -match '-513$') {
-                        $memberName = "Domain Users"
-                        $riskyMembers += $memberName
-                    } else {
-                        $memberName = ConvertFrom-SID -SID $memberSID
-                    }
+                    $memberRisk = Resolve-GroupMemberRisk -MemberSID $memberSID
+                    $memberName = $memberRisk.Name
+                    if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
                     foreach ($groupSID in $targetGroupSIDs) {
                         if ([string]::IsNullOrWhiteSpace($groupSID)) { continue }
                         $groupName = Resolve-LocalGroupTargetName -SID $groupSID
@@ -71332,15 +71345,9 @@ function Parse-GPPGroups {
                         $memberSID = ConvertTo-SID -Identity ([string]$memberName)
                     }
                     if ($memberSID) {
-                        if ($Script:RiskySIDs.ContainsKey($memberSID)) {
-                            $memberName = $Script:RiskySIDs[$memberSID]
-                            $riskyMembers += $memberName
-                        } elseif ($memberSID -match '-513$') {
-                            $memberName = "Domain Users"
-                            $riskyMembers += $memberName
-                        } elseif (-not $memberName) {
-                            $memberName = ConvertFrom-SID -SID $memberSID
-                        }
+                        $memberRisk = Resolve-GroupMemberRisk -MemberSID ([string]$memberSID) -FallbackName ([string]$memberName)
+                        $memberName = $memberRisk.Name
+                        if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
                         $memberSIDs += $memberSID
                     }
                     if ($memberName) {
@@ -89107,7 +89114,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1248"
+$Script:adPEASVersion = "2.7.0+20261017-1253"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
