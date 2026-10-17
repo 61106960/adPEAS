@@ -1647,7 +1647,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Whether the script comes out of the policy's own Scripts folder or from somewhere else"
             "Whether the parameter line carries something that looks like a credential"
             "PowerShell scripts via psscripts.ini"
-            "Not tested: who may write the script file - its permissions are not in the directory"
+            "Who may write a script outside the policy's own folder - the NTFS permissions of the file and its folder, read over SMB from the domain's own name and enabled computers of the domain; not under -OPSEC, and not the share permissions"
         )
         SecureMessage = "No scripts distributed via GPO. No Logon/Logoff/Startup/Shutdown scripts were found in Group Policy configurations."
     }

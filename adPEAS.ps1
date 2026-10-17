@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 17:58:19
-    Version: 2.7.0+20261017-1758
+    Build: 2026-10-17 18:08:54
+    Version: 2.7.0+20261017-1808
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -22217,7 +22217,7 @@ $acl.Access | Where-Object {
         Title = "GPO Script Executed From Outside the Policy Store"
         Risk = "Finding"
         BaseScore = 60
-        Description = "A Group Policy runs this script from a path that is not the policy's own Scripts folder in SYSVOL - a file share, the domain's NETLOGON scripts folder, or a local path on every target machine. Whoever may write that file decides what runs, and a startup or shutdown script runs as SYSTEM on every machine the policy reaches. adPEAS reports the path and the context; the permissions of that path are not something it can read from the directory, so they are the first thing to check by hand."
+        Description = "A Group Policy runs this script from a path that is not the policy's own Scripts folder in SYSVOL - a file share, the domain's NETLOGON scripts folder, or a local path on every target machine. Whoever may write that file decides what runs, and a startup or shutdown script runs as SYSTEM on every machine the policy reaches. For a UNC path adPEAS reads the NTFS permissions of the file and of its folder over SMB, where it may connect - the domain's own name and enabled computers of the domain, not under -OPSEC - and names whoever beyond the administrators may write them (scriptPathPermissions). The share permissions apply on top over the network and are not read; a local path exists on each computer and is not read either."
         Impact = @(
             "Write access to the script file is code execution in the script's context - SYSTEM for startup and shutdown scripts"
             "The scope is every machine or every user the GPO applies to, at every boot or every logon"
@@ -22261,6 +22261,19 @@ $acl.Access | Where-Object {
             # a hint under SYSTEM, a note under the user.
             @{ Attribute = 'scriptRisk'; Pattern = '^Runs as SYSTEM from NETLOGON'; Severity = 'Hint' }
             @{ Attribute = 'scriptRisk'; Pattern = '^Runs as the logged-on user from NETLOGON'; Severity = 'Note' }
+
+            # The permissions read over SMB (Set-GPOScriptWriteAccess). A principal beyond
+            # the administrators may write the script: a finding in either context. Read in
+            # full and only administrators may: a note in NETLOGON, whose administrators are
+            # the domain's, a hint on another server, whose administrators decide what runs.
+            # Severity only - the openings above still pick the card - and disjoint from each
+            # other and from the policy-store colour below.
+            @{ Attribute = 'scriptRisk'; Pattern = ' can change it by NTFS permission'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'scriptRisk'; Pattern = '^Runs as .+ from NETLOGON or SYSVOL outside a GPO folder - only '; Severity = 'Note'; SeverityOnly = $true }
+            @{ Attribute = 'scriptRisk'; Pattern = '^Runs as .+ from a path outside the policy store - only '; Severity = 'Hint'; SeverityOnly = $true }
+            # One "path: Identity (Rights)" row per trustee that can write, written only when
+            # there is one.
+            @{ Attribute = 'scriptPathPermissions'; Severity = 'Finding' }
 
             # The script in the policy store: a colour and no card, because the GPO
             # permissions decide who may change it and the GPO permission checks are what
@@ -27393,7 +27406,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Whether the script comes out of the policy's own Scripts folder or from somewhere else"
             "Whether the parameter line carries something that looks like a credential"
             "PowerShell scripts via psscripts.ini"
-            "Not tested: who may write the script file - its permissions are not in the directory"
+            "Who may write a script outside the policy's own folder - the NTFS permissions of the file and its folder, read over SMB from the domain's own name and enabled computers of the domain; not under -OPSEC, and not the share permissions"
         )
         SecureMessage = "No scripts distributed via GPO. No Logon/Logoff/Startup/Shutdown scripts were found in Group Policy configurations."
     }
@@ -62978,6 +62991,10 @@ function Select-NTFSWriteAccess {
 .PARAMETER Caller
     The check name the log lines carry.
 
+.PARAMETER Runner
+    What runs the path, for the reason given when the path holds an environment variable:
+    "the task", "the script".
+
 .OUTPUTS
     [PSCustomObject] with
       Rows      - "<path>: Identity (Rights)" per trustee that can write, across all paths
@@ -62996,7 +63013,10 @@ function Get-UNCWriteAccess {
         [switch]$OPSEC,
 
         [Parameter(Mandatory = $false)]
-        [string]$Caller = 'Get-UNCWriteAccess'
+        [string]$Caller = 'Get-UNCWriteAccess',
+
+        [Parameter(Mandatory = $false)]
+        [string]$Runner = 'the task'
     )
 
     if ($null -eq $Script:_uncWriteAccess) {
@@ -63012,7 +63032,7 @@ function Get-UNCWriteAccess {
 
         $pathKey = $uncPath.ToLowerInvariant()
         if (-not $Script:_uncWriteAccess.Paths.ContainsKey($pathKey)) {
-            $Script:_uncWriteAccess.Paths[$pathKey] = Read-UNCPathAccess -Path $uncPath -OPSEC:$OPSEC -Caller $Caller
+            $Script:_uncWriteAccess.Paths[$pathKey] = Read-UNCPathAccess -Path $uncPath -OPSEC:$OPSEC -Caller $Caller -Runner $Runner
         }
         $entry = $Script:_uncWriteAccess.Paths[$pathKey]
 
@@ -63063,7 +63083,10 @@ function Read-UNCPathAccess {
         [switch]$OPSEC,
 
         [Parameter(Mandatory = $false)]
-        [string]$Caller = 'Get-UNCWriteAccess'
+        [string]$Caller = 'Get-UNCWriteAccess',
+
+        [Parameter(Mandatory = $false)]
+        [string]$Runner = 'the task'
     )
 
     $findings = @()
@@ -63073,9 +63096,9 @@ function Read-UNCPathAccess {
             return [PSCustomObject]@{ Findings = @(); Reason = '-OPSEC connects to no host a policy names' }
         }
 
-        # Resolved on the computer that runs the task, and nowhere else.
+        # Resolved on the computer that runs it, and nowhere else.
         if ($Path -match '%') {
-            return [PSCustomObject]@{ Findings = @(); Reason = "$Path contains an environment variable, which only the computer running the task resolves" }
+            return [PSCustomObject]@{ Findings = @(); Reason = "$Path contains an environment variable, which only the computer running $Runner resolves" }
         }
 
         if ($Path -notmatch '^\\\\([^\\]+)\\([^\\]+)(.*)$') {
@@ -117619,8 +117642,15 @@ function Get-GPOScriptPaths {
     - Scripts running as SYSTEM (startup/shutdown) from UNC or writable paths
     - Scripts executing from network shares (credential exposure)
     - PowerShell scripts configured via psscripts.ini
+    - Who may write a script that runs from outside the policy's own folder - NETLOGON,
+      SYSVOL outside a GPO folder, a file share - read over SMB from the domain's own name
+      and enabled computers of the domain (Set-GPOScriptWriteAccess)
 
     Requires SMB access to \\domain\SYSVOL.
+
+    .PARAMETER OPSEC
+    Connect to no host a policy names: the permissions of a script outside the policy
+    store are then reported as not checked.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -117654,7 +117684,10 @@ function Get-GPOScriptPaths {
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory=$false)]
-        [switch]$IncludeInactive
+        [switch]$IncludeInactive,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$OPSEC
     )
 
     begin {
@@ -117663,7 +117696,7 @@ function Get-GPOScriptPaths {
 
     process {
         try {
-            # Connection parameters only. -IncludeInactive belongs to this check and neither
+            # Connection parameters only. -IncludeInactive and -OPSEC belong to this check and neither
             # callee below has a parameter by that name, so splatting $PSBoundParameters
             # failed to bind - a terminating error before any output, which looks like a
             # check that silently produced nothing.
@@ -117679,6 +117712,10 @@ function Get-GPOScriptPaths {
 
             $domainFQDN = $Script:LDAPContext.Domain
             $Script:_gpoScriptFindings = [System.Collections.ArrayList]::new()
+
+            # The hosts and paths read for script permissions - see Get-UNCWriteAccess. Fresh
+            # per run, cleared when the check ends.
+            $Script:_uncWriteAccess = @{ Hosts = @{}; Paths = @{} }
 
             Show-SubHeader "Searching for GPO-deployed scripts..." -ObjectType "GPOScriptPath"
 
@@ -117823,6 +117860,13 @@ function Get-GPOScriptPaths {
             }
 
             if ($scriptFindings.Count -gt 0) {
+                # Who may write a script that runs from outside the policy store, where adPEAS
+                # may connect - see Set-GPOScriptWriteAccess. Before the split below, which
+                # reads the severities this sets.
+                foreach ($finding in $scriptFindings) {
+                    Set-GPOScriptWriteAccess -Finding $finding -OPSEC:$OPSEC
+                }
+
                 # A script named by a policy that is not linked or not enabled never runs.
                 # Held back rather than dropped - see Show-GPOInactiveSummary. The scope
                 # comes from the entry itself: a startup script depends on the computer
@@ -117875,6 +117919,8 @@ function Get-GPOScriptPaths {
         } catch {
             Write-Log "[Get-GPOScriptPaths] Error: $_" -Level Error
             Show-Line "Error during check - scripts deployed via GPO could not be evaluated: $_" -Class Finding
+        } finally {
+            $Script:_uncWriteAccess = $null
         }
     }
 
@@ -118090,6 +118136,89 @@ function Parse-ScriptIni {
         Write-Log "[Parse-ScriptIni] Error parsing $FilePath : $_"
         return $null
     }
+}
+
+<#
+.SYNOPSIS
+    Reads who may write a GPO script that runs from outside the policy store, and puts the
+    answer into the script's verdict.
+
+.DESCRIPTION
+    Coverage item A9. A script in the policy's own Scripts folder follows the GPO's
+    permissions, which the GPO permission checks report. One in NETLOGON, in SYSVOL outside
+    a GPO folder or on a file share follows the NTFS permissions of the file and of the
+    folder it is in, and Parse-ScriptIni could only say they were not checked.
+    Get-UNCWriteAccess reads them where adPEAS may connect - the domain's own name and the
+    enabled computers of the domain, never under -OPSEC - past the identity gates a GPO is
+    judged by.
+
+    Three outcomes:
+      a principal beyond the administrators may write the script or its folder
+        - a finding in either context, named in scriptPathPermissions: SYSTEM on every
+          computer in scope, or every user in scope, administrators among them
+      read in full, and only administrators and privileged accounts may write it
+        - NETLOGON or SYSVOL: a note, those are the domain's administrators
+        - another share: a hint, the administrators of that server decide what runs
+      not read in full - the verdict Parse-ScriptIni wrote, with the reason
+
+    A local path exists on each computer and is not read over the network; its verdict
+    keeps Parse-ScriptIni's severity and says so. A credential in the parameter line stays
+    a finding whatever the permissions say. The share permissions are not read - they apply
+    on top of NTFS over the network and can only narrow what is reported.
+
+.PARAMETER Finding
+    One script as Parse-ScriptIni returns it.
+
+.PARAMETER OPSEC
+    Connect to nothing; the path is reported as not checked.
+#>
+function Set-GPOScriptWriteAccess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Finding,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$OPSEC
+    )
+
+    if ($Finding.InsidePolicyStore) { return }
+
+    $path = [string]$Finding.ScriptPath
+    if ($path -notmatch '^\\\\[^\\]+\\[^\\]+') {
+        if ($path -match '^[A-Za-z]:\\') {
+            $Finding.scriptRisk = [string]$Finding.scriptRisk + ' - a local path exists on each computer and is not read over the network'
+        }
+        return
+    }
+
+    $inSysvolShare = ($path -match '(?i)\\(SYSVOL|NETLOGON)\\')
+    $runsAs = 'the logged-on user'
+    $reach = 'run code as every user in scope'
+    if ([bool]$Finding.RunsAsSystem) {
+        $runsAs = 'SYSTEM'
+        $reach = 'run code as SYSTEM on every computer in scope'
+    }
+    $from = 'a path outside the policy store'
+    if ($inSysvolShare) { $from = 'NETLOGON or SYSVOL outside a GPO folder' }
+
+    $access = Get-UNCWriteAccess -Path @($path) -OPSEC:$OPSEC -Caller 'Get-GPOScriptPaths' -Runner 'the script'
+
+    if (@($access.Writers).Count -gt 0) {
+        $Finding | Add-Member -NotePropertyName 'scriptPathPermissions' -NotePropertyValue (@($access.Rows) -join "`n") -Force
+        $Finding.scriptRisk = "Runs as $runsAs from $from - $(@($access.Writers) -join ', ') can change it by NTFS permission (see scriptPathPermissions), and so $reach. The share permissions, which can narrow this over the network, were not read"
+        $Finding._Severity = 'Finding'
+    } elseif (@($access.Unchecked).Count -gt 0) {
+        $Finding.scriptRisk = [string]$Finding.scriptRisk + ', because ' + (@($access.Unchecked) -join '; ')
+    } elseif ($inSysvolShare) {
+        $Finding.scriptRisk = "Runs as $runsAs from $from - only the domain's administrators and privileged accounts may change it there"
+        $Finding._Severity = 'Note'
+    } else {
+        $Finding.scriptRisk = "Runs as $runsAs from $from - only the administrators of that server and privileged accounts may change it, so they decide what runs"
+        $Finding._Severity = 'Hint'
+    }
+
+    if ($Finding.PSObject.Properties['scriptParameterCredential']) { $Finding._Severity = 'Finding' }
 }
 
 
@@ -141719,7 +141848,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1758"
+$Script:adPEASVersion = "2.7.0+20261017-1808"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -141821,7 +141950,7 @@ function Invoke-adPEAS {
 .PARAMETER OPSEC
     Skips OPSEC-critical and heavy-load checks (Kerberoast, ASREPRoast, BloodHound collection, PasswordInDescription, NonDefaultOwners, OutdatedComputers).
     These checks enumerate thousands of objects and generate significant LDAP traffic.
-    Also makes no SMB connection to the file servers a GPO scheduled task names: without -OPSEC, the NTFS permissions of a program a task running as SYSTEM or a privileged account starts from a share are read, on computers of the domain only.
+    Also makes no SMB connection to the file servers a GPO scheduled task or a GPO script names: without -OPSEC, the NTFS permissions of a program a task running as SYSTEM or a privileged account starts from a share, and of a script a policy runs from NETLOGON or a share, are read, on computers of the domain only.
 
 .PARAMETER NoColor
     Disables colored console output. Useful for logging or terminals that don't support ANSI colors.
@@ -142661,7 +142790,7 @@ try {
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPermissions' -Title 'GPO Permissions' -Check { Get-GPOPermissions -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOLocalGroupMembership' -Title 'GPO Local Group Membership' -Check { Get-GPOLocalGroupMembership }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks -OPSEC:$OPSEC }
-            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScriptPaths' -Title 'GPO Script Paths' -Check { Get-GPOScriptPaths }
+            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScriptPaths' -Title 'GPO Script Paths' -Check { Get-GPOScriptPaths -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPORegistrySettings' -Title 'GPO Registry Settings' -Check { Get-GPORegistrySettings }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPointAndPrint' -Title 'Point and Print Policies' -Check { Get-GPOPointAndPrint -IncludeDefaults:$IncludePrivileged }
         } catch {

@@ -233,6 +233,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   who control every unprotected account through the default security descriptor of the
   user class, are named once. New card `PRIVILEGED_ACCOUNT_ACL`.
 
+- **`Get-GPOScriptPaths` reads who may write a script that runs from outside the policy
+  store.** A script in NETLOGON, in SYSVOL outside a GPO folder or on a file share follows
+  the NTFS permissions of that file, not the GPO's, and the check said only that they
+  were not checked. It now reads them over SMB the way `Get-GPOScheduledTasks` reads the
+  program of a task - from the domain's own name and enabled computers of the domain only,
+  and not under the new `-OPSEC` switch, which `Invoke-adPEAS -OPSEC` passes on. A
+  principal beyond the administrators that may write the script or its folder makes the
+  script a finding in either context and is named in the new `scriptPathPermissions` row;
+  a script in NETLOGON only administrators may change is a note, one on another server a
+  hint, because that server's administrators decide what runs. A path that could not be
+  read keeps its verdict and says why. The share permissions are not read.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

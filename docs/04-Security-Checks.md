@@ -1282,12 +1282,16 @@ Get-GPOScheduledTasks -OPSEC
 - Logon/Logoff scripts (run in user context)
 - Scripts loaded from UNC paths (credential exposure risk)
 - PowerShell scripts configured via psscripts.ini
+- Who may write a script that runs from outside the policy's own folder - NETLOGON, SYSVOL outside a GPO folder, or a file share: the NTFS permissions of the file and of its folder are read over SMB from the domain's own name and enabled computers of the domain. A principal beyond the administrators that may write them makes the script a finding and is named in `scriptPathPermissions`; a script in NETLOGON only administrators may change is a note, one on another server a hint (its administrators decide what runs). The share permissions are not read, and a local path is not read over the network.
 
 **Security Impact**: GPO scripts execute automatically on target systems. Startup and Shutdown scripts run as SYSTEM, making them high-value targets for privilege escalation. Scripts loaded from UNC paths expose machine credentials on the network.
 
 **Usage**:
 ```powershell
 Get-GPOScriptPaths
+
+# Make no SMB connection to the hosts a script path names
+Get-GPOScriptPaths -OPSEC
 ```
 
 **Output Properties**:
@@ -1303,6 +1307,8 @@ Get-GPOScriptPaths
 - `ExecutionContext`: SYSTEM or User
 - `ScriptLanguage`: PowerShell, Batch, VBScript, etc.
 - `HasUNCPath`: Whether the script is loaded from a network share
+- `scriptRisk`: What the script's location is worth - the policy store, NETLOGON, a share or a local path, with who may change it or why that was not checked
+- `scriptPathPermissions`: One `path: Identity (Rights)` row per principal beyond the administrators that may write the script or its folder (only present when there is one)
 
 ---
 

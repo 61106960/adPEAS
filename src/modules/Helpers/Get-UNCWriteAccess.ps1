@@ -31,6 +31,10 @@
 .PARAMETER Caller
     The check name the log lines carry.
 
+.PARAMETER Runner
+    What runs the path, for the reason given when the path holds an environment variable:
+    "the task", "the script".
+
 .OUTPUTS
     [PSCustomObject] with
       Rows      - "<path>: Identity (Rights)" per trustee that can write, across all paths
@@ -49,7 +53,10 @@ function Get-UNCWriteAccess {
         [switch]$OPSEC,
 
         [Parameter(Mandatory = $false)]
-        [string]$Caller = 'Get-UNCWriteAccess'
+        [string]$Caller = 'Get-UNCWriteAccess',
+
+        [Parameter(Mandatory = $false)]
+        [string]$Runner = 'the task'
     )
 
     if ($null -eq $Script:_uncWriteAccess) {
@@ -65,7 +72,7 @@ function Get-UNCWriteAccess {
 
         $pathKey = $uncPath.ToLowerInvariant()
         if (-not $Script:_uncWriteAccess.Paths.ContainsKey($pathKey)) {
-            $Script:_uncWriteAccess.Paths[$pathKey] = Read-UNCPathAccess -Path $uncPath -OPSEC:$OPSEC -Caller $Caller
+            $Script:_uncWriteAccess.Paths[$pathKey] = Read-UNCPathAccess -Path $uncPath -OPSEC:$OPSEC -Caller $Caller -Runner $Runner
         }
         $entry = $Script:_uncWriteAccess.Paths[$pathKey]
 
@@ -116,7 +123,10 @@ function Read-UNCPathAccess {
         [switch]$OPSEC,
 
         [Parameter(Mandatory = $false)]
-        [string]$Caller = 'Get-UNCWriteAccess'
+        [string]$Caller = 'Get-UNCWriteAccess',
+
+        [Parameter(Mandatory = $false)]
+        [string]$Runner = 'the task'
     )
 
     $findings = @()
@@ -126,9 +136,9 @@ function Read-UNCPathAccess {
             return [PSCustomObject]@{ Findings = @(); Reason = '-OPSEC connects to no host a policy names' }
         }
 
-        # Resolved on the computer that runs the task, and nowhere else.
+        # Resolved on the computer that runs it, and nowhere else.
         if ($Path -match '%') {
-            return [PSCustomObject]@{ Findings = @(); Reason = "$Path contains an environment variable, which only the computer running the task resolves" }
+            return [PSCustomObject]@{ Findings = @(); Reason = "$Path contains an environment variable, which only the computer running $Runner resolves" }
         }
 
         if ($Path -notmatch '^\\\\([^\\]+)\\([^\\]+)(.*)$') {

@@ -14259,7 +14259,7 @@ $acl.Access | Where-Object {
         Title = "GPO Script Executed From Outside the Policy Store"
         Risk = "Finding"
         BaseScore = 60
-        Description = "A Group Policy runs this script from a path that is not the policy's own Scripts folder in SYSVOL - a file share, the domain's NETLOGON scripts folder, or a local path on every target machine. Whoever may write that file decides what runs, and a startup or shutdown script runs as SYSTEM on every machine the policy reaches. adPEAS reports the path and the context; the permissions of that path are not something it can read from the directory, so they are the first thing to check by hand."
+        Description = "A Group Policy runs this script from a path that is not the policy's own Scripts folder in SYSVOL - a file share, the domain's NETLOGON scripts folder, or a local path on every target machine. Whoever may write that file decides what runs, and a startup or shutdown script runs as SYSTEM on every machine the policy reaches. For a UNC path adPEAS reads the NTFS permissions of the file and of its folder over SMB, where it may connect - the domain's own name and enabled computers of the domain, not under -OPSEC - and names whoever beyond the administrators may write them (scriptPathPermissions). The share permissions apply on top over the network and are not read; a local path exists on each computer and is not read either."
         Impact = @(
             "Write access to the script file is code execution in the script's context - SYSTEM for startup and shutdown scripts"
             "The scope is every machine or every user the GPO applies to, at every boot or every logon"
@@ -14303,6 +14303,19 @@ $acl.Access | Where-Object {
             # a hint under SYSTEM, a note under the user.
             @{ Attribute = 'scriptRisk'; Pattern = '^Runs as SYSTEM from NETLOGON'; Severity = 'Hint' }
             @{ Attribute = 'scriptRisk'; Pattern = '^Runs as the logged-on user from NETLOGON'; Severity = 'Note' }
+
+            # The permissions read over SMB (Set-GPOScriptWriteAccess). A principal beyond
+            # the administrators may write the script: a finding in either context. Read in
+            # full and only administrators may: a note in NETLOGON, whose administrators are
+            # the domain's, a hint on another server, whose administrators decide what runs.
+            # Severity only - the openings above still pick the card - and disjoint from each
+            # other and from the policy-store colour below.
+            @{ Attribute = 'scriptRisk'; Pattern = ' can change it by NTFS permission'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'scriptRisk'; Pattern = '^Runs as .+ from NETLOGON or SYSVOL outside a GPO folder - only '; Severity = 'Note'; SeverityOnly = $true }
+            @{ Attribute = 'scriptRisk'; Pattern = '^Runs as .+ from a path outside the policy store - only '; Severity = 'Hint'; SeverityOnly = $true }
+            # One "path: Identity (Rights)" row per trustee that can write, written only when
+            # there is one.
+            @{ Attribute = 'scriptPathPermissions'; Severity = 'Finding' }
 
             # The script in the policy store: a colour and no card, because the GPO
             # permissions decide who may change it and the GPO permission checks are what
