@@ -185,6 +185,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `RequirePassword`, preference items switched off or deleting the value, and the
   Winlogon password, which keeps its own row, are left out.
 
+- **New check `Get-CriticalObjectACLs`: control over the schema, the partitions container
+  and the RID and infrastructure objects.** These four objects carry the schema, the
+  naming contexts of the forest and two operations master roles, and no check read their
+  ACLs. A principal outside Tier-0 - an operator group counts - that owns one of them,
+  holds full control, write or DACL rights on it, holds the transfer right of the role it
+  carries or all extended rights, or may write the RID pool of the RID Manager is a
+  finding with a card of its own. It runs in the Rights module.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

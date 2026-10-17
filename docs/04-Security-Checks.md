@@ -446,6 +446,26 @@ Get-DangerousACLs
 Get-DangerousACLs -IncludePrivileged
 ```
 
+---
+
+### Get-CriticalObjectACLs
+
+**Purpose**: Finds principals outside Tier-0 that control the schema, the partitions container, the RID Manager or the infrastructure object.
+
+**What it checks**:
+- The schema naming context head, `CN=Partitions` in the configuration naming context, `CN=RID Manager$,CN=System` and `CN=Infrastructure`
+- Owner, GenericAll, GenericWrite, WriteDacl, WriteOwner and unrestricted WriteProperty on each
+- The role transfer right of each object (Change-Schema-Master, Change-Domain-Master, Change-Rid-Master, Change-Infrastructure-Master) and all extended rights
+- WriteProperty on `rIDAvailablePool` of the RID Manager
+- Operator groups count as outside Tier-0
+
+**Security Impact**: Schema control changes the default security descriptor of every new object in the forest; a role object under control moves its operations master role, and the RID pool can be exhausted.
+
+**Usage**:
+```powershell
+Get-CriticalObjectACLs
+```
+
 **Parameters**:
 
 | Parameter | Description |

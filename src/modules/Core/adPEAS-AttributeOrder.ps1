@@ -568,6 +568,10 @@ $Script:PrimaryAttributes = @{
         'member', 'memberOf', 'description'
     )
 
+    CriticalObjectACL = @(
+        'Trustee', 'TrusteeSID', 'criticalObject', 'criticalObjectRights'
+    )
+
     ExchangeServersGroup = @(
         'sAMAccountName', 'distinguishedName', 'objectSid',
         'member', 'memberOf', 'description'

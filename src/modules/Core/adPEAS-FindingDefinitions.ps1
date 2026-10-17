@@ -2598,6 +2598,42 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
     }
 
+    'CRITICAL_OBJECT_CONTROL' = @{
+        Title = "Control Over the Schema, the Partitions Container or a Role Object"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "A principal outside Tier-0 controls one of the objects the forest and the domain run on: it owns the object, holds full control, write or DACL rights on it, holds the transfer right of the role the object carries, or - on the RID Manager - may write the RID pool. Through the schema it can change the default security descriptor every new object of a class receives; through the partitions container the naming contexts of the forest; through the RID Manager and the infrastructure object it can take the role, and on the RID Manager exhaust the pool every new security identifier of the domain is cut from."
+        Impact = @(
+            "Schema control is forest-wide persistence: an ACE added to a default security descriptor lands on every object created from then on"
+            "A role taken over moves an operation of the forest or the domain to a server of the attacker's choosing"
+            "An exhausted RID pool stops the domain from creating any new account, group or computer"
+        )
+        Attack = @(
+            "1. Attacker controls the listed principal"
+            "2. Uses the right on the object - writes the DACL, the schema, or fSMORoleOwner with the role's transfer right"
+            "3. Holds the change for as long as nobody compares the object with its default"
+        )
+        Remediation = @(
+            "Remove the ACE or the ownership from the principal - these objects are administered by Schema Admins, Enterprise Admins and Domain Admins only"
+            "Review who granted it and when; a change on the schema is replicated to every domain controller of the forest"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the owner and the access rules of the RID Manager"
+                Command = "`$dn = 'CN=RID Manager`$,CN=System,' + (Get-ADDomain).DistinguishedName; `$acl = Get-Acl -Path ('AD:' + `$dn); `$acl.Owner; `$acl.Access | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "RID-Available-Pool attribute - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-ridavailablepool" }
+            @{ Title = "Control access rights - MS-ADTS 5.1.3.2.1"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/1522b774-6464-41a3-87a5-1e5633c3fbbb" }
+        )
+        Tools = @("PowerView", "ADACLScanner")
+        MITRE = "T1484"
+        Triggers = @(
+            @{ Attribute = 'criticalObjectRights'; Pattern = '.'; Severity = 'Finding' }
+        )
+    }
+
     'RODC_PRIVILEGED_PASSWORD_ALLOWED' = @{
         Title = "Read-Only Domain Controller May Cache Privileged Passwords"
         Risk = "Finding"

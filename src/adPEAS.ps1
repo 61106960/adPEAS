@@ -240,6 +240,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Delegation\Get-ConstrainedDelegation.ps1"
     . "$Script:ScriptPath\modules\Checks\Delegation\Get-ResourceBasedConstrainedDelegation.ps1"
     . "$Script:ScriptPath\modules\Checks\Rights\Get-DangerousACLs.ps1"
+    . "$Script:ScriptPath\modules\Checks\Rights\Get-CriticalObjectACLs.ps1"
     . "$Script:ScriptPath\modules\Checks\Rights\Get-DangerousOUPermissions.ps1"
     . "$Script:ScriptPath\modules\Checks\Rights\Get-PasswordResetRights.ps1"
     . "$Script:ScriptPath\modules\Checks\Rights\Get-AddComputerRights.ps1"
@@ -1118,6 +1119,7 @@ try {
         Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['Rights'])"
         try {
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-DangerousACLs' -Title 'Dangerous ACLs' -Check { Get-DangerousACLs -IncludePrivileged:$IncludePrivileged }
+            Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-CriticalObjectACLs' -Title 'Schema, Partitions and Role Object ACLs' -Check { Get-CriticalObjectACLs }
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-DangerousOUPermissions' -Title 'Dangerous OU Permissions' -Check { Get-DangerousOUPermissions -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-PasswordResetRights' -Title 'Password Reset Rights' -Check { Get-PasswordResetRights -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-AddComputerRights' -Title 'Add Computer Rights' -Check { Get-AddComputerRights -IncludePrivileged:$IncludePrivileged }

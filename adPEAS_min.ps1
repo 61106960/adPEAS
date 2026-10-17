@@ -3423,6 +3423,9 @@ $Script:PrimaryAttributes = @{
         'sAMAccountName', 'distinguishedName', 'objectSid',
         'member', 'memberOf', 'description'
     )
+    CriticalObjectACL = @(
+        'Trustee', 'TrusteeSID', 'criticalObject', 'criticalObjectRights'
+    )
     ExchangeServersGroup = @(
         'sAMAccountName', 'distinguishedName', 'objectSid',
         'member', 'memberOf', 'description'
@@ -6296,6 +6299,41 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         MITRE = "T1207"
         Triggers = @(
             @{ Attribute = 'dangerousRights'; Pattern = 'DS-Install-Replica'; Severity = 'Finding' }
+        )
+    }
+    'CRITICAL_OBJECT_CONTROL' = @{
+        Title = "Control Over the Schema, the Partitions Container or a Role Object"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "A principal outside Tier-0 controls one of the objects the forest and the domain run on: it owns the object, holds full control, write or DACL rights on it, holds the transfer right of the role the object carries, or - on the RID Manager - may write the RID pool. Through the schema it can change the default security descriptor every new object of a class receives; through the partitions container the naming contexts of the forest; through the RID Manager and the infrastructure object it can take the role, and on the RID Manager exhaust the pool every new security identifier of the domain is cut from."
+        Impact = @(
+            "Schema control is forest-wide persistence: an ACE added to a default security descriptor lands on every object created from then on"
+            "A role taken over moves an operation of the forest or the domain to a server of the attacker's choosing"
+            "An exhausted RID pool stops the domain from creating any new account, group or computer"
+        )
+        Attack = @(
+            "1. Attacker controls the listed principal"
+            "2. Uses the right on the object - writes the DACL, the schema, or fSMORoleOwner with the role's transfer right"
+            "3. Holds the change for as long as nobody compares the object with its default"
+        )
+        Remediation = @(
+            "Remove the ACE or the ownership from the principal - these objects are administered by Schema Admins, Enterprise Admins and Domain Admins only"
+            "Review who granted it and when; a change on the schema is replicated to every domain controller of the forest"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the owner and the access rules of the RID Manager"
+                Command = "`$dn = 'CN=RID Manager`$,CN=System,' + (Get-ADDomain).DistinguishedName; `$acl = Get-Acl -Path ('AD:' + `$dn); `$acl.Owner; `$acl.Access | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "RID-Available-Pool attribute - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-ridavailablepool" }
+            @{ Title = "Control access rights - MS-ADTS 5.1.3.2.1"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/1522b774-6464-41a3-87a5-1e5633c3fbbb" }
+        )
+        Tools = @("PowerView", "ADACLScanner")
+        MITRE = "T1484"
+        Triggers = @(
+            @{ Attribute = 'criticalObjectRights'; Pattern = '.'; Severity = 'Finding' }
         )
     }
     'RODC_PRIVILEGED_PASSWORD_ALLOWED' = @{
@@ -19629,6 +19667,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         SecureMessage = "No account stores its password with reversible encryption. No password can be recovered to plaintext from Active Directory through this setting."
         PrimaryFindingId = 'REVERSIBLE_ENCRYPTION'
+    }
+    'CriticalObjectACL' = @{
+        TitleFormat = "Critical Object Control: {Trustee}"
+        Module = "Rights"
+        Category = "Rights"
+        SectionTitle = "Schema, Partitions and Role Object ACLs"
+        Summary = "Finds principals outside Tier-0 that control the schema, the partitions container, the RID Manager or the infrastructure object."
+        WhyItMatters = "These four objects carry the schema, the naming contexts of the forest and two of the operations master roles. Control over the schema changes the default security descriptor of every new object; control over a role object moves the role or, for the RID Manager, exhausts the identifiers the domain is built from."
+        WhatWeCheck = @(
+            "Owner, GenericAll, GenericWrite, WriteDacl, WriteOwner and unrestricted WriteProperty on each of the four objects"
+            "The role transfer right of each object, and all extended rights"
+            "WriteProperty on rIDAvailablePool of the RID Manager"
+            "Only principals outside Tier-0 - an operator group counts"
+        )
+        SecureMessage = "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager or the infrastructure object."
+        PrimaryFindingId = 'CRITICAL_OBJECT_CONTROL'
     }
     'RODCPasswordReplication' = @{
         TitleFormat = "RODC Password Replication: {Name}"
@@ -68647,6 +68701,110 @@ function Get-DangerousACLs {
         Write-Log "[Get-DangerousACLs] Check completed"
     }
 }
+function Get-CriticalObjectACLs {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    begin {
+        Write-Log "[Get-CriticalObjectACLs] Starting check"
+    }
+    process {
+        try {
+            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+                return
+            }
+            Show-SubHeader "Analyzing the ACLs of the schema, the partitions container and the RID and infrastructure objects..." -ObjectType "CriticalObjectACL"
+            $targets = @()
+            if ($Script:LDAPContext.SchemaNamingContext) {
+                $targets += @{ DN = [string]$Script:LDAPContext.SchemaNamingContext; Label = 'Schema'; Role = 'Change-Schema-Master'
+                               Meaning = 'may change the schema - classes, attributes and the default security descriptor of every new object' }
+            }
+            if ($Script:LDAPContext.ConfigurationNamingContext) {
+                $targets += @{ DN = "CN=Partitions,$($Script:LDAPContext.ConfigurationNamingContext)"; Label = 'Partitions container'; Role = 'Change-Domain-Master'
+                               Meaning = 'may change the cross-references that define the naming contexts of the forest' }
+            }
+            $targets += @{ DN = "CN=RID Manager`$,CN=System,$($Script:LDAPContext.DomainDN)"; Label = 'RID Manager'; Role = 'Change-Rid-Master'
+                           Meaning = 'may take the RID master role or exhaust the RID pool every new security identifier of the domain is cut from' }
+            $targets += @{ DN = "CN=Infrastructure,$($Script:LDAPContext.DomainDN)"; Label = 'Infrastructure object'; Role = 'Change-Infrastructure-Master'
+                           Meaning = 'may take the infrastructure master role' }
+            $ridPoolGuid = '66171888-8f3c-11d0-afda-00c04fd930c9'
+            $noGuid = '00000000-0000-0000-0000-000000000000'
+            $findings = @()
+            $unread = @()
+            foreach ($target in $targets) {
+                $aclResult = Get-ObjectACL -DistinguishedName $target.DN -DangerousOnly -AllowOnly @PSBoundParameters
+                if (-not $aclResult) {
+                    $unread += $target.Label
+                    continue
+                }
+                $rightsBySID = [ordered]@{}
+                $nameBySID = @{}
+                if ($aclResult.OwnerSID) {
+                    $rightsBySID[[string]$aclResult.OwnerSID] = @('Owner')
+                    $nameBySID[[string]$aclResult.OwnerSID] = $(if ($aclResult.Owner) { [string]$aclResult.Owner } else { [string]$aclResult.OwnerSID })
+                }
+                foreach ($ace in @($aclResult.ACEs)) {
+                    if ($ace.InheritedObjectType -and $ace.InheritedObjectType -ne $noGuid) { continue }
+                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+                    $granted = @()
+                    $objectType = [string]$ace.ObjectType
+                    if (-not $objectType -or $objectType -eq $noGuid) {
+                        $granted += @($ace.RightsRaw | Where-Object { $_ -in @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'WriteProperty') })
+                        if (@($ace.RightsRaw) -contains 'ExtendedRight' -and @($ace.RightsRaw) -notcontains 'GenericAll') {
+                            $granted += 'All extended rights'
+                        }
+                    } elseif ($ace.ObjectTypeName -eq $target.Role) {
+                        $granted += $target.Role
+                    } elseif ($target.Role -eq 'Change-Rid-Master' -and $objectType -ieq $ridPoolGuid -and @($ace.RightsRaw) -contains 'WriteProperty') {
+                        $granted += 'WriteProperty (rIDAvailablePool)'
+                    }
+                    if ($granted.Count -eq 0) { continue }
+                    $sid = [string]$ace.TrusteeSID
+                    if (-not $rightsBySID.Contains($sid)) {
+                        $rightsBySID[$sid] = @()
+                        $nameBySID[$sid] = $(if ($ace.Trustee) { [string]$ace.Trustee } else { $sid })
+                    }
+                    $rightsBySID[$sid] = @($rightsBySID[$sid]) + $granted
+                }
+                foreach ($sid in @($rightsBySID.Keys)) {
+                    if ((Test-IsPrivileged -Identity $sid).Category -eq 'Privileged') { continue }
+                    $rightsText = "$(@($rightsBySID[$sid] | Select-Object -Unique) -join ', ') - $($target.Meaning)"
+                    if (Test-IsBroadTrustee -SID $sid) { $rightsText = "$rightsText - granted to a broad group so every member holds it" }
+                    $findings += [PSCustomObject]@{
+                        Trustee              = $nameBySID[$sid]
+                        TrusteeSID           = $sid
+                        criticalObject       = "$($target.Label) ($($target.DN))"
+                        criticalObjectRights = $rightsText
+                    }
+                }
+            }
+            foreach ($label in $unread) {
+                Show-Line "The ACL of the $label could not be read - not checked" -Class Note
+            }
+            if ($findings.Count -gt 0) {
+                Show-Line "Found $($findings.Count) non-Tier-0 principal(s) with control over the schema, the partitions container or a role object" -Class Finding
+                foreach ($finding in $findings) {
+                    $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CriticalObjectACL' -Force
+                    Show-Object $finding -Class Finding
+                }
+            } elseif ($unread.Count -eq 0) {
+                Show-Line "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager or the infrastructure object" -Class Secure
+            }
+        } catch {
+            Write-Log "[Get-CriticalObjectACLs] Error: $_" -Level Error
+            Show-Line "Error during check - the ACLs of the schema, the partitions container and the role objects could not be evaluated: $_" -Class Finding
+        }
+    }
+    end {
+        Write-Log "[Get-CriticalObjectACLs] Check completed"
+    }
+}
 function Get-DangerousOUPermissions {
     [CmdletBinding()]
     param(
@@ -90325,7 +90483,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1638"
+$Script:adPEASVersion = "2.7.0+20261017-1647"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -90769,6 +90927,7 @@ try {
         Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['Rights'])"
         try {
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-DangerousACLs' -Title 'Dangerous ACLs' -Check { Get-DangerousACLs -IncludePrivileged:$IncludePrivileged }
+            Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-CriticalObjectACLs' -Title 'Schema, Partitions and Role Object ACLs' -Check { Get-CriticalObjectACLs }
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-DangerousOUPermissions' -Title 'Dangerous OU Permissions' -Check { Get-DangerousOUPermissions -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-PasswordResetRights' -Title 'Password Reset Rights' -Check { Get-PasswordResetRights -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-AddComputerRights' -Title 'Add Computer Rights' -Check { Get-AddComputerRights -IncludePrivileged:$IncludePrivileged }

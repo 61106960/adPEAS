@@ -850,6 +850,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'REVERSIBLE_ENCRYPTION'
     }
 
+    'CriticalObjectACL' = @{
+        TitleFormat = "Critical Object Control: {Trustee}"
+        Module = "Rights"
+        Category = "Rights"
+        SectionTitle = "Schema, Partitions and Role Object ACLs"
+        Summary = "Finds principals outside Tier-0 that control the schema, the partitions container, the RID Manager or the infrastructure object."
+        WhyItMatters = "These four objects carry the schema, the naming contexts of the forest and two of the operations master roles. Control over the schema changes the default security descriptor of every new object; control over a role object moves the role or, for the RID Manager, exhausts the identifiers the domain is built from."
+        WhatWeCheck = @(
+            "Owner, GenericAll, GenericWrite, WriteDacl, WriteOwner and unrestricted WriteProperty on each of the four objects"
+            "The role transfer right of each object, and all extended rights"
+            "WriteProperty on rIDAvailablePool of the RID Manager"
+            "Only principals outside Tier-0 - an operator group counts"
+        )
+        SecureMessage = "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager or the infrastructure object."
+        PrimaryFindingId = 'CRITICAL_OBJECT_CONTROL'
+    }
+
     'RODCPasswordReplication' = @{
         TitleFormat = "RODC Password Replication: {Name}"
         Module = "Accounts"
