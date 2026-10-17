@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 18:55:26
-    Version: 2.7.0+20261017-1855
+    Build: 2026-10-17 19:08:35
+    Version: 2.7.0+20261017-1908
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -12861,48 +12861,47 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
     }
 
     'LDAP_ANONYMOUS_BINDING_ALLOWED' = @{
-        Title = "Anonymous LDAP Binding Allowed"
-        Risk = "Hint"
+        # The card used to describe a GPO setting ("The GPO does not restrict anonymous
+        # LDAP binding") and remediate it with 'Do not allow anonymous enumeration of SAM
+        # accounts and shares', an SMB null-session control. Get-LDAPConfiguration raises
+        # this card from dsHeuristics character 7 alone, and no GPO setting governs that.
+        Title = "Anonymous LDAP Operations Allowed"
+        Risk = "Finding"
         BaseScore = 30
-        Description = "The GPO does not restrict anonymous LDAP binding. Note: 'Not Configured' in GPO does not necessarily mean anonymous access is allowed - it may be restricted locally on the Domain Controller or by OS defaults (disabled by default since Windows Server 2003). However, best practice is to explicitly configure security settings via GPO for consistent configuration and auditability."
+        Description = "Character 7 of dsHeuristics (fLDAPBlockAnonOps) is 2 on CN=Directory Service in the configuration partition, so every domain controller of the forest lets an anonymous client do more than bind and read rootDSE: it can search the directory and read whatever the ACLs grant ANONYMOUS LOGON. Out of the box that is little. ANONYMOUS LOGON in Pre-Windows 2000 Compatible Access, an ACE for ANONYMOUS LOGON, or 'Network access: Let Everyone permissions apply to anonymous users' turns it into users, groups and their attributes for anyone who reaches port 389. No GPO setting governs this - the attribute is the only place it is configured."
         Impact = @(
-            "Unauthenticated enumeration of Active Directory objects"
-            "Discovery of usernames, group memberships, and organizational structure"
-            "Information gathering for targeted attacks"
-            "Potential exposure of sensitive attributes"
+            "Unauthenticated reading of whatever the ACLs grant ANONYMOUS LOGON - with Pre-Windows 2000 Compatible Access holding it, users, groups and their attributes"
+            "Account names for password spraying and the group structure for choosing targets, without a domain account"
+            "The setting is forest-wide: it applies on every domain controller of every domain"
         )
         Attack = @(
-            "1. Attacker connects to LDAP without credentials"
-            "2. Enumerates users, groups, and computers"
-            "3. Identifies high-value targets and attack paths"
-            "4. Uses gathered information for further attacks"
+            "1. Attacker reaches a domain controller on port 389 without credentials"
+            "2. Binds anonymously and searches the domain partition"
+            "3. Collects users, groups and descriptions as far as the ACLs let ANONYMOUS LOGON read"
+            "4. Uses the account list for password spraying or targeted attacks"
         )
         Remediation = @(
-            "Explicitly disable anonymous LDAP access via GPO"
-            "Review 'Network access: Do not allow anonymous enumeration of SAM accounts and shares'"
-            "Configure dsHeuristics to remove ANONYMOUS LOGON access"
-            "Best practice: Explicitly configure security settings via GPO rather than relying on defaults"
+            "Set character 7 of dsHeuristics back to 0 and keep every other character as it is"
+            "Find the application that needed anonymous LDAP first - the setting is off by default, so somebody turned it on"
+            "Remove ANONYMOUS LOGON and Everyone from Pre-Windows 2000 Compatible Access where nothing depends on them"
         )
         RemediationCommands = @(
             @{
-                Description = "Disable anonymous LDAP access via Group Policy"
-                Command = "# In Group Policy Management: Computer Configuration > Policies > Windows Settings > Security Settings > Local Policies > Security Options > 'Network access: Do not allow anonymous enumeration of SAM accounts and shares' = Enabled"
-            }
-            @{
-                Description = "Check current dsHeuristics value (7th character controls anonymous access)"
+                Description = "Show the current dsHeuristics value (character 7 is fLDAPBlockAnonOps)"
                 Command = "Get-ADObject 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com' -Properties dsHeuristics | Select-Object dsHeuristics"
             }
             @{
-                Description = "Remove anonymous LDAP access by modifying dsHeuristics (set 7th character to 0)"
+                Description = "Set character 7 back to 0, leaving every other character as it is"
                 Command = "`$dn = 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=domain,DC=com'; `$current = (Get-ADObject `$dn -Properties dsHeuristics).dsHeuristics; if (`$current.Length -ge 7) { `$new = `$current.Substring(0,6) + '0' + `$current.Substring(7); Set-ADObject `$dn -Replace @{dsHeuristics=`$new} }"
             }
             @{
-                Description = "Test anonymous LDAP access (should fail if properly configured)"
+                Description = "Test anonymous LDAP access (should fail after the change)"
                 Command = "# From non-domain-joined system: ldapsearch -x -h dc01.domain.com -b 'DC=domain,DC=com' '(objectClass=user)' sAMAccountName"
             }
         )
         References = @(
             @{ Title = "Anonymous LDAP Operations"; Url = "https://docs.microsoft.com/en-us/troubleshoot/windows-server/identity/anonymous-ldap-operations-active-directory-disabled" }
+            @{ Title = "dSHeuristics - MS-ADTS 6.1.1.2.4.1.2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e5899be4-862e-496f-9a38-33950617d2c5" }
         )
         Tools = @("ldapsearch", "windapsearch", "ldapdomaindump")
         MITRE = "T1087"
@@ -142649,7 +142648,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1855"
+$Script:adPEASVersion = "2.7.0+20261017-1908"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -559,6 +559,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   and are not any more: they reach neither the template nor the objects SDProp copies it
   onto.
 
+- **The anonymous LDAP card describes `dsHeuristics`.** `Get-LDAPConfiguration` raises it
+  from character 7 of `dsHeuristics` alone, but the card still said "The GPO does not
+  restrict anonymous LDAP binding" and recommended 'Network access: Do not allow anonymous
+  enumeration of SAM accounts and shares', an SMB null-session setting that has no effect
+  on LDAP. It now says what the character allows, which ACLs decide what an anonymous
+  client can read, and how to set the character back; its title is *Anonymous LDAP
+  Operations Allowed*, and its risk is a finding like the line that raises it.
+
 ---
 
 ## [2.7.0] - 2026-10-08
