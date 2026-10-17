@@ -2057,6 +2057,19 @@ $Script:DangerousRegistryKeys = @(
 	    VulnerabilityName = 'Unencrypted access to encrypted SMB shares allowed via GPO'
 	    RiskReason        = 'A share or server that requires encryption also serves clients that cannot encrypt - an attacker in the path claims to be such a client, or downgrades one, and reads the data the encryption was set up to protect'
 	}
+	@{
+	    Id                = 'DSRM_ADMIN_LOGON'
+	    Hive              = 'HKLM'
+	    Key               = 'System\CurrentControlSet\Control\Lsa'
+	    ValueName         = 'DsrmAdminLogonBehavior'
+	    Match             = 'Equals'
+	    MatchValue        = 2
+	    Severity          = 'High'
+	    ConsoleClass      = 'Finding'
+	    FindingId         = 'REGISTRY_DSRM_ADMIN_LOGON'
+	    VulnerabilityName = 'DSRM Administrator logon allowed at any time'
+	    RiskReason        = 'On a domain controller the DSRM account - its local administrator, whose password no password policy checks - logs on while the directory runs, over the network with its hash alone'
+	}
 )
 $Script:Win32ErrorCodes = @{
 	0     = @{ Name = 'ERROR_SUCCESS';                    Message = 'Success';                        Category = 'Success' }
@@ -17132,6 +17145,47 @@ $acl.Access | Where-Object {
 	    MITRE = "T1557"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = '^Unencrypted access to encrypted SMB shares'; Severity = 'Hint' }
+	    )
+	}
+	'REGISTRY_DSRM_ADMIN_LOGON' = @{
+	    Title = "DSRM Administrator Logon Allowed at Any Time via GPO"
+	    Risk = "Finding"
+	    BaseScore = 55
+	    Description = "A Group Policy sets DsrmAdminLogonBehavior to 2 under Control\Lsa. On a domain controller that value lets the Directory Services Restore Mode account - the domain controller's local administrator - log on while the directory runs, not only after a restart into restore mode. Microsoft documents the value and recommends against it, because the DSRM password is checked against no password policy. It is also a known persistence technique: the DSRM password is rarely changed after promotion, and with this value its hash alone logs on to the domain controller over the network."
+	    Impact = @(
+	        "The DSRM account logs on to the running domain controller as its local administrator, over the network with the NT hash alone"
+	        "A DSRM password captured once - or set at promotion and never changed since - stays a way into every domain controller in scope"
+	        "Resetting domain passwords, krbtgt included, does not touch it: the account lives in the domain controller's local SAM"
+	    )
+	    Attack = @(
+	        "1. Attacker with administrative access to a domain controller reads the DSRM account hash from its SAM, or sets a DSRM password of its own"
+	        "2. DsrmAdminLogonBehavior = 2 is in place - here deployed by Group Policy"
+	        "3. Later, after the domain passwords were reset, the attacker authenticates to the domain controller as the DSRM account with that hash"
+	        "4. Local administrator on a domain controller holds the directory database and the krbtgt key"
+	    )
+	    Remediation = @(
+	        "Remove the value from the policy and from the registry of the domain controllers, or set it to 0 - restore mode then needs a restart into it, as by default"
+	        "Reset the DSRM password on every domain controller in scope, or let Windows LAPS manage it (BackupDsrmPassword)"
+	        "Monitor for event 4794, an attempt to set the DSRM administrator password, and for changes to DsrmAdminLogonBehavior"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show the value on a domain controller"
+	            Command = "Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Lsa' -Name DsrmAdminLogonBehavior -ErrorAction SilentlyContinue"
+	        }
+	        @{
+	            Description = "Remove the value on a domain controller, after removing it from the policy that writes it"
+	            Command = "Remove-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Lsa' -Name DsrmAdminLogonBehavior"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Restartable AD DS Step-by-Step Guide - Modifying the default logon behavior"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc732714(v=ws.10)" }
+	        @{ Title = "Sneaky Active Directory Persistence #11: Directory Service Restore Mode"; Url = "https://adsecurity.org/?p=1785" }
+	    )
+	    Tools = @("Mimikatz", "Impacket")
+	    MITRE = "T1556"
+	    Triggers = @(
+	        @{ Attribute = 'VulnerabilityName'; Pattern = '^DSRM Administrator logon allowed at any time'; Severity = 'Finding' }
 	    )
 	}
 	'GPO_POINTANDPRINT_EXPLOITABLE' = @{
@@ -89691,7 +89745,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-2110"
+$Script:adPEASVersion = "2.7.0+20261017-2121"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

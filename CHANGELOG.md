@@ -408,6 +408,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Privileged Domain Account*, naming the group that makes each one privileged; an account
   whose privileges cannot be evaluated is named as unknown rather than counted as clean.
 
+- **`Get-GPORegistrySettings` reports DsrmAdminLogonBehavior = 2.** With that value the
+  Directory Services Restore Mode account - a domain controller's local administrator, its
+  password checked against no password policy - logs on while the directory runs, over the
+  network with its hash alone; Microsoft recommends against it, and it is a known way to
+  keep access after the domain passwords were reset. A policy that deploys it is a finding
+  with the card *DSRM Administrator Logon Allowed at Any Time via GPO*. 0, the default, and
+  1, Microsoft's suggestion for a single or isolated domain controller, are not reported.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

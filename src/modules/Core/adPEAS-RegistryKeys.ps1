@@ -52,6 +52,7 @@
       - SMB server/client signing:         see Get-SMBSigningStatus (dedicated check, not duplicated here)
       - SMBv1 / SMBv2 server and client:   https://learn.microsoft.com/en-us/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
       - RejectUnencryptedAccess:           https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-security
+      - DsrmAdminLogonBehavior:            https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc732714(v=ws.10)
 #>
 
 # =============================================================================
@@ -611,5 +612,21 @@ $Script:DangerousRegistryKeys = @(
         FindingId         = 'REGISTRY_SMB_UNENCRYPTED_ACCESS'
         VulnerabilityName = 'Unencrypted access to encrypted SMB shares allowed via GPO'
         RiskReason        = 'A share or server that requires encryption also serves clients that cannot encrypt - an attacker in the path claims to be such a client, or downgrades one, and reads the data the encryption was set up to protect'
+    }
+    # Only 2 is flagged. 0 (the default) admits the DSRM account only to a domain
+    # controller started in restore mode, and 1 also while AD DS is stopped - Microsoft's
+    # own suggestion for a single domain controller or an isolated one.
+    @{
+        Id                = 'DSRM_ADMIN_LOGON'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Control\Lsa'
+        ValueName         = 'DsrmAdminLogonBehavior'
+        Match             = 'Equals'
+        MatchValue        = 2
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_DSRM_ADMIN_LOGON'
+        VulnerabilityName = 'DSRM Administrator logon allowed at any time'
+        RiskReason        = 'On a domain controller the DSRM account - its local administrator, whose password no password policy checks - logs on while the directory runs, over the network with its hash alone'
     }
 )
