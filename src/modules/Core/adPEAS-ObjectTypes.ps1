@@ -1124,6 +1124,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'PRIVILEGED_ACCOUNT_ACL'
     }
 
+    'LogonScriptPermission' = @{
+        TitleFormat = "Logon Script: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Logon Scripts of Accounts"
+        Summary = "Analyzes who may change the logon scripts that accounts run from NETLOGON."
+        WhyItMatters = "Windows runs the logon script an account's scriptPath names at every logon of that account, as that account. Whoever may change the script runs code as every account that has it set, an administrator among them with the administrator's rights. NETLOGON is the scripts folder of SYSVOL, and its file permissions are nobody's GPO permissions."
+        WhatWeCheck = @(
+            "The scriptPath of every enabled account, a relative one resolved to \\<domain>\NETLOGON"
+            "The NTFS permissions of each distinct script and of its folder, read over SMB from the domain's own name and enabled computers of the domain"
+            "Writers beyond the administrators and privileged accounts, the number of accounts that run the script, and the privileged ones among them by name"
+        )
+        FilteringNote = "A local path exists on each computer and is not read. A path that could not be read is listed with the reason. The share permissions are not read. -OPSEC reads nothing."
+        SecureMessage = "Only administrators and privileged accounts may change the logon scripts accounts run."
+        PrimaryFindingId = 'LOGON_SCRIPT_WRITABLE'
+    }
+
     'PreWindows2000Access' = @{
         TitleFormat = "Pre-Windows 2000 Compatible Access: {Name}"
         Module = "Accounts"

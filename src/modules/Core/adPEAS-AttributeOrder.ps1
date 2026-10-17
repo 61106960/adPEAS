@@ -632,6 +632,12 @@ $Script:PrimaryAttributes = @{
         'Trustee', 'TrusteeSID', 'dangerousRights', 'affectedAccounts'
     )
 
+    # Logon scripts of accounts a principal beyond the administrators may change
+    # (Get-LogonScriptPermissions)
+    LogonScriptPermission = @(
+        'logonScript', 'logonScriptRisk', 'logonScriptPermissions', 'runByAccounts', 'runByPrivilegedAccounts'
+    )
+
     # LDAP Statistics per module (from Invoke-adPEAS -Statistics)
     LDAPStatisticsModule = @(
         'Queries', 'Results', 'EstimatedTraffic'

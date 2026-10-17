@@ -237,6 +237,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-SIDHistoryInjection.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-NonDefaultUserOwners.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-PasswordNotRequired.ps1"
+    . "$Script:ScriptPath\modules\Checks\Accounts\Get-LogonScriptPermissions.ps1"
     . "$Script:ScriptPath\modules\Checks\Delegation\Get-UnconstrainedDelegation.ps1"
     . "$Script:ScriptPath\modules\Checks\Delegation\Get-ConstrainedDelegation.ps1"
     . "$Script:ScriptPath\modules\Checks\Delegation\Get-ResourceBasedConstrainedDelegation.ps1"
@@ -356,7 +357,7 @@ function Invoke-adPEAS {
 .PARAMETER OPSEC
     Skips OPSEC-critical and heavy-load checks (Kerberoast, ASREPRoast, BloodHound collection, PasswordInDescription, NonDefaultOwners, OutdatedComputers).
     These checks enumerate thousands of objects and generate significant LDAP traffic.
-    Also makes no SMB connection to the file servers a GPO scheduled task or a GPO script names: without -OPSEC, the NTFS permissions of a program a task running as SYSTEM or a privileged account starts from a share, and of a script a policy runs from NETLOGON or a share, are read, on computers of the domain only.
+    Also makes no SMB connection to the file servers a GPO scheduled task or a GPO script names, or to NETLOGON for the logon scripts of accounts: without -OPSEC, the NTFS permissions of a program a task running as SYSTEM or a privileged account starts from a share, of a script a policy runs from NETLOGON or a share, and of the logon script an account's scriptPath names are read, on computers of the domain only.
 
 .PARAMETER NoColor
     Disables colored console output. Useful for logging or terminals that don't support ANSI colors.
@@ -1180,6 +1181,7 @@ try {
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-AdminReversibleEncryption' -Title 'Admin Reversible Encryption' -Check { Get-AdminReversibleEncryption }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-PasswordNotRequired' -Title 'Password Not Required Accounts' -Check { Get-PasswordNotRequired }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-NonDefaultUserOwners' -Title 'Non-Default User Owners' -Check { Get-NonDefaultUserOwners -OPSEC:$OPSEC }
+            Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-LogonScriptPermissions' -Title 'Logon Script Permissions' -Check { Get-LogonScriptPermissions -OPSEC:$OPSEC }
         } catch {
             Write-Warning "[adPEAS] Error executing Accounts Module: $_"
         }

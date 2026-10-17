@@ -14328,6 +14328,54 @@ $acl.Access | Where-Object {
         )
     }
 
+    'LOGON_SCRIPT_WRITABLE' = @{
+        Title = "Logon Script a Principal Beyond the Administrators May Change"
+        Risk = "Finding"
+        BaseScore = 65
+        Description = "Accounts run this logon script - their scriptPath names it, relative to the NETLOGON share - and Windows runs it at every logon of each of them, as that account. A principal beyond the administrators may change the script or create files in its folder by NTFS permission, and so run code as every account that has the script set; a privileged account among them runs it with the privileges it holds. adPEAS reads the NTFS permissions of the file and of its folder over SMB; the share permissions apply on top over the network and are not read."
+        Impact = @(
+            "Code execution as every account that runs the script, at its next logon"
+            "An administrator who has the script set hands the writer administrative rights"
+            "The change leaves the accounts untouched, so it is easily missed"
+        )
+        Attack = @(
+            "1. Attacker reads the scriptPath of the accounts and lists who may write the scripts in NETLOGON"
+            "2. As a principal with write access, adds a command to the script or replaces it"
+            "3. Waits for an account that runs it to log on, and the command runs as that account"
+        )
+        Remediation = @(
+            "Remove the write access from the script and its folder; NETLOGON should be writable by the domain's administrators only"
+            "An inherited entry has to be changed at the folder it comes from"
+            "Prefer logon scripts deployed by Group Policy, in the policy's own folder, where the GPO permissions decide who may change them"
+            "Do not give administrative accounts a logon script at all"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who besides Administrators and SYSTEM may write a logon script (replace the domain and the script name)"
+                Command = "(Get-Acl '\\contoso.com\NETLOGON\logon.bat').Access | Where-Object { `$_.AccessControlType -eq 'Allow' -and `$_.FileSystemRights -match 'Write|Modify|FullControl|CreateFiles|Delete|ChangePermissions|TakeOwnership' } | Format-Table IdentityReference,FileSystemRights,IsInherited -AutoSize"
+            }
+            @{
+                Description = "List the accounts that run a given logon script"
+                Command = "Get-ADUser -LDAPFilter '(scriptPath=logon.bat)' -Properties scriptPath | Select-Object SamAccountName, Enabled, scriptPath"
+            }
+        )
+        References = @(
+            @{ Title = "Boot or Logon Initialization Scripts: Logon Script (Windows) - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1037/001/" }
+            @{ Title = "scriptPath attribute - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-scriptpath" }
+        )
+        Tools = @("PowerView", "icacls")
+        MITRE = "T1037.001"
+        Triggers = @(
+            # Attributes only Get-LogonScriptPermissions writes - not scriptPath, whose
+            # transformer and SCRIPTPATH_HARDCODED card are about a user object's attribute, and
+            # not scriptPathPermissions, which belongs to the GPO script card and would be taken
+            # over by this one's higher BaseScore.
+            @{ Attribute = 'logonScriptPermissions'; Severity = 'Finding' }
+            @{ Attribute = 'logonScriptRisk'; Pattern = ' can change it by NTFS permission'; Severity = 'Finding' }
+            @{ Attribute = 'runByPrivilegedAccounts'; Severity = 'Finding' }
+        )
+    }
+
     'SCRIPTPATH_HARDCODED' = @{
         Title = "Hardcoded Logon Script Path"
         Risk = "Hint"

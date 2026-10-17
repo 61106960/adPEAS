@@ -1020,6 +1020,36 @@ Get-NonDefaultUserOwners -IncludeHealthMailboxes
 
 ---
 
+### Get-LogonScriptPermissions
+
+**Purpose**: Finds the logon scripts accounts run that a principal beyond the administrators may change.
+
+**What it checks**:
+- The `scriptPath` of every enabled account; a relative path is resolved to `\\<domain>\NETLOGON\<path>`
+- The NTFS permissions of each distinct script and of the folder it is in, read over SMB from the domain's own name and enabled computers of the domain - the same reader the GPO script and scheduled task checks use
+- Writers beyond the administrators and privileged accounts, how many accounts run the script, and the privileged accounts among them by name
+
+**Security Impact**: Windows runs an account's logon script at every logon of that account, as that account. Whoever may change the script runs code as every account that has it set - an administrator among them with the administrator's rights. NETLOGON is the scripts folder of SYSVOL, and its file permissions are nobody's GPO permissions.
+
+A local path exists on each computer and is not read; a path that could not be read is listed with the reason. The share permissions are not read.
+
+**Usage**:
+```powershell
+Get-LogonScriptPermissions
+
+# Make no SMB connection - the scripts are not read
+Get-LogonScriptPermissions -OPSEC
+```
+
+**Output Properties**:
+- `logonScript`: The script, as a UNC path
+- `logonScriptRisk`: Who may change it and what that reaches
+- `logonScriptPermissions`: One `path: Identity (Rights)` row per principal beyond the administrators that may write the script or its folder
+- `runByAccounts`: How many enabled accounts run the script
+- `runByPrivilegedAccounts`: The privileged accounts among them, operators included
+
+---
+
 ## GPO Module
 
 Analyzes Group Policy security.

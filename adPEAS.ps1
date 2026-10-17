@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 18:08:54
-    Version: 2.7.0+20261017-1808
+    Build: 2026-10-17 18:17:45
+    Version: 2.7.0+20261017-1817
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6917,6 +6917,12 @@ $Script:PrimaryAttributes = @{
     )
     PrivilegedAccountACL = @(
         'Trustee', 'TrusteeSID', 'dangerousRights', 'affectedAccounts'
+    )
+
+    # Logon scripts of accounts a principal beyond the administrators may change
+    # (Get-LogonScriptPermissions)
+    LogonScriptPermission = @(
+        'logonScript', 'logonScriptRisk', 'logonScriptPermissions', 'runByAccounts', 'runByPrivilegedAccounts'
     )
 
     # LDAP Statistics per module (from Invoke-adPEAS -Statistics)
@@ -22286,6 +22292,54 @@ $acl.Access | Where-Object {
         )
     }
 
+    'LOGON_SCRIPT_WRITABLE' = @{
+        Title = "Logon Script a Principal Beyond the Administrators May Change"
+        Risk = "Finding"
+        BaseScore = 65
+        Description = "Accounts run this logon script - their scriptPath names it, relative to the NETLOGON share - and Windows runs it at every logon of each of them, as that account. A principal beyond the administrators may change the script or create files in its folder by NTFS permission, and so run code as every account that has the script set; a privileged account among them runs it with the privileges it holds. adPEAS reads the NTFS permissions of the file and of its folder over SMB; the share permissions apply on top over the network and are not read."
+        Impact = @(
+            "Code execution as every account that runs the script, at its next logon"
+            "An administrator who has the script set hands the writer administrative rights"
+            "The change leaves the accounts untouched, so it is easily missed"
+        )
+        Attack = @(
+            "1. Attacker reads the scriptPath of the accounts and lists who may write the scripts in NETLOGON"
+            "2. As a principal with write access, adds a command to the script or replaces it"
+            "3. Waits for an account that runs it to log on, and the command runs as that account"
+        )
+        Remediation = @(
+            "Remove the write access from the script and its folder; NETLOGON should be writable by the domain's administrators only"
+            "An inherited entry has to be changed at the folder it comes from"
+            "Prefer logon scripts deployed by Group Policy, in the policy's own folder, where the GPO permissions decide who may change them"
+            "Do not give administrative accounts a logon script at all"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who besides Administrators and SYSTEM may write a logon script (replace the domain and the script name)"
+                Command = "(Get-Acl '\\contoso.com\NETLOGON\logon.bat').Access | Where-Object { `$_.AccessControlType -eq 'Allow' -and `$_.FileSystemRights -match 'Write|Modify|FullControl|CreateFiles|Delete|ChangePermissions|TakeOwnership' } | Format-Table IdentityReference,FileSystemRights,IsInherited -AutoSize"
+            }
+            @{
+                Description = "List the accounts that run a given logon script"
+                Command = "Get-ADUser -LDAPFilter '(scriptPath=logon.bat)' -Properties scriptPath | Select-Object SamAccountName, Enabled, scriptPath"
+            }
+        )
+        References = @(
+            @{ Title = "Boot or Logon Initialization Scripts: Logon Script (Windows) - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1037/001/" }
+            @{ Title = "scriptPath attribute - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-scriptpath" }
+        )
+        Tools = @("PowerView", "icacls")
+        MITRE = "T1037.001"
+        Triggers = @(
+            # Attributes only Get-LogonScriptPermissions writes - not scriptPath, whose
+            # transformer and SCRIPTPATH_HARDCODED card are about a user object's attribute, and
+            # not scriptPathPermissions, which belongs to the GPO script card and would be taken
+            # over by this one's higher BaseScore.
+            @{ Attribute = 'logonScriptPermissions'; Severity = 'Finding' }
+            @{ Attribute = 'logonScriptRisk'; Pattern = ' can change it by NTFS permission'; Severity = 'Finding' }
+            @{ Attribute = 'runByPrivilegedAccounts'; Severity = 'Finding' }
+        )
+    }
+
     'SCRIPTPATH_HARDCODED' = @{
         Title = "Hardcoded Logon Script Path"
         Risk = "Hint"
@@ -26881,6 +26935,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         FilteringNote = "Computers are reported by the computer owner check, which reads the explicit entries on every computer object. On an account with adminCount=1 an entry the AdminSDHolder template grants the same trustee is reported with AdminSDHolder rather than once per account. Account Operators control every account AdminSDHolder does not protect through the default security descriptor of the user class; that is said once. Key Admins and Enterprise Key Admins write msDS-KeyCredentialLink by design. Expected and privileged holders are hidden unless -IncludePrivileged. Accounts in another domain of the forest are not read."
         SecureMessage = "No principal beyond the expected ones can take over a privileged account."
         PrimaryFindingId = 'PRIVILEGED_ACCOUNT_ACL'
+    }
+
+    'LogonScriptPermission' = @{
+        TitleFormat = "Logon Script: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Logon Scripts of Accounts"
+        Summary = "Analyzes who may change the logon scripts that accounts run from NETLOGON."
+        WhyItMatters = "Windows runs the logon script an account's scriptPath names at every logon of that account, as that account. Whoever may change the script runs code as every account that has it set, an administrator among them with the administrator's rights. NETLOGON is the scripts folder of SYSVOL, and its file permissions are nobody's GPO permissions."
+        WhatWeCheck = @(
+            "The scriptPath of every enabled account, a relative one resolved to \\<domain>\NETLOGON"
+            "The NTFS permissions of each distinct script and of its folder, read over SMB from the domain's own name and enabled computers of the domain"
+            "Writers beyond the administrators and privileged accounts, the number of accounts that run the script, and the privileged ones among them by name"
+        )
+        FilteringNote = "A local path exists on each computer and is not read. A path that could not be read is listed with the reason. The share permissions are not read. -OPSEC reads nothing."
+        SecureMessage = "Only administrators and privileged accounts may change the logon scripts accounts run."
+        PrimaryFindingId = 'LOGON_SCRIPT_WRITABLE'
     }
 
     'PreWindows2000Access' = @{
@@ -108181,6 +108252,221 @@ function Get-PasswordNotRequired {
 
 
 
+# ----- Get-LogonScriptPermissions.ps1 -----
+
+function Get-LogonScriptPermissions {
+    <#
+    .SYNOPSIS
+    Reports the logon scripts accounts run that a principal beyond the administrators may change.
+
+    .DESCRIPTION
+    Coverage item A9, second half. The scriptPath of an account names a logon script,
+    relative to the NETLOGON share of the domain controller that logs the account on, and
+    Windows runs it at every logon of that account, as that account. Whoever may change the
+    script runs code as every account that has it set - an administrator among them runs it
+    with the administrator's rights. NETLOGON is the scripts folder of SYSVOL: its file
+    permissions are nobody's GPO permissions, and nothing read them.
+
+    The check reads the scriptPath of every enabled account, resolves a relative one to
+    \\<domain>\NETLOGON\<path>, and reads the NTFS permissions of each distinct script and
+    of the folder it is in through Get-UNCWriteAccess - the reader the GPO checks use, which
+    connects only to the domain's own name and to enabled computers of the domain, and
+    judges the writers by the identity gates a GPO is judged by. A script a principal beyond
+    the administrators may write is a finding, with the number of accounts that run it and
+    the privileged ones among them by name.
+
+    A local path (C:\...) exists on each computer and is not read over the network; a path
+    that could not be read is listed with the reason. The share permissions are not read -
+    they apply on top of NTFS over the network and can only narrow what is reported.
+
+    .PARAMETER Domain
+    Target domain (optional, uses current domain if not specified)
+
+    .PARAMETER Server
+    Domain Controller to query (optional, uses auto-discovery if not specified)
+
+    .PARAMETER Credential
+    PSCredential object for authentication (optional, uses current user if not specified)
+
+    .PARAMETER OPSEC
+    Make no SMB connection: the logon scripts are not read.
+
+    .EXAMPLE
+    Get-LogonScriptPermissions
+
+    .EXAMPLE
+    Get-LogonScriptPermissions -Domain "contoso.com" -Credential (Get-Credential)
+
+    .NOTES
+    Category: Accounts
+    Author: Alexander Sturz (@_61106960_)
+    #>
+
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$OPSEC
+    )
+
+    begin {
+        Write-Log "[Get-LogonScriptPermissions] Starting check"
+    }
+
+    process {
+        try {
+            # Connection parameters only - -OPSEC belongs to this check, and splatting
+            # $PSBoundParameters into Ensure-LDAPConnection fails to bind it.
+            $connectionParams = @{}
+            if ($Domain)     { $connectionParams['Domain']     = $Domain }
+            if ($Server)     { $connectionParams['Server']     = $Server }
+            if ($Credential) { $connectionParams['Credential'] = $Credential }
+
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
+                return
+            }
+
+            Show-SubHeader "Checking who may change the logon scripts accounts run..." -ObjectType "LogonScriptPermission"
+
+            if ($OPSEC) {
+                Show-Line "OPSEC mode: Skipping the logon scripts of accounts (reading their permissions takes an SMB connection to NETLOGON)" -Class "Hint"
+                return
+            }
+
+            # The hosts and paths read in this run - see Get-UNCWriteAccess. Cleared below.
+            $Script:_uncWriteAccess = @{ Hosts = @{}; Paths = @{} }
+
+            # Internal: the attributes are used here, the accounts are not shown.
+            $accounts = @(Get-DomainUser -Enabled -LDAPFilter '(scriptPath=*)' -Properties 'sAMAccountName', 'scriptPath', 'objectSid' @connectionParams)
+            if ($accounts.Count -eq 0) {
+                Show-Line "No enabled account runs a logon script" -Class Note
+                return
+            }
+
+            # One read per script, however many accounts run it. A relative scriptPath is
+            # resolved against NETLOGON, by the domain's own name, which is the namespace every
+            # domain controller answers for; forward slashes are what some tools write.
+            $domainFQDN = [string]$Script:LDAPContext.Domain
+            $byScript = [ordered]@{}
+            $localAccounts = 0
+            foreach ($account in $accounts) {
+                $scriptPath = ([string]@($account.scriptPath)[0]).Trim().Trim('"').Replace('/', '\')
+                if (-not $scriptPath) { continue }
+                if ($scriptPath -match '^[A-Za-z]:\\') {
+                    $localAccounts++
+                    continue
+                }
+                $uncPath = $scriptPath
+                if ($scriptPath -notmatch '^\\\\') { $uncPath = "\\$domainFQDN\NETLOGON\" + $scriptPath.TrimStart([char]0x5C) }
+
+                # [ordered] compares its keys without regard to case, as a script path is
+                # compared on Windows - logon.bat and LOGON.BAT are one script, read once.
+                if (-not $byScript.Contains($uncPath)) {
+                    $byScript[$uncPath] = [PSCustomObject]@{ Path = $uncPath; Accounts = @() }
+                }
+                $byScript[$uncPath].Accounts += $account
+            }
+
+            $writable = @()
+            $unchecked = @()
+            $readClean = 0
+            foreach ($scriptKey in @($byScript.Keys)) {
+                $entry = $byScript[$scriptKey]
+                $access = Get-UNCWriteAccess -Path @($entry.Path) -Caller 'Get-LogonScriptPermissions' -Runner 'the logon script'
+                if (@($access.Writers).Count -gt 0) {
+                    $writable += [PSCustomObject]@{ Entry = $entry; Access = $access }
+                } elseif (@($access.Unchecked).Count -gt 0) {
+                    $unchecked += @($access.Unchecked)
+                } else {
+                    $readClean++
+                }
+            }
+
+            if ($writable.Count -gt 0) {
+                # Who among the accounts that run them is privileged: one query for the
+                # candidates, each confirmed - the filter is a candidate list, adminCount
+                # included, not a verdict. Operators count: a script that runs as one is
+                # code that runs as one.
+                $privilegedSIDs = @{}
+                try {
+                    $privilegedFilter = Get-PrivilegedAccountFilter -IncludeOperators @connectionParams
+                    foreach ($candidate in @(Get-DomainUser -Enabled -LDAPFilter "(&(scriptPath=*)$privilegedFilter)" -Properties 'sAMAccountName', 'objectSid' @connectionParams)) {
+                        $candidateSID = [string]$candidate.objectSid
+                        if (-not $candidateSID -or $privilegedSIDs.ContainsKey($candidateSID)) { continue }
+                        if ((Test-IsPrivileged -Identity $candidateSID -IncludeOperators).IsPrivileged) {
+                            $privilegedSIDs[$candidateSID] = $true
+                        }
+                    }
+                } catch {
+                    Write-Log "[Get-LogonScriptPermissions] Could not tell the privileged accounts apart: $_"
+                }
+
+                Show-Line "Found $($writable.Count) logon script(s) a principal beyond the administrators may change" -Class Finding -FindingId 'LOGON_SCRIPT_WRITABLE'
+                foreach ($item in $writable) {
+                    $runBy = @($item.Entry.Accounts)
+                    $privilegedNames = @($runBy |
+                        Where-Object { $privilegedSIDs.ContainsKey([string]$_.objectSid) } |
+                        ForEach-Object { [string]$_.sAMAccountName } | Sort-Object)
+
+                    $risk = "$(@($item.Access.Writers) -join ', ') can change it by NTFS permission (see logonScriptPermissions), and so run code as each of the $($runBy.Count) account(s) that run it at logon"
+                    if ($privilegedNames.Count -gt 0) { $risk += " - $($privilegedNames.Count) of them privileged" }
+                    $risk += '. The share permissions, which can narrow this over the network, were not read'
+
+                    $row = [PSCustomObject]@{
+                        Name                   = $item.Entry.Path
+                        logonScript            = $item.Entry.Path
+                        logonScriptRisk        = $risk
+                        logonScriptPermissions = (@($item.Access.Rows) -join "`n")
+                        runByAccounts          = $runBy.Count
+                    }
+                    if ($privilegedNames.Count -gt 0) {
+                        $row | Add-Member -NotePropertyName 'runByPrivilegedAccounts' -NotePropertyValue $privilegedNames -Force
+                    }
+                    $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LogonScriptPermission' -Force
+                    Show-Object $row -Class Finding
+                }
+            }
+
+            if ($unchecked.Count -gt 0) {
+                $distinctReasons = @($unchecked | Select-Object -Unique)
+                $reasonText = (@($distinctReasons | Select-Object -First 10) -join '; ')
+                if ($distinctReasons.Count -gt 10) { $reasonText += "; and $($distinctReasons.Count - 10) more" }
+                Show-Line "$($distinctReasons.Count) logon script(s) could not be checked - who may change them was not evaluated: $reasonText" -Class Note
+            }
+
+            if ($localAccounts -gt 0) {
+                Show-Line "$localAccounts account(s) run a logon script from a local path, which exists on each computer and is not read over the network" -Class Note
+            }
+
+            if ($writable.Count -eq 0 -and $readClean -gt 0) {
+                $cleanClass = 'Secure'
+                if ($unchecked.Count -gt 0) { $cleanClass = 'Note' }
+                Show-Line "Only administrators and privileged accounts may change the $readClean logon script(s) read" -Class $cleanClass
+            }
+
+        } catch {
+            Write-Log "[Get-LogonScriptPermissions] Error: $_" -Level Error
+            Show-Line "Error during check - the logon scripts of accounts could not be evaluated: $_" -Class Finding
+        } finally {
+            $Script:_uncWriteAccess = $null
+        }
+    }
+
+    end {
+        Write-Log "[Get-LogonScriptPermissions] Check completed"
+    }
+}
+
+
+
 # ----- Get-UnconstrainedDelegation.ps1 -----
 
 <#
@@ -141848,7 +142134,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1808"
+$Script:adPEASVersion = "2.7.0+20261017-1817"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -141950,7 +142236,7 @@ function Invoke-adPEAS {
 .PARAMETER OPSEC
     Skips OPSEC-critical and heavy-load checks (Kerberoast, ASREPRoast, BloodHound collection, PasswordInDescription, NonDefaultOwners, OutdatedComputers).
     These checks enumerate thousands of objects and generate significant LDAP traffic.
-    Also makes no SMB connection to the file servers a GPO scheduled task or a GPO script names: without -OPSEC, the NTFS permissions of a program a task running as SYSTEM or a privileged account starts from a share, and of a script a policy runs from NETLOGON or a share, are read, on computers of the domain only.
+    Also makes no SMB connection to the file servers a GPO scheduled task or a GPO script names, or to NETLOGON for the logon scripts of accounts: without -OPSEC, the NTFS permissions of a program a task running as SYSTEM or a privileged account starts from a share, of a script a policy runs from NETLOGON or a share, and of the logon script an account's scriptPath names are read, on computers of the domain only.
 
 .PARAMETER NoColor
     Disables colored console output. Useful for logging or terminals that don't support ANSI colors.
@@ -142774,6 +143060,7 @@ try {
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-AdminReversibleEncryption' -Title 'Admin Reversible Encryption' -Check { Get-AdminReversibleEncryption }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-PasswordNotRequired' -Title 'Password Not Required Accounts' -Check { Get-PasswordNotRequired }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-NonDefaultUserOwners' -Title 'Non-Default User Owners' -Check { Get-NonDefaultUserOwners -OPSEC:$OPSEC }
+            Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-LogonScriptPermissions' -Title 'Logon Script Permissions' -Check { Get-LogonScriptPermissions -OPSEC:$OPSEC }
         } catch {
             Write-Warning "[adPEAS] Error executing Accounts Module: $_"
         }

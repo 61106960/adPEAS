@@ -245,6 +245,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   hint, because that server's administrators decide what runs. A path that could not be
   read keeps its verdict and says why. The share permissions are not read.
 
+- **New check `Get-LogonScriptPermissions`: logon scripts a principal beyond the
+  administrators may change.** Windows runs the logon script an account's `scriptPath`
+  names at every logon of that account, as that account, and nothing read who may change
+  those scripts in NETLOGON. The check resolves the `scriptPath` of every enabled account,
+  reads the NTFS permissions of each distinct script and of its folder over SMB with the
+  same reader as the GPO checks, and reports a script a principal beyond the
+  administrators may write - with the number of accounts that run it and the privileged
+  ones among them by name. A local path is not read; `-OPSEC`, passed on by
+  `Invoke-adPEAS -OPSEC`, reads nothing. It runs in the Accounts module.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
