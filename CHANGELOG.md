@@ -410,6 +410,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   primary group, Domain Users, still makes no account a broad-group member. Domain
   controller accounts, whose primary group is Domain Controllers, are privileged now too.
 
+- **An Exchange role assigned through a role assignment policy is judged on its own.**
+  `Get-ExchangeRBACAssignments` set the resolved assignee only for directory principals
+  and never cleared it, so a policy assignment inherited the object of the assignment
+  before it - and with it that account's privilege verdict. A high-value role on a
+  policy that followed an assignment to an administrator was reported as a hint about an
+  "already privileged" assignee instead of as a finding.
+
 ---
 
 ## [2.7.0] - 2026-10-08

@@ -73978,6 +73978,7 @@ function Get-ExchangeRBACAssignments {
 	            $roleInfo = $watchedRoles[$roleKey]
 	            $assigneeName = $null
 	            $assigneeType = $null
+	            $assigneeObject = $null
 	            if ($userDN -match ',CN=Policies,CN=RBAC,') {
 	                if ($userDN -match '^CN=((?:[^,\\]|\\.)+),') {
 	                    $assigneeName = $Matches[1] -replace '\\(.)', '$1'
@@ -87076,7 +87077,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1605"
+$Script:adPEASVersion = "2.7.0+20261017-1614"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

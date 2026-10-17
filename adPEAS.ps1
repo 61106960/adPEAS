@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 16:05:38
-    Version: 2.7.0+20261017-1605
+    Build: 2026-10-17 16:14:25
+    Version: 2.7.0+20261017-1614
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -123088,6 +123088,10 @@ function Get-ExchangeRBACAssignments {
                 # carries it, so a watched role assigned through one reaches all of them.
                 $assigneeName = $null
                 $assigneeType = $null
+                # Reset with the other two: only the principal branch below sets it, and a
+                # policy assignment used to inherit the object of the assignment before it -
+                # and that account's privilege verdict with it.
+                $assigneeObject = $null
 
                 if ($userDN -match ',CN=Policies,CN=RBAC,') {
                     if ($userDN -match '^CN=((?:[^,\\]|\\.)+),') {
@@ -140410,7 +140414,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1605"
+$Script:adPEASVersion = "2.7.0+20261017-1614"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

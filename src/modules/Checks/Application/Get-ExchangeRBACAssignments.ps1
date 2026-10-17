@@ -182,6 +182,10 @@ function Get-ExchangeRBACAssignments {
                 # carries it, so a watched role assigned through one reaches all of them.
                 $assigneeName = $null
                 $assigneeType = $null
+                # Reset with the other two: only the principal branch below sets it, and a
+                # policy assignment used to inherit the object of the assignment before it -
+                # and that account's privilege verdict with it.
+                $assigneeObject = $null
 
                 if ($userDN -match ',CN=Policies,CN=RBAC,') {
                     if ($userDN -match '^CN=((?:[^,\\]|\\.)+),') {
