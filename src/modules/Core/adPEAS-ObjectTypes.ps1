@@ -241,6 +241,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "All computers with the DC role"
             "DC operating system versions"
             "Read-Only Domain Controllers (RODCs)"
+            "Computers whose primary group is Domain Controllers without the role flag"
+            "Whether each of them is registered as a Domain Controller - an NTDS Settings object under CN=Sites in the configuration partition, which a promotion creates and the role flag alone does not"
         )
     }
 

@@ -139,6 +139,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   never ages out. Domain Controllers are a finding, since their key replicates the
   directory; other computers are a hint. It runs in the Computer module.
 
+- **Computer accounts with the Domain Controller role that are not Domain Controllers are
+  reported.** Whoever holds DS-Install-Replica on the domain object and may write a
+  computer account's `userAccountControl` can set `SERVER_TRUST_ACCOUNT`, which moves the
+  account's primary group to Domain Controllers and gives it their replication rights,
+  without any server being promoted. `Get-InfrastructureServers` now also asks for
+  computers whose primary group is Domain Controllers, compares every account with the
+  role against the NTDS Settings objects in the configuration partition, and reports the
+  ones without as a finding with a card of its own. Where the configuration partition
+  cannot be read, it says so instead.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

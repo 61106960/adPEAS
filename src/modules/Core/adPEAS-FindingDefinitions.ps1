@@ -2598,6 +2598,48 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
     }
 
+    'UNREGISTERED_DOMAIN_CONTROLLER' = @{
+        Title = "Computer Account With the Domain Controller Role That Is Not a Domain Controller"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "This computer account carries the Domain Controller role - SERVER_TRUST_ACCOUNT in userAccountControl, or Domain Controllers as its primary group - but the configuration partition holds no NTDS Settings object for it, which every promotion creates. Setting SERVER_TRUST_ACCOUNT moves the account's primary group to Domain Controllers, so it holds their replication rights: whoever knows the account's password can replicate every secret of the domain (DCSync). Setting the flag needs DS-Install-Replica on the domain object and write access to the account's userAccountControl, which is why it is a persistence technique. A promotion that failed or a demotion that was not cleaned up leaves the same state behind."
+        Impact = @(
+            "The account replicates the directory as a Domain Controller would, every password hash included (DCSync)"
+            "It does not appear where Domain Controllers are expected - no server object, no replication partner - so it is easy to miss"
+            "adPEAS and other tools that recognise Domain Controllers by the role flag treat it as one, which hides it from the checks that skip Domain Controllers"
+        )
+        Attack = @(
+            "1. Attacker with DS-Install-Replica on the domain sets SERVER_TRUST_ACCOUNT on a computer account it knows the password of"
+            "2. The primary group becomes Domain Controllers (RID 516)"
+            "3. The attacker requests a TGT for the account and replicates the domain's secrets with it (DCSync)"
+        )
+        Remediation = @(
+            "Find out how the account got the role: a failed promotion or demotion, or a change of userAccountControl outside a promotion (event 4742 with 0x2000)"
+            "Remove the role from an account that is not a Domain Controller: set userAccountControl back to WORKSTATION_TRUST_ACCOUNT, and check afterwards that primaryGroupID is 515 (Domain Computers) again"
+            "Reset the account's password and treat the domain's secrets as exposed if the account was used"
+            "Review who holds DS-Install-Replica on the domain object"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the NTDS Settings objects and the computer accounts their servers refer to"
+                Command = '$configNC = (Get-ADRootDSE).configurationNamingContext; Get-ADObject -SearchBase "CN=Sites,$configNC" -LDAPFilter "(objectClass=server)" -Properties serverReference | Select-Object Name,serverReference'
+            }
+            @{
+                Description = "Return a computer account that is not a Domain Controller to a workstation account"
+                Command = "Set-ADComputer -Identity 'COMPUTERNAME' -Replace @{userAccountControl=4096}"
+            }
+        )
+        References = @(
+            @{ Title = "Server (Un)Trust Account - Netwrix"; Url = "https://www.netwrix.com/en/resources/blog/server-untrust-account/" }
+            @{ Title = "NTDS-DSA-RO class - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/c-ntdsdsaro" }
+        )
+        Tools = @("Mimikatz", "Impacket")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'directoryRegistration'; Pattern = '^NOT REGISTERED'; Severity = 'Finding' }
+        )
+    }
+
     'DOMAIN_ROOT_REANIMATE_TOMBSTONES' = @{
         Title = "Reanimate-Tombstones on the Domain Object"
         Risk = "Finding"

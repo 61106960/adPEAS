@@ -123,6 +123,70 @@ function Show-SPNIdleServers {
     $names = @($idle | ForEach-Object { "$($_.sAMAccountName)" -replace '\$$', '' })
     Show-Line "$(@($idle).Count) of the $ServiceName computer account(s) show no recent logon - possibly decommissioned: $(@($names) -join ', ')" -Class "Note"
 }
+<#
+.SYNOPSIS
+    Returns the computer DNs the configuration partition registers as Domain Controllers.
+
+.DESCRIPTION
+    A promotion creates a server object under CN=Sites whose serverReference names the
+    computer account, and below it the NTDS Settings object (nTDSDSA, nTDSDSARO for an
+    RODC). The role flag on the computer account is only userAccountControl: whoever holds
+    DS-Install-Replica on the domain object and may write the account's
+    userAccountControl can set SERVER_TRUST_ACCOUNT, which makes the account's primary
+    group Domain Controllers - with its replication rights - and creates neither object.
+
+    Sites are forest-wide, so the set holds the Domain Controllers of every domain in the
+    forest; the caller compares it with its own accounts.
+
+.OUTPUTS
+    Hashtable keyed by computer DN - case-insensitive, as every PowerShell hashtable -
+    or $null when the configuration partition could not be read. Every forest has an NTDS
+    Settings object, so none at all counts as not read rather than as no Domain Controller.
+
+.NOTES
+    Internal helper function
+#>
+function Get-RegisteredDomainControllerDN {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+
+    $configNC = $Script:LDAPContext.ConfigurationNamingContext
+    if (-not $configNC) { return $null }
+    $sitesContainer = "CN=Sites,$configNC"
+
+    try {
+        # nTDSDSARO is a subclass of nTDSDSA, so one clause finds both kinds.
+        $serversWithSettings = @{}
+        foreach ($settings in @(Get-DomainObject -LDAPFilter '(objectClass=nTDSDSA)' -SearchBase $sitesContainer -Properties 'distinguishedName' @PSBoundParameters)) {
+            # The NTDS Settings object's parent is the server object.
+            if ([string]$settings.distinguishedName -match '^CN=(?:[^,\\]|\\.)+,(.+)$') {
+                $serversWithSettings[$Matches[1]] = $true
+            }
+        }
+        if ($serversWithSettings.Count -eq 0) { return $null }
+
+        $registered = @{}
+        foreach ($serverObject in @(Get-DomainObject -LDAPFilter '(&(objectClass=server)(serverReference=*))' -SearchBase $sitesContainer -Properties 'distinguishedName', 'serverReference' @PSBoundParameters)) {
+            if ($serversWithSettings.ContainsKey([string]$serverObject.distinguishedName)) {
+                $registered[[string]$serverObject.serverReference] = $true
+            }
+        }
+        return $registered
+    } catch {
+        Write-Log "[Get-RegisteredDomainControllerDN] The configuration partition could not be read: $_"
+        return $null
+    }
+}
+
 function Get-InfrastructureServers {
     <#
     .SYNOPSIS
@@ -133,7 +197,10 @@ function Get-InfrastructureServers {
     is looked up the way that kind actually records itself, which is not always an SPN.
 
     Detected Server Types:
-    - Domain Controllers (the userAccountControl role bit, via Get-DomainComputer -DomainController)
+    - Domain Controllers (the userAccountControl role bit, via Get-DomainComputer -DomainController,
+      and a primary group of Domain Controllers), each checked against the NTDS Settings
+      object a promotion creates - an account with the role and without that object holds
+      the rights of a Domain Controller and is a finding
     - Exchange Servers (msExchExchangeServer objects in the Configuration partition,
       falling back to the exchangeAB/, exchangeRFR/, exchangeMDB/ SPNs)
     - MSSQL Servers (MSSQLSvc/)
@@ -209,11 +276,46 @@ function Get-InfrastructureServers {
             # this inventory and the delegation checks cannot drift apart on the question.
             $domainControllers = @(Get-DomainComputer -DomainController @PSBoundParameters | Test-AccountActivity -IsEnabled)
 
+            # And the computers whose primary group is Domain Controllers without the role
+            # flag: in the token they are Domain Controllers, to -DomainController not. The
+            # query returns the real ones again; they are dropped by DN rather than by a
+            # second spelling of the role flag here.
+            $listedDNs = @{}
+            foreach ($dc in $domainControllers) { $listedDNs[[string]$dc.distinguishedName] = $true }
+            foreach ($primaryGroupHolder in @(Get-DomainComputer -LDAPFilter '(primaryGroupID=516)' @PSBoundParameters | Test-AccountActivity -IsEnabled)) {
+                if (-not $listedDNs.ContainsKey([string]$primaryGroupHolder.distinguishedName)) {
+                    $domainControllers += $primaryGroupHolder
+                }
+            }
+
             if ($domainControllers.Count -gt 0) {
-                Show-Line "Found $($domainControllers.Count) Domain Controller(s):" -Class "Hint"
+                # Which of them a promotion actually made a Domain Controller. The role flag
+                # can be set on any computer account by whoever holds DS-Install-Replica and
+                # may write its userAccountControl, and gives it the replication rights of
+                # Domain Controllers without a server ever being promoted.
+                $registered = Get-RegisteredDomainControllerDN @PSBoundParameters
+                $listedDCs = @()
+                $unregisteredDCs = @()
                 foreach ($dc in $domainControllers) {
                     $dc | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainController' -Force
-                    $dc | Show-Object -Class Hint
+                    if ($null -ne $registered -and -not $registered.ContainsKey([string]$dc.distinguishedName)) {
+                        $dc | Add-Member -NotePropertyName 'directoryRegistration' -NotePropertyValue 'NOT REGISTERED - no NTDS Settings object in the configuration partition, yet the account holds the rights of a Domain Controller' -Force
+                        $unregisteredDCs += $dc
+                    } else {
+                        $listedDCs += $dc
+                    }
+                }
+
+                if ($listedDCs.Count -gt 0) {
+                    Show-Line "Found $($listedDCs.Count) Domain Controller(s):" -Class "Hint"
+                    foreach ($dc in $listedDCs) { $dc | Show-Object -Class Hint }
+                }
+                if ($unregisteredDCs.Count -gt 0) {
+                    Show-Line "$($unregisteredDCs.Count) computer account(s) carry the Domain Controller role without being registered as Domain Controllers:" -Class "Finding"
+                    foreach ($dc in $unregisteredDCs) { $dc | Show-Object -Class Finding }
+                }
+                if ($null -eq $registered) {
+                    Show-Line "The configuration partition could not be read - the Domain Controllers were not checked against their NTDS Settings objects" -Class "Note"
                 }
             } else {
                 Show-Line "No Domain Controllers found (unexpected)" -Class "Note"

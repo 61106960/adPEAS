@@ -6274,6 +6274,47 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	        @{ Attribute = 'dangerousRights'; Pattern = 'DS-Install-Replica'; Severity = 'Finding' }
 	    )
 	}
+	'UNREGISTERED_DOMAIN_CONTROLLER' = @{
+	    Title = "Computer Account With the Domain Controller Role That Is Not a Domain Controller"
+	    Risk = "Finding"
+	    BaseScore = 70
+	    Description = "This computer account carries the Domain Controller role - SERVER_TRUST_ACCOUNT in userAccountControl, or Domain Controllers as its primary group - but the configuration partition holds no NTDS Settings object for it, which every promotion creates. Setting SERVER_TRUST_ACCOUNT moves the account's primary group to Domain Controllers, so it holds their replication rights: whoever knows the account's password can replicate every secret of the domain (DCSync). Setting the flag needs DS-Install-Replica on the domain object and write access to the account's userAccountControl, which is why it is a persistence technique. A promotion that failed or a demotion that was not cleaned up leaves the same state behind."
+	    Impact = @(
+	        "The account replicates the directory as a Domain Controller would, every password hash included (DCSync)"
+	        "It does not appear where Domain Controllers are expected - no server object, no replication partner - so it is easy to miss"
+	        "adPEAS and other tools that recognise Domain Controllers by the role flag treat it as one, which hides it from the checks that skip Domain Controllers"
+	    )
+	    Attack = @(
+	        "1. Attacker with DS-Install-Replica on the domain sets SERVER_TRUST_ACCOUNT on a computer account it knows the password of"
+	        "2. The primary group becomes Domain Controllers (RID 516)"
+	        "3. The attacker requests a TGT for the account and replicates the domain's secrets with it (DCSync)"
+	    )
+	    Remediation = @(
+	        "Find out how the account got the role: a failed promotion or demotion, or a change of userAccountControl outside a promotion (event 4742 with 0x2000)"
+	        "Remove the role from an account that is not a Domain Controller: set userAccountControl back to WORKSTATION_TRUST_ACCOUNT, and check afterwards that primaryGroupID is 515 (Domain Computers) again"
+	        "Reset the account's password and treat the domain's secrets as exposed if the account was used"
+	        "Review who holds DS-Install-Replica on the domain object"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "List the NTDS Settings objects and the computer accounts their servers refer to"
+	            Command = '$configNC = (Get-ADRootDSE).configurationNamingContext; Get-ADObject -SearchBase "CN=Sites,$configNC" -LDAPFilter "(objectClass=server)" -Properties serverReference | Select-Object Name,serverReference'
+	        }
+	        @{
+	            Description = "Return a computer account that is not a Domain Controller to a workstation account"
+	            Command = "Set-ADComputer -Identity 'COMPUTERNAME' -Replace @{userAccountControl=4096}"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Server (Un)Trust Account - Netwrix"; Url = "https://www.netwrix.com/en/resources/blog/server-untrust-account/" }
+	        @{ Title = "NTDS-DSA-RO class - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/c-ntdsdsaro" }
+	    )
+	    Tools = @("Mimikatz", "Impacket")
+	    MITRE = "T1098"
+	    Triggers = @(
+	        @{ Attribute = 'directoryRegistration'; Pattern = '^NOT REGISTERED'; Severity = 'Finding' }
+	    )
+	}
 	'DOMAIN_ROOT_REANIMATE_TOMBSTONES' = @{
 	    Title = "Reanimate-Tombstones on the Domain Object"
 	    Risk = "Finding"
@@ -18846,6 +18887,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "All computers with the DC role"
 	        "DC operating system versions"
 	        "Read-Only Domain Controllers (RODCs)"
+	        "Computers whose primary group is Domain Controllers without the role flag"
+	        "Whether each of them is registered as a Domain Controller - an NTDS Settings object under CN=Sites in the configuration partition, which a promotion creates and the role flag alone does not"
 	    )
 	}
 	'ExchangeServer' = @{
@@ -68006,6 +68049,38 @@ function Show-SPNIdleServers {
 	$names = @($idle | ForEach-Object { "$($_.sAMAccountName)" -replace '\$$', '' })
 	Show-Line "$(@($idle).Count) of the $ServiceName computer account(s) show no recent logon - possibly decommissioned: $(@($names) -join ', ')" -Class "Note"
 }
+function Get-RegisteredDomainControllerDN {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [string]$Domain,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Server,
+	    [Parameter(Mandatory=$false)]
+	    [System.Management.Automation.PSCredential]$Credential
+	)
+	$configNC = $Script:LDAPContext.ConfigurationNamingContext
+	if (-not $configNC) { return $null }
+	$sitesContainer = "CN=Sites,$configNC"
+	try {
+	    $serversWithSettings = @{}
+	    foreach ($settings in @(Get-DomainObject -LDAPFilter '(objectClass=nTDSDSA)' -SearchBase $sitesContainer -Properties 'distinguishedName' @PSBoundParameters)) {
+	        if ([string]$settings.distinguishedName -match '^CN=(?:[^,\\]|\\.)+,(.+)$') {
+	            $serversWithSettings[$Matches[1]] = $true
+	        }
+	    }
+	    if ($serversWithSettings.Count -eq 0) { return $null }
+	    $registered = @{}
+	    foreach ($serverObject in @(Get-DomainObject -LDAPFilter '(&(objectClass=server)(serverReference=*))' -SearchBase $sitesContainer -Properties 'distinguishedName', 'serverReference' @PSBoundParameters)) {
+	        if ($serversWithSettings.ContainsKey([string]$serverObject.distinguishedName)) {
+	            $registered[[string]$serverObject.serverReference] = $true
+	        }
+	    }
+	    return $registered
+	} catch {
+	    return $null
+	}
+}
 function Get-InfrastructureServers {
 	[CmdletBinding()]
 	param(
@@ -68023,11 +68098,36 @@ function Get-InfrastructureServers {
 	    Show-SubHeader "Searching for Domain Controllers..." -ObjectType "DomainController"
 	    try {
 	        $domainControllers = @(Get-DomainComputer -DomainController @PSBoundParameters | Test-AccountActivity -IsEnabled)
+	        $listedDNs = @{}
+	        foreach ($dc in $domainControllers) { $listedDNs[[string]$dc.distinguishedName] = $true }
+	        foreach ($primaryGroupHolder in @(Get-DomainComputer -LDAPFilter '(primaryGroupID=516)' @PSBoundParameters | Test-AccountActivity -IsEnabled)) {
+	            if (-not $listedDNs.ContainsKey([string]$primaryGroupHolder.distinguishedName)) {
+	                $domainControllers += $primaryGroupHolder
+	            }
+	        }
 	        if ($domainControllers.Count -gt 0) {
-	            Show-Line "Found $($domainControllers.Count) Domain Controller(s):" -Class "Hint"
+	            $registered = Get-RegisteredDomainControllerDN @PSBoundParameters
+	            $listedDCs = @()
+	            $unregisteredDCs = @()
 	            foreach ($dc in $domainControllers) {
 	                $dc | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainController' -Force
-	                $dc | Show-Object -Class Hint
+	                if ($null -ne $registered -and -not $registered.ContainsKey([string]$dc.distinguishedName)) {
+	                    $dc | Add-Member -NotePropertyName 'directoryRegistration' -NotePropertyValue 'NOT REGISTERED - no NTDS Settings object in the configuration partition, yet the account holds the rights of a Domain Controller' -Force
+	                    $unregisteredDCs += $dc
+	                } else {
+	                    $listedDCs += $dc
+	                }
+	            }
+	            if ($listedDCs.Count -gt 0) {
+	                Show-Line "Found $($listedDCs.Count) Domain Controller(s):" -Class "Hint"
+	                foreach ($dc in $listedDCs) { $dc | Show-Object -Class Hint }
+	            }
+	            if ($unregisteredDCs.Count -gt 0) {
+	                Show-Line "$($unregisteredDCs.Count) computer account(s) carry the Domain Controller role without being registered as Domain Controllers:" -Class "Finding"
+	                foreach ($dc in $unregisteredDCs) { $dc | Show-Object -Class Finding }
+	            }
+	            if ($null -eq $registered) {
+	                Show-Line "The configuration partition could not be read - the Domain Controllers were not checked against their NTDS Settings objects" -Class "Note"
 	            }
 	        } else {
 	            Show-Line "No Domain Controllers found (unexpected)" -Class "Note"
@@ -86755,7 +86855,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1539"
+$Script:adPEASVersion = "2.7.0+20261017-1553"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
