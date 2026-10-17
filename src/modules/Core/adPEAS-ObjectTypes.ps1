@@ -1106,6 +1106,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'PRIVILEGED_GROUP_ACL'
     }
 
+    'PrivilegedAccountACL' = @{
+        TitleFormat = "Privileged Account ACL: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Control Over Privileged Accounts"
+        Summary = "Analyzes who may take over a privileged user or managed service account through the account's own DACL."
+        WhyItMatters = "Whoever may reset the password of a privileged account, add a key credential to it, give it an SPN, map a certificate onto it or rewrite its DACL can act as that account and holds its group rights. AdminSDHolder resets the accounts it protects every hour; every other privileged account - a DnsAdmins member, a Group Policy Creator Owner - keeps the entries it is given, including what an OU delegation passes down."
+        WhatWeCheck = @(
+            "Every user and managed service account of this domain found in a privileged group"
+            "GenericAll, WriteDacl, WriteOwner, writes of every attribute, all extended rights, the password reset right, and writes of msDS-KeyCredentialLink, servicePrincipalName, altSecurityIdentities, userAccountControl, scriptPath and - on a gMSA - msDS-GroupMSAMembership; explicit and inherited"
+            "The owner of each account"
+            "On an account AdminSDHolder protects, only what its template does not grant"
+        )
+        FilteringNote = "Computers are reported by the computer owner check, which reads the explicit entries on every computer object. On an account with adminCount=1 an entry the AdminSDHolder template grants the same trustee is reported with AdminSDHolder rather than once per account. Account Operators control every account AdminSDHolder does not protect through the default security descriptor of the user class; that is said once. Key Admins and Enterprise Key Admins write msDS-KeyCredentialLink by design. Expected and privileged holders are hidden unless -IncludePrivileged. Accounts in another domain of the forest are not read."
+        SecureMessage = "No principal beyond the expected ones can take over a privileged account."
+        PrimaryFindingId = 'PRIVILEGED_ACCOUNT_ACL'
+    }
+
     'PreWindows2000Access' = @{
         TitleFormat = "Pre-Windows 2000 Compatible Access: {Name}"
         Module = "Accounts"

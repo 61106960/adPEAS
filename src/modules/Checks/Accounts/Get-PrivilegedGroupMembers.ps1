@@ -18,6 +18,8 @@ function Get-PrivilegedGroupMembers {
     - Analyzes AdminSDHolder ACLs for unauthorized permissions
     - Reads the DACL of the privileged groups AdminSDHolder does not protect
       (Show-UnprotectedGroupACL)
+    - Reads the DACL of the privileged users and managed service accounts
+      (Show-PrivilegedAccountACL)
     - Checks Pre-Windows 2000 Compatible Access group for dangerous members
 
     .PARAMETER Domain
@@ -1083,6 +1085,8 @@ function Get-PrivilegedGroupMembers {
             Show-SubHeader "Checking AdminSDHolder ACLs..." -ObjectType "AdminSDHolderACL"
 
             $AdminSDHolderFindings = @()
+            # The template's rules, for step 5c; $null while it could not be read.
+            $AdminSDHolderRules = $null
             $DomainDN = $Script:LDAPContext.DomainDN
             $AdminSDHolderDN = "CN=AdminSDHolder,CN=System,$DomainDN"
 
@@ -1457,6 +1461,31 @@ function Get-PrivilegedGroupMembers {
             } catch {
                 Write-Log "[Get-PrivilegedGroupMembers] Group ACL analysis failed: $_" -Level Error
                 Show-Line "Error during the group ACL analysis - the privileged groups AdminSDHolder does not protect could not be evaluated: $_" -Class Finding
+            }
+
+            # ===== STEP 5c: The DACL of the privileged accounts =====
+            # Users and managed service accounts of this domain. Computers are left to
+            # Get-NonDefaultComputerOwners, which reads the explicit entries on every computer
+            # object; an account behind a trust (IsForeign) or in another domain of the forest
+            # (IsCrossDomain, set where the member was resolved) is not read here.
+            try {
+                $AccountsForACLReview = @(foreach ($memberDN in @($MemberGroupMemberships.Keys)) {
+                    $memberInfo = $MemberGroupMemberships[$memberDN].MemberInfo
+                    if (-not $memberInfo -or $memberInfo.IsForeign -or $memberInfo.IsCrossDomain) { continue }
+                    if ([string]$memberInfo.ObjectClass -eq 'computer') { continue }
+                    [PSCustomObject]@{
+                        DistinguishedName = [string]$memberDN
+                        Name              = $(if ($memberInfo.SAMAccountName) { [string]$memberInfo.SAMAccountName } else { [string]$memberInfo.Name })
+                        SID               = [string]$memberInfo.SID
+                        ObjectClass       = [string]$memberInfo.ObjectClass
+                        Groups            = @($MemberGroupMemberships[$memberDN].Groups)
+                    }
+                })
+                Show-PrivilegedAccountACL -Accounts $AccountsForACLReview -TemplateRules $AdminSDHolderRules -IncludePrivileged:$IncludePrivileged `
+                    -ConnectionParams $connectionParams -AccountOperatorMembers $accountOperatorMembers
+            } catch {
+                Write-Log "[Get-PrivilegedGroupMembers] Account ACL analysis failed: $_" -Level Error
+                Show-Line "Error during the account ACL analysis - the privileged accounts could not be evaluated: $_" -Class Finding
             }
 
             # ===== STEP 6: Check Pre-Windows 2000 Compatible Access =====
@@ -1875,6 +1904,386 @@ function Show-UnprotectedGroupACL {
             $cleanText += " - $($suppressed.Count) expected or privileged holder(s) hidden, use -IncludePrivileged to see them"
         }
         Show-Line $cleanText -Class $cleanClass
+    }
+}
+
+<#
+.SYNOPSIS
+    The rights one ACE grants that take over the account carrying it.
+
+.DESCRIPTION
+    Internal helper of Show-PrivilegedAccountACL. Returns one object per right, Key being
+    the name DefaultRightHolders and the AdminSDHolder comparison use and Text the row a
+    reader sees. Full control is named alone - it contains every right below, and listing
+    them beside it would say the same several times.
+
+.PARAMETER Rule
+    An ActiveDirectoryAccessRule.
+
+.PARAMETER ObjectClass
+    The class of the account; msDS-GroupMSAMembership counts on a group managed service
+    account only, the one class that has the attribute.
+#>
+function Get-AccountTakeoverRight {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Rule,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ObjectClass
+    )
+
+    $mask = $Rule.ActiveDirectoryRights
+    $objectType = $Rule.ObjectType
+    $objectTypeIsEmpty = (-not $objectType -or $objectType -eq [Guid]::Empty)
+
+    # Test-ADRightsMask expands the generic bits - see the AdminSDHolder step.
+    if ($objectTypeIsEmpty -and (Test-ADRightsMask -Rights $mask -Has ([System.DirectoryServices.ActiveDirectoryRights]::GenericAll))) {
+        [PSCustomObject]@{ Key = 'GenericAll'; Text = 'GenericAll' }
+        return
+    }
+
+    $hasWriteProperty = Test-ADRightsMask -Rights $mask -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteProperty)
+    $hasExtendedRight = Test-ADRightsMask -Rights $mask -Has ([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
+
+    if ($objectTypeIsEmpty) {
+        if (Test-ADRightsMask -Rights $mask -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteDacl)) {
+            [PSCustomObject]@{ Key = 'WriteDacl'; Text = 'WriteDacl' }
+        }
+        if (Test-ADRightsMask -Rights $mask -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner)) {
+            [PSCustomObject]@{ Key = 'WriteOwner'; Text = 'WriteOwner' }
+        }
+        if ($hasWriteProperty) {
+            [PSCustomObject]@{ Key = 'WriteProperty'; Text = 'WriteProperty on every attribute - may add a key credential or an SPN to the account' }
+        }
+        if ($hasExtendedRight) {
+            [PSCustomObject]@{ Key = 'AllExtendedRights'; Text = 'All extended rights - may reset the password of the account' }
+        }
+        return
+    }
+
+    $objectTypeText = ([string]$objectType).ToLowerInvariant()
+    if ($hasExtendedRight -and $objectTypeText -eq [string]$Script:ExtendedRightsAliases['ForceChangePassword']) {
+        # Not "Reset password ...": OU_PERM_PASSWORD_RESET matches that text - see the
+        # AdminSDHolder step.
+        [PSCustomObject]@{ Key = 'User-Force-Change-Password'; Text = 'Password reset right - may set a new password for the account' }
+    }
+    if (-not $hasWriteProperty) { return }
+
+    $written = @(
+        @{ Guid = $Script:PropertyGUIDs['msDS-KeyCredentialLink']; Key = 'msDS-KeyCredentialLink'
+           Text = 'WriteProperty on msDS-KeyCredentialLink - may add a key credential and log on as the account' }
+        @{ Guid = $Script:PropertyGUIDs['servicePrincipalName']; Key = 'servicePrincipalName'
+           Text = 'WriteProperty on servicePrincipalName - may give the account an SPN and roast its password' }
+        @{ Guid = $Script:PropertyGUIDs['altSecurityIdentities']; Key = 'altSecurityIdentities'
+           Text = 'WriteProperty on altSecurityIdentities - may map a certificate onto the account' }
+        @{ Guid = $Script:PropertyGUIDs['userAccountControl']; Key = 'userAccountControl'
+           Text = 'WriteProperty on userAccountControl - may turn off pre-authentication or the password requirement of the account' }
+        @{ Guid = $Script:PropertySetGUIDs['User-Account-Restrictions']; Key = 'userAccountControl'
+           Text = 'WriteProperty on userAccountControl - may turn off pre-authentication or the password requirement of the account' }
+        @{ Guid = $Script:PropertyGUIDs['scriptPath']; Key = 'scriptPath'
+           Text = 'WriteProperty on scriptPath - may set a logon script the account runs' }
+    )
+    if ($ObjectClass -eq 'msDS-GroupManagedServiceAccount') {
+        # msDS-GroupMSAMembership (schemaIDGUID 888eedd6-ce04-df40-b462-b8a50e41ba38) is the
+        # list of who may read the managed password.
+        $written += @{ Guid = '888eedd6-ce04-df40-b462-b8a50e41ba38'; Key = 'msDS-GroupMSAMembership'
+                       Text = 'WriteProperty on msDS-GroupMSAMembership - may allow itself to read the password of the account' }
+    }
+    foreach ($entry in $written) {
+        if ($entry.Guid -and $objectTypeText -eq ([string]$entry.Guid).ToLowerInvariant()) {
+            [PSCustomObject]@{ Key = $entry.Key; Text = $entry.Text }
+        }
+    }
+}
+
+<#
+.SYNOPSIS
+    Reports who may take over a privileged account through the account's own DACL.
+
+.DESCRIPTION
+    Step 5c of Get-PrivilegedGroupMembers (coverage gap A1, 2026-10-17). Step 5 reads the
+    AdminSDHolder template and step 5b the DACL of the privileged groups it does not
+    protect; the DACL of the privileged accounts themselves was read by nobody. A password
+    reset right put on a DnsAdmins member, a key credential write on the group managed
+    service account in Domain Admins, an OU delegation that reaches an administrator whose
+    account still inherits - each takes the account, and with it the group, over.
+
+    Read are the privileged users and managed service accounts of this domain the steps
+    above found. Computers are not: Get-NonDefaultComputerOwners reports the explicit
+    entries on every computer object. An account in another domain is not read over this
+    connection. Explicit and inherited ACEs alike - both apply to the account - but not an
+    inherit-only one, and not an Allow that an explicit Deny for the same trustee cancels
+    completely. An inherited one is said to be, because it has to be removed at the parent.
+
+    An account SDProp protects (adminCount=1) carries the template as explicit ACEs. A right
+    the template grants the same trustee is step 5's finding and is not repeated per account;
+    a right beyond it was added after SDProp's last run, or the account is no longer
+    protected and keeps a stale copy - reported either way. Without the template (step 5 could
+    not read it) every ACE is judged on its own.
+
+    The rights: GenericAll, WriteDacl, WriteOwner, a write of every attribute, all extended
+    rights, the password reset right, and a write of msDS-KeyCredentialLink (shadow
+    credentials), servicePrincipalName (targeted Kerberoasting), altSecurityIdentities
+    (certificate mapping), userAccountControl or the User-Account-Restrictions set
+    (pre-authentication, password requirement), scriptPath (logon script) and - on a group
+    managed service account - msDS-GroupMSAMembership. And the owner, who may rewrite the
+    DACL whatever it says.
+
+    Who counts as expected is decided by the gate of steps 5 and 5b, told the rights in
+    question: Key Admins and Enterprise Key Admins write msDS-KeyCredentialLink on every user
+    by design. Account Operators hold full control over every user AdminSDHolder does not
+    protect through the default security descriptor of the user class -
+    (A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;AO) on learn.microsoft.com, adschema - which is said
+    once, as for the groups.
+
+.PARAMETER Accounts
+    The accounts to read: DistinguishedName, Name, SID, ObjectClass and Groups (the
+    privileged groups the account is in).
+
+.PARAMETER TemplateRules
+    The access rules of AdminSDHolder from step 5, or $null when step 5 could not read them.
+
+.PARAMETER IncludePrivileged
+    Also list the expected and privileged holders, as hints.
+
+.PARAMETER ConnectionParams
+    Domain/Server/Credential hashtable, passed through unchanged.
+
+.PARAMETER AccountOperatorMembers
+    How many members Account Operators has, or $null when the group was not found.
+#>
+function Show-PrivilegedAccountACL {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        [object[]]$Accounts,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $TemplateRules,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludePrivileged,
+
+        [Parameter(Mandatory=$false)]
+        [hashtable]$ConnectionParams = @{},
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $AccountOperatorMembers
+    )
+
+    Show-SubHeader "Checking the ACLs of privileged accounts..." -ObjectType 'PrivilegedAccountACL'
+
+    $accountOperatorsSID = 'S-1-5-32-548'
+    $allowType = [System.Security.AccessControl.AccessControlType]::Allow
+
+    # The template as trustee|right pairs - what SDProp writes onto a protected account.
+    # Built for a managed service account, so the one right only that class has is in it.
+    $templatePairs = @{}
+    foreach ($templateRule in @($TemplateRules)) {
+        if (-not $templateRule) { continue }
+        if ($templateRule.AccessControlType -ne $allowType -or $templateRule.IsInherited) { continue }
+        if (([string]$templateRule.PropagationFlags) -match 'InheritOnly') { continue }
+        $templateSID = $templateRule.IdentityReference.Value
+        foreach ($right in @(Get-AccountTakeoverRight -Rule $templateRule -ObjectClass 'msDS-GroupManagedServiceAccount')) {
+            $templatePairs["$templateSID|$($right.Key)"] = $true
+        }
+    }
+
+    # Per trustee: the rights it holds, and on which accounts.
+    $byTrustee = [ordered]@{}
+    $examinedAccounts = 0
+    $protectedAccounts = 0
+    $unreadAccounts = @()
+    $accountOperatorAccounts = @()
+    $suppressed = @{}
+
+    foreach ($account in @($Accounts)) {
+        if (-not $account -or -not $account.DistinguishedName) { continue }
+        $accountName = $(if ($account.Name) { [string]$account.Name } else { [string]$account.DistinguishedName })
+
+        $accountObject = $null
+        try {
+            $accountObject = @(Get-DomainObject -Identity $account.DistinguishedName -Properties 'nTSecurityDescriptor', 'adminCount' -Raw @ConnectionParams)[0]
+        } catch {
+            Write-Log "[Get-PrivilegedGroupMembers] Could not read $($account.DistinguishedName): $_"
+        }
+        if (-not $accountObject -or -not $accountObject.nTSecurityDescriptor) {
+            $unreadAccounts += $accountName
+            continue
+        }
+
+        $descriptor = New-Object System.DirectoryServices.ActiveDirectorySecurity
+        try {
+            $descriptor.SetSecurityDescriptorBinaryForm([byte[]]$accountObject.nTSecurityDescriptor)
+        } catch {
+            Write-Log "[Get-PrivilegedGroupMembers] Could not parse the descriptor of $($account.DistinguishedName): $_"
+            $unreadAccounts += $accountName
+            continue
+        }
+        $examinedAccounts++
+        $isProtected = ("$($accountObject.adminCount)" -eq '1')
+        if ($isProtected) { $protectedAccounts++ }
+
+        # SecurityIdentifier, not .Access - see the AdminSDHolder step.
+        $rules = @($descriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+        $denyRules = @($rules | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny })
+
+        # Trustee SID -> the rights it holds on this account, and whether any came by inheritance.
+        $onThisAccount = [ordered]@{}
+
+        foreach ($ace in $rules) {
+            if ($ace.AccessControlType -ne $allowType) { continue }
+            if (([string]$ace.PropagationFlags) -match 'InheritOnly') { continue }
+
+            $trusteeSID = $ace.IdentityReference.Value
+            # SELF, CREATOR OWNER and the account itself: whoever holds them is the account.
+            if ($trusteeSID -in @('S-1-5-10', 'S-1-3-0')) { continue }
+            if ($account.SID -and $trusteeSID -eq [string]$account.SID) { continue }
+            if ($denyRules.Count -gt 0 -and (Test-ACEFullyDenied -ACE $ace -DenyACEs $denyRules)) { continue }
+
+            $rights = @(Get-AccountTakeoverRight -Rule $ace -ObjectClass ([string]$account.ObjectClass))
+            if ($isProtected -and -not $ace.IsInherited) {
+                $rights = @($rights | Where-Object { -not $templatePairs.ContainsKey("$trusteeSID|$($_.Key)") })
+            }
+            if ($rights.Count -eq 0) { continue }
+
+            if (-not $onThisAccount.Contains($trusteeSID)) {
+                $onThisAccount[$trusteeSID] = [PSCustomObject]@{ Rights = @(); Inherited = $false }
+            }
+            $held = $onThisAccount[$trusteeSID]
+            foreach ($right in $rights) {
+                if (@($held.Rights | ForEach-Object { $_.Key }) -notcontains $right.Key) { $held.Rights += $right }
+            }
+            if ($ace.IsInherited) { $held.Inherited = $true }
+        }
+
+        # The owner may rewrite the DACL whatever it says - the same as WriteDacl.
+        $ownerSID = $null
+        try { $ownerSID = $descriptor.GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch { $ownerSID = $null }
+        if ($ownerSID -and -not ($account.SID -and $ownerSID -eq [string]$account.SID)) {
+            if (-not $onThisAccount.Contains($ownerSID)) {
+                $onThisAccount[$ownerSID] = [PSCustomObject]@{ Rights = @(); Inherited = $false }
+            }
+            $onThisAccount[$ownerSID].Rights += [PSCustomObject]@{ Key = 'Owner'; Text = 'Owner of the account - may rewrite its DACL' }
+        }
+
+        $accountText = $accountName
+        if (@($account.Groups).Count -gt 0) { $accountText += " ($(@($account.Groups) -join ', '))" }
+
+        foreach ($trusteeSID in @($onThisAccount.Keys)) {
+            $held = $onThisAccount[$trusteeSID]
+            $heldKeys = @($held.Rights | ForEach-Object { $_.Key })
+
+            if ($trusteeSID -eq $accountOperatorsSID) {
+                $accountOperatorAccounts += $accountName
+                if (-not $IncludePrivileged) { continue }
+                $severity = 'Attention'
+            } else {
+                # The gate of steps 5 and 5b, told the rights: Key Admins hold the key
+                # credential write by design and nothing else here.
+                $scopeResult = Test-IsExpectedInScope -Identity $trusteeSID -Scope 'DomainRootACL' -Rights $heldKeys -ReturnDetails
+                $severity = $scopeResult.Severity
+                if ($severity -notin @('Expected', 'Attention')) {
+                    $exchangeCheck = Test-IsExchangeServiceGroup -Identity $trusteeSID
+                    if ($exchangeCheck -and $exchangeCheck.IsExchangeService) { $severity = 'Attention' }
+                }
+                if ($severity -in @('Expected', 'Attention') -and -not $IncludePrivileged) {
+                    $suppressed[$trusteeSID] = $true
+                    continue
+                }
+            }
+
+            if (-not $byTrustee.Contains($trusteeSID)) {
+                $byTrustee[$trusteeSID] = [PSCustomObject]@{ Rights = @(); Accounts = @(); Severity = $severity }
+            }
+            $entry = $byTrustee[$trusteeSID]
+            foreach ($right in $held.Rights) {
+                if ($entry.Rights -notcontains $right.Text) { $entry.Rights += $right.Text }
+            }
+            $thisAccountText = $accountText
+            if ($held.Inherited) { $thisAccountText += ' - inherited, remove it at the parent' }
+            $entry.Accounts += $thisAccountText
+        }
+    }
+
+    if ($examinedAccounts -gt 0) {
+        $readText = "$examinedAccounts privileged account(s) were read"
+        if ($protectedAccounts -gt 0) {
+            $readText += "; on the $protectedAccounts AdminSDHolder protects, what its template grants is reported with AdminSDHolder above"
+        }
+        Show-Line $readText -Class Note
+    }
+
+    # Account Operators: the default, said once - see the description.
+    if ($accountOperatorAccounts.Count -gt 0) {
+        $aoText = "Account Operators control $($accountOperatorAccounts.Count) of these account(s) through the default every new user gets - a member of Account Operators can take each of them over"
+        $aoClass = 'Note'
+        if ($null -ne $AccountOperatorMembers -and [int]$AccountOperatorMembers -gt 0) {
+            $aoText += "; Account Operators has $AccountOperatorMembers member(s)"
+            $aoClass = 'Hint'
+        } elseif ($null -ne $AccountOperatorMembers) {
+            $aoText += '; Account Operators has no members'
+        }
+        Show-Line $aoText -Class $aoClass -FindingId 'PRIVILEGED_ACCOUNT_ACL'
+    }
+
+    $accountFindingRows = @()
+    $accountHintRows = @()
+    foreach ($trusteeSID in @($byTrustee.Keys)) {
+        $entry = $byTrustee[$trusteeSID]
+        $trusteeName = ConvertFrom-SID -SID $trusteeSID
+        if (-not $trusteeName) { $trusteeName = $trusteeSID }
+
+        $row = [PSCustomObject]@{
+            Name             = $trusteeName
+            Trustee          = $trusteeName
+            TrusteeSID       = $trusteeSID
+            dangerousRights  = @($entry.Rights)
+            affectedAccounts = @($entry.Accounts)
+        }
+        if ($entry.Severity -in @('Expected', 'Attention')) {
+            $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
+            $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedAccountACL' -Force
+            $accountHintRows += $row
+        } else {
+            $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedAccountACL' -Force
+            $accountFindingRows += $row
+        }
+    }
+
+    if ($accountFindingRows.Count -gt 0) {
+        Show-Line "Found $($accountFindingRows.Count) principal(s) that can take over a privileged account" -Class Finding -FindingId 'PRIVILEGED_ACCOUNT_ACL'
+        foreach ($row in $accountFindingRows) { Show-Object $row -Class Finding }
+    }
+    if ($accountHintRows.Count -gt 0) {
+        Show-Line "Found $($accountHintRows.Count) expected or privileged holder(s) of the same rights" -Class Hint
+        foreach ($row in $accountHintRows) { Show-Object $row -Class Hint }
+    }
+
+    if ($unreadAccounts.Count -gt 0) {
+        Show-Line ("$($unreadAccounts.Count) account(s) could not be read - who may take them over was not evaluated: " +
+                   ($unreadAccounts -join ', ')) -Class Note
+    }
+
+    if ($accountFindingRows.Count -eq 0 -and $accountHintRows.Count -eq 0) {
+        if ($examinedAccounts -eq 0) {
+            if ($unreadAccounts.Count -eq 0) {
+                Show-Line "No privileged user or service account of this domain was found to read" -Class Note
+            }
+            return
+        }
+        $accountCleanClass = 'Secure'
+        if ($unreadAccounts.Count -gt 0) { $accountCleanClass = 'Note' }
+        $accountCleanText = "No principal beyond the expected ones can take over the $examinedAccounts privileged account(s) read"
+        if ($suppressed.Count -gt 0) {
+            $accountCleanText += " - $($suppressed.Count) expected or privileged holder(s) hidden, use -IncludePrivileged to see them"
+        }
+        Show-Line $accountCleanText -Class $accountCleanClass
     }
 }
 

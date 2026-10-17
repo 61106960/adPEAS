@@ -217,6 +217,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   reported. `ConvertFrom-SecurityDescriptor` now carries `IsInherited`,
   `InheritedObjectType` and `PropagationFlags` on every ACE.
 
+- **Who may take over a privileged account through its own DACL is reported.**
+  `Get-PrivilegedGroupMembers` read the AdminSDHolder template and the DACL of the
+  privileged groups it does not protect, but not the DACL of the privileged accounts: a
+  password reset right on a DnsAdmins member, a key credential write on a managed service
+  account in a privileged group or an OU delegation reaching an administrator whose
+  account still inherits went unreported. A new step reads every privileged user and
+  managed service account of the domain and reports, per principal and with the accounts
+  it reaches, full control, a DACL or owner change, a write of every attribute, all
+  extended rights, the password reset right, writes of `msDS-KeyCredentialLink`,
+  `servicePrincipalName`, `altSecurityIdentities`, `userAccountControl`, `scriptPath` and
+  `msDS-GroupMSAMembership`, and the owner - explicit and inherited entries, an inherited
+  one marked as such. On an account AdminSDHolder protects, what the template grants is
+  left to the AdminSDHolder step instead of being repeated per account. Account Operators,
+  who control every unprotected account through the default security descriptor of the
+  user class, are named once. New card `PRIVILEGED_ACCOUNT_ACL`.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

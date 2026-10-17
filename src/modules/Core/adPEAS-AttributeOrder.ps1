@@ -628,6 +628,9 @@ $Script:PrimaryAttributes = @{
     PrivilegedGroupACL = @(
         'Trustee', 'TrusteeSID', 'dangerousRights', 'affectedGroups'
     )
+    PrivilegedAccountACL = @(
+        'Trustee', 'TrusteeSID', 'dangerousRights', 'affectedAccounts'
+    )
 
     # LDAP Statistics per module (from Invoke-adPEAS -Statistics)
     LDAPStatisticsModule = @(

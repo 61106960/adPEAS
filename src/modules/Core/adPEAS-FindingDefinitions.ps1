@@ -10639,6 +10639,55 @@ $acl.Access | Where-Object {
         )
     }
 
+    'PRIVILEGED_ACCOUNT_ACL' = @{
+        Title = "Control Over a Privileged Account"
+        Risk = "Finding"
+        BaseScore = 75
+        Description = "A principal outside Tier-0 holds a right on a privileged account that lets it act as that account: it may reset the password, add a key credential (shadow credentials), give the account an SPN and crack the ticket, map a certificate onto it, switch off its pre-authentication, set a logon script, rewrite the DACL or take ownership. The account is a member of a privileged group, so the holder receives the group's rights. AdminSDHolder resets the DACL of the accounts it protects every hour; an entry found on such an account was added since, or the account is no longer protected. Every other privileged account - a member of DnsAdmins or of Group Policy Creator Owners, for instance - keeps what it is given, including what an OU delegation passes down."
+        Impact = @(
+            "The holder authenticates as the privileged account and holds every right of its groups"
+            "Password reset and certificate mapping work without the account's password; a key credential leaves the password untouched and is easily missed"
+            "An inherited right reaches every account below the OU it was delegated on"
+        )
+        Attack = @(
+            "1. As the holder, add a key credential to the account (Whisker, pyWhisker) or reset its password"
+            "2. Request a TGT for the account with the key (PKINIT) or the new password"
+            "3. Use the account's group rights - Domain Admin, DnsAdmins code execution on the DNS servers, or policy creation"
+        )
+        Remediation = @(
+            "Remove the entry from the account; an inherited one has to go at the container it comes from"
+            "Keep privileged accounts in an OU that only Tier 0 administrators control, so no delegation on an ordinary OU reaches them"
+            "Keep Account Operators empty - the user class gives them full control over every account AdminSDHolder does not protect"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who may take over an account through its DACL or its owner"
+                Command = @'
+$acl = Get-Acl "AD:\<account DN>"
+$acl.Owner
+$acl.Access | Where-Object {
+    $_.AccessControlType -eq 'Allow' -and
+    $_.ActiveDirectoryRights -match 'GenericAll|GenericWrite|WriteDacl|WriteOwner|WriteProperty|ExtendedRight'
+} | Select-Object IdentityReference, ActiveDirectoryRights, ObjectType, IsInherited
+'@
+            }
+        )
+        References = @(
+            @{ Title = "Appendix C - Protected Accounts and Groups in Active Directory (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory" }
+            @{ Title = "User class - default security descriptor (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/c-user" }
+            @{ Title = "Shadow Credentials - The Hacker Recipes"; Url = "https://www.thehacker.recipes/ad/movement/kerberos/shadow-credentials" }
+        )
+        Tools = @("BloodHound", "Whisker", "Rubeus", "PowerView")
+        MITRE = "T1098"
+        Triggers = @(
+            # The labels only this check writes. GenericAll, WriteDacl and WriteOwner keep the
+            # generic cards they reach everywhere else.
+            @{ Attribute = 'dangerousRights'; Pattern = ' - may .*\bthe account\b|^Owner of the account - '; Severity = 'Finding' }
+            @{ Attribute = 'affectedAccounts'; Custom = 'dangerous_rights_expected'; Severity = 'Hint'; SeverityOnly = $true }
+            @{ Attribute = 'affectedAccounts'; Severity = 'Finding' }
+        )
+    }
+
     'NTAUTH_FOREIGN_ISSUER' = @{
         Title = "NTAuth Store - Issuer That Is No Enterprise CA of This Forest"
         Risk = "Hint"
