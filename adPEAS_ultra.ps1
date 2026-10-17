@@ -67221,6 +67221,7 @@ function Get-LAPSConfiguration {
 	            Show-Line "All computers (100%) have LAPS protection" -Class "Secure"
 	        }
 	    } catch {
+	        Show-Line "Error during check - the LAPS configuration could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -67346,6 +67347,7 @@ function Get-OutdatedComputers {
 	            Show-Line "No computers with an outdated Microsoft operating system found" -Class "Secure"
 	        }
 	    } catch {
+	        Show-Line "Error during check - outdated operating systems could not be evaluated: $_" -Class Finding
 	    }
 	}
 }
@@ -86000,7 +86002,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-0859"
+$Script:adPEASVersion = "2.7.0+20261017-0906"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

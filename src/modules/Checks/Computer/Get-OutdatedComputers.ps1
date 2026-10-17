@@ -250,7 +250,10 @@ function Get-OutdatedComputers {
             }
 
         } catch {
+            # Say so on the console, not only in the log - an aborted check is otherwise
+            # indistinguishable from a domain without an outdated machine.
             Write-Log "[Get-OutdatedComputers] Error: $_" -Level Error
+            Show-Line "Error during check - outdated operating systems could not be evaluated: $_" -Class Finding
         }
     }
 

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 08:59:21
-    Version: 2.7.0+20261017-0859
+    Build: 2026-10-17 09:06:33
+    Version: 2.7.0+20261017-0906
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -110911,7 +110911,11 @@ function Get-LAPSConfiguration {
             }
 
         } catch {
+            # Say so on the console, not only in the log - an aborted check is otherwise
+            # indistinguishable from a domain with nothing to report: the output just
+            # stopped, and no line said the coverage figure was never computed.
             Write-Log "[Get-LAPSConfiguration] Error: $_" -Level Error
+            Show-Line "Error during check - the LAPS configuration could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -111177,7 +111181,10 @@ function Get-OutdatedComputers {
             }
 
         } catch {
+            # Say so on the console, not only in the log - an aborted check is otherwise
+            # indistinguishable from a domain without an outdated machine.
             Write-Log "[Get-OutdatedComputers] Error: $_" -Level Error
+            Show-Line "Error during check - outdated operating systems could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -138763,7 +138770,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-0859"
+$Script:adPEASVersion = "2.7.0+20261017-0906"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

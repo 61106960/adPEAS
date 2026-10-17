@@ -884,7 +884,11 @@ function Get-LAPSConfiguration {
             }
 
         } catch {
+            # Say so on the console, not only in the log - an aborted check is otherwise
+            # indistinguishable from a domain with nothing to report: the output just
+            # stopped, and no line said the coverage figure was never computed.
             Write-Log "[Get-LAPSConfiguration] Error: $_" -Level Error
+            Show-Line "Error during check - the LAPS configuration could not be evaluated: $_" -Class Finding
         }
     }
 

@@ -69776,6 +69776,7 @@ function Get-LAPSConfiguration {
             }
         } catch {
             Write-Log "[Get-LAPSConfiguration] Error: $_" -Level Error
+            Show-Line "Error during check - the LAPS configuration could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -69906,6 +69907,7 @@ function Get-OutdatedComputers {
             }
         } catch {
             Write-Log "[Get-OutdatedComputers] Error: $_" -Level Error
+            Show-Line "Error during check - outdated operating systems could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -88994,7 +88996,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-0859"
+$Script:adPEASVersion = "2.7.0+20261017-0906"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

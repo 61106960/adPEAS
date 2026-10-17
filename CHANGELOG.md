@@ -144,6 +144,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Domain Admins can read them by default instead of "No Fine-Grained Password Policies
   configured".
 
+- **`Get-LAPSConfiguration` and `Get-OutdatedComputers` say when they could not finish.**
+  Both wrote a failed query to the log only, so the section simply ended - a LAPS
+  coverage figure that was never computed looked like a domain with nothing to report.
+  They print "Error during check - ... could not be evaluated" now, as the other checks
+  do.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object
