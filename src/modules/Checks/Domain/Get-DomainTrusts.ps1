@@ -127,8 +127,9 @@ function Get-DomainTrusts {
       absence means filtering was switched off. A forest trust filters differently, and
       TREAT_AS_EXTERNAL is what weakens it to external semantics.
 
-    Also reported: a trust whose key is RC4, which is weaker than the AES the trust could
-    be using.
+    Also reported: the encryption types Kerberos may use across each trust, read from
+    msDS-SupportedEncryptionTypes on the trust object - a trust without it supports RC4 and
+    no AES - and a hint where no AES is among them.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -192,6 +193,7 @@ function Get-DomainTrusts {
                 Show-Line "Found $(@($trusts).Count) domain trust(s):" -Class Hint
 
                 $riskyTrusts = 0
+                $weakKeyTrusts = 0
                 foreach ($trust in $trusts) {
                     # trustDirection, trustType and trustAttributes are already decoded
                     # by Invoke-LDAPSearch into readable strings/arrays
@@ -239,28 +241,72 @@ function Get-DomainTrusts {
                         $trustObject | Add-Member -NotePropertyName 'trustRisk' -NotePropertyValue $verdict.Risk -Force
                     }
 
-                    # The trust key itself. RC4 is weaker than the AES the trust could be
-                    # using, and it is the key a Golden Ticket across the trust is forged
-                    # with - but it is not on its own a way in, so it stays a hint.
+                    # The encryption types of Kerberos across the trust. A referral ticket
+                    # across a trust is encrypted with the trust key, in a type the trust
+                    # object allows: msDS-SupportedEncryptionTypes on it, which the checkbox
+                    # "The other domain supports Kerberos AES Encryption" and ksetup
+                    # /setenctypeattr set. Without it a trust supports RC4 and no AES
+                    # (KB4492348), and the 2026 change that made AES the default for
+                    # accounts leaves trusts alone - "The Kerberos Trust and referral flow
+                    # ... is unaffected" (CVE-2026-20833). A downlevel (NT4) trust carries
+                    # no Kerberos and gets no row. The -SK bit asks for AES session keys
+                    # and is no type of the key.
                     #
-                    # Which trust type it is decides whether the bit means anything.
-                    # MS-ADTS defines TRUST_ATTRIBUTE_USES_RC4_ENCRYPTION for an MIT realm
-                    # trust; on an Active Directory trust the encryption of the trust key
-                    # comes from msDS-SupportedEncryptionTypes instead, and the bit is
-                    # left over. Reported as a red finding on every trust that carried it,
-                    # it said something about the key that the attribute cannot say.
-                    if ($usesRC4) {
-                        if ("$type" -match 'MIT') {
-                            $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
-                                -NotePropertyValue 'RC4 - the trust key is RC4 rather than AES. Weaker to crack, and it is the key an inter-realm ticket would be forged with.' -Force
+                    # RC4 is weaker than AES, and on a realm trust to MIT Kerberos the trust
+                    # password is one an administrator typed - but it is not on its own a
+                    # way in, so it stays a hint.
+                    $isAdTrust = ("$type" -match 'Uplevel')
+                    $isMitTrust = ("$type" -match 'MIT')
+                    $encTypeProp = $trust.PSObject.Properties['msDS-SupportedEncryptionTypes']
+                    $keyTypes = @()
+                    if ($encTypeProp -and $null -ne $encTypeProp.Value) {
+                        $keyTypes = @(@($encTypeProp.Value) | ForEach-Object { ([string]$_).Trim() } | Where-Object {
+                            ($_ -like 'RC4*' -or $_ -like 'AES*' -or $_ -like 'DES*') -and $_ -notlike '*-SK'
+                        })
+                    }
+                    $hasAES = (@($keyTypes | Where-Object { $_ -like 'AES*' }).Count -gt 0)
+                    $hasRC4 = (@($keyTypes | Where-Object { $_ -like 'RC4*' }).Count -gt 0)
+
+                    $keyWeakness = $null
+                    if ($isAdTrust -or ($isMitTrust -and $keyTypes.Count -gt 0)) {
+                        if ($keyTypes.Count -eq 0) {
+                            $trustObject | Add-Member -NotePropertyName 'trustEncryptionTypes' -NotePropertyValue 'Not set' -Force
+                            $keyWeakness = "RC4 - msDS-SupportedEncryptionTypes is not set on the trust, and a trust without it supports RC4 and no AES. The 2026 change to AES by default covers accounts, not trusts."
                         } else {
-                            $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
-                                -NotePropertyValue "Set, but not meaningful on a $type trust - MS-ADTS defines the RC4 attribute bit for an MIT realm trust. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
+                            $trustObject | Add-Member -NotePropertyName 'trustEncryptionTypes' -NotePropertyValue ($keyTypes -join ', ') -Force
+                            if (-not $hasAES -and $hasRC4) {
+                                $keyWeakness = 'RC4 - the trust supports RC4 and no AES'
+                            } elseif (-not $hasAES) {
+                                $keyWeakness = 'DES - the trust supports DES and neither RC4 nor AES; Windows has disabled DES by default since Windows 7 and Server 2008 R2'
+                            }
                         }
+                    } elseif ($isMitTrust -and $usesRC4) {
+                        # No msDS-SupportedEncryptionTypes on a realm trust: the attribute
+                        # bit is what MS-ADTS defines for it.
+                        $keyWeakness = 'RC4 - the trust key is RC4 rather than AES. Weaker to crack, and it is the key an inter-realm ticket would be forged with.'
+                    }
+
+                    if ($keyWeakness) {
+                        $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' -NotePropertyValue $keyWeakness -Force
+                    } elseif ($usesRC4 -and -not $isMitTrust) {
+                        # MS-ADTS defines TRUST_ATTRIBUTE_USES_RC4_ENCRYPTION for an MIT realm
+                        # trust; on any other trust it is left over. Reported as a red finding
+                        # on every trust that carried it, it said something about the key that
+                        # the bit cannot say.
+                        $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
+                            -NotePropertyValue "Set, but not meaningful on a $type trust - MS-ADTS defines the RC4 attribute bit for an MIT realm trust. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
+                    }
+
+                    # The class of the object: the SID filtering verdict, raised to a hint
+                    # by a key without AES.
+                    $objectClass = $verdict.Severity
+                    if ($keyWeakness) {
+                        $weakKeyTrusts++
+                        if ($objectClass -ne 'Finding') { $objectClass = 'Hint' }
                     }
 
                     $trustObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainTrust' -Force
-                    Show-Object $trustObject -Class $verdict.Severity
+                    Show-Object $trustObject -Class $objectClass
 
                 }
 
@@ -268,6 +314,9 @@ function Get-DomainTrusts {
                     Show-Line "$riskyTrusts of them let SID history from the other side reach this domain - whoever controls that domain controls this one" -Class Finding
                 } else {
                     Show-Line "No trust lets SID history from another domain reach this one" -Class Secure
+                }
+                if ($weakKeyTrusts -gt 0) {
+                    Show-Line "$weakKeyTrusts of them allow no AES for Kerberos across the trust" -Class Hint -FindingId 'TRUST_USES_RC4'
                 }
             }
 

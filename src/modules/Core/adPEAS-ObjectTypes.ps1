@@ -160,6 +160,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "SID filtering status (quarantine)"
             "Selective authentication settings"
             "Trust transitivity"
+            "The Kerberos encryption types allowed across the trust (msDS-SupportedEncryptionTypes on the trust object)"
         )
         SecureMessage = "All domain trusts are properly secured with SID filtering enabled and appropriate authentication settings. No misconfigured or overly permissive trusts were found."
     }

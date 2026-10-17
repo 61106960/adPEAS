@@ -298,6 +298,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the GPO type with the card title "LDAP Configuration GPO:" and no name, has a type of its
   own, *Directory Service Heuristics*, with one decoded value per heuristic.
 
+- **`Get-DomainTrusts` reads the Kerberos encryption types of each trust.** A referral
+  ticket across a trust is encrypted with the trust key in a type that
+  `msDS-SupportedEncryptionTypes` on the trust object allows; the attribute was read
+  nowhere. A new `trustEncryptionTypes` row names the types, and a trust that allows no
+  AES is a hint - including one without the attribute, which supports RC4 and no AES
+  (KB4492348); Microsoft's 2026 change to AES by default covers accounts, not trusts
+  (CVE-2026-20833). A line counts such trusts. The RC4 attribute bit keeps its meaning on
+  a realm trust to MIT Kerberos without the attribute. The card *Trust Without AES for
+  Kerberos* no longer claims offline cracking of an Active Directory trust key, whose
+  password the domain controllers generate, nor that the trust has to be re-created: AES
+  is switched on at the trust object.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

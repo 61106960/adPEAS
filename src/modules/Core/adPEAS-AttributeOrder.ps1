@@ -315,7 +315,8 @@ $Script:PrimaryAttributes = @{
         'flatName',
         'trustDirection',
         'trustType',
-        'trustAttributes'
+        'trustAttributes',
+        'trustEncryptionTypes'
     )
 
     # Domain Controllers object
