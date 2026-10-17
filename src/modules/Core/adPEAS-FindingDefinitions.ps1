@@ -7091,6 +7091,43 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
 
+    'CREDENTIAL_UNATTEND_PASSWORD' = @{
+        Title = "Password in a Windows Answer File"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A Windows answer file (unattend.xml or the like) readable here carries a password: the built-in administrator's, a local account's, the automatic logon's, or the account that joins the machine to the domain. Windows SIM can 'hide' the first three, and Microsoft says that this 'does not provide encryption or other security benefits' - the value is the Base64 of the password with the setting's name appended, and is shown decoded here. The domain join account cannot be hidden at all."
+        Impact = @(
+            "The local administrator password of every machine built from the file - often the same on all of them"
+            "The domain join account's password, a domain credential, in clear text"
+            "Readable by whoever can read the share the file sits on - in SYSVOL or NETLOGON, every authenticated user"
+        )
+        Attack = @(
+            "1. Read the answer file from the share"
+            "2. Decode a hidden value: Base64, then UTF-16LE, then cut AdministratorPassword or Password off the end"
+            "3. Log on with the local administrator password to every machine built from the file, or with the domain join account to the domain"
+        )
+        Remediation = @(
+            "Change the exposed passwords first - every machine built from the file, and the domain join account"
+            "Remove the answer file from the share; keep deployment files where only the deployment service reads them"
+            "Use Windows LAPS for the local administrator, and a join account that may only join computers, ideally with a pre-staged computer object"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Find answer files in SYSVOL"
+                Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com' -Recurse -Include *.xml | Where-Object { Select-String -Path `$_.FullName -Pattern 'urn:schemas-microsoft-com:unattend' -Quiet } | Select-Object FullName"
+            }
+        )
+        References = @(
+            @{ Title = "Hide Sensitive Data in an Answer File - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/wsim/hide-sensitive-data-in-an-answer-file" }
+            @{ Title = "Unsecured Credentials: Credentials In Files - MITRE"; Url = "https://attack.mitre.org/techniques/T1552/001/" }
+        )
+        Tools = @("Snaffler", "Manual SYSVOL search")
+        MITRE = "T1552.001"
+        Triggers = @(
+            @{ Attribute = 'credentialType'; Pattern = '^Unattend Answer File$'; Severity = 'Finding' }
+        )
+    }
+
     'CREDENTIAL_NET_USE' = @{
         Title = "Net Use Command with Embedded Password"
         Risk = "Finding"

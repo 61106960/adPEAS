@@ -3476,7 +3476,7 @@ $Script:PrimaryAttributes = @{
         'Group', 'Reason', 'Count', 'Policies'
     )
     GPPCredential = @(
-        'CredentialType', 'GPOName', 'FilePath', 'RegistryValue', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'RegistryValue', 'UnattendSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
     )
     SYSVOLCredential = @(
         'CredentialType', 'GPOName', 'FilePath', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
@@ -10635,6 +10635,42 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1552.001"
         Triggers = @(
             @{ Attribute = 'credentialType'; Pattern = '^Registry Value$'; Severity = 'Finding' }
+        )
+    }
+    'CREDENTIAL_UNATTEND_PASSWORD' = @{
+        Title = "Password in a Windows Answer File"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A Windows answer file (unattend.xml or the like) readable here carries a password: the built-in administrator's, a local account's, the automatic logon's, or the account that joins the machine to the domain. Windows SIM can 'hide' the first three, and Microsoft says that this 'does not provide encryption or other security benefits' - the value is the Base64 of the password with the setting's name appended, and is shown decoded here. The domain join account cannot be hidden at all."
+        Impact = @(
+            "The local administrator password of every machine built from the file - often the same on all of them"
+            "The domain join account's password, a domain credential, in clear text"
+            "Readable by whoever can read the share the file sits on - in SYSVOL or NETLOGON, every authenticated user"
+        )
+        Attack = @(
+            "1. Read the answer file from the share"
+            "2. Decode a hidden value: Base64, then UTF-16LE, then cut AdministratorPassword or Password off the end"
+            "3. Log on with the local administrator password to every machine built from the file, or with the domain join account to the domain"
+        )
+        Remediation = @(
+            "Change the exposed passwords first - every machine built from the file, and the domain join account"
+            "Remove the answer file from the share; keep deployment files where only the deployment service reads them"
+            "Use Windows LAPS for the local administrator, and a join account that may only join computers, ideally with a pre-staged computer object"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Find answer files in SYSVOL"
+                Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com' -Recurse -Include *.xml | Where-Object { Select-String -Path `$_.FullName -Pattern 'urn:schemas-microsoft-com:unattend' -Quiet } | Select-Object FullName"
+            }
+        )
+        References = @(
+            @{ Title = "Hide Sensitive Data in an Answer File - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/wsim/hide-sensitive-data-in-an-answer-file" }
+            @{ Title = "Unsecured Credentials: Credentials In Files - MITRE"; Url = "https://attack.mitre.org/techniques/T1552/001/" }
+        )
+        Tools = @("Snaffler", "Manual SYSVOL search")
+        MITRE = "T1552.001"
+        Triggers = @(
+            @{ Attribute = 'credentialType'; Pattern = '^Unattend Answer File$'; Severity = 'Finding' }
         )
     }
     'CREDENTIAL_NET_USE' = @{
@@ -80803,8 +80839,9 @@ function Get-UnixPasswordAccounts {
 $Script:CredentialScanExtensions = @(
     '*.txt', '*.bat', '*.ini', '*.conf', '*.cnf', '*.cmd', '*.vbs', '*.vbe', '*.kix',
     '*.ps1', '*.psm1',
-    '*.cmtx', '*.config', '*.reg', '*.json', '*.yml', '*.yaml', '*.psd1'
+    '*.cmtx', '*.config', '*.reg', '*.json', '*.yml', '*.yaml', '*.psd1', '*.inf'
 )
+$Script:CredentialScanSkippedFiles = @('GptTmpl.inf')
 function Get-ReportedLineKey {
     [CmdletBinding()]
     [OutputType([string])]
@@ -80903,6 +80940,75 @@ function Get-RegistryPasswordCredential {
             RegistryValue  = (@($record.Hive, $record.Key, $valueName) | Where-Object { $_ }) -join '\'
             Password       = [string]$record.ValueString
         }
+    }
+}
+function Get-UnattendCredential {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [xml]$XmlContent
+    )
+    $root = $XmlContent.DocumentElement
+    if (-not $root -or $root.LocalName -ne 'unattend') { return }
+    $child = {
+        param($node, [string]$name)
+        if (-not $node) { return $null }
+        @($node.ChildNodes | Where-Object { $_.LocalName -eq $name })[0]
+    }
+    $reveal = {
+        param($passwordNode, [string]$suffix)
+        if (-not $passwordNode) { return $null }
+        $valueNode = & $child $passwordNode 'Value'
+        $text = if ($valueNode) { [string]$valueNode.InnerText } else { [string]$passwordNode.InnerText }
+        if ([string]::IsNullOrEmpty($text)) { return $null }
+        $plainNode = & $child $passwordNode 'PlainText'
+        if ($plainNode -and ([string]$plainNode.InnerText).Trim() -ieq 'false') {
+            try {
+                $decoded = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($text))
+                if ($decoded.EndsWith($suffix) -and $decoded.Length -gt $suffix.Length) {
+                    $decoded = $decoded.Substring(0, $decoded.Length - $suffix.Length)
+                }
+                return $decoded
+            } catch {
+                return $text
+            }
+        }
+        return $text
+    }
+    $all = { param([string]$name) @($root.SelectNodes("//*[local-name()='$name']")) }
+    foreach ($node in (& $all 'AdministratorPassword')) {
+        $password = & $reveal $node 'AdministratorPassword'
+        if ($null -eq $password) { continue }
+        [PSCustomObject]@{ UserName = '.\Administrator'; Password = $password; Setting = 'UserAccounts/AdministratorPassword' }
+    }
+    foreach ($node in (& $all 'LocalAccount')) {
+        $password = & $reveal (& $child $node 'Password') 'Password'
+        if ($null -eq $password) { continue }
+        $nameNode = & $child $node 'Name'
+        $userName = if ($nameNode -and $nameNode.InnerText) { ".\$($nameNode.InnerText)" } else { '' }
+        [PSCustomObject]@{ UserName = $userName; Password = $password; Setting = 'LocalAccounts/LocalAccount' }
+    }
+    foreach ($node in (& $all 'AutoLogon')) {
+        $password = & $reveal (& $child $node 'Password') 'Password'
+        if ($null -eq $password) { continue }
+        $userNode = & $child $node 'Username'
+        $domainNode = & $child $node 'Domain'
+        $userName = if ($userNode) { [string]$userNode.InnerText } else { '' }
+        if ($userName) {
+            if ($domainNode -and $domainNode.InnerText) { $userName = "$($domainNode.InnerText)\$userName" }
+            else { $userName = ".\$userName" }
+        }
+        [PSCustomObject]@{ UserName = $userName; Password = $password; Setting = 'AutoLogon' }
+    }
+    foreach ($node in (& $all 'Credentials')) {
+        if (-not $node.ParentNode -or $node.ParentNode.LocalName -ne 'Identification') { continue }
+        $passwordNode = & $child $node 'Password'
+        if (-not $passwordNode -or [string]::IsNullOrEmpty([string]$passwordNode.InnerText)) { continue }
+        $userNode = & $child $node 'Username'
+        $domainNode = & $child $node 'Domain'
+        $userName = if ($userNode) { [string]$userNode.InnerText } else { '' }
+        if ($domainNode -and $domainNode.InnerText -and $userName) { $userName = "$($domainNode.InnerText)\$userName" }
+        [PSCustomObject]@{ UserName = $userName; Password = [string]$passwordNode.InnerText; Setting = 'UnattendedJoin/Identification/Credentials' }
     }
 }
 function Get-CredentialExposure {
@@ -81063,6 +81169,21 @@ function Get-CredentialExposure {
                                     Show-Object $credObj -Class Finding
                                 }
                             }
+                            foreach ($unattendCredential in @(Get-UnattendCredential -XmlContent $xmlContent)) {
+                                $credObj = [PSCustomObject]@{
+                                    CredentialType  = "Unattend Answer File"
+                                    FilePath        = $xmlFile.Fullname
+                                    UnattendSetting = $unattendCredential.Setting
+                                    UserName        = $unattendCredential.UserName
+                                    Password        = $unattendCredential.Password
+                                }
+                                $accountInAD = Resolve-CredentialAccount -UserName $unattendCredential.UserName -FileName $fileName -FileTime $xmlFile.LastWriteTime
+                                if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
+                                Show-Line "Found a password in a Windows answer file" -Class Finding
+                                $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
+                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Unattend' -Force
+                                Show-Object $credObj -Class Finding
+                            }
                         }
                         catch {
                             Write-Log "[Get-CredentialExposure] Error parsing $($xmlFile.Fullname): $_"
@@ -81084,7 +81205,8 @@ function Get-CredentialExposure {
                     }
                 }
                 $searchExtensions = $Script:CredentialScanExtensions
-                $files = Get-ChildItem -Force -Path $scanPath -Recurse -Include $searchExtensions -ErrorAction SilentlyContinue
+                $files = @(Get-ChildItem -Force -Path $scanPath -Recurse -Include $searchExtensions -ErrorAction SilentlyContinue |
+                    Where-Object { $Script:CredentialScanSkippedFiles -notcontains $_.Name })
                 if (@($files).Count -gt 0) {
                     Write-Log "[Get-CredentialExposure] Found $(@($files).Count) script/config file(s) in custom path"
                     foreach ($file in $files) {
@@ -81237,7 +81359,8 @@ function Get-CredentialExposure {
                     $allFiles = @(Get-CachedSYSVOLFiles -Filter $allExtensions -SYSVOLPath $sysvolBase)
                     $xmlFiles = @($allFiles | Where-Object { $_.Extension -eq '.xml' })
                     $polFiles = @($allFiles | Where-Object { $_.Name -ieq 'Registry.pol' })
-                    $scriptFiles = @($allFiles | Where-Object { $_.Extension -ne '.xml' -and $_.Name -ine 'Registry.pol' })
+                    $scriptFiles = @($allFiles | Where-Object { $_.Extension -ne '.xml' -and $_.Name -ine 'Registry.pol' -and
+                        $Script:CredentialScanSkippedFiles -notcontains $_.Name })
                     Write-Log "[Get-CredentialExposure] Split: $($xmlFiles.Count) XML, $($scriptFiles.Count) script/config"
                     if ($xmlFiles.Count -gt 0) {
                         Write-Log "[Get-CredentialExposure] Analyzing $($xmlFiles.Count) XML file(s)..."
@@ -81325,6 +81448,24 @@ function Get-CredentialExposure {
                                         Show-Object $credObj -Class Finding
                                         $gppFindingsCount++
                                     }
+                                }
+                                foreach ($unattendCredential in @(Get-UnattendCredential -XmlContent $xmlContent)) {
+                                    $credObj = [PSCustomObject]@{
+                                        CredentialType  = "Unattend Answer File"
+                                        FilePath        = $xmlFile.Fullname
+                                        UnattendSetting = $unattendCredential.Setting
+                                        UserName        = $unattendCredential.UserName
+                                        Password        = $unattendCredential.Password
+                                    }
+                                    $accountInAD = Resolve-CredentialAccount -UserName $unattendCredential.UserName -FileName $fileName -FileTime $xmlFile.LastWriteTime
+                                    if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
+                                    if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
+                                    if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
+                                    Show-Line "Found a password in a Windows answer file" -Class Finding
+                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
+                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Unattend' -Force
+                                    Show-Object $credObj -Class Finding
+                                    $gppFindingsCount++
                                 }
                             }
                             catch {
@@ -93213,7 +93354,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-2238"
+$Script:adPEASVersion = "2.7.0+20261017-2249"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

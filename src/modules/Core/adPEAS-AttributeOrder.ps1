@@ -460,7 +460,7 @@ $Script:PrimaryAttributes = @{
     # a caller-supplied -Path, where there is no GPO folder to be relative to, and for a
     # finding that does come from a GPO the full path already contains the GUID.
     GPPCredential = @(
-        'CredentialType', 'GPOName', 'FilePath', 'RegistryValue', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'RegistryValue', 'UnattendSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
     )
     SYSVOLCredential = @(
         'CredentialType', 'GPOName', 'FilePath', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'

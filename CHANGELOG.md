@@ -464,10 +464,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`Get-CredentialExposure` reads the files a credential is written into besides
   scripts.** GPO comment files (`.cmtx`), application and deployment configuration
   (`.config`, `.json`, `.yml`, `.yaml`, `.psd1`) and exported registry files (`.reg` - an
-  AutoAdminLogon export carries `DefaultPassword` in clear) are searched like the scripts,
-  in SYSVOL and in a custom path. `.inf` stays out: every `GptTmpl.inf` with a password
+  AutoAdminLogon export carries `DefaultPassword` in clear) and setup information files
+  (`.inf`, a `sysprep.inf`'s `AdminPassword` among them) are searched like the scripts, in
+  SYSVOL and in a custom path. `GptTmpl.inf` is skipped by name: every one with a password
   policy names `MinimumPasswordAge`, which would put a mention on each of them, and
   `Registry.pol` is parsed for password values on its own.
+
+- **Windows answer files are read for their passwords.** An `unattend.xml`,
+  `autounattend.xml` or any XML whose root is `unattend` carries the built-in
+  administrator's password, local accounts', the automatic logon's and the domain join
+  account's. Windows SIM can "hide" the first three, which Microsoft says is not
+  encryption - Base64 of the password with the setting's name appended - so they are shown
+  decoded; the domain join password cannot be hidden at all. Each is a finding with the card
+  *Password in a Windows Answer File*, and the local accounts are named `.\name`, so they
+  are not looked up as domain accounts of the same name.
 
 - **`Get-GPOUserRightsAssignment` evaluates seven more user rights.** A GPO granting
   `SeCreateSymbolicLinkPrivilege`, `SeAuditPrivilege`, `SeSystemEnvironmentPrivilege`,
