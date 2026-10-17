@@ -1,8 +1,8 @@
 function Get-CriticalObjectACLs {
     <#
     .SYNOPSIS
-    Detects non-privileged control over the schema, the partitions container and the RID
-    and infrastructure role objects.
+    Detects non-privileged control over the schema, the partitions container, the RID
+    and infrastructure role objects and the sites.
 
     .DESCRIPTION
     Four objects the forest and the domain run on, each with a role of its own:
@@ -16,11 +16,15 @@ function Get-CriticalObjectACLs {
       the domain is cut from
     - CN=Infrastructure (Infrastructure Master)
 
+    And every site under CN=Sites: a Group Policy Object linked to a site applies to every
+    computer in it, domain controllers included, and the site lives in the configuration
+    naming context, out of reach of the OU and domain root checks.
+
     For each, a trustee that is not Tier-0 is reported when it owns the object, holds
     GenericAll, GenericWrite, WriteDacl, WriteOwner or an unrestricted WriteProperty on it,
     holds the role's transfer right (Change-Schema-Master, Change-Domain-Master,
     Change-Rid-Master, Change-Infrastructure-Master) or all extended rights, or - on the
-    RID Manager - may write rIDAvailablePool. Operators count as not Tier-0 here: an
+    RID Manager - may write rIDAvailablePool, or on a site gPLink. Operators count as not Tier-0 here: an
     Account Operator with WriteDacl on the schema is an escalation, not a delegation.
 
     .PARAMETER Domain
@@ -65,7 +69,7 @@ function Get-CriticalObjectACLs {
                 return
             }
 
-            Show-SubHeader "Analyzing the ACLs of the schema, the partitions container and the RID and infrastructure objects..." -ObjectType "CriticalObjectACL"
+            Show-SubHeader "Analyzing the ACLs of the schema, the partitions container, the role objects and the sites..." -ObjectType "CriticalObjectACL"
 
             $targets = @()
             if ($Script:LDAPContext.SchemaNamingContext) {
@@ -76,18 +80,38 @@ function Get-CriticalObjectACLs {
                 $targets += @{ DN = "CN=Partitions,$($Script:LDAPContext.ConfigurationNamingContext)"; Label = 'Partitions container'; Role = 'Change-Domain-Master'
                                Meaning = 'may change the cross-references that define the naming contexts of the forest' }
             }
+            # rIDAvailablePool, the attribute the RID Master allocates pools from (Microsoft,
+            # RID-Available-Pool attribute).
             $targets += @{ DN = "CN=RID Manager`$,CN=System,$($Script:LDAPContext.DomainDN)"; Label = 'RID Manager'; Role = 'Change-Rid-Master'
+                           Attribute = @{ Guid = '66171888-8f3c-11d0-afda-00c04fd930c9'; Name = 'rIDAvailablePool' }
                            Meaning = 'may take the RID master role or exhaust the RID pool every new security identifier of the domain is cut from' }
             $targets += @{ DN = "CN=Infrastructure,$($Script:LDAPContext.DomainDN)"; Label = 'Infrastructure object'; Role = 'Change-Infrastructure-Master'
                            Meaning = 'may take the infrastructure master role' }
 
-            # rIDAvailablePool, the attribute the RID Master allocates pools from (Microsoft,
-            # RID-Available-Pool attribute).
-            $ridPoolGuid = '66171888-8f3c-11d0-afda-00c04fd930c9'
+            # And the sites. A GPO linked to a site applies to every computer in it, domain
+            # controllers included, and the site object lives in the configuration naming
+            # context - out of reach of the OU and domain root checks.
+            $unread = @()
+            $sitesUnread = $false
+            if ($Script:LDAPContext.ConfigurationNamingContext) {
+                $sites = $null
+                try {
+                    $sites = @(Get-DomainObject -LDAPFilter '(objectClass=site)' -SearchBase "CN=Sites,$($Script:LDAPContext.ConfigurationNamingContext)" -Properties 'distinguishedName', 'name' @PSBoundParameters)
+                } catch {
+                    Write-Log "[Get-CriticalObjectACLs] The sites could not be enumerated: $_"
+                    $sitesUnread = $true
+                }
+                foreach ($site in @($sites)) {
+                    if (-not $site -or -not $site.distinguishedName) { continue }
+                    $targets += @{ DN = [string]$site.distinguishedName; Label = "Site $($site.name)"; Role = $null
+                                   Attribute = @{ Guid = 'f30e3bbe-9ff0-11d1-b603-0000f80367c1'; Name = 'gPLink' }
+                                   Meaning = 'may link a Group Policy Object to the site - it applies to every computer in the site, domain controllers included' }
+                }
+            }
+
             $noGuid = '00000000-0000-0000-0000-000000000000'
 
             $findings = @()
-            $unread = @()
             foreach ($target in $targets) {
                 $aclResult = Get-ObjectACL -DistinguishedName $target.DN -DangerousOnly -AllowOnly @PSBoundParameters
                 if (-not $aclResult) {
@@ -112,14 +136,15 @@ function Get-CriticalObjectACLs {
                     if (-not $objectType -or $objectType -eq $noGuid) {
                         $granted += @($ace.RightsRaw | Where-Object { $_ -in @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'WriteProperty') })
                         # CONTROL_ACCESS with no object type is every extended right, the
-                        # role transfer among them. Full control says that already.
-                        if (@($ace.RightsRaw) -contains 'ExtendedRight' -and @($ace.RightsRaw) -notcontains 'GenericAll') {
+                        # role transfer among them. Full control says that already, and an
+                        # object without a role has no extended right that matters here.
+                        if ($target.Role -and @($ace.RightsRaw) -contains 'ExtendedRight' -and @($ace.RightsRaw) -notcontains 'GenericAll') {
                             $granted += 'All extended rights'
                         }
-                    } elseif ($ace.ObjectTypeName -eq $target.Role) {
+                    } elseif ($target.Role -and $ace.ObjectTypeName -eq $target.Role) {
                         $granted += $target.Role
-                    } elseif ($target.Role -eq 'Change-Rid-Master' -and $objectType -ieq $ridPoolGuid -and @($ace.RightsRaw) -contains 'WriteProperty') {
-                        $granted += 'WriteProperty (rIDAvailablePool)'
+                    } elseif ($objectType -ieq $target.Attribute.Guid -and @($ace.RightsRaw) -contains 'WriteProperty') {
+                        $granted += "WriteProperty ($($target.Attribute.Name))"
                     }
                     if ($granted.Count -eq 0) { continue }
 
@@ -149,20 +174,23 @@ function Get-CriticalObjectACLs {
             foreach ($label in $unread) {
                 Show-Line "The ACL of the $label could not be read - not checked" -Class Note
             }
+            if ($sitesUnread) {
+                Show-Line "The sites could not be enumerated - their ACLs were not checked" -Class Note
+            }
 
             if ($findings.Count -gt 0) {
-                Show-Line "Found $($findings.Count) non-Tier-0 principal(s) with control over the schema, the partitions container or a role object" -Class Finding
+                Show-Line "Found $($findings.Count) non-Tier-0 principal(s) with control over the schema, the partitions container, a role object or a site" -Class Finding
                 foreach ($finding in $findings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CriticalObjectACL' -Force
                     Show-Object $finding -Class Finding
                 }
-            } elseif ($unread.Count -eq 0) {
-                Show-Line "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager or the infrastructure object" -Class Secure
+            } elseif ($unread.Count -eq 0 -and -not $sitesUnread) {
+                Show-Line "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager, the infrastructure object or a site" -Class Secure
             }
 
         } catch {
             Write-Log "[Get-CriticalObjectACLs] Error: $_" -Level Error
-            Show-Line "Error during check - the ACLs of the schema, the partitions container and the role objects could not be evaluated: $_" -Class Finding
+            Show-Line "Error during check - the ACLs of the schema, the partitions container, the role objects and the sites could not be evaluated: $_" -Class Finding
         }
     }
 

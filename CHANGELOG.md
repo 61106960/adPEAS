@@ -193,6 +193,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   carries or all extended rights, or may write the RID pool of the RID Manager is a
   finding with a card of its own. It runs in the Rights module.
 
+- **GPO links on sites and Block Inheritance on OUs are checked for who may set them.**
+  `Get-CriticalObjectACLs` now also reads every site under `CN=Sites`: a principal outside
+  Tier-0 that may write `gPLink` on a site can link a GPO that applies to every computer
+  of the site, domain controllers included. The OU permission check reports a write on
+  `gPOptions`, the other attribute the "Manage Group Policy links" delegation grants:
+  whoever sets Block Inheritance on an OU switches off every non-enforced GPO linked
+  above it, a security baseline at the domain included.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

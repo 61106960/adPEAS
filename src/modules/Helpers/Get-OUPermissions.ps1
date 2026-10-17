@@ -1478,6 +1478,20 @@ function Get-OUPermissions {
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
                             }
+                        } elseif ($ACE.ObjectType -eq $PropertyGUIDs['gPOptions']) {
+                            # The other half of "Manage Group Policy links": gPOptions is
+                            # where the OU blocks inheritance, and with it every GPO linked
+                            # above that is not enforced - a security baseline linked at the
+                            # domain stops applying to everything below.
+                            $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
+                            $Findings += [PSCustomObject]@{
+                                CheckType     = "GPOLinking"
+                                Right         = "WriteProperty (gPOptions)$inheritanceNote"
+                                Principal     = $TrusteeName
+                                SID           = $TrusteeSID
+                                Severity      = $Severity
+                                InheritedFrom = $InheritedFrom
+                            }
                         }
                     }
                 }

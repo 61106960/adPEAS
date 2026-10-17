@@ -855,15 +855,16 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Module = "Rights"
         Category = "Rights"
         SectionTitle = "Schema, Partitions and Role Object ACLs"
-        Summary = "Finds principals outside Tier-0 that control the schema, the partitions container, the RID Manager or the infrastructure object."
+        Summary = "Finds principals outside Tier-0 that control the schema, the partitions container, the RID Manager, the infrastructure object or a site."
         WhyItMatters = "These four objects carry the schema, the naming contexts of the forest and two of the operations master roles. Control over the schema changes the default security descriptor of every new object; control over a role object moves the role or, for the RID Manager, exhausts the identifiers the domain is built from."
         WhatWeCheck = @(
             "Owner, GenericAll, GenericWrite, WriteDacl, WriteOwner and unrestricted WriteProperty on each of the four objects"
             "The role transfer right of each object, and all extended rights"
             "WriteProperty on rIDAvailablePool of the RID Manager"
+            "WriteProperty on gPLink of every site, where a linked GPO reaches every computer of the site, domain controllers included"
             "Only principals outside Tier-0 - an operator group counts"
         )
-        SecureMessage = "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager or the infrastructure object."
+        SecureMessage = "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager, the infrastructure object or a site."
         PrimaryFindingId = 'CRITICAL_OBJECT_CONTROL'
     }
 

@@ -2599,10 +2599,10 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
     }
 
     'CRITICAL_OBJECT_CONTROL' = @{
-        Title = "Control Over the Schema, the Partitions Container or a Role Object"
+        Title = "Control Over the Schema, the Partitions Container, a Role Object or a Site"
         Risk = "Finding"
         BaseScore = 60
-        Description = "A principal outside Tier-0 controls one of the objects the forest and the domain run on: it owns the object, holds full control, write or DACL rights on it, holds the transfer right of the role the object carries, or - on the RID Manager - may write the RID pool. Through the schema it can change the default security descriptor every new object of a class receives; through the partitions container the naming contexts of the forest; through the RID Manager and the infrastructure object it can take the role, and on the RID Manager exhaust the pool every new security identifier of the domain is cut from."
+        Description = "A principal outside Tier-0 controls one of the objects the forest and the domain run on: it owns the object, holds full control, write or DACL rights on it, holds the transfer right of the role the object carries, or - on the RID Manager - may write the RID pool. Through the schema it can change the default security descriptor every new object of a class receives; through the partitions container the naming contexts of the forest; through the RID Manager and the infrastructure object it can take the role, and on the RID Manager exhaust the pool every new security identifier of the domain is cut from. On a site it may write gPLink: a GPO linked there applies to every computer in the site, domain controllers included."
         Impact = @(
             "Schema control is forest-wide persistence: an ACE added to a default security descriptor lands on every object created from then on"
             "A role taken over moves an operation of the forest or the domain to a server of the attacker's choosing"
@@ -4257,6 +4257,46 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         MITRE = "T1484.001"
         Triggers = @(
             @{ Attribute = 'dangerousRights'; Pattern = 'WriteProperty \(gPLink\)'; Severity = 'Finding' }
+        )
+    }
+
+    'OU_PERM_GPOPTIONS' = @{
+        Title = "WriteProperty (gPOptions) on OU"
+        Risk = "Finding"
+        BaseScore = 25
+        Description = "A principal can modify the gPOptions attribute on this OU, which is where an OU blocks inheritance. Set, it stops every Group Policy Object linked above the OU from applying below it unless that link is enforced - a security baseline linked at the domain, an AppLocker or firewall policy, the LAPS configuration. It is the second attribute the 'Manage Group Policy links' delegation grants, next to gPLink."
+        Impact = @(
+            "Can switch off every non-enforced GPO linked above the OU for all objects below it"
+            "Removes hardening without touching a single GPO, which is where a review would look"
+        )
+        Attack = @(
+            "1. Attacker sets Block Inheritance (gPOptions = 1) on the OU"
+            "2. The policies linked above stop applying at the next refresh"
+            "3. The machines below lose their baseline, and the attacker uses what it protected"
+        )
+        Remediation = @(
+            "Remove the write on gPOptions from principals that are not Group Policy administrators"
+            "Mark the links of security baselines as enforced, which Block Inheritance does not stop"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the principals that may write gPOptions on the OU"
+                Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'f30e3bbf-9ff0-11d1-b603-0000f80367c1'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+            }
+            @{
+                Description = "List the OUs that block inheritance"
+                Command = "Get-ADOrganizationalUnit -LDAPFilter '(gPOptions=1)' | Select-Object Name,DistinguishedName"
+            }
+        )
+        References = @(
+            @{ Title = "Group Policy Overview - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/group-policy/group-policy-overview" }
+            @{ Title = "GPO Abuse"; Url = "https://www.thehacker.recipes/ad/movement/group-policies" }
+        )
+        Tools = @("PowerView")
+        MITRE = "T1484.001"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'WriteProperty \(gPOptions\)'; Severity = 'Finding' }
         )
     }
 

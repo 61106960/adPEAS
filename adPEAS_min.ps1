@@ -6302,10 +6302,10 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
     }
     'CRITICAL_OBJECT_CONTROL' = @{
-        Title = "Control Over the Schema, the Partitions Container or a Role Object"
+        Title = "Control Over the Schema, the Partitions Container, a Role Object or a Site"
         Risk = "Finding"
         BaseScore = 60
-        Description = "A principal outside Tier-0 controls one of the objects the forest and the domain run on: it owns the object, holds full control, write or DACL rights on it, holds the transfer right of the role the object carries, or - on the RID Manager - may write the RID pool. Through the schema it can change the default security descriptor every new object of a class receives; through the partitions container the naming contexts of the forest; through the RID Manager and the infrastructure object it can take the role, and on the RID Manager exhaust the pool every new security identifier of the domain is cut from."
+        Description = "A principal outside Tier-0 controls one of the objects the forest and the domain run on: it owns the object, holds full control, write or DACL rights on it, holds the transfer right of the role the object carries, or - on the RID Manager - may write the RID pool. Through the schema it can change the default security descriptor every new object of a class receives; through the partitions container the naming contexts of the forest; through the RID Manager and the infrastructure object it can take the role, and on the RID Manager exhaust the pool every new security identifier of the domain is cut from. On a site it may write gPLink: a GPO linked there applies to every computer in the site, domain controllers included."
         Impact = @(
             "Schema control is forest-wide persistence: an ACE added to a default security descriptor lands on every object created from then on"
             "A role taken over moves an operation of the forest or the domain to a server of the attacker's choosing"
@@ -7870,6 +7870,45 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         MITRE = "T1484.001"
         Triggers = @(
             @{ Attribute = 'dangerousRights'; Pattern = 'WriteProperty \(gPLink\)'; Severity = 'Finding' }
+        )
+    }
+    'OU_PERM_GPOPTIONS' = @{
+        Title = "WriteProperty (gPOptions) on OU"
+        Risk = "Finding"
+        BaseScore = 25
+        Description = "A principal can modify the gPOptions attribute on this OU, which is where an OU blocks inheritance. Set, it stops every Group Policy Object linked above the OU from applying below it unless that link is enforced - a security baseline linked at the domain, an AppLocker or firewall policy, the LAPS configuration. It is the second attribute the 'Manage Group Policy links' delegation grants, next to gPLink."
+        Impact = @(
+            "Can switch off every non-enforced GPO linked above the OU for all objects below it"
+            "Removes hardening without touching a single GPO, which is where a review would look"
+        )
+        Attack = @(
+            "1. Attacker sets Block Inheritance (gPOptions = 1) on the OU"
+            "2. The policies linked above stop applying at the next refresh"
+            "3. The machines below lose their baseline, and the attacker uses what it protected"
+        )
+        Remediation = @(
+            "Remove the write on gPOptions from principals that are not Group Policy administrators"
+            "Mark the links of security baselines as enforced, which Block Inheritance does not stop"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the principals that may write gPOptions on the OU"
+                Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object {`$_.ActiveDirectoryRights -match 'WriteProperty' -and `$_.ObjectType -eq 'f30e3bbf-9ff0-11d1-b603-0000f80367c1'} | Format-Table IdentityReference,ActiveDirectoryRights,AccessControlType -AutoSize"
+            }
+            @{
+                Description = "List the OUs that block inheritance"
+                Command = "Get-ADOrganizationalUnit -LDAPFilter '(gPOptions=1)' | Select-Object Name,DistinguishedName"
+            }
+        )
+        References = @(
+            @{ Title = "Group Policy Overview - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/group-policy/group-policy-overview" }
+            @{ Title = "GPO Abuse"; Url = "https://www.thehacker.recipes/ad/movement/group-policies" }
+        )
+        Tools = @("PowerView")
+        MITRE = "T1484.001"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'WriteProperty \(gPOptions\)'; Severity = 'Finding' }
         )
     }
     'OU_PERM_GENERICWRITE' = @{
@@ -19673,15 +19712,16 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Module = "Rights"
         Category = "Rights"
         SectionTitle = "Schema, Partitions and Role Object ACLs"
-        Summary = "Finds principals outside Tier-0 that control the schema, the partitions container, the RID Manager or the infrastructure object."
+        Summary = "Finds principals outside Tier-0 that control the schema, the partitions container, the RID Manager, the infrastructure object or a site."
         WhyItMatters = "These four objects carry the schema, the naming contexts of the forest and two of the operations master roles. Control over the schema changes the default security descriptor of every new object; control over a role object moves the role or, for the RID Manager, exhausts the identifiers the domain is built from."
         WhatWeCheck = @(
             "Owner, GenericAll, GenericWrite, WriteDacl, WriteOwner and unrestricted WriteProperty on each of the four objects"
             "The role transfer right of each object, and all extended rights"
             "WriteProperty on rIDAvailablePool of the RID Manager"
+            "WriteProperty on gPLink of every site, where a linked GPO reaches every computer of the site, domain controllers included"
             "Only principals outside Tier-0 - an operator group counts"
         )
-        SecureMessage = "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager or the infrastructure object."
+        SecureMessage = "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager, the infrastructure object or a site."
         PrimaryFindingId = 'CRITICAL_OBJECT_CONTROL'
     }
     'RODCPasswordReplication' = @{
@@ -53162,6 +53202,16 @@ function Get-OUPermissions {
                                 Severity      = $Severity
                                 InheritedFrom = $InheritedFrom
                             }
+                        } elseif ($ACE.ObjectType -eq $PropertyGUIDs['gPOptions']) {
+                            $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
+                            $Findings += [PSCustomObject]@{
+                                CheckType     = "GPOLinking"
+                                Right         = "WriteProperty (gPOptions)$inheritanceNote"
+                                Principal     = $TrusteeName
+                                SID           = $TrusteeSID
+                                Severity      = $Severity
+                                InheritedFrom = $InheritedFrom
+                            }
                         }
                     }
                 }
@@ -68719,7 +68769,7 @@ function Get-CriticalObjectACLs {
             if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
                 return
             }
-            Show-SubHeader "Analyzing the ACLs of the schema, the partitions container and the RID and infrastructure objects..." -ObjectType "CriticalObjectACL"
+            Show-SubHeader "Analyzing the ACLs of the schema, the partitions container, the role objects and the sites..." -ObjectType "CriticalObjectACL"
             $targets = @()
             if ($Script:LDAPContext.SchemaNamingContext) {
                 $targets += @{ DN = [string]$Script:LDAPContext.SchemaNamingContext; Label = 'Schema'; Role = 'Change-Schema-Master'
@@ -68730,13 +68780,29 @@ function Get-CriticalObjectACLs {
                                Meaning = 'may change the cross-references that define the naming contexts of the forest' }
             }
             $targets += @{ DN = "CN=RID Manager`$,CN=System,$($Script:LDAPContext.DomainDN)"; Label = 'RID Manager'; Role = 'Change-Rid-Master'
+                           Attribute = @{ Guid = '66171888-8f3c-11d0-afda-00c04fd930c9'; Name = 'rIDAvailablePool' }
                            Meaning = 'may take the RID master role or exhaust the RID pool every new security identifier of the domain is cut from' }
             $targets += @{ DN = "CN=Infrastructure,$($Script:LDAPContext.DomainDN)"; Label = 'Infrastructure object'; Role = 'Change-Infrastructure-Master'
                            Meaning = 'may take the infrastructure master role' }
-            $ridPoolGuid = '66171888-8f3c-11d0-afda-00c04fd930c9'
+            $unread = @()
+            $sitesUnread = $false
+            if ($Script:LDAPContext.ConfigurationNamingContext) {
+                $sites = $null
+                try {
+                    $sites = @(Get-DomainObject -LDAPFilter '(objectClass=site)' -SearchBase "CN=Sites,$($Script:LDAPContext.ConfigurationNamingContext)" -Properties 'distinguishedName', 'name' @PSBoundParameters)
+                } catch {
+                    Write-Log "[Get-CriticalObjectACLs] The sites could not be enumerated: $_"
+                    $sitesUnread = $true
+                }
+                foreach ($site in @($sites)) {
+                    if (-not $site -or -not $site.distinguishedName) { continue }
+                    $targets += @{ DN = [string]$site.distinguishedName; Label = "Site $($site.name)"; Role = $null
+                                   Attribute = @{ Guid = 'f30e3bbe-9ff0-11d1-b603-0000f80367c1'; Name = 'gPLink' }
+                                   Meaning = 'may link a Group Policy Object to the site - it applies to every computer in the site, domain controllers included' }
+                }
+            }
             $noGuid = '00000000-0000-0000-0000-000000000000'
             $findings = @()
-            $unread = @()
             foreach ($target in $targets) {
                 $aclResult = Get-ObjectACL -DistinguishedName $target.DN -DangerousOnly -AllowOnly @PSBoundParameters
                 if (-not $aclResult) {
@@ -68756,13 +68822,13 @@ function Get-CriticalObjectACLs {
                     $objectType = [string]$ace.ObjectType
                     if (-not $objectType -or $objectType -eq $noGuid) {
                         $granted += @($ace.RightsRaw | Where-Object { $_ -in @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'WriteProperty') })
-                        if (@($ace.RightsRaw) -contains 'ExtendedRight' -and @($ace.RightsRaw) -notcontains 'GenericAll') {
+                        if ($target.Role -and @($ace.RightsRaw) -contains 'ExtendedRight' -and @($ace.RightsRaw) -notcontains 'GenericAll') {
                             $granted += 'All extended rights'
                         }
-                    } elseif ($ace.ObjectTypeName -eq $target.Role) {
+                    } elseif ($target.Role -and $ace.ObjectTypeName -eq $target.Role) {
                         $granted += $target.Role
-                    } elseif ($target.Role -eq 'Change-Rid-Master' -and $objectType -ieq $ridPoolGuid -and @($ace.RightsRaw) -contains 'WriteProperty') {
-                        $granted += 'WriteProperty (rIDAvailablePool)'
+                    } elseif ($objectType -ieq $target.Attribute.Guid -and @($ace.RightsRaw) -contains 'WriteProperty') {
+                        $granted += "WriteProperty ($($target.Attribute.Name))"
                     }
                     if ($granted.Count -eq 0) { continue }
                     $sid = [string]$ace.TrusteeSID
@@ -68787,18 +68853,21 @@ function Get-CriticalObjectACLs {
             foreach ($label in $unread) {
                 Show-Line "The ACL of the $label could not be read - not checked" -Class Note
             }
+            if ($sitesUnread) {
+                Show-Line "The sites could not be enumerated - their ACLs were not checked" -Class Note
+            }
             if ($findings.Count -gt 0) {
-                Show-Line "Found $($findings.Count) non-Tier-0 principal(s) with control over the schema, the partitions container or a role object" -Class Finding
+                Show-Line "Found $($findings.Count) non-Tier-0 principal(s) with control over the schema, the partitions container, a role object or a site" -Class Finding
                 foreach ($finding in $findings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CriticalObjectACL' -Force
                     Show-Object $finding -Class Finding
                 }
-            } elseif ($unread.Count -eq 0) {
-                Show-Line "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager or the infrastructure object" -Class Secure
+            } elseif ($unread.Count -eq 0 -and -not $sitesUnread) {
+                Show-Line "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager, the infrastructure object or a site" -Class Secure
             }
         } catch {
             Write-Log "[Get-CriticalObjectACLs] Error: $_" -Level Error
-            Show-Line "Error during check - the ACLs of the schema, the partitions container and the role objects could not be evaluated: $_" -Class Finding
+            Show-Line "Error during check - the ACLs of the schema, the partitions container, the role objects and the sites could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -90483,7 +90552,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1647"
+$Script:adPEASVersion = "2.7.0+20261017-1656"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
