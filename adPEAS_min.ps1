@@ -35862,9 +35862,15 @@ function Get-ForestRootExchangeGroup {
         $gcConn = Get-GCConnection
         if (-not $gcConn) { return $null }
         $nameClauses = ($Name | ForEach-Object { "(sAMAccountName=$(Escape-LDAPFilterValue -Value $_))" }) -join ''
-        $searchBase = "OU=Microsoft Exchange Security Groups,$rootNC"
-        $gcResults = @(Invoke-LDAPSearch -Filter "(&(objectClass=group)(|$nameClauses))" -SearchBase $searchBase `
-            -Properties @('sAMAccountName', 'objectSid', 'distinguishedName') -LdapConnection $gcConn -Raw)
+        $searchBases = @(
+            "OU=Microsoft Exchange Security Groups,$rootNC"
+            "OU=Microsoft Exchange Protected Groups,$rootNC"
+        )
+        $gcResults = @()
+        foreach ($searchBase in $searchBases) {
+            $gcResults += @(Invoke-LDAPSearch -Filter "(&(objectClass=group)(|$nameClauses))" -SearchBase $searchBase `
+                -Properties @('sAMAccountName', 'objectSid', 'distinguishedName') -LdapConnection $gcConn -Raw)
+        }
         $found = @{}
         foreach ($gcResult in $gcResults) {
             $groupName = [string]$gcResult.sAMAccountName
@@ -35881,7 +35887,7 @@ function Get-ForestRootExchangeGroup {
                 DistinguishedName = [string]$gcResult.distinguishedName
             }
         }
-        Write-Log "[Get-ForestRootExchangeGroup] Found $($found.Count) of $(@($Name).Count) group(s) in $searchBase"
+        Write-Log "[Get-ForestRootExchangeGroup] Found $($found.Count) of $(@($Name).Count) group(s) in the Exchange OUs of $rootNC"
         return $found
     } catch {
         Write-Log "[Get-ForestRootExchangeGroup] Global Catalog lookup failed: $($_.Exception.Message)"
@@ -75468,6 +75474,7 @@ function Get-ExchangeInfrastructure {
             }
             $modelGroupsFromRoot = $false
             $forestRootAsked = $false
+            $rootWinPerm = $null
             $rootNC = [string]$Script:LDAPContext.RootDomainNamingContext
             if (@($modelGroups).Count -eq 0 -and $rootNC -and $rootNC -ne $domainDN) {
                 $forestRootAsked = $true
@@ -75484,6 +75491,9 @@ function Get-ExchangeInfrastructure {
                         }
                     }
                     $modelGroupsFromRoot = (@($modelGroups).Count -gt 0)
+                    if ($rootGroups.ContainsKey('Exchange Windows Permissions')) {
+                        $rootWinPerm = $rootGroups['Exchange Windows Permissions']
+                    }
                 }
             }
             $protectedGroupsOU = $null
@@ -75492,6 +75502,16 @@ function Get-ExchangeInfrastructure {
             }
             catch {
                 Write-Log "[Get-ExchangeInfrastructure] Microsoft Exchange Protected Groups OU not present: $_"
+            }
+            $splitPermissionsState = if ($protectedGroupsOU) { 'Enabled' } else { 'NotEnabled' }
+            if ($modelGroupsFromRoot) {
+                $splitPermissionsState = if (-not $rootWinPerm) {
+                    'Unknown'
+                } elseif ([string]$rootWinPerm.DistinguishedName -match '^CN=[^,]+,OU=Microsoft Exchange Protected Groups,') {
+                    'Enabled'
+                } else {
+                    'NotEnabled'
+                }
             }
             if (@($modelGroups).Count -eq 0) {
                 $absentScope = if ($rootNC -and $rootNC -ne $domainDN) {
@@ -75565,7 +75585,7 @@ function Get-ExchangeInfrastructure {
                         $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Mitigated shared permissions - the Exchange ACE is inherit-only and does not apply to the domain object' -Force
                         $modelConsoleClass = 'Secure'
                     }
-                    elseif ($protectedGroupsOU) {
+                    elseif ($splitPermissionsState -eq 'Enabled') {
                         $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Split permissions - no Exchange group holds escalation rights on the domain object' -Force
                         $modelConsoleClass = 'Secure'
                     }
@@ -75579,10 +75599,14 @@ function Get-ExchangeInfrastructure {
                     if (@($inheritOnlyACEs).Count -gt 0) {
                         $modelObj | Add-Member -NotePropertyName 'InheritOnlyDomainACEs' -NotePropertyValue $inheritOnlyACEs -Force
                     }
-                    $splitPermissionsText = if ($protectedGroupsOU) {
-                        'Enabled - Exchange Windows Permissions holds no ACEs on the domain object'
-                    } else {
+                    $splitPermissionsText = if ($splitPermissionsState -eq 'Unknown') {
+                        'Unknown - Exchange Windows Permissions was not found in the forest root'
+                    } elseif ($splitPermissionsState -ne 'Enabled') {
                         'Not enabled - shared permissions model'
+                    } elseif ($effectiveHolders -contains 'Exchange Windows Permissions') {
+                        'Not applied here - the forest was prepared for split permissions, but Exchange Windows Permissions still holds its ACEs on this domain object'
+                    } else {
+                        'Enabled - Exchange Windows Permissions holds no ACEs on the domain object'
                     }
                     $modelObj | Add-Member -NotePropertyName 'ADSplitPermissions' -NotePropertyValue $splitPermissionsText -Force
                     if ($modelGroupsFromRoot) {
@@ -88970,7 +88994,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-0855"
+$Script:adPEASVersion = "2.7.0+20261017-0857"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -1031,6 +1031,7 @@ function Get-ExchangeInfrastructure {
             # Exchange setup creates them in.
             $modelGroupsFromRoot = $false
             $forestRootAsked = $false
+            $rootWinPerm = $null
             $rootNC = [string]$Script:LDAPContext.RootDomainNamingContext
             if (@($modelGroups).Count -eq 0 -and $rootNC -and $rootNC -ne $domainDN) {
                 $forestRootAsked = $true
@@ -1047,6 +1048,9 @@ function Get-ExchangeInfrastructure {
                         }
                     }
                     $modelGroupsFromRoot = (@($modelGroups).Count -gt 0)
+                    if ($rootGroups.ContainsKey('Exchange Windows Permissions')) {
+                        $rootWinPerm = $rootGroups['Exchange Windows Permissions']
+                    }
                 }
             }
 
@@ -1058,6 +1062,22 @@ function Get-ExchangeInfrastructure {
             }
             catch {
                 Write-Log "[Get-ExchangeInfrastructure] Microsoft Exchange Protected Groups OU not present: $_"
+            }
+
+            # Setup /PrepareAD creates that OU in the forest root only, so in a child domain
+            # it was never found and the row said "Not enabled" for a forest prepared with
+            # split permissions. There the answer is where the forest root keeps Exchange
+            # Windows Permissions: split permissions moves it into the protected OU
+            # (Microsoft, "Split permissions in Exchange Server").
+            $splitPermissionsState = if ($protectedGroupsOU) { 'Enabled' } else { 'NotEnabled' }
+            if ($modelGroupsFromRoot) {
+                $splitPermissionsState = if (-not $rootWinPerm) {
+                    'Unknown'
+                } elseif ([string]$rootWinPerm.DistinguishedName -match '^CN=[^,]+,OU=Microsoft Exchange Protected Groups,') {
+                    'Enabled'
+                } else {
+                    'NotEnabled'
+                }
             }
 
             if (@($modelGroups).Count -eq 0) {
@@ -1176,7 +1196,7 @@ function Get-ExchangeInfrastructure {
                         $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Mitigated shared permissions - the Exchange ACE is inherit-only and does not apply to the domain object' -Force
                         $modelConsoleClass = 'Secure'
                     }
-                    elseif ($protectedGroupsOU) {
+                    elseif ($splitPermissionsState -eq 'Enabled') {
                         $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Split permissions - no Exchange group holds escalation rights on the domain object' -Force
                         $modelConsoleClass = 'Secure'
                     }
@@ -1201,10 +1221,19 @@ function Get-ExchangeInfrastructure {
                     # the Exchange Windows Permissions ACEs off the domain object - so its
                     # presence or absence answers which permissions model this organization
                     # was prepared with, which is the question a reader actually has.
-                    $splitPermissionsText = if ($protectedGroupsOU) {
-                        'Enabled - Exchange Windows Permissions holds no ACEs on the domain object'
-                    } else {
+                    #
+                    # Prepared with it is not the same as applied here: Setup removes the
+                    # Exchange Windows Permissions ACEs from a child domain object only when
+                    # that domain is prepared again, and "holds no ACEs" was said whether the
+                    # ACE read above found one or not.
+                    $splitPermissionsText = if ($splitPermissionsState -eq 'Unknown') {
+                        'Unknown - Exchange Windows Permissions was not found in the forest root'
+                    } elseif ($splitPermissionsState -ne 'Enabled') {
                         'Not enabled - shared permissions model'
+                    } elseif ($effectiveHolders -contains 'Exchange Windows Permissions') {
+                        'Not applied here - the forest was prepared for split permissions, but Exchange Windows Permissions still holds its ACEs on this domain object'
+                    } else {
+                        'Enabled - Exchange Windows Permissions holds no ACEs on the domain object'
                     }
                     $modelObj | Add-Member -NotePropertyName 'ADSplitPermissions' -NotePropertyValue $splitPermissionsText -Force
 

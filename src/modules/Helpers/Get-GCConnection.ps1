@@ -158,8 +158,13 @@ function Get-ForestRootExchangeGroup {
         model of every child domain as undeterminable for that reason - while the ACE that
         decides it was right there.
 
-        Asked by name, in the one OU Exchange setup creates them in, so that a group of the
-        same name somewhere else in the forest does not stand in for it.
+        Asked by name, in the two OUs Exchange setup puts them in, so that a group of the
+        same name somewhere else in the forest does not stand in for it. The second one is
+        OU=Microsoft Exchange Protected Groups: /ActiveDirectorySplitPermissions:true
+        creates it in the forest root and moves Exchange Windows Permissions into it
+        (Microsoft, "Split permissions in Exchange Server"). Asking the first alone missed
+        that group in exactly the forests where it no longer holds its ACEs - and where it
+        is found answers which permissions model the forest was prepared with.
 
     .PARAMETER Name
         The group names (sAMAccountName) to look for.
@@ -190,12 +195,20 @@ function Get-ForestRootExchangeGroup {
         if (-not $gcConn) { return $null }
 
         $nameClauses = ($Name | ForEach-Object { "(sAMAccountName=$(Escape-LDAPFilterValue -Value $_))" }) -join ''
-        $searchBase = "OU=Microsoft Exchange Security Groups,$rootNC"
+        $searchBases = @(
+            "OU=Microsoft Exchange Security Groups,$rootNC"
+            "OU=Microsoft Exchange Protected Groups,$rootNC"
+        )
 
         # -Raw, like Resolve-SIDViaGC: the explicit attribute list then works on the GC
-        # port, and objectSid comes back as the bytes it is.
-        $gcResults = @(Invoke-LDAPSearch -Filter "(&(objectClass=group)(|$nameClauses))" -SearchBase $searchBase `
-            -Properties @('sAMAccountName', 'objectSid', 'distinguishedName') -LdapConnection $gcConn -Raw)
+        # port, and objectSid comes back as the bytes it is. A base that does not exist -
+        # the protected OU in a forest without split permissions - answers with nothing,
+        # not with an error.
+        $gcResults = @()
+        foreach ($searchBase in $searchBases) {
+            $gcResults += @(Invoke-LDAPSearch -Filter "(&(objectClass=group)(|$nameClauses))" -SearchBase $searchBase `
+                -Properties @('sAMAccountName', 'objectSid', 'distinguishedName') -LdapConnection $gcConn -Raw)
+        }
 
         $found = @{}
         foreach ($gcResult in $gcResults) {
@@ -216,7 +229,7 @@ function Get-ForestRootExchangeGroup {
             }
         }
 
-        Write-Log "[Get-ForestRootExchangeGroup] Found $($found.Count) of $(@($Name).Count) group(s) in $searchBase"
+        Write-Log "[Get-ForestRootExchangeGroup] Found $($found.Count) of $(@($Name).Count) group(s) in the Exchange OUs of $rootNC"
         return $found
     } catch {
         Write-Log "[Get-ForestRootExchangeGroup] Global Catalog lookup failed: $($_.Exception.Message)"

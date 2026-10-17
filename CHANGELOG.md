@@ -187,6 +187,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Catalog for them in the forest root and says where it found them; the group cards say
   that the group lives in the forest root instead of "not found".
 
+- **A child domain of a forest prepared with Active Directory split permissions no longer
+  reads as shared permissions.** Setup creates `OU=Microsoft Exchange Protected Groups` in
+  the forest root only and moves Exchange Windows Permissions into it, so the lookup in
+  the scanned domain never found the OU there and the `ADSplitPermissions` row said "Not
+  enabled - shared permissions model"; the forest root lookup asked only `OU=Microsoft
+  Exchange Security Groups` and missed the moved group. Both OUs are asked now, and where
+  the forest root keeps Exchange Windows Permissions answers the question. The row also
+  no longer says "holds no ACEs" while the domain object still carries them - Setup
+  removes them from a domain only when that domain is prepared again.
+
 - **A Credential Roaming row that says `PrivilegedAccount: No` no longer carries the
   privileged-account card.** The card "The Affected Account Is Privileged" hangs off any
   value of `PrivilegedAccount`, because the check it was written for sets that attribute

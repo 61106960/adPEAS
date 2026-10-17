@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 08:55:58
-    Version: 2.7.0+20261017-0855
+    Build: 2026-10-17 08:57:44
+    Version: 2.7.0+20261017-0857
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -53218,8 +53218,13 @@ function Get-ForestRootExchangeGroup {
         model of every child domain as undeterminable for that reason - while the ACE that
         decides it was right there.
 
-        Asked by name, in the one OU Exchange setup creates them in, so that a group of the
-        same name somewhere else in the forest does not stand in for it.
+        Asked by name, in the two OUs Exchange setup puts them in, so that a group of the
+        same name somewhere else in the forest does not stand in for it. The second one is
+        OU=Microsoft Exchange Protected Groups: /ActiveDirectorySplitPermissions:true
+        creates it in the forest root and moves Exchange Windows Permissions into it
+        (Microsoft, "Split permissions in Exchange Server"). Asking the first alone missed
+        that group in exactly the forests where it no longer holds its ACEs - and where it
+        is found answers which permissions model the forest was prepared with.
 
     .PARAMETER Name
         The group names (sAMAccountName) to look for.
@@ -53250,12 +53255,20 @@ function Get-ForestRootExchangeGroup {
         if (-not $gcConn) { return $null }
 
         $nameClauses = ($Name | ForEach-Object { "(sAMAccountName=$(Escape-LDAPFilterValue -Value $_))" }) -join ''
-        $searchBase = "OU=Microsoft Exchange Security Groups,$rootNC"
+        $searchBases = @(
+            "OU=Microsoft Exchange Security Groups,$rootNC"
+            "OU=Microsoft Exchange Protected Groups,$rootNC"
+        )
 
         # -Raw, like Resolve-SIDViaGC: the explicit attribute list then works on the GC
-        # port, and objectSid comes back as the bytes it is.
-        $gcResults = @(Invoke-LDAPSearch -Filter "(&(objectClass=group)(|$nameClauses))" -SearchBase $searchBase `
-            -Properties @('sAMAccountName', 'objectSid', 'distinguishedName') -LdapConnection $gcConn -Raw)
+        # port, and objectSid comes back as the bytes it is. A base that does not exist -
+        # the protected OU in a forest without split permissions - answers with nothing,
+        # not with an error.
+        $gcResults = @()
+        foreach ($searchBase in $searchBases) {
+            $gcResults += @(Invoke-LDAPSearch -Filter "(&(objectClass=group)(|$nameClauses))" -SearchBase $searchBase `
+                -Properties @('sAMAccountName', 'objectSid', 'distinguishedName') -LdapConnection $gcConn -Raw)
+        }
 
         $found = @{}
         foreach ($gcResult in $gcResults) {
@@ -53276,7 +53289,7 @@ function Get-ForestRootExchangeGroup {
             }
         }
 
-        Write-Log "[Get-ForestRootExchangeGroup] Found $($found.Count) of $(@($Name).Count) group(s) in $searchBase"
+        Write-Log "[Get-ForestRootExchangeGroup] Found $($found.Count) of $(@($Name).Count) group(s) in the Exchange OUs of $rootNC"
         return $found
     } catch {
         Write-Log "[Get-ForestRootExchangeGroup] Global Catalog lookup failed: $($_.Exception.Message)"
@@ -121043,6 +121056,7 @@ function Get-ExchangeInfrastructure {
             # Exchange setup creates them in.
             $modelGroupsFromRoot = $false
             $forestRootAsked = $false
+            $rootWinPerm = $null
             $rootNC = [string]$Script:LDAPContext.RootDomainNamingContext
             if (@($modelGroups).Count -eq 0 -and $rootNC -and $rootNC -ne $domainDN) {
                 $forestRootAsked = $true
@@ -121059,6 +121073,9 @@ function Get-ExchangeInfrastructure {
                         }
                     }
                     $modelGroupsFromRoot = (@($modelGroups).Count -gt 0)
+                    if ($rootGroups.ContainsKey('Exchange Windows Permissions')) {
+                        $rootWinPerm = $rootGroups['Exchange Windows Permissions']
+                    }
                 }
             }
 
@@ -121070,6 +121087,22 @@ function Get-ExchangeInfrastructure {
             }
             catch {
                 Write-Log "[Get-ExchangeInfrastructure] Microsoft Exchange Protected Groups OU not present: $_"
+            }
+
+            # Setup /PrepareAD creates that OU in the forest root only, so in a child domain
+            # it was never found and the row said "Not enabled" for a forest prepared with
+            # split permissions. There the answer is where the forest root keeps Exchange
+            # Windows Permissions: split permissions moves it into the protected OU
+            # (Microsoft, "Split permissions in Exchange Server").
+            $splitPermissionsState = if ($protectedGroupsOU) { 'Enabled' } else { 'NotEnabled' }
+            if ($modelGroupsFromRoot) {
+                $splitPermissionsState = if (-not $rootWinPerm) {
+                    'Unknown'
+                } elseif ([string]$rootWinPerm.DistinguishedName -match '^CN=[^,]+,OU=Microsoft Exchange Protected Groups,') {
+                    'Enabled'
+                } else {
+                    'NotEnabled'
+                }
             }
 
             if (@($modelGroups).Count -eq 0) {
@@ -121188,7 +121221,7 @@ function Get-ExchangeInfrastructure {
                         $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Mitigated shared permissions - the Exchange ACE is inherit-only and does not apply to the domain object' -Force
                         $modelConsoleClass = 'Secure'
                     }
-                    elseif ($protectedGroupsOU) {
+                    elseif ($splitPermissionsState -eq 'Enabled') {
                         $modelObj | Add-Member -NotePropertyName 'PermissionsModel' -NotePropertyValue 'Split permissions - no Exchange group holds escalation rights on the domain object' -Force
                         $modelConsoleClass = 'Secure'
                     }
@@ -121213,10 +121246,19 @@ function Get-ExchangeInfrastructure {
                     # the Exchange Windows Permissions ACEs off the domain object - so its
                     # presence or absence answers which permissions model this organization
                     # was prepared with, which is the question a reader actually has.
-                    $splitPermissionsText = if ($protectedGroupsOU) {
-                        'Enabled - Exchange Windows Permissions holds no ACEs on the domain object'
-                    } else {
+                    #
+                    # Prepared with it is not the same as applied here: Setup removes the
+                    # Exchange Windows Permissions ACEs from a child domain object only when
+                    # that domain is prepared again, and "holds no ACEs" was said whether the
+                    # ACE read above found one or not.
+                    $splitPermissionsText = if ($splitPermissionsState -eq 'Unknown') {
+                        'Unknown - Exchange Windows Permissions was not found in the forest root'
+                    } elseif ($splitPermissionsState -ne 'Enabled') {
                         'Not enabled - shared permissions model'
+                    } elseif ($effectiveHolders -contains 'Exchange Windows Permissions') {
+                        'Not applied here - the forest was prepared for split permissions, but Exchange Windows Permissions still holds its ACEs on this domain object'
+                    } else {
+                        'Enabled - Exchange Windows Permissions holds no ACEs on the domain object'
                     }
                     $modelObj | Add-Member -NotePropertyName 'ADSplitPermissions' -NotePropertyValue $splitPermissionsText -Force
 
@@ -138721,7 +138763,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-0855"
+$Script:adPEASVersion = "2.7.0+20261017-0857"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
