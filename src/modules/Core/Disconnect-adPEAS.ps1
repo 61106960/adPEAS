@@ -356,6 +356,10 @@ function Clear-SessionState {
     $Script:DomainControllerGPOContext = $null
     $Script:GPOSecurityFilterMap = $null
     $Script:GPOFilterPrincipalCache = $null
+    # The WMI filter and loopback mode of each policy (Get-GPOWmiFilter,
+    # Get-GPOLoopbackMode). Per domain, like the security filters above.
+    $Script:GPOWmiFilterMap = $null
+    $Script:GPOLoopbackMap = $null
 
     # Kerberoast run state (Invoke-Kerberoast)
     # KerberoastCredParams is a splat table that carries the PSCredential the caller

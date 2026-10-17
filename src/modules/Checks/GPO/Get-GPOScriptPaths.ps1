@@ -200,6 +200,7 @@ function Get-GPOScriptPaths {
                                 foreach ($finding in $findings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+                                    Add-GPOConditionRow -Object $finding -GPOGUID $gpoGUID
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }

@@ -383,6 +383,8 @@ function Get-GPOUserRightsAssignment {
                             _severity            = $severity
                         }
 
+                        Add-GPOConditionRow -Object $finding -GPOGUID $gpo.Name
+
                         if (-not $comparison.HasBaseline) {
                             $finding | Add-Member -NotePropertyName 'BaselineUnknown' `
                                 -NotePropertyValue 'Windows publishes no fixed default set for this right, so the holders above were filtered by identity instead of compared. Judge them against what this domain actually runs.' -Force

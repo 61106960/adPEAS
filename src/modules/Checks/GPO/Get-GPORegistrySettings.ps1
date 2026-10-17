@@ -298,6 +298,7 @@ function Get-GPORegistrySettings {
                     # fact beside LinkedOUs, no verdict.
                     $finding | Add-Member -NotePropertyName 'reachesDomainControllers' `
                         -NotePropertyValue (Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $finding.GPOGUID) -Force
+                    Add-GPOConditionRow -Object $finding -GPOGUID $finding.GPOGUID
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 
                     # A value in a policy whose relevant half is switched off reaches no

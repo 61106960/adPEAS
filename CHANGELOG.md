@@ -29,8 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   an OU above a domain controller, the domain root or the domain controller's site - or
   says why none does. Domain controllers are found where their computer objects are, and
   a container that blocks inheritance stops every link above it that is not enforced.
-  WMI filters are not read, so the row speaks of links and security filtering only. It is
-  information and changes no severity.
+  The row speaks of links and security filtering only; a WMI filter the policy names is
+  shown in a row of its own. It is information and changes no severity.
 
 - **Credentials found in SYSVOL say what their account is in the directory.** A new
   `accountInAD` row on every GPP password, AutoAdminLogon and `net use` credential says
@@ -488,6 +488,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   says - and all seven are hints with a card of their own. Microsoft publishes no default
   for `SeDelegateSessionUserImpersonatePrivilege`, so its holders are listed through the
   identity filter rather than compared against a guess.
+
+- **GPO findings name the policy's WMI filter and its loopback processing mode.** Two new
+  rows beside `reachesDomainControllers`, in the seven GPO checks: `wmiFilter` names the
+  filter and its WQL queries - a policy applies only where the query returns a result, so
+  a filter can narrow it to no machine at all - or says the filter is missing from the
+  directory, in which case a client applies the policy. `loopbackProcessing` says whether
+  the policy switches user Group Policy loopback processing on, in Merge or Replace mode,
+  which makes the user settings of the policies reaching its computers apply to everyone
+  who logs on to them. Each row appears only for a policy that has one, and says
+  *Unknown* where it could not be read whether the policy has one. Both are information
+  and change no severity.
 
 - **The Restricted Admin card is a hint, as its row is.** The registry table lowered
   `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the

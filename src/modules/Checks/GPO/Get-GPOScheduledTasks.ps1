@@ -241,6 +241,7 @@ function Get-GPOScheduledTasks {
                                     # statement rather than an absence.
                                     $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     $task | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+                                    Add-GPOConditionRow -Object $task -GPOGUID $gpoGUID
 
                                     # A task in a policy whose relevant half is switched off
                                     # does not run, and it used to read exactly like one that

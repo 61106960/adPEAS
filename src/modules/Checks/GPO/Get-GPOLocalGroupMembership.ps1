@@ -227,6 +227,7 @@ function Get-GPOLocalGroupMembership {
                                 foreach ($finding in $restrictedGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+                                    Add-GPOConditionRow -Object $finding -GPOGUID $gpoGUID
                                     # Restricted Groups is a computer-side section, so the
                                     # half is Machine - stated per finding because the
                                     # suppression decision reads it from the row now, and
@@ -297,6 +298,7 @@ function Get-GPOLocalGroupMembership {
                                 foreach ($finding in $gppGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+                                    Add-GPOConditionRow -Object $finding -GPOGUID $gpoGUID
                                     # And here the file's path decides, the same way the
                                     # GPOStatus line above is computed.
                                     $finding | Add-Member -NotePropertyName '_ReachScope' `

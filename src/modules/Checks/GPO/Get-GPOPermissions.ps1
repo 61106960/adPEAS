@@ -638,6 +638,7 @@ function Get-GPOPermissions {
                         # LinkedOUs, no verdict.
                         $enrichedGPO | Add-Member -NotePropertyName "reachesDomainControllers" `
                             -NotePropertyValue (Get-GPODomainControllerReach -Link $links -GPOGUID $gpoGUID) -Force
+                        Add-GPOConditionRow -Object $enrichedGPO -GPOGUID $gpoGUID
 
                         # The object is a copy of the GPO and already carries GPOStatus from
                         # Get-DomainGPO; the transformer hides it when it says "Enabled".
@@ -795,6 +796,7 @@ function Get-GPOPermissions {
                 $extraCard | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $extraLinksDisplay -Force
                 $extraCard | Add-Member -NotePropertyName "reachesDomainControllers" `
                     -NotePropertyValue (Get-GPODomainControllerReach -Link $extraLinks -GPOGUID $extraGUID) -Force
+                Add-GPOConditionRow -Object $extraCard -GPOGUID $extraGUID
 
                 $extraStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$extraGUID] -Scope 'Any' -Link $extraLinks
                 if ($extraStatus) {

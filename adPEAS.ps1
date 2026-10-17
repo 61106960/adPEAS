@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 23:22:15
-    Version: 2.7.0+20261017-2322
+    Build: 2026-10-17 23:42:56
+    Version: 2.7.0+20261017-2342
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6594,7 +6594,7 @@ $Script:PrimaryAttributes = @{
         # Security findings
         'DangerousPermissions', 'SysvolPermissions', 'GPOOwner', 'DangerousSettings',
         # Linkage
-        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
+        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
     )
 
     # SMB Signing GPO (only SMB-relevant attributes, no LDAP)
@@ -6623,7 +6623,7 @@ $Script:PrimaryAttributes = @{
     GPORegistrySetting = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'RegistryKey', 'ConfiguredValue',
         'VulnerabilityName', 'RiskReason',
-        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 
     # Point and Print printer driver policy per GPO (Get-GPOPointAndPrint).
@@ -6639,7 +6639,7 @@ $Script:PrimaryAttributes = @{
         'ApprovedDriverSource', 'ApprovedServerList',
         'SpoolerClientConnections', 'QueueSpecificFiles',
         'WebDriverDownload', 'HTTPPrinting', 'InstallDriversSecurityOption',
-        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 
     # LAPS policy settings deployed via GPO (Get-LAPSConfiguration, Step 3)
@@ -6816,7 +6816,7 @@ $Script:PrimaryAttributes = @{
     GPOUserRights = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
         'GrantedBeyondDefault', 'RemovedFromDefault', 'BaselineUnknown',
-        'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+        'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 
     # Machine Account Quota setting
@@ -6827,13 +6827,13 @@ $Script:PrimaryAttributes = @{
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'UNCPathPermissions',
-        'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+        'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 
     # GPO Script Paths (custom PSCustomObject from Get-GPOScriptPaths)
     GPOScriptPath = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
-        'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+        'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 
     # GPO Local Group Membership (custom PSCustomObject from Get-GPOLocalGroupMembership)
@@ -6846,7 +6846,7 @@ $Script:PrimaryAttributes = @{
     GPOLocalGroup = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'Mode',
         'MembersAdded', 'MembersRemoved', 'groupEmptied',
-        'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 
     # GPO granting SeMachineAccountPrivilege (enriched native GPO object, same pattern as LDAPConfigGPO/SMBSigning)
@@ -36105,6 +36105,10 @@ function Clear-SessionState {
     $Script:DomainControllerGPOContext = $null
     $Script:GPOSecurityFilterMap = $null
     $Script:GPOFilterPrincipalCache = $null
+    # The WMI filter and loopback mode of each policy (Get-GPOWmiFilter,
+    # Get-GPOLoopbackMode). Per domain, like the security filters above.
+    $Script:GPOWmiFilterMap = $null
+    $Script:GPOLoopbackMap = $null
 
     # Kerberoast run state (Invoke-Kerberoast)
     # KerberoastCredParams is a splat table that carries the PSCredential the caller
@@ -83502,6 +83506,324 @@ function Format-GPOSecurityFilter {
     return ($parts -join ', and ')
 }
 
+<#
+.SYNOPSIS
+    The WMI filter a policy names, as the sentence for its row.
+
+.DESCRIPTION
+    A Group Policy object can name a WMI filter in gPCWQLFilter - [domain;{filter id};0] - and
+    the filter, an msWMI-Som object under CN=SOM,CN=WMIPolicy,CN=System, holds the WQL query
+    every client runs before it applies the policy. MS-GPOL, WMI Filter Evaluation: "If the
+    WMI query returns no results, the GPO is considered denied". On which machines the query
+    is true nothing in the directory says, so this is a fact beside LinkedOUs and
+    reachesDomainControllers, not a reach adPEAS computes: a policy whose filter matches no
+    machine reaches none, and those two rows do not know it.
+
+    A filter the policy names and the directory does not hold is said to be missing. The
+    client's WMI Filter Search is a base search on the filter's DN, which fails for an object
+    that is not there, and MS-GPOL again: when that search fails, "the WMI filter evaluation
+    MUST be skipped, and the GPO MUST be assumed to be allowed".
+
+    Where the policies' links could not be read, every policy is answered with Unknown: a
+    missing row would claim that the policy names no filter.
+
+    msWMI-Parm2 holds the query list - "1;3;10;58;WQL;root\CIMv2;SELECT ...;", a count, then
+    per query a type, the lengths of namespace and query, the language, the namespace and
+    the query. Read by the lengths, because a query may contain a semicolon; a value that
+    does not parse is shown as it stands.
+
+    One query for the policies that name a filter and one for the filters, cached for the
+    session in $Script:GPOWmiFilterMap.
+
+.PARAMETER GPOGUID
+    The policy's GUID, with or without braces.
+
+.OUTPUTS
+    [string] for the wmiFilter row, or $null when the policy is known to name no filter.
+#>
+function Get-GPOWmiFilter {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$GPOGUID
+    )
+
+    if ([string]::IsNullOrWhiteSpace($GPOGUID)) { return $null }
+
+    if ($null -eq $Script:GPOWmiFilterMap) {
+        $map = @{}
+        $named = @{}
+        try {
+            foreach ($gpo in @(Get-DomainObject -LDAPFilter '(&(objectClass=groupPolicyContainer)(gPCWQLFilter=*))' -Properties 'distinguishedName', 'gPCWQLFilter')) {
+                if ("$($gpo.distinguishedName)" -notmatch '^CN=(\{[0-9A-Fa-f-]+\}),') { continue }
+                $gpoKey = $Matches[1]
+                if ("$($gpo.gPCWQLFilter)" -match '^\[([^;]*);(\{[0-9A-Fa-f-]+\});\d+\]$') {
+                    $named[$gpoKey] = [PSCustomObject]@{ Domain = $Matches[1]; FilterId = $Matches[2] }
+                } else {
+                    $map[$gpoKey] = "Unknown - gPCWQLFilter does not have the expected form: $($gpo.gPCWQLFilter)"
+                }
+            }
+        } catch {
+            Write-Log "[Get-GPOWmiFilter] Could not read the policies' WMI filter links: $_"
+            # Then no policy can be said to have no filter. '*' is no GUID, and the lookup
+            # below answers it for every policy.
+            $map = @{ '*' = 'Unknown - the WMI filter links of the policies could not be read' }
+        }
+
+        if ($named.Count -gt 0) {
+            # @{} compares its keys without regard to case, as GUIDs are compared.
+            $filters = @{}
+            $filtersRead = $false
+            try {
+                $somBase = "CN=SOM,CN=WMIPolicy,CN=System,$($Script:LDAPContext.DomainDN)"
+                foreach ($som in @(Get-DomainObject -LDAPFilter '(objectClass=msWMI-Som)' -SearchBase $somBase -Properties 'msWMI-ID', 'msWMI-Name', 'msWMI-Parm2')) {
+                    $somId = "$($som.'msWMI-ID')".Trim()
+                    if ($somId) { $filters[$somId] = $som }
+                }
+                $filtersRead = $true
+            } catch {
+                Write-Log "[Get-GPOWmiFilter] Could not read the WMI filters: $_"
+            }
+
+            foreach ($gpoKey in @($named.Keys)) {
+                $link = $named[$gpoKey]
+                if (-not $filtersRead) {
+                    $map[$gpoKey] = "Unknown - the policy names WMI filter $($link.FilterId), and the filters could not be read"
+                    continue
+                }
+                if (-not $filters.ContainsKey($link.FilterId)) {
+                    $map[$gpoKey] = "Missing - the policy names WMI filter $($link.FilterId), which this domain does not hold; a client that cannot find the filter applies the policy"
+                    continue
+                }
+                $som = $filters[$link.FilterId]
+                $name = "$($som.'msWMI-Name')"
+                if (-not $name) { $name = $link.FilterId }
+                $queries = @(ConvertFrom-WmiFilterQuery -Parm2 "$($som.'msWMI-Parm2')")
+                $queryText = if ($queries.Count -gt 0) { $queries -join '; ' } else { 'no query' }
+                $map[$gpoKey] = "$name - applies only where the query returns a result: $queryText"
+            }
+        }
+
+        $Script:GPOWmiFilterMap = $map
+    }
+
+    if ($Script:GPOWmiFilterMap.ContainsKey('*')) { return $Script:GPOWmiFilterMap['*'] }
+    $lookupKey = $GPOGUID.Trim()
+    if ($lookupKey -notmatch '^\{') { $lookupKey = "{$lookupKey}" }
+    if ($Script:GPOWmiFilterMap.ContainsKey($lookupKey)) { return $Script:GPOWmiFilterMap[$lookupKey] }
+    return $null
+}
+
+<#
+.SYNOPSIS
+    The queries of a WMI filter, out of msWMI-Parm2.
+
+.DESCRIPTION
+    Internal helper of Get-GPOWmiFilter. Returns one query per entry, prefixed with its
+    namespace unless that is root\CIMv2, which nearly every filter uses. A value that does
+    not have the expected shape is returned as it stands, so the reader still sees what the
+    filter says.
+
+.PARAMETER Parm2
+    The msWMI-Parm2 value.
+
+.OUTPUTS
+    [string[]]
+#>
+function ConvertFrom-WmiFilterQuery {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Parm2
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Parm2)) { return @() }
+
+    $text = $Parm2
+
+    # The count, the type, the two lengths and the language are plain fields up to the next
+    # semicolon; namespace and query are read by their lengths. The cursor is passed by
+    # reference, because the scriptblock runs in a scope of its own.
+    $readField = {
+        param([ref]$cursor)
+        $end = $text.IndexOf(';', $cursor.Value)
+        if ($end -lt 0) { throw 'unterminated field' }
+        $field = $text.Substring($cursor.Value, $end - $cursor.Value)
+        $cursor.Value = $end + 1
+        $field
+    }
+
+    try {
+        $queries = @()
+        $cursor = [ref]0
+        $count = [int](& $readField $cursor)
+        for ($i = 0; $i -lt $count; $i++) {
+            $null = & $readField $cursor                     # query type
+            $namespaceLength = [int](& $readField $cursor)
+            $queryLength = [int](& $readField $cursor)
+            $null = & $readField $cursor                     # language, WQL
+            $namespace = $text.Substring($cursor.Value, $namespaceLength)
+            $cursor.Value += $namespaceLength
+            if ($text[$cursor.Value] -ne ';') { throw 'namespace length' }
+            $cursor.Value++
+            $query = $text.Substring($cursor.Value, $queryLength)
+            $cursor.Value += $queryLength
+            if ($cursor.Value -lt $text.Length -and $text[$cursor.Value] -eq ';') { $cursor.Value++ }
+
+            if ($namespace -ieq 'root\CIMv2') { $queries += $query } else { $queries += "${namespace}: $query" }
+        }
+        return $queries
+    } catch {
+        return @($Parm2)
+    }
+}
+
+<#
+.SYNOPSIS
+    Whether a policy switches user Group Policy loopback processing on, as the sentence for
+    its row.
+
+.DESCRIPTION
+    "Configure user Group Policy loopback processing mode" writes UserPolicyMode under
+    HKLM\Software\Policies\Microsoft\Windows\System into the computer half's Registry.pol -
+    1 for Merge, 2 for Replace. Microsoft (KB 231287): in Merge mode the computer's list of
+    policies is added after the user's and takes precedence; in Replace mode the user's
+    list is not gathered at all. Either way the user settings of the policies that reach the
+    computer apply to whoever logs on to it - which is how the user half of a policy linked
+    to a server OU reaches anybody, and the reach rows beside it do not say so.
+
+    A fact for the reader, no verdict. Read through the SYSVOL listing and parsed once,
+    cached for the session in $Script:GPOLoopbackMap. Runs its own Invoke-SMBAccess: the
+    callers ask from inside and outside an SMB block alike - inside one it runs on that
+    block's mount - and the scriptblock hands its result back rather than assigning to the
+    caller's scope, which it could not.
+
+    Unknown where the answer was not read: SYSVOL as a whole, the policy's folder, or a
+    Registry.pol that could not be read or parsed and did not show the value before it
+    failed. A missing row would claim the policy leaves the mode unset.
+
+.PARAMETER GPOGUID
+    The policy's GUID, with or without braces.
+
+.OUTPUTS
+    [string] for the loopbackProcessing row, or $null when the policy is known to leave the
+    mode unset.
+#>
+function Get-GPOLoopbackMode {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$GPOGUID
+    )
+
+    if ([string]::IsNullOrWhiteSpace($GPOGUID)) { return $null }
+
+    if ($null -eq $Script:GPOLoopbackMap) {
+        $built = $null
+        try {
+            $built = Invoke-SMBAccess -Description 'Reading the loopback processing mode of the GPOs' -ScriptBlock {
+                $modes = @{}
+                $polFiles = @(Get-CachedSYSVOLFiles -Filter 'Registry.pol')
+                $coverage = Get-SYSVOLCacheCoverage
+                if ($null -ne $coverage -and -not $coverage.Reachable) {
+                    return @{ '*' = 'Unknown - SYSVOL could not be read' }
+                }
+
+                foreach ($polFile in $polFiles) {
+                    if ($polFile.FullName -notmatch '(?i)\\Policies\\(\{[0-9A-F-]+\})\\Machine\\Registry\.pol$') { continue }
+                    $polGuid = $Matches[1]
+                    foreach ($record in @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive 'HKLM')) {
+                        if ("$($record.Key)".TrimStart('\') -ine 'Software\Policies\Microsoft\Windows\System') { continue }
+                        if ("$($record.ValueName)" -ine 'UserPolicyMode') { continue }
+                        switch ("$($record.ValueInt)") {
+                            '1' { $modes[$polGuid] = 'Merge - the user settings of the policies that reach these computers apply to everyone who logs on to them, ahead of the user''s own' }
+                            '2' { $modes[$polGuid] = 'Replace - only the user settings of the policies that reach these computers apply to whoever logs on to them; the user''s own policies do not' }
+                        }
+                    }
+                    # The parser registers a file it could not read or parse, and returns what
+                    # it got that far - which need not reach the value.
+                    if (-not $modes.ContainsKey($polGuid)) {
+                        $gap = @(Get-SYSVOLFileGap -FileFilter 'Registry.pol' | Where-Object { $_.Path -eq $polFile.FullName })
+                        if ($gap.Count -gt 0) { $modes[$polGuid] = "Unknown - the policy's Machine\Registry.pol $($gap[0].Reason)" }
+                    }
+                }
+
+                # A policy folder, or its Machine folder, that the listing could not read may
+                # hold a Registry.pol nobody saw.
+                if ($null -ne $coverage) {
+                    foreach ($skipped in @($coverage.SkippedPaths)) {
+                        if ("$skipped" -match '(?i)\\Policies\\(\{[0-9A-F-]+\})(\\Machine)?\\?$' -and -not $modes.ContainsKey($Matches[1])) {
+                            $modes[$Matches[1]] = 'Unknown - the policy''s folder in SYSVOL could not be read'
+                        }
+                    }
+                }
+                $modes
+            }
+        } catch {
+            Write-Log "[Get-GPOLoopbackMode] Could not read the loopback processing mode: $_"
+        }
+        # No table back means SYSVOL was not read, and no policy can be said to leave the
+        # mode unset. '*' is no GUID, and the lookup below answers it for every policy.
+        if ($built -is [hashtable]) {
+            $Script:GPOLoopbackMap = $built
+        } else {
+            $Script:GPOLoopbackMap = @{ '*' = 'Unknown - SYSVOL could not be read' }
+        }
+    }
+
+    if ($Script:GPOLoopbackMap.ContainsKey('*')) { return $Script:GPOLoopbackMap['*'] }
+    $lookupKey = $GPOGUID.Trim()
+    if ($lookupKey -notmatch '^\{') { $lookupKey = "{$lookupKey}" }
+    if ($Script:GPOLoopbackMap.ContainsKey($lookupKey)) { return $Script:GPOLoopbackMap[$lookupKey] }
+    return $null
+}
+
+<#
+.SYNOPSIS
+    Adds the WMI filter and loopback rows to a GPO finding, where the policy has them.
+
+.DESCRIPTION
+    Two facts beside LinkedOUs and reachesDomainControllers that change which machines and
+    which users a policy reaches, and that no reach computation in adPEAS evaluates: a WMI
+    filter can narrow a policy to no machine at all, and loopback processing makes the user
+    half of a policy apply through the computers it reaches. Rows only where the policy has
+    one, or where it could not be read whether it has - a policy without either applies by
+    its links alone, as the other rows already say.
+
+.PARAMETER Object
+    The finding to annotate.
+
+.PARAMETER GPOGUID
+    The policy's GUID. Without one, neither row can be looked up and none is added.
+#>
+function Add-GPOConditionRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Object,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$GPOGUID
+    )
+
+    $wmiFilter = Get-GPOWmiFilter -GPOGUID $GPOGUID
+    if ($wmiFilter) { $Object | Add-Member -NotePropertyName 'wmiFilter' -NotePropertyValue $wmiFilter -Force }
+
+    $loopback = Get-GPOLoopbackMode -GPOGUID $GPOGUID
+    if ($loopback) { $Object | Add-Member -NotePropertyName 'loopbackProcessing' -NotePropertyValue $loopback -Force }
+}
+
 
 
 # ----- Get-DomainControllerGPOContext.ps1 -----
@@ -114629,6 +114951,8 @@ function Get-GPOUserRightsAssignment {
                             _severity            = $severity
                         }
 
+                        Add-GPOConditionRow -Object $finding -GPOGUID $gpo.Name
+
                         if (-not $comparison.HasBaseline) {
                             $finding | Add-Member -NotePropertyName 'BaselineUnknown' `
                                 -NotePropertyValue 'Windows publishes no fixed default set for this right, so the holders above were filtered by identity instead of compared. Judge them against what this domain actually runs.' -Force
@@ -118527,6 +118851,7 @@ function Get-GPOPermissions {
                         # LinkedOUs, no verdict.
                         $enrichedGPO | Add-Member -NotePropertyName "reachesDomainControllers" `
                             -NotePropertyValue (Get-GPODomainControllerReach -Link $links -GPOGUID $gpoGUID) -Force
+                        Add-GPOConditionRow -Object $enrichedGPO -GPOGUID $gpoGUID
 
                         # The object is a copy of the GPO and already carries GPOStatus from
                         # Get-DomainGPO; the transformer hides it when it says "Enabled".
@@ -118684,6 +119009,7 @@ function Get-GPOPermissions {
                 $extraCard | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $extraLinksDisplay -Force
                 $extraCard | Add-Member -NotePropertyName "reachesDomainControllers" `
                     -NotePropertyValue (Get-GPODomainControllerReach -Link $extraLinks -GPOGUID $extraGUID) -Force
+                Add-GPOConditionRow -Object $extraCard -GPOGUID $extraGUID
 
                 $extraStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$extraGUID] -Scope 'Any' -Link $extraLinks
                 if ($extraStatus) {
@@ -119003,6 +119329,7 @@ function Get-GPOLocalGroupMembership {
                                 foreach ($finding in $restrictedGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+                                    Add-GPOConditionRow -Object $finding -GPOGUID $gpoGUID
                                     # Restricted Groups is a computer-side section, so the
                                     # half is Machine - stated per finding because the
                                     # suppression decision reads it from the row now, and
@@ -119073,6 +119400,7 @@ function Get-GPOLocalGroupMembership {
                                 foreach ($finding in $gppGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+                                    Add-GPOConditionRow -Object $finding -GPOGUID $gpoGUID
                                     # And here the file's path decides, the same way the
                                     # GPOStatus line above is computed.
                                     $finding | Add-Member -NotePropertyName '_ReachScope' `
@@ -120008,6 +120336,7 @@ function Get-GPOScheduledTasks {
                                     # statement rather than an absence.
                                     $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     $task | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+                                    Add-GPOConditionRow -Object $task -GPOGUID $gpoGUID
 
                                     # A task in a policy whose relevant half is switched off
                                     # does not run, and it used to read exactly like one that
@@ -120892,6 +121221,7 @@ function Get-GPOScriptPaths {
                                 foreach ($finding in $findings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
                                     $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+                                    Add-GPOConditionRow -Object $finding -GPOGUID $gpoGUID
                                     if ($gpoStatus) {
                                         $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
                                     }
@@ -121591,6 +121921,7 @@ function Get-GPORegistrySettings {
                     # fact beside LinkedOUs, no verdict.
                     $finding | Add-Member -NotePropertyName 'reachesDomainControllers' `
                         -NotePropertyValue (Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $finding.GPOGUID) -Force
+                    Add-GPOConditionRow -Object $finding -GPOGUID $finding.GPOGUID
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 
                     # A value in a policy whose relevant half is switched off reaches no
@@ -122783,6 +123114,7 @@ function New-PointAndPrintObject {
     if ($null -eq $GPOLinkage) { $dcReachLinks = $null }
     $obj | Add-Member -NotePropertyName 'reachesDomainControllers' `
         -NotePropertyValue (Get-GPODomainControllerReach -Link $dcReachLinks -GPOGUID $gpoGuid) -Force
+    Add-GPOConditionRow -Object $obj -GPOGUID $gpoGuid
 
     # Point and Print lives under HKLM, so the computer half of the GPO is the one that has
     # to be switched on. $null for the links when the linkage could not be resolved at all.
@@ -145146,7 +145478,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-2322"
+$Script:adPEASVersion = "2.7.0+20261017-2342"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

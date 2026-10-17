@@ -3278,7 +3278,7 @@ $Script:PrimaryAttributes = @{
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
 	    'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'ServerSigning', 'ClientSigning',
 	    'DangerousPermissions', 'SysvolPermissions', 'GPOOwner', 'DangerousSettings',
-	    'LinkedOUs', 'reachesDomainControllers', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
+	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
 	)
 	SMBSigning = @(
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
@@ -3297,7 +3297,7 @@ $Script:PrimaryAttributes = @{
 	GPORegistrySetting = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'RegistryKey', 'ConfiguredValue',
 	    'VulnerabilityName', 'RiskReason',
-	    'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
 	)
 	PointAndPrintPolicy = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'Scope', 'SourceFile',
@@ -3307,7 +3307,7 @@ $Script:PrimaryAttributes = @{
 	    'ApprovedDriverSource', 'ApprovedServerList',
 	    'SpoolerClientConnections', 'QueueSpecificFiles',
 	    'WebDriverDownload', 'HTTPPrinting', 'InstallDriversSecurityOption',
-	    'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
 	)
 	LAPSGPOConfig = @(
 	    'lapsGpoNotLinked',
@@ -3409,23 +3409,23 @@ $Script:PrimaryAttributes = @{
 	GPOUserRights = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
 	    'GrantedBeyondDefault', 'RemovedFromDefault', 'BaselineUnknown',
-	    'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+	    'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
 	)
 	MachineAccountQuota = @(
 	    'ms-DS-MachineAccountQuota'
 	)
 	GPOScheduledTask = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'UNCPathPermissions',
-	    'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+	    'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
 	)
 	GPOScriptPath = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
-	    'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+	    'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
 	)
 	GPOLocalGroup = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'Mode',
 	    'MembersAdded', 'MembersRemoved', 'groupEmptied',
-	    'LinkedOUs', 'reachesDomainControllers', 'GPOStatus'
+	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
 	)
 	AddComputerGPO = @(
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
@@ -25580,6 +25580,8 @@ function Clear-SessionState {
 	$Script:DomainControllerGPOContext = $null
 	$Script:GPOSecurityFilterMap = $null
 	$Script:GPOFilterPrincipalCache = $null
+	$Script:GPOWmiFilterMap = $null
+	$Script:GPOLoopbackMap = $null
 	$Script:KerberoastCredParams = $null
 	$Script:UseInMemoryMethod = $null
 	$Script:LastProgressUpdate = $null
@@ -52187,6 +52189,186 @@ function Format-GPOSecurityFilter {
 	if ($denyNames.Count -gt 0) { $parts += "it is denied to $($denyNames -join ', ')" }
 	return ($parts -join ', and ')
 }
+function Get-GPOWmiFilter {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$GPOGUID
+	)
+	if ([string]::IsNullOrWhiteSpace($GPOGUID)) { return $null }
+	if ($null -eq $Script:GPOWmiFilterMap) {
+	    $map = @{}
+	    $named = @{}
+	    try {
+	        foreach ($gpo in @(Get-DomainObject -LDAPFilter '(&(objectClass=groupPolicyContainer)(gPCWQLFilter=*))' -Properties 'distinguishedName', 'gPCWQLFilter')) {
+	            if ("$($gpo.distinguishedName)" -notmatch '^CN=(\{[0-9A-Fa-f-]+\}),') { continue }
+	            $gpoKey = $Matches[1]
+	            if ("$($gpo.gPCWQLFilter)" -match '^\[([^;]*);(\{[0-9A-Fa-f-]+\});\d+\]$') {
+	                $named[$gpoKey] = [PSCustomObject]@{ Domain = $Matches[1]; FilterId = $Matches[2] }
+	            } else {
+	                $map[$gpoKey] = "Unknown - gPCWQLFilter does not have the expected form: $($gpo.gPCWQLFilter)"
+	            }
+	        }
+	    } catch {
+	        $map = @{ '*' = 'Unknown - the WMI filter links of the policies could not be read' }
+	    }
+	    if ($named.Count -gt 0) {
+	        $filters = @{}
+	        $filtersRead = $false
+	        try {
+	            $somBase = "CN=SOM,CN=WMIPolicy,CN=System,$($Script:LDAPContext.DomainDN)"
+	            foreach ($som in @(Get-DomainObject -LDAPFilter '(objectClass=msWMI-Som)' -SearchBase $somBase -Properties 'msWMI-ID', 'msWMI-Name', 'msWMI-Parm2')) {
+	                $somId = "$($som.'msWMI-ID')".Trim()
+	                if ($somId) { $filters[$somId] = $som }
+	            }
+	            $filtersRead = $true
+	        } catch {
+	        }
+	        foreach ($gpoKey in @($named.Keys)) {
+	            $link = $named[$gpoKey]
+	            if (-not $filtersRead) {
+	                $map[$gpoKey] = "Unknown - the policy names WMI filter $($link.FilterId), and the filters could not be read"
+	                continue
+	            }
+	            if (-not $filters.ContainsKey($link.FilterId)) {
+	                $map[$gpoKey] = "Missing - the policy names WMI filter $($link.FilterId), which this domain does not hold; a client that cannot find the filter applies the policy"
+	                continue
+	            }
+	            $som = $filters[$link.FilterId]
+	            $name = "$($som.'msWMI-Name')"
+	            if (-not $name) { $name = $link.FilterId }
+	            $queries = @(ConvertFrom-WmiFilterQuery -Parm2 "$($som.'msWMI-Parm2')")
+	            $queryText = if ($queries.Count -gt 0) { $queries -join '; ' } else { 'no query' }
+	            $map[$gpoKey] = "$name - applies only where the query returns a result: $queryText"
+	        }
+	    }
+	    $Script:GPOWmiFilterMap = $map
+	}
+	if ($Script:GPOWmiFilterMap.ContainsKey('*')) { return $Script:GPOWmiFilterMap['*'] }
+	$lookupKey = $GPOGUID.Trim()
+	if ($lookupKey -notmatch '^\{') { $lookupKey = "{$lookupKey}" }
+	if ($Script:GPOWmiFilterMap.ContainsKey($lookupKey)) { return $Script:GPOWmiFilterMap[$lookupKey] }
+	return $null
+}
+function ConvertFrom-WmiFilterQuery {
+	[CmdletBinding()]
+	[OutputType([string[]])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$Parm2
+	)
+	if ([string]::IsNullOrWhiteSpace($Parm2)) { return @() }
+	$text = $Parm2
+	$readField = {
+	    param([ref]$cursor)
+	    $end = $text.IndexOf(';', $cursor.Value)
+	    if ($end -lt 0) { throw 'unterminated field' }
+	    $field = $text.Substring($cursor.Value, $end - $cursor.Value)
+	    $cursor.Value = $end + 1
+	    $field
+	}
+	try {
+	    $queries = @()
+	    $cursor = [ref]0
+	    $count = [int](& $readField $cursor)
+	    for ($i = 0; $i -lt $count; $i++) {
+	        $null = & $readField $cursor
+	        $namespaceLength = [int](& $readField $cursor)
+	        $queryLength = [int](& $readField $cursor)
+	        $null = & $readField $cursor
+	        $namespace = $text.Substring($cursor.Value, $namespaceLength)
+	        $cursor.Value += $namespaceLength
+	        if ($text[$cursor.Value] -ne ';') { throw 'namespace length' }
+	        $cursor.Value++
+	        $query = $text.Substring($cursor.Value, $queryLength)
+	        $cursor.Value += $queryLength
+	        if ($cursor.Value -lt $text.Length -and $text[$cursor.Value] -eq ';') { $cursor.Value++ }
+	        if ($namespace -ieq 'root\CIMv2') { $queries += $query } else { $queries += "${namespace}: $query" }
+	    }
+	    return $queries
+	} catch {
+	    return @($Parm2)
+	}
+}
+function Get-GPOLoopbackMode {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$GPOGUID
+	)
+	if ([string]::IsNullOrWhiteSpace($GPOGUID)) { return $null }
+	if ($null -eq $Script:GPOLoopbackMap) {
+	    $built = $null
+	    try {
+	        $built = Invoke-SMBAccess -Description 'Reading the loopback processing mode of the GPOs' -ScriptBlock {
+	            $modes = @{}
+	            $polFiles = @(Get-CachedSYSVOLFiles -Filter 'Registry.pol')
+	            $coverage = Get-SYSVOLCacheCoverage
+	            if ($null -ne $coverage -and -not $coverage.Reachable) {
+	                return @{ '*' = 'Unknown - SYSVOL could not be read' }
+	            }
+	            foreach ($polFile in $polFiles) {
+	                if ($polFile.FullName -notmatch '(?i)\\Policies\\(\{[0-9A-F-]+\})\\Machine\\Registry\.pol$') { continue }
+	                $polGuid = $Matches[1]
+	                foreach ($record in @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive 'HKLM')) {
+	                    if ("$($record.Key)".TrimStart('\') -ine 'Software\Policies\Microsoft\Windows\System') { continue }
+	                    if ("$($record.ValueName)" -ine 'UserPolicyMode') { continue }
+	                    switch ("$($record.ValueInt)") {
+	                        '1' { $modes[$polGuid] = 'Merge - the user settings of the policies that reach these computers apply to everyone who logs on to them, ahead of the user''s own' }
+	                        '2' { $modes[$polGuid] = 'Replace - only the user settings of the policies that reach these computers apply to whoever logs on to them; the user''s own policies do not' }
+	                    }
+	                }
+	                if (-not $modes.ContainsKey($polGuid)) {
+	                    $gap = @(Get-SYSVOLFileGap -FileFilter 'Registry.pol' | Where-Object { $_.Path -eq $polFile.FullName })
+	                    if ($gap.Count -gt 0) { $modes[$polGuid] = "Unknown - the policy's Machine\Registry.pol $($gap[0].Reason)" }
+	                }
+	            }
+	            if ($null -ne $coverage) {
+	                foreach ($skipped in @($coverage.SkippedPaths)) {
+	                    if ("$skipped" -match '(?i)\\Policies\\(\{[0-9A-F-]+\})(\\Machine)?\\?$' -and -not $modes.ContainsKey($Matches[1])) {
+	                        $modes[$Matches[1]] = 'Unknown - the policy''s folder in SYSVOL could not be read'
+	                    }
+	                }
+	            }
+	            $modes
+	        }
+	    } catch {
+	    }
+	    if ($built -is [hashtable]) {
+	        $Script:GPOLoopbackMap = $built
+	    } else {
+	        $Script:GPOLoopbackMap = @{ '*' = 'Unknown - SYSVOL could not be read' }
+	    }
+	}
+	if ($Script:GPOLoopbackMap.ContainsKey('*')) { return $Script:GPOLoopbackMap['*'] }
+	$lookupKey = $GPOGUID.Trim()
+	if ($lookupKey -notmatch '^\{') { $lookupKey = "{$lookupKey}" }
+	if ($Script:GPOLoopbackMap.ContainsKey($lookupKey)) { return $Script:GPOLoopbackMap[$lookupKey] }
+	return $null
+}
+function Add-GPOConditionRow {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    $Object,
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$GPOGUID
+	)
+	$wmiFilter = Get-GPOWmiFilter -GPOGUID $GPOGUID
+	if ($wmiFilter) { $Object | Add-Member -NotePropertyName 'wmiFilter' -NotePropertyValue $wmiFilter -Force }
+	$loopback = Get-GPOLoopbackMode -GPOGUID $GPOGUID
+	if ($loopback) { $Object | Add-Member -NotePropertyName 'loopbackProcessing' -NotePropertyValue $loopback -Force }
+}
 function Get-DomainControllerGPOContext {
 	[CmdletBinding()]
 	[OutputType([PSCustomObject])]
@@ -70088,6 +70270,7 @@ function Get-GPOUserRightsAssignment {
 	                        reachesDomainControllers = (Get-GPODomainControllerReach -Link $links -GPOGUID $gpo.Name)
 	                        _severity            = $severity
 	                    }
+	                    Add-GPOConditionRow -Object $finding -GPOGUID $gpo.Name
 	                    if (-not $comparison.HasBaseline) {
 	                        $finding | Add-Member -NotePropertyName 'BaselineUnknown' `
 	                            -NotePropertyValue 'Windows publishes no fixed default set for this right, so the holders above were filtered by identity instead of compared. Judge them against what this domain actually runs.' -Force
@@ -72114,6 +72297,7 @@ function Get-GPOPermissions {
 	                    $enrichedGPO | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
 	                    $enrichedGPO | Add-Member -NotePropertyName "reachesDomainControllers" `
 	                        -NotePropertyValue (Get-GPODomainControllerReach -Link $links -GPOGUID $gpoGUID) -Force
+	                    Add-GPOConditionRow -Object $enrichedGPO -GPOGUID $gpoGUID
 	                    $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoGUID] `
 	                        -Scope 'Any' -Link $links
 	                    if ($gpoStatus) {
@@ -72206,6 +72390,7 @@ function Get-GPOPermissions {
 	            $extraCard | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $extraLinksDisplay -Force
 	            $extraCard | Add-Member -NotePropertyName "reachesDomainControllers" `
 	                -NotePropertyValue (Get-GPODomainControllerReach -Link $extraLinks -GPOGUID $extraGUID) -Force
+	            Add-GPOConditionRow -Object $extraCard -GPOGUID $extraGUID
 	            $extraStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$extraGUID] -Scope 'Any' -Link $extraLinks
 	            if ($extraStatus) {
 	                $extraCard | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $extraStatus -Force
@@ -72375,6 +72560,7 @@ function Get-GPOLocalGroupMembership {
 	                            foreach ($finding in $restrictedGroupsFindings) {
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 	                                $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+	                                Add-GPOConditionRow -Object $finding -GPOGUID $gpoGUID
 	                                $finding | Add-Member -NotePropertyName '_ReachScope' -NotePropertyValue 'Machine' -Force
 	                                if ($gpoStatus) {
 	                                    $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
@@ -72419,6 +72605,7 @@ function Get-GPOLocalGroupMembership {
 	                            foreach ($finding in $gppGroupsFindings) {
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 	                                $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+	                                Add-GPOConditionRow -Object $finding -GPOGUID $gpoGUID
 	                                $finding | Add-Member -NotePropertyName '_ReachScope' `
 	                                    -NotePropertyValue (Get-GPOHalfFromSource -SourceFile (Get-GPORelativePath -Path $file.FullName)) -Force
 	                                if ($gpoStatus) {
@@ -72892,6 +73079,7 @@ function Get-GPOScheduledTasks {
 	                            foreach ($task in $taskFindings) {
 	                                $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 	                                $task | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+	                                Add-GPOConditionRow -Object $task -GPOGUID $gpoGUID
 	                                $gpoStatus = Get-GPOEffectiveStatus `
 	                                    -StatusEntry $gpoStatusMap[$gpoGUID] `
 	                                    -Scope $(if ($task.Context -eq 'Machine') { 'Machine' } else { 'User' }) `
@@ -73365,6 +73553,7 @@ function Get-GPOScriptPaths {
 	                            foreach ($finding in $findings) {
 	                                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 	                                $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+	                                Add-GPOConditionRow -Object $finding -GPOGUID $gpoGUID
 	                                if ($gpoStatus) {
 	                                    $finding | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force
 	                                }
@@ -73743,6 +73932,7 @@ function Get-GPORegistrySettings {
 	                $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
 	                $finding | Add-Member -NotePropertyName 'reachesDomainControllers' `
 	                    -NotePropertyValue (Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $finding.GPOGUID) -Force
+	                Add-GPOConditionRow -Object $finding -GPOGUID $finding.GPOGUID
 	                $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPORegistrySetting' -Force
 	                $gpoStatus = Get-GPOEffectiveStatus `
 	                    -StatusEntry $gpoStatusMap[$finding.GPOGUID] `
@@ -74411,6 +74601,7 @@ function New-PointAndPrintObject {
 	if ($null -eq $GPOLinkage) { $dcReachLinks = $null }
 	$obj | Add-Member -NotePropertyName 'reachesDomainControllers' `
 	    -NotePropertyValue (Get-GPODomainControllerReach -Link $dcReachLinks -GPOGUID $gpoGuid) -Force
+	Add-GPOConditionRow -Object $obj -GPOGUID $gpoGuid
 	$gpoStatus = Get-GPOEffectiveStatus `
 	    -StatusEntry $(if ($GPOStatusMap -and $gpoGuid) { $GPOStatusMap[$gpoGuid] } else { $null }) `
 	    -Scope 'Machine' `
@@ -90323,7 +90514,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-2322"
+$Script:adPEASVersion = "2.7.0+20261017-2342"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
