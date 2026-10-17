@@ -457,6 +457,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   missing from a schema that has the other, and a filter naming an undefined attribute
   fails as a whole. The card is titled *Credentials Found in a Free-Text Attribute*.
 
+- **`Get-CredentialExposure` reads the files a credential is written into besides
+  scripts.** GPO comment files (`.cmtx`), application and deployment configuration
+  (`.config`, `.json`, `.yml`, `.yaml`, `.psd1`) and exported registry files (`.reg` - an
+  AutoAdminLogon export carries `DefaultPassword` in clear) are searched like the scripts,
+  in SYSVOL and in a custom path. `.inf` stays out: every `GptTmpl.inf` with a password
+  policy names `MinimumPasswordAge`, which would put a mention on each of them, and
+  `Registry.pol` is parsed for password values on its own.
+
 - **The Restricted Admin card is a hint, as its row is.** The registry table lowered
   `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the
   card and the trigger on its row stayed a finding: the console printed the row yellow and

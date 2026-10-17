@@ -77663,7 +77663,8 @@ function Get-UnixPasswordAccounts {
 }
 $Script:CredentialScanExtensions = @(
 	'*.txt', '*.bat', '*.ini', '*.conf', '*.cnf', '*.cmd', '*.vbs', '*.vbe', '*.kix',
-	'*.ps1', '*.psm1'
+	'*.ps1', '*.psm1',
+	'*.cmtx', '*.config', '*.reg', '*.json', '*.yml', '*.yaml', '*.psd1'
 )
 function Get-ReportedLineKey {
 	[CmdletBinding()]
@@ -89926,7 +89927,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-2217"
+$Script:adPEASVersion = "2.7.0+20261017-2222"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

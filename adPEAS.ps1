@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 22:17:51
-    Version: 2.7.0+20261017-2217
+    Build: 2026-10-17 22:22:32
+    Version: 2.7.0+20261017-2222
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -128848,7 +128848,15 @@ function Get-UnixPasswordAccounts {
 # separately because those files are parsed as XML rather than grepped.
 $Script:CredentialScanExtensions = @(
     '*.txt', '*.bat', '*.ini', '*.conf', '*.cnf', '*.cmd', '*.vbs', '*.vbe', '*.kix',
-    '*.ps1', '*.psm1'
+    '*.ps1', '*.psm1',
+    # The files a credential is written into besides scripts: the GPO comment file an
+    # administrator types into, application and deployment configuration, and an
+    # exported registry file - an AutoAdminLogon .reg carries DefaultPassword in clear.
+    # Not *.inf: every GptTmpl.inf with a password policy names MinimumPasswordAge and
+    # friends, which would put a mention on every such policy in the domain, and the
+    # settings in it are read by the checks that own them. Not *.pol: Registry.pol is
+    # binary and is parsed for password values on its own.
+    '*.cmtx', '*.config', '*.reg', '*.json', '*.yml', '*.yaml', '*.psd1'
 )
 
 function Get-ReportedLineKey {
@@ -144624,7 +144632,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-2217"
+$Script:adPEASVersion = "2.7.0+20261017-2222"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

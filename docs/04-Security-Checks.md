@@ -322,7 +322,7 @@ Get-CredentialRoaming -IncludePrivileged
 **What it checks**:
 - GPP passwords in SYSVOL XML files (cpassword attribute, MS14-025)
 - AutoAdminLogon passwords in Registry.xml (plaintext)
-- Hardcoded credentials in NETLOGON/SYSVOL scripts and configuration files (.bat, .cmd, .ps1, .psm1, .vbs, .vbe, .kix, .txt, .ini, .conf, .cnf)
+- Hardcoded credentials in NETLOGON/SYSVOL scripts and configuration files (.bat, .cmd, .ps1, .psm1, .psd1, .vbs, .vbe, .kix, .txt, .ini, .conf, .cnf, .config, .json, .yml, .yaml, .reg) and in GPO comment files (.cmtx). Not .inf - every GptTmpl.inf names the password policy - and not Registry.pol, which is parsed for password values on its own
 - Net use commands with embedded passwords
 - VBScript Encoded (.vbe) files (automatically decoded)
 - Custom UNC paths or local directories (standalone mode)

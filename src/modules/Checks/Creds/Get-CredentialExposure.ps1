@@ -8,7 +8,15 @@
 # separately because those files are parsed as XML rather than grepped.
 $Script:CredentialScanExtensions = @(
     '*.txt', '*.bat', '*.ini', '*.conf', '*.cnf', '*.cmd', '*.vbs', '*.vbe', '*.kix',
-    '*.ps1', '*.psm1'
+    '*.ps1', '*.psm1',
+    # The files a credential is written into besides scripts: the GPO comment file an
+    # administrator types into, application and deployment configuration, and an
+    # exported registry file - an AutoAdminLogon .reg carries DefaultPassword in clear.
+    # Not *.inf: every GptTmpl.inf with a password policy names MinimumPasswordAge and
+    # friends, which would put a mention on every such policy in the domain, and the
+    # settings in it are read by the checks that own them. Not *.pol: Registry.pol is
+    # binary and is parsed for password values on its own.
+    '*.cmtx', '*.config', '*.reg', '*.json', '*.yml', '*.yaml', '*.psd1'
 )
 
 function Get-ReportedLineKey {
