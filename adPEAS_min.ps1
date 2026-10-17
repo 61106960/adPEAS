@@ -19105,14 +19105,14 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Module = "Accounts"
         Category = "Accounts"
         SectionTitle = "Reversible Encryption"
-        Summary = "Finds administrative accounts storing passwords with reversible encryption."
+        Summary = "Finds every account storing its password with reversible encryption, and names the privileged ones."
         WhyItMatters = "Reversible encryption allows the actual password to be recovered from AD, effectively storing it in cleartext. This is a severe security risk for any account, especially privileged ones."
         WhatWeCheck = @(
             "Accounts with 'Store password using reversible encryption' enabled"
             "Whether this setting is actually required"
             "Impact on credential security"
         )
-        SecureMessage = "No privileged accounts store passwords with reversible encryption. Password hashes cannot be recovered to plaintext from Active Directory."
+        SecureMessage = "No account stores its password with reversible encryption. No password can be recovered to plaintext from Active Directory through this setting."
         PrimaryFindingId = 'REVERSIBLE_ENCRYPTION'
     }
     'PasswordNotRequired' = @{
@@ -66315,6 +66315,7 @@ function Get-AdminReversibleEncryption {
             }
         } catch {
             Write-Log "[Get-AdminReversibleEncryption] Error: $_" -Level Error
+            Show-Line "Error during check - accounts with reversible encryption could not be evaluated: $_" -Class Finding
         }
     }
     end {
@@ -89068,7 +89069,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-1232"
+$Script:adPEASVersion = "2.7.0+20261017-1235"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

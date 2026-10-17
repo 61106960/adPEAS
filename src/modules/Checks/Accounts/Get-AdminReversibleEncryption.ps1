@@ -1,10 +1,10 @@
 function Get-AdminReversibleEncryption {
     <#
     .SYNOPSIS
-    Detects privileged accounts with "Store Password using Reversible Encryption" enabled.
+    Detects accounts with "Store Password using Reversible Encryption" enabled, and names the privileged ones.
 
     .DESCRIPTION
-    Identifies privileged user accounts (adminCount=1) where passwords are stored using reversible encryption (ENCRYPTED_TEXT_PWD_ALLOWED flag).
+    Identifies every user account whose password is stored using reversible encryption (ENCRYPTED_TEXT_PWD_ALLOWED flag) and marks the privileged ones. Privilege is decided by Test-IsPrivileged, not by adminCount, which AdminSDHolder sets and never clears.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -105,6 +105,9 @@ function Get-AdminReversibleEncryption {
 
         } catch {
             Write-Log "[Get-AdminReversibleEncryption] Error: $_" -Level Error
+            # Said on the console, as the other checks do: a failed query used to end the
+            # section without a word, which read like a domain with nothing to report.
+            Show-Line "Error during check - accounts with reversible encryption could not be evaluated: $_" -Class Finding
         }
     }
 

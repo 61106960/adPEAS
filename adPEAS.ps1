@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 12:32:28
-    Version: 2.7.0+20261017-1232
+    Build: 2026-10-17 12:35:55
+    Version: 2.7.0+20261017-1235
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -25863,14 +25863,14 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Module = "Accounts"
         Category = "Accounts"
         SectionTitle = "Reversible Encryption"
-        Summary = "Finds administrative accounts storing passwords with reversible encryption."
+        Summary = "Finds every account storing its password with reversible encryption, and names the privileged ones."
         WhyItMatters = "Reversible encryption allows the actual password to be recovered from AD, effectively storing it in cleartext. This is a severe security risk for any account, especially privileged ones."
         WhatWeCheck = @(
             "Accounts with 'Store password using reversible encryption' enabled"
             "Whether this setting is actually required"
             "Impact on credential security"
         )
-        SecureMessage = "No privileged accounts store passwords with reversible encryption. Password hashes cannot be recovered to plaintext from Active Directory."
+        SecureMessage = "No account stores its password with reversible encryption. No password can be recovered to plaintext from Active Directory through this setting."
         PrimaryFindingId = 'REVERSIBLE_ENCRYPTION'
     }
 
@@ -104584,10 +104584,10 @@ function Get-AdminPasswordNeverExpires {
 function Get-AdminReversibleEncryption {
     <#
     .SYNOPSIS
-    Detects privileged accounts with "Store Password using Reversible Encryption" enabled.
+    Detects accounts with "Store Password using Reversible Encryption" enabled, and names the privileged ones.
 
     .DESCRIPTION
-    Identifies privileged user accounts (adminCount=1) where passwords are stored using reversible encryption (ENCRYPTED_TEXT_PWD_ALLOWED flag).
+    Identifies every user account whose password is stored using reversible encryption (ENCRYPTED_TEXT_PWD_ALLOWED flag) and marks the privileged ones. Privilege is decided by Test-IsPrivileged, not by adminCount, which AdminSDHolder sets and never clears.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -104688,6 +104688,9 @@ function Get-AdminReversibleEncryption {
 
         } catch {
             Write-Log "[Get-AdminReversibleEncryption] Error: $_" -Level Error
+            # Said on the console, as the other checks do: a failed query used to end the
+            # section without a word, which read like a domain with nothing to report.
+            Show-Line "Error during check - accounts with reversible encryption could not be evaluated: $_" -Class Finding
         }
     }
 
@@ -138955,7 +138958,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1232"
+$Script:adPEASVersion = "2.7.0+20261017-1235"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

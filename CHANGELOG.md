@@ -214,6 +214,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   by the domain controllers; the card called that password possibly empty and named a
   `netdom` switch that does not exist. Its MITRE reference pointed at Kerberoasting.
 
+- **`Get-AdminReversibleEncryption` describes what it checks.** It reports every account
+  with reversible password encryption and names the privileged ones, while its help text
+  and its report section still spoke of privileged accounts with `adminCount=1` only. A
+  failed query now prints an error line instead of ending the section without a word.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object
