@@ -40916,6 +40916,9 @@ function Convert-ADTimestamp {
 if (-not $Script:SMBShareAccessCache) {
 	$Script:SMBShareAccessCache = @{}
 }
+if ($null -eq $Script:SMBHeldShares) {
+	$Script:SMBHeldShares = @{}
+}
 if (-not $Script:SYSVOLFileCache) {
 	$Script:SYSVOLFileCache = $null
 }
@@ -41278,6 +41281,9 @@ function Invoke-SMBAccess {
 	    $driveName = $null
 	    $driveMounted = $false
 	    $credToUse = $null
+	    $shareKey = $null
+	    $heldShare = $false
+	    $nestedRun = $false
 	    try {
 	        if ($Credential) {
 	            $credToUse = $Credential
@@ -41374,6 +41380,10 @@ function Invoke-SMBAccess {
 	        if ($targetPath -match '^(\\\\[^\\]+\\[^\\]+)') {
 	            $shareKey = $Matches[1].ToLower()
 	        }
+	        if ($shareKey -and $Script:SMBHeldShares.ContainsKey($shareKey)) {
+	            $nestedRun = $true
+	            return & $ScriptBlock $targetPath
+	        }
 	        if ($shareKey -and $Script:SMBShareAccessCache.ContainsKey($shareKey)) {
 	            $cachedError = $Script:SMBShareAccessCache[$shareKey]
 	            switch ($ErrorHandling) {
@@ -41381,6 +41391,10 @@ function Invoke-SMBAccess {
 	                'Stop' { throw "SMB access skipped (previously failed): $cachedError" }
 	                default { return $null }
 	            }
+	        }
+	        if ($shareKey) {
+	            $Script:SMBHeldShares[$shareKey] = $operationDesc
+	            $heldShare = $true
 	        }
 	        $attempt = 0
 	        $success = $false
@@ -41466,7 +41480,7 @@ try {
 	        }
 	    } catch {
 	        $errorMsg = "SMB access failed: $_"
-	        if ($shareKey) {
+	        if ($shareKey -and -not $nestedRun) {
 	            $Script:SMBShareAccessCache[$shareKey] = [string]$_
 	        }
 	        switch ($ErrorHandling) {
@@ -41482,7 +41496,10 @@ try {
 	            }
 	        }
 	    } finally {
-	        if ($Script:LastProgressUpdate -and $Script:LastProgressUpdate.Count -gt 0) {
+	        if ($heldShare) {
+	            $Script:SMBHeldShares.Remove($shareKey)
+	        }
+	        if (-not $nestedRun -and $Script:LastProgressUpdate -and $Script:LastProgressUpdate.Count -gt 0) {
 	            foreach ($activityKey in @($Script:LastProgressUpdate.Keys)) {
 	                try { Write-Progress -Activity $activityKey -Completed } catch { }
 	            }
@@ -90306,7 +90323,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-2249"
+$Script:adPEASVersion = "2.7.0+20261017-2322"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

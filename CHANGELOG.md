@@ -495,6 +495,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the HTML report counted a red finding scored 50 for the same line. Both are a hint now,
   scored 30 like the other hints of the table.
 
+- **An SMB access made from inside another one no longer ends the connection of the
+  first.** `Get-GPOScheduledTasks` reads who may write a task's UNC path while it reads
+  SYSVOL, and that path can be on the very SYSVOL share it is reading. The inner access
+  mounted the share a second time and removed it again, and for a drive mounted with
+  credentials removing it cancels every connection to that share without a drive letter -
+  the scan's own included, which then read on without the credentials it had mounted with.
+  A call for a share an enclosing call already has mounted now runs on that mount, and a
+  failure there no longer marks the share as unreachable for the rest of the session.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

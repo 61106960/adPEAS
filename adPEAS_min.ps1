@@ -42116,6 +42116,9 @@ function Convert-ADTimestamp {
 if (-not $Script:SMBShareAccessCache) {
     $Script:SMBShareAccessCache = @{}
 }
+if ($null -eq $Script:SMBHeldShares) {
+    $Script:SMBHeldShares = @{}
+}
 if (-not $Script:SYSVOLFileCache) {
     $Script:SYSVOLFileCache = $null
 }
@@ -42494,6 +42497,9 @@ function Invoke-SMBAccess {
         $driveName = $null
         $driveMounted = $false
         $credToUse = $null
+        $shareKey = $null
+        $heldShare = $false
+        $nestedRun = $false
         try {
             if ($Credential) {
                 $credToUse = $Credential
@@ -42608,6 +42614,11 @@ function Invoke-SMBAccess {
             if ($targetPath -match '^(\\\\[^\\]+\\[^\\]+)') {
                 $shareKey = $Matches[1].ToLower()
             }
+            if ($shareKey -and $Script:SMBHeldShares.ContainsKey($shareKey)) {
+                $nestedRun = $true
+                Write-Log "[Invoke-SMBAccess] $operationDesc - '$shareKey' is mounted by an enclosing call, running on that mount"
+                return & $ScriptBlock $targetPath
+            }
             if ($shareKey -and $Script:SMBShareAccessCache.ContainsKey($shareKey)) {
                 $cachedError = $Script:SMBShareAccessCache[$shareKey]
                 Write-Log "[Invoke-SMBAccess] SKIPPED (cached failure): $operationDesc - Share '$shareKey' previously failed: $cachedError"
@@ -42616,6 +42627,10 @@ function Invoke-SMBAccess {
                     'Stop' { throw "SMB access skipped (previously failed): $cachedError" }
                     default { return $null }
                 }
+            }
+            if ($shareKey) {
+                $Script:SMBHeldShares[$shareKey] = $operationDesc
+                $heldShare = $true
             }
             $attempt = 0
             $success = $false
@@ -42712,7 +42727,7 @@ try {
         } catch {
             $errorMsg = "SMB access failed: $_"
             Write-Log "[Invoke-SMBAccess] $errorMsg"
-            if ($shareKey) {
+            if ($shareKey -and -not $nestedRun) {
                 $Script:SMBShareAccessCache[$shareKey] = [string]$_
                 Write-Log "[Invoke-SMBAccess] Cached failed share: $shareKey"
             }
@@ -42730,7 +42745,10 @@ try {
                 }
             }
         } finally {
-            if ($Script:LastProgressUpdate -and $Script:LastProgressUpdate.Count -gt 0) {
+            if ($heldShare) {
+                $Script:SMBHeldShares.Remove($shareKey)
+            }
+            if (-not $nestedRun -and $Script:LastProgressUpdate -and $Script:LastProgressUpdate.Count -gt 0) {
                 foreach ($activityKey in @($Script:LastProgressUpdate.Keys)) {
                     try { Write-Progress -Activity $activityKey -Completed } catch { }
                 }
@@ -93354,7 +93372,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261017-2249"
+$Script:adPEASVersion = "2.7.0+20261017-2322"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

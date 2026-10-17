@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 22:49:29
-    Version: 2.7.0+20261017-2249
+    Build: 2026-10-17 23:22:15
+    Version: 2.7.0+20261017-2322
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -63085,6 +63085,8 @@ function Convert-ADTimestamp {
     - Retry logic for transient network errors
     - Comprehensive error handling and logging
     - Automatic cleanup (PSDrive removal)
+    - Nesting: a call made from inside another call's scriptblock for the same share runs
+      on that call's mount rather than mounting and removing the share again
 
     Use Cases:
     - SYSVOL access (GPO files, Registry.pol, GptTmpl.inf)
@@ -63168,6 +63170,18 @@ function Convert-ADTimestamp {
 
 if (-not $Script:SMBShareAccessCache) {
     $Script:SMBShareAccessCache = @{}
+}
+
+# Share roots that an Invoke-SMBAccess further up the call stack has mounted. A call for a
+# root that is already held runs its block on that mount instead of mounting the root a
+# second time, because removing the second drive would end the first one's connection as
+# well: for a drive mounted with credentials, Remove-PSDrive calls WNetCancelConnection2 on
+# the root, and for a remote name that cancels every connection to it that has no device.
+# The enclosing call then read on without the credentials it had mounted with. Each holder
+# releases its root in its own finally block, so the table is empty whenever no SMB access
+# is running - session state it is not, and Clear-SessionState leaves it alone.
+if ($null -eq $Script:SMBHeldShares) {
+    $Script:SMBHeldShares = @{}
 }
 
 # ============================================================================
@@ -63936,6 +63950,9 @@ function Invoke-SMBAccess {
         $driveName = $null
         $driveMounted = $false
         $credToUse = $null
+        $shareKey = $null
+        $heldShare = $false
+        $nestedRun = $false
 
         try {
             if ($Credential) {
@@ -64091,6 +64108,15 @@ function Invoke-SMBAccess {
             if ($targetPath -match '^(\\\\[^\\]+\\[^\\]+)') {
                 $shareKey = $Matches[1].ToLower()
             }
+
+            # An enclosing call has this share mounted - run on its mount, see
+            # $Script:SMBHeldShares. The block's output is the result, as on a mount of its own.
+            if ($shareKey -and $Script:SMBHeldShares.ContainsKey($shareKey)) {
+                $nestedRun = $true
+                Write-Log "[Invoke-SMBAccess] $operationDesc - '$shareKey' is mounted by an enclosing call, running on that mount"
+                return & $ScriptBlock $targetPath
+            }
+
             if ($shareKey -and $Script:SMBShareAccessCache.ContainsKey($shareKey)) {
                 $cachedError = $Script:SMBShareAccessCache[$shareKey]
                 Write-Log "[Invoke-SMBAccess] SKIPPED (cached failure): $operationDesc - Share '$shareKey' previously failed: $cachedError"
@@ -64100,6 +64126,14 @@ function Invoke-SMBAccess {
                     'Stop' { throw "SMB access skipped (previously failed): $cachedError" }
                     default { return $null }
                 }
+            }
+
+            # Held from here to the finally block, which releases it. Taken before the mount
+            # rather than after it: no call can nest before the block runs, and one place
+            # covers both mount paths below.
+            if ($shareKey) {
+                $Script:SMBHeldShares[$shareKey] = $operationDesc
+                $heldShare = $true
             }
 
             # Execute with PSDrive mounting (secure credential handling)
@@ -64243,8 +64277,10 @@ try {
             $errorMsg = "SMB access failed: $_"
             Write-Log "[Invoke-SMBAccess] $errorMsg"
 
-            # Cache the failed share to prevent repeated timeout attempts
-            if ($shareKey) {
+            # Cache the failed share to prevent repeated timeout attempts. Not from a run on
+            # an enclosing call's mount: the share is reachable there, and what failed was
+            # the block - caching it would turn every later access to the share away.
+            if ($shareKey -and -not $nestedRun) {
                 $Script:SMBShareAccessCache[$shareKey] = [string]$_
                 Write-Log "[Invoke-SMBAccess] Cached failed share: $shareKey"
             }
@@ -64264,8 +64300,13 @@ try {
             }
 
         } finally {
-            # Cleanup: Close any open progress bars left by the scriptblock (e.g., on exception)
-            if ($Script:LastProgressUpdate -and $Script:LastProgressUpdate.Count -gt 0) {
+            if ($heldShare) {
+                $Script:SMBHeldShares.Remove($shareKey)
+            }
+
+            # Cleanup: Close any open progress bars left by the scriptblock (e.g., on exception).
+            # Not from a run on an enclosing call's mount - the bars open then are that call's.
+            if (-not $nestedRun -and $Script:LastProgressUpdate -and $Script:LastProgressUpdate.Count -gt 0) {
                 foreach ($activityKey in @($Script:LastProgressUpdate.Keys)) {
                     try { Write-Progress -Activity $activityKey -Completed } catch { }
                 }
@@ -145105,7 +145146,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-2249"
+$Script:adPEASVersion = "2.7.0+20261017-2322"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
