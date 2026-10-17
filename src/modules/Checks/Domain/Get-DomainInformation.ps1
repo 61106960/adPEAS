@@ -109,39 +109,9 @@ function Get-DomainInformation {
                         Write-Log "[Get-DomainInformation] NetBIOS name fallback (domain object name/DNS label): $NetBIOSName"
                     }
 
-                    # Kerberos Policy
-                    $MaxTicketAge = $null
-                    $MaxRenewAge = $null
-
-                    # The interval attributes are negative 100ns units, so the sign goes
-                    # away before the TimeSpan - but [Math]::Abs throws on
-                    # [Int64]::MinValue, the sentinel these attributes use for "never",
-                    # and there is no positive Int64 to return. The throw would land in
-                    # the catch below and take the rest of this block with it: the PDC
-                    # role owner and the NetBIOS fallback, with nothing in the report to
-                    # say why. One comparison each.
-                    if ($DomainObject.maxTicketAge) {
-                        $TicketAgeRaw = [Int64]$DomainObject.maxTicketAge
-                        if ($TicketAgeRaw -ne [Int64]::MinValue) {
-                            $MaxTicketAge = [TimeSpan]::FromTicks([Math]::Abs($TicketAgeRaw))
-                        } else {
-                            Write-Log "[Get-DomainInformation] maxTicketAge is the never sentinel - no ticket lifetime to report"
-                        }
-                    }
-
-                    if ($DomainObject.maxRenewAge) {
-                        $RenewAgeRaw = [Int64]$DomainObject.maxRenewAge
-                        if ($RenewAgeRaw -ne [Int64]::MinValue) {
-                            $MaxRenewAge = [TimeSpan]::FromTicks([Math]::Abs($RenewAgeRaw))
-                        } else {
-                            Write-Log "[Get-DomainInformation] maxRenewAge is the never sentinel - no renewal window to report"
-                        }
-                    }
-
-                    $KerberosPolicy = @{
-                        MaxTicketAge = $MaxTicketAge
-                        MaxRenewAge = $MaxRenewAge
-                    }
+                    # The Kerberos policy is not read here: maxTicketAge and maxRenewAge
+                    # belong to class Domain-Policy, not to the domain object, which never
+                    # carries them. Get-DomainKerberosPolicy reads it from SYSVOL below.
 
                     $PdcFSMO = $DomainObject.fSMORoleOwner
                 }
@@ -463,46 +433,65 @@ function Get-DomainInformation {
             # ===================================================================
             Show-SubHeader "Analyzing Kerberos policy..." -ObjectType "KerberosPolicy"
 
-            # Build Kerberos policy values.
-            #
-            # Not "the default" until something was read. These two lines used to carry
-            # the Microsoft defaults before any query had run, and $KerberosPolicy is
-            # $null whenever the domain object could not be read at all - so a domain
-            # nobody had looked at was reported as having 10 hours and 7 days, in the
-            # same words as a domain that really does.
-            $maxTicketAgeText = "Unknown - the domain Kerberos policy could not be read"
-            $maxRenewalAgeText = $maxTicketAgeText
-
-            # And the values are assessed now. Microsoft's defaults are 10 hours and 7
-            # days; above them a stolen TGT keeps working for longer, which is the whole
-            # of what these two settings decide.
-            $ticketLifetimeVerdict = $null
-
-            if ($KerberosPolicy -and $KerberosPolicy.MaxTicketAge) {
-                $TicketAgeHours = [Math]::Round($KerberosPolicy.MaxTicketAge.TotalHours, 1)
-                $maxTicketAgeText = "$TicketAgeHours hours"
-                if ($TicketAgeHours -eq 10) {
-                    $maxTicketAgeText += " (default)"
-                } elseif ($TicketAgeHours -gt 10) {
-                    $ticketLifetimeVerdict = "EXTENDED - a ticket lives $TicketAgeHours hours instead of the default 10"
-                }
+            # Build Kerberos policy values, from the [Kerberos Policy] section of the
+            # domain-linked GPOs (Get-DomainKerberosPolicy). Not "the default" until
+            # something was read: an unread policy is Unknown, and a policy no GPO sets is
+            # said to be the Windows default, with that reason.
+            $kerberosConnection = @{}
+            foreach ($key in @('Domain', 'Server', 'Credential')) {
+                if ($PSBoundParameters.ContainsKey($key)) { $kerberosConnection[$key] = $PSBoundParameters[$key] }
             }
-            if ($KerberosPolicy -and $KerberosPolicy.MaxRenewAge) {
-                $RenewAgeDays = [Math]::Round($KerberosPolicy.MaxRenewAge.TotalDays, 1)
-                $maxRenewalAgeText = "$RenewAgeDays days"
-                if ($RenewAgeDays -eq 7) {
-                    $maxRenewalAgeText += " (default)"
-                } elseif ($RenewAgeDays -gt 7) {
-                    # Both widened: one sentence, because the renewal window is the
-                    # outer bound and reporting them separately says the same thing
-                    # twice.
-                    $renewVerdict = "EXTENDED - a ticket can be renewed for $RenewAgeDays days instead of the default 7"
-                    $ticketLifetimeVerdict = if ($ticketLifetimeVerdict) {
-                        $ticketLifetimeVerdict + ", and renewed for $RenewAgeDays days instead of 7"
-                    } else {
-                        $renewVerdict
-                    }
+            $KerberosPolicy = Get-DomainKerberosPolicy -ConnectionParams $kerberosConnection
+
+            # Unit, Windows default, and the clause the verdict uses for each setting.
+            # 0 is "never expires" for the two ticket lifetimes (Microsoft's policy
+            # reference); for the renewal window and the clock skew it is just a number.
+            $kerberosSettings = @(
+                @{ Name = 'MaxTicketAge';  Unit = 'hours';   Default = 10
+                   Clause = 'a ticket-granting ticket lives {0} hours instead of the default 10'
+                   NeverClause = 'a ticket-granting ticket never expires' }
+                @{ Name = 'MaxRenewAge';   Unit = 'days';    Default = 7
+                   Clause = 'a ticket can be renewed for {0} days instead of 7'; NeverClause = $null }
+                @{ Name = 'MaxServiceAge'; Unit = 'minutes'; Default = 600
+                   Clause = 'a service ticket lives {0} minutes instead of 600'
+                   NeverClause = 'a service ticket never expires' }
+                @{ Name = 'MaxClockSkew';  Unit = 'minutes'; Default = 5
+                   Clause = 'a clock {0} minutes off is accepted instead of 5'; NeverClause = $null }
+            )
+            $kerberosTexts = @{}
+            $verdictClauses = @()
+            foreach ($setting in $kerberosSettings) {
+                if ($null -eq $KerberosPolicy) {
+                    $kerberosTexts[$setting.Name] = 'Unknown - the Kerberos policy in SYSVOL could not be read'
+                    continue
                 }
+                $entry = $KerberosPolicy[$setting.Name]
+                if ($null -eq $entry -or $null -eq $entry.Value) {
+                    $kerberosTexts[$setting.Name] = "$($setting.Default) $($setting.Unit) (default) - no domain-linked GPO sets it"
+                    continue
+                }
+                $value = [int]$entry.Value
+                if ($value -eq 0 -and $setting.NeverClause) {
+                    $kerberosTexts[$setting.Name] = "0 - never expires (set by $($entry.Source))"
+                    $verdictClauses += $setting.NeverClause
+                    continue
+                }
+                $kerberosTexts[$setting.Name] = if ($value -eq $setting.Default) {
+                    "$value $($setting.Unit) (default, set by $($entry.Source))"
+                } else {
+                    "$value $($setting.Unit) (set by $($entry.Source))"
+                }
+                if ($value -gt $setting.Default) { $verdictClauses += ($setting.Clause -f $value) }
+            }
+            $maxTicketAgeText = $kerberosTexts['MaxTicketAge']
+            $maxRenewalAgeText = $kerberosTexts['MaxRenewAge']
+
+            # Above the defaults a stolen ticket keeps working for longer, which is the
+            # whole of what these settings decide. One sentence for all of them: the
+            # renewal window is the outer bound, and separate rows say the same thing.
+            $ticketLifetimeVerdict = $null
+            if (@($verdictClauses).Count -gt 0) {
+                $ticketLifetimeVerdict = 'EXTENDED - ' + (@($verdictClauses) -join ', and ')
             }
 
             # Query DC current time from RootDSE (direct LdapConnection query, not via Invoke-LDAPSearch
@@ -541,6 +530,8 @@ function Get-DomainInformation {
             $kerberosObj = [PSCustomObject]@{
                 maxTicketAgeTGT = $maxTicketAgeText
                 maxRenewalAge = $maxRenewalAgeText
+                maxServiceTicketAge = $kerberosTexts['MaxServiceAge']
+                maxClockSkew = $kerberosTexts['MaxClockSkew']
             }
 
             # Add DC time if available
@@ -760,5 +751,112 @@ function Get-DomainInformation {
 
     end {
         Write-Log "[Get-DomainInformation] Domain enumeration completed"
+    }
+}
+
+<#
+.SYNOPSIS
+    The domain's Kerberos policy, read where Group Policy keeps it.
+
+.DESCRIPTION
+    The Kerberos policy is the [Kerberos Policy] section of GptTmpl.inf in a GPO linked to
+    the domain - MaxTicketAge in hours, MaxRenewAge in days, MaxServiceAge and MaxClockSkew
+    in minutes - and the domain controllers take it from there and from nowhere else. The
+    check used to read maxTicketAge and maxRenewAge from the domain object; per the schema
+    those attributes belong to class Domain-Policy, not to the domain, so the row always
+    said Unknown and KERBEROS_TICKET_LIFETIME_EXTENDED could never fire.
+
+    Per setting, the value comes from the highest-ranked domain-linked GPO that sets it: an
+    enforced link before the others, then link order. None setting it is the Windows
+    default. A policy linked anywhere else does not count; the domain controllers ignore
+    Kerberos policy that is not linked to the domain.
+
+.OUTPUTS
+    $null when the GPOs, their links or SYSVOL could not be read. Otherwise a hashtable:
+    setting name -> @{ Value = [int] or $null; Source = GPO display name or $null }.
+#>
+function Get-DomainKerberosPolicy {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    $settingNames = @('MaxTicketAge', 'MaxRenewAge', 'MaxServiceAge', 'MaxClockSkew')
+
+    try {
+        $gpoByGuid = @{}
+        foreach ($gpo in @(Get-DomainGPO @ConnectionParams)) {
+            if ($gpo.Name) { $gpoByGuid[([string]$gpo.Name).ToUpper()] = $gpo }
+        }
+        $linkage = Get-GPOLinkage
+        if ($null -eq $linkage) {
+            Write-Log "[Get-DomainKerberosPolicy] GPO linkage could not be resolved"
+            return $null
+        }
+
+        # The candidates: every GPO with an active link on the domain object, ranked.
+        $candidates = @()
+        foreach ($guid in @($linkage.Keys)) {
+            $domainLinks = @(@($linkage[$guid]) | Where-Object { $_ -and $_.Scope -eq 'Domain' -and -not $_.IsDisabled })
+            if ($domainLinks.Count -eq 0) { continue }
+            $best = @($domainLinks | ForEach-Object {
+                [PSCustomObject]@{
+                    Rank  = $(if ($_.IsEnforced -eq $true) { 0 } else { 1 })
+                    Order = $(if ($_.LinkOrder) { [int]$_.LinkOrder } else { 999 })
+                }
+            } | Sort-Object Rank, Order)[0]
+            $name = if ($gpoByGuid.ContainsKey(([string]$guid).ToUpper())) { [string]$gpoByGuid[([string]$guid).ToUpper()].DisplayName } else { [string]$guid }
+            $candidates += [PSCustomObject]@{ Guid = ([string]$guid).ToUpper(); Name = $name; Rank = $best.Rank; Order = $best.Order }
+        }
+
+        # The [Kerberos Policy] section of each candidate's GptTmpl.inf. Handed out through
+        # a script variable because Invoke-SMBAccess runs the block in a scope of its own,
+        # and cleared in the finally below.
+        $Script:KerberosPolicySections = @{}
+        $Script:KerberosPolicySysvolRead = $false
+        $candidateGuids = @($candidates | ForEach-Object { $_.Guid })
+        Invoke-SMBAccess -Description "Reading the Kerberos policy from SYSVOL" -ScriptBlock {
+            foreach ($file in @(Get-CachedSYSVOLFiles -Filter 'GptTmpl.inf')) {
+                if (-not $file -or "$($file.FullName)" -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+                $fileGuid = $Matches[1].ToUpper()
+                if ($candidateGuids -notcontains $fileGuid) { continue }
+                $content = Get-CachedSYSVOLContent -Path $file.FullName
+                if ($null -eq $content) { continue }
+                $values = @{}
+                $inSection = $false
+                foreach ($line in ([string]$content -split "`r?`n")) {
+                    $trimmed = $line.Trim()
+                    if ($trimmed -match '^\[(.+)\]$') { $inSection = ($Matches[1] -eq 'Kerberos Policy'); continue }
+                    if ($inSection -and $trimmed -match '^(\w+)\s*=\s*(-?\d+)\s*$') { $values[$Matches[1]] = [int]$Matches[2] }
+                }
+                $Script:KerberosPolicySections[$fileGuid] = $values
+            }
+            $Script:KerberosPolicySysvolRead = $true
+        }
+        if (-not $Script:KerberosPolicySysvolRead) {
+            Write-Log "[Get-DomainKerberosPolicy] SYSVOL could not be read"
+            return $null
+        }
+
+        $ranked = @($candidates | Sort-Object Rank, Order, Name)
+        $policy = @{}
+        foreach ($setting in $settingNames) {
+            $policy[$setting] = @{ Value = $null; Source = $null }
+            foreach ($candidate in $ranked) {
+                $section = $Script:KerberosPolicySections[$candidate.Guid]
+                if ($section -and $section.ContainsKey($setting)) {
+                    $policy[$setting] = @{ Value = [int]$section[$setting]; Source = $candidate.Name }
+                    break
+                }
+            }
+        }
+        return $policy
+    } catch {
+        Write-Log "[Get-DomainKerberosPolicy] Error: $_"
+        return $null
+    } finally {
+        $Script:KerberosPolicySections = $null
+        $Script:KerberosPolicySysvolRead = $null
     }
 }

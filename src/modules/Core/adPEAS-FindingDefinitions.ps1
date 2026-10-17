@@ -6838,7 +6838,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "Kerberos Ticket Lifetime Extended Beyond the Default"
         Risk = "Hint"
         BaseScore = 25
-        Description = "The domain grants Kerberos tickets a longer life than the Microsoft default of 10 hours, or allows them to be renewed for longer than the default 7 days. Those two numbers are the whole of what decides how long a stolen ticket keeps working: a TGT taken out of LSASS, or forged with the krbtgt key, is accepted until it expires, and no password change and no account disable shortens that. Both values were read and printed by adPEAS before this write-up existed, with nothing said about them either way."
+        Description = "The domain's Kerberos policy is wider than the Microsoft defaults: a ticket-granting ticket lives longer than 10 hours or never expires, tickets can be renewed for longer than 7 days, a service ticket lives longer than 600 minutes or never expires, or a clock more than 5 minutes off is accepted. The lifetimes decide how long a stolen ticket keeps working: a TGT taken out of LSASS, or forged with the krbtgt key, is accepted until it expires, and no password change and no account disable shortens that. The policy is read from the [Kerberos Policy] section of the GPOs linked to the domain, which is where the domain controllers take it from; the row names the GPO that sets each value."
         Impact = @(
             "A stolen or forged TGT is accepted for as long as the lifetime allows"
             "Disabling the account or resetting its password does not invalidate a ticket already issued"
@@ -6851,14 +6851,14 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             "3. Renews it inside the renewal window, which costs one request and extends the hold"
         )
         Remediation = @(
-            "Set the maximum lifetime for user tickets back to 10 hours and the renewal lifetime to 7 days"
-            "Both live in Default Domain Policy under Computer Configuration -> Policies -> Windows Settings -> Security Settings -> Account Policies -> Kerberos Policy"
+            "Set the maximum lifetime for user tickets back to 10 hours, the renewal lifetime to 7 days, the service ticket lifetime to 600 minutes and the clock tolerance to 5 minutes"
+            "They live in Default Domain Policy under Computer Configuration -> Policies -> Windows Settings -> Security Settings -> Account Policies -> Kerberos Policy; the row names the GPO that actually sets each value"
             "A longer lifetime is sometimes set for an application that cannot re-authenticate; the fix there belongs in the application, not in the domain policy"
         )
         RemediationCommands = @(
             @{
-                Description = "Read the two values as the directory holds them (negative 100ns intervals)"
-                Command = "Get-ADObject -Identity (Get-ADDomain).DistinguishedName -Properties maxTicketAge,maxRenewAge | Select-Object maxTicketAge,maxRenewAge"
+                Description = "Read the values where Group Policy keeps them - the Default Domain Policy's GptTmpl.inf (another domain-linked GPO may override them)"
+                Command = "Get-Content '\\domain.com\SYSVOL\domain.com\Policies\{31B2F340-016D-11D2-945F-00C04FB984F9}\MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf' | Select-String -Pattern 'MaxTicketAge|MaxRenewAge|MaxServiceAge|MaxClockSkew'"
             }
             @{
                 Description = "The policy path that sets them"

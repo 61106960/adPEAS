@@ -99,6 +99,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   several ACEs is reported once with all of its rights; the check used to keep the first
   ACE the descriptor returned, and the descriptor re-sorts them on load.
 
+- **The Kerberos policy is read from the GPOs that set it.** `Get-DomainInformation` read
+  the ticket lifetimes from the domain object, which does not carry them - so the row
+  always said "Unknown" and the card for widened lifetimes could never appear. They now
+  come from the `[Kerberos Policy]` section of the GPOs linked to the domain, per setting
+  from the highest-ranked GPO that sets it, with the GPO named; the service ticket
+  lifetime and the tolerated clock skew are shown beside them, a lifetime of 0 is said to
+  never expire, and every widened value is named in the verdict.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
