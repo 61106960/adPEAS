@@ -23,6 +23,11 @@
       Present       - value exists at all (used for REG_SD allow-lists)
       UrlNotHttps   - REG_SZ value starts with http:// (cleartext, not https)
 
+    StoredAsString = $true marks a setting that Windows keeps as a REG_SZ holding a number
+    (AutoAdminLogon "1"). Equals then also reads the number out of the string. Every other
+    entry is a DWORD setting, and there a string is not the setting: a REG_SZ "0" written
+    to NoLmHash is not the dangerous DWORD 0, so the flag stays off for them.
+
     Hive/Key matching: the Key field holds the path WITHOUT the hive prefix. The hive is
     derived from the source (Machine\Registry.pol -> HKLM, User\Registry.pol -> HKCU) or
     read explicitly from Registry.xml. Key comparison is case-insensitive with leading
@@ -92,6 +97,10 @@ $Script:DangerousRegistryKeys = @(
         ValueName         = 'AutoAdminLogon'
         Match             = 'Equals'
         MatchValue        = 1
+        # Microsoft documents the value as a String value with the data 1, and all three
+        # parsers put a REG_SZ into ValueString - so the rule compared only ValueInt and
+        # never fired on the value as Windows stores it.
+        StoredAsString    = $true
         Severity          = 'High'
         ConsoleClass      = 'Finding'
         FindingId         = 'REGISTRY_AUTOLOGON'

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 09:06:33
-    Version: 2.7.0+20261017-0906
+    Build: 2026-10-17 11:34:04
+    Version: 2.7.0+20261017-1134
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -3617,6 +3617,11 @@ function Compare-UserRightAssignment {
       Present       - value exists at all (used for REG_SD allow-lists)
       UrlNotHttps   - REG_SZ value starts with http:// (cleartext, not https)
 
+    StoredAsString = $true marks a setting that Windows keeps as a REG_SZ holding a number
+    (AutoAdminLogon "1"). Equals then also reads the number out of the string. Every other
+    entry is a DWORD setting, and there a string is not the setting: a REG_SZ "0" written
+    to NoLmHash is not the dangerous DWORD 0, so the flag stays off for them.
+
     Hive/Key matching: the Key field holds the path WITHOUT the hive prefix. The hive is
     derived from the source (Machine\Registry.pol -> HKLM, User\Registry.pol -> HKCU) or
     read explicitly from Registry.xml. Key comparison is case-insensitive with leading
@@ -3686,6 +3691,10 @@ $Script:DangerousRegistryKeys = @(
         ValueName         = 'AutoAdminLogon'
         Match             = 'Equals'
         MatchValue        = 1
+        # Microsoft documents the value as a String value with the data 1, and all three
+        # parsers put a REG_SZ into ValueString - so the rule compared only ValueInt and
+        # never fired on the value as Windows stores it.
+        StoredAsString    = $true
         Severity          = 'High'
         ConsoleClass      = 'Finding'
         FindingId         = 'REGISTRY_AUTOLOGON'
@@ -115884,7 +115893,16 @@ function Test-DangerousRegistryRecord {
                 $isMatch = $true
             }
             'Equals' {
-                if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -eq [int64]$entry.MatchValue) }
+                if ($null -ne $Record.ValueInt) {
+                    $isMatch = ([int64]$Record.ValueInt -eq [int64]$entry.MatchValue)
+                } elseif ($entry.StoredAsString -and $null -ne $Record.ValueString) {
+                    # A setting Windows keeps as a REG_SZ number (AutoAdminLogon "1"). Only
+                    # entries that say so read a string; see StoredAsString in the table.
+                    $stringNumber = [int64]0
+                    if ([int64]::TryParse([string]$Record.ValueString, [ref]$stringNumber)) {
+                        $isMatch = ($stringNumber -eq [int64]$entry.MatchValue)
+                    }
+                }
             }
             'LessOrEqual' {
                 if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -le [int64]$entry.MatchValue) }
@@ -138770,7 +138788,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-0906"
+$Script:adPEASVersion = "2.7.0+20261017-1134"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

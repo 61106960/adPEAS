@@ -150,6 +150,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   They print "Error during check - ... could not be evaluated" now, as the other checks
   do.
 
+- **`Get-GPORegistrySettings` reports AutoAdminLogon as Windows stores it.** The value is
+  a String holding `1`, and the rule compared numbers only, so a GPO that switches on
+  automatic logon the documented way was never reported. The rule reads the number out of
+  the string now; the DWORD rules still ignore a string, because Windows does too.
+
 - **An OU delegation with `NoPropagateInherit` says how far it reaches.** Such an ACE
   stops one level down, at the direct children of the OU, and it read like a delegation
   on the whole subtree. Its rights now carry "(direct children only)", or "(this object

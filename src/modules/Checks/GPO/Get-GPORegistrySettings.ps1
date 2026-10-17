@@ -381,7 +381,16 @@ function Test-DangerousRegistryRecord {
                 $isMatch = $true
             }
             'Equals' {
-                if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -eq [int64]$entry.MatchValue) }
+                if ($null -ne $Record.ValueInt) {
+                    $isMatch = ([int64]$Record.ValueInt -eq [int64]$entry.MatchValue)
+                } elseif ($entry.StoredAsString -and $null -ne $Record.ValueString) {
+                    # A setting Windows keeps as a REG_SZ number (AutoAdminLogon "1"). Only
+                    # entries that say so read a string; see StoredAsString in the table.
+                    $stringNumber = [int64]0
+                    if ([int64]::TryParse([string]$Record.ValueString, [ref]$stringNumber)) {
+                        $isMatch = ($stringNumber -eq [int64]$entry.MatchValue)
+                    }
+                }
             }
             'LessOrEqual' {
                 if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -le [int64]$entry.MatchValue) }

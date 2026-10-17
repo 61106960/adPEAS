@@ -1598,6 +1598,7 @@ $Script:DangerousRegistryKeys = @(
 	    ValueName         = 'AutoAdminLogon'
 	    Match             = 'Equals'
 	    MatchValue        = 1
+	    StoredAsString    = $true
 	    Severity          = 'High'
 	    ConsoleClass      = 'Finding'
 	    FindingId         = 'REGISTRY_AUTOLOGON'
@@ -69812,7 +69813,14 @@ function Test-DangerousRegistryRecord {
 	            $isMatch = $true
 	        }
 	        'Equals' {
-	            if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -eq [int64]$entry.MatchValue) }
+	            if ($null -ne $Record.ValueInt) {
+	                $isMatch = ([int64]$Record.ValueInt -eq [int64]$entry.MatchValue)
+	            } elseif ($entry.StoredAsString -and $null -ne $Record.ValueString) {
+	                $stringNumber = [int64]0
+	                if ([int64]::TryParse([string]$Record.ValueString, [ref]$stringNumber)) {
+	                    $isMatch = ($stringNumber -eq [int64]$entry.MatchValue)
+	                }
+	            }
 	        }
 	        'LessOrEqual' {
 	            if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -le [int64]$entry.MatchValue) }
@@ -86002,7 +86010,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-0906"
+$Script:adPEASVersion = "2.7.0+20261017-1134"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
