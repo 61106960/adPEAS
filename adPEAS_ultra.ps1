@@ -6286,6 +6286,60 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	        @{ Attribute = 'GPOOwner'; Severity = 'Finding' }
 	    )
 	}
+	'GPO_SYSVOL_GPT_MISSING' = @{
+	    Title = "GPO Without Its Folder or gpt.ini in SYSVOL"
+	    Risk = "Hint"
+	    BaseScore = 30
+	    Description = "A Group Policy object is two halves: the object in the directory and its folder in SYSVOL, Policies\{GUID}, which holds gpt.ini and the policy content. For these policies the folder, or the gpt.ini in it, is not there on the domain controller adPEAS read SYSVOL from. Before a computer applies any policy it opens the gpt.ini of every policy in its scope (MS-GPOL, GPO Search), and a failure there ends the whole run: Event 1058 reads 'Group Policy processing aborted'. A linked policy without its gpt.ini therefore stops Group Policy for the computers and users it reaches, the settings of every other policy included, whenever they read SYSVOL from such a domain controller. An unlinked one applies nothing and is listed as a note. The usual causes are SYSVOL replication that has not completed, and a folder deleted by hand."
+	    Impact = @(
+	        "Computers and users in the scope of a linked policy apply no Group Policy at all - security baselines, audit and firewall settings stay as they were or never arrive"
+	        "Where only some domain controllers lack the folder, the outcome depends on which one a computer reads SYSVOL from, and can change from one start to the next"
+	        "Group Policy Management shows the policy as usual, because its directory half is intact"
+	    )
+	    Remediation = @(
+	        "Look at the policy on every domain controller - the Status tab of the domain in Group Policy Management (Group Policy Infrastructure Status) compares the directory and SYSVOL halves across them"
+	        "Where the folder exists on other domain controllers, repair SYSVOL replication rather than copying files by hand"
+	        "Where it is gone on every domain controller, restore the policy from a Group Policy Management backup, or delete the policy object and recreate it; for the two default policies Microsoft provides dcgpofix"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show which domain controllers hold the gpt.ini of one policy"
+	            Command = 'Get-ADDomainController -Filter * | ForEach-Object { [PSCustomObject]@{ DC = $_.HostName; GptIni = Test-Path "\\$($_.HostName)\SYSVOL\<domain>\Policies\{<GUID>}\gpt.ini" } }'
+	        }
+	        @{
+	            Description = "Show the SYSVOL replication backlog between two domain controllers (DFS Replication)"
+	            Command = 'Get-DfsrBacklog -GroupName "Domain System Volume" -FolderName "SYSVOL Share" -SourceComputerName "<DC1>" -DestinationComputerName "<DC2>"'
+	        }
+	    )
+	    References = @(
+	        @{ Title = "MS-GPOL: GPO Search"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/5c7ecdad-469f-4b30-94b3-450b7fff868f" }
+	        @{ Title = "Userenv errors occur and events are logged (Event ID 1058)"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/userenv-errors-occur-events-are-logged" }
+	    )
+	}
+	'GPO_SYSVOL_FOLDER_ORPHANED' = @{
+	    Title = "SYSVOL Folder Without a GPO"
+	    Risk = "Note"
+	    BaseScore = 10
+	    Description = "A folder in SYSVOL\Policies is named like a policy GUID, and the account adPEAS ran as found no policy object of that GUID in the directory. Usually the folder is left over from a policy whose directory object was deleted without it - by hand, by a deletion that did not complete, or in a replication conflict - and nothing applies it. It can also belong to a policy this account may not read: security filtering that removes the read right of Authenticated Users hides the object, and its folder then looks the same."
+	    Impact = @(
+	        "Nothing applies an orphaned folder, but its content - scripts, Registry.pol, Groups.xml - stays where every domain user may read it, and may still carry credentials or internal paths"
+	        "If the policy object is restored - from the Active Directory Recycle Bin, for example - it uses this folder again, with whatever the folder holds by then"
+	    )
+	    Remediation = @(
+	        "Confirm with an account that can read every policy that no policy object has this GUID"
+	        "Look through the folder for credentials and scripts before removing it"
+	        "Delete the folder on one domain controller and let SYSVOL replication remove it from the others"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "List the folders in SYSVOL\Policies that no policy object has (GroupPolicy module)"
+	            Command = '$ids = (Get-GPO -All).Id | ForEach-Object { "{$_}" }; Get-ChildItem "\\<domain>\SYSVOL\<domain>\Policies" -Directory | Where-Object { $_.Name -match "^\{" -and $_.Name -notin $ids }'
+	        }
+	    )
+	    References = @(
+	        @{ Title = "MS-GPOL: Group Policy Protocol"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/" }
+	    )
+	}
 	'DOMAIN_ROOT_GPLINK_WRITE' = @{
 	    Title = "Write Access to the GPO Link of the Domain Object"
 	    Risk = "Finding"
@@ -25563,6 +25617,8 @@ function Clear-SessionState {
 	$Script:_gpoSysvolRows = $null
 	$Script:_gpoSysvolUnread = $null
 	$Script:_gpoSysvolScanned = $null
+	$Script:_gpoSysvolMissing = $null
+	$Script:_gpoSysvolOrphans = $null
 	$Script:LAPSSchemaInfo = $null
 	$Script:CredentialAccountCache = $null
 	$Script:PrivilegedAccountFilterCache = $null
@@ -72318,12 +72374,36 @@ function Get-GPOPermissions {
 	        $Script:_gpoSysvolRows = @{}
 	        $Script:_gpoSysvolUnread = @()
 	        $Script:_gpoSysvolScanned = $false
+	        $Script:_gpoSysvolMissing = @()
+	        $Script:_gpoSysvolOrphans = @()
 	        Invoke-SMBAccess -Description "Reading the NTFS permissions of the GPO folders in SYSVOL" -ScriptBlock {
 	            $policiesPath = "\\$($Script:LDAPContext.Server)\SYSVOL\$($Script:LDAPContext.Domain)\Policies"
 	            if (-not (Test-Path $policiesPath)) {
 	                return
 	            }
 	            $Script:_gpoSysvolScanned = $true
+	            $policyFolders = $null
+	            $folderListErrors = @()
+	            $listedFolders = @(Get-ChildItem -Force -LiteralPath $policiesPath -Directory -ErrorAction SilentlyContinue -ErrorVariable +folderListErrors)
+	            if (@($folderListErrors).Count -eq 0) {
+	                $policyFolders = @{}
+	                foreach ($listedFolder in $listedFolders) { $policyFolders[[string]$listedFolder.Name] = $true }
+	            } else {
+	            }
+	            $gptIniGUIDs = $null
+	            $gptIniUnknown = @{}
+	            $gptIniFiles = @(Get-CachedSYSVOLFiles -Filter 'gpt.ini')
+	            $listingCoverage = Get-SYSVOLCacheCoverage
+	            if ($null -ne $listingCoverage -and $listingCoverage.Reachable) {
+	                $gptIniGUIDs = @{}
+	                foreach ($gptIniFile in $gptIniFiles) {
+	                    if ([string]$gptIniFile.FullName -match '(?i)\\Policies\\(\{[0-9A-F-]+\})\\gpt\.ini$') { $gptIniGUIDs[$Matches[1]] = $true }
+	                }
+	                foreach ($skippedPath in @($listingCoverage.SkippedPaths)) {
+	                    if ("$skippedPath" -match '(?i)\\Policies\\?$') { $gptIniGUIDs = $null; break }
+	                    if ("$skippedPath" -match '(?i)\\Policies\\(\{[0-9A-F-]+\})\\?$') { $gptIniUnknown[$Matches[1]] = $true }
+	                }
+	            }
 	            $sysvolTotal = @($allGPOs).Count
 	            $sysvolIndex = 0
 	            foreach ($sysvolGPO in $allGPOs) {
@@ -72334,6 +72414,12 @@ function Get-GPOPermissions {
 	                $sysvolGUID = [string]$sysvolGPO.Name
 	                if (-not $sysvolGUID) { continue }
 	                $gpoFolder = Join-Path $policiesPath $sysvolGUID
+	                $sysvolPathAttr = [string]$sysvolGPO.gPCFileSysPath
+	                $folderExpected = (-not $sysvolPathAttr) -or ($sysvolPathAttr.TrimEnd('\') -match "(?i)\\Policies\\$([regex]::Escape($sysvolGUID))$")
+	                if ($folderExpected -and $null -ne $policyFolders -and -not $policyFolders.ContainsKey($sysvolGUID)) {
+	                    $Script:_gpoSysvolMissing += [PSCustomObject]@{ GPO = $sysvolGPO; What = 'no folder' }
+	                    continue
+	                }
 	                $rules = Get-DirectoryAccessRules -Path $gpoFolder
 	                if ($null -eq $rules) {
 	                    $Script:_gpoSysvolUnread += ([string]$sysvolGPO.DisplayName)
@@ -72344,6 +72430,20 @@ function Get-GPOPermissions {
 	                    ForEach-Object { $_.Row })
 	                if (@($folderRows).Count -gt 0) {
 	                    $Script:_gpoSysvolRows[$sysvolGUID] = @($folderRows)
+	                }
+	                if ($folderExpected -and $null -ne $gptIniGUIDs -and
+	                    -not $gptIniGUIDs.ContainsKey($sysvolGUID) -and -not $gptIniUnknown.ContainsKey($sysvolGUID)) {
+	                    $Script:_gpoSysvolMissing += [PSCustomObject]@{ GPO = $sysvolGPO; What = 'no gpt.ini' }
+	                }
+	            }
+	            if ($null -ne $policyFolders) {
+	                $knownGUIDs = @{}
+	                foreach ($knownGPO in $allGPOs) { if ($knownGPO.Name) { $knownGUIDs[[string]$knownGPO.Name] = $true } }
+	                foreach ($folderName in @($policyFolders.Keys | Sort-Object)) {
+	                    if ($folderName -match '^\{[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\}$' -and
+	                        -not $knownGUIDs.ContainsKey($folderName)) {
+	                        $Script:_gpoSysvolOrphans += $folderName
+	                    }
 	                }
 	            }
 	            if ($sysvolTotal -gt $Script:ProgressThreshold) {
@@ -72412,6 +72512,41 @@ function Get-GPOPermissions {
 	                Show-Line "  ... and $(@($Script:_gpoSysvolUnread).Count - 10) more" -Class Hint
 	            }
 	            $sysvolCoverageIncomplete = $true
+	        }
+	        if (@($Script:_gpoSysvolMissing).Count -gt 0) {
+	            $missingLines = @()
+	            $missingReachesAnybody = $false
+	            foreach ($missing in @($Script:_gpoSysvolMissing)) {
+	                $missingGUID = [string]$missing.GPO.Name
+	                $linkState = 'links unknown'
+	                if ($null -ne $gpoLinkage) {
+	                    $linkState = 'not linked'
+	                    if ($gpoLinkage.ContainsKey($missingGUID) -and
+	                        @($gpoLinkage[$missingGUID] | Where-Object { $_.LinkStatus -ne 'Disabled' }).Count -gt 0) {
+	                        $linkState = 'linked'
+	                    }
+	                }
+	                if ($linkState -ne 'not linked') { $missingReachesAnybody = $true }
+	                $missingLines += "  $($missing.GPO.DisplayName) $missingGUID - $($missing.What), $linkState"
+	            }
+	            $missingClass = 'Note'
+	            if ($missingReachesAnybody) { $missingClass = 'Hint' }
+	            Show-Line "$(@($missingLines).Count) GPO(s) have no folder or no gpt.ini in SYSVOL on $($Script:LDAPContext.Server) - Group Policy processing aborts where they are linked" -Class $missingClass -FindingId 'GPO_SYSVOL_GPT_MISSING'
+	            foreach ($missingLine in (@($missingLines) | Select-Object -First 10)) {
+	                Show-Line $missingLine -Class $missingClass
+	            }
+	            if (@($missingLines).Count -gt 10) {
+	                Show-Line "  ... and $(@($missingLines).Count - 10) more" -Class $missingClass
+	            }
+	        }
+	        if (@($Script:_gpoSysvolOrphans).Count -gt 0) {
+	            Show-Line "$(@($Script:_gpoSysvolOrphans).Count) folder(s) in SYSVOL\Policies on $($Script:LDAPContext.Server) belong to no GPO this account can read - deleted, or hidden from it" -Class Note -FindingId 'GPO_SYSVOL_FOLDER_ORPHANED'
+	            foreach ($orphanFolder in (@($Script:_gpoSysvolOrphans) | Select-Object -First 10)) {
+	                Show-Line "  $orphanFolder" -Class Note
+	            }
+	            if (@($Script:_gpoSysvolOrphans).Count -gt 10) {
+	                Show-Line "  ... and $(@($Script:_gpoSysvolOrphans).Count - 10) more" -Class Note
+	            }
 	        }
 	        if (@($vulnerableGPOs).Count -gt 0) {
 	            $ownerOnlyCount = @($ownerOnlyGPOs.Keys).Count
@@ -90514,7 +90649,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-0000"
+$Script:adPEASVersion = "2.7.0+20261018-0013"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

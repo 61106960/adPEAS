@@ -2459,6 +2459,62 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
     }
 
+    'GPO_SYSVOL_GPT_MISSING' = @{
+        Title = "GPO Without Its Folder or gpt.ini in SYSVOL"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A Group Policy object is two halves: the object in the directory and its folder in SYSVOL, Policies\{GUID}, which holds gpt.ini and the policy content. For these policies the folder, or the gpt.ini in it, is not there on the domain controller adPEAS read SYSVOL from. Before a computer applies any policy it opens the gpt.ini of every policy in its scope (MS-GPOL, GPO Search), and a failure there ends the whole run: Event 1058 reads 'Group Policy processing aborted'. A linked policy without its gpt.ini therefore stops Group Policy for the computers and users it reaches, the settings of every other policy included, whenever they read SYSVOL from such a domain controller. An unlinked one applies nothing and is listed as a note. The usual causes are SYSVOL replication that has not completed, and a folder deleted by hand."
+        Impact = @(
+            "Computers and users in the scope of a linked policy apply no Group Policy at all - security baselines, audit and firewall settings stay as they were or never arrive"
+            "Where only some domain controllers lack the folder, the outcome depends on which one a computer reads SYSVOL from, and can change from one start to the next"
+            "Group Policy Management shows the policy as usual, because its directory half is intact"
+        )
+        Remediation = @(
+            "Look at the policy on every domain controller - the Status tab of the domain in Group Policy Management (Group Policy Infrastructure Status) compares the directory and SYSVOL halves across them"
+            "Where the folder exists on other domain controllers, repair SYSVOL replication rather than copying files by hand"
+            "Where it is gone on every domain controller, restore the policy from a Group Policy Management backup, or delete the policy object and recreate it; for the two default policies Microsoft provides dcgpofix"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show which domain controllers hold the gpt.ini of one policy"
+                Command = 'Get-ADDomainController -Filter * | ForEach-Object { [PSCustomObject]@{ DC = $_.HostName; GptIni = Test-Path "\\$($_.HostName)\SYSVOL\<domain>\Policies\{<GUID>}\gpt.ini" } }'
+            }
+            @{
+                Description = "Show the SYSVOL replication backlog between two domain controllers (DFS Replication)"
+                Command = 'Get-DfsrBacklog -GroupName "Domain System Volume" -FolderName "SYSVOL Share" -SourceComputerName "<DC1>" -DestinationComputerName "<DC2>"'
+            }
+        )
+        References = @(
+            @{ Title = "MS-GPOL: GPO Search"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/5c7ecdad-469f-4b30-94b3-450b7fff868f" }
+            @{ Title = "Userenv errors occur and events are logged (Event ID 1058)"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/userenv-errors-occur-events-are-logged" }
+        )
+    }
+
+    'GPO_SYSVOL_FOLDER_ORPHANED' = @{
+        Title = "SYSVOL Folder Without a GPO"
+        Risk = "Note"
+        BaseScore = 10
+        Description = "A folder in SYSVOL\Policies is named like a policy GUID, and the account adPEAS ran as found no policy object of that GUID in the directory. Usually the folder is left over from a policy whose directory object was deleted without it - by hand, by a deletion that did not complete, or in a replication conflict - and nothing applies it. It can also belong to a policy this account may not read: security filtering that removes the read right of Authenticated Users hides the object, and its folder then looks the same."
+        Impact = @(
+            "Nothing applies an orphaned folder, but its content - scripts, Registry.pol, Groups.xml - stays where every domain user may read it, and may still carry credentials or internal paths"
+            "If the policy object is restored - from the Active Directory Recycle Bin, for example - it uses this folder again, with whatever the folder holds by then"
+        )
+        Remediation = @(
+            "Confirm with an account that can read every policy that no policy object has this GUID"
+            "Look through the folder for credentials and scripts before removing it"
+            "Delete the folder on one domain controller and let SYSVOL replication remove it from the others"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the folders in SYSVOL\Policies that no policy object has (GroupPolicy module)"
+                Command = '$ids = (Get-GPO -All).Id | ForEach-Object { "{$_}" }; Get-ChildItem "\\<domain>\SYSVOL\<domain>\Policies" -Directory | Where-Object { $_.Name -match "^\{" -and $_.Name -notin $ids }'
+            }
+        )
+        References = @(
+            @{ Title = "MS-GPOL: Group Policy Protocol"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/" }
+        )
+    }
+
     'DOMAIN_ROOT_GPLINK_WRITE' = @{
         Title = "Write Access to the GPO Link of the Domain Object"
         Risk = "Finding"

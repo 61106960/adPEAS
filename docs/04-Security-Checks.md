@@ -1232,8 +1232,11 @@ separate question, answered by `GPOStatus`.
 **What it checks**:
 - Write permissions on GPO objects
 - Non-privileged accounts with GPO edit rights
+- Write access to each policy's folder in SYSVOL (`Policies\{GUID}`), the other half of a GPO
 - GPO linkage to sensitive OUs
 - Affected computer count (including Domain Controllers)
+- Policies whose folder or `gpt.ini` is missing in SYSVOL on the domain controller read - a hint when the policy is linked, because a client that cannot open the `gpt.ini` of a policy in its scope aborts Group Policy processing (Event 1058); a note when it is not. A folder that is there but could not be read is reported as such, not as missing
+- Folders in `SYSVOL\Policies` named for no policy object the account can read - left over from a deleted policy, or a policy hidden from the account by its security filtering (note)
 
 **Security Impact**: GPO modification enables code execution on all computers where the GPO is linked. An attacker with GPO write access can deploy malware domain-wide.
 

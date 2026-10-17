@@ -500,6 +500,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   *Unknown* where it could not be read whether the policy has one. Both are information
   and change no severity.
 
+- **`Get-GPOPermissions` tells a missing policy folder from an unreadable one, and names
+  orphaned folders.** A policy whose folder in SYSVOL does not exist used to be listed
+  among the folders that *could not be read*. It is now reported as what it is, together
+  with policies whose folder holds no `gpt.ini`: a client opens the `gpt.ini` of every
+  policy in its scope before it applies any, and Event 1058 says what a failure does -
+  "Group Policy processing aborted". A linked policy in that state is a hint (*GPO Without
+  Its Folder or gpt.ini in SYSVOL*), an unlinked one a note, and a policy whose links could
+  not be resolved counts as linked. Folders in `SYSVOL\Policies` named for no policy object
+  the scan account can read are listed as a note (*SYSVOL Folder Without a GPO*) - left
+  over from a deleted policy, or a policy hidden from the account. A policy whose
+  `gPCFileSysPath` points elsewhere is not expected to have the folder.
+
 - **The Restricted Admin card is a hint, as its row is.** The registry table lowered
   `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the
   card and the trigger on its row stayed a finding: the console printed the row yellow and
