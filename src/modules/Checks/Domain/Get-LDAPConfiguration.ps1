@@ -602,14 +602,14 @@ function Get-LDAPConfiguration {
                 # "every link disabled" apart. A policy that reaches no machine is never in
                 # force, however its settings read.
                 foreach ($gpoFinding in $gpoFindings) {
-                    if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain')) {
+                    if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain', 'Site')) {
                         $winsSomething = @($ldapSettings | Where-Object {
                             [object]::ReferenceEquals($settingWinners[$_.Property], $gpoFinding)
                         }).Count -gt 0
                         $gpoFinding._IsEffective = $winsSomething
                         $effectiveText = Get-GPOSettingPrecedenceText -Finding $gpoFinding -Setting $ldapSettings -Winner $settingWinners
                     } else {
-                        $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -eq 'OtherOU')
+                        $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -in @('OtherOU', 'Blocked'))
                         $effectiveText = Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
                             -IsEffective $gpoFinding._IsEffective -HasAnyLink $gpoFinding._HasAnyLink
                     }

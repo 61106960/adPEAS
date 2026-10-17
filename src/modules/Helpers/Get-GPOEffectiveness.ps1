@@ -178,13 +178,13 @@ function Get-GPOEffectiveStatus {
     precedence it never evaluated would be worse than one that says so.
 
 .PARAMETER Scope
-    The precedence scope the caller determined: DomainControllers, Domain, OtherOU,
-    NotLinked, or Unknown when the linkage could not be resolved. Anything else is treated
-    as Unknown rather than as NotLinked - see the default branch.
+    The precedence scope the caller determined: DomainControllers, Domain, Site, Blocked,
+    OtherOU, NotLinked, or Unknown when the linkage could not be resolved. Anything else is
+    treated as Unknown rather than as NotLinked - see the default branch.
 
 .PARAMETER IsEffective
-    Whether this GPO won its scope's precedence contest. Only consulted for the two scopes
-    that hold a contest, DomainControllers and Domain.
+    Whether this GPO won its scope's precedence contest. Only consulted for the three scopes
+    that hold a contest, DomainControllers, Domain and Site.
 
 .PARAMETER WinnerName
     Display name of the GPO that won, for the overridden case. Omitted when unknown.
@@ -238,8 +238,15 @@ function Get-GPOEffectiveSettingText {
             if ($IsEffective) { return 'Yes - wins precedence at the domain root' }
             return (Get-GPOOverriddenText -WinnerName $WinnerName -WinnerLinkOrder $WinnerLinkOrder)
         }
+        'Site' {
+            if ($IsEffective) { return 'Yes - wins precedence on its site' }
+            return (Get-GPOOverriddenText -WinnerName $WinnerName -WinnerLinkOrder $WinnerLinkOrder)
+        }
         'OtherOU' {
             return 'Yes - applies on its linked OUs; no precedence comparison there'
+        }
+        'Blocked' {
+            return 'Yes - applies below its links, but not on the domain controllers: inheritance is blocked between them and none of its links is enforced'
         }
         'NotLinked' {
             if ($HasAnyLink) { return 'No - every link is disabled' }
@@ -998,10 +1005,6 @@ function Get-GPODomainControllerReach {
             return 'Unknown - the domain controllers could not be read'
         }
 
-        $domainDN = [string]$Context.DomainDN
-        $blocked  = $Context.BlockedContainers
-        if ($null -eq $blocked) { $blocked = @{} }
-
         $reachingLabels = New-Object System.Collections.Generic.List[string]
         # Every domain controller a link reaches, for the security filtering below.
         $reachedDCs     = New-Object System.Collections.ArrayList
@@ -1009,51 +1012,20 @@ function Get-GPODomainControllerReach {
         $sawUnknownSite = $false
 
         foreach ($activeLink in $activeLinks) {
-            $linkDN = [string]$activeLink.DistinguishedName
-            $isEnforced = ($activeLink.IsEnforced -eq $true) -or ($activeLink.LinkStatus -eq 'Enforced')
-            $isSite = ($activeLink.Scope -eq 'Site') -or ($linkDN -match '(?i),CN=Sites,CN=Configuration,')
+            # The rules live in Get-GPOLinkDCReach, which the signing contest reads as well.
+            $linkReach = Get-GPOLinkDCReach -Link $activeLink -Context $Context
+            if ($linkReach.Blocked) { $sawBlocked = $true }
+            if ($linkReach.UnknownSite) { $sawUnknownSite = $true }
+            if (@($linkReach.Reached).Count -eq 0) { continue }
 
-            foreach ($dc in @($Context.DomainControllers)) {
-                # The containers above the domain controller, nearest first, up to the
-                # domain root - compared component by component, so an OU whose name only
-                # ends like the linked one is not mistaken for it.
-                $chain = @(Get-DNParentChain -DistinguishedName ([string]$dc.DistinguishedName) -StopAt $domainDN)
-
-                # The containers a link that is not enforced has to pass on its way down:
-                # for a link on a container, the ones strictly below it; for a site link,
-                # every one from the domain root down, because site policies are applied
-                # before the domain's.
-                $passes = @()
-                if ($isSite) {
-                    if ($null -eq $dc.SiteDN) { $sawUnknownSite = $true; continue }
-                    if (-not [string]::Equals([string]$dc.SiteDN, $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-                    $passes = $chain
-                } else {
-                    $linkIndex = -1
-                    for ($chainIndex = 0; $chainIndex -lt $chain.Count; $chainIndex++) {
-                        if ([string]::Equals($chain[$chainIndex], $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) {
-                            $linkIndex = $chainIndex
-                            break
-                        }
-                    }
-                    if ($linkIndex -lt 0) { continue }
-                    if ($linkIndex -gt 0) { $passes = @($chain[0..($linkIndex - 1)]) }
-                }
-
-                if (-not $isEnforced) {
-                    $blockedOnTheWay = @($passes | Where-Object { $blocked.ContainsKey($_.ToLowerInvariant()) })
-                    if ($blockedOnTheWay.Count -gt 0) { $sawBlocked = $true; continue }
-                }
-
-                $label = if ($isSite) {
-                    "site $(if ($activeLink.Name) { $activeLink.Name } else { $linkDN })"
-                } elseif ($domainDN -and [string]::Equals($linkDN, $domainDN, [System.StringComparison]::OrdinalIgnoreCase)) {
-                    'the domain root'
-                } else {
-                    $linkDN
-                }
-                if (-not $reachingLabels.Contains($label)) { $reachingLabels.Add($label) }
-                if (-not $reachedDCs.Contains($dc)) { [void]$reachedDCs.Add($dc) }
+            $label = switch ($linkReach.Kind) {
+                'Site'   { "site $(if ($activeLink.Name) { $activeLink.Name } else { [string]$activeLink.DistinguishedName })" }
+                'Domain' { 'the domain root' }
+                default  { [string]$activeLink.DistinguishedName }
+            }
+            if (-not $reachingLabels.Contains($label)) { $reachingLabels.Add($label) }
+            foreach ($hit in @($linkReach.Reached)) {
+                if (-not $reachedDCs.Contains($hit.DC)) { [void]$reachedDCs.Add($hit.DC) }
             }
         }
 
@@ -1133,35 +1105,150 @@ function Get-DNParentChain {
 
 <#
 .SYNOPSIS
+    The domain controllers one GPO link reaches, by the rules Group Policy applies.
+
+.DESCRIPTION
+    Shared by Get-GPODomainControllerReach and Get-GPODCPrecedence (coverage item A11), so
+    the reach row and the signing contest answer the same question the same way - the
+    contest used to file a policy by the name of the OU it was linked to, and knew nothing
+    of a moved domain controller, a site link or a container that blocks inheritance.
+
+    A link on a container above a domain controller's computer object reaches it, and so
+    does a link on the domain controller's site - unless a container the link has to pass
+    blocks inheritance and the link is not enforced. A link on a container passes the
+    containers strictly below it; a site link passes every one from the domain root down,
+    because site policies are applied before the domain's. The containers above a domain
+    controller are compared component by component, so an OU whose name only ends like the
+    linked one is not mistaken for it.
+
+.PARAMETER Link
+    One link record as Get-GPOLinkage returns it.
+
+.PARAMETER Context
+    From Get-DomainControllerGPOContext.
+
+.OUTPUTS
+    PSCustomObject with
+      Kind        - Site, Domain or OU
+      IsEnforced  - whether the link is enforced
+      Reached     - per domain controller reached: DC (its context entry), Index (where the
+                    link sits in its chain, 0 its own container; -1 for a site) and
+                    ChainLength (the containers from it up to the domain root)
+      Blocked     - a domain controller the link would reach but for a block
+      UnknownSite - a site link, and a domain controller whose site could not be read
+#>
+function Get-GPOLinkDCReach {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Link,
+
+        [Parameter(Mandatory=$true)]
+        $Context
+    )
+
+    $linkDN = [string]$Link.DistinguishedName
+    $domainDN = [string]$Context.DomainDN
+    $isEnforced = ($Link.IsEnforced -eq $true) -or ($Link.LinkStatus -eq 'Enforced')
+    $kind = 'OU'
+    if (($Link.Scope -eq 'Site') -or ($linkDN -match '(?i),CN=Sites,CN=Configuration,')) {
+        $kind = 'Site'
+    } elseif ($domainDN -and [string]::Equals($linkDN, $domainDN, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $kind = 'Domain'
+    }
+
+    $blocked = $Context.BlockedContainers
+    if ($null -eq $blocked) { $blocked = @{} }
+
+    $reached = New-Object System.Collections.ArrayList
+    $sawBlocked = $false
+    $sawUnknownSite = $false
+
+    foreach ($dc in @($Context.DomainControllers)) {
+        $chain = @(Get-DNParentChain -DistinguishedName ([string]$dc.DistinguishedName) -StopAt $domainDN)
+
+        $passes = @()
+        $linkIndex = -1
+        if ($kind -eq 'Site') {
+            if ($null -eq $dc.SiteDN) { $sawUnknownSite = $true; continue }
+            if (-not [string]::Equals([string]$dc.SiteDN, $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            $passes = $chain
+        } else {
+            for ($chainIndex = 0; $chainIndex -lt $chain.Count; $chainIndex++) {
+                if ([string]::Equals($chain[$chainIndex], $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $linkIndex = $chainIndex
+                    break
+                }
+            }
+            if ($linkIndex -lt 0) { continue }
+            if ($linkIndex -gt 0) { $passes = @($chain[0..($linkIndex - 1)]) }
+        }
+
+        if (-not $isEnforced) {
+            $blockedOnTheWay = @($passes | Where-Object { $blocked.ContainsKey($_.ToLowerInvariant()) })
+            if ($blockedOnTheWay.Count -gt 0) { $sawBlocked = $true; continue }
+        }
+
+        [void]$reached.Add([PSCustomObject]@{ DC = $dc; Index = $linkIndex; ChainLength = $chain.Count })
+    }
+
+    [PSCustomObject]@{
+        Kind        = $kind
+        IsEnforced  = $isEnforced
+        Reached     = @($reached)
+        Blocked     = $sawBlocked
+        UnknownSite = $sawUnknownSite
+    }
+}
+
+<#
+.SYNOPSIS
     Files a GPO into the precedence contest for the domain controllers.
 
 .DESCRIPTION
     Get-LDAPConfiguration and Get-SMBSigningStatus each carried this block, word for word.
-    It answers five ways, and the distinction between the last two is whether a policy
-    reaches a machine at all:
+    It answers seven ways, and the distinctions among the last four are whether and why a
+    policy reaches no domain controller:
 
-      DomainControllers - linked at or below the Domain Controllers OU
+      DomainControllers - linked to a container above a domain controller - the Domain
+                          Controllers OU, or the OU a moved domain controller sits in
       Domain            - linked at the domain root
-      OtherOU           - actively linked, but to some ordinary OU
+      Site              - linked to the site a domain controller is in, and nowhere above
+                          a domain controller
+      Blocked           - linked above a domain controller, but inheritance is blocked on
+                          the way and none of those links is enforced
+      OtherOU           - actively linked, but to nothing above a domain controller
       NotLinked         - linked nowhere, or every link disabled
       Unknown           - the linkage could not be resolved
 
-    For the first two it also ranks the policy for the contest, by the link that ranks
-    highest. Group Policy applies the domain root before the OUs below it, so a link on the
-    Domain Controllers OU wins over one at the root - unless a link is enforced: enforced
-    links are applied last and cannot be overridden below, and among two enforced links the
-    one higher up wins. Order, highest first:
+    Which domain controllers a link reaches is Get-GPOLinkDCReach's answer, the one the
+    reachesDomainControllers row gives (coverage item A11): where the domain controllers
+    actually are, their sites, and the containers that block inheritance. The contest used to
+    go by the name of the OU a link was on and knew nothing of a block, a site or a moved
+    domain controller. When the domain controllers cannot be read, a link on an OU named
+    Domain Controllers and a link at the domain root are filed as before.
 
-      0  enforced, at the domain root
-      1  enforced, on the Domain Controllers OU
-      2  on the Domain Controllers OU
-      3  at the domain root
+    For a policy that reaches a domain controller it also ranks the policy, by the link that
+    ranks highest. Group Policy applies site, domain and OUs in that order, the deeper OU
+    last, so a later one wins - unless a link is enforced: enforced links are applied after
+    all others, and among them the one higher up wins. Lowest first:
 
-    and within a rank by link order, 1 first. Enforcement used to be ignored, so an
-    enforced domain policy lost to a Domain Controllers policy it actually overrides.
+      0       enforced, on the site
+      10      enforced, at the domain root
+      20 + d  enforced, on an OU, d = its depth below the domain root
+      40 + i  on an OU, i = how far above the domain controller (0 its own OU)
+      60      at the domain root
+      70      on the site
+
+    and within a rank by link order, 1 first. A policy that reaches several domain
+    controllers takes its best rank among them.
 
 .PARAMETER Link
     The policy's link records, three-valued: $null unresolved, @() linked nowhere.
+
+.PARAMETER Context
+    From Get-DomainControllerGPOContext. Read from there when not given.
 
 .OUTPUTS
     PSCustomObject with Scope, Rank (99 outside the contest), Order (999 where unknown) and
@@ -1173,7 +1260,11 @@ function Get-GPODCPrecedence {
     param(
         [Parameter(Mandatory=$false)]
         [AllowNull()]
-        $Link
+        $Link,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Context
     )
 
     $result = [PSCustomObject]@{
@@ -1194,31 +1285,51 @@ function Get-GPODCPrecedence {
     $activeLinks = @($records | Where-Object { -not $_.IsDisabled })
     if ($activeLinks.Count -eq 0) { return $result }
 
-    $dcLinks     = @($activeLinks | Where-Object { "$($_.DistinguishedName)" -match 'OU=Domain Controllers' })
-    $domainLinks = @($activeLinks | Where-Object { $_.Scope -eq 'Domain' })
+    if ($null -eq $Context) { $Context = Get-DomainControllerGPOContext }
 
-    if ($dcLinks.Count -eq 0 -and $domainLinks.Count -eq 0) {
-        $result.Scope = 'OtherOU'
+    # One candidate per link and domain controller it reaches, ranked - see the description.
+    $candidates = @()
+    $sawBlocked = $false
+    if ($null -ne $Context -and @($Context.DomainControllers).Count -gt 0) {
+        foreach ($activeLink in $activeLinks) {
+            $linkReach = Get-GPOLinkDCReach -Link $activeLink -Context $Context
+            if ($linkReach.Blocked) { $sawBlocked = $true }
+            $linkOrder = $(if ($activeLink.LinkOrder) { [int]$activeLink.LinkOrder } else { 999 })
+            foreach ($hit in @($linkReach.Reached)) {
+                $rank = switch ($linkReach.Kind) {
+                    'Site'   { $(if ($linkReach.IsEnforced) { 0 } else { 70 }) }
+                    'Domain' { $(if ($linkReach.IsEnforced) { 10 } else { 60 }) }
+                    default {
+                        if ($linkReach.IsEnforced) { 20 + [Math]::Min(9, [Math]::Max(0, $hit.ChainLength - 2 - $hit.Index)) }
+                        else { 40 + [Math]::Min(9, [Math]::Max(0, $hit.Index)) }
+                    }
+                }
+                $candidates += [PSCustomObject]@{ Kind = $linkReach.Kind; Rank = $rank; Order = $linkOrder }
+            }
+        }
+    } else {
+        # The domain controllers could not be read: by the names, as before - a link on an
+        # OU called Domain Controllers, or at the domain root.
+        foreach ($activeLink in $activeLinks) {
+            $linkOrder = $(if ($activeLink.LinkOrder) { [int]$activeLink.LinkOrder } else { 999 })
+            if ("$($activeLink.DistinguishedName)" -match 'OU=Domain Controllers') {
+                $candidates += [PSCustomObject]@{ Kind = 'OU'; Rank = $(if ($activeLink.IsEnforced -eq $true) { 20 } else { 40 }); Order = $linkOrder }
+            } elseif ($activeLink.Scope -eq 'Domain') {
+                $candidates += [PSCustomObject]@{ Kind = 'Domain'; Rank = $(if ($activeLink.IsEnforced -eq $true) { 10 } else { 60 }); Order = $linkOrder }
+            }
+        }
+    }
+
+    if ($candidates.Count -eq 0) {
+        $result.Scope = $(if ($sawBlocked) { 'Blocked' } else { 'OtherOU' })
         return $result
     }
 
     # The scope names where the policy sits; the rank comes from the link that ranks
-    # highest, which for a policy linked at both places can be the enforced root link.
-    $result.Scope = if ($dcLinks.Count -gt 0) { 'DomainControllers' } else { 'Domain' }
+    # highest, which for a policy linked at several places can be the enforced root link.
+    $kinds = @($candidates | ForEach-Object { $_.Kind })
+    $result.Scope = if ($kinds -contains 'OU') { 'DomainControllers' } elseif ($kinds -contains 'Domain') { 'Domain' } else { 'Site' }
 
-    $candidates = @()
-    foreach ($dcLink in $dcLinks) {
-        $candidates += [PSCustomObject]@{
-            Rank  = $(if ($dcLink.IsEnforced -eq $true) { 1 } else { 2 })
-            Order = $(if ($dcLink.LinkOrder) { [int]$dcLink.LinkOrder } else { 999 })
-        }
-    }
-    foreach ($domainLink in $domainLinks) {
-        $candidates += [PSCustomObject]@{
-            Rank  = $(if ($domainLink.IsEnforced -eq $true) { 0 } else { 3 })
-            Order = $(if ($domainLink.LinkOrder) { [int]$domainLink.LinkOrder } else { 999 })
-        }
-    }
     $best = @($candidates | Sort-Object Rank, Order)[0]
     $result.Rank  = $best.Rank
     $result.Order = $best.Order
@@ -1241,12 +1352,14 @@ function Get-GPODCPrecedence {
     was the one in force. In the dangerous direction that made a weak value read as
     ineffective: a false negative.
 
-    The contest is the policies Get-GPODCPrecedence filed as DomainControllers or Domain,
-    ordered by its rank, then link order, then display name - the last only so that a tie
-    the directory cannot produce does not come out by hashtable order.
+    The contest is the policies Get-GPODCPrecedence filed as DomainControllers, Domain or
+    Site, ordered by its rank, then link order, then display name - the last only so that a
+    tie the directory cannot produce does not come out by hashtable order.
 
-    Site links are not part of it: site policies are applied before the domain's and lose
-    to it unless enforced, and a policy hardening domain controllers is rarely linked there.
+    A site policy is part of it since coverage item A11: applied before the domain's, it
+    loses every setting the domain or an OU above a domain controller configures, unless it
+    is enforced - but a setting nobody else configures is the site policy's, and it used to
+    be left out of the contest altogether.
 
 .PARAMETER Finding
     The GPO findings, carrying _PrecedenceScope, _PrecedenceRank and _PrecedenceOrder.
@@ -1269,7 +1382,7 @@ function Resolve-GPOSettingPrecedence {
         [hashtable[]]$Setting
     )
 
-    $contest = @(@($Finding) | Where-Object { $_ -and $_._PrecedenceScope -in @('DomainControllers', 'Domain') } |
+    $contest = @(@($Finding) | Where-Object { $_ -and $_._PrecedenceScope -in @('DomainControllers', 'Domain', 'Site') } |
         Sort-Object @{ Expression = { [int]$_._PrecedenceRank } },
                     @{ Expression = { [int]$_._PrecedenceOrder } },
                     @{ Expression = { [string]$_.DisplayName } })
@@ -1413,7 +1526,7 @@ function Get-GPOSettingPostureSource {
         }
     }
     if ($parts.Count -eq 0) {
-        return 'No policy linked to the Domain Controllers OU or the domain root configures any of these'
+        return 'No policy that reaches the domain controllers configures any of these'
     }
     return ($parts -join '; ')
 }

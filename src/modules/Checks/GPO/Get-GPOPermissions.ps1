@@ -161,6 +161,8 @@ function Get-GPOPermissions {
             # objectSid and primaryGroupID for a policy's security filtering, which decides
             # by the computer's token - see Test-GPOFilterCoversComputer.
             $allComputers = @(Get-DomainComputer -Properties "name","distinguishedName","objectSid","primaryGroupID" @connectionParams)
+            # The containers above each computer, worked out once for every policy below.
+            $computerChainCache = @{}
 
             if (-not $allComputers) {
                 $allComputers = @()
@@ -469,43 +471,56 @@ function Get-GPOPermissions {
                         # The computers the links put in scope, for the security filtering below.
                         $inScopeComputers = New-Object System.Collections.ArrayList
 
-                        if ($isDomainWide) {
-                            foreach ($computer in $allComputers) { [void]$inScopeComputers.Add($computer) }
-                        }
-                        elseif (@($activeLinks).Count -gt 0) {
+                        # A link on a container reaches the computers below it, unless a
+                        # container between them blocks inheritance and the link is not
+                        # enforced (coverage item A11) - the rule the reachesDomainControllers
+                        # row and the signing contest go by. The domain root is a link like any
+                        # other here: a policy linked there reaches no computer below an OU that
+                        # blocks inheritance unless the link is enforced, and the count used to
+                        # take every computer of the domain. A site link matches no container of
+                        # the domain, so it is counted nowhere here - see below. Without the
+                        # blocking containers (the context could not be read) no link counts as
+                        # blocked, as before.
+                        $containerLinks = @($activeLinks)
+                        $blockedContainers = $null
+                        $blockedOutComputers = 0
+                        if ($containerLinks.Count -gt 0) {
+                            $gpoContext = Get-DomainControllerGPOContext
+                            if ($null -ne $gpoContext) { $blockedContainers = $gpoContext.BlockedContainers }
+
                             foreach ($computer in $allComputers) {
-                                $computerDN = $computer.distinguishedName
-
-                                if ($computerDN -match '^CN=[^,]+,(.+)$') {
-                                    $computerParentDN = $Matches[1]
-                                    $isCovered = $false
-                                    $currentDN = $computerParentDN
-
-                                    while ($currentDN -ne $domainDN -and -not $isCovered) {
-                                        foreach ($link in $activeLinks) {
-                                            if ($link.DistinguishedName -eq $currentDN) {
-                                                $isCovered = $true
-                                                break
-                                            }
-                                        }
-
-                                        if ($isCovered) { break }
-
-                                        if ($currentDN -match '^[^,]+,(.+)$') {
-                                            $currentDN = $Matches[1]
-                                        }
-                                        else {
-                                            break
-                                        }
-                                    }
-
-                                    if ($isCovered) {
-                                        [void]$inScopeComputers.Add($computer)
-                                    }
+                                $computerDN = [string]$computer.distinguishedName
+                                $computerChain = $computerChainCache[$computerDN]
+                                if ($null -eq $computerChain) {
+                                    $computerChain = @(Get-DNParentChain -DistinguishedName $computerDN -StopAt $domainDN)
+                                    $computerChainCache[$computerDN] = $computerChain
                                 }
+
+                                $isCovered = $false
+                                $passedBlock = $false
+                                $stoppedByBlock = $false
+                                foreach ($container in $computerChain) {
+                                    foreach ($link in $containerLinks) {
+                                        if (-not [string]::Equals([string]$link.DistinguishedName, $container, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                                        $linkEnforced = ($link.IsEnforced -eq $true) -or ($link.LinkStatus -eq 'Enforced')
+                                        if ($linkEnforced -or -not $passedBlock) { $isCovered = $true; break }
+                                        $stoppedByBlock = $true
+                                    }
+                                    if ($isCovered) { break }
+                                    # A block on this container stops what comes from above it, not
+                                    # what is linked here.
+                                    if ($blockedContainers -and $blockedContainers.ContainsKey($container.ToLowerInvariant())) { $passedBlock = $true }
+                                }
+
+                                if ($isCovered) { [void]$inScopeComputers.Add($computer) }
+                                elseif ($stoppedByBlock) { $blockedOutComputers++ }
                             }
                         }
                         $affectedComputerCount = $inScopeComputers.Count
+                        $blockNote = $null
+                        if ($blockedOutComputers -gt 0) {
+                            $blockNote = "$blockedOutComputers computer(s) below its links are not counted: inheritance is blocked on the way and none of those links is enforced"
+                        }
 
                         # Security filtering (coverage item A10): a computer in scope applies
                         # the policy only if its token holds a principal granted Apply Group
@@ -545,9 +560,10 @@ function Get-GPOPermissions {
                                 $affectedComputersNote = 'plus the computers of the linked site(s), which the directory does not record - site membership follows IP subnets'
                             }
                         }
-                        if ($securityFilterNote) {
-                            if ($affectedComputersNote) { $affectedComputersNote = "$affectedComputersNote; $securityFilterNote" }
-                            else { $affectedComputersNote = $securityFilterNote }
+                        foreach ($extraNote in @($blockNote, $securityFilterNote)) {
+                            if (-not $extraNote) { continue }
+                            if ($affectedComputersNote) { $affectedComputersNote = "$affectedComputersNote; $extraNote" }
+                            else { $affectedComputersNote = $extraNote }
                         }
 
                         # Where the policy applies. The full link records, disabled ones

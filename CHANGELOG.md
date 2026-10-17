@@ -270,6 +270,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Unknown and the count a lower bound. Where the filtering is not known, the links decide
   as before.
 
+- **The signing checks and the computer count read the reach of a GPO the way the
+  reachesDomainControllers row does.** The precedence contest of `Get-LDAPConfiguration`
+  and `Get-SMBSigningStatus` filed a policy by the name of the OU it was linked to and
+  left site links out; `affectedComputerCount` of `Get-GPOPermissions` took every computer
+  below a link, every computer of the domain for a root link. Both now go by where the
+  domain controllers actually are, their sites and the containers that block inheritance,
+  with enforced links passing a block. A policy on the site of a domain controller takes
+  part in the contest - it decides what no domain or OU policy configures, and everything
+  when its link is enforced; a policy whose links a block keeps from the domain
+  controllers says so ("applies below its links, but not on the domain controllers")
+  instead of deciding their values; a policy linked above a domain controller moved out of
+  the Domain Controllers OU competes for it. The count leaves out the computers below a
+  block and says how many in `affectedComputersNote`. When the domain controllers cannot be
+  read, the contest goes by the names as before.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

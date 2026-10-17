@@ -50212,8 +50212,15 @@ function Get-GPOEffectiveSettingText {
 	        if ($IsEffective) { return 'Yes - wins precedence at the domain root' }
 	        return (Get-GPOOverriddenText -WinnerName $WinnerName -WinnerLinkOrder $WinnerLinkOrder)
 	    }
+	    'Site' {
+	        if ($IsEffective) { return 'Yes - wins precedence on its site' }
+	        return (Get-GPOOverriddenText -WinnerName $WinnerName -WinnerLinkOrder $WinnerLinkOrder)
+	    }
 	    'OtherOU' {
 	        return 'Yes - applies on its linked OUs; no precedence comparison there'
+	    }
+	    'Blocked' {
+	        return 'Yes - applies below its links, but not on the domain controllers: inheritance is blocked between them and none of its links is enforced'
 	    }
 	    'NotLinked' {
 	        if ($HasAnyLink) { return 'No - every link is disabled' }
@@ -50494,48 +50501,23 @@ function Get-GPODomainControllerReach {
 	    if ($null -eq $Context -or @($Context.DomainControllers).Count -eq 0) {
 	        return 'Unknown - the domain controllers could not be read'
 	    }
-	    $domainDN = [string]$Context.DomainDN
-	    $blocked  = $Context.BlockedContainers
-	    if ($null -eq $blocked) { $blocked = @{} }
 	    $reachingLabels = New-Object System.Collections.Generic.List[string]
 	    $reachedDCs     = New-Object System.Collections.ArrayList
 	    $sawBlocked     = $false
 	    $sawUnknownSite = $false
 	    foreach ($activeLink in $activeLinks) {
-	        $linkDN = [string]$activeLink.DistinguishedName
-	        $isEnforced = ($activeLink.IsEnforced -eq $true) -or ($activeLink.LinkStatus -eq 'Enforced')
-	        $isSite = ($activeLink.Scope -eq 'Site') -or ($linkDN -match '(?i),CN=Sites,CN=Configuration,')
-	        foreach ($dc in @($Context.DomainControllers)) {
-	            $chain = @(Get-DNParentChain -DistinguishedName ([string]$dc.DistinguishedName) -StopAt $domainDN)
-	            $passes = @()
-	            if ($isSite) {
-	                if ($null -eq $dc.SiteDN) { $sawUnknownSite = $true; continue }
-	                if (-not [string]::Equals([string]$dc.SiteDN, $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-	                $passes = $chain
-	            } else {
-	                $linkIndex = -1
-	                for ($chainIndex = 0; $chainIndex -lt $chain.Count; $chainIndex++) {
-	                    if ([string]::Equals($chain[$chainIndex], $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) {
-	                        $linkIndex = $chainIndex
-	                        break
-	                    }
-	                }
-	                if ($linkIndex -lt 0) { continue }
-	                if ($linkIndex -gt 0) { $passes = @($chain[0..($linkIndex - 1)]) }
-	            }
-	            if (-not $isEnforced) {
-	                $blockedOnTheWay = @($passes | Where-Object { $blocked.ContainsKey($_.ToLowerInvariant()) })
-	                if ($blockedOnTheWay.Count -gt 0) { $sawBlocked = $true; continue }
-	            }
-	            $label = if ($isSite) {
-	                "site $(if ($activeLink.Name) { $activeLink.Name } else { $linkDN })"
-	            } elseif ($domainDN -and [string]::Equals($linkDN, $domainDN, [System.StringComparison]::OrdinalIgnoreCase)) {
-	                'the domain root'
-	            } else {
-	                $linkDN
-	            }
-	            if (-not $reachingLabels.Contains($label)) { $reachingLabels.Add($label) }
-	            if (-not $reachedDCs.Contains($dc)) { [void]$reachedDCs.Add($dc) }
+	        $linkReach = Get-GPOLinkDCReach -Link $activeLink -Context $Context
+	        if ($linkReach.Blocked) { $sawBlocked = $true }
+	        if ($linkReach.UnknownSite) { $sawUnknownSite = $true }
+	        if (@($linkReach.Reached).Count -eq 0) { continue }
+	        $label = switch ($linkReach.Kind) {
+	            'Site'   { "site $(if ($activeLink.Name) { $activeLink.Name } else { [string]$activeLink.DistinguishedName })" }
+	            'Domain' { 'the domain root' }
+	            default  { [string]$activeLink.DistinguishedName }
+	        }
+	        if (-not $reachingLabels.Contains($label)) { $reachingLabels.Add($label) }
+	        foreach ($hit in @($linkReach.Reached)) {
+	            if (-not $reachedDCs.Contains($hit.DC)) { [void]$reachedDCs.Add($hit.DC) }
 	        }
 	    }
 	    if ($reachingLabels.Count -gt 0) {
@@ -50581,13 +50563,71 @@ function Get-DNParentChain {
 	}
 	return $chain
 }
+function Get-GPOLinkDCReach {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    $Link,
+	    [Parameter(Mandatory=$true)]
+	    $Context
+	)
+	$linkDN = [string]$Link.DistinguishedName
+	$domainDN = [string]$Context.DomainDN
+	$isEnforced = ($Link.IsEnforced -eq $true) -or ($Link.LinkStatus -eq 'Enforced')
+	$kind = 'OU'
+	if (($Link.Scope -eq 'Site') -or ($linkDN -match '(?i),CN=Sites,CN=Configuration,')) {
+	    $kind = 'Site'
+	} elseif ($domainDN -and [string]::Equals($linkDN, $domainDN, [System.StringComparison]::OrdinalIgnoreCase)) {
+	    $kind = 'Domain'
+	}
+	$blocked = $Context.BlockedContainers
+	if ($null -eq $blocked) { $blocked = @{} }
+	$reached = New-Object System.Collections.ArrayList
+	$sawBlocked = $false
+	$sawUnknownSite = $false
+	foreach ($dc in @($Context.DomainControllers)) {
+	    $chain = @(Get-DNParentChain -DistinguishedName ([string]$dc.DistinguishedName) -StopAt $domainDN)
+	    $passes = @()
+	    $linkIndex = -1
+	    if ($kind -eq 'Site') {
+	        if ($null -eq $dc.SiteDN) { $sawUnknownSite = $true; continue }
+	        if (-not [string]::Equals([string]$dc.SiteDN, $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+	        $passes = $chain
+	    } else {
+	        for ($chainIndex = 0; $chainIndex -lt $chain.Count; $chainIndex++) {
+	            if ([string]::Equals($chain[$chainIndex], $linkDN, [System.StringComparison]::OrdinalIgnoreCase)) {
+	                $linkIndex = $chainIndex
+	                break
+	            }
+	        }
+	        if ($linkIndex -lt 0) { continue }
+	        if ($linkIndex -gt 0) { $passes = @($chain[0..($linkIndex - 1)]) }
+	    }
+	    if (-not $isEnforced) {
+	        $blockedOnTheWay = @($passes | Where-Object { $blocked.ContainsKey($_.ToLowerInvariant()) })
+	        if ($blockedOnTheWay.Count -gt 0) { $sawBlocked = $true; continue }
+	    }
+	    [void]$reached.Add([PSCustomObject]@{ DC = $dc; Index = $linkIndex; ChainLength = $chain.Count })
+	}
+	[PSCustomObject]@{
+	    Kind        = $kind
+	    IsEnforced  = $isEnforced
+	    Reached     = @($reached)
+	    Blocked     = $sawBlocked
+	    UnknownSite = $sawUnknownSite
+	}
+}
 function Get-GPODCPrecedence {
 	[CmdletBinding()]
 	[OutputType([PSCustomObject])]
 	param(
 	    [Parameter(Mandatory=$false)]
 	    [AllowNull()]
-	    $Link
+	    $Link,
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Context
 	)
 	$result = [PSCustomObject]@{
 	    Scope      = 'Unknown'
@@ -50601,26 +50641,42 @@ function Get-GPODCPrecedence {
 	$result.Scope = 'NotLinked'
 	$activeLinks = @($records | Where-Object { -not $_.IsDisabled })
 	if ($activeLinks.Count -eq 0) { return $result }
-	$dcLinks     = @($activeLinks | Where-Object { "$($_.DistinguishedName)" -match 'OU=Domain Controllers' })
-	$domainLinks = @($activeLinks | Where-Object { $_.Scope -eq 'Domain' })
-	if ($dcLinks.Count -eq 0 -and $domainLinks.Count -eq 0) {
-	    $result.Scope = 'OtherOU'
+	if ($null -eq $Context) { $Context = Get-DomainControllerGPOContext }
+	$candidates = @()
+	$sawBlocked = $false
+	if ($null -ne $Context -and @($Context.DomainControllers).Count -gt 0) {
+	    foreach ($activeLink in $activeLinks) {
+	        $linkReach = Get-GPOLinkDCReach -Link $activeLink -Context $Context
+	        if ($linkReach.Blocked) { $sawBlocked = $true }
+	        $linkOrder = $(if ($activeLink.LinkOrder) { [int]$activeLink.LinkOrder } else { 999 })
+	        foreach ($hit in @($linkReach.Reached)) {
+	            $rank = switch ($linkReach.Kind) {
+	                'Site'   { $(if ($linkReach.IsEnforced) { 0 } else { 70 }) }
+	                'Domain' { $(if ($linkReach.IsEnforced) { 10 } else { 60 }) }
+	                default {
+	                    if ($linkReach.IsEnforced) { 20 + [Math]::Min(9, [Math]::Max(0, $hit.ChainLength - 2 - $hit.Index)) }
+	                    else { 40 + [Math]::Min(9, [Math]::Max(0, $hit.Index)) }
+	                }
+	            }
+	            $candidates += [PSCustomObject]@{ Kind = $linkReach.Kind; Rank = $rank; Order = $linkOrder }
+	        }
+	    }
+	} else {
+	    foreach ($activeLink in $activeLinks) {
+	        $linkOrder = $(if ($activeLink.LinkOrder) { [int]$activeLink.LinkOrder } else { 999 })
+	        if ("$($activeLink.DistinguishedName)" -match 'OU=Domain Controllers') {
+	            $candidates += [PSCustomObject]@{ Kind = 'OU'; Rank = $(if ($activeLink.IsEnforced -eq $true) { 20 } else { 40 }); Order = $linkOrder }
+	        } elseif ($activeLink.Scope -eq 'Domain') {
+	            $candidates += [PSCustomObject]@{ Kind = 'Domain'; Rank = $(if ($activeLink.IsEnforced -eq $true) { 10 } else { 60 }); Order = $linkOrder }
+	        }
+	    }
+	}
+	if ($candidates.Count -eq 0) {
+	    $result.Scope = $(if ($sawBlocked) { 'Blocked' } else { 'OtherOU' })
 	    return $result
 	}
-	$result.Scope = if ($dcLinks.Count -gt 0) { 'DomainControllers' } else { 'Domain' }
-	$candidates = @()
-	foreach ($dcLink in $dcLinks) {
-	    $candidates += [PSCustomObject]@{
-	        Rank  = $(if ($dcLink.IsEnforced -eq $true) { 1 } else { 2 })
-	        Order = $(if ($dcLink.LinkOrder) { [int]$dcLink.LinkOrder } else { 999 })
-	    }
-	}
-	foreach ($domainLink in $domainLinks) {
-	    $candidates += [PSCustomObject]@{
-	        Rank  = $(if ($domainLink.IsEnforced -eq $true) { 0 } else { 3 })
-	        Order = $(if ($domainLink.LinkOrder) { [int]$domainLink.LinkOrder } else { 999 })
-	    }
-	}
+	$kinds = @($candidates | ForEach-Object { $_.Kind })
+	$result.Scope = if ($kinds -contains 'OU') { 'DomainControllers' } elseif ($kinds -contains 'Domain') { 'Domain' } else { 'Site' }
 	$best = @($candidates | Sort-Object Rank, Order)[0]
 	$result.Rank  = $best.Rank
 	$result.Order = $best.Order
@@ -50636,7 +50692,7 @@ function Resolve-GPOSettingPrecedence {
 	    [Parameter(Mandatory=$true)]
 	    [hashtable[]]$Setting
 	)
-	$contest = @(@($Finding) | Where-Object { $_ -and $_._PrecedenceScope -in @('DomainControllers', 'Domain') } |
+	$contest = @(@($Finding) | Where-Object { $_ -and $_._PrecedenceScope -in @('DomainControllers', 'Domain', 'Site') } |
 	    Sort-Object @{ Expression = { [int]$_._PrecedenceRank } },
 	                @{ Expression = { [int]$_._PrecedenceOrder } },
 	                @{ Expression = { [string]$_.DisplayName } })
@@ -50722,7 +50778,7 @@ function Get-GPOSettingPostureSource {
 	    }
 	}
 	if ($parts.Count -eq 0) {
-	    return 'No policy linked to the Domain Controllers OU or the domain root configures any of these'
+	    return 'No policy that reaches the domain controllers configures any of these'
 	}
 	return ($parts -join '; ')
 }
@@ -63334,14 +63390,14 @@ function Get-LDAPConfiguration {
 	            )
 	            $settingWinners = Resolve-GPOSettingPrecedence -Finding $gpoFindings -Setting $ldapSettings
 	            foreach ($gpoFinding in $gpoFindings) {
-	                if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain')) {
+	                if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain', 'Site')) {
 	                    $winsSomething = @($ldapSettings | Where-Object {
 	                        [object]::ReferenceEquals($settingWinners[$_.Property], $gpoFinding)
 	                    }).Count -gt 0
 	                    $gpoFinding._IsEffective = $winsSomething
 	                    $effectiveText = Get-GPOSettingPrecedenceText -Finding $gpoFinding -Setting $ldapSettings -Winner $settingWinners
 	                } else {
-	                    $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -eq 'OtherOU')
+	                    $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -in @('OtherOU', 'Blocked'))
 	                    $effectiveText = Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
 	                        -IsEffective $gpoFinding._IsEffective -HasAnyLink $gpoFinding._HasAnyLink
 	                }
@@ -63610,7 +63666,7 @@ function Get-SMBSigningStatus {
 	                if ($gpoFinding.ServerSigning -eq 'Not configured') {
 	                    if ($precScope -eq 'DomainControllers') {
 	                        $gpoFinding.ServerSigning = 'Not configured - the Domain Controllers default requires it'
-	                    } elseif ($precScope -eq 'Domain' -or $precScope -eq 'OtherOU') {
+	                    } elseif ($precScope -in @('Domain', 'OtherOU', 'Site', 'Blocked')) {
 	                        $gpoFinding.ServerSigning = 'Not configured - not required by default before Windows Server 2025'
 	                    }
 	                }
@@ -63621,14 +63677,14 @@ function Get-SMBSigningStatus {
 	            )
 	            $settingWinners = Resolve-GPOSettingPrecedence -Finding $gpoFindings -Setting $smbSettings
 	            foreach ($gpoFinding in $gpoFindings) {
-	                if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain')) {
+	                if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain', 'Site')) {
 	                    $winsSomething = @($smbSettings | Where-Object {
 	                        [object]::ReferenceEquals($settingWinners[$_.Property], $gpoFinding)
 	                    }).Count -gt 0
 	                    $gpoFinding._IsEffective = $winsSomething
 	                    $effectiveText = Get-GPOSettingPrecedenceText -Finding $gpoFinding -Setting $smbSettings -Winner $settingWinners
 	                } else {
-	                    $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -eq 'OtherOU')
+	                    $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -in @('OtherOU', 'Blocked'))
 	                    $effectiveText = Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
 	                        -IsEffective $gpoFinding._IsEffective -HasAnyLink $gpoFinding._HasAnyLink
 	                }
@@ -70157,6 +70213,7 @@ function Get-GPOPermissions {
 	        catch {
 	        }
 	        $allComputers = @(Get-DomainComputer -Properties "name","distinguishedName","objectSid","primaryGroupID" @connectionParams)
+	        $computerChainCache = @{}
 	        if (-not $allComputers) {
 	            $allComputers = @()
 	        }
@@ -70306,38 +70363,41 @@ function Get-GPOPermissions {
 	                    }
 	                    $affectedComputerCount = 0
 	                    $inScopeComputers = New-Object System.Collections.ArrayList
-	                    if ($isDomainWide) {
-	                        foreach ($computer in $allComputers) { [void]$inScopeComputers.Add($computer) }
-	                    }
-	                    elseif (@($activeLinks).Count -gt 0) {
+	                    $containerLinks = @($activeLinks)
+	                    $blockedContainers = $null
+	                    $blockedOutComputers = 0
+	                    if ($containerLinks.Count -gt 0) {
+	                        $gpoContext = Get-DomainControllerGPOContext
+	                        if ($null -ne $gpoContext) { $blockedContainers = $gpoContext.BlockedContainers }
 	                        foreach ($computer in $allComputers) {
-	                            $computerDN = $computer.distinguishedName
-	                            if ($computerDN -match '^CN=[^,]+,(.+)$') {
-	                                $computerParentDN = $Matches[1]
-	                                $isCovered = $false
-	                                $currentDN = $computerParentDN
-	                                while ($currentDN -ne $domainDN -and -not $isCovered) {
-	                                    foreach ($link in $activeLinks) {
-	                                        if ($link.DistinguishedName -eq $currentDN) {
-	                                            $isCovered = $true
-	                                            break
-	                                        }
-	                                    }
-	                                    if ($isCovered) { break }
-	                                    if ($currentDN -match '^[^,]+,(.+)$') {
-	                                        $currentDN = $Matches[1]
-	                                    }
-	                                    else {
-	                                        break
-	                                    }
-	                                }
-	                                if ($isCovered) {
-	                                    [void]$inScopeComputers.Add($computer)
-	                                }
+	                            $computerDN = [string]$computer.distinguishedName
+	                            $computerChain = $computerChainCache[$computerDN]
+	                            if ($null -eq $computerChain) {
+	                                $computerChain = @(Get-DNParentChain -DistinguishedName $computerDN -StopAt $domainDN)
+	                                $computerChainCache[$computerDN] = $computerChain
 	                            }
+	                            $isCovered = $false
+	                            $passedBlock = $false
+	                            $stoppedByBlock = $false
+	                            foreach ($container in $computerChain) {
+	                                foreach ($link in $containerLinks) {
+	                                    if (-not [string]::Equals([string]$link.DistinguishedName, $container, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+	                                    $linkEnforced = ($link.IsEnforced -eq $true) -or ($link.LinkStatus -eq 'Enforced')
+	                                    if ($linkEnforced -or -not $passedBlock) { $isCovered = $true; break }
+	                                    $stoppedByBlock = $true
+	                                }
+	                                if ($isCovered) { break }
+	                                if ($blockedContainers -and $blockedContainers.ContainsKey($container.ToLowerInvariant())) { $passedBlock = $true }
+	                            }
+	                            if ($isCovered) { [void]$inScopeComputers.Add($computer) }
+	                            elseif ($stoppedByBlock) { $blockedOutComputers++ }
 	                        }
 	                    }
 	                    $affectedComputerCount = $inScopeComputers.Count
+	                    $blockNote = $null
+	                    if ($blockedOutComputers -gt 0) {
+	                        $blockNote = "$blockedOutComputers computer(s) below its links are not counted: inheritance is blocked on the way and none of those links is enforced"
+	                    }
 	                    $securityFilterNote = $null
 	                    $securityFilter = Get-GPOSecurityFilter -GPOGUID $gpoGUID
 	                    if ($null -ne $securityFilter -and -not ($securityFilter.Everyone -and @($securityFilter.DenySIDs).Count -eq 0)) {
@@ -70363,9 +70423,10 @@ function Get-GPOPermissions {
 	                            $affectedComputersNote = 'plus the computers of the linked site(s), which the directory does not record - site membership follows IP subnets'
 	                        }
 	                    }
-	                    if ($securityFilterNote) {
-	                        if ($affectedComputersNote) { $affectedComputersNote = "$affectedComputersNote; $securityFilterNote" }
-	                        else { $affectedComputersNote = $securityFilterNote }
+	                    foreach ($extraNote in @($blockNote, $securityFilterNote)) {
+	                        if (-not $extraNote) { continue }
+	                        if ($affectedComputersNote) { $affectedComputersNote = "$affectedComputersNote; $extraNote" }
+	                        else { $affectedComputersNote = $extraNote }
 	                    }
 	                    $linkedOUsDisplay = $links
 	                    if ($null -eq $links) {
@@ -88459,7 +88520,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261017-1837"
+$Script:adPEASVersion = "2.7.0+20261017-1855"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

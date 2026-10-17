@@ -392,7 +392,7 @@ function Get-SMBSigningStatus {
                     if ($gpoFinding.ServerSigning -eq 'Not configured') {
                         if ($precScope -eq 'DomainControllers') {
                             $gpoFinding.ServerSigning = 'Not configured - the Domain Controllers default requires it'
-                        } elseif ($precScope -eq 'Domain' -or $precScope -eq 'OtherOU') {
+                        } elseif ($precScope -in @('Domain', 'OtherOU', 'Site', 'Blocked')) {
                             $gpoFinding.ServerSigning = 'Not configured - not required by default before Windows Server 2025'
                         }
                     }
@@ -415,14 +415,14 @@ function Get-SMBSigningStatus {
                 # "every link disabled" apart. A policy that reaches no machine is never in
                 # force, however its settings read.
                 foreach ($gpoFinding in $gpoFindings) {
-                    if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain')) {
+                    if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain', 'Site')) {
                         $winsSomething = @($smbSettings | Where-Object {
                             [object]::ReferenceEquals($settingWinners[$_.Property], $gpoFinding)
                         }).Count -gt 0
                         $gpoFinding._IsEffective = $winsSomething
                         $effectiveText = Get-GPOSettingPrecedenceText -Finding $gpoFinding -Setting $smbSettings -Winner $settingWinners
                     } else {
-                        $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -eq 'OtherOU')
+                        $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -in @('OtherOU', 'Blocked'))
                         $effectiveText = Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
                             -IsEffective $gpoFinding._IsEffective -HasAnyLink $gpoFinding._HasAnyLink
                     }

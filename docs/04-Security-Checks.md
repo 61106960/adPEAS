@@ -1195,13 +1195,18 @@ those call for completely different work.
 |-----------|-------|
 | `Yes - wins precedence on the Domain Controllers OU` | Linked at or below the Domain Controllers OU and first in link order. This is the value the DCs run with. |
 | `Yes - wins precedence at the domain root` | Linked at the domain root, with no Domain Controllers OU policy outranking it. |
+| `Yes - wins precedence on its site` | Linked to the site a domain controller is in, and nowhere above a domain controller. Site policies are applied before the domain's, so it decides only what no domain or OU policy configures - unless its link is enforced. |
 | `Yes - applies on its linked OUs; no precedence comparison there` | Linked to ordinary OUs and applies to the machines in them. The caveat is literal: adPEAS does not compare link order below the domain level, so two policies on the same OU with opposite values are both reported this way. |
+| `Yes - applies below its links, but not on the domain controllers: ...` | Linked above a domain controller, but a container on the way blocks inheritance and none of its links is enforced. It applies to the other machines below its links. |
 | `No - overridden by '<name>' (link order <n>)` | Configured, reaches machines, but another policy wins. Read the named policy to see what actually applies. |
 | `No - the policy is linked nowhere` | Configured and linked to nothing. It changes nothing today, and is worth cleaning up or linking. |
 | `No - every link is disabled` | Linked, but every link is switched off, so it reaches nothing either. `GPOStatus` says the same in its own row. |
 
-`EffectiveSetting` only weighs linkage and link order. Whether the policy's computer
-configuration is switched off is a separate question, answered by `GPOStatus`.
+`EffectiveSetting` weighs linkage, enforcement and link order. In the LDAP and SMB signing
+checks it reads the domain controllers the way the `reachesDomainControllers` row does:
+where their computer objects actually are, the site each is in, and the containers that
+block inheritance. Whether the policy's computer configuration is switched off is a
+separate question, answered by `GPOStatus`.
 
 ### Get-GPOPermissions
 
