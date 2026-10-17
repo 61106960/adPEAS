@@ -214,6 +214,23 @@ function Get-ASREPRoastableAccounts {
                 if ($protectedCount -gt 0) {
                     Show-Line "$protectedCount of them is/are in Protected Users - AES-only AS-REP, slower to crack" -Class "Hint"
                 }
+
+                # Kerberoasting without pre-authentication: an account that needs none lets
+                # anybody send an AS-REQ for it whose service name is any account with an SPN,
+                # and the KDC answers with a service ticket encrypted with that account's key.
+                # One such account therefore makes every kerberoastable account roastable
+                # without any credentials. Counted with the kerberoast check's own filter;
+                # -Properties because only the number is used here.
+                $domainSIDForRoast = $Script:LDAPContext['DomainSID']
+                $krbtgtExclusion = if ($domainSIDForRoast) {
+                    "(&(!(objectSid=$domainSIDForRoast-502))(!(msDS-SecondaryKrbTgtNumber=*)))"
+                } else {
+                    "(&(!(samAccountName=krbtgt))(!(msDS-SecondaryKrbTgtNumber=*)))"
+                }
+                $spnAccounts = @(Get-DomainUser -SPN -Enabled -LDAPFilter $krbtgtExclusion -Properties 'sAMAccountName' @connectionParams)
+                if (@($spnAccounts).Count -gt 0) {
+                    Show-Line "Through these accounts, $(@($spnAccounts).Count) kerberoastable account(s) can be roasted without any credentials" -Class "Finding" -FindingId 'KERBEROAST_WITHOUT_PREAUTH'
+                }
             } else {
                 Show-Line "No AS-REP Roastable accounts found" -Class "Secure"
             }

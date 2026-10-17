@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-17 14:00:08
-    Version: 2.7.0+20261017-1400
+    Build: 2026-10-17 14:04:39
+    Version: 2.7.0+20261017-1404
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -8180,6 +8180,42 @@ $Script:FindingDefinitions = @{
             # encrypted, which is the difference between a crack and a cracking budget.
             @{ Attribute = 'protectedUsersMember'; Severity = 'Hint' }
         )
+    }
+
+    # Reached through the summary line of Get-ASREPRoastableAccounts (-FindingId), which
+    # is written only when an account without pre-authentication exists and at least one
+    # account carries an SPN.
+    'KERBEROAST_WITHOUT_PREAUTH' = @{
+        Title = "Kerberoasting Without Credentials Through an Account Without Pre-Authentication"
+        Risk = "Finding"
+        BaseScore = 35
+        Description = "An account that does not require Kerberos pre-authentication lets anybody send an AS-REQ for it, and the service name in that request may be any account with a service principal name. The KDC answers with a service ticket for that service, encrypted with its account's key - which is all Kerberoasting needs. With one such account in the domain, every kerberoastable account can be roasted by an attacker who holds no credentials at all, only a list of account names."
+        Impact = @(
+            "Kerberoasting no longer needs a domain account - network access to a domain controller is enough"
+            "Every service account with an SPN is exposed, whatever its own pre-authentication setting"
+            "The requests carry no pre-authentication and show up only as AS-REQs for the one account without it"
+        )
+        Attack = @(
+            "1. Attacker learns the name of an account without pre-authentication and of the accounts with an SPN"
+            "2. Sends an AS-REQ for the first account whose sname is one of the SPN accounts (Rubeus kerberoast /nopreauth, impacket GetUserSPNs -no-preauth)"
+            "3. Cracks the service tickets offline like any Kerberoast result"
+        )
+        Remediation = @(
+            "Require pre-authentication on every account - removing the last account without it closes this path for all SPN accounts at once"
+            "Give the accounts with an SPN long random passwords, or move them to gMSAs, which closes it for each of them whatever else happens"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Find the accounts without pre-authentication"
+                Command = "Get-ADUser -Filter {DoesNotRequirePreAuth -eq `$true} -Properties DoesNotRequirePreAuth | Select-Object Name,SamAccountName"
+            }
+        )
+        References = @(
+            @{ Title = "New Attack Paths? AS Requested Service Tickets - Semperis"; Url = "https://www.semperis.com/blog/new-attack-paths-as-requested-sts/" }
+            @{ Title = "Kerberoasting - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1558/003/" }
+        )
+        Tools = @("Rubeus", "Impacket")
+        MITRE = "T1558.003"
     }
 
     'KERBEROS_HASH_CRACKABLE' = @{
@@ -123583,6 +123619,23 @@ function Get-ASREPRoastableAccounts {
                 if ($protectedCount -gt 0) {
                     Show-Line "$protectedCount of them is/are in Protected Users - AES-only AS-REP, slower to crack" -Class "Hint"
                 }
+
+                # Kerberoasting without pre-authentication: an account that needs none lets
+                # anybody send an AS-REQ for it whose service name is any account with an SPN,
+                # and the KDC answers with a service ticket encrypted with that account's key.
+                # One such account therefore makes every kerberoastable account roastable
+                # without any credentials. Counted with the kerberoast check's own filter;
+                # -Properties because only the number is used here.
+                $domainSIDForRoast = $Script:LDAPContext['DomainSID']
+                $krbtgtExclusion = if ($domainSIDForRoast) {
+                    "(&(!(objectSid=$domainSIDForRoast-502))(!(msDS-SecondaryKrbTgtNumber=*)))"
+                } else {
+                    "(&(!(samAccountName=krbtgt))(!(msDS-SecondaryKrbTgtNumber=*)))"
+                }
+                $spnAccounts = @(Get-DomainUser -SPN -Enabled -LDAPFilter $krbtgtExclusion -Properties 'sAMAccountName' @connectionParams)
+                if (@($spnAccounts).Count -gt 0) {
+                    Show-Line "Through these accounts, $(@($spnAccounts).Count) kerberoastable account(s) can be roasted without any credentials" -Class "Finding" -FindingId 'KERBEROAST_WITHOUT_PREAUTH'
+                }
             } else {
                 Show-Line "No AS-REP Roastable accounts found" -Class "Secure"
             }
@@ -139377,7 +139430,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261017-1400"
+$Script:adPEASVersion = "2.7.0+20261017-1404"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

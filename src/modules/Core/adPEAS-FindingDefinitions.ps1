@@ -240,6 +240,42 @@ $Script:FindingDefinitions = @{
         )
     }
 
+    # Reached through the summary line of Get-ASREPRoastableAccounts (-FindingId), which
+    # is written only when an account without pre-authentication exists and at least one
+    # account carries an SPN.
+    'KERBEROAST_WITHOUT_PREAUTH' = @{
+        Title = "Kerberoasting Without Credentials Through an Account Without Pre-Authentication"
+        Risk = "Finding"
+        BaseScore = 35
+        Description = "An account that does not require Kerberos pre-authentication lets anybody send an AS-REQ for it, and the service name in that request may be any account with a service principal name. The KDC answers with a service ticket for that service, encrypted with its account's key - which is all Kerberoasting needs. With one such account in the domain, every kerberoastable account can be roasted by an attacker who holds no credentials at all, only a list of account names."
+        Impact = @(
+            "Kerberoasting no longer needs a domain account - network access to a domain controller is enough"
+            "Every service account with an SPN is exposed, whatever its own pre-authentication setting"
+            "The requests carry no pre-authentication and show up only as AS-REQs for the one account without it"
+        )
+        Attack = @(
+            "1. Attacker learns the name of an account without pre-authentication and of the accounts with an SPN"
+            "2. Sends an AS-REQ for the first account whose sname is one of the SPN accounts (Rubeus kerberoast /nopreauth, impacket GetUserSPNs -no-preauth)"
+            "3. Cracks the service tickets offline like any Kerberoast result"
+        )
+        Remediation = @(
+            "Require pre-authentication on every account - removing the last account without it closes this path for all SPN accounts at once"
+            "Give the accounts with an SPN long random passwords, or move them to gMSAs, which closes it for each of them whatever else happens"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Find the accounts without pre-authentication"
+                Command = "Get-ADUser -Filter {DoesNotRequirePreAuth -eq `$true} -Properties DoesNotRequirePreAuth | Select-Object Name,SamAccountName"
+            }
+        )
+        References = @(
+            @{ Title = "New Attack Paths? AS Requested Service Tickets - Semperis"; Url = "https://www.semperis.com/blog/new-attack-paths-as-requested-sts/" }
+            @{ Title = "Kerberoasting - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1558/003/" }
+        )
+        Tools = @("Rubeus", "Impacket")
+        MITRE = "T1558.003"
+    }
+
     'KERBEROS_HASH_CRACKABLE' = @{
         Title = "Kerberos Hash - Offline Cracking"
         Risk = "Finding"

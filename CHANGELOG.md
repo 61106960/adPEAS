@@ -99,6 +99,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   several ACEs is reported once with all of its rights; the check used to keep the first
   ACE the descriptor returned, and the descriptor re-sorts them on load.
 
+- **An account without Kerberos pre-authentication is said to make Kerberoasting possible
+  without credentials.** Such an account lets anybody request service tickets in an
+  AS-REQ, so with one of them every account with an SPN can be roasted by an attacker who
+  holds no account at all. `Get-ASREPRoastableAccounts` names how many accounts that
+  reaches, with a card of its own.
+
 - **The Kerberos policy is read from the GPOs that set it.** `Get-DomainInformation` read
   the ticket lifetimes from the domain object, which does not carry them - so the row
   always said "Unknown" and the card for widened lifetimes could never appear. They now
