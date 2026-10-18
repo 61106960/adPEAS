@@ -20620,13 +20620,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    TitleFormat = "Domain Controllers"
 	    Module = "Domain"
 	    Category = "Domain"
-	    SectionTitle = "Domain Controllers"
-	    Summary = "Lists all Domain Controllers in the domain."
+	    SectionTitle = "Domain Controllers and FSMO Roles"
+	    Summary = "Lists the Domain Controllers of the domain and the FSMO roles each of them holds."
 	    WhyItMatters = "Domain Controllers are Tier-0 assets containing all domain secrets. Understanding the DC infrastructure helps identify critical assets requiring maximum protection."
 	    WhatWeCheck = @(
 	        "All computers with the DC role"
-	        "FSMO role assignments"
-	        "Global Catalog servers"
+	        "Which Domain Controller holds each of the five FSMO roles"
 	    )
 	}
 	'SitesAndSubnets' = @{
@@ -64593,7 +64592,7 @@ function Get-DomainInformation {
 	        } else {
 	            Show-Line "Guest account not found (unusual - RID 501 should always exist)" -Class Hint
 	        }
-	        Show-SubHeader "Searching for Domain Controllers..." -ObjectType "DomainController"
+	        Show-SubHeader "Listing the Domain Controllers and their FSMO roles..." -ObjectType "DomainControllers"
 	        $FSMORoles = @{}
 	        $FSMOByDC = @{}
 	        try {
@@ -72248,7 +72247,7 @@ function Get-InfrastructureServers {
 	    } catch {
 	        Show-Line "Domain Controller enumeration failed - result unknown, not empty" -Class "Note"
 	    }
-	    Show-SubHeader "Searching for Exchange Servers..." -ObjectType "ExchangeServer"
+	    Show-SubHeader "Searching for Exchange Servers..." -ObjectType "ExchangeServerBasic"
 	    try {
 	        $exchangeVersionByName = @{}
 	        $configNC = $Script:LDAPContext.ConfigurationNamingContext
@@ -77412,7 +77411,7 @@ function Get-ExchangeInfrastructure {
 	            $srvObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ExchangeConfigServer' -Force
 	            Show-Object $srvObj -Class Hint
 	        }
-	        Show-SubHeader "Searching for Exchange servers..." -ObjectType "ExchangeServer"
+	        Show-SubHeader "Checking the Exchange servers and their web endpoints..." -ObjectType "ExchangeServer"
 	        $exchangeServers = @()
 	        try {
 	            $servers = Get-DomainComputer -LDAPFilter "(msExchCurrentServerRoles>=1)" @PSBoundParameters
@@ -91505,7 +91504,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1813"
+$Script:adPEASVersion = "2.7.0+20261018-1822"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

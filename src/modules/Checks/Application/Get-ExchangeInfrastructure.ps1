@@ -378,7 +378,9 @@ function Get-ExchangeInfrastructure {
             }
 
             # ===== Step 2: Enumerate Exchange Servers (Domain Partition - detailed) =====
-            Show-SubHeader "Searching for Exchange servers..." -ObjectType "ExchangeServer"
+            # Not "Searching for Exchange servers...": Get-InfrastructureServers announces
+            # its inventory of the same servers that way, one letter apart.
+            Show-SubHeader "Checking the Exchange servers and their web endpoints..." -ObjectType "ExchangeServer"
 
             $exchangeServers = @()
 

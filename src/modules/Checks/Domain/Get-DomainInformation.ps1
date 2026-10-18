@@ -682,7 +682,11 @@ function Get-DomainInformation {
             # SubCheck 4: Domain Controllers
             # Severity: Note (informational only, OS/LDAPS checked elsewhere)
             # ===================================================================
-            Show-SubHeader "Searching for Domain Controllers..." -ObjectType "DomainController"
+            # Its own header and object type: Get-InfrastructureServers lists the Domain
+            # Controller computer accounts under "Searching for Domain Controllers...", and
+            # the report titles a card by the object type of its header - both sections
+            # came out as "Domain Controllers" with the inventory's help text.
+            Show-SubHeader "Listing the Domain Controllers and their FSMO roles..." -ObjectType "DomainControllers"
 
             # Query FSMO Roles first to associate with DCs
             $FSMORoles = @{}

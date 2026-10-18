@@ -1189,6 +1189,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   keeps its own section, and so does a readable configuration with a server but no
   receive connector.
 
+- **No two checks announce the same section.** `Get-DomainInformation` and
+  `Get-InfrastructureServers` both printed "Searching for Domain Controllers...", and
+  `Get-InfrastructureServers` announced its Exchange inventory with the object type of
+  the analysis in `Get-ExchangeInfrastructure`, which printed "Searching for Exchange
+  servers...". The report titles a card by its header's object type, so it showed two
+  cards "Domain Controllers" and two "Exchange Servers", each pair sharing one help
+  text. The domain overview now lists *the Domain Controllers and their FSMO roles* under
+  a type of its own. Its card no longer claims Global Catalog servers, which it never
+  read. The inventory's Exchange section uses `ExchangeServerBasic` like its SCCM and
+  SCOM sections, and the analysis is *Checking the Exchange servers and their web
+  endpoints*.
+
 ---
 
 ## [2.7.0] - 2026-10-08

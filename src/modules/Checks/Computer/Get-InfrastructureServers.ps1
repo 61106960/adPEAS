@@ -368,7 +368,11 @@ function Get-InfrastructureServers {
         }
 
         # ===== Exchange Servers =====
-        Show-SubHeader "Searching for Exchange Servers..." -ObjectType "ExchangeServer"
+        # ExchangeServerBasic, the type of the objects below - like the SCCM and SCOM
+        # sections. ExchangeServer belongs to the analysis in Get-ExchangeInfrastructure,
+        # and the report titles a card by its header's object type: both came out as
+        # "Exchange Servers" with that analysis's help text.
+        Show-SubHeader "Searching for Exchange Servers..." -ObjectType "ExchangeServerBasic"
 
         try {
             # Exchange records its own servers in the Configuration partition, one

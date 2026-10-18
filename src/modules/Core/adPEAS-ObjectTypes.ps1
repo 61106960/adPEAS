@@ -91,13 +91,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         TitleFormat = "Domain Controllers"
         Module = "Domain"
         Category = "Domain"
-        SectionTitle = "Domain Controllers"
-        Summary = "Lists all Domain Controllers in the domain."
+        SectionTitle = "Domain Controllers and FSMO Roles"
+        Summary = "Lists the Domain Controllers of the domain and the FSMO roles each of them holds."
         WhyItMatters = "Domain Controllers are Tier-0 assets containing all domain secrets. Understanding the DC infrastructure helps identify critical assets requiring maximum protection."
         WhatWeCheck = @(
             "All computers with the DC role"
-            "FSMO role assignments"
-            "Global Catalog servers"
+            "Which Domain Controller holds each of the five FSMO roles"
         )
     }
 

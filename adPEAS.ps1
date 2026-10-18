@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 18:13:02
-    Version: 2.7.0+20261018-1813
+    Build: 2026-10-18 18:22:03
+    Version: 2.7.0+20261018-1822
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -27605,13 +27605,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         TitleFormat = "Domain Controllers"
         Module = "Domain"
         Category = "Domain"
-        SectionTitle = "Domain Controllers"
-        Summary = "Lists all Domain Controllers in the domain."
+        SectionTitle = "Domain Controllers and FSMO Roles"
+        Summary = "Lists the Domain Controllers of the domain and the FSMO roles each of them holds."
         WhyItMatters = "Domain Controllers are Tier-0 assets containing all domain secrets. Understanding the DC infrastructure helps identify critical assets requiring maximum protection."
         WhatWeCheck = @(
             "All computers with the DC role"
-            "FSMO role assignments"
-            "Global Catalog servers"
+            "Which Domain Controller holds each of the five FSMO roles"
         )
     }
 
@@ -104309,7 +104308,11 @@ function Get-DomainInformation {
             # SubCheck 4: Domain Controllers
             # Severity: Note (informational only, OS/LDAPS checked elsewhere)
             # ===================================================================
-            Show-SubHeader "Searching for Domain Controllers..." -ObjectType "DomainController"
+            # Its own header and object type: Get-InfrastructureServers lists the Domain
+            # Controller computer accounts under "Searching for Domain Controllers...", and
+            # the report titles a card by the object type of its header - both sections
+            # came out as "Domain Controllers" with the inventory's help text.
+            Show-SubHeader "Listing the Domain Controllers and their FSMO roles..." -ObjectType "DomainControllers"
 
             # Query FSMO Roles first to associate with DCs
             $FSMORoles = @{}
@@ -118459,7 +118462,11 @@ function Get-InfrastructureServers {
         }
 
         # ===== Exchange Servers =====
-        Show-SubHeader "Searching for Exchange Servers..." -ObjectType "ExchangeServer"
+        # ExchangeServerBasic, the type of the objects below - like the SCCM and SCOM
+        # sections. ExchangeServer belongs to the analysis in Get-ExchangeInfrastructure,
+        # and the report titles a card by its header's object type: both came out as
+        # "Exchange Servers" with that analysis's help text.
+        Show-SubHeader "Searching for Exchange Servers..." -ObjectType "ExchangeServerBasic"
 
         try {
             # Exchange records its own servers in the Configuration partition, one
@@ -128050,7 +128057,9 @@ function Get-ExchangeInfrastructure {
             }
 
             # ===== Step 2: Enumerate Exchange Servers (Domain Partition - detailed) =====
-            Show-SubHeader "Searching for Exchange servers..." -ObjectType "ExchangeServer"
+            # Not "Searching for Exchange servers...": Get-InfrastructureServers announces
+            # its inventory of the same servers that way, one letter apart.
+            Show-SubHeader "Checking the Exchange servers and their web endpoints..." -ObjectType "ExchangeServer"
 
             $exchangeServers = @()
 
@@ -147138,7 +147147,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1813"
+$Script:adPEASVersion = "2.7.0+20261018-1822"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
