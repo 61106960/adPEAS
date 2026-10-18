@@ -65085,9 +65085,12 @@ function Get-DomainPasswordPolicy {
 	            pwdHistoryLength = Format-PasswordHistoryLength -Value $(if ($hasPwdHistoryLength) { $pwdHistoryLength } else { $null })
 	        }
 	        if ($hasPwdProperties) {
-	            $pwdPropsDisplay = @($pwdPropsSet | ForEach-Object { "$($_.Name) - $($_.Text)" })
-	            if ($pwdPropsDisplay.Count -eq 0) { $pwdPropsDisplay = @('None set') }
-	            $passwordPolicyObj | Add-Member -NotePropertyName 'passwordProperties' -NotePropertyValue $pwdPropsDisplay -Force
+	            $pwdPropsOwnRow = @('DOMAIN_PASSWORD_COMPLEX', 'DOMAIN_PASSWORD_STORE_CLEARTEXT')
+	            $pwdPropsDisplay = @($pwdPropsSet | Where-Object { $pwdPropsOwnRow -notcontains $_.Name } |
+	                ForEach-Object { "$($_.Name) - $($_.Text)" })
+	            if ($pwdPropsDisplay.Count -gt 0) {
+	                $passwordPolicyObj | Add-Member -NotePropertyName 'passwordProperties' -NotePropertyValue $pwdPropsDisplay -Force
+	            }
 	        }
 	        if ($hasPwdProperties -and $lockoutThreshold -gt 0 -and -not $adminLockoutApplies) {
 	            $passwordPolicyObj | Add-Member -NotePropertyName 'builtinAdministratorLockout' `
@@ -91685,7 +91688,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-2046"
+$Script:adPEASVersion = "2.7.0+20261018-2130"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

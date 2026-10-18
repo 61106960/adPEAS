@@ -858,11 +858,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   and a row next to it says so.
 
 - **The domain password policy shows every `pwdProperties` flag.** Two of the six fed the
-  verdict and the other four were never shown. Each flag that is set is now listed by
-  name and meaning; three of them MS-SAMR calls reserved, and the row says so. Where a
-  lockout threshold exists and `DOMAIN_LOCKOUT_ADMINS` is not set, a row says that the
-  built-in Administrator is exempt from the lockout - the default, so it is information
-  and changes no severity.
+  verdict and the other four were never shown. `passwordProperties` now lists each of
+  those four that is set, by name and meaning; MS-SAMR calls two of them reserved, and
+  the row says so. Complexity and reversible encryption keep their own rows and are not
+  repeated there, so a domain with none of the four set shows no `passwordProperties`
+  row. Where a lockout threshold exists and `DOMAIN_LOCKOUT_ADMINS` is not set, a row
+  says that the built-in Administrator is exempt from the lockout - the default, so it
+  is information and changes no severity.
 
 - **An unread lockout threshold or `pwdProperties` is no longer reported as disabled.**
   Both became 0 when the attribute did not arrive or could not be parsed, and 0 carries

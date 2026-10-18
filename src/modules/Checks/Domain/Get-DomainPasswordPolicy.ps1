@@ -37,7 +37,7 @@ function Get-DomainPasswordPolicy {
     Collects:
     - Domain Default Policy: minimum length, complexity, minimum and maximum age, password
       history, reversible encryption, lockout threshold, duration and observation window,
-      and every pwdProperties flag
+      and the pwdProperties flags that have no row of their own
     - Fine-Grained Password Policies (FGPP): the same settings from each policy, its
       precedence, and whom it applies to
 
@@ -277,13 +277,19 @@ function Get-DomainPasswordPolicy {
                 pwdHistoryLength = Format-PasswordHistoryLength -Value $(if ($hasPwdHistoryLength) { $pwdHistoryLength } else { $null })
             }
 
-            # Every flag that is set, named and read out - so a reader sees the whole
-            # attribute, not the two flags the verdict uses. Only where the attribute
-            # arrived; an absent one says nothing about any flag.
+            # The flags that have no row of their own, named and read out, so no bit of the
+            # attribute is lost. Complexity and reversible encryption are rows above, and
+            # in an ordinary domain repeating them was all this row said -
+            # "DOMAIN_PASSWORD_COMPLEX - complexity required" two rows under
+            # "passwordComplexity: Enabled". With none of the others set there is no row.
+            # Only where the attribute arrived; an absent one says nothing about any flag.
             if ($hasPwdProperties) {
-                $pwdPropsDisplay = @($pwdPropsSet | ForEach-Object { "$($_.Name) - $($_.Text)" })
-                if ($pwdPropsDisplay.Count -eq 0) { $pwdPropsDisplay = @('None set') }
-                $passwordPolicyObj | Add-Member -NotePropertyName 'passwordProperties' -NotePropertyValue $pwdPropsDisplay -Force
+                $pwdPropsOwnRow = @('DOMAIN_PASSWORD_COMPLEX', 'DOMAIN_PASSWORD_STORE_CLEARTEXT')
+                $pwdPropsDisplay = @($pwdPropsSet | Where-Object { $pwdPropsOwnRow -notcontains $_.Name } |
+                    ForEach-Object { "$($_.Name) - $($_.Text)" })
+                if ($pwdPropsDisplay.Count -gt 0) {
+                    $passwordPolicyObj | Add-Member -NotePropertyName 'passwordProperties' -NotePropertyValue $pwdPropsDisplay -Force
+                }
             }
 
             # Without DOMAIN_LOCKOUT_ADMINS - the default - failed network logons never lock
