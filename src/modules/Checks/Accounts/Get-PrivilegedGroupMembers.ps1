@@ -1381,8 +1381,28 @@ function Get-PrivilegedGroupMembers {
                         if (-not $aceSID) { continue }
 
                         if ($ACE.AccessControlType -eq 'Deny') {
-                            # A Deny on AdminSDHolder is itself worth a look: it can hide the
-                            # template from the very administrators who would audit it.
+                            # A Deny on AdminSDHolder is itself worth a look when it can hide
+                            # the template from the very administrators who would audit it:
+                            # one on ReadControl keeps them from reading its DACL, one on reading
+                            # or listing the whole object keeps them from seeing it at all.
+                            #
+                            # A Deny on writing one attribute hides nothing. Exchange setup
+                            # writes four - Exchange Servers and Exchange Trusted Subsystem
+                            # denied WriteProperty on userCertificate, altSecurityIdentities and
+                            # servicePrincipalName, measured - so that a compromised Exchange
+                            # server cannot plant a certificate mapping or an SPN on a
+                            # protected account. They were listed as hiding the template.
+                            $denyType = $ACE.ObjectType
+                            $denyWholeObject = (-not $denyType -or $denyType -eq [Guid]::Empty)
+                            $hidesTemplate = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadControl)) -or
+                                ($denyWholeObject -and (
+                                    (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty)) -or
+                                    (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ListChildren)) -or
+                                    (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ListObject))))
+                            if (-not $hidesTemplate) {
+                                Write-Log "[Get-PrivilegedGroupMembers] Deny on AdminSDHolder that hides nothing: $aceSID $($ACE.ActiveDirectoryRights) $denyType"
+                                continue
+                            }
                             $denyName = ConvertFrom-SID -SID $aceSID
                             if (-not $denyName) { $denyName = $aceSID }
                             if ($denyTrustees -notcontains $denyName) { $denyTrustees += $denyName }

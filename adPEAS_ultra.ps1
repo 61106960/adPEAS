@@ -66808,6 +66808,16 @@ function Get-PrivilegedGroupMembers {
 	                    }
 	                    if (-not $aceSID) { continue }
 	                    if ($ACE.AccessControlType -eq 'Deny') {
+	                        $denyType = $ACE.ObjectType
+	                        $denyWholeObject = (-not $denyType -or $denyType -eq [Guid]::Empty)
+	                        $hidesTemplate = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadControl)) -or
+	                            ($denyWholeObject -and (
+	                                (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty)) -or
+	                                (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ListChildren)) -or
+	                                (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ListObject))))
+	                        if (-not $hidesTemplate) {
+	                            continue
+	                        }
 	                        $denyName = ConvertFrom-SID -SID $aceSID
 	                        if (-not $denyName) { $denyName = $aceSID }
 	                        if ($denyTrustees -notcontains $denyName) { $denyTrustees += $denyName }
@@ -91176,7 +91186,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1256"
+$Script:adPEASVersion = "2.7.0+20261018-1303"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

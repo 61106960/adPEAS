@@ -649,6 +649,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   server inventory and wherever else a domain controller was printed. It is a hint with
   the card written for domain controllers now.
 
+- **Exchange's Deny ACEs on AdminSDHolder are no longer said to hide the template.**
+  Exchange setup denies Exchange Servers and Exchange Trusted Subsystem writing
+  userCertificate, altSecurityIdentities and servicePrincipalName on protected accounts -
+  hardening against a compromised Exchange server - and `Get-PrivilegedGroupMembers`
+  listed both groups as Deny trustees that "can hide the template from the people who
+  audit it". Only a Deny that keeps someone from reading the template's DACL, or from
+  reading or listing the object as a whole, is listed now.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
