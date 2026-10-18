@@ -402,9 +402,9 @@ function Get-DomainInformation {
             }
             elseif ($Script:LDAPContext['AnonymousAccessTested']) {
                 # Measured and refused. This is the earned green state, and nothing used
-                # to say it out loud.
-                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue (
-                    'Refused - an anonymous bind was tried and could not read the domain object') -Force
+                # to say it out loud. "(tested)" is what sets it apart from the dsHeuristics
+                # reading; what was tried is the card's to explain.
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue 'Refused (tested)' -Force
             }
             else {
                 # Not asked, or asked and never answered. Neutral on purpose: this is the one
@@ -430,11 +430,12 @@ function Get-DomainInformation {
             if ($null -eq $deletion.TombstoneLifetime) {
                 $tombstoneText = 'Unknown - the Directory Service object could not be read'
             } else {
+                # Short on purpose - what the lifetime bounds is the card's to say.
                 $tombstoneDays = $deletion.TombstoneLifetime
-                $tombstoneText = if ($deletion.TombstoneLifetimeSet) { "$tombstoneDays days" } else { "$tombstoneDays days - not set, which means $tombstoneDays" }
+                $tombstoneText = if ($deletion.TombstoneLifetimeSet) { "$tombstoneDays days" } else { "$tombstoneDays days (not set)" }
                 if ($tombstoneDays -lt 180) {
                     $maintenanceHint = $true
-                    $tombstoneText += "; shorter than the 180 days Microsoft sets in a new forest - a backup older than $tombstoneDays days can no longer be restored"
+                    $tombstoneText += ' - below the 180-day default'
                 }
             }
             $domainInfoObj | Add-Member -NotePropertyName 'tombstoneLifetime' -NotePropertyValue $tombstoneText -Force
@@ -451,7 +452,11 @@ function Get-DomainInformation {
             }
             $domainInfoObj | Add-Member -NotePropertyName 'recycleBin' -NotePropertyValue $recycleBinText -Force
             if ($deletion.RecycleBin -and $null -ne $deletion.DeletedObjectLifetime) {
-                $domainInfoObj | Add-Member -NotePropertyName 'deletedObjectLifetime' -NotePropertyValue "$($deletion.DeletedObjectLifetime) days" -Force
+                # Unset, it takes the tombstone lifetime, and the two rows read like two
+                # settings that happen to agree unless this one says where its value is from.
+                $deletedText = "$($deletion.DeletedObjectLifetime) days"
+                if (-not $deletion.DeletedObjectLifetimeSet) { $deletedText += ' (not set, follows tombstoneLifetime)' }
+                $domainInfoObj | Add-Member -NotePropertyName 'deletedObjectLifetime' -NotePropertyValue $deletedText -Force
             }
 
             # Which service replicates SYSVOL. FRS is deprecated, and a domain that still
@@ -846,9 +851,10 @@ function Get-DomainInformation {
 
 .OUTPUTS
     PSCustomObject: TombstoneLifetime (days, effective), TombstoneLifetimeSet ($true when
-    the attribute carries a value), DeletedObjectLifetime (days, effective), both $null when
-    the Directory Service object could not be read; RecycleBin $true, $false, or $null when
-    the Partitions container could not be read.
+    the attribute carries a value), DeletedObjectLifetime (days, effective),
+    DeletedObjectLifetimeSet (the same for msDS-DeletedObjectLifetime), both lifetimes $null
+    when the Directory Service object could not be read; RecycleBin $true, $false, or $null
+    when the Partitions container could not be read.
 #>
 function Get-ForestDeletionSetting {
     [CmdletBinding()]
@@ -858,10 +864,11 @@ function Get-ForestDeletionSetting {
     )
 
     $result = [PSCustomObject]@{
-        TombstoneLifetime     = $null
-        TombstoneLifetimeSet  = $false
-        DeletedObjectLifetime = $null
-        RecycleBin            = $null
+        TombstoneLifetime        = $null
+        TombstoneLifetimeSet     = $false
+        DeletedObjectLifetime    = $null
+        DeletedObjectLifetimeSet = $false
+        RecycleBin               = $null
     }
     $configDN = $Script:LDAPContext.ConfigurationNamingContext
     if (-not $configDN) { return $result }
@@ -877,10 +884,11 @@ function Get-ForestDeletionSetting {
                 $result.TombstoneLifetime = 60
             }
             $deletedDays = 0
-            $result.DeletedObjectLifetime = if ([int]::TryParse([string]$dirService.'msDS-DeletedObjectLifetime', [ref]$deletedDays)) {
-                [Math]::Max($deletedDays, 2)
+            if ([int]::TryParse([string]$dirService.'msDS-DeletedObjectLifetime', [ref]$deletedDays)) {
+                $result.DeletedObjectLifetimeSet = $true
+                $result.DeletedObjectLifetime = [Math]::Max($deletedDays, 2)
             } else {
-                $result.TombstoneLifetime
+                $result.DeletedObjectLifetime = $result.TombstoneLifetime
             }
         }
     } catch {

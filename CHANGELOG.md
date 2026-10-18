@@ -339,8 +339,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   2008 R2 or higher is a hint - a deleted object then keeps only a few attributes and
   comes back without its group memberships - and below that level it is said to be
   unavailable. With the Recycle Bin, `deletedObjectLifetime` shows how long a deleted
-  object stays complete. Two new cards, *Active Directory Recycle Bin Not Enabled* and
-  *Tombstone Lifetime Shorter Than 180 Days*.
+  object stays complete, marked "(not set, follows tombstoneLifetime)" where it takes the
+  tombstone lifetime. The rows stay short - "60 days (not set) - below the 180-day
+  default" - and the card of the domain information says what each lifetime bounds. Two
+  new cards, *Active Directory Recycle Bin Not Enabled* and *Tombstone Lifetime Shorter
+  Than 180 Days*.
 
 - **`Get-DomainInformation` says which service replicates SYSVOL.** A new
   `sysvolReplication` row reads the FRS replica set and the DFSR replication group of
@@ -568,9 +571,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **The anonymous LDAP row says what was measured.** In a fresh Windows PowerShell
   session the anonymous bind test never ran: it was the first code of the connection to
   create a `System.DirectoryServices.Protocols` type, the assembly was loaded only after
-  it, and the error was read as a refused bind - so `Get-DomainInformation` printed
-  "Refused - an anonymous bind was tried and could not read the domain object" for a bind
-  nobody tried. The assembly is loaded before the test now, and a test the server never
+  it, and the error was read as a refused bind - so `Get-DomainInformation` printed a
+  refused bind for a bind nobody tried. The assembly is loaded before the test now; a
+  bind that was tried and refused reads "Refused (tested)", and a test the server never
   answered - a domain controller out of reach, a timeout, a connect error - is reported
   as "Not tested" with its reason instead of as refused. The finding pattern for an
   enabled anonymous bind is anchored, so the text of that reason cannot colour the row.

@@ -12667,7 +12667,7 @@ $acl.Access | Where-Object {
         Tools = @()
         MITRE = "T1490"
         Triggers = @(
-            @{ Attribute = 'tombstoneLifetime'; Pattern = 'shorter than the 180 days'; Severity = 'Hint' }
+            @{ Attribute = 'tombstoneLifetime'; Pattern = 'below the 180-day default$'; Severity = 'Hint' }
         )
     }
 
