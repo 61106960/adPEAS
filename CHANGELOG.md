@@ -681,6 +681,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - not one that can rewrite the DACL. The same reading decided ESC14 findings for
   delegations outside Exchange.
 
+- **The OU permission checks count what they analysed.** `Get-PasswordResetRights`
+  counted a protected administrator once per privileged group it belongs to - measured,
+  one account was "5 privileged account(s) have inheritance disabled" - and then said "No
+  OUs with privileged users found to analyze" about an account that sits in an OU. It
+  counts accounts now and says that no other privileged account was found.
+  `Get-DangerousOUPermissions`, `Get-PasswordResetRights` and `Get-LAPSPermissions`
+  analyse containers such as CN=Users alongside organizational units and called all of
+  them OUs ("12 analyzed OU(s)" for 4 OUs and 8 containers); they name both counts now.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

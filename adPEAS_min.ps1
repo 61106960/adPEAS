@@ -54897,6 +54897,23 @@ function ConvertTo-UACValue {
     if (-not $sawSomething) { return $Default }
     return $uac
 }
+function Format-OUContainerCount {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$DistinguishedName
+    )
+    $dns = @($DistinguishedName | Where-Object { $_ })
+    $ouCount = @($dns | Where-Object { $_ -match '^OU=' }).Count
+    $containerCount = $dns.Count - $ouCount
+    if ($containerCount -eq 0) { return "$ouCount OU(s)" }
+    if ($ouCount -eq 0) { return "$containerCount container(s)" }
+    return "$ouCount OU(s) and $containerCount container(s)"
+}
 function Get-ACEInheritanceSource {
     [CmdletBinding()]
     param(
@@ -72300,7 +72317,7 @@ function Get-DangerousOUPermissions {
             }
             $allFindings = @()
             $ouCount = 0
-            $ouWithFindings = 0
+            $ouWithFindingDNs = @()
             $unreadOUs = @()
             $neutralisedByDeny = 0
             $totalOUs = @($OUs).Count
@@ -72335,7 +72352,7 @@ function Get-DangerousOUPermissions {
                     -not (Test-IsDefaultObjectCreation -Finding $_)
                 }
                 if ($dangerousFindings) {
-                    $ouWithFindings++
+                    $ouWithFindingDNs += $ouDN
                     foreach ($finding in $dangerousFindings) {
                         $isExchangeService = $false
                         $exchangeCheck = Test-IsExchangeServiceGroup -Identity $finding.SID
@@ -72364,6 +72381,7 @@ function Get-DangerousOUPermissions {
             }
             if ($totalOUs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing OU permissions" -Completed }
             $readOUs = $totalOUs - @($unreadOUs).Count
+            $readScope = Format-OUContainerCount -DistinguishedName @(@($OUs | ForEach-Object { [string]$_.distinguishedName }) | Where-Object { $unreadOUs -notcontains $_ })
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
             $conclusionClass = 'Secure'
             if ($coverageIncomplete) { $conclusionClass = 'Note' }
@@ -72374,7 +72392,7 @@ function Get-DangerousOUPermissions {
                 if ($totalOUs -gt 0 -and $readOUs -le 0) {
                     Show-Line "OU permissions were not evaluated - no security descriptor could be read" -Class Note
                 } else {
-                    Show-Line "No dangerous OU permissions detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                    Show-Line "No dangerous OU permissions detected in the $readScope analyzed" -Class $conclusionClass
                 }
                 return
             }
@@ -72404,7 +72422,7 @@ function Get-DangerousOUPermissions {
             }
             if (@($nonExchangeFindings).Count -gt 0) {
                 $countText = if ($IncludePrivileged) { "$(@($nonExchangeFindings).Count) account(s)" } else { "$(@($nonExchangeFindings).Count) non-privileged account(s)" }
-                Show-Line "Found $countText with dangerous OU permissions in $ouWithFindings OU(s)" -Class Finding
+                Show-Line "Found $countText with dangerous OU permissions in $(Format-OUContainerCount -DistinguishedName $ouWithFindingDNs)" -Class Finding
                 foreach ($principalGroup in $nonExchangeFindings) {
                     $sid = $principalGroup.Name
                     $principal = $principalGroup.Group[0].Principal
@@ -72509,7 +72527,7 @@ function Get-DangerousOUPermissions {
                 }
             }
             if (@($nonExchangeFindings).Count -eq 0 -and (-not $IncludePrivileged -or @($exchangeFindings).Count -eq 0)) {
-                Show-Line "No dangerous OU permissions detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                Show-Line "No dangerous OU permissions detected in the $readScope analyzed" -Class $conclusionClass
             }
         } catch {
             Write-Log "[Get-DangerousOUPermissions] Error: $_" -Level Error
@@ -72548,6 +72566,7 @@ function Get-PasswordResetRights {
             }
             $domainSID = $Script:LDAPContext.DomainSID
             $privilegedOUs = @{}
+            $protectedTargetDNs = @{}
             $protectedTargets = 0
             Show-SubHeader "Analyzing password reset rights on OUs with privileged users..." -ObjectType "PasswordResetRight"
             if ($IncludeAllOUs) {
@@ -72619,7 +72638,7 @@ function Get-PasswordResetRights {
                                 if ($memberSD -and $memberSD.SecurityDescriptor -and
                                     $memberSD.SecurityDescriptor.AreAccessRulesProtected) {
                                     Write-Log "[Get-PasswordResetRights] Inheritance is disabled on '$memberDN' - an OU delegation does not reach it"
-                                    $protectedTargets++
+                                    $protectedTargetDNs[[string]$memberDN] = $true
                                     continue
                                 }
                             }
@@ -72641,12 +72660,15 @@ function Get-PasswordResetRights {
                 }
                 Write-Log "[Get-PasswordResetRights] Found $($privilegedOUs.Keys.Count) OU(s)/Container(s) with privileged users"
             }
+            $protectedTargets = $protectedTargetDNs.Count
             if ($privilegedOUs.Keys.Count -eq 0) {
                 Write-Log "[Get-PasswordResetRights] No OUs with privileged users found"
                 if ($protectedTargets -gt 0) {
                     Show-Line "$protectedTargets privileged account(s) have inheritance disabled - a delegation on their OU does not reach them" -Class Secure
+                    Show-Line "No other privileged account was found, so no OU or container was analyzed" -Class Note
+                } else {
+                    Show-Line "No OUs with privileged users found to analyze" -Class Note
                 }
-                Show-Line "No OUs with privileged users found to analyze" -Class Note
                 return
             }
             $allFindings = @()
@@ -72693,6 +72715,7 @@ function Get-PasswordResetRights {
             }
             $totalOUs = @($privilegedOUs.Keys).Count
             $readOUs = $totalOUs - @($unreadOUs).Count
+            $readScope = Format-OUContainerCount -DistinguishedName @(@($privilegedOUs.Keys) | Where-Object { $unreadOUs -notcontains $_ })
             if ($protectedTargets -gt 0) {
                 Show-Line "$protectedTargets privileged account(s) have inheritance disabled - a delegation on their OU does not reach them" -Class Secure
             }
@@ -72703,7 +72726,7 @@ function Get-PasswordResetRights {
                 if ($totalOUs -gt 0 -and $readOUs -le 0) {
                     Show-Line "Password reset rights were not evaluated - no security descriptor could be read" -Class Note
                 } else {
-                    Show-Line "No dangerous password reset rights detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                    Show-Line "No dangerous password reset rights detected in the $readScope analyzed" -Class $conclusionClass
                 }
                 return
             }
@@ -72813,7 +72836,7 @@ function Get-PasswordResetRights {
                 }
             }
             if (@($nonExchangeFindings).Count -eq 0 -and (-not $IncludePrivileged -or @($exchangeFindings).Count -eq 0)) {
-                Show-Line "No dangerous password reset rights detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                Show-Line "No dangerous password reset rights detected in the $readScope analyzed" -Class $conclusionClass
             }
         } catch {
             Write-Log "[Get-PasswordResetRights] Error: $_" -Level Error
@@ -73644,6 +73667,7 @@ function Get-LAPSPermissions {
             }
             if ($totalOUs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS permissions" -Completed }
             $readOUs = $totalOUs - @($unreadOUs).Count
+            $readScope = Format-OUContainerCount -DistinguishedName @(@($computersByOU.Keys) | Where-Object { $unreadOUs -notcontains $_ })
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
             $conclusionClass = 'Secure'
             if ($coverageIncomplete) { $conclusionClass = 'Note' }
@@ -73808,12 +73832,12 @@ function Get-LAPSPermissions {
                     }
                 }
                 if ($allReaderSIDs.Keys.Count -eq 0 -and $privilegedReaderSIDs.Keys.Count -eq 0 -and (-not $IncludePrivileged -or $exchangeReaderSIDs.Keys.Count -eq 0)) {
-                    Show-Line "No non-privileged accounts with LAPS read access found in $readOUs analyzed OU(s)" -Class $conclusionClass
+                    Show-Line "No non-privileged accounts with LAPS read access found in the $readScope analyzed" -Class $conclusionClass
                 }
             } elseif ($totalOUs -gt 0 -and $readOUs -le 0) {
                 Show-Line "LAPS read permissions were not evaluated - no security descriptor could be read" -Class Note
             } else {
-                Show-Line "No non-privileged accounts with LAPS read access found in $readOUs analyzed OU(s)" -Class $conclusionClass
+                Show-Line "No non-privileged accounts with LAPS read access found in the $readScope analyzed" -Class $conclusionClass
             }
         } catch {
             Write-Log "[Get-LAPSPermissions] Error: $_" -Level Error
@@ -94264,7 +94288,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1323"
+$Script:adPEASVersion = "2.7.0+20261018-1337"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

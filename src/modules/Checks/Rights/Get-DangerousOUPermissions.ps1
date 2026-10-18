@@ -152,7 +152,7 @@ function Get-DangerousOUPermissions {
 
             $allFindings = @()
             $ouCount = 0
-            $ouWithFindings = 0
+            $ouWithFindingDNs = @()
             $unreadOUs = @()
             # Delegations an explicit Deny ACE cancels. Get-OUPermissions drops them
             # now rather than reporting access nobody has, and the total is named in
@@ -230,7 +230,7 @@ function Get-DangerousOUPermissions {
                 }
 
                 if ($dangerousFindings) {
-                    $ouWithFindings++
+                    $ouWithFindingDNs += $ouDN
 
                     foreach ($finding in $dangerousFindings) {
                         # Check if this is an Exchange service group
@@ -272,6 +272,7 @@ function Get-DangerousOUPermissions {
             # Both conclusion lines below used to name the full OU count and stay Secure
             # whatever was readable.
             $readOUs = $totalOUs - @($unreadOUs).Count
+            $readScope = Format-OUContainerCount -DistinguishedName @(@($OUs | ForEach-Object { [string]$_.distinguishedName }) | Where-Object { $unreadOUs -notcontains $_ })
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
             $conclusionClass = 'Secure'
             if ($coverageIncomplete) { $conclusionClass = 'Note' }
@@ -288,7 +289,7 @@ function Get-DangerousOUPermissions {
                 if ($totalOUs -gt 0 -and $readOUs -le 0) {
                     Show-Line "OU permissions were not evaluated - no security descriptor could be read" -Class Note
                 } else {
-                    Show-Line "No dangerous OU permissions detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                    Show-Line "No dangerous OU permissions detected in the $readScope analyzed" -Class $conclusionClass
                 }
                 return
             }
@@ -327,7 +328,7 @@ function Get-DangerousOUPermissions {
             # Display non-Exchange findings as Finding (red)
             if (@($nonExchangeFindings).Count -gt 0) {
                 $countText = if ($IncludePrivileged) { "$(@($nonExchangeFindings).Count) account(s)" } else { "$(@($nonExchangeFindings).Count) non-privileged account(s)" }
-                Show-Line "Found $countText with dangerous OU permissions in $ouWithFindings OU(s)" -Class Finding
+                Show-Line "Found $countText with dangerous OU permissions in $(Format-OUContainerCount -DistinguishedName $ouWithFindingDNs)" -Class Finding
 
                 foreach ($principalGroup in $nonExchangeFindings) {
                     $sid = $principalGroup.Name
@@ -446,7 +447,7 @@ function Get-DangerousOUPermissions {
 
             # If no non-Exchange findings were displayed (and Exchange is hidden without -IncludePrivileged)
             if (@($nonExchangeFindings).Count -eq 0 -and (-not $IncludePrivileged -or @($exchangeFindings).Count -eq 0)) {
-                Show-Line "No dangerous OU permissions detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                Show-Line "No dangerous OU permissions detected in the $readScope analyzed" -Class $conclusionClass
             }
 
         } catch {

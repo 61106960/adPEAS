@@ -321,6 +321,7 @@ function Get-LAPSPermissions {
             # Both conclusion lines below used to name the full OU count and stay Secure
             # whatever was readable.
             $readOUs = $totalOUs - @($unreadOUs).Count
+            $readScope = Format-OUContainerCount -DistinguishedName @(@($computersByOU.Keys) | Where-Object { $unreadOUs -notcontains $_ })
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
             $conclusionClass = 'Secure'
             if ($coverageIncomplete) { $conclusionClass = 'Note' }
@@ -551,13 +552,13 @@ function Get-LAPSPermissions {
 
                 # If no non-Exchange findings were displayed (and Exchange is hidden without -IncludePrivileged)
                 if ($allReaderSIDs.Keys.Count -eq 0 -and $privilegedReaderSIDs.Keys.Count -eq 0 -and (-not $IncludePrivileged -or $exchangeReaderSIDs.Keys.Count -eq 0)) {
-                    Show-Line "No non-privileged accounts with LAPS read access found in $readOUs analyzed OU(s)" -Class $conclusionClass
+                    Show-Line "No non-privileged accounts with LAPS read access found in the $readScope analyzed" -Class $conclusionClass
                 }
 
             } elseif ($totalOUs -gt 0 -and $readOUs -le 0) {
                 Show-Line "LAPS read permissions were not evaluated - no security descriptor could be read" -Class Note
             } else {
-                Show-Line "No non-privileged accounts with LAPS read access found in $readOUs analyzed OU(s)" -Class $conclusionClass
+                Show-Line "No non-privileged accounts with LAPS read access found in the $readScope analyzed" -Class $conclusionClass
             }
 
         } catch {

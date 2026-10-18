@@ -108,6 +108,11 @@ function Get-PasswordResetRights {
             #
             # Declared here rather than beside $allFindings: that runs after the loop
             # that increments this, so the count was reset to zero before it was read.
+            #
+            # Keyed by DN: the member query runs once per privileged group and is recursive,
+            # so one Domain Admin comes back for Domain Admins, Administrators, Enterprise
+            # Admins and the rest - measured, one account was "5 privileged account(s)".
+            $protectedTargetDNs = @{}
             $protectedTargets = 0
 
             Show-SubHeader "Analyzing password reset rights on OUs with privileged users..." -ObjectType "PasswordResetRight"
@@ -244,7 +249,7 @@ function Get-PasswordResetRights {
                                 if ($memberSD -and $memberSD.SecurityDescriptor -and
                                     $memberSD.SecurityDescriptor.AreAccessRulesProtected) {
                                     Write-Log "[Get-PasswordResetRights] Inheritance is disabled on '$memberDN' - an OU delegation does not reach it"
-                                    $protectedTargets++
+                                    $protectedTargetDNs[[string]$memberDN] = $true
                                     continue
                                 }
                             }
@@ -279,12 +284,18 @@ function Get-PasswordResetRights {
                 Write-Log "[Get-PasswordResetRights] Found $($privilegedOUs.Keys.Count) OU(s)/Container(s) with privileged users"
             }
 
+            $protectedTargets = $protectedTargetDNs.Count
+
             if ($privilegedOUs.Keys.Count -eq 0) {
                 Write-Log "[Get-PasswordResetRights] No OUs with privileged users found"
                 if ($protectedTargets -gt 0) {
                     Show-Line "$protectedTargets privileged account(s) have inheritance disabled - a delegation on their OU does not reach them" -Class Secure
+                    # Not "no OUs with privileged users": those accounts are in an OU, it is
+                    # just not one a delegation could reach them through.
+                    Show-Line "No other privileged account was found, so no OU or container was analyzed" -Class Note
+                } else {
+                    Show-Line "No OUs with privileged users found to analyze" -Class Note
                 }
-                Show-Line "No OUs with privileged users found to analyze" -Class Note
                 return
             }
 
@@ -357,6 +368,7 @@ function Get-PasswordResetRights {
             # whatever was readable.
             $totalOUs = @($privilegedOUs.Keys).Count
             $readOUs = $totalOUs - @($unreadOUs).Count
+            $readScope = Format-OUContainerCount -DistinguishedName @(@($privilegedOUs.Keys) | Where-Object { $unreadOUs -notcontains $_ })
 
             # Secure, and said once for the whole scan: it is the reason the scope is
             # smaller than the list of privileged accounts, and it is a control working.
@@ -371,7 +383,7 @@ function Get-PasswordResetRights {
                 if ($totalOUs -gt 0 -and $readOUs -le 0) {
                     Show-Line "Password reset rights were not evaluated - no security descriptor could be read" -Class Note
                 } else {
-                    Show-Line "No dangerous password reset rights detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                    Show-Line "No dangerous password reset rights detected in the $readScope analyzed" -Class $conclusionClass
                 }
                 return
             }
@@ -514,7 +526,7 @@ function Get-PasswordResetRights {
 
             # If no non-Exchange findings were displayed (and Exchange is hidden without -IncludePrivileged)
             if (@($nonExchangeFindings).Count -eq 0 -and (-not $IncludePrivileged -or @($exchangeFindings).Count -eq 0)) {
-                Show-Line "No dangerous password reset rights detected in $readOUs analyzed OU(s)" -Class $conclusionClass
+                Show-Line "No dangerous password reset rights detected in the $readScope analyzed" -Class $conclusionClass
             }
 
         } catch {
