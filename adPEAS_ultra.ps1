@@ -22296,6 +22296,7 @@ $Script:WindowsLifecycle = @{
 	'Windows Server 2016'    = @{ ExtendedEnd = '2027-01-12' }
 	'Windows Server 2019'    = @{ ExtendedEnd = '2029-01-09' }
 	'Windows Server 2022'    = @{ ExtendedEnd = '2031-10-14' }
+	'Windows Server 2025'    = @{ ExtendedEnd = '2034-11-14' }
 }
 $Script:Windows11Builds = @{
 	22000 = @{ Release = '21H2'; ConsumerEnd = '2023-10-10'; EnterpriseEnd = '2024-10-08' }
@@ -22312,7 +22313,6 @@ $Script:Windows11EnterpriseEditions = @(
 )
 $Script:WindowsSupportedNoEOL = @(
 	'Windows 11'
-	'Windows Server 2025'
 )
 $Script:ExchangeLifecycle = @{
 	'Exchange 2007' = @{
@@ -91153,7 +91153,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1217"
+$Script:adPEASVersion = "2.7.0+20261018-1221"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

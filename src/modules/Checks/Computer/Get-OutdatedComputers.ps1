@@ -101,8 +101,8 @@ function Get-OutdatedComputers {
             $esuOnlyComputerDNs = @()
 
             # A recognized product this table cannot place: a Windows 11 machine whose
-            # build is absent or unknown, or Server 2025 before its lifecycle was
-            # published. Counted and named, because "not assessable" is not "supported" -
+            # build is absent or unknown. Counted and named, because "not assessable" is
+            # not "supported" -
             # and Windows 11 used to fall into exactly this gap silently, for every build.
             $notAssessableCount = 0
             # Which systems, not only how many. Keyed by the OS string, so the output

@@ -94,6 +94,9 @@ $Script:WindowsLifecycle = @{
     # both came back HasLifecycleData = $false.
     'Windows Server 2019'    = @{ ExtendedEnd = '2029-01-09' }
     'Windows Server 2022'    = @{ ExtendedEnd = '2031-10-14' }
+    # Published since this table was first written; it sat in $Script:WindowsSupportedNoEOL
+    # and every Server 2025 machine was counted as not assessable.
+    'Windows Server 2025'    = @{ ExtendedEnd = '2034-11-14' }
 }
 
 # =============================================================================
@@ -129,14 +132,12 @@ $Script:Windows11EnterpriseEditions = @(
     'Education'
 )
 
-# Products that are recognized but have no date this table can apply:
-# Windows Server 2025's lifecycle was not published when this was written, and a Windows
-# 11 machine whose build is absent from the table above cannot be placed on the annual
-# channel at all. They must not be given an invented date and must not be reported as an
-# unknown platform either, so Test-IsOutdatedOS calls them known and not assessable.
+# Products that are recognized but have no date this table can apply: a Windows 11
+# machine whose build is absent from the table above cannot be placed on the annual
+# channel at all. It must not be given an invented date and must not be reported as an
+# unknown platform either, so Test-IsOutdatedOS calls it known and not assessable.
 $Script:WindowsSupportedNoEOL = @(
     'Windows 11'
-    'Windows Server 2025'
 )
 
 # =============================================================================

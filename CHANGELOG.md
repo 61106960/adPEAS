@@ -605,6 +605,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   names the product instead of printing the raw value, and the inventory shows the build
   Microsoft publishes.
 
+- **Windows Server 2025 has its support end date.** Its lifecycle was unpublished when
+  the table was written, so `Get-OutdatedComputers` counted every Windows Server 2025
+  machine - the domain controllers of a current domain among them - as a system it
+  cannot assess. Microsoft has published extended support to 2034-11-14, and these
+  machines are reported as supported.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

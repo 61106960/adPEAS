@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 12:17:24
-    Version: 2.7.0+20261018-1217
+    Build: 2026-10-18 12:21:06
+    Version: 2.7.0+20261018-1221
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -29632,6 +29632,9 @@ $Script:WindowsLifecycle = @{
     # both came back HasLifecycleData = $false.
     'Windows Server 2019'    = @{ ExtendedEnd = '2029-01-09' }
     'Windows Server 2022'    = @{ ExtendedEnd = '2031-10-14' }
+    # Published since this table was first written; it sat in $Script:WindowsSupportedNoEOL
+    # and every Server 2025 machine was counted as not assessable.
+    'Windows Server 2025'    = @{ ExtendedEnd = '2034-11-14' }
 }
 
 # =============================================================================
@@ -29667,14 +29670,12 @@ $Script:Windows11EnterpriseEditions = @(
     'Education'
 )
 
-# Products that are recognized but have no date this table can apply:
-# Windows Server 2025's lifecycle was not published when this was written, and a Windows
-# 11 machine whose build is absent from the table above cannot be placed on the annual
-# channel at all. They must not be given an invented date and must not be reported as an
-# unknown platform either, so Test-IsOutdatedOS calls them known and not assessable.
+# Products that are recognized but have no date this table can apply: a Windows 11
+# machine whose build is absent from the table above cannot be placed on the annual
+# channel at all. It must not be given an invented date and must not be reported as an
+# unknown platform either, so Test-IsOutdatedOS calls it known and not assessable.
 $Script:WindowsSupportedNoEOL = @(
     'Windows 11'
-    'Windows Server 2025'
 )
 
 # =============================================================================
@@ -117441,8 +117442,8 @@ function Get-OutdatedComputers {
             $esuOnlyComputerDNs = @()
 
             # A recognized product this table cannot place: a Windows 11 machine whose
-            # build is absent or unknown, or Server 2025 before its lifecycle was
-            # published. Counted and named, because "not assessable" is not "supported" -
+            # build is absent or unknown. Counted and named, because "not assessable" is
+            # not "supported" -
             # and Windows 11 used to fall into exactly this gap silently, for every build.
             $notAssessableCount = 0
             # Which systems, not only how many. Keyed by the OS string, so the output
@@ -146333,7 +146334,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1217"
+$Script:adPEASVersion = "2.7.0+20261018-1221"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
