@@ -1500,11 +1500,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Module = "Rights"
         Category = "Rights"
         SectionTitle = "Machine Account Quota"
-        Summary = "Displays the ms-DS-MachineAccountQuota domain setting."
-        WhyItMatters = "This setting controls how many computers any authenticated user can join to the domain. Default is 10, which allows RBCD attacks."
+        Summary = "Displays the ms-DS-MachineAccountQuota domain setting and who can use it."
+        WhyItMatters = "This setting controls how many computers any authenticated user can join to the domain. Default is 10, which allows RBCD attacks. The quota is a ceiling on SeMachineAccountPrivilege, so it is reachable only by the accounts that hold the privilege on the domain controllers."
         WhatWeCheck = @(
             "Current quota value"
             "Whether it's the default (10) or has been modified"
+            "Who holds SeMachineAccountPrivilege on the domain controllers - by the policy that wins there, or by the Windows default when no policy sets it"
         )
         SecureMessage = "ms-DS-MachineAccountQuota is set to 0. Only authorized accounts can join computers to the domain."
     }

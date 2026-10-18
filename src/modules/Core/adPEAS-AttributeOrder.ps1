@@ -384,7 +384,7 @@ $Script:PrimaryAttributes = @{
 
     # Machine Account Quota setting
     MachineAccountQuota = @(
-        'ms-DS-MachineAccountQuota'
+        'ms-DS-MachineAccountQuota', 'whoCanAddComputers', 'privilegeGrantedBy'
     )
 
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)

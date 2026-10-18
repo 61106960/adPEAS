@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 16:57:20
-    Version: 2.7.0+20261018-1657
+    Build: 2026-10-18 17:05:01
+    Version: 2.7.0+20261018-1705
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7047,7 +7047,7 @@ $Script:PrimaryAttributes = @{
 
     # Machine Account Quota setting
     MachineAccountQuota = @(
-        'ms-DS-MachineAccountQuota'
+        'ms-DS-MachineAccountQuota', 'whoCanAddComputers', 'privilegeGrantedBy'
     )
 
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
@@ -17499,6 +17499,10 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1136.002"
         Triggers = @(
             @{ Attribute = 'ms-DS-MachineAccountQuota'; Custom = 'gt_0'; Severity = 'Hint' }
+            # Who can use the quota, beside it on the same object. "Only ..." is the policy
+            # that keeps the privilege away from ordinary accounts: nothing to write up.
+            @{ Attribute = 'whoCanAddComputers'; Pattern = '^Any authenticated user'; Severity = 'Hint' }
+            @{ Attribute = 'whoCanAddComputers'; Pattern = '^Only '; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
 
@@ -28966,11 +28970,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Module = "Rights"
         Category = "Rights"
         SectionTitle = "Machine Account Quota"
-        Summary = "Displays the ms-DS-MachineAccountQuota domain setting."
-        WhyItMatters = "This setting controls how many computers any authenticated user can join to the domain. Default is 10, which allows RBCD attacks."
+        Summary = "Displays the ms-DS-MachineAccountQuota domain setting and who can use it."
+        WhyItMatters = "This setting controls how many computers any authenticated user can join to the domain. Default is 10, which allows RBCD attacks. The quota is a ceiling on SeMachineAccountPrivilege, so it is reachable only by the accounts that hold the privilege on the domain controllers."
         WhatWeCheck = @(
             "Current quota value"
             "Whether it's the default (10) or has been modified"
+            "Who holds SeMachineAccountPrivilege on the domain controllers - by the policy that wins there, or by the Windows default when no policy sets it"
         )
         SecureMessage = "ms-DS-MachineAccountQuota is set to 0. Only authorized accounts can join computers to the domain."
     }
@@ -115144,24 +115149,37 @@ function Get-AddComputerRights {
                 # Without a policy the documented default applies - Authenticated Users
                 # hold SeMachineAccountPrivilege on domain controllers - so the
                 # original sentence is right and now says what it rests on.
+                #
+                # In the object, beside the quota they qualify. The statement used to be
+                # the line above the object, ending in a colon that announced a row with
+                # the number alone, while the policy it named came two blocks later.
                 if ($effectiveGPO -and -not $effectiveIsDangerous) {
                     # Accounts, not EffectiveSetting: the latter explains precedence
                     # ("this policy wins", "overridden by X"), which is not the list of
                     # principals the privilege went to.
                     $restrictedTo = if (@($effectiveGPO.Accounts).Count -gt 0) { @($effectiveGPO.Accounts) -join ', ' } else { "nobody" }
-                    Show-Line "SeMachineAccountPrivilege is restricted to $restrictedTo by GPO '$($effectiveGPO.displayName)'" -Class Note
+                    $whoCanAdd = "Only $restrictedTo - no other account can use the quota"
+                    $grantedBy = "GPO '$($effectiveGPO.displayName)' restricts SeMachineAccountPrivilege to $restrictedTo"
+                    $quotaClass = 'Note'
                 } elseif ($effectiveGPO) {
-                    Show-Line "Any authenticated user can add computers - GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege:" -Class Hint
+                    $grantedTo = if (@($effectiveGPO.Accounts).Count -gt 0) { @($effectiveGPO.Accounts) -join ', ' } else { "Authenticated Users" }
+                    $whoCanAdd = "Any authenticated user, up to the quota"
+                    $grantedBy = "GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege to $grantedTo"
+                    $quotaClass = 'Hint'
                 } else {
-                    Show-Line "Any authenticated user can add computers - no policy restricts SeMachineAccountPrivilege:" -Class Hint
+                    $whoCanAdd = "Any authenticated user, up to the quota"
+                    $grantedBy = "No policy - the Windows default grants SeMachineAccountPrivilege to Authenticated Users on the domain controllers"
+                    $quotaClass = 'Hint'
                 }
 
                 $quotaObject = [PSCustomObject]@{
                     'ms-DS-MachineAccountQuota' = $quotaValue
+                    whoCanAddComputers          = $whoCanAdd
+                    privilegeGrantedBy          = $grantedBy
                 }
                 $quotaObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MachineAccountQuota' -Force
-                # The class of whichever of the three lines above announced it.
-                Show-Object $quotaObject -Class $(if ($effectiveGPO -and -not $effectiveIsDangerous) { 'Note' } else { 'Hint' })
+                Show-Line "Who can add computers to the domain:" -Class $quotaClass
+                Show-Object $quotaObject -Class $quotaClass
                 $hasFindings = $true
             }
 
@@ -147031,7 +147049,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1657"
+$Script:adPEASVersion = "2.7.0+20261018-1705"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

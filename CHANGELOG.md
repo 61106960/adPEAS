@@ -1139,6 +1139,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Controllers OU, which policy decides them (none), and what reading the policies cannot
   see.
 
+- **`Get-AddComputerRights` says who can use the machine account quota on the quota
+  object.** The statement stood in the line above the object - "Any authenticated user
+  can add computers - GPO '...' grants SeMachineAccountPrivilege:" - and its colon
+  announced a row with the number alone, while the policy came two blocks later. The line
+  now reads *Who can add computers to the domain*, and the object carries the quota,
+  `whoCanAddComputers` and `privilegeGrantedBy`: the winning policy and the accounts it
+  grants or restricts the privilege to, or the Windows default when no policy sets it.
+
 ---
 
 ## [2.7.0] - 2026-10-08

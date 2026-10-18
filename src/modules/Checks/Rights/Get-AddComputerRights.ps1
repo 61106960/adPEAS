@@ -258,24 +258,37 @@ function Get-AddComputerRights {
                 # Without a policy the documented default applies - Authenticated Users
                 # hold SeMachineAccountPrivilege on domain controllers - so the
                 # original sentence is right and now says what it rests on.
+                #
+                # In the object, beside the quota they qualify. The statement used to be
+                # the line above the object, ending in a colon that announced a row with
+                # the number alone, while the policy it named came two blocks later.
                 if ($effectiveGPO -and -not $effectiveIsDangerous) {
                     # Accounts, not EffectiveSetting: the latter explains precedence
                     # ("this policy wins", "overridden by X"), which is not the list of
                     # principals the privilege went to.
                     $restrictedTo = if (@($effectiveGPO.Accounts).Count -gt 0) { @($effectiveGPO.Accounts) -join ', ' } else { "nobody" }
-                    Show-Line "SeMachineAccountPrivilege is restricted to $restrictedTo by GPO '$($effectiveGPO.displayName)'" -Class Note
+                    $whoCanAdd = "Only $restrictedTo - no other account can use the quota"
+                    $grantedBy = "GPO '$($effectiveGPO.displayName)' restricts SeMachineAccountPrivilege to $restrictedTo"
+                    $quotaClass = 'Note'
                 } elseif ($effectiveGPO) {
-                    Show-Line "Any authenticated user can add computers - GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege:" -Class Hint
+                    $grantedTo = if (@($effectiveGPO.Accounts).Count -gt 0) { @($effectiveGPO.Accounts) -join ', ' } else { "Authenticated Users" }
+                    $whoCanAdd = "Any authenticated user, up to the quota"
+                    $grantedBy = "GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege to $grantedTo"
+                    $quotaClass = 'Hint'
                 } else {
-                    Show-Line "Any authenticated user can add computers - no policy restricts SeMachineAccountPrivilege:" -Class Hint
+                    $whoCanAdd = "Any authenticated user, up to the quota"
+                    $grantedBy = "No policy - the Windows default grants SeMachineAccountPrivilege to Authenticated Users on the domain controllers"
+                    $quotaClass = 'Hint'
                 }
 
                 $quotaObject = [PSCustomObject]@{
                     'ms-DS-MachineAccountQuota' = $quotaValue
+                    whoCanAddComputers          = $whoCanAdd
+                    privilegeGrantedBy          = $grantedBy
                 }
                 $quotaObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'MachineAccountQuota' -Force
-                # The class of whichever of the three lines above announced it.
-                Show-Object $quotaObject -Class $(if ($effectiveGPO -and -not $effectiveIsDangerous) { 'Note' } else { 'Hint' })
+                Show-Line "Who can add computers to the domain:" -Class $quotaClass
+                Show-Object $quotaObject -Class $quotaClass
                 $hasFindings = $true
             }
 

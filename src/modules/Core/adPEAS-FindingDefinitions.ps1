@@ -9136,6 +9136,10 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1136.002"
         Triggers = @(
             @{ Attribute = 'ms-DS-MachineAccountQuota'; Custom = 'gt_0'; Severity = 'Hint' }
+            # Who can use the quota, beside it on the same object. "Only ..." is the policy
+            # that keeps the privilege away from ordinary accounts: nothing to write up.
+            @{ Attribute = 'whoCanAddComputers'; Pattern = '^Any authenticated user'; Severity = 'Hint' }
+            @{ Attribute = 'whoCanAddComputers'; Pattern = '^Only '; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
 
