@@ -339,17 +339,17 @@ $Script:PrimaryAttributes = @{
     # value by value, by policy precedence (Get-LDAPConfiguration)
     EffectiveLDAPConfig = @(
         'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
-        'decidedBy', 'basis'
+        'decidedBy'
     )
 
     # The same for SMB signing (Get-SMBSigningStatus)
     EffectiveSMBSigning = @(
-        'ServerSigning', 'ClientSigning', 'decidedBy', 'basis'
+        'ServerSigning', 'ClientSigning', 'decidedBy'
     )
 
     # And for the member computers, when no signing policy reaches them
     EffectiveSMBSigningMembers = @(
-        'ServerSigning', 'ClientSigning', 'decidedBy', 'basis'
+        'ServerSigning', 'ClientSigning', 'decidedBy'
     )
 
     # Outdated Computer object

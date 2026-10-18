@@ -473,7 +473,6 @@ function Get-SMBSigningStatus {
                         ServerSigning = $(if ($settingWinners['ServerSigning']) { $settingWinners['ServerSigning'].ServerSigning } else { 'Not configured' })
                         ClientSigning = $(if ($settingWinners['ClientSigning']) { $settingWinners['ClientSigning'].ClientSigning } else { 'Not configured' })
                         decidedBy     = Get-GPOSettingPostureSource -Setting $smbSettings -Winner $settingWinners
-                        basis         = Get-GPOPostureBasisNote
                     }
                     $posture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigning' -Force
 
@@ -537,8 +536,9 @@ function Get-SMBSigningStatus {
                     $memberPosture = [PSCustomObject]@{
                         ServerSigning = 'Not configured - not required by default before Windows Server 2025'
                         ClientSigning = 'Not configured'
-                        decidedBy     = 'No policy - every policy that sets SMB signing is linked to the Domain Controllers OU only'
-                        basis         = 'Read from the policies, not from the computers: a value set locally or left behind by a former policy is not visible here, and Windows 11 24H2 and Windows Server 2025 require signing by default'
+                        # Short; why no policy reaches them, and what is not read here, is
+                        # the card's to say.
+                        decidedBy     = 'None (signing is set on the DC OU only)'
                     }
                     $memberPosture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigningMembers' -Force
                     Show-Line "In force on member servers and clients:" -Class $dcOnlyClass

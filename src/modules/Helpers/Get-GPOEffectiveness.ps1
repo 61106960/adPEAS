@@ -1498,6 +1498,14 @@ function Get-GPOSettingPrecedenceText {
 .SYNOPSIS
     Names the policy each in-force setting on the domain controllers comes from.
 
+.DESCRIPTION
+    One entry per policy, with the settings it decides in brackets, so the row is a list
+    of short lines rather than one sentence that repeats every setting's name. A policy
+    is told apart by its object, not its name - two policies can share a display name.
+
+    That the posture is read from the policies and not from the domain controllers -
+    a value a policy wrote can outlive the policy (tattooing) - is the card's to say.
+
 .PARAMETER Setting
     The settings, as Resolve-GPOSettingPrecedence took them.
 
@@ -1505,11 +1513,12 @@ function Get-GPOSettingPrecedenceText {
     What Resolve-GPOSettingPrecedence returned.
 
 .OUTPUTS
-    [string] "LDAP signing: 'DC Hardening'; channel binding: 'Default Domain Policy'"
+    [string[]] "DC Hardening (LDAP signing)", "Default Domain Policy (channel binding)";
+    'None' when no policy decides any of them.
 #>
 function Get-GPOSettingPostureSource {
     [CmdletBinding()]
-    [OutputType([string])]
+    [OutputType([string[]])]
     param(
         [Parameter(Mandatory=$true)]
         [hashtable[]]$Setting,
@@ -1519,35 +1528,24 @@ function Get-GPOSettingPostureSource {
         [hashtable]$Winner
     )
 
-    $parts = @()
+    $groups = New-Object System.Collections.ArrayList
     foreach ($entry in $Setting) {
-        if ($Winner -and $Winner[$entry.Property]) {
-            $parts += "$($entry.Label): '$($Winner[$entry.Property].DisplayName)'"
+        if (-not ($Winner -and $Winner[$entry.Property])) { continue }
+        $policy = $Winner[$entry.Property]
+        $group = $null
+        foreach ($candidate in $groups) {
+            if ([object]::ReferenceEquals($candidate.Policy, $policy)) { $group = $candidate; break }
         }
+        if (-not $group) {
+            $group = @{ Policy = $policy; Labels = @() }
+            [void]$groups.Add($group)
+        }
+        $group.Labels += $entry.Label
     }
-    if ($parts.Count -eq 0) {
-        return 'No policy that reaches the domain controllers configures any of these'
+    if ($groups.Count -eq 0) {
+        return 'None'
     }
-    return ($parts -join '; ')
-}
-
-<#
-.SYNOPSIS
-    What a posture read from Group Policy does not know about the domain controllers.
-
-.DESCRIPTION
-    A value a policy wrote can stay on a machine after the policy stops applying -
-    Security Options from GptTmpl.inf do, and so do registry values outside the Policies
-    keys. So what the policies say and what sits on a domain controller can diverge, and
-    the domain controller's registry is the ground truth. Said once, in one wording, for
-    every posture built from policies.
-#>
-function Get-GPOPostureBasisNote {
-    [CmdletBinding()]
-    [OutputType([string])]
-    param()
-
-    return 'Read from the policies, not from the domain controllers: a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing), so the registry of the domain controllers is the ground truth'
+    return [string[]]@($groups | ForEach-Object { "$($_.Policy.DisplayName) ($($_.Labels -join ', '))" })
 }
 
 <#

@@ -734,7 +734,6 @@ function Get-LDAPConfiguration {
                         anonymousSamEnumeration     = $(if ($settingWinners['anonymousSamEnumeration']) { $settingWinners['anonymousSamEnumeration'].anonymousSamEnumeration } else { 'Not Configured' })
                         anonymousSidNameTranslation = $(if ($settingWinners['anonymousSidNameTranslation']) { $settingWinners['anonymousSidNameTranslation'].anonymousSidNameTranslation } else { 'Not Configured' })
                         decidedBy                   = Get-GPOSettingPostureSource -Setting $ldapSettings -Winner $settingWinners
-                        basis                       = Get-GPOPostureBasisNote
                     }
                     $posture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveLDAPConfig' -Force
 

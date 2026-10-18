@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 22:34:10
-    Version: 2.7.0+20261018-2234
+    Build: 2026-10-18 22:43:58
+    Version: 2.7.0+20261018-2243
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7009,17 +7009,17 @@ $Script:PrimaryAttributes = @{
     # value by value, by policy precedence (Get-LDAPConfiguration)
     EffectiveLDAPConfig = @(
         'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
-        'decidedBy', 'basis'
+        'decidedBy'
     )
 
     # The same for SMB signing (Get-SMBSigningStatus)
     EffectiveSMBSigning = @(
-        'ServerSigning', 'ClientSigning', 'decidedBy', 'basis'
+        'ServerSigning', 'ClientSigning', 'decidedBy'
     )
 
     # And for the member computers, when no signing policy reaches them
     EffectiveSMBSigningMembers = @(
-        'ServerSigning', 'ClientSigning', 'decidedBy', 'basis'
+        'ServerSigning', 'ClientSigning', 'decidedBy'
     )
 
     # Outdated Computer object
@@ -27780,6 +27780,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Every policy linked to the Domain Controllers OU or the domain root"
             "For each value, the highest-ranked policy that sets it - enforced links first, then the Domain Controllers OU, then the domain root, then link order"
+            "decidedBy lists each policy with the values it decides in brackets"
+            "Not tested: the registry of the domain controllers. The values are read from the policies, and a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing) - the registry is the ground truth"
         )
         SecureMessage = "The policies in force on the domain controllers require LDAP signing and channel binding."
     }
@@ -27794,6 +27796,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Every policy linked to the Domain Controllers OU or the domain root"
             "For each value, the highest-ranked policy that sets it - enforced links first, then the Domain Controllers OU, then the domain root, then link order"
+            "decidedBy lists each policy with the values it decides in brackets"
+            "Not tested: the registry of the domain controllers. The values are read from the policies, and a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing) - the registry is the ground truth"
         )
         SecureMessage = "The policies in force on the domain controllers require SMB signing on both the server and the client side."
     }
@@ -27810,6 +27814,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Whether any linked and enabled policy outside the Domain Controllers OU sets SMB signing"
             "The Windows default the members fall back to, server side and client side"
+            "Not tested: the computers themselves - a value set locally or left behind by a former policy is not visible here, and Windows 11 24H2 and Windows Server 2025 require signing by default"
         )
         SecureMessage = "A policy that reaches member servers and clients sets SMB signing for them."
     }
@@ -84339,6 +84344,14 @@ function Get-GPOSettingPrecedenceText {
 .SYNOPSIS
     Names the policy each in-force setting on the domain controllers comes from.
 
+.DESCRIPTION
+    One entry per policy, with the settings it decides in brackets, so the row is a list
+    of short lines rather than one sentence that repeats every setting's name. A policy
+    is told apart by its object, not its name - two policies can share a display name.
+
+    That the posture is read from the policies and not from the domain controllers -
+    a value a policy wrote can outlive the policy (tattooing) - is the card's to say.
+
 .PARAMETER Setting
     The settings, as Resolve-GPOSettingPrecedence took them.
 
@@ -84346,11 +84359,12 @@ function Get-GPOSettingPrecedenceText {
     What Resolve-GPOSettingPrecedence returned.
 
 .OUTPUTS
-    [string] "LDAP signing: 'DC Hardening'; channel binding: 'Default Domain Policy'"
+    [string[]] "DC Hardening (LDAP signing)", "Default Domain Policy (channel binding)";
+    'None' when no policy decides any of them.
 #>
 function Get-GPOSettingPostureSource {
     [CmdletBinding()]
-    [OutputType([string])]
+    [OutputType([string[]])]
     param(
         [Parameter(Mandatory=$true)]
         [hashtable[]]$Setting,
@@ -84360,35 +84374,24 @@ function Get-GPOSettingPostureSource {
         [hashtable]$Winner
     )
 
-    $parts = @()
+    $groups = New-Object System.Collections.ArrayList
     foreach ($entry in $Setting) {
-        if ($Winner -and $Winner[$entry.Property]) {
-            $parts += "$($entry.Label): '$($Winner[$entry.Property].DisplayName)'"
+        if (-not ($Winner -and $Winner[$entry.Property])) { continue }
+        $policy = $Winner[$entry.Property]
+        $group = $null
+        foreach ($candidate in $groups) {
+            if ([object]::ReferenceEquals($candidate.Policy, $policy)) { $group = $candidate; break }
         }
+        if (-not $group) {
+            $group = @{ Policy = $policy; Labels = @() }
+            [void]$groups.Add($group)
+        }
+        $group.Labels += $entry.Label
     }
-    if ($parts.Count -eq 0) {
-        return 'No policy that reaches the domain controllers configures any of these'
+    if ($groups.Count -eq 0) {
+        return 'None'
     }
-    return ($parts -join '; ')
-}
-
-<#
-.SYNOPSIS
-    What a posture read from Group Policy does not know about the domain controllers.
-
-.DESCRIPTION
-    A value a policy wrote can stay on a machine after the policy stops applying -
-    Security Options from GptTmpl.inf do, and so do registry values outside the Policies
-    keys. So what the policies say and what sits on a domain controller can diverge, and
-    the domain controller's registry is the ground truth. Said once, in one wording, for
-    every posture built from policies.
-#>
-function Get-GPOPostureBasisNote {
-    [CmdletBinding()]
-    [OutputType([string])]
-    param()
-
-    return 'Read from the policies, not from the domain controllers: a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing), so the registry of the domain controllers is the ground truth'
+    return [string[]]@($groups | ForEach-Object { "$($_.Policy.DisplayName) ($($_.Labels -join ', '))" })
 }
 
 <#
@@ -106723,7 +106726,6 @@ function Get-LDAPConfiguration {
                         anonymousSamEnumeration     = $(if ($settingWinners['anonymousSamEnumeration']) { $settingWinners['anonymousSamEnumeration'].anonymousSamEnumeration } else { 'Not Configured' })
                         anonymousSidNameTranslation = $(if ($settingWinners['anonymousSidNameTranslation']) { $settingWinners['anonymousSidNameTranslation'].anonymousSidNameTranslation } else { 'Not Configured' })
                         decidedBy                   = Get-GPOSettingPostureSource -Setting $ldapSettings -Winner $settingWinners
-                        basis                       = Get-GPOPostureBasisNote
                     }
                     $posture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveLDAPConfig' -Force
 
@@ -107235,7 +107237,6 @@ function Get-SMBSigningStatus {
                         ServerSigning = $(if ($settingWinners['ServerSigning']) { $settingWinners['ServerSigning'].ServerSigning } else { 'Not configured' })
                         ClientSigning = $(if ($settingWinners['ClientSigning']) { $settingWinners['ClientSigning'].ClientSigning } else { 'Not configured' })
                         decidedBy     = Get-GPOSettingPostureSource -Setting $smbSettings -Winner $settingWinners
-                        basis         = Get-GPOPostureBasisNote
                     }
                     $posture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigning' -Force
 
@@ -107299,8 +107300,9 @@ function Get-SMBSigningStatus {
                     $memberPosture = [PSCustomObject]@{
                         ServerSigning = 'Not configured - not required by default before Windows Server 2025'
                         ClientSigning = 'Not configured'
-                        decidedBy     = 'No policy - every policy that sets SMB signing is linked to the Domain Controllers OU only'
-                        basis         = 'Read from the policies, not from the computers: a value set locally or left behind by a former policy is not visible here, and Windows 11 24H2 and Windows Server 2025 require signing by default'
+                        # Short; why no policy reaches them, and what is not read here, is
+                        # the card's to say.
+                        decidedBy     = 'None (signing is set on the DC OU only)'
                     }
                     $memberPosture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigningMembers' -Force
                     Show-Line "In force on member servers and clients:" -Class $dcOnlyClass
@@ -147545,7 +147547,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-2234"
+$Script:adPEASVersion = "2.7.0+20261018-2243"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

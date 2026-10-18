@@ -231,6 +231,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Every policy linked to the Domain Controllers OU or the domain root"
             "For each value, the highest-ranked policy that sets it - enforced links first, then the Domain Controllers OU, then the domain root, then link order"
+            "decidedBy lists each policy with the values it decides in brackets"
+            "Not tested: the registry of the domain controllers. The values are read from the policies, and a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing) - the registry is the ground truth"
         )
         SecureMessage = "The policies in force on the domain controllers require LDAP signing and channel binding."
     }
@@ -245,6 +247,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Every policy linked to the Domain Controllers OU or the domain root"
             "For each value, the highest-ranked policy that sets it - enforced links first, then the Domain Controllers OU, then the domain root, then link order"
+            "decidedBy lists each policy with the values it decides in brackets"
+            "Not tested: the registry of the domain controllers. The values are read from the policies, and a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing) - the registry is the ground truth"
         )
         SecureMessage = "The policies in force on the domain controllers require SMB signing on both the server and the client side."
     }
@@ -261,6 +265,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Whether any linked and enabled policy outside the Domain Controllers OU sets SMB signing"
             "The Windows default the members fall back to, server side and client side"
+            "Not tested: the computers themselves - a value set locally or left behind by a former policy is not visible here, and Windows 11 24H2 and Windows Server 2025 require signing by default"
         )
         SecureMessage = "A policy that reaches member servers and clients sets SMB signing for them."
     }

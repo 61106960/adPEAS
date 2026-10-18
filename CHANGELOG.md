@@ -1035,9 +1035,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the domain controllers enforced. `EffectiveSetting` now names which of a policy's
   settings are in force and who overrides the rest, enforced links rank as Group Policy
   ranks them, and a new object below the policies shows what is in force on the domain
-  controllers, value by value, with the policy each value comes from. It is coloured by
-  its weakest value and says that it is read from the policies: a value can stay on a
-  domain controller after its policy stops applying.
+  controllers, value by value, with the policy each value comes from - one line per
+  policy, "Default Domain Policy (channel binding)". It is coloured by its weakest value,
+  and its card says that it is read from the policies: a value can stay on a domain
+  controller after its policy stops applying.
 
 - **The Exchange permissions model is determined in child domains too.** Exchange creates
   its groups once, in the forest root domain, and grants them their rights on every other
@@ -1148,8 +1149,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   so the HTML report carried it without the remediation of the SMB signing card. It is
   now the counterpart of the domain controller object: *In force on member servers and
   clients*, with both values as the policy rows read an unset value outside the Domain
-  Controllers OU, which policy decides them (none), and what reading the policies cannot
-  see.
+  Controllers OU and which policy decides them - "None (signing is set on the DC OU
+  only)". What reading the policies cannot see is on its card.
 
 - **`Get-AddComputerRights` says who can use the machine account quota on the quota
   object.** The statement stood in the line above the object - "Any authenticated user
