@@ -262,6 +262,10 @@ function Test-ACEFullyDenied {
     foreach ($deny in $DenyACEs) {
         if ($deny.IdentityReference.Value -ne $ACE.IdentityReference.Value) { continue }
 
+        # An inherited Deny is evaluated after every explicit ACE, so it takes nothing from
+        # an Allow written on this object - it cancelled that delegation all the same.
+        if ($deny.IsInherited -and -not $ACE.IsInherited) { continue }
+
         # ObjectType limits a Deny to one attribute or one extended right. An empty
         # GUID means all of them, which covers whatever the Allow names.
         $denyObjectType = $deny.ObjectType

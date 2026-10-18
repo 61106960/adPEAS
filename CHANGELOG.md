@@ -795,6 +795,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   write - matched no mask and became no edge at all. The measured export went from 4157 to
   3343 ACE edges.
 
+- **An inherited Deny no longer cancels a delegation written on the object.** The Deny
+  netting behind the OU permission checks and the privileged-group and privileged-account
+  ACL rows let a Deny inherited from a parent cancel an Allow on the object itself. The
+  access check evaluates every explicit ACE first, so that delegation is access, and it is
+  reported again.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

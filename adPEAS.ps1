@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 15:35:21
-    Version: 2.7.0+20261018-1535
+    Build: 2026-10-18 15:40:38
+    Version: 2.7.0+20261018-1540
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -85650,6 +85650,10 @@ function Test-ACEFullyDenied {
     foreach ($deny in $DenyACEs) {
         if ($deny.IdentityReference.Value -ne $ACE.IdentityReference.Value) { continue }
 
+        # An inherited Deny is evaluated after every explicit ACE, so it takes nothing from
+        # an Allow written on this object - it cancelled that delegation all the same.
+        if ($deny.IsInherited -and -not $ACE.IsInherited) { continue }
+
         # ObjectType limits a Deny to one attribute or one extended right. An empty
         # GUID means all of them, which covers whatever the Allow names.
         $denyObjectType = $deny.ObjectType
@@ -146937,7 +146941,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1535"
+$Script:adPEASVersion = "2.7.0+20261018-1540"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

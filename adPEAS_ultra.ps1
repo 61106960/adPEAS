@@ -53318,6 +53318,7 @@ function Test-ACEFullyDenied {
 	$allowKids = ($ACE.InheritanceFlags -band $ci) -or ($ACE.InheritanceFlags -band $oi)
 	foreach ($deny in $DenyACEs) {
 	    if ($deny.IdentityReference.Value -ne $ACE.IdentityReference.Value) { continue }
+	    if ($deny.IsInherited -and -not $ACE.IsInherited) { continue }
 	    $denyObjectType = $deny.ObjectType
 	    $denyCoversEveryRight = (-not $denyObjectType) -or ($denyObjectType -eq [GUID]::Empty)
 	    if (-not $denyCoversEveryRight -and ($denyObjectType -ne $ACE.ObjectType)) { continue }
@@ -91405,7 +91406,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1535"
+$Script:adPEASVersion = "2.7.0+20261018-1540"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
