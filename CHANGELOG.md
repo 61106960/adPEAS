@@ -770,6 +770,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   groups it belongs to, and not at all once it belongs to none. It is read as the account
   it is now.
 
+- **A GPO permission scoped to one attribute is no control of the GPO.**
+  `Get-GPOPermissions` held that an ObjectType narrows the attribute rights only, so an
+  ACE granting GenericAll, WriteDacl, WriteOwner or Delete beside it was reported as that
+  right over the whole GPO - a write of the WMI filter link as full control. An object ACE
+  grants its mask on the attribute or class its GUID names and nowhere else (MS-ADTS
+  5.1.3.3.3): a scoped GenericAll now counts as the write of that attribute, with the
+  attribute named and judged by whether it carries the policy content, and an ACE scoped
+  to a child class counts as nothing. A Deny takes a right only from what it covers: a Deny
+  of one attribute no longer cancels a write of every property, and an inherited Deny
+  nothing from an Allow written on the GPO.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

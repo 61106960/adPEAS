@@ -86,10 +86,10 @@ function Get-GPOPermissions {
             'versionNumber'
         )
 
-        # The rights an ObjectType GUID cannot narrow. ObjectType restricts the
-        # attribute-scoped bits - WriteProperty, ReadProperty, Self, ExtendedRight - and
-        # nothing else, so an ACE that also grants one of these is not limited by the
-        # attribute it names.
+        # The rights only an ACE without an ObjectType grants on the GPO. An object ACE grants
+        # its mask on the attribute, property set or class its GUID names and nowhere else
+        # (MS-ADTS 5.1.3.3.3), so none of these reaches the GPO from a scoped ACE: GenericAll
+        # and GenericWrite scoped to an attribute write that attribute, and the rest drop out.
         $Script:UnscopedGPORights = @(
             'GenericAll',
             'GenericWrite',
@@ -261,7 +261,9 @@ function Get-GPOPermissions {
                     }
 
                     # Deny first, so the Allow ACEs below can be netted against it. Keyed
-                    # by trustee: a Deny on one trustee says nothing about another.
+                    # by trustee: a Deny on one trustee says nothing about another. Each
+                    # Deny keeps its scope and whether it is inherited, because both decide
+                    # which Allow it takes something from - see below.
                     $deniedRights = @{}
                     foreach ($ace in @($aclResult.ACEs)) {
                         if ($ace.AccessControlType -ne 'Deny') { continue }
@@ -272,7 +274,11 @@ function Get-GPOPermissions {
                         $denySID = [string]$ace.TrusteeSID
                         if (-not $denySID) { continue }
                         if (-not $deniedRights.ContainsKey($denySID)) { $deniedRights[$denySID] = @() }
-                        $deniedRights[$denySID] += @($ace.RightsRaw)
+                        $deniedRights[$denySID] += [PSCustomObject]@{
+                            Rights      = @($ace.RightsRaw)
+                            ObjectType  = [string]$ace.ObjectType
+                            IsInherited = [bool]$ace.IsInherited
+                        }
                     }
 
                     $dangerousAces = @($aclResult.ACEs | Where-Object { $_.AccessControlType -eq 'Allow' })
@@ -303,9 +309,22 @@ function Get-GPOPermissions {
 
                         # Every dangerous right of the ACE, not the first one, and minus
                         # what a Deny ACE takes away from the same trustee.
+                        #
+                        # Only a Deny that covers what this ACE grants: one for the whole
+                        # object, or one scoped to the same attribute. A Deny of one
+                        # attribute took the right away by its name, so a trustee allowed to
+                        # write every property and denied gPCWQLFilter lost the write of
+                        # gPCFileSysPath with it. And an inherited Deny is evaluated after
+                        # every explicit ACE, so it takes nothing from an Allow written on
+                        # the GPO.
+                        $aceScope = [string]$ace.ObjectType
                         $deniedForTrustee = @()
                         if ($deniedRights.ContainsKey([string]$aceSID)) {
-                            $deniedForTrustee = @($deniedRights[[string]$aceSID])
+                            foreach ($deny in @($deniedRights[[string]$aceSID])) {
+                                if ($deny.IsInherited -and -not $ace.IsInherited) { continue }
+                                if ($deny.ObjectType -and $deny.ObjectType -ne $aceScope) { continue }
+                                $deniedForTrustee += @($deny.Rights)
+                            }
                         }
 
                         $matchedRights = @()
@@ -365,13 +384,32 @@ function Get-GPOPermissions {
                         $scopeLabel = ''
                         $scopeReachesPolicy = $true
 
-                        # An ObjectType narrows the attribute-scoped bits only. An ACE that
-                        # also grants GenericAll or WriteDacl is not limited by the
-                        # attribute it names.
-                        $unscopedMatched = @($matchedRights | Where-Object { $Script:UnscopedGPORights -contains $_ })
-
-                        if ($aceObjectType -and @($unscopedMatched).Count -eq 0) {
+                        if ($aceObjectType) {
+                            # An object ACE grants its whole mask on the node its GUID names
+                            # and nowhere else (MS-ADTS 5.1.3.3.3) - GenericAll and WriteDacl
+                            # included. A right over the whole GPO is checked at the root of
+                            # the object type tree, which such an ACE never reaches. This
+                            # used to read the other way round, "an ObjectType narrows the
+                            # attribute-scoped bits only", and reported a write of one
+                            # attribute as full control of the GPO.
                             $resolvedScope = Resolve-ObjectTypeGUID -GUID $aceObjectType
+                            if ($resolvedScope -and $resolvedScope.Type -eq 'SchemaClass') {
+                                # Scoped to a child class: creates and deletes objects of that
+                                # class below the GPO, and writes nothing of it.
+                                Write-Log "[Get-GPOPermissions] $($ace.Trustee) holds $aceRights on GPO $gpoDisplayName scoped to the class $($resolvedScope.Name) - no right over the policy"
+                                continue
+                            }
+                            # GenericAll and GenericWrite carry the WriteProperty bit, which is
+                            # what they grant on the attribute; the rights over the whole
+                            # object drop out.
+                            $scopedRights = @()
+                            if (@($matchedRights | Where-Object { @('GenericAll', 'GenericWrite', 'WriteProperty') -contains $_ }).Count -gt 0) {
+                                $scopedRights += 'WriteProperty'
+                            }
+                            $scopedRights += @($matchedRights | Where-Object { $Script:UnscopedGPORights -notcontains $_ -and $_ -ne 'WriteProperty' })
+                            if (@($scopedRights).Count -eq 0) { continue }
+                            $matchedRights = $scopedRights
+
                             if ($resolvedScope -and $resolvedScope.Name) {
                                 $scopeLabel = [string]$resolvedScope.Name
                                 if ($resolvedScope.Type -eq 'Property' -and

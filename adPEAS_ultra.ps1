@@ -72754,7 +72754,11 @@ function Get-GPOPermissions {
 	                    $denySID = [string]$ace.TrusteeSID
 	                    if (-not $denySID) { continue }
 	                    if (-not $deniedRights.ContainsKey($denySID)) { $deniedRights[$denySID] = @() }
-	                    $deniedRights[$denySID] += @($ace.RightsRaw)
+	                    $deniedRights[$denySID] += [PSCustomObject]@{
+	                        Rights      = @($ace.RightsRaw)
+	                        ObjectType  = [string]$ace.ObjectType
+	                        IsInherited = [bool]$ace.IsInherited
+	                    }
 	                }
 	                $dangerousAces = @($aclResult.ACEs | Where-Object { $_.AccessControlType -eq 'Allow' })
 	                $vulnerableIdentities = @()
@@ -72768,9 +72772,14 @@ function Get-GPOPermissions {
 	                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
 	                        continue
 	                    }
+	                    $aceScope = [string]$ace.ObjectType
 	                    $deniedForTrustee = @()
 	                    if ($deniedRights.ContainsKey([string]$aceSID)) {
-	                        $deniedForTrustee = @($deniedRights[[string]$aceSID])
+	                        foreach ($deny in @($deniedRights[[string]$aceSID])) {
+	                            if ($deny.IsInherited -and -not $ace.IsInherited) { continue }
+	                            if ($deny.ObjectType -and $deny.ObjectType -ne $aceScope) { continue }
+	                            $deniedForTrustee += @($deny.Rights)
+	                        }
 	                    }
 	                    $matchedRights = @()
 	                    foreach ($dangerousRight in $Script:DangerousGPOAccessRights) {
@@ -72792,9 +72801,18 @@ function Get-GPOPermissions {
 	                    $aceObjectType = [string]$ace.ObjectType
 	                    $scopeLabel = ''
 	                    $scopeReachesPolicy = $true
-	                    $unscopedMatched = @($matchedRights | Where-Object { $Script:UnscopedGPORights -contains $_ })
-	                    if ($aceObjectType -and @($unscopedMatched).Count -eq 0) {
+	                    if ($aceObjectType) {
 	                        $resolvedScope = Resolve-ObjectTypeGUID -GUID $aceObjectType
+	                        if ($resolvedScope -and $resolvedScope.Type -eq 'SchemaClass') {
+	                            continue
+	                        }
+	                        $scopedRights = @()
+	                        if (@($matchedRights | Where-Object { @('GenericAll', 'GenericWrite', 'WriteProperty') -contains $_ }).Count -gt 0) {
+	                            $scopedRights += 'WriteProperty'
+	                        }
+	                        $scopedRights += @($matchedRights | Where-Object { $Script:UnscopedGPORights -notcontains $_ -and $_ -ne 'WriteProperty' })
+	                        if (@($scopedRights).Count -eq 0) { continue }
+	                        $matchedRights = $scopedRights
 	                        if ($resolvedScope -and $resolvedScope.Name) {
 	                            $scopeLabel = [string]$resolvedScope.Name
 	                            if ($resolvedScope.Type -eq 'Property' -and
@@ -91383,7 +91401,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1512"
+$Script:adPEASVersion = "2.7.0+20261018-1526"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
