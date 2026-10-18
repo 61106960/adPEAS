@@ -584,6 +584,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   object-specific ACE is no longer counted as a DACL rewrite of the domain object or of
   its descendants, which is how `Get-DangerousACLs` already read it.
 
+- **Exchange configuration the account cannot read is no longer reported as absent.**
+  Measured with a domain user against an Exchange SE organization: the organization and
+  its servers are readable, its accepted domains, connectors, virtual directories, role
+  assignments and hybrid configuration are not - and the checks said "No SMTP receive
+  connectors found", "No Exchange role assignments found" and "this organization appears
+  to be purely on-premises". Every organization has an accepted domain and several hundred
+  role assignments, and a server that transports mail has receive connectors, so these
+  results now say the configuration is not readable by this account and the answer is
+  unknown. The organization card carries a new `ConfigurationVisibility` row when no
+  accepted domain is readable.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

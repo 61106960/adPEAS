@@ -3654,7 +3654,7 @@ $Script:PrimaryAttributes = @{
         'DangerousPermissions'
     )
     ExchangeOrganization = @(
-        'OrganizationName', 'ExchangeServerCount', 'AcceptedDomains', 'SMTPSendConnectors'
+        'OrganizationName', 'ExchangeServerCount', 'ConfigurationVisibility', 'AcceptedDomains', 'SMTPSendConnectors'
     )
     ExchangeConfigServer = @(
         'Name', 'dNSHostName',
@@ -20775,11 +20775,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Category = "Infrastructure"
         SectionTitle = "Exchange Organization"
         Summary = "Exchange Organization overview from the Configuration partition (forest-wide)."
-        WhyItMatters = "Exchange Organization data in the Configuration partition is visible from any domain in the forest. This provides a complete picture of the Exchange infrastructure even when querying from a child domain."
+        WhyItMatters = "The Configuration partition is replicated to every domain controller of the forest, so the Exchange organization can be read from any of its domains, a child domain included - as far as the account may read it. Measured against Exchange SE, a domain user sees the organization and its servers, but not its accepted domains, connectors or virtual directories."
         WhatWeCheck = @(
             "Exchange Organization name"
             "Accepted mail domains and SMTP send connectors"
             "Number of Exchange servers across the forest"
+            "Whether this account can read the organization's configuration at all"
         )
     }
     'ExchangeConfigServer' = @{
@@ -79771,12 +79772,16 @@ function Get-ExchangeInfrastructure {
             } catch {
                 Write-Log "[Get-ExchangeInfrastructure] Error querying Accepted Domains: $_" -Level Error
             }
+            $orgConfigHidden = (@($allAcceptedDomains).Count -eq 0)
             $orgObj = [PSCustomObject]@{
                 Name = $organizationName
                 OrganizationName = $organizationName
             }
             if ($realServers.Count -gt 0) {
                 $orgObj | Add-Member -NotePropertyName 'ExchangeServerCount' -NotePropertyValue "$($realServers.Count) server(s)" -Force
+            }
+            if ($orgConfigHidden) {
+                $orgObj | Add-Member -NotePropertyName 'ConfigurationVisibility' -NotePropertyValue 'Not readable by this account - no accepted domain is visible, and every organization has one' -Force
             }
             if (@($allAcceptedDomains).Count -gt 0) {
                 $typeMap = @{ 0 = "Authoritative"; 1 = "InternalRelay"; 2 = "ExternalRelay" }
@@ -80121,12 +80126,20 @@ function Get-ExchangeInfrastructure {
             elseif ($hybridQueryFailed) {
                 Show-Line "Hybrid configuration could not be read - result unknown, not absent" -Class Hint
             }
+            elseif ($orgConfigHidden) {
+                Show-Line "Hybrid configuration is not readable by this account - result unknown, not absent" -Class Hint
+            }
             else {
                 Show-Line "No hybrid configuration found - this organization appears to be purely on-premises" -Class Note
             }
             Show-SubHeader "Checking SMTP receive connector permissions..." -ObjectType "ExchangeReceiveConnector"
             if (@($allRecvConnectors).Count -eq 0) {
-                Show-Line "No SMTP receive connectors found in the Configuration partition" -Class Note
+                if ($orgConfigHidden -or @($realServers).Count -gt 0) {
+                    Show-Line "No SMTP receive connector is readable by this account - their permissions are unknown, not clean" -Class Hint
+                }
+                else {
+                    Show-Line "No SMTP receive connectors found in the Configuration partition" -Class Note
+                }
             }
             else {
                 $smtpRightsByGuid = @{}
@@ -80595,7 +80608,7 @@ function Get-ExchangeRBACAssignments {
                 return
             }
             if (@($roleAssignments).Count -eq 0) {
-                Show-Line "No Exchange role assignments found in the Configuration partition" -Class Note
+                Show-Line "No Exchange role assignment is readable by this account - result unknown, not empty" -Class Hint
                 return
             }
             Write-Log "[Get-ExchangeRBACAssignments] Read $(@($roleAssignments).Count) role assignment(s)"
@@ -94171,7 +94184,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1157"
+$Script:adPEASVersion = "2.7.0+20261018-1206"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

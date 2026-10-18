@@ -150,7 +150,11 @@ function Get-ExchangeRBACAssignments {
             }
 
             if (@($roleAssignments).Count -eq 0) {
-                Show-Line "No Exchange role assignments found in the Configuration partition" -Class Note
+                # Setup creates the role assignments with the organization, several hundred
+                # of them, so none readable is a container this account may not see rather
+                # than an empty one. Measured with a domain user against Exchange SE, where
+                # the RBAC container is not readable.
+                Show-Line "No Exchange role assignment is readable by this account - result unknown, not empty" -Class Hint
                 return
             }
 

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 11:57:10
-    Version: 2.7.0+20261018-1157
+    Build: 2026-10-18 12:06:22
+    Version: 2.7.0+20261018-1206
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7110,7 +7110,7 @@ $Script:PrimaryAttributes = @{
 
     # ExchangeOrganization (Config Partition overview from Get-ExchangeInfrastructure)
     ExchangeOrganization = @(
-        'OrganizationName', 'ExchangeServerCount', 'AcceptedDomains', 'SMTPSendConnectors'
+        'OrganizationName', 'ExchangeServerCount', 'ConfigurationVisibility', 'AcceptedDomains', 'SMTPSendConnectors'
     )
 
     # ExchangeConfigServer (per-server details from Config Partition)
@@ -27673,11 +27673,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Category = "Infrastructure"
         SectionTitle = "Exchange Organization"
         Summary = "Exchange Organization overview from the Configuration partition (forest-wide)."
-        WhyItMatters = "Exchange Organization data in the Configuration partition is visible from any domain in the forest. This provides a complete picture of the Exchange infrastructure even when querying from a child domain."
+        WhyItMatters = "The Configuration partition is replicated to every domain controller of the forest, so the Exchange organization can be read from any of its domains, a child domain included - as far as the account may read it. Measured against Exchange SE, a domain user sees the organization and its servers, but not its accepted domains, connectors or virtual directories."
         WhatWeCheck = @(
             "Exchange Organization name"
             "Accepted mail domains and SMTP send connectors"
             "Number of Exchange servers across the forest"
+            "Whether this account can read the organization's configuration at all"
         )
     }
 
@@ -127120,6 +127121,15 @@ function Get-ExchangeInfrastructure {
                 Write-Log "[Get-ExchangeInfrastructure] Error querying Accepted Domains: $_" -Level Error
             }
 
+            # Every organization has an accepted domain: setup creates the default one, and
+            # Exchange refuses to remove the default. None readable is a configuration this
+            # account may not see, not an empty one. Measured with a domain user against an
+            # Exchange SE organization: the organization, its servers and its address lists
+            # are readable; its accepted domains, connectors, virtual directories, role
+            # assignments and hybrid configuration are not - and the sections below read
+            # "none found" for every one of them.
+            $orgConfigHidden = (@($allAcceptedDomains).Count -eq 0)
+
             # --- Phase 2: Global Organization Card ---
             $orgObj = [PSCustomObject]@{
                 Name = $organizationName
@@ -127128,6 +127138,10 @@ function Get-ExchangeInfrastructure {
 
             if ($realServers.Count -gt 0) {
                 $orgObj | Add-Member -NotePropertyName 'ExchangeServerCount' -NotePropertyValue "$($realServers.Count) server(s)" -Force
+            }
+
+            if ($orgConfigHidden) {
+                $orgObj | Add-Member -NotePropertyName 'ConfigurationVisibility' -NotePropertyValue 'Not readable by this account - no accepted domain is visible, and every organization has one' -Force
             }
 
             if (@($allAcceptedDomains).Count -gt 0) {
@@ -127638,6 +127652,11 @@ function Get-ExchangeInfrastructure {
                 # one of the two justifies the sentence below.
                 Show-Line "Hybrid configuration could not be read - result unknown, not absent" -Class Hint
             }
+            elseif ($orgConfigHidden) {
+                # The relationship object sits in the organization's configuration, which
+                # this account cannot read - see $orgConfigHidden.
+                Show-Line "Hybrid configuration is not readable by this account - result unknown, not absent" -Class Hint
+            }
             else {
                 Show-Line "No hybrid configuration found - this organization appears to be purely on-premises" -Class Note
             }
@@ -127657,7 +127676,15 @@ function Get-ExchangeInfrastructure {
             Show-SubHeader "Checking SMTP receive connector permissions..." -ObjectType "ExchangeReceiveConnector"
 
             if (@($allRecvConnectors).Count -eq 0) {
-                Show-Line "No SMTP receive connectors found in the Configuration partition" -Class Note
+                # A server that transports mail carries receive connectors - five default
+                # ones on an Exchange 2013 or later Mailbox server - so none beside a server
+                # that was found is a connector this account cannot see.
+                if ($orgConfigHidden -or @($realServers).Count -gt 0) {
+                    Show-Line "No SMTP receive connector is readable by this account - their permissions are unknown, not clean" -Class Hint
+                }
+                else {
+                    Show-Line "No SMTP receive connectors found in the Configuration partition" -Class Note
+                }
             }
             else {
                 # Exchange registers its extended rights in the forest's own Extended-Rights
@@ -128468,7 +128495,11 @@ function Get-ExchangeRBACAssignments {
             }
 
             if (@($roleAssignments).Count -eq 0) {
-                Show-Line "No Exchange role assignments found in the Configuration partition" -Class Note
+                # Setup creates the role assignments with the organization, several hundred
+                # of them, so none readable is a container this account may not see rather
+                # than an empty one. Measured with a domain user against Exchange SE, where
+                # the RBAC container is not readable.
+                Show-Line "No Exchange role assignment is readable by this account - result unknown, not empty" -Class Hint
                 return
             }
 
@@ -146241,7 +146272,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1157"
+$Script:adPEASVersion = "2.7.0+20261018-1206"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

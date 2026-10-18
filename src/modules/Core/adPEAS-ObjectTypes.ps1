@@ -302,11 +302,12 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Category = "Infrastructure"
         SectionTitle = "Exchange Organization"
         Summary = "Exchange Organization overview from the Configuration partition (forest-wide)."
-        WhyItMatters = "Exchange Organization data in the Configuration partition is visible from any domain in the forest. This provides a complete picture of the Exchange infrastructure even when querying from a child domain."
+        WhyItMatters = "The Configuration partition is replicated to every domain controller of the forest, so the Exchange organization can be read from any of its domains, a child domain included - as far as the account may read it. Measured against Exchange SE, a domain user sees the organization and its servers, but not its accepted domains, connectors or virtual directories."
         WhatWeCheck = @(
             "Exchange Organization name"
             "Accepted mail domains and SMTP send connectors"
             "Number of Exchange servers across the forest"
+            "Whether this account can read the organization's configuration at all"
         )
     }
 
