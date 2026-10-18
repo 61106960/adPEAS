@@ -1201,6 +1201,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   SCOM sections, and the analysis is *Checking the Exchange servers and their web
   endpoints*.
 
+- **Loading adPEAS prints a pointer instead of the logo and the quick start.** A script
+  or one-liner that loads adPEAS and starts a scan showed the logo twice, with nine lines
+  of help between the two, because `Invoke-adPEAS` opens every scan with the logo
+  itself. Loading now says how to start a scan and that `Get-adPEASHelp` shows the quick
+  start. It keeps the note that alternate credentials replace the Kerberos tickets of a
+  domain-joined session, because nothing else says so before it happens.
+
 ---
 
 ## [2.7.0] - 2026-10-08

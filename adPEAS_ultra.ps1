@@ -91504,7 +91504,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1822"
+$Script:adPEASVersion = "2.7.0+20261018-1827"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -92151,5 +92151,7 @@ finally {
 	Clear-FindingsCollection
 }
 }
-Show-Logo -Version $Script:adPEASVersion
-Get-adPEASHelp -Section QuickStart
+Show-Line "adPEAS $Script:adPEASVersion loaded - Invoke-adPEAS -Domain 'contoso.com' starts a scan, Get-adPEASHelp shows the quick start" -Class Note
+Show-Line "On domain-joined machines, -Password/-NTHash/-AES*Key/-Certificate replace your Kerberos tickets." -Class Note
+Show-Line "Use Connect-adPEAS with -ForceNTLM or -ForceSimpleBind to avoid this."
+Show-EmptyLine

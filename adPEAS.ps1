@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 18:22:03
-    Version: 2.7.0+20261018-1822
+    Build: 2026-10-18 18:27:50
+    Version: 2.7.0+20261018-1827
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -147147,7 +147147,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1822"
+$Script:adPEASVersion = "2.7.0+20261018-1827"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -148297,9 +148297,11 @@ finally {
 # ===== End of Invoke-adPEAS Function =====
 
 # ===== Module Import Message =====
-# Use Show-Logo for consistent banner display
-
-Show-Logo -Version $Script:adPEASVersion
-
-# Quick Start Guide (centralized in Get-adPEASHelp)
-Get-adPEASHelp -Section QuickStart
+# A pointer, not the logo and the quick start. Invoke-adPEAS opens every scan with the
+# logo, so a script that imports adPEAS and starts a scan printed it twice, with the whole
+# quick start between the two; Get-adPEASHelp shows the quick start on request. The ticket
+# note stays, because nothing else says it before it happens.
+Show-Line "adPEAS $Script:adPEASVersion loaded - Invoke-adPEAS -Domain 'contoso.com' starts a scan, Get-adPEASHelp shows the quick start" -Class Note
+Show-Line "On domain-joined machines, -Password/-NTHash/-AES*Key/-Certificate replace your Kerberos tickets." -Class Note
+Show-Line "Use Connect-adPEAS with -ForceNTLM or -ForceSimpleBind to avoid this."
+Show-EmptyLine

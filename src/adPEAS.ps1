@@ -1407,9 +1407,11 @@ finally {
 # ===== End of Invoke-adPEAS Function =====
 
 # ===== Module Import Message =====
-# Use Show-Logo for consistent banner display
-
-Show-Logo -Version $Script:adPEASVersion
-
-# Quick Start Guide (centralized in Get-adPEASHelp)
-Get-adPEASHelp -Section QuickStart
+# A pointer, not the logo and the quick start. Invoke-adPEAS opens every scan with the
+# logo, so a script that imports adPEAS and starts a scan printed it twice, with the whole
+# quick start between the two; Get-adPEASHelp shows the quick start on request. The ticket
+# note stays, because nothing else says it before it happens.
+Show-Line "adPEAS $Script:adPEASVersion loaded - Invoke-adPEAS -Domain 'contoso.com' starts a scan, Get-adPEASHelp shows the quick start" -Class Note
+Show-Line "On domain-joined machines, -Password/-NTHash/-AES*Key/-Certificate replace your Kerberos tickets." -Class Note
+Show-Line "Use Connect-adPEAS with -ForceNTLM or -ForceSimpleBind to avoid this."
+Show-EmptyLine
