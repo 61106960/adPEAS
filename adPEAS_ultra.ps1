@@ -27695,7 +27695,8 @@ function Invoke-LDAPSearch {
 	            'extensiondata',
 	            'msmqdigests', 'msmqsigncertificates',
 	            'userparameters', 'terminalserver',
-	            'tokengroups', 'tokengroupsglobalanduniversal', 'tokengroupsnogcacceptable'
+	            'tokengroups', 'tokengroupsglobalanduniversal', 'tokengroupsnogcacceptable',
+	            'dsasignature', 'repsfrom', 'repsto', 'auditingpolicy'
 	        )) { [void]$BinaryAttributeSet.Add($ba) }
 	        if ($CountOnly) {
 	            $TotalCount = 0
@@ -27802,8 +27803,22 @@ function Invoke-LDAPSearch {
 	                        }
 	                    }
 	                } else {
+	                    $TextValues = @()
+	                    $IsBinaryValue = $false
 	                    for ($i = 0; $i -lt $AttrValues.Count; $i++) {
-	                        $PropValue += $AttrValues[$i]
+	                        $AttrValue = $AttrValues[$i]
+	                        if ($AttrValue -is [byte[]]) {
+	                            $IsBinaryValue = $true
+	                            break
+	                        }
+	                        $TextValues += $AttrValue
+	                    }
+	                    if ($IsBinaryValue) {
+	                        foreach ($bv in $AttrValues.GetValues([byte[]])) {
+	                            $PropValue += ,$bv
+	                        }
+	                    } else {
+	                        $PropValue = $TextValues
 	                    }
 	                }
 	                if ($Raw) {
@@ -91626,7 +91641,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1906"
+$Script:adPEASVersion = "2.7.0+20261018-1912"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

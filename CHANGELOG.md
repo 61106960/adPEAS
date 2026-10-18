@@ -1240,6 +1240,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   attribute, and one scoped to a child class or carrying only WriteDacl or WriteOwner on
   an attribute counts as nothing.
 
+- **`Invoke-LDAPSearch` returns a binary attribute as one byte array per value, whether
+  or not it is on the list of binary attributes.** For a value that is not valid UTF-8
+  the search result indexer returns `byte[]`, and the text path appended it with `+=`,
+  byte by byte, so the values of a multi-valued attribute ran into one another. Measured
+  on a domain object, `repsFrom` and `repsTo` came back as 484 loose bytes each and
+  `dSASignature` as 40, and `auditingPolicy`, whose two bytes happen to be valid UTF-8,
+  came back as two characters of text. One value that is not text now marks the whole
+  attribute as binary, so all its values are read as bytes. The four measured attributes
+  are on the list as well, because a value that decodes as text gives nothing else away.
+
 ---
 
 ## [2.7.0] - 2026-10-08

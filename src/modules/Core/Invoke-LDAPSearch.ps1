@@ -234,7 +234,12 @@ function Invoke-LDAPSearch {
                 # SIDs, one per value. Read as text, a SID that happened to decode as UTF-8
                 # arrived as a string and every other one was added byte by byte - measured
                 # in a lab domain, three SIDs came back as one string and 56 loose bytes.
-                'tokengroups', 'tokengroupsglobalanduniversal', 'tokengroupsnogcacceptable'
+                'tokengroups', 'tokengroupsglobalanduniversal', 'tokengroupsnogcacceptable',
+                # The binary attributes of the domain object, measured: dSASignature, repsFrom
+                # and repsTo came back as loose bytes - see the text path below, which now
+                # catches those by itself - and auditingPolicy as two characters of text,
+                # because its bytes happen to be valid UTF-8. Only this list catches that.
+                'dsasignature', 'repsfrom', 'repsto', 'auditingpolicy'
             )) { [void]$BinaryAttributeSet.Add($ba) }
 
             # CountOnly mode: only count matching objects without collecting or converting them
@@ -388,9 +393,32 @@ function Invoke-LDAPSearch {
                             }
                         }
                     } else {
-                        # Non-binary attribute - use default string extraction
+                        # Non-binary attribute - use default string extraction.
+                        #
+                        # The indexer answers byte[] for a value that is not valid UTF-8,
+                        # which only a binary value is, and "+=" added it byte by byte: the
+                        # values of a multi-valued attribute ran into one another. Measured
+                        # on a domain object, repsFrom and repsTo came back as 484 loose
+                        # bytes each and dSASignature as 40. One such value proves the
+                        # attribute binary, so all of its values are read as bytes, the way
+                        # the list above is read - a value that happened to decode as text
+                        # among them included.
+                        $TextValues = @()
+                        $IsBinaryValue = $false
                         for ($i = 0; $i -lt $AttrValues.Count; $i++) {
-                            $PropValue += $AttrValues[$i]
+                            $AttrValue = $AttrValues[$i]
+                            if ($AttrValue -is [byte[]]) {
+                                $IsBinaryValue = $true
+                                break
+                            }
+                            $TextValues += $AttrValue
+                        }
+                        if ($IsBinaryValue) {
+                            foreach ($bv in $AttrValues.GetValues([byte[]])) {
+                                $PropValue += ,$bv
+                            }
+                        } else {
+                            $PropValue = $TextValues
                         }
                     }
 
