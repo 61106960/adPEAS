@@ -421,7 +421,8 @@ function ConvertFrom-LDAPAttribute {
         }
 
         # sIDHistory - Multi-valued SID attribute (critical for SID History Injection detection)
-        if ($PropName -ieq "sIDHistory") {
+        # The three tokenGroups attributes are lists of SIDs as well.
+        if ($PropName -iin @('sIDHistory', 'tokenGroups', 'tokenGroupsGlobalAndUniversal', 'tokenGroupsNoGCAcceptable')) {
             $sidStrings = @()
             foreach ($sidBytes in $PropValue) {
                 if ($sidBytes -is [byte[]]) {

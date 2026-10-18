@@ -26417,7 +26417,7 @@ function ConvertFrom-LDAPAttribute {
 	        }
 	        return $ConvertedProperties
 	    }
-	    if ($PropName -ieq "sIDHistory") {
+	    if ($PropName -iin @('sIDHistory', 'tokenGroups', 'tokenGroupsGlobalAndUniversal', 'tokenGroupsNoGCAcceptable')) {
 	        $sidStrings = @()
 	        foreach ($sidBytes in $PropValue) {
 	            if ($sidBytes -is [byte[]]) {
@@ -27627,7 +27627,8 @@ function Invoke-LDAPSearch {
 	            'pkiexpirationperiod', 'pkioverlapperiod', 'pkikeyusage',
 	            'extensiondata',
 	            'msmqdigests', 'msmqsigncertificates',
-	            'userparameters', 'terminalserver'
+	            'userparameters', 'terminalserver',
+	            'tokengroups', 'tokengroupsglobalanduniversal', 'tokengroupsnogcacceptable'
 	        )) { [void]$BinaryAttributeSet.Add($ba) }
 	        if ($CountOnly) {
 	            $TotalCount = 0
@@ -40513,42 +40514,34 @@ function Get-CurrentUserTokenGroups {
 	    return ,@()
 	}
 	try {
-	    $principalDN = $null
-	    if ($Script:LDAPContext.AuthenticatedUserDN) {
-	        $principalDN = [string]$Script:LDAPContext.AuthenticatedUserDN
-	    }
-	    if ([string]::IsNullOrWhiteSpace($principalDN)) {
-	        return ,@()
-	    }
-	    $TokenResults = @(Invoke-LDAPSearch -Filter "(objectClass=*)" -Properties "tokenGroups" -Scope "Base" -SearchBase $principalDN -Raw)
+	    $sidValues = @(Read-RootDSETokenGroups -Connection $Script:LdapConnection)
 	    $TokenGroupSIDs = @()
-	    if ($TokenResults -and $TokenResults.Count -gt 0) {
-	        $TokenResult = $TokenResults[0]
-	        $tokenGroupsAttr = $TokenResult.tokenGroups
-	        if ($tokenGroupsAttr) {
-	            if ($tokenGroupsAttr -is [byte[]]) {
-	                $tokenGroupsArray = ,$tokenGroupsAttr
-	            } else {
-	                $tokenGroupsArray = $tokenGroupsAttr
-	            }
-	            foreach ($sidBytes in $tokenGroupsArray) {
-	                try {
-	                    if ($sidBytes -is [byte[]]) {
-	                        $sid = New-Object System.Security.Principal.SecurityIdentifier($sidBytes, 0)
-	                        $TokenGroupSIDs += $sid.Value
-	                    }
-	                } catch {
-	                }
-	            }
-	        } else {
+	    foreach ($sidBytes in $sidValues) {
+	        try {
+	            $sid = New-Object System.Security.Principal.SecurityIdentifier($sidBytes, 0)
+	            $TokenGroupSIDs += $sid.Value
+	        } catch {
 	        }
-	    } else {
 	    }
 	    $Script:CurrentUserTokenGroups = $TokenGroupSIDs
 	    return ,$TokenGroupSIDs
 	} catch {
 	    return ,@()
 	}
+}
+function Read-RootDSETokenGroups {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    $Connection
+	)
+	$request = New-Object System.DirectoryServices.Protocols.SearchRequest(
+	    '', '(objectClass=*)', [System.DirectoryServices.Protocols.SearchScope]::Base, [string[]]@('tokenGroups'))
+	$response = $Connection.SendRequest($request)
+	if (-not $response -or @($response.Entries).Count -eq 0) { return }
+	$attribute = @($response.Entries)[0].Attributes.get_Item('tokengroups')
+	if (-not $attribute) { return }
+	foreach ($value in $attribute.GetValues([byte[]])) { ,$value }
 }
 function Test-SIDInTokenGroups {
 	[CmdletBinding()]
@@ -91375,7 +91368,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1454"
+$Script:adPEASVersion = "2.7.0+20261018-1504"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

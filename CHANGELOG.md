@@ -749,6 +749,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   objectSid as bytes: the attribute indexer of a search result returns a string for a SID
   whose bytes happen to be valid UTF-8, and the SID was lost.
 
+- **The token groups of the session are read at all.** `Get-CurrentUserTokenGroups`, the
+  fast path of the encrypted-LAPS check that compares the decryptor a blob names against
+  the scanning account's groups, had never returned a SID from a real domain. It read
+  tokenGroups off the account's own object, and `Invoke-LDAPSearch` did not know the
+  attribute as binary: a SID that happened to decode as UTF-8 arrived as a string and
+  every other one byte by byte - measured, three SIDs came back as one string and 56 loose
+  bytes. It needed the account's DN as well, which no Kerberos session had. It reads the
+  token of the connection off the rootDSE now (MS-ADTS 3.1.1.3.2.41), which also holds the
+  account's own SID and the well-known groups of the logon. `Invoke-LDAPSearch` returns the
+  three tokenGroups attributes as one SID per value, and without `-Raw` as SID strings.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 14:54:25
-    Version: 2.7.0+20261018-1454
+    Build: 2026-10-18 15:04:01
+    Version: 2.7.0+20261018-1504
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -37397,7 +37397,8 @@ function ConvertFrom-LDAPAttribute {
         }
 
         # sIDHistory - Multi-valued SID attribute (critical for SID History Injection detection)
-        if ($PropName -ieq "sIDHistory") {
+        # The three tokenGroups attributes are lists of SIDs as well.
+        if ($PropName -iin @('sIDHistory', 'tokenGroups', 'tokenGroupsGlobalAndUniversal', 'tokenGroupsNoGCAcceptable')) {
             $sidStrings = @()
             foreach ($sidBytes in $PropValue) {
                 if ($sidBytes -is [byte[]]) {
@@ -39023,7 +39024,11 @@ function Invoke-LDAPSearch {
                 'pkiexpirationperiod', 'pkioverlapperiod', 'pkikeyusage',
                 'extensiondata',
                 'msmqdigests', 'msmqsigncertificates',
-                'userparameters', 'terminalserver'
+                'userparameters', 'terminalserver',
+                # SIDs, one per value. Read as text, a SID that happened to decode as UTF-8
+                # arrived as a string and every other one was added byte by byte - measured
+                # in a lab domain, three SIDs came back as one string and 56 loose bytes.
+                'tokengroups', 'tokengroupsglobalanduniversal', 'tokengroupsnogcacceptable'
             )) { [void]$BinaryAttributeSet.Add($ba) }
 
             # CountOnly mode: only count matching objects without collecting or converting them
@@ -62176,14 +62181,16 @@ function ConvertFrom-DSHeuristics {
 function Get-CurrentUserTokenGroups {
     <#
     .SYNOPSIS
-    Returns all SIDs the current authenticated user is a member of.
+    Returns the SIDs in the token of the current LDAP session.
 
     .DESCRIPTION
-    Queries the tokenGroups attribute for the current LDAP session to get all
-    group memberships (including nested groups) of the authenticated user.
+    Reads the tokenGroups attribute of the rootDSE, which returns "the SIDs contained in
+    the security context as which the client has authenticated the LDAP connection"
+    (MS-ADTS 3.1.1.3.2.41): the account's own SID, its groups with nesting resolved, and
+    the well-known groups of the logon such as Authenticated Users.
 
-    This is useful for checking if the current user can decrypt LAPS encrypted
-    passwords, as the Target SID must be in the user's token groups.
+    This is what checks whether the current user can decrypt an encrypted LAPS password:
+    the blob names the one principal allowed to, a group or an account.
 
     The function caches results in $Script:CurrentUserTokenGroups for performance.
 
@@ -62220,86 +62227,31 @@ function Get-CurrentUserTokenGroups {
     }
 
     try {
-        Write-Log "[Get-CurrentUserTokenGroups] Querying tokenGroups for current session..."
+        Write-Log "[Get-CurrentUserTokenGroups] Reading the token of the LDAP session off the rootDSE..."
 
-        # tokenGroups on the bound principal's own object, Base scope.
-        #
-        # It used to read the domain root, with a comment claiming that returns the groups
-        # of the authenticated user. It does not: tokenGroups is a constructed attribute
-        # that AD computes for the object being read (MS-ADTS 3.1.1.4.5.19), and the
-        # documented way to read your own is a Base-scope search on your own DN. Without a
-        # SearchBase, Invoke-LDAPSearch uses the domain DN, so the best case was an empty
-        # attribute and the realistic case the domain object's own SID and nothing else.
+        # The rootDSE, not an object. tokenGroups read off the account's own object - the
+        # way this worked before - never produced a SID: Invoke-LDAPSearch did not know the
+        # attribute as binary, so a SID that happened to decode as UTF-8 arrived as a string
+        # and every other one as loose bytes. Measured in a lab domain: three SIDs, one string
+        # and 56 bytes, nothing parsed. It needed the account's DN as well, which no
+        # Kerberos session had, and the attribute of an object leaves out the object's own
+        # SID - which the decryptor of a LAPS password can be.
         #
         # What hung off it: the encrypted-LAPS authorization gate, which compares these
-        # SIDs against the decryptor group named in each blob. It never matched, so a
-        # domain using encrypted Windows LAPS - the configuration Microsoft recommends -
-        # had every computer silently discarded.
-        #
-        # Note: tokenGroups is a special constructed attribute that returns raw byte arrays
-        $principalDN = $null
-        if ($Script:LDAPContext.AuthenticatedUserDN) {
-            $principalDN = [string]$Script:LDAPContext.AuthenticatedUserDN
-        }
-        if ([string]::IsNullOrWhiteSpace($principalDN)) {
-            # Honest empty rather than a wrong answer: without the principal's DN there is
-            # no object to compute the groups for, and the caller treats an empty list as
-            # "could not be determined" rather than as "member of nothing".
-            Write-Log "[Get-CurrentUserTokenGroups] No DN for the bound principal, cannot read its tokenGroups"
-            return ,@()
-        }
-        # @() wrap required: a Base-scope self-lookup always returns exactly one entry,
-        # and Invoke-LDAPSearch's own bare "return $OutputObjects" unrolls a one-element
-        # result to that bare entry rather than a one-item array (PSCustomObject has no
-        # synthetic .Count, so the check below would silently always see 0). Every other
-        # Invoke-LDAPSearch call site in this codebase already wraps the call the same way.
-        $TokenResults = @(Invoke-LDAPSearch -Filter "(objectClass=*)" -Properties "tokenGroups" -Scope "Base" -SearchBase $principalDN -Raw)
+        # SIDs against the decryptor named in each blob. Without them it falls back to
+        # sampling three computers.
+        $sidValues = @(Read-RootDSETokenGroups -Connection $Script:LdapConnection)
 
         $TokenGroupSIDs = @()
-
-        if ($TokenResults -and $TokenResults.Count -gt 0) {
-            $TokenResult = $TokenResults[0]
-            $tokenGroupsAttr = $TokenResult.tokenGroups
-
-            if ($tokenGroupsAttr) {
-                # tokenGroups can be a single SID (one byte[]) or multiple (an array of
-                # byte[]). "-is [array]" cannot tell these apart: byte[] IS an array, so
-                # it was always true and a lone-group user's single byte[] fell into the
-                # "already an array" branch, where the foreach below iterated individual
-                # bytes instead of the one SID - "$sidBytes -is [byte[]]" then never
-                # matched a lone byte, and the user's only group membership was silently
-                # dropped. "-is [byte[]]" is unambiguous: only the single-SID case is
-                # itself typed byte[]; wrap it as a one-element list with a leading comma.
-                #
-                # The comma has to sit inside an "if" used as a STATEMENT, assigned
-                # separately in each branch - not "$x = if (...) { ,$y } else { $y }".
-                # An "if" captured as an expression value re-enumerates whatever each
-                # branch produced the same way a bare "return" does, and silently strips
-                # the comma's one-element wrapping right back off (confirmed: the
-                # assignment form measurably loses it, the statement form does not).
-                if ($tokenGroupsAttr -is [byte[]]) {
-                    $tokenGroupsArray = ,$tokenGroupsAttr
-                } else {
-                    $tokenGroupsArray = $tokenGroupsAttr
-                }
-
-                foreach ($sidBytes in $tokenGroupsArray) {
-                    try {
-                        if ($sidBytes -is [byte[]]) {
-                            $sid = New-Object System.Security.Principal.SecurityIdentifier($sidBytes, 0)
-                            $TokenGroupSIDs += $sid.Value
-                        }
-                    } catch {
-                        Write-Log "[Get-CurrentUserTokenGroups] Failed to parse SID bytes: $_"
-                    }
-                }
-                Write-Log "[Get-CurrentUserTokenGroups] Found $($TokenGroupSIDs.Count) token groups"
-            } else {
-                Write-Log "[Get-CurrentUserTokenGroups] tokenGroups attribute not found"
+        foreach ($sidBytes in $sidValues) {
+            try {
+                $sid = New-Object System.Security.Principal.SecurityIdentifier($sidBytes, 0)
+                $TokenGroupSIDs += $sid.Value
+            } catch {
+                Write-Log "[Get-CurrentUserTokenGroups] Failed to parse SID bytes: $_"
             }
-        } else {
-            Write-Log "[Get-CurrentUserTokenGroups] tokenGroups query returned no results"
         }
+        Write-Log "[Get-CurrentUserTokenGroups] Found $($TokenGroupSIDs.Count) SIDs in the session token"
 
         # Cache the result
         $Script:CurrentUserTokenGroups = $TokenGroupSIDs
@@ -62312,6 +62264,45 @@ function Get-CurrentUserTokenGroups {
     }
 }
 
+
+function Read-RootDSETokenGroups {
+    <#
+    .SYNOPSIS
+    Reads the tokenGroups values of the rootDSE, one byte array per SID.
+
+    .DESCRIPTION
+    Through the connection itself: Invoke-LDAPSearch puts the domain DN in place of an
+    empty search base, so it cannot read the rootDSE. GetValues([byte[]]) rather than the
+    indexer, which on a search result returns a string for a SID whose bytes happen to
+    decode as UTF-8 - BUILTIN\Users is one.
+
+    .PARAMETER Connection
+    The bound System.DirectoryServices.Protocols.LdapConnection.
+
+    .OUTPUTS
+    byte[], one per SID; nothing when the rootDSE carries no tokenGroups.
+
+    .NOTES
+    Author: Alexander Sturz (@_61106960_)
+    #>
+
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Connection
+    )
+
+    $request = New-Object System.DirectoryServices.Protocols.SearchRequest(
+        '', '(objectClass=*)', [System.DirectoryServices.Protocols.SearchScope]::Base, [string[]]@('tokenGroups'))
+    $response = $Connection.SendRequest($request)
+    if (-not $response -or @($response.Entries).Count -eq 0) { return }
+
+    $attribute = @($response.Entries)[0].Attributes.get_Item('tokengroups')
+    if (-not $attribute) { return }
+
+    # One byte[] per pipeline object - the comma keeps the pipeline from unrolling it.
+    foreach ($value in $attribute.GetValues([byte[]])) { ,$value }
+}
 
 function Test-SIDInTokenGroups {
     <#
@@ -146862,7 +146853,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1454"
+$Script:adPEASVersion = "2.7.0+20261018-1504"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

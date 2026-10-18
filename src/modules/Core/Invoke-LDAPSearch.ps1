@@ -230,7 +230,11 @@ function Invoke-LDAPSearch {
                 'pkiexpirationperiod', 'pkioverlapperiod', 'pkikeyusage',
                 'extensiondata',
                 'msmqdigests', 'msmqsigncertificates',
-                'userparameters', 'terminalserver'
+                'userparameters', 'terminalserver',
+                # SIDs, one per value. Read as text, a SID that happened to decode as UTF-8
+                # arrived as a string and every other one was added byte by byte - measured
+                # in a lab domain, three SIDs came back as one string and 56 loose bytes.
+                'tokengroups', 'tokengroupsglobalanduniversal', 'tokengroupsnogcacceptable'
             )) { [void]$BinaryAttributeSet.Add($ba) }
 
             # CountOnly mode: only count matching objects without collecting or converting them
