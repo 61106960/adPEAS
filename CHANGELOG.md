@@ -1179,6 +1179,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the AdminSDHolder ACL with inheritance off, and SDProp no longer maintains it. It used
   to say the opposite, that SDProp resets the ACL every hour.
 
+- **The Exchange organization card names what this account cannot read.** When the
+  organization's configuration is hidden, the card said so, and then the hybrid and
+  receive connector sections each said it again in a line of their own with no card
+  behind it in the report. The card now carries `NotReadable`, the parts that came back
+  empty because of it: accepted domains, virtual directories, receive connectors (their
+  permissions unknown, not clean), send connectors and the hybrid configuration (unknown,
+  not absent). The two sections are left out in that case. A hybrid query that fails
+  keeps its own section, and so does a readable configuration with a server but no
+  receive connector.
+
 ---
 
 ## [2.7.0] - 2026-10-08

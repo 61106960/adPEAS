@@ -323,7 +323,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Exchange Organization name"
             "Accepted mail domains and SMTP send connectors"
             "Number of Exchange servers across the forest"
-            "Whether this account can read the organization's configuration at all"
+            "Whether this account can read the organization's configuration at all, and which parts of it came back empty because it cannot"
         )
     }
 

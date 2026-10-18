@@ -500,7 +500,7 @@ $Script:PrimaryAttributes = @{
 
     # ExchangeOrganization (Config Partition overview from Get-ExchangeInfrastructure)
     ExchangeOrganization = @(
-        'OrganizationName', 'ExchangeServerCount', 'ConfigurationVisibility', 'AcceptedDomains', 'SMTPSendConnectors'
+        'OrganizationName', 'ExchangeServerCount', 'ConfigurationVisibility', 'NotReadable', 'AcceptedDomains', 'SMTPSendConnectors'
     )
 
     # ExchangeConfigServer (per-server details from Config Partition)

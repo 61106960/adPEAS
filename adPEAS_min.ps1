@@ -3676,7 +3676,7 @@ $Script:PrimaryAttributes = @{
         'DangerousPermissions'
     )
     ExchangeOrganization = @(
-        'OrganizationName', 'ExchangeServerCount', 'ConfigurationVisibility', 'AcceptedDomains', 'SMTPSendConnectors'
+        'OrganizationName', 'ExchangeServerCount', 'ConfigurationVisibility', 'NotReadable', 'AcceptedDomains', 'SMTPSendConnectors'
     )
     ExchangeConfigServer = @(
         'Name', 'dNSHostName',
@@ -20848,7 +20848,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Exchange Organization name"
             "Accepted mail domains and SMTP send connectors"
             "Number of Exchange servers across the forest"
-            "Whether this account can read the organization's configuration at all"
+            "Whether this account can read the organization's configuration at all, and which parts of it came back empty because it cannot"
         )
     }
     'ExchangeConfigServer' = @{
@@ -80104,6 +80104,15 @@ function Get-ExchangeInfrastructure {
             } catch {
                 Write-Log "[Get-ExchangeInfrastructure] Error querying Accepted Domains: $_" -Level Error
             }
+            $hybridRelationships = @()
+            $hybridQueryFailed = $false
+            try {
+                $hybridRelationships = @(Get-DomainObject -LDAPFilter "(objectClass=msExchCoexistenceRelationship)" -SearchBase $exchangeBase @PSBoundParameters)
+            }
+            catch {
+                $hybridQueryFailed = $true
+                Write-Log "[Get-ExchangeInfrastructure] Error querying hybrid configuration: $_" -Level Error
+            }
             $orgConfigHidden = (@($allAcceptedDomains).Count -eq 0)
             $orgObj = [PSCustomObject]@{
                 Name = $organizationName
@@ -80114,6 +80123,12 @@ function Get-ExchangeInfrastructure {
             }
             if ($orgConfigHidden) {
                 $orgObj | Add-Member -NotePropertyName 'ConfigurationVisibility' -NotePropertyValue 'Not readable by this account - no accepted domain is visible, and every organization has one' -Force
+                $notReadable = @('Accepted domains')
+                if (@($allVDirs).Count -eq 0) { $notReadable += 'Virtual directories' }
+                if (@($allRecvConnectors).Count -eq 0) { $notReadable += 'SMTP receive connectors - their permissions are unknown, not clean' }
+                if (@($allSendConnectors).Count -eq 0) { $notReadable += 'SMTP send connectors' }
+                if (-not $hybridQueryFailed -and @($hybridRelationships).Count -eq 0) { $notReadable += 'Hybrid configuration - unknown, not absent' }
+                $orgObj | Add-Member -NotePropertyName 'NotReadable' -NotePropertyValue $notReadable -Force
             }
             if (@($allAcceptedDomains).Count -gt 0) {
                 $typeMap = @{ 0 = "Authoritative"; 1 = "InternalRelay"; 2 = "ExternalRelay" }
@@ -80416,15 +80431,9 @@ function Get-ExchangeInfrastructure {
             } else {
                 Show-Line "Exchange Organization: $organizationName - No active Exchange Servers found" -Class Note
             }
-            Show-SubHeader "Checking for an Exchange hybrid deployment..." -ObjectType "ExchangeHybridConfiguration"
-            $hybridRelationships = @()
-            $hybridQueryFailed = $false
-            try {
-                $hybridRelationships = @(Get-DomainObject -LDAPFilter "(objectClass=msExchCoexistenceRelationship)" -SearchBase $exchangeBase @PSBoundParameters)
-            }
-            catch {
-                $hybridQueryFailed = $true
-                Write-Log "[Get-ExchangeInfrastructure] Error querying hybrid configuration: $_" -Level Error
+            $hybridOnOrgCard = ($orgConfigHidden -and -not $hybridQueryFailed -and @($hybridRelationships).Count -eq 0)
+            if (-not $hybridOnOrgCard) {
+                Show-SubHeader "Checking for an Exchange hybrid deployment..." -ObjectType "ExchangeHybridConfiguration"
             }
             if (@($hybridRelationships).Count -gt 0) {
                 $hybridObj = [PSCustomObject]@{
@@ -80458,19 +80467,21 @@ function Get-ExchangeInfrastructure {
             elseif ($hybridQueryFailed) {
                 Show-Line "Hybrid configuration could not be read - result unknown, not absent" -Class Hint
             }
-            elseif ($orgConfigHidden) {
-                Show-Line "Hybrid configuration is not readable by this account - result unknown, not absent" -Class Hint
-            }
-            else {
+            elseif (-not $hybridOnOrgCard) {
                 Show-Line "No hybrid configuration found - this organization appears to be purely on-premises" -Class Note
             }
-            Show-SubHeader "Checking SMTP receive connector permissions..." -ObjectType "ExchangeReceiveConnector"
+            $recvConnectorsOnOrgCard = ($orgConfigHidden -and @($allRecvConnectors).Count -eq 0)
+            if (-not $recvConnectorsOnOrgCard) {
+                Show-SubHeader "Checking SMTP receive connector permissions..." -ObjectType "ExchangeReceiveConnector"
+            }
             if (@($allRecvConnectors).Count -eq 0) {
-                if ($orgConfigHidden -or @($realServers).Count -gt 0) {
-                    Show-Line "No SMTP receive connector is readable by this account - their permissions are unknown, not clean" -Class Hint
-                }
-                else {
-                    Show-Line "No SMTP receive connectors found in the Configuration partition" -Class Note
+                if (-not $recvConnectorsOnOrgCard) {
+                    if (@($realServers).Count -gt 0) {
+                        Show-Line "No SMTP receive connector is readable by this account - their permissions are unknown, not clean" -Class Hint
+                    }
+                    else {
+                        Show-Line "No SMTP receive connectors found in the Configuration partition" -Class Note
+                    }
                 }
             }
             else {
@@ -94548,7 +94559,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1803"
+$Script:adPEASVersion = "2.7.0+20261018-1813"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

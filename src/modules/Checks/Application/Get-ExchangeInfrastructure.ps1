@@ -195,6 +195,19 @@ function Get-ExchangeInfrastructure {
                 Write-Log "[Get-ExchangeInfrastructure] Error querying Accepted Domains: $_" -Level Error
             }
 
+            # The coexistence relationship, read here with the rest so the organization
+            # card can name it when it is not readable - Step 3 explains why this object
+            # and nothing else is the hybrid signal.
+            $hybridRelationships = @()
+            $hybridQueryFailed = $false
+            try {
+                $hybridRelationships = @(Get-DomainObject -LDAPFilter "(objectClass=msExchCoexistenceRelationship)" -SearchBase $exchangeBase @PSBoundParameters)
+            }
+            catch {
+                $hybridQueryFailed = $true
+                Write-Log "[Get-ExchangeInfrastructure] Error querying hybrid configuration: $_" -Level Error
+            }
+
             # Every organization has an accepted domain: setup creates the default one, and
             # Exchange refuses to remove the default. None readable is a configuration this
             # account may not see, not an empty one. Measured with a domain user against an
@@ -216,6 +229,16 @@ function Get-ExchangeInfrastructure {
 
             if ($orgConfigHidden) {
                 $orgObj | Add-Member -NotePropertyName 'ConfigurationVisibility' -NotePropertyValue 'Not readable by this account - no accepted domain is visible, and every organization has one' -Force
+
+                # What came back empty because of it, named once on the card the reason is
+                # on. The hybrid and receive connector sections each said it again in a
+                # line of their own, with no card behind it in the report.
+                $notReadable = @('Accepted domains')
+                if (@($allVDirs).Count -eq 0) { $notReadable += 'Virtual directories' }
+                if (@($allRecvConnectors).Count -eq 0) { $notReadable += 'SMTP receive connectors - their permissions are unknown, not clean' }
+                if (@($allSendConnectors).Count -eq 0) { $notReadable += 'SMTP send connectors' }
+                if (-not $hybridQueryFailed -and @($hybridRelationships).Count -eq 0) { $notReadable += 'Hybrid configuration - unknown, not absent' }
+                $orgObj | Add-Member -NotePropertyName 'NotReadable' -NotePropertyValue $notReadable -Force
             }
 
             if (@($allAcceptedDomains).Count -gt 0) {
@@ -677,16 +700,14 @@ function Get-ExchangeInfrastructure {
             # /PrepareAD and every cumulative update, in every organization. Treating it as
             # a signal reported a purely on-premises organization as hybrid, on an object
             # that is present in all of them.
-            Show-SubHeader "Checking for an Exchange hybrid deployment..." -ObjectType "ExchangeHybridConfiguration"
-
-            $hybridRelationships = @()
-            $hybridQueryFailed = $false
-            try {
-                $hybridRelationships = @(Get-DomainObject -LDAPFilter "(objectClass=msExchCoexistenceRelationship)" -SearchBase $exchangeBase @PSBoundParameters)
-            }
-            catch {
-                $hybridQueryFailed = $true
-                Write-Log "[Get-ExchangeInfrastructure] Error querying hybrid configuration: $_" -Level Error
+            #
+            # The relationship is read in Phase 1. Where the organization's configuration
+            # is hidden and nothing came back, the organization card names the hybrid
+            # configuration among what this account cannot read, and this section has
+            # nothing to add.
+            $hybridOnOrgCard = ($orgConfigHidden -and -not $hybridQueryFailed -and @($hybridRelationships).Count -eq 0)
+            if (-not $hybridOnOrgCard) {
+                Show-SubHeader "Checking for an Exchange hybrid deployment..." -ObjectType "ExchangeHybridConfiguration"
             }
 
             if (@($hybridRelationships).Count -gt 0) {
@@ -730,12 +751,7 @@ function Get-ExchangeInfrastructure {
                 # one of the two justifies the sentence below.
                 Show-Line "Hybrid configuration could not be read - result unknown, not absent" -Class Hint
             }
-            elseif ($orgConfigHidden) {
-                # The relationship object sits in the organization's configuration, which
-                # this account cannot read - see $orgConfigHidden.
-                Show-Line "Hybrid configuration is not readable by this account - result unknown, not absent" -Class Hint
-            }
-            else {
+            elseif (-not $hybridOnOrgCard) {
                 Show-Line "No hybrid configuration found - this organization appears to be purely on-premises" -Class Note
             }
 
@@ -751,17 +767,25 @@ function Get-ExchangeInfrastructure {
             # a numeric encoding Microsoft does not publish, so every verdict below is
             # taken from the DACL alone. Guessing a bit value would produce a confidently
             # worded label that happens to be wrong.
-            Show-SubHeader "Checking SMTP receive connector permissions..." -ObjectType "ExchangeReceiveConnector"
+            #
+            # None readable in a hidden configuration is named on the organization card,
+            # like the hybrid configuration above, and the section is left out.
+            $recvConnectorsOnOrgCard = ($orgConfigHidden -and @($allRecvConnectors).Count -eq 0)
+            if (-not $recvConnectorsOnOrgCard) {
+                Show-SubHeader "Checking SMTP receive connector permissions..." -ObjectType "ExchangeReceiveConnector"
+            }
 
             if (@($allRecvConnectors).Count -eq 0) {
                 # A server that transports mail carries receive connectors - five default
                 # ones on an Exchange 2013 or later Mailbox server - so none beside a server
                 # that was found is a connector this account cannot see.
-                if ($orgConfigHidden -or @($realServers).Count -gt 0) {
-                    Show-Line "No SMTP receive connector is readable by this account - their permissions are unknown, not clean" -Class Hint
-                }
-                else {
-                    Show-Line "No SMTP receive connectors found in the Configuration partition" -Class Note
+                if (-not $recvConnectorsOnOrgCard) {
+                    if (@($realServers).Count -gt 0) {
+                        Show-Line "No SMTP receive connector is readable by this account - their permissions are unknown, not clean" -Class Hint
+                    }
+                    else {
+                        Show-Line "No SMTP receive connectors found in the Configuration partition" -Class Note
+                    }
                 }
             }
             else {
