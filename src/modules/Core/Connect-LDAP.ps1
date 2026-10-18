@@ -486,16 +486,17 @@ function Connect-LDAP {
             # refuses anonymous binds, which is nothing. That is the scan mode a
             # security-conscious customer picks.
             $Script:AnonymousAccessTested = $false
-            # Why the question was not answered, for the row Get-DomainInformation prints.
+            # Why the question was not answered, in a word or two: Get-DomainInformation
+            # prints it in brackets after "Not tested", and the log has the rest.
             $Script:AnonymousAccessSkipReason = $null
 
             if ($AsGlobalCatalog) {
                 Write-Log "[Connect-LDAP] Skipping anonymous access check for GC mode"
-                $Script:AnonymousAccessSkipReason = 'the session is a global catalog connection, where the anonymous bind test is skipped'
+                $Script:AnonymousAccessSkipReason = 'global catalog'
             }
             elseif ($UseLDAPS) {
                 Write-Log "[Connect-LDAP] Skipping anonymous access check for LDAPS (rarely enabled over SSL)"
-                $Script:AnonymousAccessSkipReason = 'the session is LDAPS, where the anonymous bind test is skipped'
+                $Script:AnonymousAccessSkipReason = 'LDAPS'
             }
             else {
                 # From here the answer is measured rather than assumed - Test-AnonymousLDAPBind
@@ -1270,7 +1271,7 @@ function Test-AnonymousLDAPBind {
         if ($anonOutcome.Refused) {
             Write-Log "[Test-AnonymousLDAPBind] Anonymous access test: denied (secure - this is expected)"
         } else {
-            Write-Log "[Test-AnonymousLDAPBind] Anonymous access test did not run - $($anonOutcome.Reason)"
+            Write-Log "[Test-AnonymousLDAPBind] Anonymous access test did not run - $($anonOutcome.Detail)"
             $result.Tested = $false
             $result.SkipReason = $anonOutcome.Reason
         }
@@ -1305,8 +1306,8 @@ function Test-AnonymousLDAPBind {
 .PARAMETER Exception
     The exception the anonymous bind test caught.
 .OUTPUTS
-    PSCustomObject with Refused (bool) and Reason (the text Get-DomainInformation prints after
-    "Not tested - "; $null when Refused).
+    PSCustomObject with Refused (bool), Reason (the words Get-DomainInformation prints in
+    brackets after "Not tested") and Detail (the error, for the log); both $null when Refused.
 #>
 function Get-AnonymousBindOutcome {
     [CmdletBinding()]
@@ -1319,24 +1320,26 @@ function Get-AnonymousBindOutcome {
     while ($null -ne $current) {
         $typeName = $current.GetType().FullName
         if ($typeName -eq 'System.DirectoryServices.Protocols.DirectoryOperationException') {
-            return [PSCustomObject]@{ Refused = $true; Reason = $null }
+            return [PSCustomObject]@{ Refused = $true; Reason = $null; Detail = $null }
         }
         if ($typeName -eq 'System.DirectoryServices.Protocols.LdapException') {
             $code = [int]$current.ErrorCode
             if ($code -ge 81 -and $code -le 97) {
                 return [PSCustomObject]@{
                     Refused = $false
-                    Reason  = "the anonymous bind got no answer from the server (LDAP client error $code`: $($current.Message))"
+                    Reason  = 'no answer from the server'
+                    Detail  = "the anonymous bind got no answer from the server (LDAP client error $code`: $($current.Message))"
                 }
             }
-            return [PSCustomObject]@{ Refused = $true; Reason = $null }
+            return [PSCustomObject]@{ Refused = $true; Reason = $null; Detail = $null }
         }
         $current = $current.InnerException
     }
 
     [PSCustomObject]@{
         Refused = $false
-        Reason  = "the anonymous bind test failed before the server answered: $($Exception.Message)"
+        Reason  = 'test failed'
+        Detail  = "the anonymous bind test failed before the server answered: $($Exception.Message)"
     }
 }
 

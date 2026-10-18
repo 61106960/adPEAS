@@ -53,9 +53,10 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "Understanding the domain structure, functional levels, and key configurations provides the foundation for all security assessments. Old functional levels may indicate legacy systems with known vulnerabilities."
         WhatWeCheck = @(
             "Domain and forest names, SIDs, and functional levels"
-            "Anonymous LDAP access: 'Refused (tested)' means an anonymous bind was attempted in this session and could not read the domain object"
+            "Anonymous LDAP access: 'Refused (tested)' means an anonymous bind was attempted in this session and could not read the domain object. 'Not tested' names why in brackets: LDAPS and global catalog sessions skip the test, and a bind that got no answer from the server or failed before one is no verdict either way - the log has the error"
             "What a deletion leaves behind: with the Recycle Bin, a deleted object stays restorable with all its attributes for the deleted-object lifetime, then remains as a stripped recycled object for the tombstone lifetime before it is removed for good. The tombstone lifetime also bounds the age of a backup that can still be restored. An unset deleted-object lifetime takes the tombstone lifetime"
-            "Which service replicates SYSVOL"
+            "Without the Recycle Bin a deleted object keeps only a few attributes and cannot be restored with its group memberships; the Recycle Bin needs forest functional level Windows Server 2008 R2"
+            "Which service replicates SYSVOL: FRS is deprecated, and no domain controller from Windows Server 1709 on can be added while it still replicates SYSVOL. 'FRS and DFSR' is a migration that has not reached Eliminated, shown with its global state"
         )
     }
 
@@ -69,6 +70,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "TGT maximum lifetime (should be 10 hours or less)"
             "TGT renewal lifetime (should be 7 days or less)"
+            "Service ticket lifetime (600 minutes) and the tolerated clock skew (5 minutes)"
+            "Read from the [Kerberos Policy] section of the domain-linked GPOs: '(default)' is the Windows default value, '(not set)' means no domain-linked GPO sets it, and a value off the default names the GPO that sets it"
             "krbtgt password age (should be changed at least yearly)"
         )
         SecureMessage = "Kerberos policy settings are properly configured. Ticket lifetimes are within recommended limits and the krbtgt password has been rotated within the last 180 days."

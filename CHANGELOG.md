@@ -109,9 +109,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the ticket lifetimes from the domain object, which does not carry them - so the row
   always said "Unknown" and the card for widened lifetimes could never appear. They now
   come from the `[Kerberos Policy]` section of the GPOs linked to the domain, per setting
-  from the highest-ranked GPO that sets it, with the GPO named; the service ticket
-  lifetime and the tolerated clock skew are shown beside them, a lifetime of 0 is said to
-  never expire, and every widened value is named in the verdict.
+  from the highest-ranked GPO that sets it; the service ticket lifetime and the tolerated
+  clock skew are shown beside them, a lifetime of 0 is said to never expire, and every
+  widened value is named in the verdict. The rows stay short: "10 hours (default)", "10
+  hours (default, not set)" where no domain-linked GPO sets it, and a value off the
+  default names the GPO that sets it - "12 hours (set by <GPO>)". The verdict names only
+  the default each value is above, "EXTENDED - TGT lifetime above 10 hours".
 
 - **Unconstrained delegation names the privileged accounts whose TGT those hosts
   receive.** A privileged user or managed service account that is neither marked
@@ -341,17 +344,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   unavailable. With the Recycle Bin, `deletedObjectLifetime` shows how long a deleted
   object stays complete, marked "(not set, follows tombstoneLifetime)" where it takes the
   tombstone lifetime. The rows stay short - "60 days (not set) - below the 180-day
-  default" - and the card of the domain information says what each lifetime bounds. Two
+  default", "Disabled", "Not available (needs forest level 2008 R2)" - and the card of
+  the domain information says what each lifetime bounds and what a missing Recycle Bin
+  costs. Two
   new cards, *Active Directory Recycle Bin Not Enabled* and *Tombstone Lifetime Shorter
   Than 180 Days*.
 
 - **`Get-DomainInformation` says which service replicates SYSVOL.** A new
   `sysvolReplication` row reads the FRS replica set and the DFSR replication group of
   SYSVOL under `CN=System` and the global migration state in `msDFSR-Flags`: *DFSR*,
-  *FRS* for a domain never migrated, or *FRS and DFSR* with the state while a migration
-  has not reached Eliminated. FRS is a hint with the card *SYSVOL Still Replicated by
-  FRS*: it is deprecated, and no domain controller from Windows Server 1709 on can be
-  added to such a domain (KB4025991).
+  *FRS (not migrated to DFSR)*, or *FRS and DFSR (migration state Prepared)* while a
+  migration has not reached Eliminated. FRS is a hint with the card *SYSVOL Still
+  Replicated by FRS*: it is deprecated, and no domain controller from Windows Server 1709
+  on can be added to such a domain (KB4025991) - the card says so, the row names the mode.
 
 - **`Get-GPORegistrySettings` reports Group Policies that weaken SMB.** Four rules with the
   paths and values Microsoft documents: the SMBv1 server enabled (`SMB1=1` under
@@ -575,8 +580,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   refused bind for a bind nobody tried. The assembly is loaded before the test now; a
   bind that was tried and refused reads "Refused (tested)", and a test the server never
   answered - a domain controller out of reach, a timeout, a connect error - is reported
-  as "Not tested" with its reason instead of as refused. The finding pattern for an
-  enabled anonymous bind is anchored, so the text of that reason cannot colour the row.
+  as "Not tested" instead of as refused, with a short reason in brackets: "(LDAPS)",
+  "(global catalog)", "(no answer from the server)", "(test failed)". The error itself
+  goes to the log. The finding pattern for an enabled anonymous bind is anchored, so no
+  reason can colour the row.
 
 - **The Exchange permissions model no longer reads a class-scoped ACE as PrivExchange.**
   Exchange setup gives Exchange Trusted Subsystem full control on the domain object

@@ -20625,9 +20625,10 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "Understanding the domain structure, functional levels, and key configurations provides the foundation for all security assessments. Old functional levels may indicate legacy systems with known vulnerabilities."
         WhatWeCheck = @(
             "Domain and forest names, SIDs, and functional levels"
-            "Anonymous LDAP access: 'Refused (tested)' means an anonymous bind was attempted in this session and could not read the domain object"
+            "Anonymous LDAP access: 'Refused (tested)' means an anonymous bind was attempted in this session and could not read the domain object. 'Not tested' names why in brackets: LDAPS and global catalog sessions skip the test, and a bind that got no answer from the server or failed before one is no verdict either way - the log has the error"
             "What a deletion leaves behind: with the Recycle Bin, a deleted object stays restorable with all its attributes for the deleted-object lifetime, then remains as a stripped recycled object for the tombstone lifetime before it is removed for good. The tombstone lifetime also bounds the age of a backup that can still be restored. An unset deleted-object lifetime takes the tombstone lifetime"
-            "Which service replicates SYSVOL"
+            "Without the Recycle Bin a deleted object keeps only a few attributes and cannot be restored with its group memberships; the Recycle Bin needs forest functional level Windows Server 2008 R2"
+            "Which service replicates SYSVOL: FRS is deprecated, and no domain controller from Windows Server 1709 on can be added while it still replicates SYSVOL. 'FRS and DFSR' is a migration that has not reached Eliminated, shown with its global state"
         )
     }
     'KerberosPolicy' = @{
@@ -20640,6 +20641,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "TGT maximum lifetime (should be 10 hours or less)"
             "TGT renewal lifetime (should be 7 days or less)"
+            "Service ticket lifetime (600 minutes) and the tolerated clock skew (5 minutes)"
+            "Read from the [Kerberos Policy] section of the domain-linked GPOs: '(default)' is the Windows default value, '(not set)' means no domain-linked GPO sets it, and a value off the default names the GPO that sets it"
             "krbtgt password age (should be changed at least yearly)"
         )
         SecureMessage = "Kerberos policy settings are properly configured. Ticket lifetimes are within recommended limits and the krbtgt password has been rotated within the last 180 days."
@@ -24302,11 +24305,11 @@ function Connect-LDAP {
             $Script:AnonymousAccessSkipReason = $null
             if ($AsGlobalCatalog) {
                 Write-Log "[Connect-LDAP] Skipping anonymous access check for GC mode"
-                $Script:AnonymousAccessSkipReason = 'the session is a global catalog connection, where the anonymous bind test is skipped'
+                $Script:AnonymousAccessSkipReason = 'global catalog'
             }
             elseif ($UseLDAPS) {
                 Write-Log "[Connect-LDAP] Skipping anonymous access check for LDAPS (rarely enabled over SSL)"
-                $Script:AnonymousAccessSkipReason = 'the session is LDAPS, where the anonymous bind test is skipped'
+                $Script:AnonymousAccessSkipReason = 'LDAPS'
             }
             else {
                 $AnonTarget = if ($CustomDnsServer -and $ResolvedIPString) { $ResolvedIPString } else { $Server }
@@ -24833,7 +24836,7 @@ function Test-AnonymousLDAPBind {
         if ($anonOutcome.Refused) {
             Write-Log "[Test-AnonymousLDAPBind] Anonymous access test: denied (secure - this is expected)"
         } else {
-            Write-Log "[Test-AnonymousLDAPBind] Anonymous access test did not run - $($anonOutcome.Reason)"
+            Write-Log "[Test-AnonymousLDAPBind] Anonymous access test did not run - $($anonOutcome.Detail)"
             $result.Tested = $false
             $result.SkipReason = $anonOutcome.Reason
         }
@@ -24854,23 +24857,25 @@ function Get-AnonymousBindOutcome {
     while ($null -ne $current) {
         $typeName = $current.GetType().FullName
         if ($typeName -eq 'System.DirectoryServices.Protocols.DirectoryOperationException') {
-            return [PSCustomObject]@{ Refused = $true; Reason = $null }
+            return [PSCustomObject]@{ Refused = $true; Reason = $null; Detail = $null }
         }
         if ($typeName -eq 'System.DirectoryServices.Protocols.LdapException') {
             $code = [int]$current.ErrorCode
             if ($code -ge 81 -and $code -le 97) {
                 return [PSCustomObject]@{
                     Refused = $false
-                    Reason  = "the anonymous bind got no answer from the server (LDAP client error $code`: $($current.Message))"
+                    Reason  = 'no answer from the server'
+                    Detail  = "the anonymous bind got no answer from the server (LDAP client error $code`: $($current.Message))"
                 }
             }
-            return [PSCustomObject]@{ Refused = $true; Reason = $null }
+            return [PSCustomObject]@{ Refused = $true; Reason = $null; Detail = $null }
         }
         $current = $current.InnerException
     }
     [PSCustomObject]@{
         Refused = $false
-        Reason  = "the anonymous bind test failed before the server answered: $($Exception.Message)"
+        Reason  = 'test failed'
+        Detail  = "the anonymous bind test failed before the server answered: $($Exception.Message)"
     }
 }
 function Read-LDAPBoundAccount {
@@ -66765,17 +66770,15 @@ function Get-DomainInformation {
             }
             else {
                 $anonSkipReason = [string]$Script:LDAPContext['AnonymousAccessSkipReason']
-                if (-not $anonSkipReason) {
-                    $anonSkipReason = 'the anonymous bind test did not run in this session'
-                }
-                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue "Not tested - $anonSkipReason" -Force
+                $anonNotTested = if ($anonSkipReason) { "Not tested ($anonSkipReason)" } else { 'Not tested' }
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue $anonNotTested -Force
             }
             $deletionParams = @{}
             foreach ($key in @($PSBoundParameters.Keys)) { $deletionParams[$key] = $PSBoundParameters[$key] }
             $deletion = Get-ForestDeletionSetting -ConnectionParams $deletionParams
             $maintenanceHint = $false
             if ($null -eq $deletion.TombstoneLifetime) {
-                $tombstoneText = 'Unknown - the Directory Service object could not be read'
+                $tombstoneText = 'Unknown (not readable)'
             } else {
                 $tombstoneDays = $deletion.TombstoneLifetime
                 $tombstoneText = if ($deletion.TombstoneLifetimeSet) { "$tombstoneDays days" } else { "$tombstoneDays days (not set)" }
@@ -66786,14 +66789,14 @@ function Get-DomainInformation {
             }
             $domainInfoObj | Add-Member -NotePropertyName 'tombstoneLifetime' -NotePropertyValue $tombstoneText -Force
             if ($null -eq $deletion.RecycleBin) {
-                $recycleBinText = 'Unknown - the Partitions container could not be read'
+                $recycleBinText = 'Unknown (not readable)'
             } elseif ($deletion.RecycleBin) {
                 $recycleBinText = 'Enabled'
             } elseif ([int]$ForestFunc -lt 4) {
-                $recycleBinText = 'Not available - it needs forest functional level Windows Server 2008 R2'
+                $recycleBinText = 'Not available (needs forest level 2008 R2)'
             } else {
                 $maintenanceHint = $true
-                $recycleBinText = 'Disabled - a deleted object keeps only a few attributes, and its group memberships cannot be restored with it'
+                $recycleBinText = 'Disabled'
             }
             $domainInfoObj | Add-Member -NotePropertyName 'recycleBin' -NotePropertyValue $recycleBinText -Force
             if ($deletion.RecycleBin -and $null -ne $deletion.DeletedObjectLifetime) {
@@ -66806,14 +66809,14 @@ function Get-DomainInformation {
                 'DFSR' { 'DFSR' }
                 'FRS' {
                     $maintenanceHint = $true
-                    'FRS - SYSVOL was never migrated to DFSR; FRS is deprecated, and no domain controller from Windows Server 1709 on can be added to this domain'
+                    'FRS (not migrated to DFSR)'
                 }
                 'Migrating' {
                     $maintenanceHint = $true
-                    $stateText = if ($sysvolReplication.State) { "global state $($sysvolReplication.State)" } else { 'global state not set' }
-                    "FRS and DFSR - the migration to DFSR is not finished ($stateText), and FRS still replicates SYSVOL"
+                    $stateText = if ($sysvolReplication.State) { $sysvolReplication.State } else { 'not set' }
+                    "FRS and DFSR (migration state $stateText)"
                 }
-                default { 'Unknown - neither the FRS replica set nor the DFSR replication group of SYSVOL was found' }
+                default { 'Unknown (not found)' }
             }
             $domainInfoObj | Add-Member -NotePropertyName 'sysvolReplication' -NotePropertyValue $sysvolText -Force
             if ($maintenanceHint -and $domainInfoSeverity -eq "Note") {
@@ -66833,46 +66836,44 @@ function Get-DomainInformation {
             $KerberosPolicy = Get-DomainKerberosPolicy -ConnectionParams $kerberosConnection
             $kerberosSettings = @(
                 @{ Name = 'MaxTicketAge';  Unit = 'hours';   Default = 10
-                   Clause = 'a ticket-granting ticket lives {0} hours instead of the default 10'
-                   NeverClause = 'a ticket-granting ticket never expires' }
+                   Clause = 'TGT lifetime above 10 hours'; NeverClause = 'TGT never expires' }
                 @{ Name = 'MaxRenewAge';   Unit = 'days';    Default = 7
-                   Clause = 'a ticket can be renewed for {0} days instead of 7'; NeverClause = $null }
+                   Clause = 'renewal above 7 days'; NeverClause = $null }
                 @{ Name = 'MaxServiceAge'; Unit = 'minutes'; Default = 600
-                   Clause = 'a service ticket lives {0} minutes instead of 600'
-                   NeverClause = 'a service ticket never expires' }
+                   Clause = 'service ticket lifetime above 600 minutes'; NeverClause = 'service ticket never expires' }
                 @{ Name = 'MaxClockSkew';  Unit = 'minutes'; Default = 5
-                   Clause = 'a clock {0} minutes off is accepted instead of 5'; NeverClause = $null }
+                   Clause = 'clock skew above 5 minutes'; NeverClause = $null }
             )
             $kerberosTexts = @{}
             $verdictClauses = @()
             foreach ($setting in $kerberosSettings) {
                 if ($null -eq $KerberosPolicy) {
-                    $kerberosTexts[$setting.Name] = 'Unknown - the Kerberos policy in SYSVOL could not be read'
+                    $kerberosTexts[$setting.Name] = 'Unknown (not readable)'
                     continue
                 }
                 $entry = $KerberosPolicy[$setting.Name]
                 if ($null -eq $entry -or $null -eq $entry.Value) {
-                    $kerberosTexts[$setting.Name] = "$($setting.Default) $($setting.Unit) (default) - no domain-linked GPO sets it"
+                    $kerberosTexts[$setting.Name] = "$($setting.Default) $($setting.Unit) (default, not set)"
                     continue
                 }
                 $value = [int]$entry.Value
                 if ($value -eq 0 -and $setting.NeverClause) {
-                    $kerberosTexts[$setting.Name] = "0 - never expires (set by $($entry.Source))"
+                    $kerberosTexts[$setting.Name] = "0 (never expires, set by $($entry.Source))"
                     $verdictClauses += $setting.NeverClause
                     continue
                 }
                 $kerberosTexts[$setting.Name] = if ($value -eq $setting.Default) {
-                    "$value $($setting.Unit) (default, set by $($entry.Source))"
+                    "$value $($setting.Unit) (default)"
                 } else {
                     "$value $($setting.Unit) (set by $($entry.Source))"
                 }
-                if ($value -gt $setting.Default) { $verdictClauses += ($setting.Clause -f $value) }
+                if ($value -gt $setting.Default) { $verdictClauses += $setting.Clause }
             }
             $maxTicketAgeText = $kerberosTexts['MaxTicketAge']
             $maxRenewalAgeText = $kerberosTexts['MaxRenewAge']
             $ticketLifetimeVerdict = $null
             if (@($verdictClauses).Count -gt 0) {
-                $ticketLifetimeVerdict = 'EXTENDED - ' + (@($verdictClauses) -join ', and ')
+                $ticketLifetimeVerdict = 'EXTENDED - ' + (@($verdictClauses) -join ', ')
             }
             $dcTimeText = $null
             try {
@@ -94747,7 +94748,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-2208"
+$Script:adPEASVersion = "2.7.0+20261018-2234"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

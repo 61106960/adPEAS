@@ -409,13 +409,11 @@ function Get-DomainInformation {
             else {
                 # Not asked, or asked and never answered. Neutral on purpose: this is the one
                 # state where adPEAS has nothing to report either way, and saying so - with
-                # the reason Connect-LDAP recorded - is the whole point. The fallback is for
-                # a context without that key, so it claims no reason of its own.
+                # the reason Connect-LDAP recorded, in a word or two - is the whole point.
+                # A context without that key claims no reason of its own.
                 $anonSkipReason = [string]$Script:LDAPContext['AnonymousAccessSkipReason']
-                if (-not $anonSkipReason) {
-                    $anonSkipReason = 'the anonymous bind test did not run in this session'
-                }
-                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue "Not tested - $anonSkipReason" -Force
+                $anonNotTested = if ($anonSkipReason) { "Not tested ($anonSkipReason)" } else { 'Not tested' }
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue $anonNotTested -Force
             }
             # What a deletion leaves behind in this forest. Without the Recycle Bin a deleted
             # object becomes a tombstone that keeps a handful of attributes - group
@@ -428,7 +426,7 @@ function Get-DomainInformation {
             $maintenanceHint = $false
 
             if ($null -eq $deletion.TombstoneLifetime) {
-                $tombstoneText = 'Unknown - the Directory Service object could not be read'
+                $tombstoneText = 'Unknown (not readable)'
             } else {
                 # Short on purpose - what the lifetime bounds is the card's to say.
                 $tombstoneDays = $deletion.TombstoneLifetime
@@ -440,15 +438,16 @@ function Get-DomainInformation {
             }
             $domainInfoObj | Add-Member -NotePropertyName 'tombstoneLifetime' -NotePropertyValue $tombstoneText -Force
 
+            # Short as well: what a disabled Recycle Bin costs is its card's to say.
             if ($null -eq $deletion.RecycleBin) {
-                $recycleBinText = 'Unknown - the Partitions container could not be read'
+                $recycleBinText = 'Unknown (not readable)'
             } elseif ($deletion.RecycleBin) {
                 $recycleBinText = 'Enabled'
             } elseif ([int]$ForestFunc -lt 4) {
-                $recycleBinText = 'Not available - it needs forest functional level Windows Server 2008 R2'
+                $recycleBinText = 'Not available (needs forest level 2008 R2)'
             } else {
                 $maintenanceHint = $true
-                $recycleBinText = 'Disabled - a deleted object keeps only a few attributes, and its group memberships cannot be restored with it'
+                $recycleBinText = 'Disabled'
             }
             $domainInfoObj | Add-Member -NotePropertyName 'recycleBin' -NotePropertyValue $recycleBinText -Force
             if ($deletion.RecycleBin -and $null -ne $deletion.DeletedObjectLifetime) {
@@ -462,20 +461,20 @@ function Get-DomainInformation {
             # Which service replicates SYSVOL. FRS is deprecated, and a domain that still
             # replicates SYSVOL with it accepts no domain controller from Windows Server 1709
             # on - it says the domain controllers and their maintenance are old. Not read
-            # anywhere before.
+            # anywhere before. The row names the mode; the card says what FRS costs.
             $sysvolReplication = Get-SysvolReplication -DomainDN $DomainDN -ConnectionParams $deletionParams
             $sysvolText = switch ($sysvolReplication.Mode) {
                 'DFSR' { 'DFSR' }
                 'FRS' {
                     $maintenanceHint = $true
-                    'FRS - SYSVOL was never migrated to DFSR; FRS is deprecated, and no domain controller from Windows Server 1709 on can be added to this domain'
+                    'FRS (not migrated to DFSR)'
                 }
                 'Migrating' {
                     $maintenanceHint = $true
-                    $stateText = if ($sysvolReplication.State) { "global state $($sysvolReplication.State)" } else { 'global state not set' }
-                    "FRS and DFSR - the migration to DFSR is not finished ($stateText), and FRS still replicates SYSVOL"
+                    $stateText = if ($sysvolReplication.State) { $sysvolReplication.State } else { 'not set' }
+                    "FRS and DFSR (migration state $stateText)"
                 }
-                default { 'Unknown - neither the FRS replica set nor the DFSR replication group of SYSVOL was found' }
+                default { 'Unknown (not found)' }
             }
             $domainInfoObj | Add-Member -NotePropertyName 'sysvolReplication' -NotePropertyValue $sysvolText -Force
 
@@ -517,42 +516,44 @@ function Get-DomainInformation {
             # Unit, Windows default, and the clause the verdict uses for each setting.
             # 0 is "never expires" for the two ticket lifetimes (Microsoft's policy
             # reference); for the renewal window and the clock skew it is just a number.
+            # The clauses name the default only - the value is in the row above.
             $kerberosSettings = @(
                 @{ Name = 'MaxTicketAge';  Unit = 'hours';   Default = 10
-                   Clause = 'a ticket-granting ticket lives {0} hours instead of the default 10'
-                   NeverClause = 'a ticket-granting ticket never expires' }
+                   Clause = 'TGT lifetime above 10 hours'; NeverClause = 'TGT never expires' }
                 @{ Name = 'MaxRenewAge';   Unit = 'days';    Default = 7
-                   Clause = 'a ticket can be renewed for {0} days instead of 7'; NeverClause = $null }
+                   Clause = 'renewal above 7 days'; NeverClause = $null }
                 @{ Name = 'MaxServiceAge'; Unit = 'minutes'; Default = 600
-                   Clause = 'a service ticket lives {0} minutes instead of 600'
-                   NeverClause = 'a service ticket never expires' }
+                   Clause = 'service ticket lifetime above 600 minutes'; NeverClause = 'service ticket never expires' }
                 @{ Name = 'MaxClockSkew';  Unit = 'minutes'; Default = 5
-                   Clause = 'a clock {0} minutes off is accepted instead of 5'; NeverClause = $null }
+                   Clause = 'clock skew above 5 minutes'; NeverClause = $null }
             )
+            # Short rows: a default value does not say which GPO carries it, an unset one
+            # says "(not set)" - the card explains both. A value off the default names
+            # its GPO, because that is where the fix goes.
             $kerberosTexts = @{}
             $verdictClauses = @()
             foreach ($setting in $kerberosSettings) {
                 if ($null -eq $KerberosPolicy) {
-                    $kerberosTexts[$setting.Name] = 'Unknown - the Kerberos policy in SYSVOL could not be read'
+                    $kerberosTexts[$setting.Name] = 'Unknown (not readable)'
                     continue
                 }
                 $entry = $KerberosPolicy[$setting.Name]
                 if ($null -eq $entry -or $null -eq $entry.Value) {
-                    $kerberosTexts[$setting.Name] = "$($setting.Default) $($setting.Unit) (default) - no domain-linked GPO sets it"
+                    $kerberosTexts[$setting.Name] = "$($setting.Default) $($setting.Unit) (default, not set)"
                     continue
                 }
                 $value = [int]$entry.Value
                 if ($value -eq 0 -and $setting.NeverClause) {
-                    $kerberosTexts[$setting.Name] = "0 - never expires (set by $($entry.Source))"
+                    $kerberosTexts[$setting.Name] = "0 (never expires, set by $($entry.Source))"
                     $verdictClauses += $setting.NeverClause
                     continue
                 }
                 $kerberosTexts[$setting.Name] = if ($value -eq $setting.Default) {
-                    "$value $($setting.Unit) (default, set by $($entry.Source))"
+                    "$value $($setting.Unit) (default)"
                 } else {
                     "$value $($setting.Unit) (set by $($entry.Source))"
                 }
-                if ($value -gt $setting.Default) { $verdictClauses += ($setting.Clause -f $value) }
+                if ($value -gt $setting.Default) { $verdictClauses += $setting.Clause }
             }
             $maxTicketAgeText = $kerberosTexts['MaxTicketAge']
             $maxRenewalAgeText = $kerberosTexts['MaxRenewAge']
@@ -562,7 +563,7 @@ function Get-DomainInformation {
             # renewal window is the outer bound, and separate rows say the same thing.
             $ticketLifetimeVerdict = $null
             if (@($verdictClauses).Count -gt 0) {
-                $ticketLifetimeVerdict = 'EXTENDED - ' + (@($verdictClauses) -join ', and ')
+                $ticketLifetimeVerdict = 'EXTENDED - ' + (@($verdictClauses) -join ', ')
             }
 
             # Query DC current time from RootDSE (direct LdapConnection query, not via Invoke-LDAPSearch

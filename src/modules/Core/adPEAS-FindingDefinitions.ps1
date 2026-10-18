@@ -5098,8 +5098,8 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
             # LDAP answer lives in dsHeuristics. Get-LDAPConfiguration reads it now.
             #
             # Anchored: both producers start the value with ENABLED, and "Not tested"
-            # carries the text of whatever exception stopped the test - matched without
-            # case, one that said "enabled" would have turned that sentence red.
+            # carries the reason the test did not run - matched without case, a reason
+            # that said "enabled" would have turned that row red.
             @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^ENABLED'; Severity = 'Finding' }
         )
     }
