@@ -2690,6 +2690,18 @@ function Test-LDAPErrorNotFound {
     if (($Exception.HResult -band 0xFFFF) -eq 0x2030) {
         return $true
     }
+    $current = $Exception
+    while ($null -ne $current) {
+        if ($current.PSObject.Properties['Response'] -and $null -ne $current.Response -and
+            [string]$current.Response.ResultCode -eq 'NoSuchObject') {
+            return $true
+        }
+        if ($current.GetType().FullName -eq 'System.DirectoryServices.Protocols.LdapException' -and
+            [int]$current.ErrorCode -eq 32) {
+            return $true
+        }
+        $current = $current.InnerException
+    }
     return $false
 }
 function Resolve-LDAPWriteError {
@@ -27987,6 +27999,7 @@ function Get-DomainObject {
             return $null
         }
         try {
+            $identityDN = $null
             if ($LDAPFilter -and -not $Identity -and -not $ObjectClass) {
                 $Filter = $LDAPFilter
             } else {
@@ -28009,6 +28022,7 @@ function Get-DomainObject {
                     } elseif ($Identity -match '^CN=.*|^OU=.*|^DC=.*') {
                         $escapedIdentityDN = Escape-LDAPFilterDN -DistinguishedName $Identity
                         $IdentityFilter = "(distinguishedName=$escapedIdentityDN)"
+                        $identityDN = $Identity
                     } elseif ($Identity -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
                         $GUIDObj = [System.Guid]::Parse($Identity)
                         $GUIDBytes = $GUIDObj.ToByteArray()
@@ -28120,6 +28134,13 @@ function Get-DomainObject {
             }
             if ($Scope) {
                 $SearchParams['Scope'] = $Scope
+            }
+            $configNC = [string]$Script:LDAPContext.ConfigurationNamingContext
+            if ($identityDN -and -not $SearchBase -and $configNC -and
+                ($identityDN -ieq $configNC -or $identityDN.EndsWith(",$configNC", [System.StringComparison]::OrdinalIgnoreCase))) {
+                $SearchParams['SearchBase'] = $identityDN
+                $SearchParams['Scope'] = 'Base'
+                Write-Log "[Get-DomainObject] Configuration partition object - base search on $identityDN"
             }
             if ($Raw) {
                 $SearchParams['Raw'] = $true
@@ -94079,7 +94100,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1056"
+$Script:adPEASVersion = "2.7.0+20261018-1127"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

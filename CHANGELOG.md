@@ -538,6 +538,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - `ConsentPromptBehaviorAdmin=0` - administrators elevate without a UAC prompt
   - Schannel `Enabled` other than 0 for SSL 3.0 or TLS 1.0, server or client role
 
+- **Objects of the Configuration partition are found by their DN.** `Get-DomainObject`
+  looked for an object asked for by its distinguished name under the domain DN, and the
+  Configuration partition is a naming context of its own that such a search does not
+  enter. Against a real domain the Directory Service object, the Partitions container,
+  the schema and every site came back as not found: `Get-DomainInformation` reported the
+  tombstone lifetime and the Recycle Bin as unknown, `Get-LDAPConfiguration` said
+  dsHeuristics could not be read, and `Get-CriticalObjectACLs` could not read the ACLs of
+  the schema, the partitions container and the sites - all objects every domain user may
+  read. Such an object is now read by a base search on its own DN. A search under a base
+  that does not exist returns nothing again instead of an error: the not-found test
+  missed the shape `System.DirectoryServices.Protocols` throws it in.
+
 - **The Restricted Admin card is a hint, as its row is.** The registry table lowered
   `DisableRestrictedAdmin=0` to a Medium hint, and the card's description says so, but the
   card and the trigger on its row stayed a finding: the console printed the row yellow and

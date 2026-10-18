@@ -756,6 +756,27 @@ function Test-LDAPErrorNotFound {
         return $true
     }
 
+    # Method 5: System.DirectoryServices.Protocols, which every search in adPEAS goes through.
+    # SendRequest is a .NET method, so PowerShell wraps what it throws in a
+    # MethodInvocationException, and inside is a DirectoryOperationException whose Response
+    # carries the LDAP result code. Neither HResult is the one above - measured against a
+    # domain controller: 0x80131501 outside, 0x80131500 inside - so a search base that does
+    # not exist was rethrown as a real error, in every language. An LdapException carries the
+    # code in ErrorCode instead (32 is LDAP_NO_SUCH_OBJECT). Type names rather than type
+    # literals: a literal needs the assembly loaded before this line can even run.
+    $current = $Exception
+    while ($null -ne $current) {
+        if ($current.PSObject.Properties['Response'] -and $null -ne $current.Response -and
+            [string]$current.Response.ResultCode -eq 'NoSuchObject') {
+            return $true
+        }
+        if ($current.GetType().FullName -eq 'System.DirectoryServices.Protocols.LdapException' -and
+            [int]$current.ErrorCode -eq 32) {
+            return $true
+        }
+        $current = $current.InnerException
+    }
+
     return $false
 }
 

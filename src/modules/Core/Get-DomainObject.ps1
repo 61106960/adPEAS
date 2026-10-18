@@ -295,6 +295,10 @@ function Get-DomainObject {
         }
 
         try {
+            # Set below when the identity is a DN. Reset per pipeline object, so a DN handed in
+            # first cannot steer the search for the identity after it.
+            $identityDN = $null
+
             # Build Filter based on what's provided
             if ($LDAPFilter -and -not $Identity -and -not $ObjectClass) {
                 # Use LDAPFilter directly when it's the only filter
@@ -333,6 +337,7 @@ function Get-DomainObject {
                         # filter and the object silently drops out of every result.
                         $escapedIdentityDN = Escape-LDAPFilterDN -DistinguishedName $Identity
                         $IdentityFilter = "(distinguishedName=$escapedIdentityDN)"
+                        $identityDN = $Identity
                     } elseif ($Identity -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
                         # GUID Format (e.g., "bf967aba-0de6-11d0-a285-00aa003049e2")
                         $GUIDObj = [System.Guid]::Parse($Identity)
@@ -519,6 +524,24 @@ function Get-DomainObject {
 
             if ($Scope) {
                 $SearchParams['Scope'] = $Scope
+            }
+
+            # An object of the Configuration or Schema partition asked for by its DN. Its DN
+            # ends in the domain DN as text, but the partition is a naming context of its own,
+            # and a subtree search from the domain does not enter it - so the Directory
+            # Service object, the Partitions container, the schema and every site came back
+            # as "not found", and the checks reading them reported unknown or "could not be
+            # read" for objects every domain user can read. Asked for where it is, by a base
+            # search on the DN itself. Only below the Configuration naming context, which the
+            # schema sits under too: a DN of another domain of the forest is not held by this
+            # domain controller, and a base search there would answer with a referral where
+            # the subtree search answered with nothing.
+            $configNC = [string]$Script:LDAPContext.ConfigurationNamingContext
+            if ($identityDN -and -not $SearchBase -and $configNC -and
+                ($identityDN -ieq $configNC -or $identityDN.EndsWith(",$configNC", [System.StringComparison]::OrdinalIgnoreCase))) {
+                $SearchParams['SearchBase'] = $identityDN
+                $SearchParams['Scope'] = 'Base'
+                Write-Log "[Get-DomainObject] Configuration partition object - base search on $identityDN"
             }
 
             if ($Raw) {

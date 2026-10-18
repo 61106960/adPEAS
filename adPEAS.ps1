@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 10:56:21
-    Version: 2.7.0+20261018-1056
+    Build: 2026-10-18 11:27:16
+    Version: 2.7.0+20261018-1127
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -5251,6 +5251,27 @@ function Test-LDAPErrorNotFound {
     # This catches cases where the full HRESULT might differ slightly
     if (($Exception.HResult -band 0xFFFF) -eq 0x2030) {
         return $true
+    }
+
+    # Method 5: System.DirectoryServices.Protocols, which every search in adPEAS goes through.
+    # SendRequest is a .NET method, so PowerShell wraps what it throws in a
+    # MethodInvocationException, and inside is a DirectoryOperationException whose Response
+    # carries the LDAP result code. Neither HResult is the one above - measured against a
+    # domain controller: 0x80131501 outside, 0x80131500 inside - so a search base that does
+    # not exist was rethrown as a real error, in every language. An LdapException carries the
+    # code in ErrorCode instead (32 is LDAP_NO_SUCH_OBJECT). Type names rather than type
+    # literals: a literal needs the assembly loaded before this line can even run.
+    $current = $Exception
+    while ($null -ne $current) {
+        if ($current.PSObject.Properties['Response'] -and $null -ne $current.Response -and
+            [string]$current.Response.ResultCode -eq 'NoSuchObject') {
+            return $true
+        }
+        if ($current.GetType().FullName -eq 'System.DirectoryServices.Protocols.LdapException' -and
+            [int]$current.ErrorCode -eq 32) {
+            return $true
+        }
+        $current = $current.InnerException
     }
 
     return $false
@@ -39128,6 +39149,10 @@ function Get-DomainObject {
         }
 
         try {
+            # Set below when the identity is a DN. Reset per pipeline object, so a DN handed in
+            # first cannot steer the search for the identity after it.
+            $identityDN = $null
+
             # Build Filter based on what's provided
             if ($LDAPFilter -and -not $Identity -and -not $ObjectClass) {
                 # Use LDAPFilter directly when it's the only filter
@@ -39166,6 +39191,7 @@ function Get-DomainObject {
                         # filter and the object silently drops out of every result.
                         $escapedIdentityDN = Escape-LDAPFilterDN -DistinguishedName $Identity
                         $IdentityFilter = "(distinguishedName=$escapedIdentityDN)"
+                        $identityDN = $Identity
                     } elseif ($Identity -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
                         # GUID Format (e.g., "bf967aba-0de6-11d0-a285-00aa003049e2")
                         $GUIDObj = [System.Guid]::Parse($Identity)
@@ -39352,6 +39378,24 @@ function Get-DomainObject {
 
             if ($Scope) {
                 $SearchParams['Scope'] = $Scope
+            }
+
+            # An object of the Configuration or Schema partition asked for by its DN. Its DN
+            # ends in the domain DN as text, but the partition is a naming context of its own,
+            # and a subtree search from the domain does not enter it - so the Directory
+            # Service object, the Partitions container, the schema and every site came back
+            # as "not found", and the checks reading them reported unknown or "could not be
+            # read" for objects every domain user can read. Asked for where it is, by a base
+            # search on the DN itself. Only below the Configuration naming context, which the
+            # schema sits under too: a DN of another domain of the forest is not held by this
+            # domain controller, and a base search there would answer with a referral where
+            # the subtree search answered with nothing.
+            $configNC = [string]$Script:LDAPContext.ConfigurationNamingContext
+            if ($identityDN -and -not $SearchBase -and $configNC -and
+                ($identityDN -ieq $configNC -or $identityDN.EndsWith(",$configNC", [System.StringComparison]::OrdinalIgnoreCase))) {
+                $SearchParams['SearchBase'] = $identityDN
+                $SearchParams['Scope'] = 'Base'
+                Write-Log "[Get-DomainObject] Configuration partition object - base search on $identityDN"
             }
 
             if ($Raw) {
@@ -146053,7 +146097,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1056"
+$Script:adPEASVersion = "2.7.0+20261018-1127"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
