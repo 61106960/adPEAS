@@ -117,6 +117,23 @@ $Script:ToolUrls = @{
     "PrivExchange"      = "https://github.com/dirkjanm/PrivExchange"
 }
 
+# The two tiers of Get-PasswordInDescription as one regex each, for the
+# CREDENTIAL_IN_DESCRIPTION triggers. The password word is the check's: password, passwd,
+# passwort (EN/DE/LU), passord (NO), pasvorto (EO).
+#
+# An assignment is such a word with "=" or ":" and a value of three characters or more,
+# or credentials in the userinfo part of a URL. A value that is a row of asterisks or an
+# angle-bracket placeholder holds no credential, which the lookaheads say.
+$Script:CredentialAssignmentPattern = '(?:pas(?:sw\S*|sord|vorto)|pwd|pw|\bpass|kennwort|\bparol[ae]?)\s*[=:]\s*(?!\*+(?:\s|$))(?!<[^>]+>)\S{3,}' +
+    '|[a-z][a-z0-9+.-]*://[^\s/:@]+:(?!\*+@)(?!<[^>]+>@)[^\s/@]+@'
+# A mention, as the check's tier 2 has it.
+$Script:CredentialMentionPattern = 'pas(?:sw\S*|sord|vorto)|\bparol[ae]?\b|\bcred(ential)?s?\b|\b(secret|token)\s*[=:]\s*\S{5,}'
+# What the mention triggers leave alone: an assignment, which the finding triggers take, and
+# a masked or placeholder value, which the check does not report at all.
+$Script:CredentialNoMentionPattern = $Script:CredentialAssignmentPattern +
+    '|(?:pas(?:sw\S*|sord|vorto)|pwd|pw|\bpass|kennwort|\bparol[ae]?)\s*[=:]\s*(?:\*+(?:\s|$)|<[^>]+>)' +
+    '|://[^\s/:@]+:(?:\*+|<[^>]+>)@'
+
 # Central Finding Definitions
 # Structure: FindingID => @{ Title, Risk, BaseScore, Description, Impact, Attack, Remediation, References, Tools, MITRE }
 #
@@ -7009,9 +7026,16 @@ Get-ADObject -SearchBase $schema `
         )
         Tools = @("PowerView", "ADRecon", "LDAP queries")
         MITRE = "T1552.001"
+        # Two tiers, as Get-PasswordInDescription has them: an assignment with a value is a
+        # finding, a word that only mentions a password is a hint. One pattern covered
+        # both and coloured every mention red - the hint objects of that check carried a
+        # red row, and a description saying "passwords" anywhere in the report did too.
+        # The hint triggers exclude the assignment, so at most one of the two matches.
         Triggers = @(
-            @{ Attribute = 'description'; Pattern = 'passw|pwd\s*[=:]|pw\s*[=:]|\bpass\s*[=:]|kennwort|secret|credential|parol[ae]?'; Severity = 'Finding' }
-            @{ Attribute = 'info'; Pattern = 'passw|pwd\s*[=:]|pw\s*[=:]|\bpass\s*[=:]|kennwort|secret|credential|parol[ae]?'; Severity = 'Finding' }
+            @{ Attribute = 'description'; Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
+            @{ Attribute = 'info';        Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
+            @{ Attribute = 'description'; Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
+            @{ Attribute = 'info';        Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
         )
     }
 

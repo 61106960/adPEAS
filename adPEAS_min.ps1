@@ -4347,6 +4347,12 @@ $Script:ToolUrls = @{
     "Neo4j"             = "https://github.com/neo4j/neo4j"
     "PrivExchange"      = "https://github.com/dirkjanm/PrivExchange"
 }
+$Script:CredentialAssignmentPattern = '(?:pas(?:sw\S*|sord|vorto)|pwd|pw|\bpass|kennwort|\bparol[ae]?)\s*[=:]\s*(?!\*+(?:\s|$))(?!<[^>]+>)\S{3,}' +
+    '|[a-z][a-z0-9+.-]*://[^\s/:@]+:(?!\*+@)(?!<[^>]+>@)[^\s/@]+@'
+$Script:CredentialMentionPattern = 'pas(?:sw\S*|sord|vorto)|\bparol[ae]?\b|\bcred(ential)?s?\b|\b(secret|token)\s*[=:]\s*\S{5,}'
+$Script:CredentialNoMentionPattern = $Script:CredentialAssignmentPattern +
+    '|(?:pas(?:sw\S*|sord|vorto)|pwd|pw|\bpass|kennwort|\bparol[ae]?)\s*[=:]\s*(?:\*+(?:\s|$)|<[^>]+>)' +
+    '|://[^\s/:@]+:(?:\*+|<[^>]+>)@'
 $Script:FindingDefinitions = @{
     'KERBEROASTABLE_SPN' = @{
         Title = "Kerberoastable Service Account"
@@ -10706,8 +10712,10 @@ Get-ADObject -SearchBase $schema `
         Tools = @("PowerView", "ADRecon", "LDAP queries")
         MITRE = "T1552.001"
         Triggers = @(
-            @{ Attribute = 'description'; Pattern = 'passw|pwd\s*[=:]|pw\s*[=:]|\bpass\s*[=:]|kennwort|secret|credential|parol[ae]?'; Severity = 'Finding' }
-            @{ Attribute = 'info'; Pattern = 'passw|pwd\s*[=:]|pw\s*[=:]|\bpass\s*[=:]|kennwort|secret|credential|parol[ae]?'; Severity = 'Finding' }
+            @{ Attribute = 'description'; Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
+            @{ Attribute = 'info';        Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
+            @{ Attribute = 'description'; Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
+            @{ Attribute = 'info';        Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
         )
     }
     'CREDENTIAL_GPP_PASSWORD' = @{
@@ -83482,15 +83490,16 @@ function Get-PasswordInDescription {
                 return
             }
             $pwToken = 'pas(?:sw\S*|sord|vorto)'
+            $realValue = '(?!\*+(?:\s|$))(?!<[^>]+>)\S{3,}'
             $tier1Patterns = @(
                 @{ Pattern = $pwToken + '\s*[=:]\s*["''][^"'']{3,}["'']'; Description = "Password-variant assignment (quoted)" }
-                @{ Pattern = $pwToken + '\s*[=:]\s*(?!["''])\S{3,}'; Description = "Password-variant assignment (unquoted)" }
-                @{ Pattern = 'pwd\s*[=:]\s*\S{3,}'; Description = "Pwd assignment" }
-                @{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" }
-                @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" }
-                @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" }
-                @{ Pattern = '\bparol[ae]?\s*[=:]\s*\S{3,}'; Description = "Parola/parole/parol assignment (RO/LV/IT)" }
-                @{ Pattern = '[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@'; Description = "Credentials embedded in a URL" }
+                @{ Pattern = $pwToken + '\s*[=:]\s*(?!["''])' + $realValue; Description = "Password-variant assignment (unquoted)" }
+                @{ Pattern = 'pwd\s*[=:]\s*' + $realValue; Description = "Pwd assignment" }
+                @{ Pattern = 'pw\s*[=:]\s*' + $realValue; Description = "PW assignment" }
+                @{ Pattern = '\bpass\s*[=:]\s*' + $realValue; Description = "Pass assignment" }
+                @{ Pattern = 'kennwort\s*[=:]\s*' + $realValue; Description = "Kennwort assignment (German)" }
+                @{ Pattern = '\bparol[ae]?\s*[=:]\s*' + $realValue; Description = "Parola/parole/parol assignment (RO/LV/IT)" }
+                @{ Pattern = '[a-z][a-z0-9+.-]*://[^\s/:@]+:(?!\*+@)(?!<[^>]+>@)[^\s/@]+@'; Description = "Credentials embedded in a URL" }
             )
             $tier2Patterns = @(
                 @{ Pattern = $pwToken; Description = "Password-variant mention (EN/DE/NO/LU/EO)" }
@@ -83508,16 +83517,17 @@ function Get-PasswordInDescription {
                 ('(minimum|maximum)\s+' + $pwToken),
                 ('(set|change|update|reset)\s+(your|the|a)\s+' + $pwToken),
                 ('Enter\s+(your\s+)?' + $pwToken),
-                ($pwToken + '\s+prompt')
+                ($pwToken + '\s+prompt'),
+                ($pwToken + '\s+replicat')
             )
             $placeholderPatterns = @(
-                ($pwToken + '\s*[=:]\s*\*+\s*$'),
+                ($pwToken + '\s*[=:]\s*\*+(?:\s|$)'),
                 ($pwToken + '\s*[=:]\s*<[^>]+>'),
-                'pwd\s*[=:]\s*\*+\s*$',
+                'pwd\s*[=:]\s*\*+(?:\s|$)',
                 'pwd\s*[=:]\s*<[^>]+>',
-                '\bpass\s*[=:]\s*\*+\s*$',
+                '\bpass\s*[=:]\s*\*+(?:\s|$)',
                 '\bpass\s*[=:]\s*<[^>]+>',
-                'kennwort\s*[=:]\s*\*+\s*$',
+                'kennwort\s*[=:]\s*\*+(?:\s|$)',
                 'kennwort\s*[=:]\s*<[^>]+>',
                 '://[^\s/:@]+:\*+@',
                 '://[^\s/:@]+:<[^>]+>@'
@@ -83587,15 +83597,6 @@ function Get-PasswordInDescription {
                     $bestAttrName = $null
                     foreach ($attr in $attributesToCheck) {
                         $attrValue = [string]$attr.Value
-                        $isPlaceholder = $false
-                        foreach ($phPattern in $placeholderPatterns) {
-                            if ($attrValue -imatch $phPattern) {
-                                $isPlaceholder = $true
-                                Write-Log "[Get-PasswordInDescription] Placeholder value on $accountName ($($attr.Name)): '$phPattern'"
-                                break
-                            }
-                        }
-                        if ($isPlaceholder) { continue }
                         $isTier1 = $false
                         foreach ($t1 in $tier1Patterns) {
                             if ($attrValue -imatch $t1.Pattern) {
@@ -83610,6 +83611,15 @@ function Get-PasswordInDescription {
                             break
                         }
                         if ($urlAttributes -contains $attr.Name) { continue }
+                        $isPlaceholder = $false
+                        foreach ($phPattern in $placeholderPatterns) {
+                            if ($attrValue -imatch $phPattern) {
+                                $isPlaceholder = $true
+                                Write-Log "[Get-PasswordInDescription] Placeholder value on $accountName ($($attr.Name)): '$phPattern'"
+                                break
+                            }
+                        }
+                        if ($isPlaceholder) { continue }
                         $excluded = $false
                         foreach ($exPattern in $exclusionPatterns) {
                             if ($attrValue -match $exPattern) {
@@ -94209,7 +94219,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1221"
+$Script:adPEASVersion = "2.7.0+20261018-1238"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

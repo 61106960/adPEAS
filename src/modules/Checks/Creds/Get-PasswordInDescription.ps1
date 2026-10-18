@@ -89,20 +89,26 @@ function Get-PasswordInDescription {
             #   vorto   pasvorto                                (EO)
             $pwToken = 'pas(?:sw\S*|sord|vorto)'
 
+            # A value that is no value: a row of asterisks or an angle-bracket placeholder.
+            # Part of every assignment pattern rather than a test on the whole attribute,
+            # which is what it used to be - a masked value anywhere in an attribute skipped
+            # the attribute, and "pwd: Sommer2024, old: password=****" was not reported.
+            $realValue = '(?!\*+(?:\s|$))(?!<[^>]+>)\S{3,}'
+
             # Tier 1: High-confidence patterns (password assignment with value)
             $tier1Patterns = @(
                 @{ Pattern = $pwToken + '\s*[=:]\s*["''][^"'']{3,}["'']'; Description = "Password-variant assignment (quoted)" }
-                @{ Pattern = $pwToken + '\s*[=:]\s*(?!["''])\S{3,}'; Description = "Password-variant assignment (unquoted)" }
-                @{ Pattern = 'pwd\s*[=:]\s*\S{3,}'; Description = "Pwd assignment" }
-                @{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" }
-                @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" }
-                @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" }
-                @{ Pattern = '\bparol[ae]?\s*[=:]\s*\S{3,}'; Description = "Parola/parole/parol assignment (RO/LV/IT)" }
+                @{ Pattern = $pwToken + '\s*[=:]\s*(?!["''])' + $realValue; Description = "Password-variant assignment (unquoted)" }
+                @{ Pattern = 'pwd\s*[=:]\s*' + $realValue; Description = "Pwd assignment" }
+                @{ Pattern = 'pw\s*[=:]\s*' + $realValue; Description = "PW assignment" }
+                @{ Pattern = '\bpass\s*[=:]\s*' + $realValue; Description = "Pass assignment" }
+                @{ Pattern = 'kennwort\s*[=:]\s*' + $realValue; Description = "Kennwort assignment (German)" }
+                @{ Pattern = '\bparol[ae]?\s*[=:]\s*' + $realValue; Description = "Parola/parole/parol assignment (RO/LV/IT)" }
                 # The userinfo part of a URL, RFC 3986: scheme://user:password@host. Written
                 # into a homepage or url attribute, or into a description, it is the
                 # credential itself. A user name alone (user@host) or an empty password
                 # (user:@host) does not match, and neither does a port (host:8080/).
-                @{ Pattern = '[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@'; Description = "Credentials embedded in a URL" }
+                @{ Pattern = '[a-z][a-z0-9+.-]*://[^\s/:@]+:(?!\*+@)(?!<[^>]+>@)[^\s/@]+@'; Description = "Credentials embedded in a URL" }
             )
 
             # Tier 2: Lower-confidence patterns (generic credential mentions)
@@ -139,26 +145,30 @@ function Get-PasswordInDescription {
                 ('(set|change|update|reset)\s+(your|the|a)\s+' + $pwToken),
                 # Prompts
                 ('Enter\s+(your\s+)?' + $pwToken),
-                ($pwToken + '\s+prompt')
+                ($pwToken + '\s+prompt'),
+                # Replication: "Members in this group can have their passwords replicated to
+                # all read-only domain controllers in the domain" is the description the
+                # Allowed and Denied RODC Password Replication Groups ship with - a hint in
+                # every domain, measured.
+                ($pwToken + '\s+replicat')
             )
 
-            # A second, much narrower list, and the only one that may overrule a tier 1 hit.
-            #
-            # The two kinds of exclusion above and below are not the same thing. The ones
-            # above describe the *sentence* - it reads like policy or help text - and that
-            # is a reason to distrust a bare mention, never a reason to ignore an
-            # assignment standing next to it. The ones here describe the *value*: the
-            # syntax is an assignment, but what was assigned is a row of asterisks or an
-            # angle-bracket placeholder, so there is no credential to find whatever the
-            # pattern says.
+            # A second, much narrower list. The two kinds of exclusion above and below are
+            # not the same thing. The ones above describe the *sentence* - it reads like
+            # policy or help text - and that is a reason to distrust a bare mention, never a
+            # reason to ignore an assignment standing next to it. The ones here describe the
+            # *value*: the syntax is an assignment, but what was assigned is a row of
+            # asterisks or an angle-bracket placeholder. The assignment patterns already
+            # pass over such a value; this list keeps the mention beside it from becoming a
+            # hint, since "Password: ********" says only that a password exists.
             $placeholderPatterns = @(
-                ($pwToken + '\s*[=:]\s*\*+\s*$'),
+                ($pwToken + '\s*[=:]\s*\*+(?:\s|$)'),
                 ($pwToken + '\s*[=:]\s*<[^>]+>'),
-                'pwd\s*[=:]\s*\*+\s*$',
+                'pwd\s*[=:]\s*\*+(?:\s|$)',
                 'pwd\s*[=:]\s*<[^>]+>',
-                '\bpass\s*[=:]\s*\*+\s*$',
+                '\bpass\s*[=:]\s*\*+(?:\s|$)',
                 '\bpass\s*[=:]\s*<[^>]+>',
-                'kennwort\s*[=:]\s*\*+\s*$',
+                'kennwort\s*[=:]\s*\*+(?:\s|$)',
                 'kennwort\s*[=:]\s*<[^>]+>',
                 '://[^\s/:@]+:\*+@',
                 '://[^\s/:@]+:<[^>]+>@'
@@ -284,19 +294,6 @@ function Get-PasswordInDescription {
                     foreach ($attr in $attributesToCheck) {
                         $attrValue = [string]$attr.Value
 
-                        # A masked or bracketed value is not a credential however much the
-                        # syntax around it looks like an assignment, so this one clause is
-                        # allowed to silence the attribute outright.
-                        $isPlaceholder = $false
-                        foreach ($phPattern in $placeholderPatterns) {
-                            if ($attrValue -imatch $phPattern) {
-                                $isPlaceholder = $true
-                                Write-Log "[Get-PasswordInDescription] Placeholder value on $accountName ($($attr.Name)): '$phPattern'"
-                                break
-                            }
-                        }
-                        if ($isPlaceholder) { continue }
-
                         # Tier 1 is decided before the prose exclusions are consulted.
                         #
                         # The exclusions used to run first and skipped the whole attribute
@@ -329,6 +326,19 @@ function Get-PasswordInDescription {
 
                         # A link mentions what it links to; that is not a credential.
                         if ($urlAttributes -contains $attr.Name) { continue }
+
+                        # A masked or bracketed value is not a credential, and the mention
+                        # beside it only says that a password exists - after tier 1, so that
+                        # a masked value no longer hides a real assignment next to it.
+                        $isPlaceholder = $false
+                        foreach ($phPattern in $placeholderPatterns) {
+                            if ($attrValue -imatch $phPattern) {
+                                $isPlaceholder = $true
+                                Write-Log "[Get-PasswordInDescription] Placeholder value on $accountName ($($attr.Name)): '$phPattern'"
+                                break
+                            }
+                        }
+                        if ($isPlaceholder) { continue }
 
                         # No assignment here, so policy wording is what it looks like.
                         $excluded = $false

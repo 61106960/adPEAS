@@ -611,6 +611,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   cannot assess. Microsoft has published extended support to 2034-11-14, and these
   machines are reported as supported.
 
+- **A masked value no longer hides the password next to it.** `Get-PasswordInDescription`
+  skipped a whole attribute as soon as a masked or placeholder value appeared in it, before
+  looking for an assignment - so "pwd: Sommer2024, old: password=****" was not reported.
+  A masked value is now recognized at the value itself, and only keeps the mention beside
+  it from becoming a hint. The descriptions the Allowed and Denied RODC Password
+  Replication Groups ship with ("can have their passwords replicated") are no longer a
+  hint in every scan.
+
+- **A credential mention is a hint on every row, not a finding.** The trigger behind
+  `CREDENTIAL_IN_DESCRIPTION` used one pattern for both tiers and coloured any description
+  or info containing a password word red - the hint objects of `Get-PasswordInDescription`
+  among them, and any description in the report that said "passwords". An assignment with
+  a value is a finding, a mention is a hint, and a masked value is neither, as the check
+  rates them.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
