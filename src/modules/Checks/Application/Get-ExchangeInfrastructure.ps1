@@ -1134,6 +1134,21 @@ function Get-ExchangeInfrastructure {
                         $grantedRights = @($ace.RightsRaw | Where-Object { $escalationRights -contains $_ })
                         if (@($grantedRights).Count -eq 0) { continue }
 
+                        # An object-specific ACE grants its rights on what its ObjectType
+                        # names - a child class, a property, an extended right - and neither
+                        # WriteDacl nor WriteOwner on the object (MS-DTYP 2.5.3.2: an object
+                        # ACE applies to the node of the object type list its GUID names).
+                        # Exchange setup writes one: Exchange Trusted Subsystem holds
+                        # GenericAll scoped to the msExchDynamicDistributionList class, which
+                        # lets it create and delete such lists. Measured on an Exchange SE
+                        # organization, that ACE alone made the verdict a PrivExchange
+                        # finding. Get-DangerousACLs reads these ACEs the same way.
+                        $aceObjectType = [string]$ace.ObjectType
+                        if ($aceObjectType -and $aceObjectType -ne '00000000-0000-0000-0000-000000000000') {
+                            Write-Log "[Get-ExchangeInfrastructure] Object-specific ACE grants no DACL rewrite: $($matchedGroup.Name), ObjectType=$aceObjectType"
+                            continue
+                        }
+
                         # An inherit-only ACE does not apply to the object carrying it. That
                         # is exactly the shape Microsoft's mitigation produces, and telling
                         # the two apart is the whole point of this check.

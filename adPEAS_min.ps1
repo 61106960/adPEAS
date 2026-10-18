@@ -80391,6 +80391,11 @@ function Get-ExchangeInfrastructure {
                         if (-not $matchedGroup) { continue }
                         $grantedRights = @($ace.RightsRaw | Where-Object { $escalationRights -contains $_ })
                         if (@($grantedRights).Count -eq 0) { continue }
+                        $aceObjectType = [string]$ace.ObjectType
+                        if ($aceObjectType -and $aceObjectType -ne '00000000-0000-0000-0000-000000000000') {
+                            Write-Log "[Get-ExchangeInfrastructure] Object-specific ACE grants no DACL rewrite: $($matchedGroup.Name), ObjectType=$aceObjectType"
+                            continue
+                        }
                         $isInheritOnly = ([string]$ace.PropagationFlags) -match 'InheritOnly'
                         $grantText = "$($matchedGroup.Name): $($grantedRights -join ', ')"
                         if ($isInheritOnly) {
@@ -94166,7 +94171,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1150"
+$Script:adPEASVersion = "2.7.0+20261018-1157"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

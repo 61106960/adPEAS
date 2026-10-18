@@ -575,6 +575,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   as "Not tested" with its reason instead of as refused. The finding pattern for an
   enabled anonymous bind is anchored, so the text of that reason cannot colour the row.
 
+- **The Exchange permissions model no longer reads a class-scoped ACE as PrivExchange.**
+  Exchange setup gives Exchange Trusted Subsystem full control on the domain object
+  scoped to the `msExchDynamicDistributionList` class - the right to create and delete
+  such lists. `Get-ExchangeInfrastructure` ignored the scope and reported "Shared
+  permissions - Exchange Trusted Subsystem can rewrite the domain DACL (PrivExchange)" for
+  an organization whose Exchange Windows Permissions ACEs are inherit-only. An
+  object-specific ACE is no longer counted as a DACL rewrite of the domain object or of
+  its descendants, which is how `Get-DangerousACLs` already read it.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
