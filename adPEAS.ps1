@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 15:59:57
-    Version: 2.7.0+20261018-1559
+    Build: 2026-10-18 16:41:49
+    Version: 2.7.0+20261018-1641
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -127797,7 +127797,7 @@ function Get-ExchangeInfrastructure {
                 $srvName = $srv.name
                 $srvDN = $srv.distinguishedName
 
-                # Extract FQDN from networkAddress (ncacn_ip_tcp:srvex.sturz.org)
+                # Extract FQDN from networkAddress (ncacn_ip_tcp:ex01.contoso.com)
                 $fqdn = $srvName
                 $netAddr = $srv.networkAddress
                 if ($netAddr) {
@@ -146987,7 +146987,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1559"
+$Script:adPEASVersion = "2.7.0+20261018-1641"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

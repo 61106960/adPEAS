@@ -254,7 +254,7 @@ function Get-ExchangeInfrastructure {
                 $srvName = $srv.name
                 $srvDN = $srv.distinguishedName
 
-                # Extract FQDN from networkAddress (ncacn_ip_tcp:srvex.sturz.org)
+                # Extract FQDN from networkAddress (ncacn_ip_tcp:ex01.contoso.com)
                 $fqdn = $srvName
                 $netAddr = $srv.networkAddress
                 if ($netAddr) {
