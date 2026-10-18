@@ -1201,12 +1201,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   SCOM sections, and the analysis is *Checking the Exchange servers and their web
   endpoints*.
 
-- **Loading adPEAS prints a pointer instead of the logo and the quick start.** A script
-  or one-liner that loads adPEAS and starts a scan showed the logo twice, with nine lines
-  of help between the two, because `Invoke-adPEAS` opens every scan with the logo
-  itself. Loading now says how to start a scan and that `Get-adPEASHelp` shows the quick
-  start. It keeps the note that alternate credentials replace the Kerberos tickets of a
-  domain-joined session, because nothing else says so before it happens.
+- **A scan started right after loading adPEAS shows no second logo.** Loading prints the
+  logo and the quick start, and `Invoke-adPEAS` opened every scan with the logo again, so
+  a script or one-liner that loads adPEAS and starts a scan showed it twice. While the
+  import's logo and quick start are still the last thing adPEAS printed, the scan now
+  writes its logo to the text report only. After anything else - a connection, an
+  earlier scan - the console shows it as before. The text report always starts with the
+  logo.
 
 - **LAPS coverage is one summary object.** `Get-LAPSConfiguration` reported its figures
   as loose lines: the active computers and what was left out, the protected ones by

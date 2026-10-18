@@ -3342,7 +3342,9 @@ function Write-adPEASLogo {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$false)]
-        [string]$Version = "2.0"
+        [string]$Version = "2.0",
+        [Parameter(Mandatory=$false)]
+        [switch]$FileOnly
     )
     $ANSI = $Script:ANSI
     $Legend = @{
@@ -3380,8 +3382,10 @@ $("")
         $($Legend["Note"])
         $($Legend["Secure"])
 "@
-    Write-Host $LogoText
-    Write-Host ""
+    if (-not $FileOnly) {
+        Write-Host $LogoText
+        Write-Host ""
+    }
     if ($Script:adPEAS_Outputfile) {
         if ($Script:adPEAS_OutputColor -ne $false) {
             [System.IO.File]::AppendAllText($Script:adPEAS_Outputfile, $LogoText + "`n`n", [System.Text.Encoding]::UTF8)
@@ -22680,6 +22684,7 @@ function Get-ExchangeSeverity {
 $Script:adPEAS_FindingsCollection = $null
 $Script:adPEAS_FindingsCollectionEnabled = $false
 $Script:adPEAS_CurrentCheckContext = $null
+$Script:adPEASLogoOnScreen = $false
 function Initialize-FindingsCollection {
     [CmdletBinding()]
     param()
@@ -23017,6 +23022,8 @@ function Show-Output {
         [Parameter(Mandatory=$false)]
         [switch]$Logo,
         [Parameter(Mandatory=$false)]
+        [switch]$FileOnly,
+        [Parameter(Mandatory=$false)]
         [string]$FindingId,
         [Parameter(Mandatory=$false)]
         [string]$ObjectType,
@@ -23040,9 +23047,10 @@ function Show-Output {
         }
     }
     if ($Logo) {
-        Write-adPEASLogo -Version $Value
+        Write-adPEASLogo -Version $Value -FileOnly:$FileOnly
         return
     }
+    $Script:adPEASLogoOnScreen = $false
     if ($Object) {
         Render-ConsoleObject -Model $renderModel -AlignAt $AlignAt
         return
@@ -23179,9 +23187,20 @@ function Show-Logo {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$false)]
+        [string]$Version,
+        [Parameter(Mandatory=$false)]
+        [switch]$FileOnly
+    )
+    Show-Output -Logo -Value $Version -FileOnly:$FileOnly
+}
+function Show-ScanLogo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
         [string]$Version
     )
-    Show-Output -Logo -Value $Version
+    Show-Logo -Version $Version -FileOnly:([bool]$Script:adPEASLogoOnScreen)
+    $Script:adPEASLogoOnScreen = $false
 }
 function Show-Message {
     [CmdletBinding()]
@@ -26506,6 +26525,7 @@ function Clear-SessionState {
     $Script:adPEAS_FindingsCollectionEnabled = $false
     $Script:adPEAS_IncompleteChecks = $null
     $Script:adPEAS_CurrentCheckContext = $null
+    $Script:adPEASLogoOnScreen = $false
     $Script:LDAPStatistics = $null
     $Script:DefaultInactiveDays = $null
     $Script:IncludePrivilegedMode = $null
@@ -94720,7 +94740,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1920"
+$Script:adPEASVersion = "2.7.0+20261018-2046"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -94861,7 +94881,7 @@ function Invoke-adPEAS {
     if ($VerboseLogging -and -not $Script:adPEAS_Outputfile) {
         Write-Warning "[adPEAS] -VerboseLogging: File logging requires -Outputfile with Text format. Verbose messages will be shown in console only."
     }
-Show-Logo -Version $Script:adPEASVersion
+Show-ScanLogo -Version $Script:adPEASVersion
 try {
     $_licJson = $null
     if ($PSBoundParameters.ContainsKey('License') -and $License -and (Test-Path $License -ErrorAction SilentlyContinue)) {
@@ -95388,7 +95408,6 @@ finally {
     Write-Log "[adPEAS] adPEAS v2 completed"
 }
 }
-Show-Line "adPEAS $Script:adPEASVersion loaded - Invoke-adPEAS -Domain 'contoso.com' starts a scan, Get-adPEASHelp shows the quick start" -Class Note
-Show-Line "On domain-joined machines, -Password/-NTHash/-AES*Key/-Certificate replace your Kerberos tickets." -Class Note
-Show-Line "Use Connect-adPEAS with -ForceNTLM or -ForceSimpleBind to avoid this."
-Show-EmptyLine
+Show-Logo -Version $Script:adPEASVersion
+Get-adPEASHelp -Section QuickStart
+$Script:adPEASLogoOnScreen = $true

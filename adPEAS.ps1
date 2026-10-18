@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 19:20:13
-    Version: 2.7.0+20261018-1920
+    Build: 2026-10-18 20:46:34
+    Version: 2.7.0+20261018-2046
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6538,12 +6538,17 @@ function Show-EmptyLine {
     This is a special case that bypasses the normal formatting pipeline.
 .PARAMETER Version
     The version string to display.
+.PARAMETER FileOnly
+    Writes the logo to the text report only, not to the console - see Show-ScanLogo.
 #>
 function Write-adPEASLogo {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$false)]
-        [string]$Version = "2.0"
+        [string]$Version = "2.0",
+
+        [Parameter(Mandatory=$false)]
+        [switch]$FileOnly
     )
 
     $ANSI = $Script:ANSI
@@ -6590,9 +6595,11 @@ $("")
         $($Legend["Secure"])
 "@
 
-    Write-Host $LogoText
-    # Explicit empty line after logo (survives minification and scope changes)
-    Write-Host ""
+    if (-not $FileOnly) {
+        Write-Host $LogoText
+        # Explicit empty line after logo (survives minification and scope changes)
+        Write-Host ""
+    }
 
     # File output (with or without ANSI codes based on $Script:adPEAS_OutputColor)
     if ($Script:adPEAS_Outputfile) {
@@ -30486,6 +30493,10 @@ $Script:adPEAS_FindingsCollection = $null
 $Script:adPEAS_FindingsCollectionEnabled = $false
 $Script:adPEAS_CurrentCheckContext = $null
 
+# Whether the logo the import printed is still the last thing adPEAS showed on the console.
+# Set by the import, cleared by every other output - read by Show-ScanLogo.
+$Script:adPEASLogoOnScreen = $false
+
 <#
 .SYNOPSIS
     Initializes the findings collection system.
@@ -31089,6 +31100,9 @@ function Sort-FindingsByCategory {
 .PARAMETER Logo
     Outputs the adPEAS logo.
 
+.PARAMETER FileOnly
+    With -Logo: writes the logo to the text report only, not to the console.
+
 .PARAMETER ObjectType
     The _adPEASObjectType for SubHeader checks. Used for tooltip lookup in HTML reports.
 
@@ -31131,6 +31145,9 @@ function Show-Output {
         [switch]$Logo,
 
         [Parameter(Mandatory=$false)]
+        [switch]$FileOnly,
+
+        [Parameter(Mandatory=$false)]
         [string]$FindingId,
 
         [Parameter(Mandatory=$false)]
@@ -31171,9 +31188,13 @@ function Show-Output {
     # =========================================================================
 
     if ($Logo) {
-        Write-adPEASLogo -Version $Value
+        Write-adPEASLogo -Version $Value -FileOnly:$FileOnly
         return
     }
+
+    # Anything else adPEAS prints now stands between the logo of the import and the next
+    # scan, which shows its own again - see Show-ScanLogo.
+    $Script:adPEASLogoOnScreen = $false
 
     if ($Object) {
         # Use RenderModel pipeline: Get-RenderModel -> Render-ConsoleObject
@@ -31525,6 +31546,9 @@ function Show-SubHeader {
 .PARAMETER Version
     The version string to display (e.g., "2.0.0").
 
+.PARAMETER FileOnly
+    Writes the logo to the text report only, not to the console.
+
 .EXAMPLE
     Show-Logo -Version "2.0.0"
 #>
@@ -31532,10 +31556,43 @@ function Show-Logo {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$false)]
+        [string]$Version,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$FileOnly
+    )
+
+    Show-Output -Logo -Value $Version -FileOnly:$FileOnly
+}
+
+<#
+.SYNOPSIS
+    Opens a scan with the logo - on the console unless the logo of the import is still
+    the last thing adPEAS printed there.
+
+.DESCRIPTION
+    Loading adPEAS prints the logo and the quick start, and Invoke-adPEAS opens every scan
+    with the logo again. A script or one-liner that loads adPEAS and starts a scan at once
+    showed it twice, with the quick start between the two.
+
+    The import sets $Script:adPEASLogoOnScreen once its logo and quick start are out, and
+    every other output through Show-Output clears it. Set, the scan writes its logo to the
+    text report only; the report always starts with the logo, the console shows it once. A
+    connection established in between, or an earlier scan, has printed something else, and
+    the logo comes back.
+
+.PARAMETER Version
+    The version string to display.
+#>
+function Show-ScanLogo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
         [string]$Version
     )
 
-    Show-Output -Logo -Value $Version
+    Show-Logo -Version $Version -FileOnly:([bool]$Script:adPEASLogoOnScreen)
+    $Script:adPEASLogoOnScreen = $false
 }
 
 # ============================================================================
@@ -36992,6 +37049,9 @@ function Clear-SessionState {
     # Checks that threw during the last run; named in the Scan Summary
     $Script:adPEAS_IncompleteChecks = $null
     $Script:adPEAS_CurrentCheckContext = $null
+    # Whether the import's logo is still the last thing on the console (Show-ScanLogo).
+    # Disconnecting prints, so it is not any more.
+    $Script:adPEASLogoOnScreen = $false
 
     # LDAP Statistics tracking (set by Invoke-adPEAS -Statistics)
     $Script:LDAPStatistics = $null
@@ -147463,7 +147523,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1920"
+$Script:adPEASVersion = "2.7.0+20261018-2046"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -147870,7 +147930,9 @@ function Invoke-adPEAS {
     }
 
 # ===== Banner =====
-Show-Logo -Version $Script:adPEASVersion
+# On the console only if the import's logo is not what it last showed; the text report
+# always starts with it.
+Show-ScanLogo -Version $Script:adPEASVersion
 
 # ===== Main Logic =====
 try {
@@ -148613,11 +148675,8 @@ finally {
 # ===== End of Invoke-adPEAS Function =====
 
 # ===== Module Import Message =====
-# A pointer, not the logo and the quick start. Invoke-adPEAS opens every scan with the
-# logo, so a script that imports adPEAS and starts a scan printed it twice, with the whole
-# quick start between the two; Get-adPEASHelp shows the quick start on request. The ticket
-# note stays, because nothing else says it before it happens.
-Show-Line "adPEAS $Script:adPEASVersion loaded - Invoke-adPEAS -Domain 'contoso.com' starts a scan, Get-adPEASHelp shows the quick start" -Class Note
-Show-Line "On domain-joined machines, -Password/-NTHash/-AES*Key/-Certificate replace your Kerberos tickets." -Class Note
-Show-Line "Use Connect-adPEAS with -ForceNTLM or -ForceSimpleBind to avoid this."
-Show-EmptyLine
+# The logo and the quick start. A scan started right after this shows no second logo on
+# the console - Show-ScanLogo reads the flag set here, which any other output clears.
+Show-Logo -Version $Script:adPEASVersion
+Get-adPEASHelp -Section QuickStart
+$Script:adPEASLogoOnScreen = $true

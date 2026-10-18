@@ -664,7 +664,9 @@ function Invoke-adPEAS {
     }
 
 # ===== Banner =====
-Show-Logo -Version $Script:adPEASVersion
+# On the console only if the import's logo is not what it last showed; the text report
+# always starts with it.
+Show-ScanLogo -Version $Script:adPEASVersion
 
 # ===== Main Logic =====
 try {
@@ -1407,11 +1409,8 @@ finally {
 # ===== End of Invoke-adPEAS Function =====
 
 # ===== Module Import Message =====
-# A pointer, not the logo and the quick start. Invoke-adPEAS opens every scan with the
-# logo, so a script that imports adPEAS and starts a scan printed it twice, with the whole
-# quick start between the two; Get-adPEASHelp shows the quick start on request. The ticket
-# note stays, because nothing else says it before it happens.
-Show-Line "adPEAS $Script:adPEASVersion loaded - Invoke-adPEAS -Domain 'contoso.com' starts a scan, Get-adPEASHelp shows the quick start" -Class Note
-Show-Line "On domain-joined machines, -Password/-NTHash/-AES*Key/-Certificate replace your Kerberos tickets." -Class Note
-Show-Line "Use Connect-adPEAS with -ForceNTLM or -ForceSimpleBind to avoid this."
-Show-EmptyLine
+# The logo and the quick start. A scan started right after this shows no second logo on
+# the console - Show-ScanLogo reads the flag set here, which any other output clears.
+Show-Logo -Version $Script:adPEASVersion
+Get-adPEASHelp -Section QuickStart
+$Script:adPEASLogoOnScreen = $true

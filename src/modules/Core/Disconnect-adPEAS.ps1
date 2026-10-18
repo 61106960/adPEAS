@@ -294,6 +294,9 @@ function Clear-SessionState {
     # Checks that threw during the last run; named in the Scan Summary
     $Script:adPEAS_IncompleteChecks = $null
     $Script:adPEAS_CurrentCheckContext = $null
+    # Whether the import's logo is still the last thing on the console (Show-ScanLogo).
+    # Disconnecting prints, so it is not any more.
+    $Script:adPEASLogoOnScreen = $false
 
     # LDAP Statistics tracking (set by Invoke-adPEAS -Statistics)
     $Script:LDAPStatistics = $null

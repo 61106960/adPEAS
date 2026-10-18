@@ -297,12 +297,17 @@ function Show-EmptyLine {
     This is a special case that bypasses the normal formatting pipeline.
 .PARAMETER Version
     The version string to display.
+.PARAMETER FileOnly
+    Writes the logo to the text report only, not to the console - see Show-ScanLogo.
 #>
 function Write-adPEASLogo {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$false)]
-        [string]$Version = "2.0"
+        [string]$Version = "2.0",
+
+        [Parameter(Mandatory=$false)]
+        [switch]$FileOnly
     )
 
     $ANSI = $Script:ANSI
@@ -349,9 +354,11 @@ $("")
         $($Legend["Secure"])
 "@
 
-    Write-Host $LogoText
-    # Explicit empty line after logo (survives minification and scope changes)
-    Write-Host ""
+    if (-not $FileOnly) {
+        Write-Host $LogoText
+        # Explicit empty line after logo (survives minification and scope changes)
+        Write-Host ""
+    }
 
     # File output (with or without ANSI codes based on $Script:adPEAS_OutputColor)
     if ($Script:adPEAS_Outputfile) {
