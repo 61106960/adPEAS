@@ -657,6 +657,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   audit it". Only a Deny that keeps someone from reading the template's DACL, or from
   reading or listing the object as a whole, is listed now.
 
+- **Users and computers with a non-default owner are a hint throughout.** Their cards
+  are hints and the Owner row had been aligned to them, but `Get-NonDefaultUserOwners` and
+  `Get-NonDefaultComputerOwners` still announced and filed the objects as findings - a red
+  heading and object over a yellow row, in front of a card rated a hint.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

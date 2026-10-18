@@ -400,7 +400,9 @@ function Get-NonDefaultComputerOwners {
             if (@($nonDefaultOwnerComputers).Count -gt 0) {
                 $reassigned = @($nonDefaultOwnerComputers | Where-Object { $_.PSObject.Properties['ownershipChanged'] }).Count
                 $reassignedInfo = if ($reassigned -gt 0) { ", $reassigned of them owned by somebody other than the creator" } else { "" }
-                Show-Line "Found $(@($nonDefaultOwnerComputers).Count) computer(s) with non-default owners$($reassignedInfo):" -Class "Finding"
+                # Hint, as NON_DEFAULT_COMPUTER_OWNERS and the Owner row say: the row was
+                # aligned to its card, and this line and the objects stayed red.
+                Show-Line "Found $(@($nonDefaultOwnerComputers).Count) computer(s) with non-default owners$($reassignedInfo):" -Class "Hint"
 
                 # Counted on a line of its own rather than subtracted from the number
                 # above it: these objects really do have a non-default owner, and a
@@ -414,7 +416,7 @@ function Get-NonDefaultComputerOwners {
 
                 foreach ($computer in $nonDefaultOwnerComputers) {
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultComputerOwner' -Force
-                    Show-Object $computer -Class Finding
+                    Show-Object $computer -Class Hint
                 }
             } elseif ($unreadableOwners -ge $totalComputers -and $totalComputers -gt 0) {
                 Show-Line "Computer ownership was not evaluated - no security descriptor carried an owner" -Class "Note"

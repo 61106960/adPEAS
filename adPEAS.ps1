@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 13:03:03
-    Version: 2.7.0+20261018-1303
+    Build: 2026-10-18 13:07:19
+    Version: 2.7.0+20261018-1307
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -111654,11 +111654,14 @@ function Get-NonDefaultUserOwners {
 
             # Output results
             if (@($nonDefaultOwnerUsers).Count -gt 0) {
-                Show-Line "Found $(@($nonDefaultOwnerUsers).Count) user(s) with non-default owners:" -Class Finding
+                # Hint, as NON_DEFAULT_USER_OWNERS and the Owner row say: the row was
+                # aligned to its card, and this line and the object stayed red - a red
+                # heading over a yellow row, in front of a card rated a hint.
+                Show-Line "Found $(@($nonDefaultOwnerUsers).Count) user(s) with non-default owners:" -Class Hint
 
                 foreach ($user in $nonDefaultOwnerUsers) {
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultOwner' -Force
-                    Show-Object $user -Class Finding
+                    Show-Object $user -Class Hint
                 }
 
             } else {
@@ -118747,7 +118750,9 @@ function Get-NonDefaultComputerOwners {
             if (@($nonDefaultOwnerComputers).Count -gt 0) {
                 $reassigned = @($nonDefaultOwnerComputers | Where-Object { $_.PSObject.Properties['ownershipChanged'] }).Count
                 $reassignedInfo = if ($reassigned -gt 0) { ", $reassigned of them owned by somebody other than the creator" } else { "" }
-                Show-Line "Found $(@($nonDefaultOwnerComputers).Count) computer(s) with non-default owners$($reassignedInfo):" -Class "Finding"
+                # Hint, as NON_DEFAULT_COMPUTER_OWNERS and the Owner row say: the row was
+                # aligned to its card, and this line and the objects stayed red.
+                Show-Line "Found $(@($nonDefaultOwnerComputers).Count) computer(s) with non-default owners$($reassignedInfo):" -Class "Hint"
 
                 # Counted on a line of its own rather than subtracted from the number
                 # above it: these objects really do have a non-default owner, and a
@@ -118761,7 +118766,7 @@ function Get-NonDefaultComputerOwners {
 
                 foreach ($computer in $nonDefaultOwnerComputers) {
                     $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultComputerOwner' -Force
-                    Show-Object $computer -Class Finding
+                    Show-Object $computer -Class Hint
                 }
             } elseif ($unreadableOwners -ge $totalComputers -and $totalComputers -gt 0) {
                 Show-Line "Computer ownership was not evaluated - no security descriptor carried an owner" -Class "Note"
@@ -146424,7 +146429,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1303"
+$Script:adPEASVersion = "2.7.0+20261018-1307"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

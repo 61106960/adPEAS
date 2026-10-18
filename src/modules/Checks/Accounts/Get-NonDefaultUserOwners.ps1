@@ -198,11 +198,14 @@ function Get-NonDefaultUserOwners {
 
             # Output results
             if (@($nonDefaultOwnerUsers).Count -gt 0) {
-                Show-Line "Found $(@($nonDefaultOwnerUsers).Count) user(s) with non-default owners:" -Class Finding
+                # Hint, as NON_DEFAULT_USER_OWNERS and the Owner row say: the row was
+                # aligned to its card, and this line and the object stayed red - a red
+                # heading over a yellow row, in front of a card rated a hint.
+                Show-Line "Found $(@($nonDefaultOwnerUsers).Count) user(s) with non-default owners:" -Class Hint
 
                 foreach ($user in $nonDefaultOwnerUsers) {
                     $user | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NonDefaultOwner' -Force
-                    Show-Object $user -Class Finding
+                    Show-Object $user -Class Hint
                 }
 
             } else {
