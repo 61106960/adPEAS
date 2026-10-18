@@ -1530,6 +1530,7 @@ function Get-PrivilegedGroupMembers {
             Show-SubHeader "Checking Pre-Windows 2000 Compatible Access group..." -ObjectType "PreWindows2000Access"
 
             $PreWin2000Findings = @()
+            $PreWin2000Rows = @()
             $PreWin2000Unresolved = @()
             $preWin2000Read = $false
             # Use Well-Known SID S-1-5-32-554 for language-independent lookup
@@ -1630,13 +1631,20 @@ function Get-PrivilegedGroupMembers {
 
                         $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PreWindows2000Access' -Force
                         $PreWin2000Findings += $finding
+                        $PreWin2000Rows += [PSCustomObject]@{ Finding = $finding; Class = $memberClass }
+                    }
 
-                        Show-Line "$MemberName is a member" -Class $memberClass
-
-                        # The object was built, counted and never shown, so it reached
-                        # neither the console nor the HTML report: the only trace of this
-                        # finding anywhere was the single line above.
-                        Show-Object $finding -Class $memberClass
+                    # One line for the group, then its members. Each member used to get a
+                    # line of its own - "<name> is a member" - directly above an object
+                    # whose only row named the same member again. The object carries the
+                    # member and its class; the line says how many there are.
+                    if (@($PreWin2000Rows).Count -gt 0) {
+                        $headerClass = 'Hint'
+                        if (@($PreWin2000Rows | Where-Object { $_.Class -eq 'Finding' }).Count -gt 0) { $headerClass = 'Finding' }
+                        Show-Line "Found $(@($PreWin2000Rows).Count) broad member(s) in Pre-Windows 2000 Compatible Access:" -Class $headerClass
+                        foreach ($row in $PreWin2000Rows) {
+                            Show-Object $row.Finding -Class $row.Class
+                        }
                     }
                 }
 

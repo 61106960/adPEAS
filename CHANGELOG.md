@@ -1125,6 +1125,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the ticket with RC4. Counted as AES, such a kerberoastable account was neither "RC4
   without AES" on its card nor RC4-only in the report's scoring.
 
+- **Pre-Windows 2000 Compatible Access announces its members in one line.** Every broad
+  member had a line of its own - "NT AUTHORITY\Authenticated Users is a member" - directly
+  above an object whose only row named the same member again. One line now says how many
+  there are, as a finding when one of them is, and the objects follow.
+
 ---
 
 ## [2.7.0] - 2026-10-08

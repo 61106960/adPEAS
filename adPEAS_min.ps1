@@ -69372,6 +69372,7 @@ function Get-PrivilegedGroupMembers {
             }
             Show-SubHeader "Checking Pre-Windows 2000 Compatible Access group..." -ObjectType "PreWindows2000Access"
             $PreWin2000Findings = @()
+            $PreWin2000Rows = @()
             $PreWin2000Unresolved = @()
             $preWin2000Read = $false
             $PreWin2000SID = 'S-1-5-32-554'
@@ -69420,8 +69421,15 @@ function Get-PrivilegedGroupMembers {
                         }
                         $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PreWindows2000Access' -Force
                         $PreWin2000Findings += $finding
-                        Show-Line "$MemberName is a member" -Class $memberClass
-                        Show-Object $finding -Class $memberClass
+                        $PreWin2000Rows += [PSCustomObject]@{ Finding = $finding; Class = $memberClass }
+                    }
+                    if (@($PreWin2000Rows).Count -gt 0) {
+                        $headerClass = 'Hint'
+                        if (@($PreWin2000Rows | Where-Object { $_.Class -eq 'Finding' }).Count -gt 0) { $headerClass = 'Finding' }
+                        Show-Line "Found $(@($PreWin2000Rows).Count) broad member(s) in Pre-Windows 2000 Compatible Access:" -Class $headerClass
+                        foreach ($row in $PreWin2000Rows) {
+                            Show-Object $row.Finding -Class $row.Class
+                        }
                     }
                 }
                 if (-not $preWin2000Read) {
@@ -94487,7 +94495,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1641"
+$Script:adPEASVersion = "2.7.0+20261018-1651"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
