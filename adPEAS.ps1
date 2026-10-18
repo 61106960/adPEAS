@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 18:47:08
-    Version: 2.7.0+20261018-1847
+    Build: 2026-10-18 18:56:21
+    Version: 2.7.0+20261018-1856
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -44056,46 +44056,43 @@ function Get-CertificateTemplate {
                         }
                     }
 
-                    # Filter: Enrollment Allowed (check nTSecurityDescriptor for enrollment rights)
+                    # Filter: Enrollment Allowed - an Allow on the template itself that
+                    # grants an enrollment right.
+                    #
+                    # The test read two shapes the descriptor does not arrive in as such. It
+                    # comes as the object ConvertFrom-SecurityDescriptor builds - bytes only
+                    # under -Raw - not as text lines, so the text branch ran on every
+                    # template, and its answer was ($a -or $b).Count: 1 for $true and for
+                    # $false alike, so every template passed. The byte branch would have
+                    # passed them as well: it took the empty GUID for All-Extended-Rights,
+                    # and an ACE without an object type carries the empty GUID - every
+                    # template's DACL has one.
+                    #
+                    # Read the way Get-ADCSTemplate reads enrollment, through
+                    # Get-TemplateEnrollmentRight: the ACE applies to the template and grants
+                    # Certificate-Enrollment, Certificate-AutoEnrollment, all extended rights
+                    # or full control in its scope. A Deny is not netted against it here;
+                    # Get-ADCSTemplate resolves that per trustee.
                     if ($EnrollmentAllowed) {
                         Write-Log "[Get-CertificateTemplate] Filtering for templates with enrollment permissions"
                         $FilteredTemplates = $FilteredTemplates | Where-Object {
-                            if ($_.nTSecurityDescriptor) {
-                                # Support both raw (byte array) and converted (string array) values
-                                if ($_.nTSecurityDescriptor -is [byte[]]) {
-                                    # Raw value: Parse Security Descriptor bytes for Certificate-Enrollment GUID
-                                    # Certificate-Enrollment: 0e10c968-78fb-11d2-90d4-00c04f79dc55
-                                    # Convert GUID to byte pattern and search in SD
-                                    $SD = New-Object System.DirectoryServices.ActiveDirectorySecurity
-                                    $SD.SetSecurityDescriptorBinaryForm($_.nTSecurityDescriptor)
-
-                                    # Check for Certificate-Enrollment extended right
-                                    $CertEnrollGuid = [Guid]"0e10c968-78fb-11d2-90d4-00c04f79dc55"
-                                    $AllExtendedRightsGuid = [Guid]"00000000-0000-0000-0000-000000000000"
-
-                                    # GetAccessRules with SecurityIdentifier, not .Access.
-                                    # .Access asks for the rules as NTAccount and silently
-                                    # drops every ACE whose SID the local machine cannot
-                                    # name-resolve, which against a foreign domain is all
-                                    # of them - a template enrollable by a domain group
-                                    # then looked like a template nobody can enroll, and
-                                    # ESC1, ESC2 and ESC3 lost their input.
-                                    $SD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object {
-                                        $_.AccessControlType -eq 'Allow' -and
-                                        ($_.ObjectType -eq $CertEnrollGuid -or $_.ObjectType -eq $AllExtendedRightsGuid)
-                                    }
-                                } else {
-                                    # Converted value: Array of formatted strings like:
-                                    # "Allow - NT-AUTHORITY\Authenticated Users - ExtendedRight (Certificate-Enrollment)"
-                                    $SDLines = $_.nTSecurityDescriptor
-                                    # Check for Certificate-Enrollment or All-Extended-Rights in any ACE line
-                                    ($SDLines -match 'Certificate-Enrollment' -or
-                                     $SDLines -match 'Certificate-AutoEnrollment' -or
-                                     $SDLines -match 'All-Extended-Rights').Count -gt 0
+                            $templateName = $_.cn
+                            $descriptor = $_.nTSecurityDescriptor
+                            if ($descriptor -is [byte[]]) {
+                                try {
+                                    $descriptor = ConvertFrom-SecurityDescriptor -SecurityDescriptorBytes $descriptor
+                                } catch {
+                                    Write-Log "[Get-CertificateTemplate] Could not parse the descriptor of ${templateName}: $_"
+                                    $descriptor = $null
                                 }
-                            } else {
-                                $false
                             }
+                            $enrollmentGrants = @()
+                            if ($descriptor -and $descriptor.ACEs) {
+                                $enrollmentGrants = @($descriptor.ACEs | Where-Object {
+                                    $_.Type -eq 'Allow' -and @(Get-TemplateEnrollmentRight -ACE $_).Count -gt 0
+                                })
+                            }
+                            $enrollmentGrants.Count -gt 0
                         }
                     }
 
@@ -55898,6 +55895,63 @@ function Test-ACEAppliesToSelf {
     if (-not $ACE.PSObject.Properties['PropagationFlags']) { return $true }
 
     return -not (([string]$ACE.PropagationFlags) -match 'InheritOnly')
+}
+
+function Get-TemplateEnrollmentRight {
+    <#
+    .SYNOPSIS
+    Says which of the two enrollment rights an ACE of a certificate template covers.
+
+    .DESCRIPTION
+    The CA asks the template's DACL for Certificate-Enrollment (a manual request) or
+    Certificate-AutoEnrollment. An ACE covers one of them when it applies to the template
+    itself and grants the extended right named, all extended rights, or full control.
+
+    Full control is read by its scope. An object ACE grants its mask on the node of the
+    object type list its GUID names and nowhere else (MS-DTYP 2.5.3.2), so GenericAll
+    scoped to an attribute or to a child class grants no extended right on the template -
+    the check used to take every GenericAll for one, and a Deny of it for a Deny of
+    enrollment. An inherit-only ACE exists only to be passed down and does not apply to
+    the template at all.
+
+    Kept here, beside Test-ACEAppliesToSelf, rather than in Get-ADCSTemplate: the Core
+    function Get-CertificateTemplate asks the same question for -EnrollmentAllowed, and a
+    Core module does not reach into a check.
+
+    .PARAMETER ACE
+    An ACE as ConvertFrom-SecurityDescriptor returns it (Rights, ObjectType,
+    PropagationFlags).
+
+    .OUTPUTS
+    [string[]] - 'Certificate-Enrollment' and/or 'Certificate-AutoEnrollment'; empty when
+    the ACE covers neither.
+
+    .EXAMPLE
+    Get-TemplateEnrollmentRight -ACE $sd.ACEs[0]
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowNull()]
+        $ACE
+    )
+
+    if ($null -eq $ACE) { return @() }
+    if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { return @() }
+    if ([string]$ACE.Rights -notmatch 'GenericAll|ExtendedRight') { return @() }
+
+    $objectType = ([string]$ACE.ObjectType).Trim('{}').ToLower()
+    if (-not $objectType -or $objectType -eq [Guid]::Empty.ToString()) {
+        return @('Certificate-Enrollment', 'Certificate-AutoEnrollment')
+    }
+    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateEnrollment']) {
+        return @('Certificate-Enrollment')
+    }
+    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateAutoEnrollment']) {
+        return @('Certificate-AutoEnrollment')
+    }
+    return @()
 }
 
 
@@ -124726,59 +124780,6 @@ function Test-EKUPresent {
     return [bool]($text -match $pattern)
 }
 
-function Get-TemplateEnrollmentRight {
-    <#
-    .SYNOPSIS
-    Says which of the two enrollment rights an ACE of a certificate template covers.
-
-    .DESCRIPTION
-    The CA asks the template's DACL for Certificate-Enrollment (a manual request) or
-    Certificate-AutoEnrollment. An ACE covers one of them when it applies to the template
-    itself and grants the extended right named, all extended rights, or full control.
-
-    Full control is read by its scope. An object ACE grants its mask on the node of the
-    object type list its GUID names and nowhere else (MS-DTYP 2.5.3.2), so GenericAll
-    scoped to an attribute or to a child class grants no extended right on the template -
-    the check used to take every GenericAll for one, and a Deny of it for a Deny of
-    enrollment. An inherit-only ACE exists only to be passed down and does not apply to
-    the template at all.
-
-    .PARAMETER ACE
-    An ACE as ConvertFrom-SecurityDescriptor returns it (Rights, ObjectType,
-    PropagationFlags).
-
-    .OUTPUTS
-    [string[]] - 'Certificate-Enrollment' and/or 'Certificate-AutoEnrollment'; empty when
-    the ACE covers neither.
-
-    .EXAMPLE
-    Get-TemplateEnrollmentRight -ACE $sd.ACEs[0]
-    #>
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param(
-        [Parameter(Mandatory=$true)]
-        [AllowNull()]
-        $ACE
-    )
-
-    if ($null -eq $ACE) { return @() }
-    if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { return @() }
-    if ([string]$ACE.Rights -notmatch 'GenericAll|ExtendedRight') { return @() }
-
-    $objectType = ([string]$ACE.ObjectType).Trim('{}').ToLower()
-    if (-not $objectType -or $objectType -eq [Guid]::Empty.ToString()) {
-        return @('Certificate-Enrollment', 'Certificate-AutoEnrollment')
-    }
-    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateEnrollment']) {
-        return @('Certificate-Enrollment')
-    }
-    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateAutoEnrollment']) {
-        return @('Certificate-AutoEnrollment')
-    }
-    return @()
-}
-
 function Get-ADCSTemplate {
     <#
     .SYNOPSIS
@@ -147344,7 +147345,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1847"
+$Script:adPEASVersion = "2.7.0+20261018-1856"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -30707,25 +30707,23 @@ function Get-CertificateTemplate {
                     if ($EnrollmentAllowed) {
                         Write-Log "[Get-CertificateTemplate] Filtering for templates with enrollment permissions"
                         $FilteredTemplates = $FilteredTemplates | Where-Object {
-                            if ($_.nTSecurityDescriptor) {
-                                if ($_.nTSecurityDescriptor -is [byte[]]) {
-                                    $SD = New-Object System.DirectoryServices.ActiveDirectorySecurity
-                                    $SD.SetSecurityDescriptorBinaryForm($_.nTSecurityDescriptor)
-                                    $CertEnrollGuid = [Guid]"0e10c968-78fb-11d2-90d4-00c04f79dc55"
-                                    $AllExtendedRightsGuid = [Guid]"00000000-0000-0000-0000-000000000000"
-                                    $SD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object {
-                                        $_.AccessControlType -eq 'Allow' -and
-                                        ($_.ObjectType -eq $CertEnrollGuid -or $_.ObjectType -eq $AllExtendedRightsGuid)
-                                    }
-                                } else {
-                                    $SDLines = $_.nTSecurityDescriptor
-                                    ($SDLines -match 'Certificate-Enrollment' -or
-                                     $SDLines -match 'Certificate-AutoEnrollment' -or
-                                     $SDLines -match 'All-Extended-Rights').Count -gt 0
+                            $templateName = $_.cn
+                            $descriptor = $_.nTSecurityDescriptor
+                            if ($descriptor -is [byte[]]) {
+                                try {
+                                    $descriptor = ConvertFrom-SecurityDescriptor -SecurityDescriptorBytes $descriptor
+                                } catch {
+                                    Write-Log "[Get-CertificateTemplate] Could not parse the descriptor of ${templateName}: $_"
+                                    $descriptor = $null
                                 }
-                            } else {
-                                $false
                             }
+                            $enrollmentGrants = @()
+                            if ($descriptor -and $descriptor.ACEs) {
+                                $enrollmentGrants = @($descriptor.ACEs | Where-Object {
+                                    $_.Type -eq 'Allow' -and @(Get-TemplateEnrollmentRight -ACE $_).Count -gt 0
+                                })
+                            }
+                            $enrollmentGrants.Count -gt 0
                         }
                     }
                     if ($FilteredTemplates) {
@@ -38196,6 +38194,29 @@ function Test-ACEAppliesToSelf {
     if ($null -eq $ACE) { return $false }
     if (-not $ACE.PSObject.Properties['PropagationFlags']) { return $true }
     return -not (([string]$ACE.PropagationFlags) -match 'InheritOnly')
+}
+function Get-TemplateEnrollmentRight {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowNull()]
+        $ACE
+    )
+    if ($null -eq $ACE) { return @() }
+    if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { return @() }
+    if ([string]$ACE.Rights -notmatch 'GenericAll|ExtendedRight') { return @() }
+    $objectType = ([string]$ACE.ObjectType).Trim('{}').ToLower()
+    if (-not $objectType -or $objectType -eq [Guid]::Empty.ToString()) {
+        return @('Certificate-Enrollment', 'Certificate-AutoEnrollment')
+    }
+    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateEnrollment']) {
+        return @('Certificate-Enrollment')
+    }
+    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateAutoEnrollment']) {
+        return @('Certificate-AutoEnrollment')
+    }
+    return @()
 }
 function Test-LDAPSProtocolSupport {
     [CmdletBinding()]
@@ -78320,29 +78341,6 @@ function Test-EKUPresent {
     $pattern = '(?<![\d.])' + [regex]::Escape($Oid) + '(?![\d.])'
     return [bool]($text -match $pattern)
 }
-function Get-TemplateEnrollmentRight {
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param(
-        [Parameter(Mandatory=$true)]
-        [AllowNull()]
-        $ACE
-    )
-    if ($null -eq $ACE) { return @() }
-    if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { return @() }
-    if ([string]$ACE.Rights -notmatch 'GenericAll|ExtendedRight') { return @() }
-    $objectType = ([string]$ACE.ObjectType).Trim('{}').ToLower()
-    if (-not $objectType -or $objectType -eq [Guid]::Empty.ToString()) {
-        return @('Certificate-Enrollment', 'Certificate-AutoEnrollment')
-    }
-    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateEnrollment']) {
-        return @('Certificate-Enrollment')
-    }
-    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateAutoEnrollment']) {
-        return @('Certificate-AutoEnrollment')
-    }
-    return @()
-}
 function Get-ADCSTemplate {
     [CmdletBinding()]
     param(
@@ -94654,7 +94652,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1847"
+$Script:adPEASVersion = "2.7.0+20261018-1856"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

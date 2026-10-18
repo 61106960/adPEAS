@@ -1219,6 +1219,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   follow, each announced in a line of its own. A domain without a LAPS schema gets the
   same summary.
 
+- **`Get-CertificateTemplate -EnrollmentAllowed` filters.** It let every template with a
+  descriptor through. The filter read the descriptor as lines of text, but it arrives as
+  the object `ConvertFrom-SecurityDescriptor` builds, and the text test's answer was
+  `($a -or $b).Count`, which is 1 whether the match succeeded or not. Its branch for
+  `-Raw` would have passed them as well: it took the empty GUID of an ACE without an
+  object type for All-Extended-Rights, and every template's DACL has such an ACE. The
+  filter now asks the question `Get-ADCSTemplate` asks: whether an Allow on the template
+  itself grants enrollment, autoenrollment, all extended rights or full control in its
+  scope. `Get-TemplateEnrollmentRight` moved beside `Test-ACEAppliesToSelf` for that.
+
 ---
 
 ## [2.7.0] - 2026-10-08

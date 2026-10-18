@@ -56,59 +56,6 @@ function Test-EKUPresent {
     return [bool]($text -match $pattern)
 }
 
-function Get-TemplateEnrollmentRight {
-    <#
-    .SYNOPSIS
-    Says which of the two enrollment rights an ACE of a certificate template covers.
-
-    .DESCRIPTION
-    The CA asks the template's DACL for Certificate-Enrollment (a manual request) or
-    Certificate-AutoEnrollment. An ACE covers one of them when it applies to the template
-    itself and grants the extended right named, all extended rights, or full control.
-
-    Full control is read by its scope. An object ACE grants its mask on the node of the
-    object type list its GUID names and nowhere else (MS-DTYP 2.5.3.2), so GenericAll
-    scoped to an attribute or to a child class grants no extended right on the template -
-    the check used to take every GenericAll for one, and a Deny of it for a Deny of
-    enrollment. An inherit-only ACE exists only to be passed down and does not apply to
-    the template at all.
-
-    .PARAMETER ACE
-    An ACE as ConvertFrom-SecurityDescriptor returns it (Rights, ObjectType,
-    PropagationFlags).
-
-    .OUTPUTS
-    [string[]] - 'Certificate-Enrollment' and/or 'Certificate-AutoEnrollment'; empty when
-    the ACE covers neither.
-
-    .EXAMPLE
-    Get-TemplateEnrollmentRight -ACE $sd.ACEs[0]
-    #>
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param(
-        [Parameter(Mandatory=$true)]
-        [AllowNull()]
-        $ACE
-    )
-
-    if ($null -eq $ACE) { return @() }
-    if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { return @() }
-    if ([string]$ACE.Rights -notmatch 'GenericAll|ExtendedRight') { return @() }
-
-    $objectType = ([string]$ACE.ObjectType).Trim('{}').ToLower()
-    if (-not $objectType -or $objectType -eq [Guid]::Empty.ToString()) {
-        return @('Certificate-Enrollment', 'Certificate-AutoEnrollment')
-    }
-    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateEnrollment']) {
-        return @('Certificate-Enrollment')
-    }
-    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateAutoEnrollment']) {
-        return @('Certificate-AutoEnrollment')
-    }
-    return @()
-}
-
 function Get-ADCSTemplate {
     <#
     .SYNOPSIS
