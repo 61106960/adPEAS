@@ -93043,6 +93043,7 @@ function ConvertTo-BHAces {
         $DACL = $RawSD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
         foreach ($ace in $DACL) {
             if ($ace.AccessControlType -ne 'Allow') { continue }
+            if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
             $trusteeSID = $ace.IdentityReference.Value
             $skipPrincipals = @(
                 'S-1-3-0',
@@ -93051,42 +93052,44 @@ function ConvertTo-BHAces {
             )
             if ($trusteeSID -in $skipPrincipals) { continue }
             $principalType = Get-BHPrincipalType -SID $trusteeSID
-            $adRights = $ace.ActiveDirectoryRights
+            $adRights = [System.DirectoryServices.ActiveDirectoryRights](ConvertTo-ExpandedADRightsValue -Rights $ace.ActiveDirectoryRights)
             $objectTypeGuid = if ($ace.ObjectType -and $ace.ObjectType -ne [System.Guid]::Empty) {
                 $ace.ObjectType.ToString().ToLower()
             } else { $null }
             $isInherited = $ace.IsInherited
-            if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericAll) -eq [System.DirectoryServices.ActiveDirectoryRights]::GenericAll) {
-                $bhAces += @{
-                    PrincipalSID  = $trusteeSID
-                    PrincipalType = $principalType
-                    RightName     = 'GenericAll'
-                    IsInherited   = $isInherited
+            if (-not $objectTypeGuid) {
+                if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericAll) -eq [System.DirectoryServices.ActiveDirectoryRights]::GenericAll) {
+                    $bhAces += @{
+                        PrincipalSID  = $trusteeSID
+                        PrincipalType = $principalType
+                        RightName     = 'GenericAll'
+                        IsInherited   = $isInherited
+                    }
+                    continue
                 }
-                continue
-            }
-            if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericWrite) -eq [System.DirectoryServices.ActiveDirectoryRights]::GenericWrite) {
-                $bhAces += @{
-                    PrincipalSID  = $trusteeSID
-                    PrincipalType = $principalType
-                    RightName     = 'GenericWrite'
-                    IsInherited   = $isInherited
+                if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericWrite) -eq [System.DirectoryServices.ActiveDirectoryRights]::GenericWrite) {
+                    $bhAces += @{
+                        PrincipalSID  = $trusteeSID
+                        PrincipalType = $principalType
+                        RightName     = 'GenericWrite'
+                        IsInherited   = $isInherited
+                    }
                 }
-            }
-            if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteDacl) -eq [System.DirectoryServices.ActiveDirectoryRights]::WriteDacl) {
-                $bhAces += @{
-                    PrincipalSID  = $trusteeSID
-                    PrincipalType = $principalType
-                    RightName     = 'WriteDacl'
-                    IsInherited   = $isInherited
+                if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteDacl) -eq [System.DirectoryServices.ActiveDirectoryRights]::WriteDacl) {
+                    $bhAces += @{
+                        PrincipalSID  = $trusteeSID
+                        PrincipalType = $principalType
+                        RightName     = 'WriteDacl'
+                        IsInherited   = $isInherited
+                    }
                 }
-            }
-            if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteOwner) -eq [System.DirectoryServices.ActiveDirectoryRights]::WriteOwner) {
-                $bhAces += @{
-                    PrincipalSID  = $trusteeSID
-                    PrincipalType = $principalType
-                    RightName     = 'WriteOwner'
-                    IsInherited   = $isInherited
+                if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteOwner) -eq [System.DirectoryServices.ActiveDirectoryRights]::WriteOwner) {
+                    $bhAces += @{
+                        PrincipalSID  = $trusteeSID
+                        PrincipalType = $principalType
+                        RightName     = 'WriteOwner'
+                        IsInherited   = $isInherited
+                    }
                 }
             }
             if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteProperty) -eq [System.DirectoryServices.ActiveDirectoryRights]::WriteProperty) {
@@ -93116,7 +93119,7 @@ function ConvertTo-BHAces {
                 }
             }
             if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::Self) -eq [System.DirectoryServices.ActiveDirectoryRights]::Self) {
-                if ($ObjectType -eq 'Group') {
+                if ($ObjectType -eq 'Group' -and (-not $objectTypeGuid -or $objectTypeGuid -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2')) {
                     $bhAces += @{
                         PrincipalSID  = $trusteeSID
                         PrincipalType = $principalType
@@ -93582,6 +93585,7 @@ function Collect-BHComputers {
                 $sd = New-Object System.DirectoryServices.ActiveDirectorySecurity
                 $sd.SetSecurityDescriptorBinaryForm($computer.'msDS-AllowedToActOnBehalfOfOtherIdentity')
                 foreach ($ace in $sd.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+                    if ($ace.AccessControlType -ne 'Allow') { continue }
                     $sidValue = $null
                     $identRef = $ace.IdentityReference
                     if ($identRef -is [System.Security.Principal.SecurityIdentifier]) {
@@ -94459,7 +94463,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1526"
+$Script:adPEASVersion = "2.7.0+20261018-1535"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

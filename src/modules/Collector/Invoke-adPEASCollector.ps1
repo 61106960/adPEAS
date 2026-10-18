@@ -1248,6 +1248,10 @@ function ConvertTo-BHAces {
             # Only process Allow ACEs
             if ($ace.AccessControlType -ne 'Allow') { continue }
 
+            # An inherit-only ACE grants nothing on this object; it exists for the objects
+            # below, each of which carries the inherited copy that applies to it.
+            if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+
             $trusteeSID = $ace.IdentityReference.Value
 
             # Filter principals that create noise without attack value
@@ -1259,51 +1263,64 @@ function ConvertTo-BHAces {
             if ($trusteeSID -in $skipPrincipals) { continue }
 
             $principalType = Get-BHPrincipalType -SID $trusteeSID
-            $adRights = $ace.ActiveDirectoryRights
+            # The generic bits mapped first: GENERIC_ALL as SDDL "GA" is the single bit
+            # 0x10000000, the form impacket and Certipy write, and it matched none of the
+            # masks below - such an ACE produced no edge at all.
+            $adRights = [System.DirectoryServices.ActiveDirectoryRights](ConvertTo-ExpandedADRightsValue -Rights $ace.ActiveDirectoryRights)
             $objectTypeGuid = if ($ace.ObjectType -and $ace.ObjectType -ne [System.Guid]::Empty) {
                 $ace.ObjectType.ToString().ToLower()
             } else { $null }
 
             $isInherited = $ace.IsInherited
 
-            # ----- GenericAll -----
-            if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericAll) -eq [System.DirectoryServices.ActiveDirectoryRights]::GenericAll) {
-                $bhAces += @{
-                    PrincipalSID  = $trusteeSID
-                    PrincipalType = $principalType
-                    RightName     = 'GenericAll'
-                    IsInherited   = $isInherited
+            # The rights over the whole object only from an ACE that names no ObjectType. An
+            # object ACE grants its mask on the attribute or class its GUID names and nowhere
+            # else (MS-ADTS 5.1.3.3.3); scoped, GenericAll is the write of that attribute, or
+            # the creation of children of that class, and the branches below read it so.
+            # Measured on an Exchange SE domain: Exchange setup's GenericAll scoped to the
+            # msExchDynamicDistributionList class made 228 GenericAll edges each for
+            # Exchange Trusted Subsystem and Organization Management - every privileged
+            # account among the targets.
+            if (-not $objectTypeGuid) {
+                # ----- GenericAll -----
+                if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericAll) -eq [System.DirectoryServices.ActiveDirectoryRights]::GenericAll) {
+                    $bhAces += @{
+                        PrincipalSID  = $trusteeSID
+                        PrincipalType = $principalType
+                        RightName     = 'GenericAll'
+                        IsInherited   = $isInherited
+                    }
+                    continue  # GenericAll encompasses everything, skip other checks
                 }
-                continue  # GenericAll encompasses everything, skip other checks
-            }
 
-            # ----- GenericWrite -----
-            if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericWrite) -eq [System.DirectoryServices.ActiveDirectoryRights]::GenericWrite) {
-                $bhAces += @{
-                    PrincipalSID  = $trusteeSID
-                    PrincipalType = $principalType
-                    RightName     = 'GenericWrite'
-                    IsInherited   = $isInherited
+                # ----- GenericWrite -----
+                if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericWrite) -eq [System.DirectoryServices.ActiveDirectoryRights]::GenericWrite) {
+                    $bhAces += @{
+                        PrincipalSID  = $trusteeSID
+                        PrincipalType = $principalType
+                        RightName     = 'GenericWrite'
+                        IsInherited   = $isInherited
+                    }
                 }
-            }
 
-            # ----- WriteDacl -----
-            if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteDacl) -eq [System.DirectoryServices.ActiveDirectoryRights]::WriteDacl) {
-                $bhAces += @{
-                    PrincipalSID  = $trusteeSID
-                    PrincipalType = $principalType
-                    RightName     = 'WriteDacl'
-                    IsInherited   = $isInherited
+                # ----- WriteDacl -----
+                if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteDacl) -eq [System.DirectoryServices.ActiveDirectoryRights]::WriteDacl) {
+                    $bhAces += @{
+                        PrincipalSID  = $trusteeSID
+                        PrincipalType = $principalType
+                        RightName     = 'WriteDacl'
+                        IsInherited   = $isInherited
+                    }
                 }
-            }
 
-            # ----- WriteOwner -----
-            if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteOwner) -eq [System.DirectoryServices.ActiveDirectoryRights]::WriteOwner) {
-                $bhAces += @{
-                    PrincipalSID  = $trusteeSID
-                    PrincipalType = $principalType
-                    RightName     = 'WriteOwner'
-                    IsInherited   = $isInherited
+                # ----- WriteOwner -----
+                if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteOwner) -eq [System.DirectoryServices.ActiveDirectoryRights]::WriteOwner) {
+                    $bhAces += @{
+                        PrincipalSID  = $trusteeSID
+                        PrincipalType = $principalType
+                        RightName     = 'WriteOwner'
+                        IsInherited   = $isInherited
+                    }
                 }
             }
 
@@ -1340,8 +1357,10 @@ function ConvertTo-BHAces {
             }
 
             # ----- Self (AddSelf for groups) -----
+            # The validated write of member, or every validated write. Scoped to another
+            # one - Validated-SPN, say - it adds nobody to anything.
             if (($adRights -band [System.DirectoryServices.ActiveDirectoryRights]::Self) -eq [System.DirectoryServices.ActiveDirectoryRights]::Self) {
-                if ($ObjectType -eq 'Group') {
+                if ($ObjectType -eq 'Group' -and (-not $objectTypeGuid -or $objectTypeGuid -eq 'bf9679c0-0de6-11d0-a285-00aa003049e2')) {
                     $bhAces += @{
                         PrincipalSID  = $trusteeSID
                         PrincipalType = $principalType
@@ -1948,6 +1967,9 @@ function Collect-BHComputers {
                 # list. The principals in this descriptor are exactly the ones that can
                 # impersonate against the computer, so losing them loses the finding.
                 foreach ($ace in $sd.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+                    # A Deny in this descriptor refuses the delegation, it does not grant it.
+                    if ($ace.AccessControlType -ne 'Allow') { continue }
+
                     # Get SID - IdentityReference may be SecurityIdentifier or NTAccount
                     $sidValue = $null
                     $identRef = $ace.IdentityReference

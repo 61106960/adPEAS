@@ -781,6 +781,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   of one attribute no longer cancels a write of every property, and an inherited Deny
   nothing from an Allow written on the GPO.
 
+- **The BloodHound export draws an edge only for a right that holds on the object.** The
+  collector read GenericAll, GenericWrite, WriteDacl and WriteOwner out of any ACE's mask
+  and counted inherit-only ACEs. Measured on an Exchange SE domain, Exchange setup's
+  GenericAll scoped to its `msExchDynamicDistributionList` class made 228 GenericAll edges
+  each for Exchange Trusted Subsystem and Organization Management - a path from either to
+  every privileged account that no access check grants. Those rights now come only from
+  an ACE that names no ObjectType; scoped, the ACE is read as the write of the attribute it
+  names (full control of servicePrincipalName is a WriteSPN edge). Inherit-only ACEs make no
+  edge, AddSelf needs the validated write of member, and a Deny in
+  msDS-AllowedToActOnBehalfOfOtherIdentity is no AllowedToAct edge. The other way round,
+  GENERIC_ALL written as the single generic bit - SDDL "GA", the form impacket and Certipy
+  write - matched no mask and became no edge at all. The measured export went from 4157 to
+  3343 ACE edges.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
