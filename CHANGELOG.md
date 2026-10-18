@@ -634,6 +634,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   restricted services authority by its authority, and the user right accepts it on domain
   controllers without expecting it in a domain created earlier.
 
+- **SeSecurityPrivilege granted by a GPO is a hint throughout.** The right was moved to
+  the hint tier - it destroys the record of an intrusion rather than enabling one - but
+  its card stayed a finding scored 65. `Get-GPOUserRightsAssignment` printed a yellow
+  object with red rows, and the HTML report counted a finding, for Exchange Servers
+  holding the right on the domain controllers as Exchange setup grants it. The card is a
+  hint scored 35 now, and every right's card and rows follow the table's tier.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

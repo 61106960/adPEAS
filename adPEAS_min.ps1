@@ -9958,8 +9958,8 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
     }
     'GPO_USERRIGHT_SESECURITY' = @{
         Title = "'Manage Auditing and Security Log' (SeSecurityPrivilege) Granted via GPO"
-        Risk = "Finding"
-        BaseScore = 65
+        Risk = "Hint"
+        BaseScore = 35
         Description = "A Group Policy grants SeSecurityPrivilege to a principal beyond the Windows default (Administrators only). The holder reads and clears the Security event log and changes the machine's audit policy - the record an intrusion is reconstructed from."
         Impact = @(
             "Clearing the Security log after an intrusion is how it stops being reconstructable - the compromise leaves no trace on the host"
@@ -9981,8 +9981,8 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         Tools = @("wevtutil", "auditpol")
         MITRE = "T1070.001"
         Triggers = @(
-            @{ Attribute = 'UserRight'; Pattern = '^SeSecurityPrivilege$'; Severity = 'Finding' }
-            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSecurityPrivilege'; Severity = 'Finding' }
+            @{ Attribute = 'UserRight'; Pattern = '^SeSecurityPrivilege$'; Severity = 'Hint' }
+            @{ Attribute = 'GrantedBeyondDefault'; Custom = 'user_right_is_SeSecurityPrivilege'; Severity = 'Hint' }
         )
     }
     'GPO_USERRIGHT_SERELABEL' = @{
@@ -94228,7 +94228,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1246"
+$Script:adPEASVersion = "2.7.0+20261018-1250"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
