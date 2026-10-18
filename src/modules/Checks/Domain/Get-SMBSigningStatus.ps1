@@ -525,10 +525,24 @@ function Get-SMBSigningStatus {
                 # If ALL SMB Signing GPOs are DC-only, warn about member servers.
                 # Use Hint when the DC policy actually requires signing (partially secured).
                 # Keep Finding when signing is only Optional or Disabled on DCs.
+                #
+                # As the member computers' counterpart of the domain controller object
+                # above, not as a line: the sentence had no card behind it, so the HTML
+                # report showed it without the remediation the SMB signing card carries.
+                # The two values read the way the policy rows read an unset value outside
+                # the Domain Controllers OU, which is what the card's triggers answer.
                 if (@($dcOnlyGPOs).Count -gt 0 -and @($dcOnlyGPOs).Count -eq $reaching.Count) {
                     $hasRequiredSigning = @($dcOnlyGPOs | Where-Object { $_.ServerSigning -eq 'Required' }).Count -gt 0
                     $dcOnlyClass = if ($hasRequiredSigning) { 'Hint' } else { 'Finding' }
-                    Show-Line "SMB Signing only configured for Domain Controllers - Member Servers and Clients rely on OS defaults (varies by version)" -Class $dcOnlyClass
+                    $memberPosture = [PSCustomObject]@{
+                        ServerSigning = 'Not configured - not required by default before Windows Server 2025'
+                        ClientSigning = 'Not configured'
+                        decidedBy     = 'No policy - every policy that sets SMB signing is linked to the Domain Controllers OU only'
+                        basis         = 'Read from the policies, not from the computers: a value set locally or left behind by a former policy is not visible here, and Windows 11 24H2 and Windows Server 2025 require signing by default'
+                    }
+                    $memberPosture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigningMembers' -Force
+                    Show-Line "In force on member servers and clients:" -Class $dcOnlyClass
+                    Show-Object $memberPosture -Class $dcOnlyClass
                 }
 
                 # Check for insecure configurations and report findings

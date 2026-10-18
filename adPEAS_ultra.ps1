@@ -3576,6 +3576,9 @@ $Script:PrimaryAttributes = @{
 	EffectiveSMBSigning = @(
 	    'ServerSigning', 'ClientSigning', 'decidedBy', 'basis'
 	)
+	EffectiveSMBSigningMembers = @(
+	    'ServerSigning', 'ClientSigning', 'decidedBy', 'basis'
+	)
 	OutdatedComputer = @(
 	    'name', 'dNSHostName', 'operatingSystem', 'operatingSystemVersion', 'osRelease',
 	    'eolDate', 'daysSinceEoL', 'osExtendedSecurityUpdates', 'lastLogonTimestamp'
@@ -3757,6 +3760,7 @@ $Script:StrictAttributeTypes = @(
 	'AddComputerGPO',
 	'EffectiveLDAPConfig',
 	'EffectiveSMBSigning',
+	'EffectiveSMBSigningMembers',
 	'LDAPStatisticsModule',
 	'LDAPStatisticsTotal',
 	'DomainPasswordPolicy',
@@ -20737,6 +20741,19 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "For each value, the highest-ranked policy that sets it - enforced links first, then the Domain Controllers OU, then the domain root, then link order"
 	    )
 	    SecureMessage = "The policies in force on the domain controllers require SMB signing on both the server and the client side."
+	}
+	'EffectiveSMBSigningMembers' = @{
+	    TitleFormat = "In force on member servers and clients"
+	    Module = "Domain"
+	    Category = "Domain"
+	    SectionTitle = "SMB Signing Configuration"
+	    Summary = "The SMB signing values in force on member servers and clients when every signing policy is linked to the Domain Controllers OU only."
+	    WhyItMatters = "A policy that requires signing on the domain controllers protects connections to the domain controllers. Member servers and clients then sign as their Windows version does by default: before Windows Server 2025 a server enables signing without requiring it, which is the state an SMB relay needs."
+	    WhatWeCheck = @(
+	        "Whether any linked and enabled policy outside the Domain Controllers OU sets SMB signing"
+	        "The Windows default the members fall back to, server side and client side"
+	    )
+	    SecureMessage = "A policy that reaches member servers and clients sets SMB signing for them."
 	}
 	'DomainController' = @{
 	    TitleFormat = "Domain Controller: {Name}"
@@ -66071,7 +66088,15 @@ function Get-SMBSigningStatus {
 	            if (@($dcOnlyGPOs).Count -gt 0 -and @($dcOnlyGPOs).Count -eq $reaching.Count) {
 	                $hasRequiredSigning = @($dcOnlyGPOs | Where-Object { $_.ServerSigning -eq 'Required' }).Count -gt 0
 	                $dcOnlyClass = if ($hasRequiredSigning) { 'Hint' } else { 'Finding' }
-	                Show-Line "SMB Signing only configured for Domain Controllers - Member Servers and Clients rely on OS defaults (varies by version)" -Class $dcOnlyClass
+	                $memberPosture = [PSCustomObject]@{
+	                    ServerSigning = 'Not configured - not required by default before Windows Server 2025'
+	                    ClientSigning = 'Not configured'
+	                    decidedBy     = 'No policy - every policy that sets SMB signing is linked to the Domain Controllers OU only'
+	                    basis         = 'Read from the policies, not from the computers: a value set locally or left behind by a former policy is not visible here, and Windows 11 24H2 and Windows Server 2025 require signing by default'
+	                }
+	                $memberPosture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigningMembers' -Force
+	                Show-Line "In force on member servers and clients:" -Class $dcOnlyClass
+	                Show-Object $memberPosture -Class $dcOnlyClass
 	            }
 	            $insecureGPOs = @()
 	            foreach ($gpoFinding in $reaching) {
@@ -91437,7 +91462,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1651"
+$Script:adPEASVersion = "2.7.0+20261018-1657"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

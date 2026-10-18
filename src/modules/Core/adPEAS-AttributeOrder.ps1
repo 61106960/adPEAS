@@ -347,6 +347,11 @@ $Script:PrimaryAttributes = @{
         'ServerSigning', 'ClientSigning', 'decidedBy', 'basis'
     )
 
+    # And for the member computers, when no signing policy reaches them
+    EffectiveSMBSigningMembers = @(
+        'ServerSigning', 'ClientSigning', 'decidedBy', 'basis'
+    )
+
     # Outdated Computer object
     #
     # osRelease names the Windows 11 release the build identifies, which is the property
@@ -670,6 +675,7 @@ $Script:StrictAttributeTypes = @(
     'AddComputerGPO',
     'EffectiveLDAPConfig',
     'EffectiveSMBSigning',
+    'EffectiveSMBSigningMembers',
     'LDAPStatisticsModule',
     'LDAPStatisticsTotal',
     'DomainPasswordPolicy',

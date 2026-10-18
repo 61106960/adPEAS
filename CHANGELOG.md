@@ -1130,6 +1130,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   above an object whose only row named the same member again. One line now says how many
   there are, as a finding when one of them is, and the objects follow.
 
+- **SMB signing shows member servers and clients as an object of their own.** When every
+  policy that sets SMB signing is linked to the Domain Controllers OU only, the check said
+  so in a line - "Member Servers and Clients rely on OS defaults" - with no card behind it,
+  so the HTML report carried it without the remediation of the SMB signing card. It is
+  now the counterpart of the domain controller object: *In force on member servers and
+  clients*, with both values as the policy rows read an unset value outside the Domain
+  Controllers OU, which policy decides them (none), and what reading the policies cannot
+  see.
+
 ---
 
 ## [2.7.0] - 2026-10-08

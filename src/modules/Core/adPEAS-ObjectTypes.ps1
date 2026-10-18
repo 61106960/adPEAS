@@ -246,6 +246,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "The policies in force on the domain controllers require SMB signing on both the server and the client side."
     }
 
+    # The member computers' side, shown when every policy that sets SMB signing is linked
+    # to the Domain Controllers OU only - so no policy reaches a member server or client.
+    'EffectiveSMBSigningMembers' = @{
+        TitleFormat = "In force on member servers and clients"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "SMB Signing Configuration"
+        Summary = "The SMB signing values in force on member servers and clients when every signing policy is linked to the Domain Controllers OU only."
+        WhyItMatters = "A policy that requires signing on the domain controllers protects connections to the domain controllers. Member servers and clients then sign as their Windows version does by default: before Windows Server 2025 a server enables signing without requiring it, which is the state an SMB relay needs."
+        WhatWeCheck = @(
+            "Whether any linked and enabled policy outside the Domain Controllers OU sets SMB signing"
+            "The Windows default the members fall back to, server side and client side"
+        )
+        SecureMessage = "A policy that reaches member servers and clients sets SMB signing for them."
+    }
+
     # ============================================================================
     # INFRASTRUCTURE SERVERS
     # ============================================================================
