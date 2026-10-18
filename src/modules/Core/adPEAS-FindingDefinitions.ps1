@@ -13207,24 +13207,27 @@ $acl.Access | Where-Object {
     }
 
     'ADMIN_COUNT_INDICATOR' = @{
-        Title = "AdminCount Attribute Set"
+        Title = "AdminCount Without Protected Group Membership"
         Risk = "Hint"
         BaseScore = 10
-        Description = "This account has adminCount=1 set, indicating it is or was a member of a protected group managed by SDProp. If the account is no longer in any admin group, this may indicate an orphaned admin account."
+        Description = "This account has adminCount=1, the mark SDProp leaves on members of the protected groups, but no current membership in one was found - directly, nested, through the primary group, or in an operator group. Nothing clears the mark when a membership ends, so this is typically an orphaned admin account: it kept the AdminSDHolder ACL, with inheritance switched off, after losing the role that ACL protected."
         Impact = @(
-            "Account is/was protected by SDProp"
-            "Custom ACLs are reset by SDProp every 60 minutes"
-            "May indicate orphaned admin account"
+            "The account keeps the AdminSDHolder ACL with inheritance disabled, so permissions delegated on its OU do not reach it"
+            "SDProp no longer maintains that ACL once the membership ended, while the mark still makes the account look protected"
+            "Typically a former admin account that was not cleaned up"
         )
         Remediation = @(
-            "If no longer in admin groups, clear adminCount and reset ACLs"
+            "Confirm the account is in no protected group, then clear adminCount and re-enable permission inheritance on it"
         )
         References = @(
             @{ Title = "AdminSDHolder and SDProp"; Url = "https://adsecurity.org/?p=1906" }
         )
         MITRE = "T1078.002"
         Triggers = @(
-            @{ Attribute = 'adminCount'; Pattern = '^1$'; Severity = 'Hint' }
+            # On a current member the mark is the expected state, so it is coloured only
+            # where no membership explains it - every Domain Admin used to carry it in the
+            # colour of the orphan it points at.
+            @{ Attribute = 'adminCount'; Pattern = '^1$'; Custom = 'is_unexplained_admincount'; Severity = 'Hint' }
         )
     }
 
@@ -16429,6 +16432,32 @@ function Test-CustomTrigger {
             if (-not $SourceObject) { return $false }
             $wantRight = $CustomType.Substring('user_right_is_'.Length)
             return ([string]$SourceObject.userRight -eq $wantRight)
+        }
+
+        'is_unexplained_admincount' {
+            # Whether adminCount=1 on this account is explained by a current membership.
+            # SDProp sets it on the members of the protected groups and nothing clears it
+            # when a membership ends; only on an account that is no longer a member does it
+            # say something.
+            #
+            # Get-InactiveAdminAccounts decides the same question and marks its rows with
+            # isOrphaned, and that answer is used where it exists, so the two rows of one
+            # card cannot disagree. Otherwise Test-IsPrivileged answers, which follows
+            # nesting and the primary group; operator groups count, SDProp protects them
+            # too. The built-in Administrator and krbtgt are protected accounts in their
+            # own right, member of anything or not. Replicator is protected as well but
+            # counted in neither tier, so a member of it alone still reads as unexplained.
+            #
+            # Without a source object, or without the helper, the row keeps the hint it
+            # always had: answering "admin" on a lookup that could not be made would hide
+            # the orphan.
+            if (-not $SourceObject) { return $true }
+            $orphanMark = $SourceObject.PSObject.Properties['isOrphaned']
+            if ($orphanMark -and $null -ne $orphanMark.Value) { return ($orphanMark.Value -eq $true) }
+            if ([string]$SourceObject.objectSid -match '^S-1-5-21-\d+-\d+-\d+-(500|502)$') { return $false }
+            if (-not (Get-Command -Name 'Test-IsPrivileged' -ErrorAction SilentlyContinue)) { return $true }
+            $privilege = Test-IsPrivileged -Identity $SourceObject
+            return ($privilege.Category -notin @('Privileged', 'Operator'))
         }
 
         'is_privileged_sid' {

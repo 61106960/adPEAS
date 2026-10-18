@@ -1168,6 +1168,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   and ESC8 cards say to read the state on the server. An accepted probe still decides:
   EPA is not enforced.
 
+- **`adminCount: 1` is marked only where no membership explains it.** SDProp sets the
+  attribute on the members of the protected groups and nothing clears it when a
+  membership ends, but the row was a hint on every account that carried it - every
+  Domain Admin in the colour of the orphaned account the card describes. It is marked now
+  where no current membership in a protected group is found, directly, nested, through
+  the primary group or in an operator group. The built-in Administrator and krbtgt count
+  as protected in their own right, and a row from `Get-InactiveAdminAccounts` follows the
+  orphan verdict it already prints. The card now describes the orphaned account: it keeps
+  the AdminSDHolder ACL with inheritance off, and SDProp no longer maintains it. It used
+  to say the opposite, that SDProp resets the ACL every hour.
+
 ---
 
 ## [2.7.0] - 2026-10-08
