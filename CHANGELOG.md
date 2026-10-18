@@ -708,6 +708,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `Get-DangerousACLs` and `Get-CriticalObjectACLs` saw it. Both checks look for exactly
   these names, and neither could report one. They pass the filter now.
 
+- **A class-scoped GenericAll on an OU is no WriteDacl or WriteOwner.** The OU permission
+  analysis behind `Get-DangerousOUPermissions` limited GenericAll and GenericWrite to ACEs
+  that name no ObjectType, but read WriteDacl and WriteOwner out of any ACE's mask.
+  Exchange setup grants Exchange Trusted Subsystem GenericAll scoped to the
+  `msExchDynamicDistributionList` class, inherited by every OU and container - measured,
+  it was listed as WriteDacl and WriteOwner on all of them. Such an ACE grants creating and
+  deleting objects of that class, which is what remains reported.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

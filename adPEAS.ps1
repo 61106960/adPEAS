@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 14:01:55
-    Version: 2.7.0+20261018-1401
+    Build: 2026-10-18 14:07:13
+    Version: 2.7.0+20261018-1407
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -85972,8 +85972,16 @@ function Get-OUPermissions {
                 }
 
                 # Check 1c: WriteDacl (can modify ACL = effectively full control)
+                #
+                # Only from an ACE that names no ObjectType, as for GenericAll above: an
+                # object ACE applies to the node of the object type list its GUID names
+                # (MS-DTYP 2.5.3.2), so the WriteDacl and WriteOwner bits of GenericAll scoped
+                # to a class grant nothing on the object. Exchange setup writes exactly that -
+                # GenericAll on the msExchDynamicDistributionList class for Exchange Trusted
+                # Subsystem, inherited by every OU - and it was reported as WriteDacl and
+                # WriteOwner on all of them.
                 if ($CheckType -contains 'WriteDacl') {
-                    $HasWriteDacl = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteDacl)
+                    $HasWriteDacl = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteDacl)) -and $IsAllProperties
 
                     if ($HasWriteDacl) {
                         $scopeInfo = if ($IsAllObjectTypes) {
@@ -85997,7 +86005,7 @@ function Get-OUPermissions {
 
                 # Check 1d: WriteOwner (can take ownership = effectively full control)
                 if ($CheckType -contains 'WriteOwner') {
-                    $HasWriteOwner = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner)
+                    $HasWriteOwner = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner)) -and $IsAllProperties
 
                     if ($HasWriteOwner) {
                         $scopeInfo = if ($IsAllObjectTypes) {
@@ -146596,7 +146604,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1401"
+$Script:adPEASVersion = "2.7.0+20261018-1407"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

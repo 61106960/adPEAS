@@ -53503,7 +53503,7 @@ function Get-OUPermissions {
 	                }
 	            }
 	            if ($CheckType -contains 'WriteDacl') {
-	                $HasWriteDacl = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteDacl)
+	                $HasWriteDacl = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteDacl)) -and $IsAllProperties
 	                if ($HasWriteDacl) {
 	                    $scopeInfo = if ($IsAllObjectTypes) {
 	                        ""
@@ -53523,7 +53523,7 @@ function Get-OUPermissions {
 	                }
 	            }
 	            if ($CheckType -contains 'WriteOwner') {
-	                $HasWriteOwner = Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner)
+	                $HasWriteOwner = (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::WriteOwner)) -and $IsAllProperties
 	                if ($HasWriteOwner) {
 	                    $scopeInfo = if ($IsAllObjectTypes) {
 	                        ""
@@ -91259,7 +91259,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1401"
+$Script:adPEASVersion = "2.7.0+20261018-1407"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
