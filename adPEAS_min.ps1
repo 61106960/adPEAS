@@ -69976,6 +69976,21 @@ function Get-ProtectedUsersStatus {
             foreach ($groupSID in $tier0GroupSIDs) {
                 $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
                 if (-not $groupObj) {
+                    $builtinAdmin = $null
+                    if ($groupSID -like "$domainSID-500") {
+                        $builtinAdmin = @(Get-DomainUser -Identity $groupSID @PSBoundParameters)[0]
+                    }
+                    if ($builtinAdmin -and $builtinAdmin.objectSid) {
+                        $adminSID = $builtinAdmin.objectSid
+                        if (-not $tier0Accounts.ContainsKey($adminSID)) {
+                            $tier0Accounts[$adminSID] = $builtinAdmin
+                            $tier0AccountGroups[$adminSID] = @()
+                        }
+                        if ('Built-in Administrator (RID 500)' -notin $tier0AccountGroups[$adminSID]) {
+                            $tier0AccountGroups[$adminSID] += 'Built-in Administrator (RID 500)'
+                        }
+                        continue
+                    }
                     Write-Log "[Get-ProtectedUsersStatus] Group not found: $groupSID"
                     continue
                 }
@@ -94425,7 +94440,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1508"
+$Script:adPEASVersion = "2.7.0+20261018-1512"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

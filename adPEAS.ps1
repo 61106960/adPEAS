@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 15:08:39
-    Version: 2.7.0+20261018-1508
+    Build: 2026-10-18 15:12:42
+    Version: 2.7.0+20261018-1512
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -109525,6 +109525,26 @@ function Get-ProtectedUsersStatus {
                 $groupObj = @(Get-DomainGroup -Identity $groupSID @PSBoundParameters)[0]
 
                 if (-not $groupObj) {
+                    # One entry of the Tier-0 list is an account: RID 500, the built-in
+                    # Administrator. Asked for as a group it was never found - measured,
+                    # "Group not found: <domain SID>-500" in every scan - so the account
+                    # counted as Tier-0 only through a group it belongs to, and not at all
+                    # once it belongs to none.
+                    $builtinAdmin = $null
+                    if ($groupSID -like "$domainSID-500") {
+                        $builtinAdmin = @(Get-DomainUser -Identity $groupSID @PSBoundParameters)[0]
+                    }
+                    if ($builtinAdmin -and $builtinAdmin.objectSid) {
+                        $adminSID = $builtinAdmin.objectSid
+                        if (-not $tier0Accounts.ContainsKey($adminSID)) {
+                            $tier0Accounts[$adminSID] = $builtinAdmin
+                            $tier0AccountGroups[$adminSID] = @()
+                        }
+                        if ('Built-in Administrator (RID 500)' -notin $tier0AccountGroups[$adminSID]) {
+                            $tier0AccountGroups[$adminSID] += 'Built-in Administrator (RID 500)'
+                        }
+                        continue
+                    }
                     Write-Log "[Get-ProtectedUsersStatus] Group not found: $groupSID"
                     continue
                 }
@@ -146857,7 +146877,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1508"
+$Script:adPEASVersion = "2.7.0+20261018-1512"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

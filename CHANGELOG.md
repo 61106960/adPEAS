@@ -764,6 +764,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   "10/18/2026 14:55:10" - the one date in the summary that did not go through the common
   formatter. The duration counts every hour: a session of 26 hours read "02:00:00".
 
+- **The built-in Administrator is a Tier-0 account to `Get-ProtectedUsersStatus` in its
+  own right.** The Tier-0 list holds RID 500 among the groups, and the check asked for it
+  as a group - "Group not found" in every scan - so the account counted only through the
+  groups it belongs to, and not at all once it belongs to none. It is read as the account
+  it is now.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
