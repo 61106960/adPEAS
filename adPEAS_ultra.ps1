@@ -8903,7 +8903,7 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
 	    Tools = @("ldapsearch", "windapsearch", "ldapdomaindump")
 	    MITRE = "T1087"
 	    Triggers = @(
-	        @{ Attribute = 'anonymousLDAPAccess'; Pattern = 'ENABLED'; Severity = 'Finding' }
+	        @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^ENABLED'; Severity = 'Finding' }
 	    )
 	}
 	'DSHEURISTICS_ANONYMOUS_NSPI' = @{
@@ -24099,71 +24099,20 @@ function Connect-LDAP {
 	        $Script:AnonymousAccessEnabled = $false
 	        $Script:AnonymousAccessDetails = $null
 	        $Script:AnonymousAccessTested = $false
+	        $Script:AnonymousAccessSkipReason = $null
 	        if ($AsGlobalCatalog) {
+	            $Script:AnonymousAccessSkipReason = 'the session is a global catalog connection, where the anonymous bind test is skipped'
 	        }
 	        elseif ($UseLDAPS) {
+	            $Script:AnonymousAccessSkipReason = 'the session is LDAPS, where the anonymous bind test is skipped'
 	        }
-	        $AnonLdapConn = $null
-	        if (-not $UseLDAPS -and -not $AsGlobalCatalog) {
-	            $Script:AnonymousAccessTested = $true
-	        try {
+	        else {
 	            $AnonTarget = if ($CustomDnsServer -and $ResolvedIPString) { $ResolvedIPString } else { $Server }
-	            $AnonIdentifier = New-Object System.DirectoryServices.Protocols.LdapDirectoryIdentifier($AnonTarget, 389)
-	            $AnonLdapConn = New-Object System.DirectoryServices.Protocols.LdapConnection($AnonIdentifier)
-	            $AnonLdapConn.SessionOptions.ProtocolVersion = 3
-	            $AnonLdapConn.Timeout = [TimeSpan]::FromSeconds(2)
-	            $AnonLdapConn.SessionOptions.SendTimeout = [TimeSpan]::FromSeconds(2)
-	            $AnonLdapConn.AuthType = [System.DirectoryServices.Protocols.AuthType]::Anonymous
-	            $AnonLdapConn.Bind()
-	            $AnonSearchRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
-	                $DomainDN,
-	                "(objectClass=domainDNS)",
-	                [System.DirectoryServices.Protocols.SearchScope]::Base,
-	                @("distinguishedName", "name", "objectSid")
-	            )
-	            $AnonSearchResponse = $AnonLdapConn.SendRequest($AnonSearchRequest)
-	            if ($AnonSearchResponse -and $AnonSearchResponse.Entries.Count -gt 0) {
-	                $AnonEntry = $AnonSearchResponse.Entries[0]
-	                if ($AnonEntry.DistinguishedName) {
-	                    $Script:AnonymousAccessEnabled = $true
-	                    $ReadableAttrs = @()
-	                    foreach ($attr in $AnonEntry.Attributes.AttributeNames) {
-	                        $ReadableAttrs += $attr
-	                    }
-	                    $CanEnumUsers = $false
-	                    $UserCount = 0
-	                    try {
-	                        $UserSearchRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
-	                            $DomainDN,
-	                            "(objectClass=user)",
-	                            [System.DirectoryServices.Protocols.SearchScope]::Subtree,
-	                            @("sAMAccountName")
-	                        )
-	                        $UserSearchRequest.SizeLimit = 5
-	                        $UserSearchResponse = $AnonLdapConn.SendRequest($UserSearchRequest)
-	                        $UserCount = $UserSearchResponse.Entries.Count
-	                        if ($UserCount -gt 0) {
-	                            $CanEnumUsers = $true
-	                        }
-	                    } catch {
-	                    }
-	                    $Script:AnonymousAccessDetails = @{
-	                        CanReadDomainRoot = $true
-	                        ReadableAttributes = $ReadableAttrs
-	                        CanEnumerateUsers = $CanEnumUsers
-	                        UsersSampled = $UserCount
-	                    }
-	                    if ($CanEnumUsers) {
-	                    }
-	                }
-	            }
-	        } catch {
-	            $Script:AnonymousAccessEnabled = $false
-	        } finally {
-	            if ($AnonLdapConn) {
-	                try { $AnonLdapConn.Dispose() } catch { }
-	            }
-	        }
+	            $anonResult = Test-AnonymousLDAPBind -Target $AnonTarget -DomainDN $DomainDN
+	            $Script:AnonymousAccessTested = $anonResult.Tested
+	            $Script:AnonymousAccessEnabled = $anonResult.Enabled
+	            $Script:AnonymousAccessDetails = $anonResult.Details
+	            $Script:AnonymousAccessSkipReason = $anonResult.SkipReason
 	        }
 	        $ConnectionEstablished = $false
 	        $LdapProtocolConn = $null
@@ -24401,6 +24350,7 @@ function Connect-LDAP {
 	        $DomainInfo['AnonymousAccessEnabled'] = $Script:AnonymousAccessEnabled
 	        $DomainInfo['AnonymousAccessTested'] = $Script:AnonymousAccessTested
 	        $DomainInfo['AnonymousAccessDetails'] = $Script:AnonymousAccessDetails
+	        $DomainInfo['AnonymousAccessSkipReason'] = $Script:AnonymousAccessSkipReason
 	        $AuthenticatedUser = $null
 	        $AuthenticatedUserDN = $null
 	        $AuthenticatedUserSAM = $null
@@ -24533,6 +24483,117 @@ function Connect-LDAP {
 	end {
 	    if ($Script:LdapConnection) {
 	    }
+	}
+}
+function Test-AnonymousLDAPBind {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [string]$Target,
+	    [Parameter(Mandatory = $true)]
+	    [string]$DomainDN,
+	    [int]$Port = 389
+	)
+	$result = [PSCustomObject]@{
+	    Tested     = $true
+	    Enabled    = $false
+	    Details    = $null
+	    SkipReason = $null
+	}
+	$AnonLdapConn = $null
+	try {
+	    Add-Type -AssemblyName System.DirectoryServices.Protocols -ErrorAction Stop
+	    $AnonIdentifier = New-Object System.DirectoryServices.Protocols.LdapDirectoryIdentifier($Target, $Port)
+	    $AnonLdapConn = New-Object System.DirectoryServices.Protocols.LdapConnection($AnonIdentifier)
+	    $AnonLdapConn.SessionOptions.ProtocolVersion = 3
+	    $AnonLdapConn.Timeout = [TimeSpan]::FromSeconds(2)
+	    $AnonLdapConn.SessionOptions.SendTimeout = [TimeSpan]::FromSeconds(2)
+	    $AnonLdapConn.AuthType = [System.DirectoryServices.Protocols.AuthType]::Anonymous
+	    $AnonLdapConn.Bind()
+	    $AnonSearchRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
+	        $DomainDN,
+	        "(objectClass=domainDNS)",
+	        [System.DirectoryServices.Protocols.SearchScope]::Base,
+	        @("distinguishedName", "name", "objectSid")
+	    )
+	    $AnonSearchResponse = $AnonLdapConn.SendRequest($AnonSearchRequest)
+	    if ($AnonSearchResponse -and $AnonSearchResponse.Entries.Count -gt 0) {
+	        $AnonEntry = $AnonSearchResponse.Entries[0]
+	        if ($AnonEntry.DistinguishedName) {
+	            $result.Enabled = $true
+	            $ReadableAttrs = @()
+	            foreach ($attr in $AnonEntry.Attributes.AttributeNames) {
+	                $ReadableAttrs += $attr
+	            }
+	            $CanEnumUsers = $false
+	            $UserCount = 0
+	            try {
+	                $UserSearchRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
+	                    $DomainDN,
+	                    "(objectClass=user)",
+	                    [System.DirectoryServices.Protocols.SearchScope]::Subtree,
+	                    @("sAMAccountName")
+	                )
+	                $UserSearchRequest.SizeLimit = 5
+	                $UserSearchResponse = $AnonLdapConn.SendRequest($UserSearchRequest)
+	                $UserCount = $UserSearchResponse.Entries.Count
+	                if ($UserCount -gt 0) {
+	                    $CanEnumUsers = $true
+	                }
+	            } catch {
+	            }
+	            $result.Details = @{
+	                CanReadDomainRoot = $true
+	                ReadableAttributes = $ReadableAttrs
+	                CanEnumerateUsers = $CanEnumUsers
+	                UsersSampled = $UserCount
+	            }
+	            if ($CanEnumUsers) {
+	            }
+	        }
+	    }
+	} catch {
+	    $result.Enabled = $false
+	    $anonOutcome = Get-AnonymousBindOutcome -Exception $_.Exception
+	    if ($anonOutcome.Refused) {
+	    } else {
+	        $result.Tested = $false
+	        $result.SkipReason = $anonOutcome.Reason
+	    }
+	} finally {
+	    if ($AnonLdapConn) {
+	        try { $AnonLdapConn.Dispose() } catch { }
+	    }
+	}
+	return $result
+}
+function Get-AnonymousBindOutcome {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [System.Exception]$Exception
+	)
+	$current = $Exception
+	while ($null -ne $current) {
+	    $typeName = $current.GetType().FullName
+	    if ($typeName -eq 'System.DirectoryServices.Protocols.DirectoryOperationException') {
+	        return [PSCustomObject]@{ Refused = $true; Reason = $null }
+	    }
+	    if ($typeName -eq 'System.DirectoryServices.Protocols.LdapException') {
+	        $code = [int]$current.ErrorCode
+	        if ($code -ge 81 -and $code -le 97) {
+	            return [PSCustomObject]@{
+	                Refused = $false
+	                Reason  = "the anonymous bind got no answer from the server (LDAP client error $code`: $($current.Message))"
+	            }
+	        }
+	        return [PSCustomObject]@{ Refused = $true; Reason = $null }
+	    }
+	    $current = $current.InnerException
+	}
+	[PSCustomObject]@{
+	    Refused = $false
+	    Reason  = "the anonymous bind test failed before the server answered: $($Exception.Message)"
 	}
 }
 function Connect-adPEAS {
@@ -25918,6 +25979,7 @@ function Clear-SessionState {
 	$Script:AnonymousAccessEnabled = $null
 	$Script:AnonymousAccessDetails = $null
 	$Script:AnonymousAccessTested = $null
+	$Script:AnonymousAccessSkipReason = $null
 	$Script:RuntimeLicense = $null
 	$Script:adPEASDisclaimer = $null
 	$Script:KirbiMetadata = $null
@@ -64152,8 +64214,11 @@ function Get-DomainInformation {
 	                'Refused - an anonymous bind was tried and could not read the domain object') -Force
 	        }
 	        else {
-	            $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue (
-	                'Not tested - the session is LDAPS or a global catalog connection, where the anonymous bind test is skipped') -Force
+	            $anonSkipReason = [string]$Script:LDAPContext['AnonymousAccessSkipReason']
+	            if (-not $anonSkipReason) {
+	                $anonSkipReason = 'the anonymous bind test did not run in this session'
+	            }
+	            $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue "Not tested - $anonSkipReason" -Force
 	        }
 	        $deletionParams = @{}
 	        foreach ($key in @($PSBoundParameters.Keys)) { $deletionParams[$key] = $PSBoundParameters[$key] }
@@ -91046,7 +91111,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1127"
+$Script:adPEASVersion = "2.7.0+20261018-1150"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

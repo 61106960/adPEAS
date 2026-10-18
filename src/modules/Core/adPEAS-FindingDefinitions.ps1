@@ -5075,7 +5075,11 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
             # attribute: RestrictAnonymous and LSAAnonymousNameLookup are SMB null-session
             # controls, not LDAP, and this definition's own remediation always said the
             # LDAP answer lives in dsHeuristics. Get-LDAPConfiguration reads it now.
-            @{ Attribute = 'anonymousLDAPAccess'; Pattern = 'ENABLED'; Severity = 'Finding' }
+            #
+            # Anchored: both producers start the value with ENABLED, and "Not tested"
+            # carries the text of whatever exception stopped the test - matched without
+            # case, one that said "enabled" would have turned that sentence red.
+            @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^ENABLED'; Severity = 'Finding' }
         )
     }
 

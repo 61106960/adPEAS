@@ -223,6 +223,7 @@ function Clear-SessionState {
     $Script:AnonymousAccessEnabled = $null
     $Script:AnonymousAccessDetails = $null
     $Script:AnonymousAccessTested = $null
+    $Script:AnonymousAccessSkipReason = $null
 
     # License (runtime-provided via -License parameter)
     $Script:RuntimeLicense = $null

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 11:27:16
-    Version: 2.7.0+20261018-1127
+    Build: 2026-10-18 11:50:56
+    Version: 2.7.0+20261018-1150
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -13379,7 +13379,11 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
             # attribute: RestrictAnonymous and LSAAnonymousNameLookup are SMB null-session
             # controls, not LDAP, and this definition's own remediation always said the
             # LDAP answer lives in dsHeuristics. Get-LDAPConfiguration reads it now.
-            @{ Attribute = 'anonymousLDAPAccess'; Pattern = 'ENABLED'; Severity = 'Finding' }
+            #
+            # Anchored: both producers start the value with ENABLED, and "Not tested"
+            # carries the text of whatever exception stopped the test - matched without
+            # case, one that said "enabled" would have turned that sentence red.
+            @{ Attribute = 'anonymousLDAPAccess'; Pattern = '^ENABLED'; Severity = 'Finding' }
         )
     }
 
@@ -33213,107 +33217,28 @@ function Connect-LDAP {
             # refuses anonymous binds, which is nothing. That is the scan mode a
             # security-conscious customer picks.
             $Script:AnonymousAccessTested = $false
+            # Why the question was not answered, for the row Get-DomainInformation prints.
+            $Script:AnonymousAccessSkipReason = $null
 
             if ($AsGlobalCatalog) {
                 Write-Log "[Connect-LDAP] Skipping anonymous access check for GC mode"
+                $Script:AnonymousAccessSkipReason = 'the session is a global catalog connection, where the anonymous bind test is skipped'
             }
             elseif ($UseLDAPS) {
                 Write-Log "[Connect-LDAP] Skipping anonymous access check for LDAPS (rarely enabled over SSL)"
+                $Script:AnonymousAccessSkipReason = 'the session is LDAPS, where the anonymous bind test is skipped'
             }
-
-            $AnonLdapConn = $null
-            if (-not $UseLDAPS -and -not $AsGlobalCatalog) {
-                # From here the answer is measured rather than assumed.
-                $Script:AnonymousAccessTested = $true
-            try {
+            else {
+                # From here the answer is measured rather than assumed - Test-AnonymousLDAPBind
+                # hands it back as untested when no server answered.
                 # Use resolved IP when custom DNS is active
                 $AnonTarget = if ($CustomDnsServer -and $ResolvedIPString) { $ResolvedIPString } else { $Server }
-
-                # Create temporary LdapConnection for anonymous bind test (always port 389 - LDAPS/GC are skipped above)
-                $AnonIdentifier = New-Object System.DirectoryServices.Protocols.LdapDirectoryIdentifier($AnonTarget, 389)
-                $AnonLdapConn = New-Object System.DirectoryServices.Protocols.LdapConnection($AnonIdentifier)
-                $AnonLdapConn.SessionOptions.ProtocolVersion = 3
-                # Short timeouts for anonymous test - Bind() uses SendTimeout, SendRequest uses Timeout
-                $AnonLdapConn.Timeout = [TimeSpan]::FromSeconds(2)
-                $AnonLdapConn.SessionOptions.SendTimeout = [TimeSpan]::FromSeconds(2)
-
-                # Set Anonymous authentication
-                $AnonLdapConn.AuthType = [System.DirectoryServices.Protocols.AuthType]::Anonymous
-
-                # Attempt anonymous bind
-                $AnonLdapConn.Bind()
-                Write-Log "[Connect-LDAP] Anonymous bind successful - testing read access..."
-
-                # Try to read the domain object
-                $AnonSearchRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
-                    $DomainDN,
-                    "(objectClass=domainDNS)",
-                    [System.DirectoryServices.Protocols.SearchScope]::Base,
-                    @("distinguishedName", "name", "objectSid")
-                )
-
-                $AnonSearchResponse = $AnonLdapConn.SendRequest($AnonSearchRequest)
-
-                if ($AnonSearchResponse -and $AnonSearchResponse.Entries.Count -gt 0) {
-                    $AnonEntry = $AnonSearchResponse.Entries[0]
-
-                    if ($AnonEntry.DistinguishedName) {
-                        # Anonymous access is possible
-                        $Script:AnonymousAccessEnabled = $true
-
-                        # Determine what we can read
-                        $ReadableAttrs = @()
-                        foreach ($attr in $AnonEntry.Attributes.AttributeNames) {
-                            $ReadableAttrs += $attr
-                        }
-
-                        # Try to enumerate users
-                        $CanEnumUsers = $false
-                        $UserCount = 0
-                        try {
-                            $UserSearchRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
-                                $DomainDN,
-                                "(objectClass=user)",
-                                [System.DirectoryServices.Protocols.SearchScope]::Subtree,
-                                @("sAMAccountName")
-                            )
-                            $UserSearchRequest.SizeLimit = 5  # Just test if we can read any
-
-                            $UserSearchResponse = $AnonLdapConn.SendRequest($UserSearchRequest)
-                            $UserCount = $UserSearchResponse.Entries.Count
-                            if ($UserCount -gt 0) {
-                                $CanEnumUsers = $true
-                            }
-                        } catch {
-                            Write-Log "[Connect-LDAP] Anonymous user enumeration test failed (expected)"
-                        }
-
-                        $Script:AnonymousAccessDetails = @{
-                            CanReadDomainRoot = $true
-                            ReadableAttributes = $ReadableAttrs
-                            CanEnumerateUsers = $CanEnumUsers
-                            UsersSampled = $UserCount
-                        }
-
-                        Write-Log "[Connect-LDAP] WARNING: Anonymous LDAP access is enabled!"
-                        Write-Log "[Connect-LDAP] Readable attributes: $($ReadableAttrs -join ', ')"
-                        if ($CanEnumUsers) {
-                            Write-Log "[Connect-LDAP] WARNING: Anonymous user enumeration is possible!"
-                        }
-                    }
-                }
-
-            } catch {
-                # Anonymous access not possible (expected/secure configuration)
-                Write-Log "[Connect-LDAP] Anonymous access test: denied (secure - this is expected)"
-                $Script:AnonymousAccessEnabled = $false
-            } finally {
-                # Always dispose the temporary anonymous connection
-                if ($AnonLdapConn) {
-                    try { $AnonLdapConn.Dispose() } catch { }
-                }
+                $anonResult = Test-AnonymousLDAPBind -Target $AnonTarget -DomainDN $DomainDN
+                $Script:AnonymousAccessTested = $anonResult.Tested
+                $Script:AnonymousAccessEnabled = $anonResult.Enabled
+                $Script:AnonymousAccessDetails = $anonResult.Details
+                $Script:AnonymousAccessSkipReason = $anonResult.SkipReason
             }
-            }  # End of: if (-not $UseLDAPS -and -not $AsGlobalCatalog)
 
             # ===== Phase 5: LDAP Connection =====
             # UNIFIED APPROACH: Always use System.DirectoryServices.Protocols.LdapConnection for ALL operations
@@ -33721,6 +33646,7 @@ function Connect-LDAP {
             $DomainInfo['AnonymousAccessEnabled'] = $Script:AnonymousAccessEnabled
             $DomainInfo['AnonymousAccessTested'] = $Script:AnonymousAccessTested
             $DomainInfo['AnonymousAccessDetails'] = $Script:AnonymousAccessDetails
+            $DomainInfo['AnonymousAccessSkipReason'] = $Script:AnonymousAccessSkipReason
 
             # ===== Phase 8: User Context Verification via LDAP =====
             Write-Log "[Connect-LDAP] Verifying authenticated user context via LDAP..."
@@ -33935,6 +33861,203 @@ function Connect-LDAP {
         if ($Script:LdapConnection) {
             Write-Log "[Connect-LDAP] LDAP connection setup completed"
         }
+    }
+}
+
+
+<#
+.SYNOPSIS
+    Tries an anonymous bind against a domain controller and a read of the domain object.
+.DESCRIPTION
+    The A-NullSession test of Connect-LDAP, on a temporary connection of its own. Failures
+    are expected and silent; Get-AnonymousBindOutcome decides whether one was the server
+    refusing or no answer at all.
+.PARAMETER Target
+    The domain controller to bind to, by name or address.
+.PARAMETER DomainDN
+    The domain naming context, read with a base search.
+.PARAMETER Port
+    The LDAP port. Connect-LDAP skips the test for LDAPS and the global catalog, so 389.
+.OUTPUTS
+    PSCustomObject with Tested, Enabled, Details and SkipReason - the four values Connect-LDAP
+    keeps as $Script:AnonymousAccess*.
+#>
+function Test-AnonymousLDAPBind {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Target,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DomainDN,
+
+        [int]$Port = 389
+    )
+
+    $result = [PSCustomObject]@{
+        Tested     = $true
+        Enabled    = $false
+        Details    = $null
+        SkipReason = $null
+    }
+
+    $AnonLdapConn = $null
+    try {
+        # The test is the first code of a session to touch these types, and Windows
+        # PowerShell 5.1 does not load the assembly on its own. It used to be loaded only in
+        # Phase 5 of Connect-LDAP, so in a fresh session New-Object threw here, the catch
+        # read that as a refused bind, and Get-DomainInformation printed the green
+        # "Refused - an anonymous bind was tried" for a test that never ran.
+        Add-Type -AssemblyName System.DirectoryServices.Protocols -ErrorAction Stop
+
+        $AnonIdentifier = New-Object System.DirectoryServices.Protocols.LdapDirectoryIdentifier($Target, $Port)
+        $AnonLdapConn = New-Object System.DirectoryServices.Protocols.LdapConnection($AnonIdentifier)
+        $AnonLdapConn.SessionOptions.ProtocolVersion = 3
+        # Short timeouts for anonymous test - Bind() uses SendTimeout, SendRequest uses Timeout
+        $AnonLdapConn.Timeout = [TimeSpan]::FromSeconds(2)
+        $AnonLdapConn.SessionOptions.SendTimeout = [TimeSpan]::FromSeconds(2)
+
+        # Set Anonymous authentication
+        $AnonLdapConn.AuthType = [System.DirectoryServices.Protocols.AuthType]::Anonymous
+
+        # Attempt anonymous bind
+        $AnonLdapConn.Bind()
+        Write-Log "[Test-AnonymousLDAPBind] Anonymous bind successful - testing read access..."
+
+        # Try to read the domain object
+        $AnonSearchRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
+            $DomainDN,
+            "(objectClass=domainDNS)",
+            [System.DirectoryServices.Protocols.SearchScope]::Base,
+            @("distinguishedName", "name", "objectSid")
+        )
+
+        $AnonSearchResponse = $AnonLdapConn.SendRequest($AnonSearchRequest)
+
+        if ($AnonSearchResponse -and $AnonSearchResponse.Entries.Count -gt 0) {
+            $AnonEntry = $AnonSearchResponse.Entries[0]
+
+            if ($AnonEntry.DistinguishedName) {
+                # Anonymous access is possible
+                $result.Enabled = $true
+
+                # Determine what we can read
+                $ReadableAttrs = @()
+                foreach ($attr in $AnonEntry.Attributes.AttributeNames) {
+                    $ReadableAttrs += $attr
+                }
+
+                # Try to enumerate users
+                $CanEnumUsers = $false
+                $UserCount = 0
+                try {
+                    $UserSearchRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
+                        $DomainDN,
+                        "(objectClass=user)",
+                        [System.DirectoryServices.Protocols.SearchScope]::Subtree,
+                        @("sAMAccountName")
+                    )
+                    $UserSearchRequest.SizeLimit = 5  # Just test if we can read any
+
+                    $UserSearchResponse = $AnonLdapConn.SendRequest($UserSearchRequest)
+                    $UserCount = $UserSearchResponse.Entries.Count
+                    if ($UserCount -gt 0) {
+                        $CanEnumUsers = $true
+                    }
+                } catch {
+                    Write-Log "[Test-AnonymousLDAPBind] Anonymous user enumeration test failed (expected)"
+                }
+
+                $result.Details = @{
+                    CanReadDomainRoot = $true
+                    ReadableAttributes = $ReadableAttrs
+                    CanEnumerateUsers = $CanEnumUsers
+                    UsersSampled = $UserCount
+                }
+
+                Write-Log "[Test-AnonymousLDAPBind] WARNING: Anonymous LDAP access is enabled!"
+                Write-Log "[Test-AnonymousLDAPBind] Readable attributes: $($ReadableAttrs -join ', ')"
+                if ($CanEnumUsers) {
+                    Write-Log "[Test-AnonymousLDAPBind] WARNING: Anonymous user enumeration is possible!"
+                }
+            }
+        }
+
+    } catch {
+        # Every failure used to land here as "denied", including the ones where no server
+        # ever answered - Get-AnonymousBindOutcome tells the two apart.
+        $result.Enabled = $false
+        $anonOutcome = Get-AnonymousBindOutcome -Exception $_.Exception
+        if ($anonOutcome.Refused) {
+            Write-Log "[Test-AnonymousLDAPBind] Anonymous access test: denied (secure - this is expected)"
+        } else {
+            Write-Log "[Test-AnonymousLDAPBind] Anonymous access test did not run - $($anonOutcome.Reason)"
+            $result.Tested = $false
+            $result.SkipReason = $anonOutcome.Reason
+        }
+    } finally {
+        # Always dispose the temporary anonymous connection
+        if ($AnonLdapConn) {
+            try { $AnonLdapConn.Dispose() } catch { }
+        }
+    }
+
+    return $result
+}
+
+<#
+.SYNOPSIS
+    Reads the exception the anonymous bind test caught as a refusal, or as a test that got no answer.
+.DESCRIPTION
+    A refusal is the server's answer: an LDAP result code on the bind or on the search.
+    Measured against Windows Server 2025, the anonymous bind succeeds and the read of the
+    domain object fails with a DirectoryOperationException (OperationsError). An LdapException
+    whose code is a server result code (below 81, e.g. 49) is a refused bind.
+
+    Codes 81 to 97 are the Windows LDAP client's own (winldap.h, LDAP_SERVER_DOWN to
+    LDAP_REFERRAL_LIMIT_EXCEEDED): a server out of reach fails the bind with 81, a timeout
+    with 85, a connect error with 91. No server answered, so nothing was refused. Neither was
+    it when the exception is not an LDAP one at all - the types failing to load throws before
+    anything is sent. Reading those as "refused" printed a green verdict for a test that never
+    ran.
+
+    PowerShell wraps the .NET exception of a method call in a MethodInvocationException, so
+    the InnerException chain is walked.
+.PARAMETER Exception
+    The exception the anonymous bind test caught.
+.OUTPUTS
+    PSCustomObject with Refused (bool) and Reason (the text Get-DomainInformation prints after
+    "Not tested - "; $null when Refused).
+#>
+function Get-AnonymousBindOutcome {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Exception]$Exception
+    )
+
+    $current = $Exception
+    while ($null -ne $current) {
+        $typeName = $current.GetType().FullName
+        if ($typeName -eq 'System.DirectoryServices.Protocols.DirectoryOperationException') {
+            return [PSCustomObject]@{ Refused = $true; Reason = $null }
+        }
+        if ($typeName -eq 'System.DirectoryServices.Protocols.LdapException') {
+            $code = [int]$current.ErrorCode
+            if ($code -ge 81 -and $code -le 97) {
+                return [PSCustomObject]@{
+                    Refused = $false
+                    Reason  = "the anonymous bind got no answer from the server (LDAP client error $code`: $($current.Message))"
+                }
+            }
+            return [PSCustomObject]@{ Refused = $true; Reason = $null }
+        }
+        $current = $current.InnerException
+    }
+
+    [PSCustomObject]@{
+        Refused = $false
+        Reason  = "the anonymous bind test failed before the server answered: $($Exception.Message)"
     }
 }
 
@@ -36415,6 +36538,7 @@ function Clear-SessionState {
     $Script:AnonymousAccessEnabled = $null
     $Script:AnonymousAccessDetails = $null
     $Script:AnonymousAccessTested = $null
+    $Script:AnonymousAccessSkipReason = $null
 
     # License (runtime-provided via -License parameter)
     $Script:RuntimeLicense = $null
@@ -103469,10 +103593,15 @@ function Get-DomainInformation {
                     'Refused - an anonymous bind was tried and could not read the domain object') -Force
             }
             else {
-                # Not asked. Neutral on purpose: this is the one state where adPEAS has
-                # nothing to report either way, and saying so is the whole point.
-                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue (
-                    'Not tested - the session is LDAPS or a global catalog connection, where the anonymous bind test is skipped') -Force
+                # Not asked, or asked and never answered. Neutral on purpose: this is the one
+                # state where adPEAS has nothing to report either way, and saying so - with
+                # the reason Connect-LDAP recorded - is the whole point. The fallback is for
+                # a context without that key, so it claims no reason of its own.
+                $anonSkipReason = [string]$Script:LDAPContext['AnonymousAccessSkipReason']
+                if (-not $anonSkipReason) {
+                    $anonSkipReason = 'the anonymous bind test did not run in this session'
+                }
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue "Not tested - $anonSkipReason" -Force
             }
             # What a deletion leaves behind in this forest. Without the Recycle Bin a deleted
             # object becomes a tombstone that keeps a handful of attributes - group
@@ -146097,7 +146226,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1127"
+$Script:adPEASVersion = "2.7.0+20261018-1150"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

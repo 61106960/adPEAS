@@ -565,6 +565,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   A call for a share an enclosing call already has mounted now runs on that mount, and a
   failure there no longer marks the share as unreachable for the rest of the session.
 
+- **The anonymous LDAP row says what was measured.** In a fresh Windows PowerShell
+  session the anonymous bind test never ran: it was the first code of the connection to
+  create a `System.DirectoryServices.Protocols` type, the assembly was loaded only after
+  it, and the error was read as a refused bind - so `Get-DomainInformation` printed
+  "Refused - an anonymous bind was tried and could not read the domain object" for a bind
+  nobody tried. The assembly is loaded before the test now, and a test the server never
+  answered - a domain controller out of reach, a timeout, a connect error - is reported
+  as "Not tested" with its reason instead of as refused. The finding pattern for an
+  enabled anonymous bind is anchored, so the text of that reason cannot colour the row.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

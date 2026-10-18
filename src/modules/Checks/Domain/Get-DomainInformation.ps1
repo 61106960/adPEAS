@@ -407,10 +407,15 @@ function Get-DomainInformation {
                     'Refused - an anonymous bind was tried and could not read the domain object') -Force
             }
             else {
-                # Not asked. Neutral on purpose: this is the one state where adPEAS has
-                # nothing to report either way, and saying so is the whole point.
-                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue (
-                    'Not tested - the session is LDAPS or a global catalog connection, where the anonymous bind test is skipped') -Force
+                # Not asked, or asked and never answered. Neutral on purpose: this is the one
+                # state where adPEAS has nothing to report either way, and saying so - with
+                # the reason Connect-LDAP recorded - is the whole point. The fallback is for
+                # a context without that key, so it claims no reason of its own.
+                $anonSkipReason = [string]$Script:LDAPContext['AnonymousAccessSkipReason']
+                if (-not $anonSkipReason) {
+                    $anonSkipReason = 'the anonymous bind test did not run in this session'
+                }
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue "Not tested - $anonSkipReason" -Force
             }
             # What a deletion leaves behind in this forest. Without the Recycle Bin a deleted
             # object becomes a tombstone that keeps a handful of attributes - group
