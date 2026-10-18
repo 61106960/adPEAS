@@ -668,6 +668,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   console, the text report and the HTML report - the 7th of April to most readers, for the
   4th of July. They go through the same formatter as every other date in adPEAS now.
 
+- **Who may write altSecurityIdentities is read the way the access check reads it.**
+  `Get-WeakCertificateMapping` counted any ACE with GenericAll, GenericWrite, WriteDacl or
+  WriteOwner as the write, whatever the ACE was scoped to, read inherit-only ACEs as if
+  they applied to the account, and ignored Deny ACEs. Measured on an Exchange SE domain,
+  that made Organization Management, Exchange Servers and Exchange Trusted Subsystem
+  writers on the RID 500 account and on krbtgt: their GenericAll is scoped to the
+  `msExchDynamicDistributionList` class, the Exchange Servers grant is inherit-only, and
+  Exchange setup denies Exchange Trusted Subsystem the attribute explicitly. An ACE scoped
+  to anything but the attribute or its property set no longer counts, inherit-only ACEs
+  are skipped, and an explicit Deny of the write cancels a grant that reaches it as a write
+  - not one that can rewrite the DACL. The same reading decided ESC14 findings for
+  delegations outside Exchange.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

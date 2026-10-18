@@ -79535,12 +79535,26 @@ function Get-WeakCertificateMapping {
                 $writers = @()
                 $exchangeWriters = @()
                 $seenWriters = @{}
+                $propertyWriteDenied = @{}
+                foreach ($ace in @($descriptor.ACEs)) {
+                    if (-not $ace -or $ace.Type -ne 'Deny' -or $ace.IsInherited) { continue }
+                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+                    if (Test-AltSecurityIdentitiesWrite -Ace $ace -PropertySetGUID $altSecPropertySet -PropertyWriteOnly) {
+                        $propertyWriteDenied[[string]$ace.SID] = $true
+                    }
+                }
                 foreach ($ace in @($descriptor.ACEs)) {
                     if (-not $ace) { continue }
                     if ($ace.Type -ne 'Allow') { continue }
+                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
                     if (-not (Test-AltSecurityIdentitiesWrite -Ace $ace -PropertySetGUID $altSecPropertySet)) { continue }
                     $trusteeSID = [string]$ace.SID
                     if ([string]::IsNullOrWhiteSpace($trusteeSID)) { continue }
+                    if ($propertyWriteDenied.ContainsKey($trusteeSID)) {
+                        $canRewriteDacl = [string]::IsNullOrWhiteSpace([string]$ace.ObjectType) -and
+                            ([string]$ace.Rights -match '(?i)GenericAll|WriteDacl|WriteOwner')
+                        if (-not $canRewriteDacl) { continue }
+                    }
                     $trusteePrivileged = $false
                     try {
                         $trusteePrivileged = ((Test-IsPrivileged -Identity $trusteeSID).IsPrivileged -eq $true)
@@ -79677,19 +79691,25 @@ function Test-AltSecurityIdentitiesWrite {
         [AllowNull()]
         $Ace,
         [Parameter(Mandatory = $false)]
-        [string]$PropertySetGUID
+        [string]$PropertySetGUID,
+        [Parameter(Mandatory = $false)]
+        [switch]$PropertyWriteOnly
     )
     if (-not $Ace) { return $false }
     $rights = [string]$Ace.Rights
     if ([string]::IsNullOrWhiteSpace($rights)) { return $false }
-    if ($rights -match '(?i)GenericAll|GenericWrite|WriteDacl|WriteOwner') { return $true }
-    if ($rights -notmatch '(?i)WriteProperty') { return $false }
     $objectType = [string]$Ace.ObjectType
-    if ([string]::IsNullOrWhiteSpace($objectType)) { return $true }
-    if ($objectType -match '(?i)altSecurityIdentities') { return $true }
-    if ($objectType -match '(?i)00fbf30c-91fe-11d1-aebc-0000f80367c1') { return $true }
-    if ($PropertySetGUID -and $objectType -match ('(?i)' + [regex]::Escape($PropertySetGUID))) { return $true }
-    return $false
+    $scoped = (-not [string]::IsNullOrWhiteSpace($objectType)) -and ($objectType -ne '00000000-0000-0000-0000-000000000000')
+    if (-not $scoped) {
+        if ($rights -match '(?i)GenericAll|GenericWrite|WriteProperty') { return $true }
+        if (-not $PropertyWriteOnly -and $rights -match '(?i)WriteDacl|WriteOwner') { return $true }
+        return $false
+    }
+    $namesAttribute = ($objectType -match '(?i)altSecurityIdentities') -or
+        ($objectType -match '(?i)00fbf30c-91fe-11d1-aebc-0000f80367c1') -or
+        ($PropertySetGUID -and $objectType -match ('(?i)' + [regex]::Escape($PropertySetGUID)))
+    if (-not $namesAttribute) { return $false }
+    return ($rights -match '(?i)GenericAll|GenericWrite|WriteProperty')
 }
 function Get-AltSecurityIdentitiesPropertySet {
     [CmdletBinding()]
@@ -94244,7 +94264,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1311"
+$Script:adPEASVersion = "2.7.0+20261018-1323"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

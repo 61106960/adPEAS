@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 13:11:59
-    Version: 2.7.0+20261018-1311
+    Build: 2026-10-18 13:23:08
+    Version: 2.7.0+20261018-1323
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -126725,14 +126725,41 @@ function Get-WeakCertificateMapping {
                 # arrives separately. Listing "Exchange Trusted Subsystem: GenericAll"
                 # three times says nothing the first line did not.
                 $seenWriters = @{}
+
+                # Who is explicitly denied the write. Exchange setup does that to Exchange
+                # Trusted Subsystem on every privileged account - measured - and the same
+                # group's write through the Public-Information property set then grants
+                # nothing for this attribute: an explicit Deny is evaluated before every
+                # Allow. Explicit only; an inherited Deny ranks below an explicit Allow.
+                $propertyWriteDenied = @{}
+                foreach ($ace in @($descriptor.ACEs)) {
+                    if (-not $ace -or $ace.Type -ne 'Deny' -or $ace.IsInherited) { continue }
+                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+                    if (Test-AltSecurityIdentitiesWrite -Ace $ace -PropertySetGUID $altSecPropertySet -PropertyWriteOnly) {
+                        $propertyWriteDenied[[string]$ace.SID] = $true
+                    }
+                }
+
                 foreach ($ace in @($descriptor.ACEs)) {
                     if (-not $ace) { continue }
                     # ConvertFrom-SecurityDescriptor names these Type and SID.
                     if ($ace.Type -ne 'Allow') { continue }
+                    # An inherit-only ACE applies to the children only - on a user object
+                    # the ActiveSync device containers Exchange creates below it.
+                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
                     if (-not (Test-AltSecurityIdentitiesWrite -Ace $ace -PropertySetGUID $altSecPropertySet)) { continue }
 
                     $trusteeSID = [string]$ace.SID
                     if ([string]::IsNullOrWhiteSpace($trusteeSID)) { continue }
+
+                    # A Deny on the write cancels a grant that reaches it as a write. A
+                    # grant that carries WriteDacl or WriteOwner over the whole object stays:
+                    # its holder can take the Deny away.
+                    if ($propertyWriteDenied.ContainsKey($trusteeSID)) {
+                        $canRewriteDacl = [string]::IsNullOrWhiteSpace([string]$ace.ObjectType) -and
+                            ([string]$ace.Rights -match '(?i)GenericAll|WriteDacl|WriteOwner')
+                        if (-not $canRewriteDacl) { continue }
+                    }
 
                     # Same two defects as above, and here they decided the whole section:
                     # [bool] of the returned object is always $true, so every trustee looked
@@ -126963,10 +126990,16 @@ function Get-CertificateMappingStrength {
 .SYNOPSIS
     Decides whether one ACE grants write access to altSecurityIdentities.
 .DESCRIPTION
-    Three ways to hold it: a WriteProperty ACE naming the attribute, a WriteProperty ACE
-    naming nothing (which covers every property), or one of the blanket rights.
+    The ways to hold it: an ACE naming nothing, which applies to the whole object, with a
+    blanket right or WriteProperty; or a WriteProperty, GenericWrite or GenericAll ACE
+    naming the attribute or the property set that contains it.
 .PARAMETER Ace
     A formatted ACE as ConvertFrom-SecurityDescriptor returns it.
+.PARAMETER PropertySetGUID
+    The property set that contains altSecurityIdentities.
+.PARAMETER PropertyWriteOnly
+    Asks about the write itself: WriteDacl and WriteOwner, which only let the holder grant
+    it, do not count. The question a Deny ACE is asked.
 .OUTPUTS
     [bool]
 #>
@@ -126984,7 +127017,10 @@ function Test-AltSecurityIdentitiesWrite {
         # caller. Empty means it could not be read, and then the question is simply not
         # asked - a guessed GUID would be a verdict about an attribute nobody looked up.
         [Parameter(Mandatory = $false)]
-        [string]$PropertySetGUID
+        [string]$PropertySetGUID,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PropertyWriteOnly
     )
 
     if (-not $Ace) { return $false }
@@ -126992,29 +127028,37 @@ function Test-AltSecurityIdentitiesWrite {
     $rights = [string]$Ace.Rights
     if ([string]::IsNullOrWhiteSpace($rights)) { return $false }
 
-    # The blanket rights carry it regardless of what the ACE names.
-    if ($rights -match '(?i)GenericAll|GenericWrite|WriteDacl|WriteOwner') { return $true }
-
-    if ($rights -notmatch '(?i)WriteProperty') { return $false }
-
-    # A WriteProperty ACE that names the attribute, or names nothing at all - the latter
-    # applies to every property of the object.
     $objectType = [string]$Ace.ObjectType
-    if ([string]::IsNullOrWhiteSpace($objectType)) { return $true }
-    if ($objectType -match '(?i)altSecurityIdentities') { return $true }
-    if ($objectType -match '(?i)00fbf30c-91fe-11d1-aebc-0000f80367c1') { return $true }
+    $scoped = (-not [string]::IsNullOrWhiteSpace($objectType)) -and ($objectType -ne '00000000-0000-0000-0000-000000000000')
 
-    # Or a WriteProperty ACE that names the property set the attribute belongs to. That is
-    # the shape the "helpdesk may maintain user attributes" delegation takes, and it was
-    # the one way in that this test did not cover: an attacker who holds it writes
-    # altSecurityIdentities on a Tier-0 account while the section printed its green line.
+    if (-not $scoped) {
+        # An ACE that names nothing applies to the whole object: the blanket rights carry
+        # the write, and WriteProperty covers every property. WriteDacl and WriteOwner
+        # carry it as the right to grant it - not as a write themselves, which is what
+        # -PropertyWriteOnly asks about.
+        if ($rights -match '(?i)GenericAll|GenericWrite|WriteProperty') { return $true }
+        if (-not $PropertyWriteOnly -and $rights -match '(?i)WriteDacl|WriteOwner') { return $true }
+        return $false
+    }
+
+    # An object ACE grants its rights on what its ObjectType names (MS-DTYP 2.5.3.2), so
+    # only one naming the attribute, or the property set it belongs to, writes it -
+    # through WriteProperty, or the GenericAll and GenericWrite that contain it. One that
+    # names anything else does not, whatever its mask: Exchange setup grants Organization
+    # Management and Exchange Trusted Subsystem GenericAll scoped to the
+    # msExchDynamicDistributionList class on every privileged account, and that was read
+    # as a write to altSecurityIdentities.
     #
-    # The set is resolved from the schema by the caller rather than hardcoded here. The
+    # The property set is the shape the "helpdesk may maintain user attributes" delegation
+    # takes. It is resolved from the schema by the caller rather than hardcoded here: the
     # usual answer is Public-Information, but attributeSecurityGUID is what the DC
     # enforces, and a schema extension can move an attribute into another set.
-    if ($PropertySetGUID -and $objectType -match ('(?i)' + [regex]::Escape($PropertySetGUID))) { return $true }
+    $namesAttribute = ($objectType -match '(?i)altSecurityIdentities') -or
+        ($objectType -match '(?i)00fbf30c-91fe-11d1-aebc-0000f80367c1') -or
+        ($PropertySetGUID -and $objectType -match ('(?i)' + [regex]::Escape($PropertySetGUID)))
+    if (-not $namesAttribute) { return $false }
 
-    return $false
+    return ($rights -match '(?i)GenericAll|GenericWrite|WriteProperty')
 }
 
 <#
@@ -146434,7 +146478,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1311"
+$Script:adPEASVersion = "2.7.0+20261018-1323"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
