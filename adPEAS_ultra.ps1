@@ -579,32 +579,6 @@ $Script:ReadPropertyAliases = @{
 $Script:SelfAliases = @{
 	'SelfMembership' = 'bf9679c0-0de6-11d0-a285-00aa003049e2'
 }
-$Script:WellKnownRIDs = @{
-	'500' = 'Administrator'
-	'501' = 'Guest'
-	'502' = 'krbtgt'
-	'503' = 'DefaultAccount'
-	'504' = 'WDAGUtilityAccount'
-	'512' = 'Domain Admins'
-	'513' = 'Domain Users'
-	'514' = 'Domain Guests'
-	'515' = 'Domain Computers'
-	'516' = 'Domain Controllers'
-	'517' = 'Cert Publishers'
-	'518' = 'Schema Admins'
-	'519' = 'Enterprise Admins'
-	'520' = 'Group Policy Creator Owners'
-	'521' = 'Read-only Domain Controllers'
-	'522' = 'Cloneable Domain Controllers'
-	'523' = 'Allowed RODC Password Replication Group'
-	'524' = 'Denied RODC Password Replication Group'
-	'525' = 'Protected Users'
-	'526' = 'Key Admins'
-	'527' = 'Enterprise Key Admins'
-	'553' = 'RAS and IAS Servers'
-	'571' = 'Allowed RODC Password Replication Group'
-	'572' = 'Denied RODC Password Replication Group'
-}
 $Script:WellKnownIdentities = @(
 	@{ SID = 'S-1-0-0';     Name = 'Null Authority\Nobody' }
 	@{ SID = 'S-1-1-0';     Name = 'Everyone' }
@@ -91052,7 +91026,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-0045"
+$Script:adPEASVersion = "2.7.0+20261018-1056"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

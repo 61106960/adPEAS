@@ -1180,59 +1180,6 @@ $Script:SelfAliases = @{
 }
 
 # ============================================================================
-# Well-Known Relative Identifiers (RIDs)
-# ============================================================================
-<#
-.SYNOPSIS
-    Maps well-known RIDs to their friendly names for FOREIGN domain SIDs.
-.DESCRIPTION
-    Domain-relative RIDs that have standard meanings across all AD domains.
-    Used by ConvertFrom-SID ONLY for resolving foreign domain SIDs when:
-    - LDAP lookup fails (SID not in current domain)
-    - Domain SID part differs from current domain (trusted/migrated domains)
-    - SID appears in sIDHistory from old domain
-
-    Output format: "FOREIGN\<RID-Name> (RID:<number>)"
-    Example: "FOREIGN\Domain Admins (RID:512)"
-
-    NOTE: For SIDs in the CURRENT domain, LDAP resolution is always used.
-    This list is only a fallback for cross-domain/cross-forest scenarios.
-
-    Reference: https://docs.microsoft.com/en-us/windows/security/identity-protection/access-control/security-identifiers
-#>
-$Script:WellKnownRIDs = @{
-    # === Built-in User Accounts (RID 500-504) ===
-    '500' = 'Administrator'
-    '501' = 'Guest'
-    '502' = 'krbtgt'
-    '503' = 'DefaultAccount'
-    '504' = 'WDAGUtilityAccount'
-
-    # === Built-in Global Groups (RID 512-527) ===
-    '512' = 'Domain Admins'
-    '513' = 'Domain Users'
-    '514' = 'Domain Guests'
-    '515' = 'Domain Computers'
-    '516' = 'Domain Controllers'
-    '517' = 'Cert Publishers'
-    '518' = 'Schema Admins'
-    '519' = 'Enterprise Admins'
-    '520' = 'Group Policy Creator Owners'
-    '521' = 'Read-only Domain Controllers'
-    '522' = 'Cloneable Domain Controllers'
-    '523' = 'Allowed RODC Password Replication Group'   # Global scope (same name as RID 571)
-    '524' = 'Denied RODC Password Replication Group'    # Global scope (same name as RID 572)
-    '525' = 'Protected Users'
-    '526' = 'Key Admins'
-    '527' = 'Enterprise Key Admins'
-
-    # === Domain Local Groups (RID 553+) ===
-    '553' = 'RAS and IAS Servers'
-    '571' = 'Allowed RODC Password Replication Group'   # Domain Local scope (same name as RID 523)
-    '572' = 'Denied RODC Password Replication Group'    # Domain Local scope (same name as RID 524)
-}
-
-# ============================================================================
 # Well-Known Security Identities
 # ============================================================================
 <#
