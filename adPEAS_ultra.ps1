@@ -29773,16 +29773,45 @@ function Get-DomainGPO {
 	                            [System.DirectoryServices.ActiveDirectoryRights]::GenericAll,
 	                            [System.DirectoryServices.ActiveDirectoryRights]::GenericWrite
 	                        )
+	                        $DeniedRights = @{}
 	                        foreach ($ACE in $DACL) {
-	                            $HasDangerousRights = $false
+	                            if ($ACE.AccessControlType -ne 'Deny') { continue }
+	                            if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { continue }
+	                            if ($ACE.ObjectType -ne [System.Guid]::Empty) { continue }
+	                            $DenySID = $ACE.IdentityReference.Value
+	                            if (-not $DeniedRights.ContainsKey($DenySID)) { $DeniedRights[$DenySID] = @() }
+	                            $DeniedRights[$DenySID] += $ACE
+	                        }
+	                        foreach ($ACE in $DACL) {
+	                            if ($ACE.AccessControlType -ne 'Allow') { continue }
+	                            if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { continue }
 	                            $GrantedRights = @()
 	                            foreach ($Right in $DangerousRightsEnum) {
-	                                if ($ACE.ActiveDirectoryRights -band $Right) {
-	                                    $HasDangerousRights = $true
-	                                    $GrantedRights += $Right.ToString()
+	                                if (-not (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has $Right)) { continue }
+	                                $denied = @($DeniedRights[$ACE.IdentityReference.Value] | Where-Object {
+	                                    $_ -and (-not $_.IsInherited -or $ACE.IsInherited) -and
+	                                    (Test-ADRightsMask -Rights $_.ActiveDirectoryRights -Has $Right)
+	                                })
+	                                if ($denied.Count -gt 0) { continue }
+	                                $GrantedRights += $Right.ToString()
+	                            }
+	                            if ($GrantedRights -contains 'GenericAll') {
+	                                $GrantedRights = @('GenericAll')
+	                            } elseif ($GrantedRights -contains 'GenericWrite') {
+	                                $GrantedRights = @($GrantedRights | Where-Object { $_ -ne 'WriteProperty' })
+	                            }
+	                            if ($ACE.ObjectType -ne [System.Guid]::Empty -and $GrantedRights.Count -gt 0) {
+	                                $Scope = Resolve-ObjectTypeGUID -GUID $ACE.ObjectType
+	                                if ($Scope -and $Scope.Type -eq 'SchemaClass') {
+	                                    $GrantedRights = @()
+	                                } elseif (@($GrantedRights | Where-Object { @('GenericAll', 'GenericWrite', 'WriteProperty') -contains $_ }).Count -gt 0) {
+	                                    $ScopeName = if ($Scope -and $Scope.Name) { $Scope.Name } else { $ACE.ObjectType.ToString() }
+	                                    $GrantedRights = @("WriteProperty ($ScopeName)")
+	                                } else {
+	                                    $GrantedRights = @()
 	                                }
 	                            }
-	                            if ($HasDangerousRights -and $ACE.AccessControlType -eq 'Allow') {
+	                            if ($GrantedRights.Count -gt 0) {
 	                                $TrusteeSID = $ACE.IdentityReference.Value
 	                                $TrusteeName = ConvertFrom-SID -SID $TrusteeSID
 	                                $category = (Test-IsPrivileged -Identity $TrusteeSID).Category
@@ -91597,7 +91626,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1856"
+$Script:adPEASVersion = "2.7.0+20261018-1906"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

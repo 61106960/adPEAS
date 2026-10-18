@@ -1229,6 +1229,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   itself grants enrollment, autoenrollment, all extended rights or full control in its
   scope. `Get-TemplateEnrollmentRight` moved beside `Test-ACEAppliesToSelf` for that.
 
+- **`Get-DomainGPO -ShowPermissions` reads the rights a principal actually holds.** It
+  tested each right with a bare `-band`, which only asks whether two masks overlap.
+  `GenericAll` is 0xF01FF and `GenericWrite` carries ReadControl, so the read and Apply
+  Group Policy ACE that every GPO grants Authenticated Users overlapped both, and every
+  GPO reported that group as holding GenericAll, rated Critical. The generic bit that
+  attacker tooling writes (GA) overlapped none of the rights and was missed. Rights are
+  now tested with `Test-ADRightsMask`. Inherit-only ACEs and an explicit Deny of the same
+  trustee are taken into account. An ACE scoped to an attribute counts as a write of that
+  attribute, and one scoped to a child class or carrying only WriteDacl or WriteOwner on
+  an attribute counts as nothing.
+
 ---
 
 ## [2.7.0] - 2026-10-08

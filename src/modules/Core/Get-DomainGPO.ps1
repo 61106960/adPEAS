@@ -560,19 +560,72 @@ function Get-DomainGPO {
                                 [System.DirectoryServices.ActiveDirectoryRights]::GenericWrite
                             )
 
+                            # The rights were read with a bare -band, which asks whether the
+                            # masks overlap. GenericAll is 0xF01FF and GenericWrite carries
+                            # ReadControl, so the read and Apply Group Policy ACE every GPO
+                            # grants Authenticated Users overlapped both, and every GPO
+                            # reported that broad group as holding GenericAll - Critical. The
+                            # SDDL generic bit an attacker's tooling writes (GA, 0x10000000)
+                            # overlapped none of them and was missed. Test-ADRightsMask
+                            # requires every bit of the right, generic bits expanded. Read as
+                            # the GPO check reads them besides: an inherit-only ACE grants
+                            # nothing on the GPO, an object ACE grants its mask on the node
+                            # its GUID names only (MS-ADTS 5.1.3.3.3), and an explicit Deny
+                            # of the same trustee takes the right away.
+                            $DeniedRights = @{}
                             foreach ($ACE in $DACL) {
-                                # Check if ACE grants dangerous rights
-                                $HasDangerousRights = $false
-                                $GrantedRights = @()
+                                if ($ACE.AccessControlType -ne 'Deny') { continue }
+                                if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { continue }
+                                # A Deny scoped to one attribute denies that attribute only;
+                                # it is not netted here, which leaves the Allow reported.
+                                if ($ACE.ObjectType -ne [System.Guid]::Empty) { continue }
+                                $DenySID = $ACE.IdentityReference.Value
+                                if (-not $DeniedRights.ContainsKey($DenySID)) { $DeniedRights[$DenySID] = @() }
+                                $DeniedRights[$DenySID] += $ACE
+                            }
 
+                            foreach ($ACE in $DACL) {
+                                if ($ACE.AccessControlType -ne 'Allow') { continue }
+                                if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { continue }
+
+                                $GrantedRights = @()
                                 foreach ($Right in $DangerousRightsEnum) {
-                                    if ($ACE.ActiveDirectoryRights -band $Right) {
-                                        $HasDangerousRights = $true
-                                        $GrantedRights += $Right.ToString()
+                                    if (-not (Test-ADRightsMask -Rights $ACE.ActiveDirectoryRights -Has $Right)) { continue }
+                                    # An inherited Deny is evaluated after every explicit ACE,
+                                    # so it takes nothing from an Allow written on the GPO.
+                                    $denied = @($DeniedRights[$ACE.IdentityReference.Value] | Where-Object {
+                                        $_ -and (-not $_.IsInherited -or $ACE.IsInherited) -and
+                                        (Test-ADRightsMask -Rights $_.ActiveDirectoryRights -Has $Right)
+                                    })
+                                    if ($denied.Count -gt 0) { continue }
+                                    $GrantedRights += $Right.ToString()
+                                }
+
+                                # GenericAll holds every right of the list, GenericWrite the
+                                # write of every property: named alone.
+                                if ($GrantedRights -contains 'GenericAll') {
+                                    $GrantedRights = @('GenericAll')
+                                } elseif ($GrantedRights -contains 'GenericWrite') {
+                                    $GrantedRights = @($GrantedRights | Where-Object { $_ -ne 'WriteProperty' })
+                                }
+
+                                if ($ACE.ObjectType -ne [System.Guid]::Empty -and $GrantedRights.Count -gt 0) {
+                                    $Scope = Resolve-ObjectTypeGUID -GUID $ACE.ObjectType
+                                    if ($Scope -and $Scope.Type -eq 'SchemaClass') {
+                                        # A child class: creates and deletes objects of it
+                                        # below the GPO, and writes nothing of the GPO.
+                                        $GrantedRights = @()
+                                    } elseif (@($GrantedRights | Where-Object { @('GenericAll', 'GenericWrite', 'WriteProperty') -contains $_ }).Count -gt 0) {
+                                        $ScopeName = if ($Scope -and $Scope.Name) { $Scope.Name } else { $ACE.ObjectType.ToString() }
+                                        $GrantedRights = @("WriteProperty ($ScopeName)")
+                                    } else {
+                                        # WriteDacl and WriteOwner are checked at the root of
+                                        # the object, which a scoped ACE never reaches.
+                                        $GrantedRights = @()
                                     }
                                 }
 
-                                if ($HasDangerousRights -and $ACE.AccessControlType -eq 'Allow') {
+                                if ($GrantedRights.Count -gt 0) {
                                     $TrusteeSID = $ACE.IdentityReference.Value
                                     $TrusteeName = ConvertFrom-SID -SID $TrusteeSID
 
