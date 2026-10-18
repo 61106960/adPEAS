@@ -1147,6 +1147,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `whoCanAddComputers` and `privilegeGrantedBy`: the winning policy and the accounts it
   grants or restricts the privilege to, or the Windows default when no policy sets it.
 
+- **A Tier-0 account in `Get-ProtectedUsersStatus` shows the groups that make it one.**
+  The account object carried `tier0Groups` and, for an account the metric leaves out,
+  `excludedReason`, but the Tier-0 type had no row list of its own, so the account
+  rendered as an ordinary user and both rows went to the collapsed block the console
+  never prints. The list is now the user list with the Tier-0 groups after the group
+  memberships, followed by the Protected Users status and the exclusion reason.
+
 ---
 
 ## [2.7.0] - 2026-10-08

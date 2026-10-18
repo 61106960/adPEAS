@@ -3754,6 +3754,10 @@ $Script:PrimaryAttributes = @{
 	    'Queries', 'Results', 'EstimatedTraffic'
 	)
 }
+$tier0AccountRows = [System.Collections.ArrayList]$Script:PrimaryAttributes['User']
+$tier0AccountRows.Insert($tier0AccountRows.IndexOf('privilegedGroups') + 1, 'tier0Groups')
+$Script:PrimaryAttributes['Tier0Account'] = @($tier0AccountRows) + @('protectedUsersStatus', 'excludedReason')
+Remove-Variable -Name tier0AccountRows
 $Script:StrictAttributeTypes = @(
 	'SMBSigning',
 	'LDAPConfigGPO',
@@ -91475,7 +91479,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1705"
+$Script:adPEASVersion = "2.7.0+20261018-1713"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

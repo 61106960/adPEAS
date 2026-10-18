@@ -666,6 +666,17 @@ $Script:PrimaryAttributes = @{
     )
 }
 
+# A Tier-0 account (Get-ProtectedUsersStatus) is a user with rows of its own: the Tier-0
+# groups that make it one, whether Protected Users covers it, and why an account cannot be.
+# Without an entry here it fell back to the User list, and tier0Groups - the answer to "why
+# is this account Tier-0" - and excludedReason went to the Extended block, which the console
+# never shows.
+# Built from the User list so that the two cannot drift apart.
+$tier0AccountRows = [System.Collections.ArrayList]$Script:PrimaryAttributes['User']
+$tier0AccountRows.Insert($tier0AccountRows.IndexOf('privilegedGroups') + 1, 'tier0Groups')
+$Script:PrimaryAttributes['Tier0Account'] = @($tier0AccountRows) + @('protectedUsersStatus', 'excludedReason')
+Remove-Variable -Name tier0AccountRows
+
 # Object types with strict attribute display: ONLY PrimaryAttributes are shown, no Extended overflow.
 # Use this for specialized views of shared objects (e.g., same GPO object used by both LDAP and SMB checks)
 # to prevent cross-contamination of attributes from other checks.
