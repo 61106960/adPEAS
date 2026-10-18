@@ -41966,8 +41966,8 @@ function Get-adPEASSession {
             Show-Line "Session:" -Class Hint
             if ($Script:LDAPContext.SessionStartTime) {
                 $sessionDuration = (Get-Date) - $Script:LDAPContext.SessionStartTime
-                Show-KeyValue "Session Started:" $Script:LDAPContext.SessionStartTime
-                Show-KeyValue "Session Duration:" $sessionDuration.ToString('hh\:mm\:ss')
+                Show-KeyValue "Session Started:" (Format-adPEASDate $Script:LDAPContext.SessionStartTime 'yyyy-MM-dd HH:mm:ss')
+                Show-KeyValue "Session Duration:" ('{0:00}:{1:mm\:ss}' -f [Math]::Floor($sessionDuration.TotalHours), $sessionDuration)
             }
             if ($Script:LDAPContext.KerberosUsed) {
                 if (-not $LiveTicketStatus) {
@@ -94425,7 +94425,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1504"
+$Script:adPEASVersion = "2.7.0+20261018-1508"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

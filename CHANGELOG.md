@@ -760,6 +760,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   account's own SID and the well-known groups of the logon. `Invoke-LDAPSearch` returns the
   three tokenGroups attributes as one SID per value, and without `-Raw` as SID strings.
 
+- **`Get-adPEASSession` writes the session start as yyyy-MM-dd HH:mm:ss.** It read
+  "10/18/2026 14:55:10" - the one date in the summary that did not go through the common
+  formatter. The duration counts every hour: a session of 26 hours read "02:00:00".
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

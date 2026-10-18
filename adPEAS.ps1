@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 15:04:01
-    Version: 2.7.0+20261018-1504
+    Build: 2026-10-18 15:08:39
+    Version: 2.7.0+20261018-1508
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -62703,8 +62703,12 @@ function Get-adPEASSession {
             Show-Line "Session:" -Class Hint
             if ($Script:LDAPContext.SessionStartTime) {
                 $sessionDuration = (Get-Date) - $Script:LDAPContext.SessionStartTime
-                Show-KeyValue "Session Started:" $Script:LDAPContext.SessionStartTime
-                Show-KeyValue "Session Duration:" $sessionDuration.ToString('hh\:mm\:ss')
+                # Through Format-adPEASDate like every other date: handed over as a DateTime,
+                # the start read "10/18/2026 14:55:10" - the invariant culture's month first.
+                # And the hours in full: 'hh' is the hour of the day, so a session of 26
+                # hours read "02:00:00".
+                Show-KeyValue "Session Started:" (Format-adPEASDate $Script:LDAPContext.SessionStartTime 'yyyy-MM-dd HH:mm:ss')
+                Show-KeyValue "Session Duration:" ('{0:00}:{1:mm\:ss}' -f [Math]::Floor($sessionDuration.TotalHours), $sessionDuration)
             }
 
             # Connection State - check live TGT status for Kerberos sessions
@@ -146853,7 +146857,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1504"
+$Script:adPEASVersion = "2.7.0+20261018-1508"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
