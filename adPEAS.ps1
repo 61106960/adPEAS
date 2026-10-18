@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 13:37:08
-    Version: 2.7.0+20261018-1337
+    Build: 2026-10-18 13:50:05
+    Version: 2.7.0+20261018-1350
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -144425,10 +144425,42 @@ function Write-BHJsonFile {
 
 <#
 .SYNOPSIS
+    Turns pwdProperties back into its mask.
+.DESCRIPTION
+    ConvertFrom-LDAPAttribute decodes the attribute into flag names (MS-SAMR, Domain
+    Fields: PasswordProperties), and Get-SafeInt read @('DOMAIN_PASSWORD_COMPLEX') as 0 - an
+    export saying complexity is off for a domain that requires it. A number passes through.
+#>
+function ConvertTo-BHPasswordPropertiesValue {
+    param($Value)
+
+    $bits = @{
+        DOMAIN_PASSWORD_COMPLEX = 1; DOMAIN_PASSWORD_NO_ANON_CHANGE = 2; DOMAIN_PASSWORD_NO_CLEAR_CHANGE = 4
+        DOMAIN_LOCKOUT_ADMINS = 8; DOMAIN_PASSWORD_STORE_CLEARTEXT = 16; DOMAIN_REFUSE_PASSWORD_CHANGE = 32
+    }
+    $mask = 0
+    foreach ($part in @($Value)) {
+        if ($null -eq $part) { continue }
+        $text = "$part"
+        $number = 0
+        if ([int]::TryParse($text, [ref]$number)) { $mask = $mask -bor $number }
+        elseif ($bits.ContainsKey($text.ToUpperInvariant())) { $mask = $mask -bor $bits[$text.ToUpperInvariant()] }
+    }
+    return $mask
+}
+
+
+<#
+.SYNOPSIS
     Converts Windows FILETIME to Unix timestamp.
 #>
 function ConvertTo-UnixTimestamp {
     param($FileTime)
+
+    # Built rather than read from [DateTime]::UnixEpoch, which exists from .NET Core 2.1 on
+    # only. In Windows PowerShell 5.1 it is $null, every subtraction below threw, and every
+    # timestamp of the export - lastlogon, pwdlastset, whencreated - came out as -1, never.
+    $unixEpoch = New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc)
 
     if ($null -eq $FileTime -or $FileTime -eq 0 -or $FileTime -eq 9223372036854775807) {
         return -1
@@ -144437,16 +144469,16 @@ function ConvertTo-UnixTimestamp {
     try {
         # Handle DateTime objects directly
         if ($FileTime -is [DateTime]) {
-            return [int64]($FileTime.ToUniversalTime() - [DateTime]::UnixEpoch).TotalSeconds
+            return [int64]($FileTime.ToUniversalTime() - $unixEpoch).TotalSeconds
         }
         # Handle LDAP Generalized Time strings ("20220412123456.0Z")
         if ($FileTime -is [string] -and $FileTime.Length -ge 14) {
             $dt = [DateTime]::ParseExact($FileTime.Substring(0, 14), 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
-            return [int64]($dt.ToUniversalTime() - [DateTime]::UnixEpoch).TotalSeconds
+            return [int64]($dt.ToUniversalTime() - $unixEpoch).TotalSeconds
         }
         # Handle Windows FILETIME (int64)
         $date = [DateTime]::FromFileTimeUtc($FileTime)
-        return [int64]($date - [DateTime]::UnixEpoch).TotalSeconds
+        return [int64]($date - $unixEpoch).TotalSeconds
     }
     catch {
         Write-Log "[ConvertTo-UnixTimestamp] Failed to convert FileTime: $_" -Level Debug
@@ -144974,7 +145006,7 @@ function Collect-BHDomain {
             lockoutthreshold                        = Get-SafeInt -Value $domainObj.lockoutThreshold -Default 0
             minpwdlength                            = Get-SafeInt -Value $domainObj.minPwdLength -Default 0
             pwdhistorylength                        = Get-SafeInt -Value $domainObj.pwdHistoryLength -Default 0
-            pwdproperties                           = Get-SafeInt -Value $domainObj.pwdProperties -Default 0
+            pwdproperties                           = ConvertTo-BHPasswordPropertiesValue -Value $domainObj.pwdProperties
             lockoutduration                         = Convert-ADIntervalToString -Value $domainObj.lockoutDuration
             lockoutobservationwindow                = if ($domainObj.lockOutObservationWindow) { [Int64]$domainObj.lockOutObservationWindow } else { 0 }
             maxpwdage                               = Convert-ADIntervalToString -Value $domainObj.maxPwdAge
@@ -145025,7 +145057,10 @@ function Collect-BHUsers {
             continue
         }
 
-        $uac = Get-SafeInt -Value $user.userAccountControl -Default 0
+        # The flags arrive as names - Get-DomainUser decodes them - and Get-SafeInt turned
+        # @('NORMAL_ACCOUNT', ...) into 0: every account enabled, none AS-REP roastable,
+        # no password that never expires. ConvertTo-UACValue reads both shapes.
+        $uac = ConvertTo-UACValue -Value $user.userAccountControl -Default 0
 
         # Parse SPNs
         $spns = @()
@@ -145293,7 +145328,9 @@ function Collect-BHComputers {
             continue
         }
 
-        $uac = Get-SafeInt -Value $computer.userAccountControl -Default 0
+        # As for users: decoded names, which made every domain controller isdc = false and
+        # every unconstrained delegation invisible.
+        $uac = ConvertTo-UACValue -Value $computer.userAccountControl -Default 0
         $isDC = ($uac -band 0x2000) -ne 0  # SERVER_TRUST_ACCOUNT
 
         # Get primary group SID
@@ -146533,7 +146570,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1337"
+$Script:adPEASVersion = "2.7.0+20261018-1350"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

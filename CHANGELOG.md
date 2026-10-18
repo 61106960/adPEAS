@@ -690,6 +690,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   analyse containers such as CN=Users alongside organizational units and called all of
   them OUs ("12 analyzed OU(s)" for 4 OUs and 8 containers); they name both counts now.
 
+- **The BloodHound export carries the real account flags and timestamps.** Measured on an
+  export from Windows PowerShell 5.1: every account was enabled - the disabled Guest,
+  krbtgt and test accounts among them - no account had a password that never expires or
+  was AS-REP roastable, both domain controllers had `isdc` and `unconstraineddelegation`
+  false, `pwdproperties` was 0 for a domain requiring complexity, and every `lastlogon`,
+  `lastlogontimestamp`, `pwdlastset` and `whencreated` was -1. userAccountControl and
+  pwdProperties arrive decoded into flag names, which the collector read as 0, and
+  `[DateTime]::UnixEpoch`, which the timestamp conversion subtracted, exists in PowerShell
+  7 only. The flags are read from their names now and the epoch is built.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

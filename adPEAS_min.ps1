@@ -92751,21 +92751,38 @@ function Write-BHJsonFile {
         Write-Error "[Export-BloodHoundJson] Failed to export: $($exportResult.Message)"
     }
 }
+function ConvertTo-BHPasswordPropertiesValue {
+    param($Value)
+    $bits = @{
+        DOMAIN_PASSWORD_COMPLEX = 1; DOMAIN_PASSWORD_NO_ANON_CHANGE = 2; DOMAIN_PASSWORD_NO_CLEAR_CHANGE = 4
+        DOMAIN_LOCKOUT_ADMINS = 8; DOMAIN_PASSWORD_STORE_CLEARTEXT = 16; DOMAIN_REFUSE_PASSWORD_CHANGE = 32
+    }
+    $mask = 0
+    foreach ($part in @($Value)) {
+        if ($null -eq $part) { continue }
+        $text = "$part"
+        $number = 0
+        if ([int]::TryParse($text, [ref]$number)) { $mask = $mask -bor $number }
+        elseif ($bits.ContainsKey($text.ToUpperInvariant())) { $mask = $mask -bor $bits[$text.ToUpperInvariant()] }
+    }
+    return $mask
+}
 function ConvertTo-UnixTimestamp {
     param($FileTime)
+    $unixEpoch = New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc)
     if ($null -eq $FileTime -or $FileTime -eq 0 -or $FileTime -eq 9223372036854775807) {
         return -1
     }
     try {
         if ($FileTime -is [DateTime]) {
-            return [int64]($FileTime.ToUniversalTime() - [DateTime]::UnixEpoch).TotalSeconds
+            return [int64]($FileTime.ToUniversalTime() - $unixEpoch).TotalSeconds
         }
         if ($FileTime -is [string] -and $FileTime.Length -ge 14) {
             $dt = [DateTime]::ParseExact($FileTime.Substring(0, 14), 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
-            return [int64]($dt.ToUniversalTime() - [DateTime]::UnixEpoch).TotalSeconds
+            return [int64]($dt.ToUniversalTime() - $unixEpoch).TotalSeconds
         }
         $date = [DateTime]::FromFileTimeUtc($FileTime)
-        return [int64]($date - [DateTime]::UnixEpoch).TotalSeconds
+        return [int64]($date - $unixEpoch).TotalSeconds
     }
     catch {
         Write-Log "[ConvertTo-UnixTimestamp] Failed to convert FileTime: $_" -Level Debug
@@ -93130,7 +93147,7 @@ function Collect-BHDomain {
             lockoutthreshold                        = Get-SafeInt -Value $domainObj.lockoutThreshold -Default 0
             minpwdlength                            = Get-SafeInt -Value $domainObj.minPwdLength -Default 0
             pwdhistorylength                        = Get-SafeInt -Value $domainObj.pwdHistoryLength -Default 0
-            pwdproperties                           = Get-SafeInt -Value $domainObj.pwdProperties -Default 0
+            pwdproperties                           = ConvertTo-BHPasswordPropertiesValue -Value $domainObj.pwdProperties
             lockoutduration                         = Convert-ADIntervalToString -Value $domainObj.lockoutDuration
             lockoutobservationwindow                = if ($domainObj.lockOutObservationWindow) { [Int64]$domainObj.lockOutObservationWindow } else { 0 }
             maxpwdage                               = Convert-ADIntervalToString -Value $domainObj.maxPwdAge
@@ -93170,7 +93187,7 @@ function Collect-BHUsers {
         else {
             continue
         }
-        $uac = Get-SafeInt -Value $user.userAccountControl -Default 0
+        $uac = ConvertTo-UACValue -Value $user.userAccountControl -Default 0
         $spns = @()
         if ($user.servicePrincipalName) {
             if ($user.servicePrincipalName -is [array]) {
@@ -93388,7 +93405,7 @@ function Collect-BHComputers {
         else {
             continue
         }
-        $uac = Get-SafeInt -Value $computer.userAccountControl -Default 0
+        $uac = ConvertTo-UACValue -Value $computer.userAccountControl -Default 0
         $isDC = ($uac -band 0x2000) -ne 0
         $primaryGroupRid = Get-SafeInt -Value $computer.primaryGroupID -Default 515
         $primaryGroupSID = "$DomainSID-$primaryGroupRid"
@@ -94288,7 +94305,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1337"
+$Script:adPEASVersion = "2.7.0+20261018-1350"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
