@@ -554,7 +554,7 @@ function Invoke-ExchangeScanInternal {
         ServerHeader     = $null
         # Legacy EPA properties (for backward compatibility) - reflects first endpoint with NTLM
         EPAEnabled       = $null         # $true = EPA active (secure), $false = EPA not active (vulnerable), $null = not tested
-        EPAConfidence    = $null         # "High", "Medium", "Low", "Unknown"
+        EPAConfidence    = $null         # "High", "Unknown", "N/A"
         EPADiagnostic    = $null         # Diagnostic info for EPA test
         # NTLM information from Type2 challenge (populated when -TestEPA is used)
         NTLMInfo         = $null         # PSCustomObject with NTLM details from first successful EPA test
@@ -1411,7 +1411,7 @@ function Invoke-ADCSScanInternal {
         }
         # Legacy EPA properties (for backward compatibility) - reflects first endpoint with NTLM
         EPAEnabled       = $null         # $true = EPA active (secure), $false = EPA not active (ESC8 vulnerable), $null = not tested
-        EPAConfidence    = $null         # "High", "Medium", "Low", "Unknown"
+        EPAConfidence    = $null         # "High", "Unknown", "N/A"
         EPADiagnostic    = $null         # Diagnostic info for EPA test
         # NTLM information from Type2 challenge (populated when -TestEPA is used)
         NTLMInfo         = $null         # PSCustomObject with NTLM details from first successful EPA test

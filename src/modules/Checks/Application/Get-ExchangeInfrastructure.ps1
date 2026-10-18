@@ -602,11 +602,9 @@ function Get-ExchangeInfrastructure {
                                         # "Untested" is its own answer: EPA is probed only
                                         # where NTLM is on offer, so on a Negotiate-only
                                         # endpoint a missing marker read as "nothing found"
-                                        # instead of "not asked".
-                                        $epaStatus = "Untested"
-                                        if ($null -ne $epData.EPAEnabled) {
-                                            $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                        }
+                                        # instead of "not asked". "Undetermined" is the
+                                        # answer of a probe that could not tell.
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }

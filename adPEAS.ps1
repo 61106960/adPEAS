@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 17:13:19
-    Version: 2.7.0+20261018-1713
+    Build: 2026-10-18 17:50:45
+    Version: 2.7.0+20261018-1750
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -10143,7 +10143,7 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
         Title = "ESC8 - NTLM Relay to Web Enrollment"
         Risk = "Finding"
         BaseScore = 70
-        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA). Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user."
+        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA). Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user. An endpoint marked [EPA: Undetermined] offers NTLM and rejected adPEAS's probe, which carries random credentials and is rejected whether or not EPA is enforced - IIS does not enforce EPA on web enrollment unless it was set, but read its tokenChecking setting before treating it as relayable."
         Impact = @(
             "NTLM authentication can be relayed to obtain certificates"
             "Domain Controller machine accounts can be relayed to get DC certificates"
@@ -10165,6 +10165,10 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
             "Enable LDAP signing and channel binding on DCs"
         )
         RemediationCommands = @(
+            @{
+                Description = "Read the EPA setting of the web enrollment endpoint (extendedProtection tokenChecking)"
+                Command = 'C:\Windows\System32\inetsrv\appcmd.exe list config "Default Web Site/CertSrv" -section:system.webServer/security/authentication/windowsAuthentication'
+            }
             @{
                 Description = "Enable Extended Protection for Authentication (EPA) on IIS"
                 Command = @'
@@ -21762,7 +21766,7 @@ $acl.Access | Where-Object {
         Title = "Exchange Web Endpoints Security"
         Risk = "Finding"
         BaseScore = 40
-        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected."
+        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected. An endpoint marked [EPA: Undetermined] offers NTLM and rejected adPEAS's probe, which carries random credentials and is rejected whether or not EPA is enforced; Exchange 2019 CU14 and later enable Extended Protection by default, so read the state of such an endpoint on the server before treating it as relayable."
         Impact = @(
             "HTTP + NTLM endpoints are vulnerable to NTLM relay"
             "HTTPS + NTLM without EPA is also vulnerable"
@@ -87464,13 +87468,18 @@ function Test-adPEASLicense {
     for Authentication (EPA/Channel Binding) is enabled.
 
     EPA binds NTLM authentication to the TLS channel, preventing relay attacks.
-    This module tests EPA by attempting NTLM auth without a Channel Binding Token (CBT).
+    This module probes EPA with an NTLM authentication that carries random credentials and
+    no Channel Binding Token (CBT).
 
-    If EPA is enabled:  Auth fails (401) even with valid dummy credentials
-    If EPA is disabled: Auth proceeds (may fail for other reasons, but not due to CBT)
+    Only an accepted probe is a verdict: nothing rejected the missing binding, so EPA is
+    not enforced. A rejected probe (401) is none - the random credentials fail whether or
+    not EPA is enforced, and the server answers both failures alike. Measured against an
+    Exchange SE server: the same valid account was accepted with the binding and rejected
+    without it on EWS, MRSProxy, MAPI and RPC, and the 401 it got without the binding was
+    the one random credentials get. See Resolve-EPAType3Answer.
 
     Success Flag Semantics:
-    - Success = $true:  EPA test completed (result is in EPAEnabled)
+    - Success = $true:  the probe completed (a verdict, if it reached one, is in EPAEnabled)
     - Success = $false: EPA test could not be completed (network error, no NTLM, etc.)
     - EPAEnabled = $true:  EPA is active (secure against NTLM relay)
     - EPAEnabled = $false: EPA is NOT active (vulnerable to NTLM relay)
@@ -88124,22 +88133,120 @@ function New-NTLMType3Message {
 
 <#
 .SYNOPSIS
+    Reads what the answer to an NTLM Type3 without channel binding says about EPA.
+.DESCRIPTION
+    The Type3 Test-ExtendedProtection sends carries random credentials and no Channel
+    Binding Token. Its acceptance is a verdict: nothing rejected the missing binding, so
+    EPA is not enforced. A 401 is none - the random credentials fail whether or not EPA is
+    enforced, and the server answers both failures alike, offering its authentication
+    schemes again.
+
+    The 401 used to be split by the schemes it offered: a bare "NTLM" or a new NTLM blob
+    read as EPA enabled, "Negotiate" as EPA disabled. Measured against an Exchange SE
+    server, the same valid account was accepted with the binding and rejected without it
+    on EWS, MRSProxy, MAPI and RPC - EPA enforced - and the 401 it got without the binding
+    offered "Negotiate,NTLM", the answer the split read as disabled. The schemes in a 401
+    are the endpoint's configuration, not the outcome of the binding check.
+.PARAMETER StatusCode
+    HTTP status of the answer to the Type3.
+.PARAMETER WwwAuthenticate
+    The WWW-Authenticate header of that answer, if it had one.
+.OUTPUTS
+    PSCustomObject with Success, EPAEnabled, Confidence, Type3Response, DiagnosticInfo and
+    ErrorMessage, named as on the result of Test-ExtendedProtection.
+#>
+function Resolve-EPAType3Answer {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$StatusCode,
+
+        [Parameter(Mandatory = $false)]
+        [string]$WwwAuthenticate
+    )
+
+    if ($StatusCode -ge 200 -and $StatusCode -lt 400) {
+        return [PSCustomObject]@{
+            Success        = $true
+            EPAEnabled     = $false
+            Confidence     = 'High'
+            Type3Response  = "Success ($StatusCode)"
+            DiagnosticInfo = "Type3 accepted (HTTP $StatusCode) - EPA is NOT blocking missing CBT"
+            ErrorMessage   = $null
+        }
+    }
+
+    if ($StatusCode -eq 401) {
+        return [PSCustomObject]@{
+            Success        = $true
+            EPAEnabled     = $null
+            Confidence     = 'Unknown'
+            Type3Response  = '401 Unauthorized'
+            DiagnosticInfo = "Type3 rejected (WWW-Authenticate: '$WwwAuthenticate') - the random credentials fail whether or not EPA is enforced, so the rejection does not tell which"
+            ErrorMessage   = $null
+        }
+    }
+
+    return [PSCustomObject]@{
+        Success        = $false
+        EPAEnabled     = $null
+        Confidence     = 'Unknown'
+        Type3Response  = "HTTP $StatusCode"
+        DiagnosticInfo = $null
+        ErrorMessage   = "Unexpected status code on Type3: $StatusCode"
+    }
+}
+
+<#
+.SYNOPSIS
+    Names the EPA state of one web endpoint for its "[EPA: ...]" marker.
+.DESCRIPTION
+    Four states, because two of them used to share one word:
+    - Enabled / Disabled: the probe reached a verdict
+    - Untested: the endpoint was never probed - EPA is probed only where NTLM is offered
+      over HTTPS
+    - Undetermined: the endpoint was probed and the probe could not tell, which is what a
+      rejected probe means (Resolve-EPAType3Answer)
+    A probed endpoint always carries a confidence and a never-probed one none, which is
+    what tells the last two apart. Both used to read "Untested", so an endpoint that had
+    been asked and gave no answer looked like one nobody asked.
+.PARAMETER EPAEnabled
+    The endpoint's verdict: $true, $false or $null.
+.PARAMETER EPAConfidence
+    The endpoint's confidence, $null when it was never probed.
+#>
+function Get-EPAStatusLabel {
+    [CmdletBinding()]
+    param(
+        $EPAEnabled,
+        $EPAConfidence
+    )
+
+    if ($EPAEnabled -eq $true) { return 'Enabled' }
+    if ($EPAEnabled -eq $false) { return 'Disabled' }
+    if ($null -eq $EPAConfidence) { return 'Untested' }
+    return 'Undetermined'
+}
+
+<#
+.SYNOPSIS
     Tests whether Extended Protection for Authentication (EPA) is enabled on an HTTPS endpoint.
 .DESCRIPTION
-    Performs a full NTLM handshake over HTTPS without a Channel Binding Token (CBT).
-    If EPA is enabled, the server will reject the Type3 message due to missing CBT.
+    Performs a full NTLM handshake over HTTPS with random credentials and without a
+    Channel Binding Token (CBT). A server that enforces EPA rejects the Type3 for the
+    missing CBT - and one that does not rejects it for the credentials, so only an
+    accepted Type3 is a verdict.
 
     This function maintains proper NTLM connection state by using a single ServicePoint
     and limiting connections to ensure Type1->Type2->Type3 flow over the same TCP connection.
 
     EPA Detection Logic (in priority order):
-    1. MsvAvFlags in Type2 with bit 0x02 set = EPA ENABLED (definitive, High confidence)
-    2. Type3 response has "NTLM <blob>" (new Type2) = EPA ENABLED (High confidence)
-    3. Type3 response has bare "NTLM" (no Negotiate prefix) = EPA ENABLED (High confidence)
-    4. Type3 response has "Negotiate" or "Negotiate,NTLM" = EPA DISABLED (Medium confidence)
-       Note: "Negotiate,NTLM" ends with NTLM but is a normal auth-failure challenge, NOT a restart
-    5. Type3 accepted (200/302) = EPA DISABLED (High confidence)
-    6. Connection reset after Type3 = EPA ENABLED (Medium confidence)
+    1. MsvAvFlags in Type2 with bit 0x02 set = EPA ENABLED (High confidence)
+    2. Type3 accepted (2xx/3xx) = EPA DISABLED (High confidence)
+    3. Type3 rejected (401), whatever its WWW-Authenticate header = undetermined
+    4. Connection dropped after Type3 = undetermined, the probe failed
+    Resolve-EPAType3Answer reads the answer to the Type3 and says why a rejection
+    decides nothing.
 
 .PARAMETER Url
     The HTTPS URL to test (must be HTTPS for EPA to be relevant).
@@ -88151,7 +88258,7 @@ function New-NTLMType3Message {
     PSCustomObject with:
     - Success: $true if EPA test completed, $false if test could not run
     - EPAEnabled: $true (EPA active/secure), $false (EPA inactive/vulnerable), $null (unknown/N/A)
-    - Confidence: "High", "Medium", "Low", "Unknown", "N/A"
+    - Confidence: "High" (a verdict), "Unknown" (no verdict), "N/A" (EPA does not apply)
     - Type2Received, Type3Response, Type3StatusCode, ErrorMessage, DiagnosticInfo
     - Server info from NTLM Type2 AV_PAIRs (NbComputerName, DnsComputerName, etc.)
 #>
@@ -88171,7 +88278,7 @@ function Test-ExtendedProtection {
     $result = [PSCustomObject]@{
         Success = $false           # True if EPA test completed (not if EPA is enabled)
         EPAEnabled = $null         # $true = EPA active (secure), $false = EPA not active (vulnerable), $null = unknown/N/A
-        Confidence = "Unknown"     # "High", "Medium", "Low", "Unknown", "N/A"
+        Confidence = "Unknown"     # "High", "Unknown", "N/A"
         Type2Received = $false
         Type3Response = $null
         Type3StatusCode = $null
@@ -88373,14 +88480,10 @@ function Test-ExtendedProtection {
 
             $response2 = $request2.GetResponse()
             $result.Type3StatusCode = [int]$response2.StatusCode
-
-            # If we got 200 OK or redirect, EPA is NOT active (our dummy creds "worked" past the channel binding check)
-            # Note: The auth itself may succeed or fail based on server config, but EPA would have rejected BEFORE this
-            $result.EPAEnabled = $false
-            $result.Confidence = "High"
-            $result.Type3Response = "Success ($($response2.StatusCode))"
-            $result.DiagnosticInfo = "Type3 accepted (HTTP $($result.Type3StatusCode)) - EPA is NOT blocking missing CBT"
-            $result.Success = $true
+            $answer = Resolve-EPAType3Answer -StatusCode $result.Type3StatusCode
+            foreach ($field in @('Success', 'EPAEnabled', 'Confidence', 'Type3Response', 'DiagnosticInfo', 'ErrorMessage')) {
+                $result.$field = $answer.$field
+            }
 
             Write-Log "[Test-ExtendedProtection] Type3 accepted - EPA NOT enabled"
 
@@ -88392,91 +88495,20 @@ function Test-ExtendedProtection {
             if ($webEx.Response) {
                 $statusCode = [int]$webEx.Response.StatusCode
                 $result.Type3StatusCode = $statusCode
-
-                if ($statusCode -eq 401) {
-                    # 401 on Type3 - need to analyze WHY
-                    $wwwAuth = $webEx.Response.Headers['WWW-Authenticate']
-                    $result.Type3Response = "401 Unauthorized"
-
-                    # EPA Detection after Type3 (priority order):
-                    #
-                    # 1. "NTLM <base64blob>" - server sent a new Type2 challenge = NTLM restart.
-                    #    EPA rejects the Type3 (SEC_E_INVALID_TOKEN) and restarts negotiation.
-                    #    Only NTLM without Negotiate prefix: IIS uses pure NTLM channel for the restart.
-                    #    -> EPA ENABLED (High confidence)
-                    #
-                    # 2. "NTLM" bare (no Negotiate prefix, no blob) - NTLM-only offer = restart signal.
-                    #    Same meaning as above but without a blob attached.
-                    #    -> EPA ENABLED (High confidence)
-                    #
-                    # 3. "Negotiate,NTLM" or "Negotiate" (with or without blob) - blanke new Auth-Challenge.
-                    #    This is the normal IIS response when authentication FAILS (invalid credentials).
-                    #    Both EPA=enabled and EPA=disabled can produce this, BUT:
-                    #    - When EPA=disabled: dummy Type3 passes the CBT check, fails on credentials -> 401 Negotiate,NTLM
-                    #    - When EPA=enabled:  dummy Type3 fails the CBT check first -> typically NTLM restart (case 1/2)
-                    #    If we reach this branch, CBT check passed (EPA not enforced) and only creds failed.
-                    #    -> EPA DISABLED (Medium confidence)
-                    #
-                    # NOTE: The old pattern "NTLM\s*$" incorrectly matched "Negotiate,NTLM" because NTLM
-                    # appears at the end of the string. Fixed by requiring NTLM NOT be preceded by "Negotiate,".
-                    if ($wwwAuth -match 'NTLM\s+([A-Za-z0-9+/=]{20,})') {
-                        # Case 1: Server sent a new NTLM Type2 blob - genuine NTLM restart after EPA rejection
-                        $result.EPAEnabled = $true
-                        $result.Confidence = "High"
-                        $result.DiagnosticInfo = "Server sent new NTLM Type2 challenge after Type3 - EPA rejected the request due to missing Channel Binding Token"
-                        Write-Log "[Test-ExtendedProtection] EPA ENABLED - Server restarted NTLM with new Type2 (CBT missing)"
-                    }
-                    elseif ($wwwAuth -match '(?<![,\s])NTLM\s*$' -or $wwwAuth -match '^NTLM\s*$') {
-                        # Case 2: Bare "NTLM" without Negotiate prefix - NTLM-only restart signal
-                        # Exclude "Negotiate,NTLM" which ends with NTLM but means normal auth failure
-                        $result.EPAEnabled = $true
-                        $result.Confidence = "High"
-                        $result.DiagnosticInfo = "Server offered bare NTLM after Type3 - NTLM restart indicates EPA rejected missing Channel Binding Token"
-                        Write-Log "[Test-ExtendedProtection] EPA ENABLED - Bare NTLM offer after Type3 (CBT missing)"
-                    }
-                    elseif ($wwwAuth -match 'Negotiate\s+([A-Za-z0-9+/=]{20,})') {
-                        # Case 3a: Negotiate blob - Kerberos token or NTLM-via-Negotiate; auth failed on credentials
-                        $result.EPAEnabled = $false
-                        $result.Confidence = "Medium"
-                        $result.DiagnosticInfo = "Server returned 401 with Negotiate blob after Type3 - credentials rejected (CBT check passed, EPA not enforced)"
-                        Write-Log "[Test-ExtendedProtection] EPA NOT enabled - auth failure with Negotiate blob (normal credential rejection)"
-                    }
-                    elseif ($wwwAuth -match 'Negotiate') {
-                        # Case 3b: "Negotiate" or "Negotiate,NTLM" - blanke new Auth-Challenge after credential failure
-                        # This is the standard IIS response when NTLM auth fails with invalid credentials
-                        # and EPA is not blocking (EPA=disabled: CBT check passed, credential check failed)
-                        $result.EPAEnabled = $false
-                        $result.Confidence = "Medium"
-                        $result.DiagnosticInfo = "Server returned 401 with Negotiate,NTLM after Type3 - credentials rejected (CBT check passed, EPA not enforced)"
-                        Write-Log "[Test-ExtendedProtection] EPA NOT enabled - auth failure with Negotiate,NTLM (normal credential rejection)"
-                    }
-                    else {
-                        # Generic 401 without recognizable auth header
-                        $result.EPAEnabled = $null
-                        $result.Confidence = "Low"
-                        $result.DiagnosticInfo = "401 received after Type3 but WWW-Authenticate header is unrecognized. Cannot determine EPA status. Header: $wwwAuth"
-                        Write-Log "[Test-ExtendedProtection] Inconclusive - 401 with unrecognized WWW-Authenticate: $wwwAuth"
-                    }
-
-                    $result.Success = $true
+                $answer = Resolve-EPAType3Answer -StatusCode $statusCode -WwwAuthenticate $webEx.Response.Headers['WWW-Authenticate']
+                foreach ($field in @('Success', 'EPAEnabled', 'Confidence', 'Type3Response', 'DiagnosticInfo', 'ErrorMessage')) {
+                    $result.$field = $answer.$field
                 }
-                else {
-                    $result.Type3Response = "HTTP $statusCode"
-                    $result.ErrorMessage = "Unexpected status code on Type3: $statusCode"
-                }
+                Write-Log "[Test-ExtendedProtection] Type3 answered HTTP $statusCode - $($answer.DiagnosticInfo)$($answer.ErrorMessage)"
 
                 try { $webEx.Response.Close() } catch {}
             }
             else {
-                # Connection error during Type3 - might indicate EPA terminating connection
+                # A connection that drops after the Type3 is no EPA verdict either. It was
+                # read as EPA enabled; an IIS that enforces EPA answers the missing binding
+                # with a 401 like any failed logon (Resolve-EPAType3Answer), and a proxy,
+                # a load balancer or a timeout drops connections too.
                 $result.ErrorMessage = "Connection failed on Type3: $($webEx.Message)"
-
-                if ($webEx.Message -match 'connection.*closed|reset|aborted' -or $webEx.Status -eq 'ConnectionClosed') {
-                    $result.EPAEnabled = $true
-                    $result.Confidence = "Medium"
-                    $result.DiagnosticInfo = "Connection terminated after Type3 - may indicate EPA rejection"
-                    $result.Success = $true
-                }
             }
         }
     }
@@ -89061,7 +89093,7 @@ function Invoke-ExchangeScanInternal {
         ServerHeader     = $null
         # Legacy EPA properties (for backward compatibility) - reflects first endpoint with NTLM
         EPAEnabled       = $null         # $true = EPA active (secure), $false = EPA not active (vulnerable), $null = not tested
-        EPAConfidence    = $null         # "High", "Medium", "Low", "Unknown"
+        EPAConfidence    = $null         # "High", "Unknown", "N/A"
         EPADiagnostic    = $null         # Diagnostic info for EPA test
         # NTLM information from Type2 challenge (populated when -TestEPA is used)
         NTLMInfo         = $null         # PSCustomObject with NTLM details from first successful EPA test
@@ -89918,7 +89950,7 @@ function Invoke-ADCSScanInternal {
         }
         # Legacy EPA properties (for backward compatibility) - reflects first endpoint with NTLM
         EPAEnabled       = $null         # $true = EPA active (secure), $false = EPA not active (ESC8 vulnerable), $null = not tested
-        EPAConfidence    = $null         # "High", "Medium", "Low", "Unknown"
+        EPAConfidence    = $null         # "High", "Unknown", "N/A"
         EPADiagnostic    = $null         # Diagnostic info for EPA test
         # NTLM information from Type2 challenge (populated when -TestEPA is used)
         NTLMInfo         = $null         # PSCustomObject with NTLM details from first successful EPA test
@@ -125659,11 +125691,9 @@ function Get-ADCSVulnerabilities {
                                         # Add EPA status only for HTTPS (EPA is TLS-based).
                                         # "Untested" is its own answer: EPA is probed only
                                         # where NTLM is on offer, and a missing marker read
-                                        # exactly like a disabled one.
-                                        $epaStatus = "Untested"
-                                        if ($null -ne $epData.EPAEnabled) {
-                                            $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                        }
+                                        # exactly like a disabled one. "Undetermined" is the
+                                        # answer of a probe that could not tell.
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
@@ -125801,11 +125831,8 @@ function Get-ADCSVulnerabilities {
                                     if ($epData.AvailableHttps) {
                                         $epString = "$ep via HTTPS"
                                         if ($authMethods) { $epString += " ($authMethods)" }
-                                        # Same three EPA states as the caComputer path above.
-                                        $epaStatus = "Untested"
-                                        if ($null -ne $epData.EPAEnabled) {
-                                            $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                        }
+                                        # Same four EPA states as the caComputer path above.
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
@@ -128218,11 +128245,9 @@ function Get-ExchangeInfrastructure {
                                         # "Untested" is its own answer: EPA is probed only
                                         # where NTLM is on offer, so on a Negotiate-only
                                         # endpoint a missing marker read as "nothing found"
-                                        # instead of "not asked".
-                                        $epaStatus = "Untested"
-                                        if ($null -ne $epData.EPAEnabled) {
-                                            $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                        }
+                                        # instead of "not asked". "Undetermined" is the
+                                        # answer of a probe that could not tell.
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
@@ -147060,7 +147085,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1713"
+$Script:adPEASVersion = "2.7.0+20261018-1750"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

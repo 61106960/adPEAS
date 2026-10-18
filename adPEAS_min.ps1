@@ -5868,7 +5868,7 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
         Title = "ESC8 - NTLM Relay to Web Enrollment"
         Risk = "Finding"
         BaseScore = 70
-        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA). Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user."
+        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA). Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user. An endpoint marked [EPA: Undetermined] offers NTLM and rejected adPEAS's probe, which carries random credentials and is rejected whether or not EPA is enforced - IIS does not enforce EPA on web enrollment unless it was set, but read its tokenChecking setting before treating it as relayable."
         Impact = @(
             "NTLM authentication can be relayed to obtain certificates"
             "Domain Controller machine accounts can be relayed to get DC certificates"
@@ -5890,6 +5890,10 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
             "Enable LDAP signing and channel binding on DCs"
         )
         RemediationCommands = @(
+            @{
+                Description = "Read the EPA setting of the web enrollment endpoint (extendedProtection tokenChecking)"
+                Command = 'C:\Windows\System32\inetsrv\appcmd.exe list config "Default Web Site/CertSrv" -section:system.webServer/security/authentication/windowsAuthentication'
+            }
             @{
                 Description = "Enable Extended Protection for Authentication (EPA) on IIS"
                 Command = @'
@@ -16506,7 +16510,7 @@ $acl.Access | Where-Object {
         Title = "Exchange Web Endpoints Security"
         Risk = "Finding"
         BaseScore = 40
-        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected."
+        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected. An endpoint marked [EPA: Undetermined] offers NTLM and rejected adPEAS's probe, which carries random credentials and is rejected whether or not EPA is enforced; Exchange 2019 CU14 and later enable Extended Protection by default, so read the state of such an endpoint on the server before treating it as relayable."
         Impact = @(
             "HTTP + NTLM endpoints are vulnerable to NTLM relay"
             "HTTPS + NTLM without EPA is also vulnerable"
@@ -56513,6 +56517,54 @@ function New-NTLMType3Message {
     $message.AddRange($workstationBytes)
     return [Convert]::ToBase64String($message.ToArray())
 }
+function Resolve-EPAType3Answer {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$StatusCode,
+        [Parameter(Mandatory = $false)]
+        [string]$WwwAuthenticate
+    )
+    if ($StatusCode -ge 200 -and $StatusCode -lt 400) {
+        return [PSCustomObject]@{
+            Success        = $true
+            EPAEnabled     = $false
+            Confidence     = 'High'
+            Type3Response  = "Success ($StatusCode)"
+            DiagnosticInfo = "Type3 accepted (HTTP $StatusCode) - EPA is NOT blocking missing CBT"
+            ErrorMessage   = $null
+        }
+    }
+    if ($StatusCode -eq 401) {
+        return [PSCustomObject]@{
+            Success        = $true
+            EPAEnabled     = $null
+            Confidence     = 'Unknown'
+            Type3Response  = '401 Unauthorized'
+            DiagnosticInfo = "Type3 rejected (WWW-Authenticate: '$WwwAuthenticate') - the random credentials fail whether or not EPA is enforced, so the rejection does not tell which"
+            ErrorMessage   = $null
+        }
+    }
+    return [PSCustomObject]@{
+        Success        = $false
+        EPAEnabled     = $null
+        Confidence     = 'Unknown'
+        Type3Response  = "HTTP $StatusCode"
+        DiagnosticInfo = $null
+        ErrorMessage   = "Unexpected status code on Type3: $StatusCode"
+    }
+}
+function Get-EPAStatusLabel {
+    [CmdletBinding()]
+    param(
+        $EPAEnabled,
+        $EPAConfidence
+    )
+    if ($EPAEnabled -eq $true) { return 'Enabled' }
+    if ($EPAEnabled -eq $false) { return 'Disabled' }
+    if ($null -eq $EPAConfidence) { return 'Untested' }
+    return 'Undetermined'
+}
 function Test-ExtendedProtection {
     [CmdletBinding()]
     param(
@@ -56680,11 +56732,10 @@ function Test-ExtendedProtection {
             $request2.UnsafeAuthenticatedConnectionSharing = $true
             $response2 = $request2.GetResponse()
             $result.Type3StatusCode = [int]$response2.StatusCode
-            $result.EPAEnabled = $false
-            $result.Confidence = "High"
-            $result.Type3Response = "Success ($($response2.StatusCode))"
-            $result.DiagnosticInfo = "Type3 accepted (HTTP $($result.Type3StatusCode)) - EPA is NOT blocking missing CBT"
-            $result.Success = $true
+            $answer = Resolve-EPAType3Answer -StatusCode $result.Type3StatusCode
+            foreach ($field in @('Success', 'EPAEnabled', 'Confidence', 'Type3Response', 'DiagnosticInfo', 'ErrorMessage')) {
+                $result.$field = $answer.$field
+            }
             Write-Log "[Test-ExtendedProtection] Type3 accepted - EPA NOT enabled"
             $response2.Close()
             $response2.Dispose()
@@ -56694,55 +56745,15 @@ function Test-ExtendedProtection {
             if ($webEx.Response) {
                 $statusCode = [int]$webEx.Response.StatusCode
                 $result.Type3StatusCode = $statusCode
-                if ($statusCode -eq 401) {
-                    $wwwAuth = $webEx.Response.Headers['WWW-Authenticate']
-                    $result.Type3Response = "401 Unauthorized"
-                    if ($wwwAuth -match 'NTLM\s+([A-Za-z0-9+/=]{20,})') {
-                        $result.EPAEnabled = $true
-                        $result.Confidence = "High"
-                        $result.DiagnosticInfo = "Server sent new NTLM Type2 challenge after Type3 - EPA rejected the request due to missing Channel Binding Token"
-                        Write-Log "[Test-ExtendedProtection] EPA ENABLED - Server restarted NTLM with new Type2 (CBT missing)"
-                    }
-                    elseif ($wwwAuth -match '(?<![,\s])NTLM\s*$' -or $wwwAuth -match '^NTLM\s*$') {
-                        $result.EPAEnabled = $true
-                        $result.Confidence = "High"
-                        $result.DiagnosticInfo = "Server offered bare NTLM after Type3 - NTLM restart indicates EPA rejected missing Channel Binding Token"
-                        Write-Log "[Test-ExtendedProtection] EPA ENABLED - Bare NTLM offer after Type3 (CBT missing)"
-                    }
-                    elseif ($wwwAuth -match 'Negotiate\s+([A-Za-z0-9+/=]{20,})') {
-                        $result.EPAEnabled = $false
-                        $result.Confidence = "Medium"
-                        $result.DiagnosticInfo = "Server returned 401 with Negotiate blob after Type3 - credentials rejected (CBT check passed, EPA not enforced)"
-                        Write-Log "[Test-ExtendedProtection] EPA NOT enabled - auth failure with Negotiate blob (normal credential rejection)"
-                    }
-                    elseif ($wwwAuth -match 'Negotiate') {
-                        $result.EPAEnabled = $false
-                        $result.Confidence = "Medium"
-                        $result.DiagnosticInfo = "Server returned 401 with Negotiate,NTLM after Type3 - credentials rejected (CBT check passed, EPA not enforced)"
-                        Write-Log "[Test-ExtendedProtection] EPA NOT enabled - auth failure with Negotiate,NTLM (normal credential rejection)"
-                    }
-                    else {
-                        $result.EPAEnabled = $null
-                        $result.Confidence = "Low"
-                        $result.DiagnosticInfo = "401 received after Type3 but WWW-Authenticate header is unrecognized. Cannot determine EPA status. Header: $wwwAuth"
-                        Write-Log "[Test-ExtendedProtection] Inconclusive - 401 with unrecognized WWW-Authenticate: $wwwAuth"
-                    }
-                    $result.Success = $true
+                $answer = Resolve-EPAType3Answer -StatusCode $statusCode -WwwAuthenticate $webEx.Response.Headers['WWW-Authenticate']
+                foreach ($field in @('Success', 'EPAEnabled', 'Confidence', 'Type3Response', 'DiagnosticInfo', 'ErrorMessage')) {
+                    $result.$field = $answer.$field
                 }
-                else {
-                    $result.Type3Response = "HTTP $statusCode"
-                    $result.ErrorMessage = "Unexpected status code on Type3: $statusCode"
-                }
+                Write-Log "[Test-ExtendedProtection] Type3 answered HTTP $statusCode - $($answer.DiagnosticInfo)$($answer.ErrorMessage)"
                 try { $webEx.Response.Close() } catch {}
             }
             else {
                 $result.ErrorMessage = "Connection failed on Type3: $($webEx.Message)"
-                if ($webEx.Message -match 'connection.*closed|reset|aborted' -or $webEx.Status -eq 'ConnectionClosed') {
-                    $result.EPAEnabled = $true
-                    $result.Confidence = "Medium"
-                    $result.DiagnosticInfo = "Connection terminated after Type3 - may indicate EPA rejection"
-                    $result.Success = $true
-                }
             }
         }
     }
@@ -78853,10 +78864,7 @@ function Get-ADCSVulnerabilities {
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
                                         }
-                                        $epaStatus = "Untested"
-                                        if ($null -ne $epData.EPAEnabled) {
-                                            $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                        }
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
@@ -78951,10 +78959,7 @@ function Get-ADCSVulnerabilities {
                                     if ($epData.AvailableHttps) {
                                         $epString = "$ep via HTTPS"
                                         if ($authMethods) { $epString += " ($authMethods)" }
-                                        $epaStatus = "Untested"
-                                        if ($null -ne $epData.EPAEnabled) {
-                                            $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                        }
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
@@ -80368,10 +80373,7 @@ function Get-ExchangeInfrastructure {
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
                                         }
-                                        $epaStatus = "Untested"
-                                        if ($null -ne $epData.EPAEnabled) {
-                                            $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                        }
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
@@ -94537,7 +94539,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1713"
+$Script:adPEASVersion = "2.7.0+20261018-1750"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

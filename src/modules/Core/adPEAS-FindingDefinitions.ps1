@@ -1769,7 +1769,7 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
         Title = "ESC8 - NTLM Relay to Web Enrollment"
         Risk = "Finding"
         BaseScore = 70
-        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA). Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user."
+        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA). Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user. An endpoint marked [EPA: Undetermined] offers NTLM and rejected adPEAS's probe, which carries random credentials and is rejected whether or not EPA is enforced - IIS does not enforce EPA on web enrollment unless it was set, but read its tokenChecking setting before treating it as relayable."
         Impact = @(
             "NTLM authentication can be relayed to obtain certificates"
             "Domain Controller machine accounts can be relayed to get DC certificates"
@@ -1791,6 +1791,10 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
             "Enable LDAP signing and channel binding on DCs"
         )
         RemediationCommands = @(
+            @{
+                Description = "Read the EPA setting of the web enrollment endpoint (extendedProtection tokenChecking)"
+                Command = 'C:\Windows\System32\inetsrv\appcmd.exe list config "Default Web Site/CertSrv" -section:system.webServer/security/authentication/windowsAuthentication'
+            }
             @{
                 Description = "Enable Extended Protection for Authentication (EPA) on IIS"
                 Command = @'
@@ -13388,7 +13392,7 @@ $acl.Access | Where-Object {
         Title = "Exchange Web Endpoints Security"
         Risk = "Finding"
         BaseScore = 40
-        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected."
+        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected. An endpoint marked [EPA: Undetermined] offers NTLM and rejected adPEAS's probe, which carries random credentials and is rejected whether or not EPA is enforced; Exchange 2019 CU14 and later enable Extended Protection by default, so read the state of such an endpoint on the server before treating it as relayable."
         Impact = @(
             "HTTP + NTLM endpoints are vulnerable to NTLM relay"
             "HTTPS + NTLM without EPA is also vulnerable"

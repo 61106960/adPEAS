@@ -663,11 +663,9 @@ function Get-ADCSVulnerabilities {
                                         # Add EPA status only for HTTPS (EPA is TLS-based).
                                         # "Untested" is its own answer: EPA is probed only
                                         # where NTLM is on offer, and a missing marker read
-                                        # exactly like a disabled one.
-                                        $epaStatus = "Untested"
-                                        if ($null -ne $epData.EPAEnabled) {
-                                            $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                        }
+                                        # exactly like a disabled one. "Undetermined" is the
+                                        # answer of a probe that could not tell.
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
@@ -805,11 +803,8 @@ function Get-ADCSVulnerabilities {
                                     if ($epData.AvailableHttps) {
                                         $epString = "$ep via HTTPS"
                                         if ($authMethods) { $epString += " ($authMethods)" }
-                                        # Same three EPA states as the caComputer path above.
-                                        $epaStatus = "Untested"
-                                        if ($null -ne $epData.EPAEnabled) {
-                                            $epaStatus = if ($epData.EPAEnabled -eq $true) { "Enabled" } else { "Disabled" }
-                                        }
+                                        # Same four EPA states as the caComputer path above.
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }

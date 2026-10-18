@@ -1154,6 +1154,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   never prints. The list is now the user list with the Tier-0 groups after the group
   memberships, followed by the Protected Users status and the exclusion reason.
 
+- **The Extended Protection probe no longer reads a verdict into a rejected logon.** EPA
+  is probed with an NTLM logon that carries random credentials and no channel binding,
+  and the 401 that comes back was split by the schemes it offered: "Negotiate,NTLM" read
+  as EPA disabled, a bare "NTLM" as enabled. Measured against an Exchange SE server, the
+  same valid account was accepted with the binding and rejected without it on EWS,
+  MRSProxy, MAPI and RPC - EPA enforced on all four - and the 401 offered
+  "Negotiate,NTLM": each of them was reported as `[EPA: Disabled]`. The random
+  credentials are rejected whether or not EPA is enforced, so a rejection decides
+  nothing, and neither does a dropped connection, which read as enabled. Such an
+  endpoint now reads `[EPA: Undetermined]` instead of sharing `[EPA: Untested]` with
+  one that was never probed. It stays a finding while it offers NTLM, and the Exchange
+  and ESC8 cards say to read the state on the server. An accepted probe still decides:
+  EPA is not enforced.
+
 ---
 
 ## [2.7.0] - 2026-10-08
