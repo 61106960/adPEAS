@@ -365,6 +365,9 @@ $Script:MachineLocalSIDAuthorities = @{
     '90' = 'Window Manager\<desktop window manager SID>'
     '94' = 'WinRM Virtual Users\<WinRM SID>'
     '96' = 'Font Driver Host\<font driver SID>'
+    # Restricted service SIDs, new with Windows 11 24H2 and Server 2025 - the print spooler
+    # runs under one. Its own SID resolves by name from $Script:SIDToName.
+    '99' = 'RESTRICTED SERVICES\<restricted service SID>'
 }
 
 # ============================================================================

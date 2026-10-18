@@ -1266,6 +1266,11 @@ $Script:WellKnownIdentities = @(
     # machine-local authority fallback in ConvertFrom-SID and came out as the generic
     # "Window Manager\<desktop window manager SID>" rather than the group it actually is.
     @{ SID = 'S-1-5-90-0';  Name = 'Window Manager\Window Manager Group' }
+    # The print spooler's restricted service SID, under authority 99 (RESTRICTED SERVICES).
+    # Its sub-authorities are a hash of the service name, so it is the same SID on every
+    # machine. Windows Server 2025 grants it Generate security audits in the Default Domain
+    # Controllers Policy - measured - and the user rights check printed it as UNRESOLVABLE.
+    @{ SID = 'S-1-5-99-216390572-1995538116-3857911515-2404958512-2623887229'; Name = 'RESTRICTED SERVICES\PrintSpoolerService' }
 
     @{ SID = 'S-1-5-1000';  Name = 'NT AUTHORITY\Other Organization' }
 

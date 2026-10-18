@@ -63,6 +63,8 @@
 #   S-1-5-32-559   Performance Log Users        S-1-5-32-568  IIS_IUSRS
 #   S-1-5-90-0     Window Manager\Window Manager Group
 #   S-1-5-80-0     NT SERVICE\ALL SERVICES
+#   S-1-5-99-216390572-1995538116-3857911515-2404958512-2623887229
+#                  RESTRICTED SERVICES\PrintSpoolerService
 
 $Script:UserRightsBaseline = [ordered]@{
 
@@ -342,6 +344,11 @@ $Script:UserRightsBaseline = [ordered]@{
         # https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/generate-security-audits
         Member = @('S-1-5-19', 'S-1-5-20')
         DC     = @('S-1-5-19', 'S-1-5-20')
+        # Accepted, not expected: the print spooler's restricted service SID. The Default
+        # Domain Controllers Policy a Windows Server 2025 domain is created with grants it -
+        # measured - and one created earlier has the same policy without it, which is no
+        # deviation either. Not on a member, where it has not been measured.
+        Optional = @{ DC = @('S-1-5-99-216390572-1995538116-3857911515-2404958512-2623887229') }
     }
 
     'SeSystemEnvironmentPrivilege' = @{
@@ -443,6 +450,15 @@ function Compare-UserRightAssignment {
         }
     }
 
+    # Holders a default may or may not contain, depending on the Windows version the policy
+    # was created by. Never reported as added, never as removed.
+    $optional = @()
+    if ($entry.Optional) {
+        foreach ($s in @($Scope)) {
+            if ($null -ne $entry.Optional[$s]) { $optional += @($entry.Optional[$s]) }
+        }
+    }
+
     $holders = @($HolderSID | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
     if (-not $hasBaseline) {
@@ -461,7 +477,7 @@ function Compare-UserRightAssignment {
 
     # Compare-Object is avoided on purpose: it unrolls a single-element side and returns
     # nothing for two empty ones, both of which have bitten this codebase before.
-    $added = @($holders | Where-Object { $baseline -notcontains $_ })
+    $added = @($holders | Where-Object { ($baseline -notcontains $_) -and ($optional -notcontains $_) })
     $removed = @($baseline | Where-Object { $holders -notcontains $_ })
 
     return @{

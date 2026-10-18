@@ -626,6 +626,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   a value is a finding, a mention is a hint, and a masked value is neither, as the check
   rates them.
 
+- **The print spooler's restricted service SID is named and expected.** The Default Domain
+  Controllers Policy a Windows Server 2025 domain is created with grants Generate security
+  audits to `RESTRICTED SERVICES\PrintSpoolerService` (`S-1-5-99-...`), and
+  `Get-GPOUserRightsAssignment` reported it in every such domain as an unresolvable holder
+  beyond the Windows default. The SID resolves by name now, any other SID under the
+  restricted services authority by its authority, and the user right accepts it on domain
+  controllers without expecting it in a domain created earlier.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

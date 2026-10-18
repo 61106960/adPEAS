@@ -617,6 +617,7 @@ $Script:WellKnownIdentities = @(
 	@{ SID = 'S-1-5-80-0';  Name = 'NT SERVICE\ALL SERVICES' }
 	@{ SID = 'S-1-5-83-0';  Name = 'NT VIRTUAL MACHINE\Virtual Machines' }
 	@{ SID = 'S-1-5-90-0';  Name = 'Window Manager\Window Manager Group' }
+	@{ SID = 'S-1-5-99-216390572-1995538116-3857911515-2404958512-2623887229'; Name = 'RESTRICTED SERVICES\PrintSpoolerService' }
 	@{ SID = 'S-1-5-1000';  Name = 'NT AUTHORITY\Other Organization' }
 	@{ SID = 'S-1-18-1';    Name = 'Authentication authority asserted identity' }
 	@{ SID = 'S-1-18-2';    Name = 'Service asserted identity' }
@@ -956,6 +957,7 @@ $Script:MachineLocalSIDAuthorities = @{
 	'90' = 'Window Manager\<desktop window manager SID>'
 	'94' = 'WinRM Virtual Users\<WinRM SID>'
 	'96' = 'Font Driver Host\<font driver SID>'
+	'99' = 'RESTRICTED SERVICES\<restricted service SID>'
 }
 function Test-IsPrivilegedSID {
 	[CmdletBinding()]
@@ -1522,6 +1524,7 @@ $Script:UserRightsBaseline = [ordered]@{
 	    Why  = 'Writes arbitrary entries into the Security log - enough to roll real events out where the log overwrites, or to stop the machine where it halts on a full log.'
 	    Member = @('S-1-5-19', 'S-1-5-20')
 	    DC     = @('S-1-5-19', 'S-1-5-20')
+	    Optional = @{ DC = @('S-1-5-99-216390572-1995538116-3857911515-2404958512-2623887229') }
 	}
 	'SeSystemEnvironmentPrivilege' = @{
 	    Name = 'Modify firmware environment values'
@@ -1575,6 +1578,12 @@ function Compare-UserRightAssignment {
 	        $baseline += @($entry[$s])
 	    }
 	}
+	$optional = @()
+	if ($entry.Optional) {
+	    foreach ($s in @($Scope)) {
+	        if ($null -ne $entry.Optional[$s]) { $optional += @($entry.Optional[$s]) }
+	    }
+	}
 	$holders = @($HolderSID | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 	if (-not $hasBaseline) {
 	    return @{
@@ -1586,7 +1595,7 @@ function Compare-UserRightAssignment {
 	        Why         = $entry.Why
 	    }
 	}
-	$added = @($holders | Where-Object { $baseline -notcontains $_ })
+	$added = @($holders | Where-Object { ($baseline -notcontains $_) -and ($optional -notcontains $_) })
 	$removed = @($baseline | Where-Object { $holders -notcontains $_ })
 	return @{
 	    Added       = $added
@@ -91163,7 +91172,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1238"
+$Script:adPEASVersion = "2.7.0+20261018-1246"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
