@@ -812,6 +812,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   can name; the SCCM schema classes are not in its tables, so a management point stays
   reported, with the class named.
 
+- **NTFS write access reads the generic rights.** The SYSVOL and UNC write checks
+  (`Get-GPOPermissions`, `Get-GPOScheduledTasks`) compared the raw rights of a rule against
+  the write rights. An inherit-only entry keeps GENERIC_ALL and GENERIC_WRITE as the bare
+  bits - measured, every default policy folder holds GENERIC_ALL as 0x10000000 for SYSTEM,
+  Administrators and CREATOR OWNER - and those entries are the rights the files of a
+  policy folder receive. A trustee holding one passed as unable to write. The generic
+  rights are mapped to the file rights they stand for now, and an inherited Deny no longer
+  takes a right from an Allow written on the file or folder.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

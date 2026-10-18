@@ -43396,6 +43396,15 @@ function Select-NTFSWriteAccess {
         [System.Security.AccessControl.FileSystemRights]::TakeOwnership
     )
     $inheritOnly = [int][System.Security.AccessControl.PropagationFlags]::InheritOnly
+    $mapFileRights = {
+        param($Rights)
+        $mask = ([long]$Rights) -band 0xFFFFFFFFL
+        if ($mask -band 0x10000000L) { $mask = $mask -bor 0x1F01FFL }
+        if ($mask -band 0x40000000L) { $mask = $mask -bor 0x120116L }
+        if ($mask -band 0x80000000L) { $mask = $mask -bor 0x120089L }
+        if ($mask -band 0x20000000L) { $mask = $mask -bor 0x1200A0L }
+        return [int]($mask -band 0x0FFFFFFFL)
+    }
     $applicable = @()
     foreach ($rule in @($Rules)) {
         if ($null -eq $rule) { continue }
@@ -43405,22 +43414,27 @@ function Select-NTFSWriteAccess {
         }
         $applicable += $rule
     }
-    $deniedMask = @{}
+    $deniedExplicit = @{}
+    $deniedInherited = @{}
     foreach ($rule in $applicable) {
         if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Deny) { continue }
         $denySID = [string]$rule.IdentityReference.Value
         if (-not $denySID) { continue }
+        if ($rule.IsInherited) { $deniedMask = $deniedInherited } else { $deniedMask = $deniedExplicit }
         if (-not $deniedMask.ContainsKey($denySID)) { $deniedMask[$denySID] = 0 }
-        $deniedMask[$denySID] = $deniedMask[$denySID] -bor [int]$rule.FileSystemRights
+        $deniedMask[$denySID] = $deniedMask[$denySID] -bor (& $mapFileRights $rule.FileSystemRights)
     }
     $result = @()
     foreach ($rule in $applicable) {
         if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
         $ruleSID = [string]$rule.IdentityReference.Value
         if (-not $ruleSID) { continue }
-        $effective = [int]$rule.FileSystemRights
-        if ($deniedMask.ContainsKey($ruleSID)) {
-            $effective = $effective -band (-bnot $deniedMask[$ruleSID])
+        $effective = & $mapFileRights $rule.FileSystemRights
+        if ($deniedExplicit.ContainsKey($ruleSID)) {
+            $effective = $effective -band (-bnot $deniedExplicit[$ruleSID])
+        }
+        if ($rule.IsInherited -and $deniedInherited.ContainsKey($ruleSID)) {
+            $effective = $effective -band (-bnot $deniedInherited[$ruleSID])
         }
         $writeBits = $effective -band $writeMask
         if ($writeBits -eq 0) { continue }
@@ -94473,7 +94487,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1545"
+$Script:adPEASVersion = "2.7.0+20261018-1559"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 15:45:54
-    Version: 2.7.0+20261018-1545
+    Build: 2026-10-18 15:59:57
+    Version: 2.7.0+20261018-1559
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -65284,6 +65284,22 @@ function Select-NTFSWriteAccess {
     )
     $inheritOnly = [int][System.Security.AccessControl.PropagationFlags]::InheritOnly
 
+    # The generic bits mapped to the file rights they stand for, the GenericMapping of a file
+    # object. An inherit-only entry of a folder ACL keeps them as written - measured, every
+    # default policy folder holds GENERIC_ALL (0x10000000) for SYSTEM, Administrators and
+    # CREATOR OWNER - and such entries are exactly the rights the files of a policy folder
+    # receive. Unmapped, 0x10000000 shares no bit with the write mask, and a trustee holding
+    # it passed as one that cannot write.
+    $mapFileRights = {
+        param($Rights)
+        $mask = ([long]$Rights) -band 0xFFFFFFFFL
+        if ($mask -band 0x10000000L) { $mask = $mask -bor 0x1F01FFL }   # GENERIC_ALL -> FILE_ALL_ACCESS
+        if ($mask -band 0x40000000L) { $mask = $mask -bor 0x120116L }   # GENERIC_WRITE -> FILE_GENERIC_WRITE
+        if ($mask -band 0x80000000L) { $mask = $mask -bor 0x120089L }   # GENERIC_READ -> FILE_GENERIC_READ
+        if ($mask -band 0x20000000L) { $mask = $mask -bor 0x1200A0L }   # GENERIC_EXECUTE -> FILE_GENERIC_EXECUTE
+        return [int]($mask -band 0x0FFFFFFFL)
+    }
+
     $applicable = @()
     foreach ($rule in @($Rules)) {
         if ($null -eq $rule) { continue }
@@ -65294,13 +65310,17 @@ function Select-NTFSWriteAccess {
         $applicable += $rule
     }
 
-    $deniedMask = @{}
+    # Explicit and inherited Deny apart: the access check evaluates every explicit entry
+    # first, so an inherited Deny takes nothing from an Allow written on the object itself.
+    $deniedExplicit = @{}
+    $deniedInherited = @{}
     foreach ($rule in $applicable) {
         if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Deny) { continue }
         $denySID = [string]$rule.IdentityReference.Value
         if (-not $denySID) { continue }
+        if ($rule.IsInherited) { $deniedMask = $deniedInherited } else { $deniedMask = $deniedExplicit }
         if (-not $deniedMask.ContainsKey($denySID)) { $deniedMask[$denySID] = 0 }
-        $deniedMask[$denySID] = $deniedMask[$denySID] -bor [int]$rule.FileSystemRights
+        $deniedMask[$denySID] = $deniedMask[$denySID] -bor (& $mapFileRights $rule.FileSystemRights)
     }
 
     $result = @()
@@ -65310,9 +65330,12 @@ function Select-NTFSWriteAccess {
         $ruleSID = [string]$rule.IdentityReference.Value
         if (-not $ruleSID) { continue }
 
-        $effective = [int]$rule.FileSystemRights
-        if ($deniedMask.ContainsKey($ruleSID)) {
-            $effective = $effective -band (-bnot $deniedMask[$ruleSID])
+        $effective = & $mapFileRights $rule.FileSystemRights
+        if ($deniedExplicit.ContainsKey($ruleSID)) {
+            $effective = $effective -band (-bnot $deniedExplicit[$ruleSID])
+        }
+        if ($rule.IsInherited -and $deniedInherited.ContainsKey($ruleSID)) {
+            $effective = $effective -band (-bnot $deniedInherited[$ruleSID])
         }
 
         $writeBits = $effective -band $writeMask
@@ -146964,7 +146987,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1545"
+$Script:adPEASVersion = "2.7.0+20261018-1559"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
