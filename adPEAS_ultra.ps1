@@ -24419,29 +24419,12 @@ function Connect-LDAP {
 	                    $CredentialSAM = $CredentialSAM.Split('@')[0]
 	                }
 	                try {
-	                    $UserRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
-	                        $DomainDN,
-	                        "(sAMAccountName=$CredentialSAM)",
-	                        [System.DirectoryServices.Protocols.SearchScope]::Subtree,
-	                        @("distinguishedName", "sAMAccountName", "userPrincipalName", "objectSid")
-	                    )
-	                    $UserResponse = $Script:LdapConnection.SendRequest($UserRequest)
-	                    if ($UserResponse -and $UserResponse.Entries.Count -gt 0) {
-	                        $UserEntry = $UserResponse.Entries[0]
-	                        $AuthenticatedUserDN = $UserEntry.DistinguishedName
-	                        if ($UserEntry.Attributes["samaccountname"]) {
-	                            $AuthenticatedUserSAM = $UserEntry.Attributes["samaccountname"][0]
-	                        }
-	                        if ($UserEntry.Attributes["userprincipalname"]) {
-	                            $AuthenticatedUserUPN = $UserEntry.Attributes["userprincipalname"][0]
-	                        }
-	                        if ($UserEntry.Attributes["objectsid"]) {
-	                            try {
-	                                $UserSIDBytes = $UserEntry.Attributes["objectsid"][0]
-	                                $AuthenticatedUserSID = (New-Object System.Security.Principal.SecurityIdentifier($UserSIDBytes, 0)).Value
-	                            } catch {
-	                            }
-	                        }
+	                    $BoundAccount = Read-LDAPBoundAccount -Connection $Script:LdapConnection -DomainDN $DomainDN -SAMAccountName $CredentialSAM
+	                    if ($BoundAccount) {
+	                        $AuthenticatedUserDN = $BoundAccount.DistinguishedName
+	                        $AuthenticatedUserSAM = $BoundAccount.SAMAccountName
+	                        $AuthenticatedUserUPN = $BoundAccount.UPN
+	                        $AuthenticatedUserSID = $BoundAccount.SID
 	                    }
 	                } catch {
 	                }
@@ -24476,6 +24459,25 @@ function Connect-LDAP {
 	                    } catch {
 	                        $AuthenticatedUser = "$DomainNetBIOS\[Kerberos Authenticated]"
 	                    }
+	                }
+	                try {
+	                    $BoundAccount = $null
+	                    if ($AuthenticatedUserDN) {
+	                        $BoundAccount = Read-LDAPBoundAccount -Connection $Script:LdapConnection -DistinguishedName $AuthenticatedUserDN
+	                    } else {
+	                        $BoundAccountName = Get-BoundAccountName -AuthenticatedUser $AuthenticatedUser -DomainNetBIOS $DomainNetBIOS
+	                        if ($BoundAccountName) {
+	                            $BoundAccount = Read-LDAPBoundAccount -Connection $Script:LdapConnection -DomainDN $DomainDN -SAMAccountName $BoundAccountName
+	                        } else {
+	                        }
+	                    }
+	                    if ($BoundAccount) {
+	                        $AuthenticatedUserDN = $BoundAccount.DistinguishedName
+	                        $AuthenticatedUserSAM = $BoundAccount.SAMAccountName
+	                        $AuthenticatedUserUPN = $BoundAccount.UPN
+	                        $AuthenticatedUserSID = $BoundAccount.SID
+	                    }
+	                } catch {
 	                }
 	            }
 	            if ([string]::IsNullOrEmpty($AuthenticatedUser)) {
@@ -24648,6 +24650,70 @@ function Get-AnonymousBindOutcome {
 	    Refused = $false
 	    Reason  = "the anonymous bind test failed before the server answered: $($Exception.Message)"
 	}
+}
+function Read-LDAPBoundAccount {
+	[CmdletBinding(DefaultParameterSetName = 'ByName')]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    $Connection,
+	    [Parameter(Mandatory = $true, ParameterSetName = 'ByName')]
+	    [string]$DomainDN,
+	    [Parameter(Mandatory = $true, ParameterSetName = 'ByName')]
+	    [string]$SAMAccountName,
+	    [Parameter(Mandatory = $true, ParameterSetName = 'ByDN')]
+	    [string]$DistinguishedName
+	)
+	$attributes = [string[]]@('distinguishedName', 'sAMAccountName', 'userPrincipalName', 'objectSid')
+	if ($PSCmdlet.ParameterSetName -eq 'ByDN') {
+	    $request = New-Object System.DirectoryServices.Protocols.SearchRequest(
+	        $DistinguishedName, '(objectClass=*)', [System.DirectoryServices.Protocols.SearchScope]::Base, $attributes)
+	} else {
+	    $escapedName = Escape-LDAPFilterValue -Value $SAMAccountName
+	    $request = New-Object System.DirectoryServices.Protocols.SearchRequest(
+	        $DomainDN, "(sAMAccountName=$escapedName)", [System.DirectoryServices.Protocols.SearchScope]::Subtree, $attributes)
+	}
+	$response = $Connection.SendRequest($request)
+	if (-not $response -or @($response.Entries).Count -eq 0) { return $null }
+	$entry = @($response.Entries)[0]
+	$account = [PSCustomObject]@{
+	    DistinguishedName = [string]$entry.DistinguishedName
+	    SAMAccountName    = $null
+	    SID               = $null
+	    UPN               = $null
+	}
+	$samAttribute = $entry.Attributes.get_Item('samaccountname')
+	if ($samAttribute) { $account.SAMAccountName = [string]@($samAttribute.GetValues([string]))[0] }
+	$upnAttribute = $entry.Attributes.get_Item('userprincipalname')
+	if ($upnAttribute) { $account.UPN = [string]@($upnAttribute.GetValues([string]))[0] }
+	$sidAttribute = $entry.Attributes.get_Item('objectsid')
+	if ($sidAttribute) {
+	    try {
+	        $sidBytes = [byte[]]@($sidAttribute.GetValues([byte[]]))[0]
+	        $account.SID = (New-Object System.Security.Principal.SecurityIdentifier($sidBytes, 0)).Value
+	    } catch {
+	    }
+	}
+	return $account
+}
+function Get-BoundAccountName {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyString()]
+	    [AllowNull()]
+	    [string]$AuthenticatedUser,
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyString()]
+	    [AllowNull()]
+	    [string]$DomainNetBIOS
+	)
+	if ($AuthenticatedUser -notmatch '^([^\\]+)\\(.+)$') { return $null }
+	$domainPart = $Matches[1]
+	$namePart = $Matches[2]
+	if ($namePart.StartsWith('[')) { return $null }
+	if (-not [string]::Equals($domainPart, $DomainNetBIOS, [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
+	return $namePart
 }
 function Connect-adPEAS {
 	[CmdletBinding(DefaultParameterSetName='WindowsAuth')]
@@ -91309,7 +91375,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1443"
+$Script:adPEASVersion = "2.7.0+20261018-1454"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

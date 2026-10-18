@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 14:43:51
-    Version: 2.7.0+20261018-1443
+    Build: 2026-10-18 14:54:25
+    Version: 2.7.0+20261018-1454
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -33816,37 +33816,15 @@ function Connect-LDAP {
                     # Query LDAP to get full user DN and verify the user exists
                     # UNIFIED: Always use LdapConnection (works for both LDAP and LDAPS)
                     try {
-                        # objectSid is one more attribute on a request that is already
-                        # being sent, and userPrincipalName was already being asked for
-                        # and then thrown away. Get-adPEASSession prints both - it reads
-                        # AuthenticatedUserSID and AuthenticatedUserUPN off the context,
-                        # and nothing ever wrote them, so those two rows never appeared
-                        # in a single session summary.
-                        $UserRequest = New-Object System.DirectoryServices.Protocols.SearchRequest(
-                            $DomainDN,
-                            "(sAMAccountName=$CredentialSAM)",
-                            [System.DirectoryServices.Protocols.SearchScope]::Subtree,
-                            @("distinguishedName", "sAMAccountName", "userPrincipalName", "objectSid")
-                        )
-                        $UserResponse = $Script:LdapConnection.SendRequest($UserRequest)
-
-                        if ($UserResponse -and $UserResponse.Entries.Count -gt 0) {
-                            $UserEntry = $UserResponse.Entries[0]
-                            $AuthenticatedUserDN = $UserEntry.DistinguishedName
-                            if ($UserEntry.Attributes["samaccountname"]) {
-                                $AuthenticatedUserSAM = $UserEntry.Attributes["samaccountname"][0]
-                            }
-                            if ($UserEntry.Attributes["userprincipalname"]) {
-                                $AuthenticatedUserUPN = $UserEntry.Attributes["userprincipalname"][0]
-                            }
-                            if ($UserEntry.Attributes["objectsid"]) {
-                                try {
-                                    $UserSIDBytes = $UserEntry.Attributes["objectsid"][0]
-                                    $AuthenticatedUserSID = (New-Object System.Security.Principal.SecurityIdentifier($UserSIDBytes, 0)).Value
-                                } catch {
-                                    Write-Log "[Connect-LDAP] Could not decode the objectSid of $AuthenticatedUserDN : $_"
-                                }
-                            }
+                        # objectSid and userPrincipalName as well: Get-adPEASSession prints
+                        # both, reading AuthenticatedUserSID and AuthenticatedUserUPN off the
+                        # context.
+                        $BoundAccount = Read-LDAPBoundAccount -Connection $Script:LdapConnection -DomainDN $DomainDN -SAMAccountName $CredentialSAM
+                        if ($BoundAccount) {
+                            $AuthenticatedUserDN = $BoundAccount.DistinguishedName
+                            $AuthenticatedUserSAM = $BoundAccount.SAMAccountName
+                            $AuthenticatedUserUPN = $BoundAccount.UPN
+                            $AuthenticatedUserSID = $BoundAccount.SID
                             Write-Log "[Connect-LDAP] Verified user: $AuthenticatedUserDN"
                         }
                     } catch {
@@ -33907,6 +33885,38 @@ function Connect-LDAP {
                             Write-Log "[Connect-LDAP] LSA ticket cache query failed: $_"
                             $AuthenticatedUser = "$DomainNetBIOS\[Kerberos Authenticated]"
                         }
+                    }
+
+                    # The account behind the name. "Who Am I?" answers "u:DOMAIN\name" on
+                    # Active Directory, and nothing below it ever looked that up - so a
+                    # session opened with Windows authentication, and every Kerberos login
+                    # that binds the same way, knew its account by name only. DN, SID,
+                    # sAMAccountName and UPN stayed empty: Get-LAPSCredentialAccess could not
+                    # tell whether the scanning account is privileged and called an
+                    # administrator's expected LAPS read a finding, and the session summary
+                    # showed no SID. Only names of this domain are looked up here - a name
+                    # of another domain would match a different account of the same name.
+                    try {
+                        $BoundAccount = $null
+                        if ($AuthenticatedUserDN) {
+                            $BoundAccount = Read-LDAPBoundAccount -Connection $Script:LdapConnection -DistinguishedName $AuthenticatedUserDN
+                        } else {
+                            $BoundAccountName = Get-BoundAccountName -AuthenticatedUser $AuthenticatedUser -DomainNetBIOS $DomainNetBIOS
+                            if ($BoundAccountName) {
+                                $BoundAccount = Read-LDAPBoundAccount -Connection $Script:LdapConnection -DomainDN $DomainDN -SAMAccountName $BoundAccountName
+                            } else {
+                                Write-Log "[Connect-LDAP] '$AuthenticatedUser' is not an account name of $DomainNetBIOS - not looked up"
+                            }
+                        }
+                        if ($BoundAccount) {
+                            $AuthenticatedUserDN = $BoundAccount.DistinguishedName
+                            $AuthenticatedUserSAM = $BoundAccount.SAMAccountName
+                            $AuthenticatedUserUPN = $BoundAccount.UPN
+                            $AuthenticatedUserSID = $BoundAccount.SID
+                            Write-Log "[Connect-LDAP] Bound account: $AuthenticatedUserDN ($AuthenticatedUserSID)"
+                        }
+                    } catch {
+                        Write-Log "[Connect-LDAP] Could not read the bound account $AuthenticatedUser : $_"
                     }
                 }
 
@@ -34201,6 +34211,123 @@ function Get-AnonymousBindOutcome {
         Refused = $false
         Reason  = "the anonymous bind test failed before the server answered: $($Exception.Message)"
     }
+}
+
+<#
+.SYNOPSIS
+    Reads the account an LDAP session is bound as out of the directory.
+.DESCRIPTION
+    Connect-LDAP knows the bound account by a name: the user name of the credential, or what
+    the LDAP "Who Am I?" operation (RFC 4532) answers - on Active Directory "u:DOMAIN\name",
+    or a DN after a certificate bind. This reads the account's distinguished name,
+    sAMAccountName, SID and userPrincipalName, which the session context carries for the
+    checks that judge the scanning account itself.
+
+    The values are read with GetValues: the indexer of a search result attribute hands back
+    a string whenever the bytes happen to decode as UTF-8, which a binary objectSid can.
+.PARAMETER Connection
+    The bound System.DirectoryServices.Protocols.LdapConnection.
+.PARAMETER DomainDN
+    The DN of the connected domain, the search base of a lookup by name.
+.PARAMETER SAMAccountName
+    The account's sAMAccountName. Escaped here for the filter.
+.PARAMETER DistinguishedName
+    The account's DN, read with a Base search.
+.OUTPUTS
+    PSCustomObject with DistinguishedName, SAMAccountName, SID and UPN, or $null when no
+    account was found.
+#>
+function Read-LDAPBoundAccount {
+    [CmdletBinding(DefaultParameterSetName = 'ByName')]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Connection,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByName')]
+        [string]$DomainDN,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByName')]
+        [string]$SAMAccountName,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByDN')]
+        [string]$DistinguishedName
+    )
+
+    $attributes = [string[]]@('distinguishedName', 'sAMAccountName', 'userPrincipalName', 'objectSid')
+    if ($PSCmdlet.ParameterSetName -eq 'ByDN') {
+        $request = New-Object System.DirectoryServices.Protocols.SearchRequest(
+            $DistinguishedName, '(objectClass=*)', [System.DirectoryServices.Protocols.SearchScope]::Base, $attributes)
+    } else {
+        $escapedName = Escape-LDAPFilterValue -Value $SAMAccountName
+        $request = New-Object System.DirectoryServices.Protocols.SearchRequest(
+            $DomainDN, "(sAMAccountName=$escapedName)", [System.DirectoryServices.Protocols.SearchScope]::Subtree, $attributes)
+    }
+
+    $response = $Connection.SendRequest($request)
+    if (-not $response -or @($response.Entries).Count -eq 0) { return $null }
+
+    $entry = @($response.Entries)[0]
+    $account = [PSCustomObject]@{
+        DistinguishedName = [string]$entry.DistinguishedName
+        SAMAccountName    = $null
+        SID               = $null
+        UPN               = $null
+    }
+
+    $samAttribute = $entry.Attributes.get_Item('samaccountname')
+    if ($samAttribute) { $account.SAMAccountName = [string]@($samAttribute.GetValues([string]))[0] }
+    $upnAttribute = $entry.Attributes.get_Item('userprincipalname')
+    if ($upnAttribute) { $account.UPN = [string]@($upnAttribute.GetValues([string]))[0] }
+    $sidAttribute = $entry.Attributes.get_Item('objectsid')
+    if ($sidAttribute) {
+        try {
+            $sidBytes = [byte[]]@($sidAttribute.GetValues([byte[]]))[0]
+            $account.SID = (New-Object System.Security.Principal.SecurityIdentifier($sidBytes, 0)).Value
+        } catch {
+            Write-Log "[Connect-LDAP] Could not decode the objectSid of $($account.DistinguishedName) : $_"
+        }
+    }
+
+    return $account
+}
+
+<#
+.SYNOPSIS
+    Says which account of the connected domain a "DOMAIN\name" identity names, if any.
+.DESCRIPTION
+    The sAMAccountName to look the bound account up by. Nothing for a name of another
+    domain - looked up here it would match a different account of the same name - and
+    nothing for the placeholders Connect-LDAP writes when it knows no name at all, such as
+    "CONTOSO\[Kerberos Authenticated]".
+.PARAMETER AuthenticatedUser
+    The identity as Connect-LDAP holds it, e.g. "CONTOSO\jdoe".
+.PARAMETER DomainNetBIOS
+    The NetBIOS name of the connected domain.
+.OUTPUTS
+    String - the sAMAccountName, or $null.
+#>
+function Get-BoundAccountName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$AuthenticatedUser,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$DomainNetBIOS
+    )
+
+    if ($AuthenticatedUser -notmatch '^([^\\]+)\\(.+)$') { return $null }
+    $domainPart = $Matches[1]
+    $namePart = $Matches[2]
+
+    if ($namePart.StartsWith('[')) { return $null }
+    if (-not [string]::Equals($domainPart, $DomainNetBIOS, [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
+    return $namePart
 }
 
 
@@ -146735,7 +146862,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1443"
+$Script:adPEASVersion = "2.7.0+20261018-1454"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

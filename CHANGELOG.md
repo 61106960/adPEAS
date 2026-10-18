@@ -738,6 +738,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   An explicit ACE is evaluated before every inherited one, and the row of an inherited
   Deny says that an Allow on the template overrides it.
 
+- **A session bound through Kerberos knows its own account.** Only a connection opened with
+  explicit credentials - the NTLM and simple bind fallbacks - looked the bound account up.
+  Every Kerberos session, which is Windows authentication and every password, NT hash, AES
+  key, certificate or ticket logon, asked LDAP "Who Am I?", got `DOMAIN\name` and kept the
+  name only: no DN, SID, sAMAccountName or UPN. `Get-LAPSCredentialAccess` could therefore
+  not tell whether the scanning account is privileged and reported an administrator's
+  expected LAPS read as a finding, and `Get-adPEASSession` showed no SID. The account is
+  looked up now, and only when the name belongs to the connected domain. The lookup reads
+  objectSid as bytes: the attribute indexer of a search result returns a string for a SID
+  whose bytes happen to be valid UTF-8, and the SID was lost.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
