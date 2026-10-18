@@ -19354,11 +19354,15 @@ function Convert-UACToRenderValues {
 	[CmdletBinding()]
 	param([string]$Name, $Value, $Context)
 	$uacFlags = @($Value)
-	$allFlagsStr = $uacFlags -join ' '
+	$sourceObject = if ($Context -and $Context.SourceObject) {
+	    $Context.SourceObject
+	} else {
+	    [PSCustomObject]@{ userAccountControl = $uacFlags }
+	}
 	$renderValues = @()
 	foreach ($flag in $uacFlags) {
 	    $flagStr = [string]$flag
-	    $match = Get-TriggerMatch -Name 'userAccountControl' -Value $flagStr -SourceObject $allFlagsStr
+	    $match = Get-TriggerMatch -Name 'userAccountControl' -Value $flagStr -SourceObject $sourceObject
 	    $renderValues += New-RenderValue -Display $flagStr -Severity $match.Severity -FindingId $match.FindingId -RawValue $flag
 	}
 	$maxSev = Get-MaxSeverityFromValues -Values $renderValues
@@ -91172,7 +91176,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1250"
+$Script:adPEASVersion = "2.7.0+20261018-1256"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

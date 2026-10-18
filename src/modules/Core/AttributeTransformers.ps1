@@ -384,12 +384,20 @@ function Convert-UACToRenderValues {
     param([string]$Name, $Value, $Context)
 
     $uacFlags = @($Value)
-    $allFlagsStr = $uacFlags -join ' '
+    # The object the flags belong to: is_dc_uac and is_not_dc_uac read SERVER_TRUST_ACCOUNT
+    # off its userAccountControl. This handed them the joined flags as a string, which has
+    # no such property, so every domain controller's TRUSTED_FOR_DELEGATION rendered as a
+    # member server's - red, with the card whose first remediation clears the flag.
+    # Without a context, an object carrying the flags stands in.
+    $sourceObject = if ($Context -and $Context.SourceObject) {
+        $Context.SourceObject
+    } else {
+        [PSCustomObject]@{ userAccountControl = $uacFlags }
+    }
     $renderValues = @()
     foreach ($flag in $uacFlags) {
         $flagStr = [string]$flag
-        # Pass allFlagsStr as SourceObject so is_dc_uac can check for SERVER_TRUST_ACCOUNT
-        $match = Get-TriggerMatch -Name 'userAccountControl' -Value $flagStr -SourceObject $allFlagsStr
+        $match = Get-TriggerMatch -Name 'userAccountControl' -Value $flagStr -SourceObject $sourceObject
         $renderValues += New-RenderValue -Display $flagStr -Severity $match.Severity -FindingId $match.FindingId -RawValue $flag
     }
 

@@ -641,6 +641,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   holding the right on the domain controllers as Exchange setup grants it. The card is a
   hint scored 35 now, and every right's card and rows follow the table's tier.
 
+- **A domain controller's TRUSTED_FOR_DELEGATION is rendered as expected again.** The
+  test for a domain controller reads SERVER_TRUST_ACCOUNT off the object's
+  `userAccountControl`, and the renderer handed it the row's flags as a string instead of
+  the object. Every domain controller therefore showed a red TRUSTED_FOR_DELEGATION with
+  the unconstrained delegation card - whose first remediation clears the flag - in the
+  server inventory and wherever else a domain controller was printed. It is a hint with
+  the card written for domain controllers now.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
